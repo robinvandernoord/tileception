@@ -179,7 +179,8 @@ impl SeatHandler for Tileception {
 delegate_seat!(Tileception);
 
 impl SelectionHandler for Tileception {
-    type SelectionUserData = ();
+    // Some(text) is compositor-owned text; None bridges an X11 selection.
+    type SelectionUserData = Option<String>;
 
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
@@ -191,7 +192,18 @@ impl SelectionHandler for Tileception {
     }
 
     /// A Wayland client pastes what an X11 program copied.
-    fn send_selection(&mut self, ty: SelectionTarget, mime_type: String, fd: OwnedFd, _seat: Seat<Self>, _: &()) {
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        text: &Option<String>,
+    ) {
+        if let Some(text) = text {
+            crate::launcher::send_clipboard_text(fd, text.clone());
+            return;
+        }
         if let Some(xwm) = self.xwm.as_mut() {
             if let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone()) {
                 tracing::warn!("could not paste from X11: {err:?}");

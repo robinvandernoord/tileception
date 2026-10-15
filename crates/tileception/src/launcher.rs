@@ -14,12 +14,28 @@ use smithay::{
 use tileception_apps::{AppIndex, IconLookup, Usage};
 use tileception_core::{Point, Rect};
 
+use smithay::wayland::selection::{
+    data_device::{
+        current_data_device_selection_userdata, request_data_device_client_selection, set_data_device_selection,
+        SelectionRequestError,
+    },
+    SelectionTarget,
+};
+
 use crate::{
     render::{push_image, push_shape, solid, OutputElement},
     shapes::Shape,
     ui::Icons,
     Tileception,
 };
+
+/// Serve compositor-owned clipboard text without starting a Wayland client.
+pub(crate) fn send_clipboard_text(fd: std::os::fd::OwnedFd, text: String) {
+    use std::io::Write;
+    std::thread::spawn(move || {
+        let _ = std::fs::File::from(fd).write_all(text.as_bytes());
+    });
+}
 
 #[derive(Default, Serialize, Deserialize)]
 struct StoredUsage {
@@ -94,9 +110,7 @@ impl Tileception {
             .insert_source(receiver, |event, _, state| {
                 if let channel::Event::Msg((epoch, text)) = event {
                     if state.launcher.open && state.launcher.epoch == epoch {
-                        state.launcher.input.insert(&text);
-                        state.launcher.edited = Instant::now();
-                        state.launcher.selected = 0;
+                        state.launcher_insert_paste(&text);
                         state.schedule_render();
                     }
                 }
@@ -163,7 +177,13 @@ impl Tileception {
                 let range = self.launcher.input.selection();
                 if !range.is_empty() {
                     let text = self.launcher.input.text[range].to_owned();
-                    self.spawn("wl-copy", &["--type".into(), "text/plain;charset=utf-8".into(), "--".into(), text]);
+                    let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
+                    set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(text));
+                    if let Some(xwm) = self.xwm.as_mut() {
+                        if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
+                            tracing::warn!("could not offer launcher text to X11: {error:?}");
+                        }
+                    }
                     if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
                         self.launcher.input.insert("");
                         self.launcher.selected = 0;
@@ -186,30 +206,74 @@ impl Tileception {
     }
 
     fn launcher_paste(&mut self) {
-        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        let text = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+        if let Some(text) = text {
+            self.launcher_insert_paste(&text);
+            return;
+        }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
         let epoch = self.launcher.epoch;
-        let display = self.socket_name.clone();
-        std::thread::spawn(move || {
-            let child = std::process::Command::new("wl-paste")
-                .arg("--no-newline")
-                .env("WAYLAND_DISPLAY", display)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            let Ok(mut child) = child else { return };
-            let mut text = String::new();
-            let read = child.stdout.take().is_some_and(|stdout| stdout.take(4097).read_to_string(&mut text).is_ok());
-            if text.len() > 4096 {
-                let _ = child.kill();
+        let Ok((reader, writer)) = UnixStream::pair() else { return };
+        // Bound stalled or oversized transfers without blocking the compositor.
+        if reader.set_read_timeout(Some(Duration::from_secs(3))).is_err() {
+            return;
+        }
+        let mut requested = false;
+        for mime_type in ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"] {
+            let Ok(fd) = writer.try_clone() else { return };
+            match request_data_device_client_selection(&self.seat, mime_type.into(), fd.into()) {
+                Ok(()) => {
+                    requested = true;
+                    break;
+                }
+                Err(SelectionRequestError::InvalidMimetype) => continue,
+                Err(SelectionRequestError::ServerSideSelection) => {
+                    if let Some(xwm) = self.xwm.as_mut() {
+                        requested = xwm
+                            .send_selection(
+                                SelectionTarget::Clipboard,
+                                mime_type.into(),
+                                writer.into(),
+                                self.loop_handle.clone(),
+                            )
+                            .is_ok();
+                    }
+                    // This writer is transferred to Xwayland or dropped here.
+                    if requested {
+                        self.launcher_read_paste(reader, sender, epoch);
+                    }
+                    return;
+                }
+                Err(SelectionRequestError::NoSelection) => return,
             }
-            let success = child.wait().is_ok_and(|status| status.success());
-            if read && success && text.len() <= 4096 {
-                let text = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        }
+        drop(writer);
+        if requested {
+            self.launcher_read_paste(reader, sender, epoch);
+        }
+    }
+
+    fn launcher_read_paste(
+        &self,
+        reader: std::os::unix::net::UnixStream,
+        sender: smithay::reexports::calloop::channel::Sender<(u64, String)>,
+        epoch: u64,
+    ) {
+        use std::io::Read;
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if reader.take(4097).read_to_string(&mut text).is_ok() && text.len() <= 4096 {
                 let _ = sender.send((epoch, text));
             }
         });
+    }
+
+    fn launcher_insert_paste(&mut self, text: &str) {
+        let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        self.launcher.input.insert(&text);
+        self.launcher.edited = Instant::now();
+        self.launcher.selected = 0;
     }
 
     pub fn launcher_step(&mut self, delta: isize) {
