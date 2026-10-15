@@ -41,13 +41,11 @@ PAM modules can impose other privilege, terminal, or interaction requirements.
 
 The service is `tileception`, falling back to `login` only when
 `/etc/pam.d/tileception` does not exist. Other metadata errors fail closed.
-The proposed service in `pam/tileception` uses the requested Debian/Ubuntu
-swaylock policy. The maintainer should update `install-session.sh` to install
-it as `/etc/pam.d/tileception`; this crate performs no installation. Verify the
-effective account stack before deployment: the supplied policy includes only
-the login *auth* stack, and account management can therefore inherit the host's
-`other` policy. Some hosts deny this; the maintainer may need a site-specific
-account stack. Do not remove `pam_acct_mgmt` to accommodate that failure.
+The service in `pam/tileception` includes the Debian/Ubuntu login authentication
+and account stacks explicitly. `install-session.sh` installs it as
+`/etc/pam.d/tileception`; this crate performs no installation itself. Review
+site-specific login policy before deployment. Do not remove `pam_acct_mgmt`
+to accommodate an account-policy denial.
 
 Passwords use `secrecy::SecretString`. The original is dropped immediately after
 authentication, before account management. The conversation supplies the user
@@ -101,10 +99,9 @@ documentation.
 
 ## Remaining uncertainties
 
-This development environment lacks `/usr/include/security/pam_appl.h` and the
-linkable `libpam` development library. `cargo test` fails at linking with
-`unable to find library -lpam`, so no tests executed here. `cargo check
---all-targets`, `cargo clippy -- -D warnings`, and `cargo fmt --check` pass.
+The development environment now has the PAM development dependencies. All six
+tests pass, including private permit/deny policies and account denial.
+Formatting and Clippy checks pass too.
 The maintainer must verify its deployed login/account policy and same-user
 helper behavior. PAM has no portable way to distinguish every lockout from an
 incorrect password or to discover a lockout timeout, and this library does not

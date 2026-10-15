@@ -209,14 +209,12 @@ Done and running as Robin's session:
 
 ### Right now (Robin)
 
-- Run `./install-session.sh`, then reboot. Before rebooting, activate the new
-  personal config: `mv ~/.config/tileception/config.toml.next
-  ~/.config/tileception/config.toml` (the running build cannot read it).
-- fuzzel, swaylock, sway-notification-center and wlogout were removed: until
-  the built-in versions land there is no launcher, no screen lock and no
-  notification popups (screenshots still save and copy, without the popup).
-  `sudo apt install swaylock sway-notification-center` brings back locking
-  and notifications in the meantime.
+- The coming-days implementation is ready for session verification. Run
+  `make install`, then log out and back in to load it; the installer also
+  installs the PAM service. The running desktop has not been changed.
+- Existing default fuzzel and swaync bindings are translated when loading the
+  config. If using a custom `[binds]` table, add `"Super+G" = "group"` and
+  `"Super+Shift+F" = "float"` if those new shortcuts are absent.
 
 ### Today (done)
 
@@ -233,7 +231,12 @@ Done and running as Robin's session:
 
 ### Coming days
 
-The external tools are gone, so these three come first, in this order:
+Status: functional corrections after laptop feedback. Lock and notification
+design work is reserved for Claude, using `docs/design.html` as the reference.
+Automatic idle locking and Suspend are disabled pending investigation of the
+reported lock freeze and blank display after resume. Do not trigger either
+during automated verification. Automatic layout saving/restoration is off by
+default; the app-matching behavior was not agreed and is deferred.
 
 1. Built-in lock screen (Super+L) with the normal password and the wallpaper,
    replacing swaylock (uses the `tileception-auth` crate from Codex).
@@ -245,8 +248,57 @@ The external tools are gone, so these three come first, in this order:
 4. Selecting several windows: Shift+click and Super+Shift+drag (plain drag in
    Overview); then Super+C closes all, Super+Shift+F floats or docks all,
    Super+G makes them tabs of one tile, Super+Shift+arrows moves them.
-5. Layouts that survive a re-login.
+5. Layouts that survive a re-login: clarify the intended scope first. The
+   experimental app-matching implementation is opt-in, not enabled by default.
 6. Idle handling: screen off and lock after a while, not during video.
+
+Verification checklist:
+
+- [x] Existing 64 tests, formatting and Clippy checks pass.
+- [x] Isolated screenshots: lock screen with wallpaper, launcher with app
+  icons, notification history with thumbnail and action buttons.
+- [x] Reopened windows recover saved split proportions and saved views across
+  compositor restarts; floating geometry is serialized successfully.
+- [x] Scripted selection, tab grouping, group float/dock and group close.
+- [x] Short headless idle timer reaches locked and display-asleep states.
+- [ ] Manually verify the real password, keyboard/compose input, pointer
+  selection gestures, notification action clicks, physical display wake and
+  suspend/resume, and video idle inhibition on the laptop.
+
+Feedback corrections:
+
+- [x] Copy the Tide reference, including its styles and examples, into
+  `docs/design.html`; do not commit without an explicit commit request.
+- [x] Add an editable launcher field with caret, selection, word navigation,
+  deletion, and clipboard shortcuts. Handle focus changes outside Smithay's
+  locked keyboard filter.
+- [x] Remove the opaque Desktop placeholder so wallpaper fills empty space.
+- [x] Include the focused window when starting a Shift+click selection and
+  add a distinct selection marker. Add the missing group/float shortcuts to
+  Robin's custom config.
+- [x] Move selected tiled windows as one subtree, retaining internal splits,
+  tab groups and proportions, instead of docking them one at a time.
+- [x] Keep the screenshot save/copy chooser open until answered; allow 30
+  seconds for saved-screenshot feedback. Leave visual styling to Claude.
+- [x] Show password dots without retaining or drawing the password itself.
+- [x] Inspect the previous boot: Linux and the compositor both resumed.
+  Clear stale pre-suspend DRM frames and request fresh scanout on activation.
+- [ ] Verify the resume recovery on hardware later. Suspend remains disabled;
+  the recovery is not claimed to be confirmed.
+
+Log, 2026-10-15: integrated the three standalone libraries, added multi-window
+actions, layout persistence and idle handling. Checks used a private headless
+compositor and private D-Bus; nothing was installed or restarted in the active
+desktop. Trackpad and touchscreen improvements were requested for later only.
+
+Follow-up, 2026-10-15: corrected the empty/floating desktop background and
+launcher editing. The isolated formation check moved a vertical group with a
+horizontal lower pair intact; selecting and closing all four windows left an
+empty desktop. The native caret and full wallpaper were inspected visually.
+All 64 existing tests and formatting/Clippy checks pass. Password dots and the
+resume recovery were compiled but no lock or suspend was triggered. Robin's
+custom config now includes group/float shortcuts and disables automatic idle
+locking. Lock and notification visual design remains Claude's task.
 
 ### Maybe someday (tm)
 
@@ -257,12 +309,26 @@ The external tools are gone, so these three come first, in this order:
   (data-control).
 - Bindings that repeat while held, pass through to the app, or work while
   locked; click-to-kill.
-- Pointer lock for games, input methods, touchpad gestures.
+- Pointer lock for games and input methods.
+- Better trackpad support: configurable multi-finger actions, swipes and
+  pinches for navigation, Overview and window management. Planning only for now.
+- Touchscreen support: touch currently does not work on Robin's laptop,
+  although the same hardware works in PikaOS. Investigate device discovery,
+  coordinate mapping and touch delivery, then add direct manipulation and
+  gestures. Planning only for now.
 - Live blur and glass styles (Smoke, Liquid glass from `design/graphite.html`).
 - A settings window instead of editing the config file.
 
 ### To be planned
 
+- **Built-in volume and media controls with visual feedback.** Currently these
+  are Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
+  Add built-in actions and standard hardware-key bindings so they work with the
+  default configuration. Show actual volume and mute state after changes, and
+  playback feedback for play/pause, stop and track changes, including the active
+  player and track when available. Report missing audio devices or active
+  players clearly. Use the Tide visual language; keep personal shell shortcuts
+  unnecessary for normal volume/media-key operation. Planned, not implemented.
 - **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:

@@ -16,7 +16,7 @@ findings and the roadmap.
   spaces, framing one window on its own, all animated.
 - Rearranging: drag windows onto edges (dock) or centres (tab) of tiles, move
   windows with the keyboard, drag gaps to resize.
-- Tab groups with a strip above the tile (no titles drawn yet).
+- Tab groups with titles and app icons above the tile.
 - History (back and forward) and saved views 1 to 9.
 - Layer shell: bars reserve their edge, launchers get the keyboard.
 - Fullscreen for Wayland and X11 programs (and Super+F).
@@ -27,24 +27,22 @@ findings and the roadmap.
 - A config file with key bindings, reloaded on save.
 - A command socket: `tileception msg <command>`.
 
-Not yet: more than one monitor (only the first is lit), persistence across
-restarts, tab titles, touchpad gestures, HiDPI scaling, idle handling,
+Not yet: more than one monitor (only the first is lit), trackpad gestures,
+touchscreen support, HiDPI scaling,
 taskbar window lists (foreign-toplevel), clipboard managers (data-control).
 
 ## Companion programs
 
-The defaults call these; on Debian and Ubuntu:
+The screenshot helpers use these; on Debian and Ubuntu:
 
 ```sh
-sudo apt install fuzzel grim slurp swaylock sway-notification-center \
+sudo apt install grim slurp \
     xdg-desktop-portal-wlr wl-clipboard
 ```
 
-Super opens fuzzel, Super+L locks with swaylock, Super+X opens the power
-menu (wlogout if installed: `sudo apt install wlogout`, otherwise a fuzzel
-list), Print and Shift+Print save
-screenshots to `~/Pictures`, and `autostart = ["swaync"]` gives
-notifications (`swaync-client -t` opens the history panel).
+The launcher, notifications and power menu are built in. Print and Shift+Print
+save screenshots to `~/Pictures/Screenshots`. The screenshot save/copy chooser
+waits for a decision; saved-screenshot feedback remains available for 30 seconds.
 
 ## Installing as a session
 
@@ -103,33 +101,71 @@ to a command:
 ## Look
 
 Tileception's look is **Tide**: flat graphite, small radii, a teal to blue
-accent with a soft glow on the focused window (mockups in `design/`). The
+accent with a soft glow on the focused window (reference in `docs/design.html`). The
 `[theme]` section of the config sets the colours, corner radius, glow, font,
 and a `wallpaper` (with `wallpaper_fit`), which the lock screen shows too.
+
+The lock screen checks the logged-in user's password through PAM on a worker
+thread. Escape or Ctrl+U clears the input; Enter submits it. Caps Lock is shown,
+and compose/dead keys follow your locale. A custom `[general].lock_command`
+still overrides the built-in locker. The session installer installs the PAM
+service. If recovery is needed, switch to a console and run
+`tileception msg unlock` as the same user.
+
+The launcher has an editable search field with a caret, mouse selection,
+Left/Right, Home/End, Shift selection, Ctrl+A, clipboard shortcuts, and
+Alt/Ctrl+Left/Right word navigation. Up/Down select search results. Usage is
+saved under `$XDG_STATE_HOME/tileception` (default `~/.local/state/tileception`).
+
+Automatic layout saving/restoration is disabled. The experimental app-matching
+implementation requires `[general].restore_layout = true`; its intended behavior
+is deferred pending scope clarification.
+
+Notifications run inside the compositor, with popups, thumbnails, actions and
+a scrollable history panel. The panel's DND control toggles do not disturb;
+critical notifications still appear. Session startup ignores the old `swaync`
+autostart entry. The old default `spawn fuzzel` and `spawn swaync-client -t`
+bindings are translated to their built-in equivalents when loading the config.
+New custom bindings should use `launcher`, `notifications`, `do-not-disturb`
+and `group` directly.
+
+`[idle]` defaults to `lock_after = 0` and `off_after = 600`, in seconds;
+zero disables an action. Visible players using Wayland idle inhibition prevent
+both actions. The display-off timer powers down the monitor, not the computer.
+Input wakes the display; the wake event is consumed. Automatic locking and the
+power menu's Suspend action are disabled while lock/resume failures are being
+investigated. The resume path clears stale queued DRM frames, but that recovery
+has not been verified on hardware.
+Nested development sessions do not automatically lock or power down the host.
 
 ## Default shortcuts
 
 | Keys | Action |
 | --- | --- |
-| Super (tap) | launcher (fuzzel) |
+| Super (tap) | built-in app launcher |
 | Super+T | open a terminal beside the focused window |
-| Super+L | lock the screen (`lock`, swaylock with your wallpaper) |
-| Super+X | built-in power menu: lock, log out, suspend, restart, power off |
+| Super+B | open the system's default web browser |
+| Super+E | open the home folder in the system's default file manager |
+| Super+L | built-in password lock screen with your wallpaper |
+| Super+N | notification history and do-not-disturb control |
+| Super+X | built-in power menu; Suspend is currently unavailable |
 | Print / Shift+Print | screenshot of the screen / of a region |
-| Super+Q | close the focused window |
+| Super+C | close the focused or selected windows |
+| Super+G | group selected windows into tabs |
 | Super+O | Overview (Esc or a click leaves it) |
 | Super+I / Super+U | step in toward the focused window / step out a level |
 | Super+WheelUp / Super+WheelDown | step in toward the pointer / step out |
 | Super+M | frame the focused window on its own (again: back) |
 | Super+[ / Super+] | back / forward through framed spaces |
 | Super+Arrows | neighbouring space |
-| Super+Shift+Arrows | move the focused window that way |
+| Super+Shift+Arrows | move the focused or selected windows that way |
 | Super+Alt+Arrows | resize the focused window by 40 pixels |
 | Super+J | stack the focused row, or lay the column side by side |
 | Alt+Tab / Alt+Shift+Tab | focus the next / previous window |
 | Super+Tab / Super+Shift+Tab | next / previous tab |
 | Super+F | fullscreen |
 | Super+V | float above the layout, or dock again |
+| Super+Shift+F | float or dock the selected windows together |
 | Super+D | show or hide the Desktop tile |
 | Super+1..9 / Super+Shift+1..9 | go to / save a view |
 | Super+Shift+E | quit |
@@ -142,7 +178,8 @@ Mouse:
   float, or at the very edge of the screen to dock beside everything.
 - Alt+drag a floating window to move it anywhere.
 - Alt+right-drag a window to resize it from the nearest corner.
-- In Overview, drag windows without a modifier.
+- Shift+click toggles window selection. Super+Shift+drag draws a selection box;
+  in Overview, plain drag draws the box. A plain click clears the selection.
 - Drag a tab out of its strip to undock it.
 - Drag the gap between windows to resize.
 
@@ -154,7 +191,10 @@ Mouse:
 `step-out`, `focus <dir>`, `move <dir>`, `resize <dir> <px>`,
 `toggle-split`, `cycle [next|prev]`, `back`, `forward`, `maximize`, `desktop`,
 `float`, `fullscreen`, `next-tab`, `prev-tab`, `save <n>`, `go <n>`, `vt <n>`,
-`drop <x> <y>`, `screenshot <file.png>`, `tree`, `reload`, `quit`.
+`drop <x> <y>`, `screenshot <file.png>`, `launcher`, `notifications`,
+`do-not-disturb`, `select [window-id ...]`, `group`, `lock`, `power-menu`,
+`tree`, `reload`, `quit`. `select` without ids clears the selection; window
+ids and selection/lock/display-sleep status are included in `tree`.
 
 ## Layout
 
