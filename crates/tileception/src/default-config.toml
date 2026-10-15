@@ -26,12 +26,14 @@ share_removed_space = true
 tab_height = 28
 
 # Shell command lines run once when Tileception starts, for example a
-# notification daemon: autostart = ["swaync"]
+# Notifications are built in; no notification daemon is needed.
 autostart = []
 
 # Command for the `lock` action. {wallpaper} becomes the wallpaper's path.
-# Unset: swaylock with the wallpaper and the theme's colours.
+# Unset: the built-in password lock screen with your wallpaper.
 # lock_command = "swaylock -f -i {wallpaper}"
+# Experimental app-matched layout persistence is disabled unless opted into.
+# restore_layout = false
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -55,6 +57,12 @@ autostart = []
 # wallpaper = "~/Pictures/wallpaper.jpg"
 # How it fits the screen: fill, fit, stretch or center.
 # wallpaper_fit = "fill"
+
+[idle]
+# Seconds of inactivity; 0 disables the corresponding action.
+# Visible video players can inhibit both through the Wayland idle-inhibit protocol.
+lock_after = 0
+off_after = 600
 
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
@@ -99,11 +107,13 @@ repeat_rate = 30
 # Always available: Ctrl+Alt+F1..F12 switch VT, Ctrl+Alt+BackSpace quits.
 # In a nested window, Alt stands in for Super.
 [binds]
-"Super" = "spawn fuzzel"
+"Super" = "launcher"
 "Super+T" = "terminal"
 "Super+C" = "close"
 "Super+L" = "lock"
 "Super+X" = "power-menu"
+"Super+N" = "notifications"
+"Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
 
@@ -141,6 +151,7 @@ repeat_rate = 30
 
 "Super+F" = "fullscreen"
 "Super+V" = "float"
+"Super+Shift+F" = "float"
 "Super+D" = "desktop"
 
 # Screenshots (grim, slurp, wl-copy). Print saves and copies the whole screen;

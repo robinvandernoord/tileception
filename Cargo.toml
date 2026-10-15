@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/tileception-core", "crates/tileception"]
+exclude = ["crates/tileception-apps", "crates/tileception-auth", "crates/tileception-notify"]
 
 [workspace.package]
 version = "0.1.0"

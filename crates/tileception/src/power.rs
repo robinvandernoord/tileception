@@ -31,7 +31,7 @@ impl PowerAction {
         match self {
             PowerAction::Lock => "Lock",
             PowerAction::LogOut => "Log out",
-            PowerAction::Suspend => "Suspend",
+            PowerAction::Suspend => "Suspend unavailable",
             PowerAction::Restart => "Restart",
             PowerAction::PowerOff => "Power off",
         }
@@ -96,6 +96,10 @@ fn icon_image(action: PowerAction, size: u32, colour: Colour) -> Option<MemoryRe
 
 impl Tileception {
     pub fn open_power_menu(&mut self) {
+        if self.is_locked() {
+            return;
+        }
+        self.launcher.open = false;
         self.power_menu = Some(PowerMenu::default());
         self.force_keyboard_focus_sync();
     }
@@ -127,12 +131,13 @@ impl Tileception {
     /// Runs an action; the menu closes first.
     pub fn run_power_action(&mut self, action: PowerAction) {
         self.close_power_menu();
-        let lock = self.lock_command();
         match action {
-            PowerAction::Lock => self.spawn("sh", &["-c".into(), lock]),
+            PowerAction::Lock => self.lock_session(false),
             PowerAction::LogOut => self.loop_signal.stop(),
             // Lock first, so the machine wakes up locked.
-            PowerAction::Suspend => self.spawn("sh", &["-c".into(), format!("{lock}; systemctl suspend")]),
+            PowerAction::Suspend => {
+                tracing::warn!("suspend disabled pending investigation of the blank display after resume")
+            }
             PowerAction::Restart => self.spawn("systemctl", &["reboot".into()]),
             PowerAction::PowerOff => self.spawn("systemctl", &["poweroff".into()]),
         }

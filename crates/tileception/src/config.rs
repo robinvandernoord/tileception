@@ -29,6 +29,7 @@ pub struct ConfigFile {
     pub general: General,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
+    pub idle: crate::idle::IdleConfig,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 
@@ -64,8 +65,10 @@ pub struct General {
     /// Shell command lines run once at startup.
     pub autostart: Vec<String>,
     /// Command for the `lock` action; `{wallpaper}` is replaced by the
-    /// wallpaper's path. Unset: swaylock with the wallpaper or theme colours.
+    /// wallpaper's path. Unset: the built-in password lock screen.
     pub lock_command: Option<String>,
+    /// Experimental app-matched layout restoration; opt in explicitly.
+    pub restore_layout: bool,
 }
 
 impl Default for General {
@@ -80,6 +83,7 @@ impl Default for General {
             tab_height: 28.0,
             autostart: Vec::new(),
             lock_command: None,
+            restore_layout: false,
         }
     }
 }
@@ -139,7 +143,19 @@ impl Config {
         let mut binds = Vec::new();
         let mut errors = Vec::new();
         for (combo, value) in &table {
-            let parsed: Result<Vec<Command>, String> = value.lines().into_iter().map(commands::parse).collect();
+            let parsed: Result<Vec<Command>, String> = value
+                .lines()
+                .into_iter()
+                .map(|line| {
+                    let line = match line.trim() {
+                        "spawn fuzzel" => "launcher",
+                        "spawn tileception-power" => "power-menu",
+                        "spawn swaync-client -t" => "notifications",
+                        other => other,
+                    };
+                    commands::parse(line)
+                })
+                .collect();
             match (parse_combo(combo), parsed) {
                 (Ok((mods, key)), Ok(commands)) => binds.push(Bind { mods, key, commands }),
                 (Err(e), _) | (_, Err(e)) => errors.push(format!("{combo:?}: {e}")),
@@ -370,7 +386,7 @@ mod tests {
     fn modifier_taps() {
         let c = Config::parse("[binds]\n\"Super\" = \"spawn fuzzel\"").unwrap();
         let logo = Mods { logo: true, ..Default::default() };
-        assert_eq!(c.lookup(logo, TAP), Some(&[Command::Spawn("fuzzel".into())][..]));
+        assert_eq!(c.lookup(logo, TAP), Some(&[Command::Action(crate::input::Action::Launcher)][..]));
         assert_eq!(modifier_of(0xffeb), Some(logo));
     }
 

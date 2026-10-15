@@ -71,6 +71,9 @@ impl Tileception {
             return;
         }
         let pending = std::mem::take(&mut self.pending_captures);
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            self.wallpaper_buffer();
+        }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let image = match self.render_offscreen(renderer, wallpaper) {
             Ok(texture) => Some(texture),

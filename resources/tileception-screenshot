@@ -44,7 +44,7 @@ copy() { wl-copy --type image/png < "$tmp"; }
 save() { mkdir -p "$dir" && cp "$tmp" "$file"; }
 
 if [ "$ask" = yes ]; then
-    choice=$(notify-send -a Screenshot -i "$tmp" -h "string:image-path:$tmp" \
+    choice=$(notify-send -a Screenshot -t 0 -i "$tmp" -h "string:image-path:$tmp" \
         -A copy=Copy -A save=Save -A both="Save and copy" \
         "Screenshot taken" "Copy it, save it, or both?")
     case "$choice" in
@@ -56,10 +56,11 @@ if [ "$ask" = yes ]; then
 fi
 
 save && copy
-choice=$(notify-send -a Screenshot -i "$file" -h "string:image-path:$file" \
-    -A open=Open -A folder="Show in folder" -A delete=Delete \
+choice=$(notify-send -a Screenshot -t 30000 -i "$file" -h "string:image-path:$file" \
+    -A copy=Copy -A open=Open -A folder="Show in folder" -A delete=Delete \
     "Screenshot saved and copied" "$file")
 case "$choice" in
+    copy) wl-copy --type image/png < "$file" ;;
     open) xdg-open "$file" ;;
     folder) xdg-open "$dir" ;;
     delete) rm -f "$file" && notify-send -a Screenshot "Screenshot deleted" "Still on the clipboard" ;;

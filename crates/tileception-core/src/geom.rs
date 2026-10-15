@@ -12,7 +12,7 @@ impl Point {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,

@@ -63,6 +63,12 @@ pub fn describe(state: &Tileception) -> String {
         world.in_overview(),
         world.focus().map(|w| w.0.to_string()).unwrap_or("none".into())
     );
+    out.push_str(&format!(
+        "locked {} display-asleep {} selected {:?}\n",
+        state.is_locked(),
+        state.idle.off,
+        state.selection.windows.iter().map(|id| id.0).collect::<Vec<_>>()
+    ));
     fn walk(state: &Tileception, id: NodeId, depth: usize, out: &mut String) {
         let world = &state.world;
         let tree = world.tree();

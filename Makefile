@@ -22,8 +22,8 @@ build:
 	@scripts/deps.sh check build
 	cargo build --release -p tileception
 
-# The library crates from .codex-work are standalone until they are wired in,
-# so they are tested on their own.
+# Support libraries keep independent workspaces. Cargo does not run dependency
+# tests, so run their tests and checks explicitly too.
 CRATES := $(wildcard crates/tileception-apps crates/tileception-notify crates/tileception-auth)
 
 test:

@@ -23,6 +23,12 @@ install -m 755 resources/tileception-power "$bindir/tileception-power"
 install -m 755 resources/tileception-screenshot "$bindir/tileception-screenshot"
 echo "Installed tileception and its helpers in $bindir"
 
+pam_service=/etc/pam.d/tileception
+if ! cmp -s crates/tileception-auth/pam/tileception "$pam_service"; then
+    sudo install -m 644 crates/tileception-auth/pam/tileception "$pam_service"
+    echo "Installed the Tileception PAM authentication and account policy"
+fi
+
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal"
 mkdir -p "$portals"
 install -m 644 resources/tileception-portals.conf "$portals/tileception-portals.conf"

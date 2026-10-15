@@ -64,10 +64,25 @@ pub enum Action {
     Lock,
     /// Open the power menu.
     PowerMenu,
+    Launcher,
+    Notifications,
+    DoNotDisturb,
+    Group,
 }
 
 impl Tileception {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        if matches!(
+            &event,
+            InputEvent::Keyboard { .. }
+                | InputEvent::PointerMotionAbsolute { .. }
+                | InputEvent::PointerMotion { .. }
+                | InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis { .. }
+        ) && self.idle_activity()
+        {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_key::<I>(event),
             InputEvent::PointerMotionAbsolute { event } => {
@@ -105,6 +120,24 @@ impl Tileception {
             |state, mods, handle| {
                 let sym = handle.modified_sym().raw();
                 let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+                if state.is_locked() {
+                    state.tap_armed = None;
+                    state.tap_fired.clear();
+                    if let Some(command @ Command::Action(Action::Vt(_))) =
+                        builtin(Mods::from_state(mods), sym, raw_sym, false)
+                    {
+                        if pressed {
+                            return FilterResult::Intercept(vec![command]);
+                        }
+                    }
+                    if matches!(state.lock, crate::lock::LockState::BuiltIn) {
+                        if pressed {
+                            state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
+                        }
+                        return FilterResult::Intercept(Vec::new());
+                    }
+                    return FilterResult::Forward;
+                }
                 if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
                     // The release still goes to the client, so it does not
                     // think the modifier is stuck; the binding runs after.
@@ -116,16 +149,28 @@ impl Tileception {
                 let mut held = Mods::from_state(mods);
                 // Unmodified, so Super+Shift+1 is "1" and not "!".
                 let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
-                if let Some(command) = builtin(held, sym, raw, state.world.in_overview()) {
+                if let Some(command) = builtin(
+                    held,
+                    sym,
+                    raw,
+                    state.world.in_overview() && !state.launcher.open && state.power_menu.is_none(),
+                ) {
                     return FilterResult::Intercept(vec![command]);
-                }
-                if state.is_locked() {
-                    // Everything goes to the locker.
-                    return FilterResult::Forward;
                 }
                 if state.power_menu.is_some() {
                     // The menu takes every key while it is open.
                     return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
+                }
+                if state.launcher.open {
+                    return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
+                }
+                if sym == keysyms::KEY_Escape
+                    && held == Mods::default()
+                    && (state.notifications.open || !state.selection.windows.is_empty())
+                {
+                    state.notifications.open = false;
+                    state.selection.windows.clear();
+                    return FilterResult::Intercept(Vec::new());
                 }
                 if state.nested && held.alt && !held.logo {
                     // The host desktop keeps Super for itself; Alt stands in.
@@ -164,11 +209,27 @@ impl Tileception {
     }
 
     pub fn run(&mut self, action: Action) {
+        if self.selection_action(action) {
+            if action != Action::Close {
+                self.persist_layout();
+            }
+            return;
+        }
         let now = self.now();
         // Navigating leaves fullscreen; closing, spawning and VT switches do not.
         let keeps_fullscreen = matches!(
             action,
-            Action::Close | Action::Quit | Action::Spawn | Action::Vt(_) | Action::Fullscreen | Action::Resize(..)
+            Action::Close
+                | Action::Quit
+                | Action::Spawn
+                | Action::Vt(_)
+                | Action::Fullscreen
+                | Action::Resize(..)
+                | Action::Lock
+                | Action::PowerMenu
+                | Action::Launcher
+                | Action::Notifications
+                | Action::DoNotDisturb
         );
         if let (Some(id), false) = (self.fullscreen, keeps_fullscreen) {
             self.set_fullscreen(id, false);
@@ -217,10 +278,13 @@ impl Tileception {
             }
             Action::Vt(n) => self.change_vt(n),
             Action::Lock => {
-                let lock = self.lock_command();
-                self.spawn("sh", &["-c".into(), lock]);
+                self.lock_session(false);
             }
             Action::PowerMenu => self.open_power_menu(),
+            Action::Launcher => self.toggle_launcher(),
+            Action::Notifications => self.toggle_notifications(),
+            Action::DoNotDisturb => self.toggle_dnd(),
+            Action::Group => {}
             Action::Fullscreen => {
                 if let Some(id) = self.world.focus() {
                     let on = self.fullscreen != Some(id);
@@ -229,10 +293,31 @@ impl Tileception {
             }
         }
         self.apply_layout();
+        if matches!(
+            action,
+            Action::Move(_)
+                | Action::Resize(..)
+                | Action::ToggleFloat
+                | Action::ToggleSplit
+                | Action::SaveView(_)
+                | Action::RecallView(_)
+                | Action::NextTab
+                | Action::PrevTab
+                | Action::ToggleDesktop
+        ) {
+            self.persist_layout();
+        }
     }
 
     fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer = pos;
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            return;
+        }
+        if !self.is_locked() && self.launcher.open {
+            self.launcher_motion(tileception_core::Point::new(pos.x, pos.y));
+            return;
+        }
         if self.power_menu.is_some() {
             if let (Some(i), Some(menu)) = (self.power_action_at(pos.x, pos.y), self.power_menu.as_mut()) {
                 menu.selected = i;
@@ -249,7 +334,17 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.notifications_contain(tileception_core::Point::new(pos.x, pos.y)) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         let now = self.now();
+        if self.selection.anchor.is_some() {
+            self.selection_motion(tileception_core::Point::new(pos.x, pos.y));
+            return;
+        }
         if let Some(mut drag) = self.gap_drag {
             let delta = if drag.horizontal { pos.x - drag.last.x } else { pos.y - drag.last.y };
             if self.world.resize_gap(drag.split, drag.index, delta, now) {
@@ -333,11 +428,23 @@ impl Tileception {
 
     fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         if self.is_locked() {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
+            return;
+        }
+        if self.launcher.open {
+            if state == ButtonState::Pressed && button == BTN_LEFT {
+                self.launcher_click(tileception_core::Point::new(self.pointer.x, self.pointer.y));
+            }
+            if state == ButtonState::Released && button == BTN_LEFT {
+                self.launcher_release();
+            }
             return;
         }
         if self.power_menu.is_some() {
@@ -352,9 +459,23 @@ impl Tileception {
         }
         let now = self.now();
         let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.notifications_contain(p) {
+            if state == ButtonState::Pressed && button == BTN_LEFT {
+                self.notification_click(p);
+            }
+            return;
+        }
 
         if state == ButtonState::Released {
+            if let Some(anchor) = self.selection.anchor.take() {
+                if self.world.in_overview() && (p.x - anchor.x).hypot(p.y - anchor.y) < DRAG_THRESHOLD {
+                    self.world.click_in_overview(anchor, now);
+                    self.apply_layout();
+                }
+                return;
+            }
             if self.gap_drag.take().is_some() || self.resize_drag.take().is_some() {
+                self.persist_layout();
                 return;
             }
             if let Some(drag) = self.move_drag.take() {
@@ -362,6 +483,7 @@ impl Tileception {
                     self.world.apply_drop(drag.window, target, now);
                 }
                 self.apply_layout();
+                self.persist_layout();
                 // A title bar drag began with a press the client saw; close it.
                 pointer.button(self, &ButtonEvent { button, state, serial, time });
                 pointer.frame(self);
@@ -400,11 +522,20 @@ impl Tileception {
         if state == ButtonState::Pressed && button == BTN_LEFT && !pointer.is_grabbed() && !over_layer {
             let drawn = self.drawn_windows(now);
             let under = drawn.iter().find(|d| d.content.contains(p)).copied();
-
-            if self.world.in_overview() {
-                self.pending_press = Some(PendingPress { at: self.pointer, window: under.map(|d| d.id) });
+            let mods = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state();
+            if mods.shift && !mods.logo {
+                if let Some(window) = self.tab_at(p, now).or(under.map(|d| d.id)) {
+                    self.toggle_selection(window);
+                }
                 return;
             }
+            if (mods.shift && mods.logo) || self.world.in_overview() {
+                self.selection.anchor = Some(p);
+                self.selection.additive = if mods.shift { self.selection.windows.clone() } else { Default::default() };
+                return;
+            }
+            self.selection.windows.clear();
+
             // A click during an animation ends it.
             if self.world.is_animating(now) {
                 self.world.finish_animation();
@@ -449,6 +580,28 @@ impl Tileception {
     }
 
     fn on_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            return;
+        }
+        if self.launcher.open && !self.is_locked() {
+            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
+                if value != 0.0 {
+                    self.launcher_step(if value > 0.0 { 1 } else { -1 });
+                }
+            }
+            return;
+        }
+        if !self.is_locked()
+            && self.notifications.open
+            && self.notifications_contain(tileception_core::Point::new(self.pointer.x, self.pointer.y))
+        {
+            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
+                if value != 0.0 {
+                    self.notification_scroll(if value > 0.0 { 1 } else { -1 });
+                }
+            }
+            return;
+        }
         self.tap_armed = None;
         let source = event.source();
         if !self.is_locked() && self.wheel_binding::<I>(event) {

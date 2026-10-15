@@ -11,10 +11,10 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct WindowId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Axis {
     /// Children sit side by side, left to right.
     Horizontal,
@@ -51,6 +51,14 @@ pub enum Node {
     Desktop { floats: Vec<WindowId>, shown: bool },
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum LayoutNode {
+    Split { axis: Axis, children: Vec<LayoutNode>, weights: Vec<f64> },
+    Tile { views: Vec<WindowId>, selected: usize },
+    Desktop { floats: Vec<WindowId>, shown: bool },
+}
+
 #[derive(Debug, Clone)]
 struct Slot {
     node: Node,
@@ -78,6 +86,107 @@ impl Default for Tree {
 }
 
 impl Tree {
+    pub fn snapshot(&self) -> LayoutNode {
+        fn visit(tree: &Tree, id: NodeId) -> LayoutNode {
+            match tree.node(id) {
+                Node::Split { axis, children, weights } => LayoutNode::Split {
+                    axis: *axis,
+                    children: children.iter().map(|id| visit(tree, *id)).collect(),
+                    weights: weights.clone(),
+                },
+                Node::Tile { views, selected } => LayoutNode::Tile { views: views.clone(), selected: *selected },
+                Node::Desktop { floats, shown } => LayoutNode::Desktop { floats: floats.clone(), shown: *shown },
+            }
+        }
+        visit(self, self.root)
+    }
+
+    pub fn restore(snapshot: &LayoutNode, remap: &HashMap<WindowId, WindowId>) -> Option<Self> {
+        fn visit(
+            tree: &mut Tree,
+            node: &LayoutNode,
+            remap: &HashMap<WindowId, WindowId>,
+            depth: usize,
+            seen: &mut std::collections::HashSet<WindowId>,
+            desktop: &mut bool,
+        ) -> Result<Option<NodeId>, ()> {
+            if depth > 64 || tree.slots.len() > 10000 {
+                return Err(());
+            }
+            let mut map_views = |views: &[WindowId]| -> Result<Vec<WindowId>, ()> {
+                let mut mapped = Vec::new();
+                for id in views {
+                    if !seen.insert(*id) {
+                        return Err(());
+                    }
+                    if let Some(live) = remap.get(id) {
+                        mapped.push(*live);
+                    }
+                }
+                Ok(mapped)
+            };
+            match node {
+                LayoutNode::Tile { views, selected } => {
+                    if views.is_empty() || *selected >= views.len() {
+                        return Err(());
+                    }
+                    let mapped = map_views(views)?;
+                    if mapped.is_empty() {
+                        return Ok(None);
+                    }
+                    let selected =
+                        remap.get(&views[*selected]).and_then(|id| mapped.iter().position(|w| w == id)).unwrap_or(0);
+                    Ok(Some(tree.alloc(Node::Tile { views: mapped, selected }, None)))
+                }
+                LayoutNode::Desktop { floats, shown } => {
+                    if *desktop {
+                        return Err(());
+                    }
+                    *desktop = true;
+                    tree.slot_mut(tree.desktop).node = Node::Desktop { floats: map_views(floats)?, shown: *shown };
+                    Ok(Some(tree.desktop))
+                }
+                LayoutNode::Split { axis, children, weights } => {
+                    if children.len() < 2
+                        || children.len() != weights.len()
+                        || weights.iter().any(|w| !w.is_finite() || *w <= 0.0)
+                    {
+                        return Err(());
+                    }
+                    let mut kept = Vec::new();
+                    let mut sizes = Vec::new();
+                    for (child, weight) in children.iter().zip(weights) {
+                        if let Some(id) = visit(tree, child, remap, depth + 1, seen, desktop)? {
+                            kept.push(id);
+                            sizes.push(*weight);
+                        }
+                    }
+                    match kept.len() {
+                        0 => Ok(None),
+                        1 => Ok(kept.pop()),
+                        _ => {
+                            let parent =
+                                tree.alloc(Node::Split { axis: *axis, children: kept.clone(), weights: sizes }, None);
+                            for child in kept {
+                                tree.slot_mut(child).parent = Some(parent);
+                            }
+                            Ok(Some(parent))
+                        }
+                    }
+                }
+            }
+        }
+        let mut tree = Tree::new();
+        let mut desktop = false;
+        let root = visit(&mut tree, snapshot, remap, 0, &mut Default::default(), &mut desktop).ok()??;
+        if !desktop {
+            return None;
+        }
+        tree.root = root;
+        tree.slot_mut(root).parent = None;
+        Some(tree)
+    }
+
     pub fn new() -> Self {
         let desktop = NodeId(0);
         Tree {
@@ -327,6 +436,64 @@ impl Tree {
         } else {
             panic!("tab target {tile:?} is not a tile");
         }
+    }
+
+    /// Extract the selected part of the tree and move it as one subtree.
+    pub fn move_group(&mut self, windows: &[WindowId], target: WindowId, side: Side) -> bool {
+        fn project(tree: &Tree, id: NodeId, windows: &[WindowId]) -> Option<LayoutNode> {
+            match tree.node(id) {
+                Node::Desktop { .. } => None,
+                Node::Tile { views, selected } => {
+                    let kept: Vec<_> = views.iter().filter(|w| windows.contains(w)).copied().collect();
+                    if kept.is_empty() {
+                        return None;
+                    }
+                    let selected = kept.iter().position(|w| *w == views[*selected]).unwrap_or(0);
+                    Some(LayoutNode::Tile { views: kept, selected })
+                }
+                Node::Split { axis, children, weights } => {
+                    let (mut kept, mut sizes) = (Vec::new(), Vec::new());
+                    for (child, weight) in children.iter().zip(weights) {
+                        if let Some(node) = project(tree, *child, windows) {
+                            kept.push(node);
+                            sizes.push(*weight);
+                        }
+                    }
+                    match kept.len() {
+                        0 => None,
+                        1 => kept.pop(),
+                        _ => {
+                            Some(LayoutNode::Split { axis: *axis, children: kept, weights: std::mem::take(&mut sizes) })
+                        }
+                    }
+                }
+            }
+        }
+        fn append(tree: &mut Tree, node: LayoutNode) -> NodeId {
+            match node {
+                LayoutNode::Tile { views, selected } => tree.alloc(Node::Tile { views, selected }, None),
+                LayoutNode::Split { axis, children, weights } => {
+                    let children: Vec<_> = children.into_iter().map(|node| append(tree, node)).collect();
+                    let parent = tree.alloc(Node::Split { axis, children: children.clone(), weights }, None);
+                    for child in children {
+                        tree.slot_mut(child).parent = Some(parent);
+                    }
+                    parent
+                }
+                LayoutNode::Desktop { .. } => unreachable!("selected projection excludes the Desktop"),
+            }
+        }
+        if windows.contains(&target) || self.tile_of(target).is_none() {
+            return false;
+        }
+        let Some(group) = project(self, self.root, windows) else { return false };
+        for window in windows {
+            self.detach(*window);
+        }
+        let target = self.tile_of(target).expect("unselected target survives extraction");
+        let group = append(self, group);
+        self.insert_beside(group, target, side);
+        true
     }
 
     /// Puts `win` on the Desktop as a floating window.

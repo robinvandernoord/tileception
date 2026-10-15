@@ -18,6 +18,7 @@ use crate::{render::OutputElement, Tileception};
 pub enum LockState {
     #[default]
     Unlocked,
+    BuiltIn,
     Locked {
         surface: Option<LockSurface>,
     },
@@ -29,8 +30,17 @@ impl SessionLockHandler for Tileception {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
+        if self.is_locked() {
+            return;
+        }
         tracing::info!("session locked");
         self.lock = LockState::Locked { surface: None };
+        self.launcher.open = false;
+        self.power_menu = None;
+        self.selection.anchor = None;
+        self.pending_press = None;
+        self.tap_armed = None;
+        self.tap_fired.clear();
         self.move_drag = None;
         self.resize_drag = None;
         self.gap_drag = None;
@@ -40,6 +50,9 @@ impl SessionLockHandler for Tileception {
     }
 
     fn unlock(&mut self) {
+        if matches!(self.lock, LockState::BuiltIn) {
+            return;
+        }
         tracing::info!("session unlocked");
         self.lock = LockState::Unlocked;
         self.force_keyboard_focus_sync();
@@ -64,12 +77,13 @@ impl Tileception {
         if self.is_locked() {
             tracing::warn!("session unlocked by command");
             self.lock = LockState::Unlocked;
+            self.builtin_locker.clear();
             self.force_keyboard_focus_sync();
         }
     }
 
     pub fn is_locked(&self) -> bool {
-        matches!(self.lock, LockState::Locked { .. })
+        !matches!(self.lock, LockState::Unlocked)
     }
 
     pub fn lock_surface(&self) -> Option<&WlSurface> {
@@ -80,6 +94,9 @@ impl Tileception {
     }
 
     pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        if matches!(self.lock, LockState::BuiltIn) {
+            return self.builtin_lock_elements(renderer);
+        }
         let Some(surface) = self.lock_surface() else { return Vec::new() };
         render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified)
             .into_iter()
