@@ -69,7 +69,7 @@ pub struct General {
     pub lock_command: Option<String>,
     /// Experimental app-matched layout restoration; opt in explicitly.
     pub restore_layout: bool,
-    /// Opt in to hardware testing of suspend/resume through the power menu.
+    /// Enable suspend/resume through the power menu; enabled by default.
     pub suspend_enabled: bool,
 }
 
@@ -86,7 +86,7 @@ impl Default for General {
             autostart: Vec::new(),
             lock_command: None,
             restore_layout: false,
-            suspend_enabled: false,
+            suspend_enabled: true,
         }
     }
 }

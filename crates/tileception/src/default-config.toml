@@ -34,8 +34,8 @@ autostart = []
 # lock_command = "swaylock -f -i {wallpaper}"
 # Experimental app-matched layout persistence is disabled unless opted into.
 # restore_layout = false
-# Suspend is opt-in while hardware resume recovery is being verified.
-# suspend_enabled = false
+# Suspend is enabled by default. Set false to disable the power-menu action.
+# suspend_enabled = true
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or

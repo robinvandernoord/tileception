@@ -63,7 +63,7 @@ impl BuiltinLocker {
 impl Tileception {
     pub fn lock_session(&mut self, suspend: bool) {
         if suspend && !self.config.file.general.suspend_enabled {
-            tracing::warn!("suspend is disabled; opt in with [general] suspend_enabled = true to test resume recovery");
+            tracing::warn!("suspend is disabled by [general] suspend_enabled = false");
             return;
         }
         if self.is_locked() {
