@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help deps check-deps build test lint install uninstall nested
+.PHONY: help deps check-deps build test lint install uninstall nested deb deb-docker
 
 help:
 	@echo "make deps        install missing system packages (asks first)"
@@ -11,6 +11,8 @@ help:
 	@echo "make install     check packages, build, install the session"
 	@echo "make uninstall   remove the session (config and logs are kept)"
 	@echo "make nested      run a development build in a window"
+	@echo "make deb         build optimised .deb packages for this system"
+	@echo "make deb-docker  build .deb packages per release in containers"
 
 deps:
 	@scripts/deps.sh install
@@ -45,3 +47,13 @@ uninstall:
 
 nested:
 	cargo run -p tileception -- --nested
+
+# Optimised, stripped packages in target/deb. deb-docker builds one set per
+# release; override the list with DEB_IMAGES="debian:bookworm ...".
+DEB_IMAGES ?= debian:trixie ubuntu:24.04
+
+deb:
+	scripts/build-deb.sh
+
+deb-docker:
+	scripts/build-deb-docker.sh $(DEB_IMAGES)

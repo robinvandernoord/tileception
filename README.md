@@ -62,6 +62,31 @@ Getting out: Super+Shift+E quits, Ctrl+Alt+BackSpace always quits, and
 Ctrl+Alt+F1..F12 switch consoles. The log is
 `~/.local/state/tileception/tileception.log` (the previous run's is `.log.old`).
 
+## Debian and Ubuntu packages
+
+```sh
+make deb
+sudo apt install ./target/deb/tileception_*.deb
+```
+
+`make deb` builds with the `dist` profile (fat LTO, one codegen unit), strips
+the binary and puts its debug symbols in a separate `tileception-dbgsym`
+package. Install that one too if you want file and line numbers in panic
+backtraces and gdb. The package installs into `/usr/bin`, adds the login
+screen entry, the PAM service and the portal config, and depends on the
+library versions of the system it was built on.
+
+To build for other releases, in clean containers (needs Docker):
+
+```sh
+make deb-docker DEB_IMAGES="debian:trixie ubuntu:24.04"
+```
+
+Each release gets its own `target/deb/<codename>/` with versions like
+`0.1.0-1~noble`. Use either the package or `install-session.sh`, not both:
+they install the same login screen entry, and the scripts refuse to run while
+the package is installed.
+
 ## Running nested or headless
 
 ```sh
