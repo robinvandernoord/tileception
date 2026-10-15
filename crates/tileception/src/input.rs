@@ -60,6 +60,10 @@ pub enum Action {
     ToggleSplit,
     /// Grow the focused window by pixels (negative shrinks).
     Resize(f64, f64),
+    /// Lock the screen with the lock command.
+    Lock,
+    /// Open the power menu.
+    PowerMenu,
 }
 
 impl Tileception {
@@ -118,6 +122,10 @@ impl Tileception {
                 if state.is_locked() {
                     // Everything goes to the locker.
                     return FilterResult::Forward;
+                }
+                if state.power_menu.is_some() {
+                    // The menu takes every key while it is open.
+                    return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
                 }
                 if state.nested && held.alt && !held.logo {
                     // The host desktop keeps Super for itself; Alt stands in.
@@ -208,6 +216,11 @@ impl Tileception {
                 self.world.recall_view(n, now);
             }
             Action::Vt(n) => self.change_vt(n),
+            Action::Lock => {
+                let lock = self.lock_command();
+                self.spawn("sh", &["-c".into(), lock]);
+            }
+            Action::PowerMenu => self.open_power_menu(),
             Action::Fullscreen => {
                 if let Some(id) = self.world.focus() {
                     let on = self.fullscreen != Some(id);
@@ -220,6 +233,15 @@ impl Tileception {
 
     fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer = pos;
+        if self.power_menu.is_some() {
+            if let (Some(i), Some(menu)) = (self.power_action_at(pos.x, pos.y), self.power_menu.as_mut()) {
+                menu.selected = i;
+            }
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if self.is_locked() {
             let under = self.lock_surface_under(pos);
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -316,6 +338,16 @@ impl Tileception {
         if self.is_locked() {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
+            return;
+        }
+        if self.power_menu.is_some() {
+            // A click picks a button; a click anywhere else closes the menu.
+            if state == ButtonState::Pressed {
+                match self.power_action_at(self.pointer.x, self.pointer.y) {
+                    Some(i) => self.run_power_action(crate::power::PowerAction::ALL[i]),
+                    None => self.close_power_menu(),
+                }
+            }
             return;
         }
         let now = self.now();

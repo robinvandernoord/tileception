@@ -17,6 +17,9 @@ xcursor = "0.3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 png = "0.18"
+cosmic-text = "0.19"
+resvg = "0.45"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 smithay-drm-extras = { version = "0.1", default-features = false }
 
 [dependencies.smithay]

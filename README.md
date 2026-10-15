@@ -100,14 +100,21 @@ to a command:
 "Super+Shift+1" = "save 1"
 ```
 
+## Look
+
+Tileception's look is **Tide**: flat graphite, small radii, a teal to blue
+accent with a soft glow on the focused window (mockups in `design/`). The
+`[theme]` section of the config sets the colours, corner radius, glow, font,
+and a `wallpaper` (with `wallpaper_fit`), which the lock screen shows too.
+
 ## Default shortcuts
 
 | Keys | Action |
 | --- | --- |
 | Super (tap) | launcher (fuzzel) |
 | Super+T | open a terminal beside the focused window |
-| Super+L | lock the screen (swaylock) |
-| Super+X | power menu: lock, log out, suspend, reboot, power off |
+| Super+L | lock the screen (`lock`, swaylock with your wallpaper) |
+| Super+X | built-in power menu: lock, log out, suspend, restart, power off |
 | Print / Shift+Print | screenshot of the screen / of a region |
 | Super+Q | close the focused window |
 | Super+O | Overview (Esc or a click leaves it) |

@@ -8,6 +8,12 @@
 set -e
 cd "$(dirname "$0")"
 
+# Stop early, with the exact command, if a system package is missing.
+if ! scripts/deps.sh check build runtime; then
+    echo "Run 'make deps' first, then try again." >&2
+    exit 1
+fi
+
 bindir="$HOME/.local/bin"
 cargo build --release -p tileception
 mkdir -p "$bindir"

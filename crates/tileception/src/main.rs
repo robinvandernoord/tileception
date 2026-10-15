@@ -18,9 +18,14 @@ mod input;
 mod ipc;
 mod layers;
 mod lock;
+mod power;
 mod render;
+mod shapes;
 mod state;
+mod text;
+mod theme;
 mod udev;
+mod wallpaper;
 mod winit;
 mod xwayland;
 

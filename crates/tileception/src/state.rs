@@ -131,6 +131,13 @@ pub struct Tileception {
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     pub lock: crate::lock::LockState,
     pub pending_captures: Vec<crate::capture::PendingCapture>,
+    pub theme: crate::theme::Theme,
+    pub text: std::cell::RefCell<crate::text::Text>,
+    pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
+    pub power_menu: Option<crate::power::PowerMenu>,
+    pub wallpaper: Option<crate::wallpaper::Wallpaper>,
+    /// A wallpaper that could not be loaded, so it is not retried every frame.
+    pub wallpaper_failed: Option<std::path::PathBuf>,
     /// Set when running without a screen.
     pub headless: Option<Box<crate::headless::Headless>>,
 }
@@ -184,6 +191,7 @@ impl Tileception {
             .or_else(|| config.file.general.terminal.clone())
             .unwrap_or_else(default_terminal);
         let settings = config.world_settings();
+        let theme = config.theme.clone();
 
         Tileception {
             start: Instant::now(),
@@ -233,6 +241,12 @@ impl Tileception {
             session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(&dh, |_| true),
             lock: Default::default(),
             pending_captures: Vec::new(),
+            theme,
+            text: Default::default(),
+            shapes: Default::default(),
+            power_menu: None,
+            wallpaper: None,
+            wallpaper_failed: None,
             headless: None,
         }
     }
@@ -420,6 +434,8 @@ impl Tileception {
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
             self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
+        } else if self.power_menu.is_some() {
+            None
         } else {
             match &self.layer_focus {
                 Some(layer) => Some(KeyboardFocus::Wayland(layer.clone())),
@@ -521,6 +537,25 @@ fn focus_target(window: &Window) -> Option<KeyboardFocus> {
         Some(KeyboardFocus::Wayland(t.wl_surface().clone()))
     } else {
         window.x11_surface().map(|x| KeyboardFocus::X11(x.clone()))
+    }
+}
+
+/// The title a window shows, falling back to its app id.
+pub fn window_title(window: &Window) -> String {
+    let title = if let Some(t) = window.toplevel() {
+        with_states(t.wl_surface(), |s| {
+            s.data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok().and_then(|d| d.title.clone()))
+        })
+        .unwrap_or_default()
+    } else {
+        window.x11_surface().map(|x| x.title()).unwrap_or_default()
+    };
+    if title.trim().is_empty() {
+        app_id(window)
+    } else {
+        title
     }
 }
 

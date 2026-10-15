@@ -121,7 +121,7 @@ impl Tileception {
     }
 
     /// Layer surfaces of the given kinds, topmost first.
-    pub fn layer_elements(&self, renderer: &mut GlesRenderer, layers: &[Layer]) -> Vec<OutputElement<GlesRenderer>> {
+    pub fn layer_elements(&self, renderer: &mut GlesRenderer, layers: &[Layer]) -> Vec<OutputElement> {
         let Some(output) = self.output.as_ref() else { return Vec::new() };
         let map = layer_map_for_output(output);
         let mut out = Vec::new();

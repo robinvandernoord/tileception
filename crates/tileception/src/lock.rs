@@ -79,7 +79,7 @@ impl Tileception {
         }
     }
 
-    pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement<GlesRenderer>> {
+    pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         let Some(surface) = self.lock_surface() else { return Vec::new() };
         render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified)
             .into_iter()

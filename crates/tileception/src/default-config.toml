@@ -29,6 +29,33 @@ tab_height = 28
 # notification daemon: autostart = ["swaync"]
 autostart = []
 
+# Command for the `lock` action. {wallpaper} becomes the wallpaper's path.
+# Unset: swaylock with the wallpaper and the theme's colours.
+# lock_command = "swaylock -f -i {wallpaper}"
+
+[theme]
+# Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
+# #rrggbbaa.
+# background = "#1c1f24"
+# surface = "#24272e"
+# surface_raised = "#2e323a"
+# border = "#343842"
+# text = "#e8eaee"
+# muted = "#8b919c"
+# accent = "#2bd4a7"
+# accent_end = "#5c8ff2"
+# on_accent = "#0d1117"
+# radius = 6
+# popup_radius = 10
+# How far the focus glow reaches, in pixels; 0 turns it off.
+# glow = 18
+# font = "Noto Sans"
+# font_size = 13
+# A background image (PNG, JPEG or WebP), also shown on the lock screen.
+# wallpaper = "~/Pictures/wallpaper.jpg"
+# How it fits the screen: fill, fit, stretch or center.
+# wallpaper_fit = "fill"
+
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
 # layout = "us"
@@ -63,6 +90,8 @@ repeat_rate = 30
 #   next-tab, prev-tab    in the focused tile
 #   float                 float the focused window above the layout, or dock it
 #   fullscreen            cover the whole screen with the focused window
+#   lock                  lock the screen (see lock_command)
+#   power-menu            lock, log out, suspend, restart or power off
 #   desktop               show or hide the Desktop tile
 #   reload                reload this file
 #   quit                  leave Tileception
@@ -73,8 +102,8 @@ repeat_rate = 30
 "Super" = "spawn fuzzel"
 "Super+T" = "terminal"
 "Super+C" = "close"
-"Super+L" = "spawn swaylock -f -c 1c1f24 --indicator-idle-visible --show-failed-attempts"
-"Super+X" = "spawn tileception-power"
+"Super+L" = "lock"
+"Super+X" = "power-menu"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
 

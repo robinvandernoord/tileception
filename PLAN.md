@@ -209,31 +209,39 @@ Done and running as Robin's session:
 
 ### Right now (Robin)
 
-- Run `./install-session.sh` and log in again for the latest fixes: typing after
-  launcher and screenshots, lock screen frames and `tileception msg unlock`,
-  divider-style resizing, capped program output in the log.
-- `sudo apt install playerctl` (media keys) and
-  `sudo apt remove libdisplay-info-dev` (no longer used).
-- Keep fuzzel, swaylock, sway-notification-center and wlogout until their
-  built-in replacements land; then
-  `sudo apt remove fuzzel swaylock sway-notification-center wlogout`.
+- Run `./install-session.sh`, then reboot. Before rebooting, activate the new
+  personal config: `mv ~/.config/tileception/config.toml.next
+  ~/.config/tileception/config.toml` (the running build cannot read it).
+- fuzzel, swaylock, sway-notification-center and wlogout were removed: until
+  the built-in versions land there is no launcher, no screen lock and no
+  notification popups (screenshots still save and copy, without the popup).
+  `sudo apt install swaylock sway-notification-center` brings back locking
+  and notifications in the meantime.
 
-### Today
+### Today (done)
 
-1. Tide inside Tileception: teal focus outline with glow, a `[theme]` section in
-   the config, matching gaps, tile backgrounds and drop previews.
-2. Text rendering in the compositor, the base for everything below.
-3. Named tab strips: program name and icon per tab, the shown tab underlined in
-   teal, a close button.
-4. Built-in power menu (Super+X), replacing wlogout and the fuzzel list.
+1. Tide inside Tileception: rounded tiles and window corners, hairline
+   borders, the teal focus border with glow, soft shadows under floating
+   windows, a Tide drop preview, and a `[theme]` section in the config.
+2. Text rendering in the compositor (cosmic-text).
+3. Named tab strips: the program's title per tab, the shown tab tinted and
+   underlined in the accent, a close mark. (Real app icons come with the app
+   index.)
+4. Built-in power menu (Super+X): lock, log out, suspend, restart, power off.
+5. Wallpaper: `wallpaper` and `wallpaper_fit` in `[theme]`, drawn behind
+   everything; the `lock` command passes it to the locker.
 
 ### Coming days
 
-1. Built-in launcher (tap Super), with app search and icons, replacing fuzzel.
-2. Built-in notifications: popups and a history panel with do-not-disturb
-   (Super+N), replacing swaync. Includes screenshot feedback: saved, thumbnail,
-   Copy, Open, Delete.
-3. Built-in lock screen (Super+L) with the normal password, replacing swaylock.
+The external tools are gone, so these three come first, in this order:
+
+1. Built-in lock screen (Super+L) with the normal password and the wallpaper,
+   replacing swaylock (uses the `tileception-auth` crate from Codex).
+2. Built-in launcher (tap Super), with app search and icons, replacing fuzzel
+   (uses the `tileception-apps` crate from Codex).
+3. Built-in notifications: popups and a history panel with do-not-disturb
+   (Super+N), replacing swaync, including screenshot feedback (uses the
+   `tileception-notify` crate from Codex).
 4. Selecting several windows: Shift+click and Super+Shift+drag (plain drag in
    Overview); then Super+C closes all, Super+Shift+F floats or docks all,
    Super+G makes them tabs of one tile, Super+Shift+arrows moves them.
@@ -268,6 +276,20 @@ Done and running as Robin's session:
   slides in when the pointer touches the screen edge, showing minimized
   windows (icon, name, maybe a small preview); click to restore, drag to place.
   Depends on text rendering and the Tide components.
+- **A welcome screen instead of nothing.** When no windows are open (right
+  after login, or after closing the last one), show the built-in launcher in a
+  "home" form on the empty desktop: app search, maybe recent or pinned apps and
+  the time. Typing searches right away; Esc dismisses it to a plain desktop.
+  Depends on the built-in launcher. (Robin's current startup error comes from
+  espanso running its X11 build; switching it to the Wayland build is separate.)
+- **A "doctor" you can talk to (ACP).** A built-in Tide panel that talks to a
+  coding agent such as Claude or Codex over the Agent Client Protocol, so you
+  can ask it to change settings, shortcuts and default apps in plain language.
+  The agent gets narrow tools: read and validate the config, propose an edit,
+  apply it after you confirm (with a backup), run `tileception msg` commands
+  such as `tree` and `reload`, and read the log. Depends on text rendering and
+  a text input in the Tide components; needs a careful permission model so the
+  agent can only touch Tileception's own files unless you allow more.
 
 ## 5. Risks and open questions
 

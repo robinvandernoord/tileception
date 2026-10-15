@@ -22,6 +22,8 @@ pub enum Command {
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
     Unlock,
+    /// A key pressed while the power menu is open (not available as text).
+    PowerMenuKey(u32),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -104,6 +106,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "desktop" => Action::ToggleDesktop,
         "float" => Action::ToggleFloat,
         "fullscreen" => Action::Fullscreen,
+        "lock" => Action::Lock,
+        "power-menu" => Action::PowerMenu,
         "next-tab" => Action::NextTab,
         "prev-tab" => Action::PrevTab,
         "save" => Action::SaveView(slot()?),
@@ -127,6 +131,7 @@ impl Tileception {
             Command::Screenshot(path) => self.screenshot(path),
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
+            Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::Drop(x, y) => {
                 let win = self.world.focus().ok_or("nothing is focused")?;
                 let now = self.now();

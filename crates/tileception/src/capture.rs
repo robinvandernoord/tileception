@@ -29,7 +29,7 @@ use smithay::{
     wayland::shm::{with_buffer_contents, with_buffer_contents_mut},
 };
 
-use crate::{render::BACKGROUND, Tileception};
+use crate::Tileception;
 
 /// Where a finished capture goes.
 pub enum CaptureTarget {
@@ -71,7 +71,8 @@ impl Tileception {
             return;
         }
         let pending = std::mem::take(&mut self.pending_captures);
-        let image = match self.render_offscreen(renderer) {
+        let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
+        let image = match self.render_offscreen(renderer, wallpaper) {
             Ok(texture) => Some(texture),
             Err(err) => {
                 tracing::warn!("capture failed: {err}");
@@ -119,15 +120,22 @@ impl Tileception {
     }
 
     /// Renders what is on screen, without the pointer, into a texture.
-    fn render_offscreen(&self, renderer: &mut GlesRenderer) -> Result<GlesTexture, String> {
+    fn render_offscreen(
+        &self,
+        renderer: &mut GlesRenderer,
+        wallpaper: Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer>,
+    ) -> Result<GlesTexture, String> {
         let r = self.output_rect();
         let (w, h) = (r.w as i32, r.h as i32);
         let mut texture: GlesTexture =
             renderer.create_buffer(Fourcc::Abgr8888, (w, h).into()).map_err(|e| e.to_string())?;
-        let elements = self.render_elements(renderer, self.now());
+        let mut elements = self.render_elements(renderer, self.now());
+        if let Some(buffer) = wallpaper {
+            crate::render::push_image(&mut elements, renderer, &buffer, (0.0, 0.0));
+        }
         let mut target = renderer.bind(&mut texture).map_err(|e| e.to_string())?;
         let mut damage = OutputDamageTracker::new((w, h), 1.0, Transform::Normal);
-        damage.render_output(renderer, &mut target, 0, &elements, BACKGROUND).map_err(|e| format!("{e:?}"))?;
+        damage.render_output(renderer, &mut target, 0, &elements, self.clear_colour()).map_err(|e| format!("{e:?}"))?;
         drop(target);
         Ok(texture)
     }

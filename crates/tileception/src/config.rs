@@ -27,6 +27,7 @@ pub const DEFAULT: &str = include_str!("default-config.toml");
 #[derive(Default)]
 pub struct ConfigFile {
     pub general: General,
+    pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
@@ -62,6 +63,9 @@ pub struct General {
     pub tab_height: f64,
     /// Shell command lines run once at startup.
     pub autostart: Vec<String>,
+    /// Command for the `lock` action; `{wallpaper}` is replaced by the
+    /// wallpaper's path. Unset: swaylock with the wallpaper or theme colours.
+    pub lock_command: Option<String>,
 }
 
 impl Default for General {
@@ -75,6 +79,7 @@ impl Default for General {
             sole_float_takes_desktop: true,
             tab_height: 28.0,
             autostart: Vec::new(),
+            lock_command: None,
         }
     }
 }
@@ -123,6 +128,7 @@ pub struct Config {
     pub file: ConfigFile,
     pub binds: Vec<Bind>,
     pub drag_mod: Mods,
+    pub theme: crate::theme::Theme,
 }
 
 impl Config {
@@ -144,7 +150,8 @@ impl Config {
         }
         let drag_mod = parse_modifier(&file.general.drag_modifier)
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
-        Ok(Config { file, binds, drag_mod })
+        let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
+        Ok(Config { file, binds, drag_mod, theme })
     }
 
     pub fn default_config() -> Config {
@@ -317,6 +324,12 @@ impl Tileception {
         }
         if let Some(t) = &config.file.general.terminal {
             self.terminal = t.clone();
+        }
+        if self.theme != config.theme {
+            self.theme = config.theme.clone();
+            self.text.borrow_mut().clear();
+            self.wallpaper = None;
+            self.wallpaper_failed = None;
         }
         self.config = config;
         self.apply_layout();

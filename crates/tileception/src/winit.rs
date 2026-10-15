@@ -13,7 +13,7 @@ use smithay::{
 };
 use tileception_core::Rect;
 
-use crate::{render::BACKGROUND, Tileception};
+use crate::Tileception;
 
 const REFRESH: i32 = 60_000;
 
@@ -57,8 +57,9 @@ pub fn init(
             state.process_captures(backend.renderer());
             {
                 let Ok((renderer, mut framebuffer)) = backend.bind() else { return };
-                let elements = state.render_elements(renderer, now);
-                if let Err(err) = damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, BACKGROUND) {
+                let elements = state.frame_elements(renderer, now);
+                let clear = state.clear_colour();
+                if let Err(err) = damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, clear) {
                     tracing::warn!("render failed: {err:?}");
                 }
             }

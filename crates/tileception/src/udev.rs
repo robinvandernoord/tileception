@@ -48,7 +48,7 @@ use smithay::{
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tileception_core::Rect;
 
-use crate::{cursor::Cursor, render::BACKGROUND, Tileception};
+use crate::{cursor::Cursor, Tileception};
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
@@ -270,7 +270,7 @@ impl Tileception {
             planes.overlay.clear();
         }
 
-        let drm_output = match udev.manager.initialize_output::<_, crate::render::OutputElement<GlesRenderer>>(
+        let drm_output = match udev.manager.initialize_output::<_, crate::render::OutputElement>(
             crtc,
             mode,
             &[connector.handle()],
@@ -330,8 +330,9 @@ impl Tileception {
         let mut queued = false;
         if let Some(mut lit) = udev.surface.take() {
             let mut elements = self.cursor_elements(&mut udev);
-            elements.extend(self.render_elements(&mut udev.renderer, now));
-            match lit.drm_output.render_frame(&mut udev.renderer, &elements, BACKGROUND, FrameFlags::DEFAULT) {
+            elements.extend(self.frame_elements(&mut udev.renderer, now));
+            let clear = self.clear_colour();
+            match lit.drm_output.render_frame(&mut udev.renderer, &elements, clear, FrameFlags::DEFAULT) {
                 Ok(result) if !result.is_empty => match lit.drm_output.queue_frame(()) {
                     Ok(()) => queued = true,
                     Err(err) => tracing::warn!("queue frame: {err}"),
