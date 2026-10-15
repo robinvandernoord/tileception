@@ -62,8 +62,8 @@ impl BuiltinLocker {
 
 impl Tileception {
     pub fn lock_session(&mut self, suspend: bool) {
-        if suspend {
-            tracing::warn!("suspend is disabled until the resume failure is resolved");
+        if suspend && !self.config.file.general.suspend_enabled {
+            tracing::warn!("suspend is disabled; opt in with [general] suspend_enabled = true to test resume recovery");
             return;
         }
         if self.is_locked() {
@@ -252,17 +252,19 @@ impl Tileception {
     }
 }
 
+#[allow(unsafe_code, reason = "the current account is resolved through libc's reentrant passwd API")]
 fn current_user() -> Option<String> {
     let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0u8; 16384];
-    // getpwuid_r initializes record and result inside these live buffers. UID comes from the process, not the environment.
+    // SAFETY: getpwuid_r receives writable record, result and buffer storage of
+    // the specified size. All storage stays live until the account name is copied.
     let status = unsafe {
         libc::getpwuid_r(libc::getuid(), record.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result)
     };
     if status != 0 || result.is_null() {
         return None;
     }
-    // A non-null successful result points to record, with pw_name terminated inside buffer.
+    // SAFETY: A non-null successful result points to record, with pw_name terminated inside buffer.
     unsafe { CStr::from_ptr((*result).pw_name) }.to_str().ok().map(str::to_owned)
 }

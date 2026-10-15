@@ -82,6 +82,24 @@ tileception msg terminal
 tileception msg screenshot /tmp/shot.png
 ```
 
+## Lint policy
+
+Run `make lint` to check formatting and all Clippy targets, including the independent
+support-library workspaces. Warnings fail the check.
+
+All crates deny `unsafe_code` by default. Opt in at the smallest practical scope
+with `#[allow(unsafe_code, reason = "why this native operation is needed")]`, and
+document each unsafe block with a `// SAFETY:` comment explaining its invariants.
+Unsafe functions still require explicit unsafe blocks, and unnecessary unsafe
+blocks are errors. Clippy requires a `reason` on lint exceptions.
+
+Production code denies `unwrap()` and `unwrap_err()`. Handle recoverable failures;
+use `expect("why this must succeed")` for invariants. The message's usefulness is
+reviewed by humans. Test modules explicitly allow unwraps for setup and assertions.
+
+The root workspace defines its lints in `Cargo.toml`; the independent `tileception-apps`,
+`tileception-auth` and `tileception-notify` manifests carry the same policy.
+
 ## Configuration
 
 `~/.config/tileception/config.toml` is written with the defaults on first run
@@ -133,10 +151,16 @@ and `group` directly.
 zero disables an action. Visible players using Wayland idle inhibition prevent
 both actions. The display-off timer powers down the monitor, not the computer.
 Input wakes the display; the wake event is consumed. Automatic locking and the
-power menu's Suspend action are disabled while lock/resume failures are being
-investigated. The resume path clears stale queued DRM frames, but that recovery
+power menu's Suspend action are disabled by default while lock/resume failures
+are being investigated. The resume path clears stale queued DRM frames, but that recovery
 has not been verified on hardware.
 Nested development sessions do not automatically lock or power down the host.
+
+To test the resume change, install the new build and log out and back in first.
+Then set `suspend_enabled = true` under the existing `[general]` section in your
+config. The config reloads automatically. Super+X, then Suspend, uses the normal
+lock-and-suspend path. Set it back to `false` to disable the action again.
+This is a manual hardware test; the earlier blank-display failure may recur.
 
 ## Default shortcuts
 
@@ -148,7 +172,7 @@ Nested development sessions do not automatically lock or power down the host.
 | Super+E | open the home folder in the system's default file manager |
 | Super+L | built-in password lock screen with your wallpaper |
 | Super+N | notification history and do-not-disturb control |
-| Super+X | built-in power menu; Suspend is currently unavailable |
+| Super+X | built-in power menu; Suspend requires `general.suspend_enabled = true` |
 | Print / Shift+Print | screenshot of the screen / of a region |
 | Super+C | close the focused or selected windows |
 | Super+G | group selected windows into tabs |

@@ -31,7 +31,7 @@ impl PowerAction {
         match self {
             PowerAction::Lock => "Lock",
             PowerAction::LogOut => "Log out",
-            PowerAction::Suspend => "Suspend unavailable",
+            PowerAction::Suspend => "Suspend",
             PowerAction::Restart => "Restart",
             PowerAction::PowerOff => "Power off",
         }
@@ -135,9 +135,7 @@ impl Tileception {
             PowerAction::Lock => self.lock_session(false),
             PowerAction::LogOut => self.loop_signal.stop(),
             // Lock first, so the machine wakes up locked.
-            PowerAction::Suspend => {
-                tracing::warn!("suspend disabled pending investigation of the blank display after resume")
-            }
+            PowerAction::Suspend => self.lock_session(true),
             PowerAction::Restart => self.spawn("systemctl", &["reboot".into()]),
             PowerAction::PowerOff => self.spawn("systemctl", &["poweroff".into()]),
         }
@@ -171,9 +169,17 @@ impl Tileception {
         let mut out = Vec::new();
         for (i, (action, rect)) in self.power_buttons().into_iter().enumerate() {
             let selected = i == menu.selected;
-            let fg = if selected { t.on_accent } else { t.muted };
+            let enabled = action != PowerAction::Suspend || self.config.file.general.suspend_enabled;
+            let fg = if !enabled {
+                t.muted.alpha(0.5)
+            } else if selected {
+                t.on_accent
+            } else {
+                t.muted
+            };
             let mut text = self.text.borrow_mut();
-            if let Some(label) = text.line(action.label(), &t.font, t.font_size, fg, BUTTON as f32 - 12.0, selected) {
+            let label = if enabled { action.label() } else { "Suspend disabled" };
+            if let Some(label) = text.line(label, &t.font, t.font_size, fg, BUTTON as f32 - 12.0, selected) {
                 let x = rect.x + (rect.w - label.width as f64) / 2.0;
                 push_image(&mut out, renderer, &label.buffer, (x, rect.y + rect.h * 0.64));
             }
@@ -181,7 +187,7 @@ impl Tileception {
             if let Some(icon) = icon_image(action, 28, fg) {
                 push_image(&mut out, renderer, &icon, (rect.x + (rect.w - 28.0) / 2.0, rect.y + rect.h * 0.28));
             }
-            let shape = if selected {
+            let shape = if selected && enabled {
                 Shape {
                     radius: t.popup_radius,
                     fill: (t.accent, t.accent_end),

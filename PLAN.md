@@ -13,7 +13,7 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
 | Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
 | Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur. Mockups in `design/graphite.html` (variant F). |
-| Shell components | Built into the compositor in the Tide style: launcher, notifications, power menu, lock screen. External tools (fuzzel, swaync, wlogout, swaylock) are stopgaps until then. |
+| Shell components | Provide Tide defaults for the Super menu/launcher, notification bar and popups, power menu and lock screen. Following Linux's modular philosophy, each must remain optional and swappable for external tools such as fuzzel, swaync, wlogout and swaylock. |
 | Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
 | Licensing | Dropped. No trial, license or update code. |
 
@@ -285,6 +285,9 @@ Feedback corrections:
   Clear stale pre-suspend DRM frames and request fresh scanout on activation.
 - [ ] Verify the resume recovery on hardware later. Suspend remains disabled;
   the recovery is not claimed to be confirmed.
+  Manual test route: after installing and starting the new build, set
+  `[general].suspend_enabled = true`, then use Super+X and Suspend. The default
+  remains false; no suspend test is run by the agent.
 
 Log, 2026-10-15: integrated the three standalone libraries, added multi-window
 actions, layout persistence and idle handling. Checks used a private headless
@@ -321,7 +324,14 @@ locking. Lock and notification visual design remains Claude's task.
 
 ### To be planned
 
-- **Built-in volume and media controls with visual feedback.** Currently these
+- [ ] **Swappable shell components.** Add documented configuration to disable or
+  replace each built-in tool independently, including the Super menu/launcher,
+  notification bar and popups, power menu and lock screen. External replacements
+  must be supported as permanent choices, with configurable shortcuts and
+  startup commands. Release shared protocol or service ownership when a built-in
+  component is disabled so it does not compete with its replacement. Preserve
+  the compositor's window-management features when using external tools.
+- [ ] **Built-in volume and media controls with visual feedback.** Currently these
   are Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
   Add built-in actions and standard hardware-key bindings so they work with the
   default configuration. Show actual volume and mute state after changes, and

@@ -44,7 +44,9 @@ impl TextInput {
             let end = before.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
             before[..end]
                 .rfind(|c: char| !c.is_alphanumeric())
-                .map(|i| i + before[i..].chars().next().unwrap().len_utf8())
+                .map(|i| {
+                    i + before[i..].chars().next().expect("character index points to an existing character").len_utf8()
+                })
                 .unwrap_or(0)
         } else {
             self.text[..self.cursor].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)

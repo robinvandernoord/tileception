@@ -25,7 +25,7 @@ share_removed_space = true
 # Height of the strip of tabs above a tile with several windows.
 tab_height = 28
 
-# Shell command lines run once when Tileception starts, for example a
+# Shell command lines run once when Tileception starts.
 # Notifications are built in; no notification daemon is needed.
 autostart = []
 
@@ -34,6 +34,8 @@ autostart = []
 # lock_command = "swaylock -f -i {wallpaper}"
 # Experimental app-matched layout persistence is disabled unless opted into.
 # restore_layout = false
+# Suspend is opt-in while hardware resume recovery is being verified.
+# suspend_enabled = false
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -109,6 +111,8 @@ repeat_rate = 30
 [binds]
 "Super" = "launcher"
 "Super+T" = "terminal"
+"Super+B" = "spawn gtk-launch \"$(xdg-settings get default-web-browser)\""
+"Super+E" = "spawn xdg-open \"$HOME\""
 "Super+C" = "close"
 "Super+L" = "lock"
 "Super+X" = "power-menu"

@@ -276,7 +276,12 @@ impl Tileception {
             .expect("socket source");
         handle
             .insert_source(Generic::new(display, Interest::READ, Mode::Level), |_, display, state| {
-                // Safety: the display is never dropped while the loop runs.
+                #[allow(
+                    unsafe_code,
+                    reason = "calloop requires an opt-in for mutable access to a registered I/O source"
+                )]
+                // SAFETY: dispatch_clients borrows the display without dropping or replacing
+                // its registered I/O source, which remains owned by the event loop.
                 unsafe {
                     display.get_mut().dispatch_clients(state).expect("dispatch clients");
                 }

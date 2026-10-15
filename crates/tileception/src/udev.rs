@@ -96,8 +96,12 @@ pub fn init(
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd.clone())?;
 
+    // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
+    #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
     let egl = unsafe { EGLDisplay::new(gbm.clone())? };
     let context = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
+    // SAFETY: The newly created context belongs exclusively to this event-loop thread.
+    #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
     let renderer = unsafe { GlesRenderer::new(context)? };
     state.shm_state.update_formats(renderer.shm_formats());
 

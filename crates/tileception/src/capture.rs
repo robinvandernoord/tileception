@@ -181,7 +181,9 @@ fn copy_into_shm(buffer: &WlBuffer, w: i32, h: i32, rgba: &[u8]) -> Result<(), S
         if needed > len {
             return Err("buffer too small".into());
         }
-        // Safety: the range was checked against the pool's length above.
+        // SAFETY: The range was checked against the pool's length above. Smithay
+        // provides exclusive access to the mapped buffer for this callback.
+        #[allow(unsafe_code, reason = "Smithay exposes the client's mapped SHM buffer as a raw pointer")]
         let dst =
             unsafe { std::slice::from_raw_parts_mut(ptr.add(info.offset as usize), needed - info.offset as usize) };
         for y in 0..h as usize {

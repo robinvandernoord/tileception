@@ -9,6 +9,9 @@ description = "Tileception: a zoomable, nesting tiling Wayland compositor"
 name = "tileception"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tileception-core = { path = "../tileception-core" }
 tileception-auth = { path = "../tileception-auth" }
