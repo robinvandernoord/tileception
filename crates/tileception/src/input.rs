@@ -468,6 +468,21 @@ impl Tileception {
 
         if state == ButtonState::Released {
             if let Some(anchor) = self.selection.anchor.take() {
+                if (p.x - anchor.x).hypot(p.y - anchor.y) < DRAG_THRESHOLD {
+                    // A click, not a box: keep the selection as it was before the press,
+                    // toggling the window under a Super+Shift click.
+                    self.selection.windows = std::mem::take(&mut self.selection.additive);
+                    let mods = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state();
+                    if mods.shift && mods.logo {
+                        let at = self.tab_at(anchor, now).or_else(|| {
+                            self.drawn_windows(now).into_iter().find(|d| d.content.contains(anchor)).map(|d| d.id)
+                        });
+                        if let Some(window) = at {
+                            self.toggle_selection(window);
+                        }
+                        return;
+                    }
+                }
                 if self.world.in_overview() && (p.x - anchor.x).hypot(p.y - anchor.y) < DRAG_THRESHOLD {
                     self.world.click_in_overview(anchor, now);
                     self.apply_layout();
@@ -523,18 +538,31 @@ impl Tileception {
             let drawn = self.drawn_windows(now);
             let under = drawn.iter().find(|d| d.content.contains(p)).copied();
             let mods = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state();
-            if mods.shift && !mods.logo {
-                if let Some(window) = self.tab_at(p, now).or(under.map(|d| d.id)) {
-                    self.toggle_selection(window);
-                }
-                return;
-            }
-            if (mods.shift && mods.logo) || self.world.in_overview() {
+            let tab = self.tab_at(p, now);
+            let overview = self.world.in_overview();
+            // Super+Shift: a click toggles the window, a drag selects with a box.
+            // In Overview a drag from empty space also selects with a box.
+            if (mods.shift && mods.logo) || (overview && under.is_none() && tab.is_none()) {
                 self.selection.anchor = Some(p);
                 self.selection.additive = if mods.shift { self.selection.windows.clone() } else { Default::default() };
                 return;
             }
-            self.selection.windows.clear();
+            // Shift+click selects tabs and previews; on a live window it belongs
+            // to the program, for example to extend a text selection.
+            if mods.shift && (tab.is_some() || under.is_some_and(|d| !d.live)) {
+                if let Some(window) = tab.or(under.map(|d| d.id)) {
+                    self.toggle_selection(window);
+                    return;
+                }
+            }
+            if !mods.shift {
+                self.selection.windows.clear();
+            }
+            if overview {
+                // Dragging a window in Overview moves it; a click zooms in.
+                self.pending_press = Some(PendingPress { at: self.pointer, window: under.map(|d| d.id) });
+                return;
+            }
 
             // A click during an animation ends it.
             if self.world.is_animating(now) {

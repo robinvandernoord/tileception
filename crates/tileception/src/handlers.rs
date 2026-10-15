@@ -179,8 +179,8 @@ impl SeatHandler for Tileception {
 delegate_seat!(Tileception);
 
 impl SelectionHandler for Tileception {
-    // Some(text) is compositor-owned text; None bridges an X11 selection.
-    type SelectionUserData = Option<String>;
+    // Some(clip) is owned by the compositor; None bridges an X11 selection.
+    type SelectionUserData = Option<crate::launcher::Clip>;
 
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
@@ -198,10 +198,10 @@ impl SelectionHandler for Tileception {
         mime_type: String,
         fd: OwnedFd,
         _seat: Seat<Self>,
-        text: &Option<String>,
+        clip: &Option<crate::launcher::Clip>,
     ) {
-        if let Some(text) = text {
-            crate::launcher::send_clipboard_text(fd, text.clone());
+        if let Some(clip) = clip {
+            clip.send(fd);
             return;
         }
         if let Some(xwm) = self.xwm.as_mut() {

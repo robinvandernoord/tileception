@@ -126,6 +126,11 @@ impl Shapes {
     /// A render element drawing `shape` over `rect` (screen pixels). The
     /// element reaches beyond the rectangle by the glow radius.
     pub fn element(&self, rect: &Rect, shape: Shape) -> Option<PixelShaderElement> {
+        self.element_faded(rect, shape, 1.0)
+    }
+
+    /// The same, at a fraction of its opacity, for fading in and out.
+    pub fn element_faded(&self, rect: &Rect, shape: Shape, alpha: f32) -> Option<PixelShaderElement> {
         let margin = shape.glow_radius.ceil();
         let x0 = (rect.x - margin as f64).floor() as i32;
         let y0 = (rect.y - margin as f64).floor() as i32;
@@ -151,6 +156,6 @@ impl Shapes {
             Uniform::new("u_glow", c(shape.glow)),
             Uniform::new("u_mask", c(shape.corner_mask)),
         ];
-        Some(PixelShaderElement::new(self.program.clone(), area, None, 1.0, uniforms, Kind::Unspecified))
+        Some(PixelShaderElement::new(self.program.clone(), area, None, alpha, uniforms, Kind::Unspecified))
     }
 }
