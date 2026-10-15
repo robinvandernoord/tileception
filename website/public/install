@@ -1,0 +1,20 @@
+#!/bin/sh
+# Tileception installer: https://tileception.space/install
+#
+# The apt repository is not published yet. This script only explains how to
+# build Tileception from source; it changes nothing on your system.
+set -eu
+
+cat <<'MSG'
+Tileception packages are not published yet.
+
+Until they are, build it from source (Debian or Ubuntu):
+
+  git clone https://github.com/robinvandernoord/tileception
+  cd tileception
+  ./install-session.sh
+
+Then log out and pick Tileception on the login screen.
+More: https://github.com/robinvandernoord/tileception#installing-as-a-session
+MSG
+exit 1
