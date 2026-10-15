@@ -632,7 +632,11 @@ impl World {
             Placement::Dock => {
                 let target = self.dock_target();
                 let side = self.split_side(target);
-                self.tree.dock(win, target, side);
+                if !self.overview && target == self.framed && target != self.tree.desktop() {
+                    self.tree.dock_local(win, target, side);
+                } else {
+                    self.tree.dock(win, target, side);
+                }
             }
         }
         self.relayout();
@@ -811,6 +815,14 @@ impl World {
         self.retarget(now);
     }
 
+    /// Change only the selected windows' split, creating their subgroup if needed.
+    pub fn toggle_split_windows(&mut self, windows: &[WindowId], now: f64) {
+        let Some(group) = self.tree.group_windows(windows) else { return };
+        self.tree.toggle_axis(group);
+        self.relayout();
+        self.retarget(now);
+    }
+
     /// Moves the edges of a window by pixel amounts: `dx` moves the edge on
     /// `side_x`, `dy` the edge on `side_y`. Tiled windows move the split
     /// boundaries on those sides; floating windows change their rectangle.
@@ -901,6 +913,13 @@ impl World {
         self.push_frame(self.tree.resolve(node));
         self.focus_inside_framed();
         self.retarget(now);
+    }
+
+    /// Frame exactly the tiled selection, instead of its unselected neighbours.
+    pub fn frame_windows(&mut self, windows: &[WindowId], now: f64) {
+        let Some(group) = self.tree.group_windows(windows) else { return };
+        self.relayout();
+        self.frame(group, now);
     }
 
     fn focus_inside_framed(&mut self) {

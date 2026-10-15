@@ -68,6 +68,12 @@ impl Tileception {
             Action::Move(dir) => {
                 self.world.move_windows(&windows, dir, now);
             }
+            Action::StepIn => {
+                self.world.frame_windows(&windows, now);
+            }
+            Action::ToggleSplit if windows.len() > 1 => {
+                self.world.toggle_split_windows(&windows, now);
+            }
             Action::Group => {
                 let Some(first) = windows.first().copied() else { return true };
                 if self.world.tree().is_floating(first) {
