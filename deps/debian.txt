@@ -1,0 +1,32 @@
+# System packages Tileception needs on Debian, Ubuntu and Linux Mint.
+#
+# One package per line, with what needs it. `make deps` installs whatever is
+# missing; `make check-deps` only reports. Whoever adds a feature that needs a
+# system package adds it here in the same change.
+
+[build]
+pkg-config        # finds the libraries below at build time
+libudev-dev       # monitors and input devices (Smithay udev backend)
+libinput-dev      # keyboard, mouse and touchpad input
+libgbm-dev        # GPU buffers for the screen
+libseat-dev       # device access and switching consoles without root
+libdrm-dev        # driving the display (DRM/KMS)
+libxkbcommon-dev  # keyboard layouts
+libpam0g-dev      # checking the password on the lock screen (tileception-auth)
+
+[runtime]
+xwayland                # X11 programs
+dbus-bin                # dbus-update-activation-environment at session start
+dbus-daemon             # the notification service's tests run a private bus
+xdg-desktop-portal-wlr  # screen sharing and screenshots for apps (tileception-portals.conf)
+xdg-desktop-portal-gtk  # file pickers and other portals (the portal config's default)
+xdg-utils               # xdg-open, used by the screenshot notification
+xdg-user-dirs           # finds the Pictures folder for screenshots
+grim                    # screenshots (tileception-screenshot)
+slurp                   # selecting a region for Shift+Print
+wl-clipboard            # copying screenshots to the clipboard
+libnotify-bin           # notify-send, for screenshot and reload notifications
+
+[optional]
+playerctl               # media keys (play, pause, next, previous)
+wireplumber             # volume keys through wpctl
