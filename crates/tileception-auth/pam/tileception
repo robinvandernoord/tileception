@@ -1,0 +1,2 @@
+# Reuse the Debian/Ubuntu login authentication stack, as swaylock does.
+auth include login
