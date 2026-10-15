@@ -1,0 +1,9 @@
+[Icon Theme]
+Name=Parent
+Comment=Fixture
+Directories=32/apps
+Inherits=current
+[32/apps]
+Size=32
+Type=Threshold
+Threshold=4

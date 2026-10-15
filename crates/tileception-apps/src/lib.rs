@@ -1,0 +1,234 @@
+//! Application discovery and search without a desktop-session dependency.
+
+mod desktop;
+mod icons;
+
+pub use icons::IconLookup;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+
+#[derive(Clone, Debug)]
+pub struct App {
+    pub id: String,
+    pub name: String,
+    pub generic_name: Option<String>,
+    pub comment: Option<String>,
+    pub keywords: Vec<String>,
+    pub icon: Option<String>,
+    /// A shell-quoted command with desktop field codes removed.
+    pub exec: String,
+    pub terminal: bool,
+    pub categories: Vec<String>,
+    pub wm_class: Option<String>,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct Usage {
+    pub count: u32,
+    pub last_used: SystemTime,
+}
+
+struct Searchable {
+    name: String,
+    secondary: Vec<String>,
+}
+
+pub struct AppIndex {
+    apps: BTreeMap<String, App>,
+    normalized: HashMap<String, Searchable>,
+    dirs: Vec<PathBuf>,
+    desktop: String,
+    locale: String,
+    path: Vec<PathBuf>,
+    snapshot: BTreeMap<PathBuf, (Option<SystemTime>, u64)>,
+}
+
+impl AppIndex {
+    pub fn scan(dirs: &[PathBuf], desktop: &str) -> Self {
+        let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .find_map(|key| env::var(key).ok().filter(|value| !value.is_empty()))
+            .unwrap_or_default();
+        let path = env::var_os("PATH").map(|value| env::split_paths(&value).collect::<Vec<_>>()).unwrap_or_default();
+        Self::scan_with_options(dirs, desktop, &locale, &path)
+    }
+
+    /// Explicit locale and executable search paths make scans deterministic.
+    pub fn scan_with_options(dirs: &[PathBuf], desktop: &str, locale: &str, path: &[PathBuf]) -> Self {
+        let mut index = Self {
+            apps: BTreeMap::new(),
+            normalized: HashMap::new(),
+            dirs: dirs.to_vec(),
+            desktop: desktop.to_owned(),
+            locale: locale.to_owned(),
+            path: path.to_vec(),
+            snapshot: BTreeMap::new(),
+        };
+        index.refresh();
+        index
+    }
+
+    pub fn scan_default() -> Self {
+        let dirs = data_dirs().into_iter().map(|dir| dir.join("applications")).collect::<Vec<_>>();
+        let desktop = env::var("XDG_CURRENT_DESKTOP")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "Tileception".to_owned());
+        Self::scan(&dirs, &desktop)
+    }
+
+    pub fn get(&self, id: &str) -> Option<&App> {
+        self.apps.get(id)
+    }
+
+    pub fn refresh(&mut self) {
+        self.apps.clear();
+        self.normalized.clear();
+        let mut seen = HashSet::new();
+        for dir in &self.dirs {
+            let mut files = Vec::new();
+            walk(dir, &mut files, &mut BTreeMap::new());
+            files.sort();
+            for file in files {
+                let Some(relative) = file.strip_prefix(dir).ok() else {
+                    continue;
+                };
+                let id = relative.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "-");
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Some(app) = fs::read_to_string(&file)
+                    .ok()
+                    .and_then(|text| desktop::parse(&text, &id, &self.desktop, &self.locale, &self.path))
+                else {
+                    continue;
+                };
+                self.normalized.insert(
+                    id.clone(),
+                    Searchable {
+                        name: normalize(&app.name),
+                        secondary: app
+                            .generic_name
+                            .iter()
+                            .chain(app.keywords.iter())
+                            .map(|value| normalize(value))
+                            .chain(std::iter::once(normalize(&desktop::program(&app.exec))))
+                            .collect(),
+                    },
+                );
+                self.apps.insert(id, app);
+            }
+        }
+        self.snapshot = snapshot(&self.dirs);
+    }
+
+    pub fn changed_since_scan(&self) -> bool {
+        self.snapshot != snapshot(&self.dirs)
+    }
+
+    pub fn search(&self, query: &str, usage: &HashMap<String, Usage>, limit: usize) -> Vec<&App> {
+        let query = normalize(query.trim());
+        let mut matches = self
+            .apps
+            .values()
+            .filter(|app| !app.hidden)
+            .filter_map(|app| {
+                let normalized = &self.normalized[&app.id];
+                let rank = if query.is_empty() || normalized.name == query {
+                    0
+                } else if normalized.name.starts_with(&query) {
+                    1
+                } else if normalized.name.split(|c: char| !c.is_alphanumeric()).any(|word| word.starts_with(&query)) {
+                    2
+                } else if normalized.name.contains(&query) {
+                    3
+                } else if subsequence(&query, &normalized.name) {
+                    4
+                } else if normalized.secondary.iter().any(|value| value.contains(&query)) {
+                    5
+                } else {
+                    return None;
+                };
+                Some((rank, app))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|(left_rank, left), (right_rank, right)| {
+            let left_usage = usage.get(&left.id);
+            let right_usage = usage.get(&right.id);
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| right_usage.map_or(0, |u| u.count).cmp(&left_usage.map_or(0, |u| u.count)))
+                .then_with(|| right_usage.map(|u| u.last_used).cmp(&left_usage.map(|u| u.last_used)))
+                .then_with(|| self.normalized[&left.id].name.cmp(&self.normalized[&right.id].name))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        matches.into_iter().take(limit).map(|(_, app)| app).collect()
+    }
+}
+
+/// The terminal prefix is trusted caller configuration, interpreted by the shell.
+pub fn command_line(app: &App, terminal: &str) -> String {
+    if app.terminal && !terminal.trim().is_empty() {
+        format!("{} {}", terminal.trim(), app.exec)
+    } else {
+        app.exec.clone()
+    }
+}
+
+fn normalize(text: &str) -> String {
+    text.nfkd().filter(|c| !is_combining_mark(*c)).flat_map(char::to_lowercase).collect()
+}
+
+fn subsequence(query: &str, text: &str) -> bool {
+    let mut chars = text.chars();
+    query.chars().all(|needle| chars.by_ref().any(|c| c == needle))
+}
+
+fn data_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+    {
+        dirs.push(home);
+    }
+    let system = env::var_os("XDG_DATA_DIRS")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.extend(env::split_paths(&system).filter(|path| path.is_absolute()));
+    dirs
+}
+
+fn snapshot(dirs: &[PathBuf]) -> BTreeMap<PathBuf, (Option<SystemTime>, u64)> {
+    let mut result = BTreeMap::new();
+    for dir in dirs {
+        walk(dir, &mut Vec::new(), &mut result);
+    }
+    result
+}
+
+fn walk(dir: &Path, files: &mut Vec<PathBuf>, state: &mut BTreeMap<PathBuf, (Option<SystemTime>, u64)>) {
+    if let Ok(metadata) = fs::metadata(dir) {
+        state.insert(dir.to_owned(), (metadata.modified().ok(), metadata.len()));
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            walk(&path, files, state);
+        } else if path.extension().is_some_and(|ext| ext == "desktop") {
+            if let Ok(metadata) = fs::metadata(&path) {
+                state.insert(path.clone(), (metadata.modified().ok(), metadata.len()));
+            }
+            files.push(path);
+        }
+    }
+}

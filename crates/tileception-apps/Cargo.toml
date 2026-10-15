@@ -1,0 +1,11 @@
+[package]
+name = "tileception-apps"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Desktop application discovery, launcher search, and icon lookup"
+
+[workspace]
+
+[dependencies]
+unicode-normalization = "0.1"

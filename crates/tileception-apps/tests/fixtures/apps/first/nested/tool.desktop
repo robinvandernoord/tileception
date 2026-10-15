@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Nested Tool
+Exec=tool
+TryExec=fixture-tool

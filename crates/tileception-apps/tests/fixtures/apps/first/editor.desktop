@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Cafe Editor
+Name[nl]=Café Bewerker
+Name[nl_NL]=Café Editor
+Name[nl@formal]=Formal Editor
+GenericName=Text editor
+GenericName[nl]=Tekstbewerker
+Comment=Edit text
+Comment[nl]=Bewerk tekst
+Keywords=text;coding;
+Keywords[nl]=tekst;programmeren;semi\;colon;
+Exec="/opt/Cafe Editor/bin/editor" "hello world" %f %F %u %U %i %c %k %% "\"quoted\"" "\\$HOME" "" "a'b"
+Icon=editor
+Terminal=true
+Categories=Utility;TextEditor;
+StartupWMClass=CafeEditor
+OnlyShowIn=Tileception;GNOME;
+[Desktop Action Wrong]
+Name=Wrong name
+Exec=wrong
