@@ -1,0 +1,14 @@
+[package]
+name = "tileception-notify"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Threaded desktop notification service for Tileception"
+
+[workspace]
+
+[dependencies]
+ammonia = "4"
+serde = "1"
+zbus = "5"
+
