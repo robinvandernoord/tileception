@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};

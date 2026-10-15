@@ -7,6 +7,16 @@ description = "Single-flight Linux-PAM password authentication for Tileception"
 
 [workspace]
 
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_unsafe = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+
 [dependencies]
 libc = "0.2"
 secrecy = "0.10"

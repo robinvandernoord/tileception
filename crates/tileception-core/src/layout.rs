@@ -50,6 +50,7 @@ impl Layout {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
     use crate::tree::{Side, WindowId};
