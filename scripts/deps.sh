@@ -29,7 +29,8 @@ packages() {
 
 missing=""
 for p in $(packages); do
-    if [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" != "install ok installed" ]; then
+    # Multiarch packages can return one status per installed architecture.
+    if ! dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -qx 'install ok installed'; then
         missing="$missing $p"
     fi
 done
