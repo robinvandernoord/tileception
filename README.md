@@ -139,6 +139,15 @@ Automatic layout saving/restoration is disabled. The experimental app-matching
 implementation requires `[general].restore_layout = true`; its intended behavior
 is deferred pending scope clarification.
 
+Opening a tiled window while zoomed into one tile splits inside that view, so
+the new window appears beside it without bringing older neighbours back onscreen.
+With tiled windows selected, Super+plus (or Super+I) frames exactly the selection,
+and Super+J toggles only its horizontal/vertical split. These commands create a
+layout subgroup when needed, rather than tabs. Adjacent sibling tiles keep their
+sizes; selecting across branches can rearrange the selected windows into their
+first tile's position. Super+U steps back out; Escape clears selection. Pointer
+zoom keeps targeting the pointer, and Super+G continues to create tabs.
+
 Notifications run inside the compositor, with popups, thumbnails, actions and
 a scrollable history panel. The panel's DND control toggles do not disturb;
 critical notifications still appear. Session startup ignores the old `swaync`
@@ -150,17 +159,14 @@ and `group` directly.
 `[idle]` defaults to `lock_after = 0` and `off_after = 600`, in seconds;
 zero disables an action. Visible players using Wayland idle inhibition prevent
 both actions. The display-off timer powers down the monitor, not the computer.
-Input wakes the display; the wake event is consumed. Automatic locking and the
-power menu's Suspend action are disabled by default while lock/resume failures
-are being investigated. The resume path clears stale queued DRM frames, but that recovery
-has not been verified on hardware.
+Input wakes the display; the wake event is consumed. Automatic locking remains
+disabled by default. Suspend is enabled by default following a successful manual
+hardware test of the resume recovery, which clears stale queued DRM frames.
 Nested development sessions do not automatically lock or power down the host.
 
-To test the resume change, install the new build and log out and back in first.
-Then set `suspend_enabled = true` under the existing `[general]` section in your
-config. The config reloads automatically. Super+X, then Suspend, uses the normal
-lock-and-suspend path. Set it back to `false` to disable the action again.
-This is a manual hardware test; the earlier blank-display failure may recur.
+Super+X, then Suspend, uses the normal lock-and-suspend path. To disable the
+action, set `suspend_enabled = false` under `[general]` in your config. The config
+reloads automatically.
 
 ## Default shortcuts
 
@@ -172,19 +178,19 @@ This is a manual hardware test; the earlier blank-display failure may recur.
 | Super+E | open the home folder in the system's default file manager |
 | Super+L | built-in password lock screen with your wallpaper |
 | Super+N | notification history and do-not-disturb control |
-| Super+X | built-in power menu; Suspend requires `general.suspend_enabled = true` |
+| Super+X | built-in power menu, including Suspend |
 | Print / Shift+Print | screenshot of the screen / of a region |
 | Super+C | close the focused or selected windows |
 | Super+G | group selected windows into tabs |
 | Super+O | Overview (Esc or a click leaves it) |
-| Super+I / Super+U | step in toward the focused window / step out a level |
+| Super+I / Super+U | frame the selection or step in toward focus / step out a level |
 | Super+WheelUp / Super+WheelDown | step in toward the pointer / step out |
 | Super+M | frame the focused window on its own (again: back) |
 | Super+[ / Super+] | back / forward through framed spaces |
 | Super+Arrows | neighbouring space |
 | Super+Shift+Arrows | move the focused or selected windows that way |
 | Super+Alt+Arrows | resize the focused window by 40 pixels |
-| Super+J | stack the focused row, or lay the column side by side |
+| Super+J | toggle the selection's split, or the focused row/column |
 | Alt+Tab / Alt+Shift+Tab | focus the next / previous window |
 | Super+Tab / Super+Shift+Tab | next / previous tab |
 | Super+F | fullscreen |

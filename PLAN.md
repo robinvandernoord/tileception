@@ -15,7 +15,8 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur. Mockups in `design/graphite.html` (variant F). |
 | Shell components | Provide Tide defaults for the Super menu/launcher, notification bar and popups, power menu and lock screen. Following Linux's modular philosophy, each must remain optional and swappable for external tools such as fuzzel, swaync, wlogout and swaylock. |
 | Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
-| Licensing | Dropped. No trial, license or update code. |
+| Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
+| Distribution | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host. |
 
 ## 1. What Trellis is (findings from the DMG)
 
@@ -233,9 +234,10 @@ Done and running as Robin's session:
 
 Status: functional corrections after laptop feedback. Lock and notification
 design work is reserved for Claude, using `docs/design.html` as the reference.
-Automatic idle locking and Suspend are disabled pending investigation of the
-reported lock freeze and blank display after resume. Do not trigger either
-during automated verification. Automatic layout saving/restoration is off by
+Suspend/resume has passed Robin's hardware test and is enabled by default, with
+`general.suspend_enabled = false` available to opt out. Automatic idle locking
+remains disabled. Do not trigger locking or suspend during automated
+verification. Automatic layout saving/restoration is off by
 default; the app-matching behavior was not agreed and is deferred.
 
 1. Built-in lock screen (Super+L) with the normal password and the wallpaper,
@@ -261,9 +263,11 @@ Verification checklist:
   compositor restarts; floating geometry is serialized successfully.
 - [x] Scripted selection, tab grouping, group float/dock and group close.
 - [x] Short headless idle timer reaches locked and display-asleep states.
-- [ ] Manually verify the real password, keyboard/compose input, pointer
-  selection gestures, notification action clicks, physical display wake and
-  suspend/resume, and video idle inhibition on the laptop.
+- [x] Robin verified suspend/resume on hardware and confirmed password dots.
+- [ ] Manually verify launcher editing (including compose input), corrected
+  window selection/group actions, notification action clicks, physical display
+  wake without suspend, and video idle inhibition on the laptop. Confirm password
+  rejection and successful unlock if not already covered by the suspend test.
 
 Feedback corrections:
 
@@ -272,22 +276,29 @@ Feedback corrections:
 - [x] Add an editable launcher field with caret, selection, word navigation,
   deletion, and clipboard shortcuts. Handle focus changes outside Smithay's
   locked keyboard filter.
+- [x] Replace the launcher's `wl-copy`/`wl-paste` helpers with direct clipboard
+  transfers, including the X11 bridge. Clipboard helpers could create temporary
+  toplevels that changed the layout underneath the launcher. Keep paste reads
+  asynchronous and bounded, and ignore results after the launcher is reopened.
 - [x] Remove the opaque Desktop placeholder so wallpaper fills empty space.
 - [x] Include the focused window when starting a Shift+click selection and
   add a distinct selection marker. Add the missing group/float shortcuts to
   Robin's custom config.
 - [x] Move selected tiled windows as one subtree, retaining internal splits,
   tab groups and proportions, instead of docking them one at a time.
+- [x] Split within a zoomed tile when opening a new tiled window, instead of
+  joining its outer row and exposing unrelated windows. Make selection zoom
+  (Super+plus/Super+I) and split toggling (Super+J) use an exact layout subgroup.
+  Preserve adjacent sibling sizes; selections across branches may need
+  rearrangement. Keep pointer zoom, single-window commands and tab grouping.
 - [x] Keep the screenshot save/copy chooser open until answered; allow 30
   seconds for saved-screenshot feedback. Leave visual styling to Claude.
 - [x] Show password dots without retaining or drawing the password itself.
 - [x] Inspect the previous boot: Linux and the compositor both resumed.
   Clear stale pre-suspend DRM frames and request fresh scanout on activation.
-- [ ] Verify the resume recovery on hardware later. Suspend remains disabled;
-  the recovery is not claimed to be confirmed.
-  Manual test route: after installing and starting the new build, set
-  `[general].suspend_enabled = true`, then use Super+X and Suspend. The default
-  remains false; no suspend test is run by the agent.
+- [x] Robin verified the resume recovery on hardware. Enable Suspend by default
+  and retain `general.suspend_enabled = false` as an opt-out. No suspend test
+  was run by the agent.
 
 Log, 2026-10-15: integrated the three standalone libraries, added multi-window
 actions, layout persistence and idle handling. Checks used a private headless
@@ -302,6 +313,85 @@ All 64 existing tests and formatting/Clippy checks pass. Password dots and the
 resume recovery were compiled but no lock or suspend was triggered. Robin's
 custom config now includes group/float shortcuts and disables automatic idle
 locking. Lock and notification visual design remains Claude's task.
+
+Follow-up, 2026-10-15: Robin reports that suspend/resume works and the lock screen
+shows password dots. Suspend now defaults to enabled, with a configuration
+opt-out. Remaining manual checks are listed above; visual redesign and input
+device enhancements remain separate planned work.
+
+Follow-up, 2026-10-15: corrected launcher clipboard handling after Robin reported
+phantom splits on Ctrl+C/Ctrl+V. Copy and paste now use compositor selection APIs
+without creating helper windows. Manual verification in the desktop remains
+pending after installing the updated build.
+
+Follow-up, 2026-10-15: isolated headless checks with real terminal windows confirm
+that opening beside a zoomed tile frames only that pair, selected split toggling
+leaves other branches alone, and selection zoom frames an exact pair even across
+branches. Existing workspace tests and Clippy pass. Desktop shortcut verification
+remains manual after installing the new build.
+
+### Packaging, installation and release delivery
+
+Status: agreed architecture, not implemented. Keep package storage separate from
+the website's 100 MB hosting allowance. A CDN caches downloads; the origin storage
+must have sufficient capacity and an explicit retention policy.
+
+- [x] Choose native Debian packaging and APT-managed updates and removal.
+- [x] Separate `apt.tileception.space` from `tileception.space`: package storage
+  can grow independently of the small OVH website host.
+- [ ] Define the supported Debian/Ubuntu releases and CPU architectures. Build
+  against compatible distribution libraries, declare runtime dependencies, and
+  map derivative distributions to their supported base release. Do not assume
+  one `.deb` works on every Debian-based system.
+- [ ] Add a release CI workflow that builds versioned `.deb` packages, runs the
+  required existing checks, generates repository indexes and signed metadata,
+  and publishes to the custom APT origin with CDN delivery. Keep private signing
+  keys and deployment credentials in protected release secrets, off the public
+  hosts; document key backup, expiry monitoring and rotation.
+- [ ] Provision HTTPS, DNS and origin storage for `apt.tileception.space`.
+  Set storage, transfer and retention budgets; retain previous working packages
+  for recovery and document downgrade instructions.
+- [ ] Make repository publication safe for concurrent clients: upload immutable
+  versioned packages first, then indexes, then signed release metadata. Use
+  content-addressed indexes (`by-hash`), retain indexes needed by existing
+  clients, serialize publication, and configure CDN caching so mutable metadata
+  refreshes promptly. Never overwrite a published package version.
+- [ ] Package the compositor and helpers in system directories, the login-screen
+  entry, the PAM policy as system configuration, and the desktop-specific portal
+  configuration in its system location. Installation must not require Rust or
+  build dependencies, alter the user's default desktop, or restart a live session.
+- [ ] Define migration from the source installer: identify old per-user binaries,
+  session entries and portal overrides that can shadow packaged files. Preserve
+  personal configuration and avoid changing unrelated users' home directories
+  from package maintainer scripts.
+- [ ] Build the website in a separate CI deployment and publish to the small OVH
+  host, including a plain-text shell script at `https://tileception.space/install`.
+  Keep website deployment independent of package publishing. Publish the install
+  command only once its referenced repository and packages are available.
+- [ ] Support `curl -fsSL https://tileception.space/install | sh`. Make the script
+  compatible with `/bin/sh`, safe to rerun, and able to detect supported OS/base
+  releases and architectures before changing the system. Explain the changes,
+  use `sudo` for privileged operations, install the repository-specific public
+  key and Deb822 `.sources` configuration with `Signed-By`, then run `apt update`
+  and `apt install tileception`. Fail clearly on errors and unsupported systems.
+  Provide download-and-inspect instructions alongside the one-line command.
+- [ ] Give repository configuration and the public key package ownership, for
+  example through `tileception-archive-keyring`, with documented removal and
+  key rotation. Never use a globally trusted key or disable signature checking.
+- [ ] Document the full lifecycle: choose Tileception at the next login; normal
+  system updates take effect at the next Tileception login; switch to another
+  desktop before removal. Normal removal keeps personal settings; package purge
+  also removes system configuration, including PAM. Provide separate instructions
+  for removing the repository and explicitly deleting the current user's data.
+- [ ] Verify installation, upgrade, repeat installer execution, source-install
+  migration, removal, purge and recovery in disposable supported environments.
+  Check the deployed script, repository signatures and CDN-served metadata before
+  announcing a release. Do not exercise these flows against the active desktop.
+
+Log, 2026-10-15: agreed two independent CI delivery paths: build and publish Debian
+packages to a custom APT host with CDN-backed storage; build and publish the website
+and `/install` script to the small OVH host. Provider selection, supported release
+matrix, credentials and deployment implementation remain pending.
 
 ### Maybe someday (tm)
 
