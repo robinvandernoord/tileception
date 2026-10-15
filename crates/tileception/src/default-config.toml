@@ -1,0 +1,139 @@
+# Tileception configuration. Changes apply as soon as the file is saved.
+#
+# This file was written with the defaults on first run. Delete it to get the
+# defaults back.
+
+[general]
+# Command for the `terminal` action. Unset: the first of ghostty, foot,
+# alacritty, kitty, lxterminal, gnome-terminal that is installed.
+# terminal = "ghostty"
+
+# Pixels between windows and around the screen edge.
+gap = 12
+
+# Length of a zoom or move, in milliseconds.
+animation_ms = 280
+
+# Hold this and drag a window with the left button to move it, or with the
+# right button to resize it: Alt, Super, Ctrl or Shift.
+drag_modifier = "Alt"
+
+# When a window closes, spread its space over the whole row (so closing
+# exactly undoes opening). Otherwise its next neighbour takes all of it.
+share_removed_space = true
+
+# Height of the strip of tabs above a tile with several windows.
+tab_height = 28
+
+# Shell command lines run once when Tileception starts, for example a
+# notification daemon: autostart = ["swaync"]
+autostart = []
+
+[keyboard]
+# Defaults come from XKB_DEFAULT_* in the environment.
+# layout = "us"
+# variant = "altgr-intl"
+# options = "compose:ralt"
+repeat_delay = 400
+repeat_rate = 30
+
+# Key bindings: "Modifiers+Key" = "command", or a list of commands run in
+# order: "Super+Escape" = ["reload", "spawn notify-send 'Reloaded'"].
+#
+# Modifiers: Super, Alt, Ctrl, Shift. Keys are xkb keysym names (T, Return,
+# Left, bracketleft, Page_Up, F1, XF86AudioRaiseVolume, ...), or WheelUp,
+# WheelDown, WheelLeft, WheelRight for the mouse wheel. A modifier on its
+# own ("Super") fires when it is pressed and let go with nothing else.
+#
+# Commands (the same as `tileception msg <command>`):
+#   terminal              open the terminal beside the focused window
+#   spawn <command line>  run a shell command
+#   close                 close the focused window
+#   overview              show everything (Esc or a click leaves)
+#   step-in [pointer]     zoom one level in, toward the focus or the pointer
+#   step-out              zoom one level out
+#   focus <dir>           frame the neighbouring space: left, right, up, down
+#   move <dir>            move the focused window past its neighbour
+#   resize <dir> <px>     move the divider next to the focused window that way
+#   toggle-split          stack the focused row, or lay the column side by side
+#   cycle [next|prev]     focus the next or previous window
+#   maximize              frame the focused window on its own (again: back)
+#   back, forward         through the spaces you have framed
+#   save <n>, go <n>      save the current view in slot 1-9, or go to it
+#   next-tab, prev-tab    in the focused tile
+#   float                 float the focused window above the layout, or dock it
+#   fullscreen            cover the whole screen with the focused window
+#   desktop               show or hide the Desktop tile
+#   reload                reload this file
+#   quit                  leave Tileception
+#
+# Always available: Ctrl+Alt+F1..F12 switch VT, Ctrl+Alt+BackSpace quits.
+# In a nested window, Alt stands in for Super.
+[binds]
+"Super" = "spawn fuzzel"
+"Super+T" = "terminal"
+"Super+C" = "close"
+"Super+L" = "spawn swaylock -f -c 1c1f24 --indicator-idle-visible --show-failed-attempts"
+"Super+X" = "spawn tileception-power"
+"Super+Shift+E" = "quit"
+"Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
+
+"Super+O" = "overview"
+"Super+equal" = "step-in"
+"Super+minus" = "step-out"
+"Super+KP_Add" = "step-in"
+"Super+KP_Subtract" = "step-out"
+"Super+WheelUp" = "step-in pointer"
+"Super+WheelDown" = "step-out"
+"Super+M" = "maximize"
+"Super+bracketleft" = "back"
+"Super+bracketright" = "forward"
+
+"Super+Left" = "focus left"
+"Super+Right" = "focus right"
+"Super+Up" = "focus up"
+"Super+Down" = "focus down"
+
+"Super+Shift+Left" = "move left"
+"Super+Shift+Right" = "move right"
+"Super+Shift+Up" = "move up"
+"Super+Shift+Down" = "move down"
+
+"Super+Alt+Left" = "resize left 40"
+"Super+Alt+Right" = "resize right 40"
+"Super+Alt+Up" = "resize up 40"
+"Super+Alt+Down" = "resize down 40"
+"Super+J" = "toggle-split"
+
+"Alt+Tab" = "cycle next"
+"Alt+Shift+Tab" = "cycle prev"
+"Super+Tab" = "next-tab"
+"Super+Shift+Tab" = "prev-tab"
+
+"Super+F" = "fullscreen"
+"Super+V" = "float"
+"Super+D" = "desktop"
+
+# Screenshots (grim, slurp, wl-copy). Print saves and copies the whole screen;
+# Shift+Print lets you drag a region and asks whether to copy or save it.
+"Print" = "spawn tileception-screenshot"
+"Shift+Print" = "spawn tileception-screenshot region --ask"
+
+"Super+1" = "go 1"
+"Super+2" = "go 2"
+"Super+3" = "go 3"
+"Super+4" = "go 4"
+"Super+5" = "go 5"
+"Super+6" = "go 6"
+"Super+7" = "go 7"
+"Super+8" = "go 8"
+"Super+9" = "go 9"
+"Super+Shift+1" = "save 1"
+"Super+Shift+2" = "save 2"
+"Super+Shift+3" = "save 3"
+"Super+Shift+4" = "save 4"
+"Super+Shift+5" = "save 5"
+"Super+Shift+6" = "save 6"
+"Super+Shift+7" = "save 7"
+"Super+Shift+8" = "save 8"
+"Super+Shift+9" = "save 9"

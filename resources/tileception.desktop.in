@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Tileception
+Comment=Windows arranged in nested spaces you zoom between
+Exec=@BINDIR@/tileception-session
+TryExec=@BINDIR@/tileception
+Type=Application
+DesktopNames=Tileception

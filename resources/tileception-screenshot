@@ -1,0 +1,66 @@
+#!/bin/sh
+# Screenshots for Tileception, with grim, slurp and wl-copy, and a notification
+# that shows it worked.
+#
+#   tileception-screenshot          the whole screen: saved to Pictures/Screenshots
+#                                   and copied; the notification offers Open,
+#                                   Show in folder and Delete
+#   tileception-screenshot region   drag a region first
+#   ... --ask                       ask first: Copy, Save, or Save and copy
+#                                   (closing the notification discards it)
+set -u
+
+mode=screen
+ask=no
+for arg in "$@"; do
+    case "$arg" in
+        region) mode=region ;;
+        screen) mode=screen ;;
+        --ask) ask=yes ;;
+    esac
+done
+
+pictures=$(xdg-user-dir PICTURES 2>/dev/null || echo "$HOME/Pictures")
+dir="$pictures/Screenshots"
+file="$dir/screenshot-$(date +%Y%m%d-%H%M%S).png"
+# Two in the same second must not overwrite each other.
+[ -e "$file" ] && file="${file%.png}-$$.png"
+tmp="${XDG_RUNTIME_DIR:-/tmp}/tileception-screenshot-$$.png"
+trap 'rm -f "$tmp"' EXIT
+
+if [ "$mode" = region ]; then
+    # Esc in slurp cancels: nothing to do then.
+    geometry=$(slurp -d) || exit 0
+    grim -g "$geometry" "$tmp" || capture_failed=yes
+else
+    grim "$tmp" || capture_failed=yes
+fi
+if [ "${capture_failed:-no}" = yes ] || [ ! -s "$tmp" ]; then
+    notify-send -a Screenshot -u critical "Screenshot failed" "grim could not capture the screen"
+    exit 1
+fi
+
+copy() { wl-copy --type image/png < "$tmp"; }
+save() { mkdir -p "$dir" && cp "$tmp" "$file"; }
+
+if [ "$ask" = yes ]; then
+    choice=$(notify-send -a Screenshot -i "$tmp" -h "string:image-path:$tmp" \
+        -A copy=Copy -A save=Save -A both="Save and copy" \
+        "Screenshot taken" "Copy it, save it, or both?")
+    case "$choice" in
+        copy) copy && notify-send -a Screenshot -i "$tmp" "Screenshot copied" "Paste it anywhere" ;;
+        save) save && notify-send -a Screenshot -i "$file" "Screenshot saved" "$file" ;;
+        both) save && copy && notify-send -a Screenshot -i "$file" "Screenshot saved and copied" "$file" ;;
+    esac
+    exit 0
+fi
+
+save && copy
+choice=$(notify-send -a Screenshot -i "$file" -h "string:image-path:$file" \
+    -A open=Open -A folder="Show in folder" -A delete=Delete \
+    "Screenshot saved and copied" "$file")
+case "$choice" in
+    open) xdg-open "$file" ;;
+    folder) xdg-open "$dir" ;;
+    delete) rm -f "$file" && notify-send -a Screenshot "Screenshot deleted" "Still on the clipboard" ;;
+esac

@@ -1,0 +1,53 @@
+#!/bin/sh
+# Starts Tileception as a login session. The display manager runs this through
+# the Tileception entry in /usr/share/wayland-sessions.
+
+# Keyboard layout as configured for the console and X.
+if [ -r /etc/default/keyboard ]; then
+    . /etc/default/keyboard
+    export XKB_DEFAULT_MODEL="${XKBMODEL}"
+    export XKB_DEFAULT_LAYOUT="${XKBLAYOUT}"
+    export XKB_DEFAULT_VARIANT="${XKBVARIANT}"
+    export XKB_DEFAULT_OPTIONS="${XKBOPTIONS}"
+fi
+
+# Cursor theme from the desktop settings, when there are any.
+if [ -z "${XCURSOR_THEME}" ] && command -v gsettings >/dev/null 2>&1; then
+    for schema in org.cinnamon.desktop.interface org.gnome.desktop.interface; do
+        theme=$(gsettings get "$schema" cursor-theme 2>/dev/null | tr -d "'")
+        size=$(gsettings get "$schema" cursor-size 2>/dev/null)
+        if [ -n "$theme" ]; then
+            export XCURSOR_THEME="$theme"
+            [ -n "$size" ] && export XCURSOR_SIZE="$size"
+            break
+        fi
+    done
+fi
+
+# The helpers (tileception-power) live next to this script.
+case ":$PATH:" in
+    *":$(dirname "$0"):"*) ;;
+    *) export PATH="$(dirname "$0"):$PATH" ;;
+esac
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=Tileception
+export XDG_SESSION_DESKTOP=tileception
+export MOZ_ENABLE_WAYLAND=1
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+export QT_QPA_PLATFORM="wayland;xcb"
+export _JAVA_AWT_WM_NONREPARENTING=1
+
+# NVIDIA's proprietary driver: GBM and GLX through the NVIDIA libraries.
+if [ -d /sys/module/nvidia_drm ]; then
+    export GBM_BACKEND=nvidia-drm
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    export LIBVA_DRIVER_NAME=nvidia
+fi
+
+state="${XDG_STATE_HOME:-$HOME/.local/state}/tileception"
+mkdir -p "$state"
+[ -f "$state/tileception.log" ] && mv -f "$state/tileception.log" "$state/tileception.log.old"
+
+export RUST_LOG="${RUST_LOG:-info,smithay=warn}"
+exec "$(dirname "$0")/tileception" --session >"$state/tileception.log" 2>&1

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Power menu for Tileception: wlogout when it is installed, otherwise a short
+# list in fuzzel.
+if command -v wlogout >/dev/null 2>&1; then
+    exec wlogout -p layer-shell
+fi
+
+choice=$(printf '%s\n' "Lock" "Log out" "Suspend" "Reboot" "Power off" \
+    | fuzzel --dmenu --prompt "Power: " --lines 5) || exit 0
+
+case "$choice" in
+    "Lock") exec swaylock -f -c 000000 ;;
+    "Log out") exec tileception msg quit ;;
+    # Lock first, so the machine wakes up locked.
+    "Suspend") swaylock -f -c 000000 && exec systemctl suspend ;;
+    "Reboot") exec systemctl reboot ;;
+    "Power off") exec systemctl poweroff ;;
+esac
