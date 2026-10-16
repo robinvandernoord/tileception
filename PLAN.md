@@ -348,68 +348,24 @@ remains manual after installing the new build.
 
 ### Packaging, installation and release delivery
 
-Status: agreed architecture, not implemented. Keep package storage separate from
-the website's 100 MB hosting allowance. A CDN caches downloads; the origin storage
-must have sufficient capacity and an explicit retention policy.
+Status: running. `release.yml` builds trixie, sid, noble and resolute for
+amd64 and arm64 on a `v*` tag, uploads them over SSH to `apt.tileception.space`
+(tileception-apt stack, packages in R2 behind the CDN) and smoke-tests the
+published indexes; `/install` adds the signed Deb822 source and installs.
 
-- [x] Choose native Debian packaging and APT-managed updates and removal.
-- [x] Separate `apt.tileception.space` from `tileception.space`: package storage
-  can grow independently of the small OVH website host.
-- [ ] Define the supported Debian/Ubuntu releases and CPU architectures. Build
-  against compatible distribution libraries, declare runtime dependencies, and
-  map derivative distributions to their supported base release. Do not assume
-  one `.deb` works on every Debian-based system.
-- [ ] Add a release CI workflow that builds versioned `.deb` packages, runs the
-  required existing checks, generates repository indexes and signed metadata,
-  and publishes to the custom APT origin with CDN delivery. Keep private signing
-  keys and deployment credentials in protected release secrets, off the public
-  hosts; document key backup, expiry monitoring and rotation.
-- [ ] Provision HTTPS, DNS and origin storage for `apt.tileception.space`.
-  Set storage, transfer and retention budgets; retain previous working packages
-  for recovery and document downgrade instructions.
-- [ ] Make repository publication safe for concurrent clients: upload immutable
-  versioned packages first, then indexes, then signed release metadata. Use
-  content-addressed indexes (`by-hash`), retain indexes needed by existing
-  clients, serialize publication, and configure CDN caching so mutable metadata
-  refreshes promptly. Never overwrite a published package version.
-- [ ] Package the compositor and helpers in system directories, the login-screen
-  entry, the PAM policy as system configuration, and the desktop-specific portal
-  configuration in its system location. Installation must not require Rust or
-  build dependencies, alter the user's default desktop, or restart a live session.
-- [ ] Define migration from the source installer: identify old per-user binaries,
-  session entries and portal overrides that can shadow packaged files. Preserve
-  personal configuration and avoid changing unrelated users' home directories
-  from package maintainer scripts.
-- [x] Build the website in a separate CI deployment and publish to the small OVH
-  host, including a plain-text shell script at `https://tileception.space/install`.
-  Keep website deployment independent of package publishing. Done in `website/`
-  and `.github/workflows/website.yml`. The page already shows the install command;
-  until the repository and packages exist, `/install` only prints the source-build
-  steps and exits without changing the system.
-- [ ] Support `curl -fsSL https://tileception.space/install | sh`. Make the script
-  compatible with `/bin/sh`, safe to rerun, and able to detect supported OS/base
-  releases and architectures before changing the system. Explain the changes,
-  use `sudo` for privileged operations, install the repository-specific public
-  key and Deb822 `.sources` configuration with `Signed-By`, then run `apt update`
-  and `apt install tileception`. Fail clearly on errors and unsupported systems.
-  Provide download-and-inspect instructions alongside the one-line command.
-- [ ] Give repository configuration and the public key package ownership, for
-  example through `tileception-archive-keyring`, with documented removal and
-  key rotation. Never use a globally trusted key or disable signature checking.
-- [ ] Document the full lifecycle: choose Tileception at the next login; normal
-  system updates take effect at the next Tileception login; switch to another
-  desktop before removal. Normal removal keeps personal settings; package purge
-  also removes system configuration, including PAM. Provide separate instructions
-  for removing the repository and explicitly deleting the current user's data.
-- [ ] Verify installation, upgrade, repeat installer execution, source-install
-  migration, removal, purge and recovery in disposable supported environments.
-  Check the deployed script, repository signatures and CDN-served metadata before
-  announcing a release. Do not exercise these flows against the active desktop.
-
-Log, 2026-10-15: agreed two independent CI delivery paths: build and publish Debian
-packages to a custom APT host with CDN-backed storage; build and publish the website
-and `/install` script to the small OVH host. Provider selection, supported release
-matrix, credentials and deployment implementation remain pending.
+- [x] Native Debian packages, APT updates and removal, a separate apt host.
+- [x] Release matrix, release CI, signed repository, `/install` script.
+- [x] `tileception-archive-keyring` (2026-10-16): owns the key at
+  `/usr/share/keyrings/tileception-archive-keyring.gpg` and keeps
+  `tileception.sources` pointing at it (keeping its URIs and suite); removes the
+  installer's old `/etc/apt/keyrings/tileception.gpg`; removing the package
+  removes the source. Built per suite in the release's publish job;
+  `tileception` recommends it and `/install` installs it. Rotation steps are in
+  `scripts/build-keyring-deb.sh`. Checked with dpkg in an Ubuntu 24.04
+  container (migration from the installer's files, a mirror kept, remove and
+  purge) and an `apt update` against the live repository.
+- Skipped: migration from the source installer (development only; uninstall
+  the session first) and README lifecycle docs (README is reworked later).
 
 ### Maybe someday (tm)
 
@@ -657,17 +613,20 @@ matrix, credentials and deployment implementation remain pending.
   three words (`5 km in mi`) is not sent to the doctor.
 
 - **Configurable per-app launch arguments.**
-  Status: agreed 2026-10-16, not implemented.
-  - [ ] Add configuration keyed by desktop-file app identity for extra launch
-    arguments, shared by the Super launcher and welcome screen. Preserve desktop
-    entry arguments and file/URL forwarding; pass configured arguments as literal
-    arguments rather than shell code.
-  - [ ] Use Spotify as the first default: add `--ozone-platform=wayland` when
-    launched through Tileception, with a user override to change or disable it.
-    Account for native, Snap and Flatpak desktop entries without changing their
-    installed files, and respect an explicitly selected Ozone platform.
-  - [ ] Document the setting and manually verify Spotify launches natively on
-    Wayland, configured overrides work, and file/URL arguments still arrive.
+  Status: implemented 2026-10-16, manual check pending.
+  - [x] Add configuration keyed by desktop-file app identity for extra launch
+    arguments, shared by the Super launcher and welcome screen. `[launch_args]`
+    maps a desktop file name (with or without `.desktop`) to a list of literal
+    arguments, inserted where the entry takes files or URLs (ahead of a Flatpak
+    `@@u` marker) or at the end, and quoted, never shell code. The launcher
+    forwards no files or URLs itself, so there was nothing to forward.
+  - [x] Use Spotify as the first default: `spotify`, `spotify_spotify` (Snap)
+    and `com.spotify.Client` (Flatpak) get `--ozone-platform=wayland`. A
+    `[launch_args]` entry for the same name replaces it; `[]` turns it off. An
+    option the desktop file already sets (`--ozone-platform=x11`) wins.
+  - [x] Document the setting (commented in the default config).
+  - [ ] Manually verify Spotify launches natively on Wayland and that an
+    override works, and whether the NVIDIA/Xwayland flicker is gone.
   Decision: retain the existing toolkit environment preferences. Spotify uses
   CEF and does not obey `ELECTRON_OZONE_PLATFORM_HINT`; use per-app arguments
   instead of adding global GPU flags or disabling hardware acceleration.

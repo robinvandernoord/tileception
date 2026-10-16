@@ -43,6 +43,12 @@ terminal prefix passed to `command_line` is trusted shell configuration; it
 should include any execution flag, such as `ghostty -e`. An empty terminal prefix
 returns the app command unchanged. The library never executes commands.
 
+`command_line_with(app, terminal, extra)` adds `extra` as quoted literal
+arguments where the entry would take files or URLs (ahead of a Flatpak
+`@@u`/`@@` marker), or at the end. `--opt=value` or `--opt` is skipped when the
+entry already has `--opt`. `App.args` holds the unquoted arguments and
+`App.extra_args_at` the insertion point.
+
 `IconLookup::new(theme, roots)` reads each theme index once, follows inheritance
 with cycle detection, and ends with hicolor. It selects exact nominal size and
 scale first, then the closest physical size within that theme. Supported formats

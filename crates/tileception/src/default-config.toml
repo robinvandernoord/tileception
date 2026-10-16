@@ -127,6 +127,18 @@ media = "builtin"
 # title = "Picture-in-Picture"
 # float = true
 
+# Extra arguments for programs started from the launcher and the welcome
+# screen, by desktop file name (without .desktop; Snap and Flatpak entries
+# have their own, such as spotify_spotify and com.spotify.Client). Each is
+# passed as is, never through a shell, where the program would get files or
+# URLs. An option the desktop file already sets wins. Built in: Spotify's
+# native, Snap and Flatpak entries get --ozone-platform=wayland; an entry
+# here replaces the built-in one, and [] switches it off.
+#
+# [launch_args]
+# spotify = []
+# firefox = ["-P", "work"]
+
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
 # layout = "us"

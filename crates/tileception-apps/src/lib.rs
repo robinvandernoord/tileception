@@ -22,6 +22,10 @@ pub struct App {
     pub icon: Option<String>,
     /// A shell-quoted command with desktop field codes removed.
     pub exec: String,
+    /// The same command as separate, unquoted arguments.
+    pub args: Vec<String>,
+    /// Where in `args` extra arguments go (see [`command_line_with`]).
+    pub extra_args_at: usize,
     pub terminal: bool,
     pub categories: Vec<String>,
     pub wm_class: Option<String>,
@@ -174,10 +178,32 @@ impl AppIndex {
 
 /// The terminal prefix is trusted caller configuration, interpreted by the shell.
 pub fn command_line(app: &App, terminal: &str) -> String {
-    if app.terminal && !terminal.trim().is_empty() {
-        format!("{} {}", terminal.trim(), app.exec)
-    } else {
+    command_line_with(app, terminal, &[])
+}
+
+/// Like [`command_line`], with `extra` added as literal arguments where the
+/// entry would take files or URLs (ahead of a Flatpak forwarding marker), or
+/// at the end. An option the entry already sets wins: `--opt=value` or `--opt`
+/// is skipped when the entry has `--opt` or `--opt=...` itself.
+pub fn command_line_with(app: &App, terminal: &str, extra: &[String]) -> String {
+    let given = |arg: &str| {
+        let Some(option) = arg.split('=').next().filter(|name| name.starts_with("--") && name.len() > 2) else {
+            return false;
+        };
+        app.args.iter().any(|own| own == option || own.strip_prefix(option).is_some_and(|rest| rest.starts_with('=')))
+    };
+    let extra = extra.iter().filter(|arg| !given(arg)).map(|arg| desktop::shell_quote(arg)).collect::<Vec<_>>();
+    let exec = if extra.is_empty() {
         app.exec.clone()
+    } else {
+        let at = app.extra_args_at.min(app.args.len());
+        let quoted = app.args.iter().map(|arg| desktop::shell_quote(arg)).collect::<Vec<_>>();
+        quoted[..at].iter().chain(&extra).chain(&quoted[at..]).cloned().collect::<Vec<_>>().join(" ")
+    };
+    if app.terminal && !terminal.trim().is_empty() {
+        format!("{} {}", terminal.trim(), exec)
+    } else {
+        exec
     }
 }
 

@@ -470,12 +470,10 @@ impl Tileception {
             }
             return;
         }
-        let Some((id, command)) = self
-            .launcher
-            .matches()
-            .get(self.launcher.selected)
-            .map(|app| (app.id.clone(), tileception_apps::command_line(app, &format!("{} -e", self.terminal))))
-        else {
+        let Some((id, command)) = self.launcher.matches().get(self.launcher.selected).map(|app| {
+            let extra = self.config.launch_args(&app.id);
+            (app.id.clone(), tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra))
+        }) else {
             return;
         };
         if self.launcher.home {
