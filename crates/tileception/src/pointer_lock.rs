@@ -96,8 +96,26 @@ impl Tileception {
         });
     }
 
+    /// The surface a constraint would belong to under `at`, with its origin.
+    /// Programs often draw into a subsurface but put the constraint on their
+    /// main surface, so this is the root of the surface tree.
     fn constraint_surface_under(&self, at: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.surface_under(at)
+        let (surface, origin) = self.surface_under(at)?;
+        let mut root = surface.clone();
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+            root = parent;
+        }
+        if root == surface {
+            return Some((surface, origin));
+        }
+        // A window's main surface sits at the origin it is drawn at.
+        let drawn = self
+            .window_id(&root)
+            .and_then(|id| self.drawn_windows(self.now()).into_iter().find(|d| d.id == id && d.live).map(|d| d.origin));
+        Some(match drawn {
+            Some(origin) => (root, origin),
+            None => (surface, origin),
+        })
     }
 }
 

@@ -140,7 +140,11 @@ impl Players {
             let mut dirty = BTreeSet::new();
             for msg in std::iter::once(first).chain(std::iter::from_fn(|| incoming.try_recv().ok())) {
                 match msg {
-                    Msg::Stop => return,
+                    Msg::Stop => {
+                        // Ends the signal listeners, which hold the connection too.
+                        let _ = self.connection.clone().close();
+                        return;
+                    }
                     Msg::Command(command) => self.command(command),
                     Msg::Owner { name, owner: None } => {
                         self.players.remove(&name);

@@ -174,6 +174,10 @@ struct Session {
 impl Session {
     fn open(sender: mpsc::Sender<Msg>) -> Result<Self, String> {
         let requests = Connection::open(c"Tileception")?;
+        // A stuck sound server must not stall this worker (and whoever stops it).
+        let timeout = Some(std::time::Duration::from_secs(5));
+        let socket = requests.socket.get_ref();
+        socket.set_read_timeout(timeout).and_then(|_| socket.set_write_timeout(timeout)).map_err(|e| e.to_string())?;
         let mut listener = Connection::open(c"Tileception events")?;
         let mask = protocol::SubscriptionMask::SINK
             | protocol::SubscriptionMask::SOURCE
@@ -227,7 +231,11 @@ impl Session {
                         if let Err(error) = self.apply(target, change, max) {
                             tracing::warn!("volume change failed: {error}");
                         }
-                        dirty = true;
+                        // Read the result back before the next one, so steps
+                        // and toggles in a burst build on each other.
+                        if self.refresh(shared, notifier).is_err() {
+                            return false;
+                        }
                     }
                     Msg::Choose(output, name) => {
                         if let Err(error) = self.choose(output, &name) {

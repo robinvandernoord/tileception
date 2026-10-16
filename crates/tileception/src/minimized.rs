@@ -98,7 +98,8 @@ impl Tileception {
     pub fn update_strip(&mut self) {
         let available = self.world.minimized().next().is_some()
             && !self.is_locked()
-            && !self.launcher.open
+            // The welcome screen leaves the strip be: minimized windows come back from it.
+            && (!self.launcher.open || self.launcher.home)
             && self.power_menu.is_none()
             && self.fullscreen.is_none()
             && self.move_drag.is_none();

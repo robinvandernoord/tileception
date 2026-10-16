@@ -210,6 +210,7 @@ impl Tileception {
             self.loop_handle.remove(token);
         }
         self.stop_media_repeat();
+        self.media.drag = None;
         self.media.service = None;
         self.media.events = None;
         self.media.snapshot = Snapshot::default();
@@ -237,7 +238,7 @@ impl Tileception {
     /// Changes a level from the panel or a key.
     pub fn adjust(&mut self, level: Level, adjust: Adjust) {
         let config = &self.config.file.media;
-        let step = |n: Option<u32>, default: u32| n.unwrap_or(default).max(1) as i32;
+        let step = |n: Option<u32>, default: u32| n.unwrap_or(default).clamp(1, 200) as i32;
         let (volume_step, brightness_step, max) = (config.volume_step, config.brightness_step, config.max_volume());
         let change = |default: u32| match adjust {
             Adjust::Up(n) => Change::Step(step(n, default)),

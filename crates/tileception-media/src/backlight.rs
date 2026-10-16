@@ -72,11 +72,11 @@ fn name(device: &Path) -> String {
 }
 
 /// The device's level now, as a percentage of its range.
-fn level(device: &Path) -> Option<(Percent, u32)> {
+fn level(device: &Path) -> Option<(Percent, u32, u32)> {
     let max = read_number(&device.join("max_brightness")).filter(|m| *m > 0)?;
     let now = read_number(&device.join("brightness"))?;
     let percent = (u64::from(now) * 100 + u64::from(max) / 2) / u64::from(max);
-    Some((percent as Percent, max))
+    Some((percent as Percent, max, now))
 }
 
 fn run(root: &Path, shared: &Shared, notifier: &Notifier, incoming: &mpsc::Receiver<Option<Change>>) {
@@ -88,7 +88,7 @@ fn run(root: &Path, shared: &Shared, notifier: &Notifier, incoming: &mpsc::Recei
     let mut logind = None;
     loop {
         if let Some(device) = &device {
-            let current = level(device).map(|(percent, _)| Backlight { device: name(device), percent });
+            let current = level(device).map(|(percent, ..)| Backlight { device: name(device), percent });
             let mut snapshot = lock(shared);
             if snapshot.backlight != current {
                 snapshot.backlight = current;
@@ -106,12 +106,24 @@ fn run(root: &Path, shared: &Shared, notifier: &Notifier, incoming: &mpsc::Recei
             notifier.send(Event::Backlight);
             continue;
         };
-        let Some((current, max)) = level(device) else { continue };
-        let next = changed(current, change, 100).max(MIN);
-        let value = ((u64::from(next) * u64::from(max) + 50) / 100).max(1) as u32;
+        let Some((current, max, raw)) = level(device) else { continue };
+        let value = next_level(current, raw, max, change);
         if let Err(error) = set(&mut logind, device, value) {
             tracing::warn!("could not set the brightness: {error}");
         }
+    }
+}
+
+/// The raw level after a change. Panels with few levels (15 on some
+/// ThinkPads) round a small step back to where they were, so a step always
+/// moves at least one level; never below 1%, so the screen stays visible.
+fn next_level(current: Percent, raw: u32, max: u32, change: Change) -> u32 {
+    let next = changed(current, change, 100).max(MIN);
+    let value = ((u64::from(next) * u64::from(max) + 50) / 100).max(1) as u32;
+    match change {
+        Change::Step(step) if value == raw && step > 0 => (raw + 1).min(max),
+        Change::Step(step) if value == raw && step < 0 => raw.saturating_sub(1).max(1),
+        _ => value,
     }
 }
 
@@ -154,6 +166,19 @@ mod tests {
     }
 
     #[test]
+    fn steps_always_move_coarse_panels() {
+        // 15 levels: raw 2 is 13%; up 5% would round back to 2.
+        assert_eq!(next_level(13, 2, 15, Change::Step(5)), 3);
+        assert_eq!(next_level(33, 5, 15, Change::Step(5)), 6);
+        assert_eq!(next_level(13, 2, 15, Change::Step(-5)), 1);
+        assert_eq!(next_level(7, 1, 15, Change::Step(-5)), 1);
+        assert_eq!(next_level(100, 15, 15, Change::Step(5)), 15);
+        // Fine-grained panels step normally.
+        assert_eq!(next_level(50, 48000, 96000, Change::Step(5)), 52800);
+        assert_eq!(next_level(50, 48000, 96000, Change::Set(0)), 960);
+    }
+
+    #[test]
     fn prefers_firmware_then_platform_then_raw() {
         let root = std::env::temp_dir().join(format!("tileception-backlight-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -165,7 +190,7 @@ mod tests {
         fake(&root, "acpi_video0", "firmware", 100, 30);
         fake(&root, "broken", "firmware", 0, 0);
         assert_eq!(pick_device(&root).as_deref(), Some(root.join("acpi_video0").as_path()));
-        assert_eq!(level(&root.join("intel_backlight")), Some((50, 96000)));
+        assert_eq!(level(&root.join("intel_backlight")), Some((50, 96000, 48000)));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

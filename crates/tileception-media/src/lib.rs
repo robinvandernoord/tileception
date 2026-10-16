@@ -97,8 +97,10 @@ impl Player {
         if self.status != Status::Playing {
             return self.position;
         }
-        let ran = now.saturating_duration_since(self.position_at).as_secs_f64() * self.rate.max(0.0);
-        let at = self.position + Duration::from_secs_f64(ran);
+        // Players report their own rate; keep it sane so the sum stays finite.
+        let rate = if self.rate.is_finite() { self.rate.clamp(0.0, 64.0) } else { 1.0 };
+        let ran = now.saturating_duration_since(self.position_at).as_secs_f64() * rate;
+        let at = self.position.saturating_add(Duration::try_from_secs_f64(ran).unwrap_or_default());
         self.length.map_or(at, |length| at.min(length))
     }
 }
