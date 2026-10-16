@@ -79,7 +79,14 @@ EOF
     say "Installing tileception"
     # stdin is this script when piped into sh, so apt must not ask anything.
     $sudo apt-get update </dev/null
-    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tileception-archive-keyring tileception </dev/null
+    packages=tileception
+    # Until a release includes the keyring package, the key stays where this
+    # script put it.
+    if apt-cache show tileception-archive-keyring >/dev/null 2>&1; then
+        packages="tileception-archive-keyring $packages"
+    fi
+    # shellcheck disable=SC2086 # a list of package names
+    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $packages </dev/null
 
     say "Done. Reboot (or log out), then pick Tileception on the login screen."
     say "Updates arrive with your normal system updates."
