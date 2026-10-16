@@ -1,9 +1,6 @@
-[project]
-# temporary
-name = "tileception"
-version = "0.1.0"
-
 [tool.vommit]
+version_source = "Cargo.toml"
+
 allow_breaking_bang = true
 allow_breaking_footer = true
 prerelease_token = "rc"
@@ -37,7 +34,7 @@ docs = "Documentation"
 enabled = false
 
 [tool.vommit.commands]
-clean = "cargo clean"
+clean = ""
 build = ""
 publish = ""
 post_publish = ""
