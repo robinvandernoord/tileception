@@ -6,8 +6,9 @@
 #
 # Packages land in target/deb/<codename>/, versioned <version>~<codename> so
 # builds for different releases can share one apt repository. Each image
-# builds every architecture in DEB_ARCHS (default: amd64 arm64); those that
-# are not the host's are cross-compiled, which is much faster than emulation.
+# builds every architecture in DEB_ARCHS (default: amd64 arm64), each in its
+# own container; those that are not the host's are cross-compiled, which is
+# much faster than emulation.
 #
 # Environment: DEB_VERSION and DEB_MAINTAINER as for build-deb.sh, DEB_ARCHS,
 # RUST_TOOLCHAIN (default: stable), and DOCKER_ARGS for extra `docker run`
@@ -26,13 +27,15 @@ maintainer="${DEB_MAINTAINER:-$(git log -1 --format='%an <%ae>')}"
 epoch="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 
 for image in "$@"; do
-    echo "== $image"
-    # shellcheck disable=SC2086 # DOCKER_ARGS is a list of options
-    docker run --rm ${DOCKER_ARGS:-} \
-        -v "$(pwd):/src" \
-        -e DEB_MAINTAINER="$maintainer" -e SOURCE_DATE_EPOCH="$epoch" \
-        -e DEB_VERSION_BASE="$version" -e DEB_ARCHS="${DEB_ARCHS:-amd64 arm64}" \
-        -e RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}" \
-        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-        "$image" /src/scripts/build-deb-container.sh
+    for arch in ${DEB_ARCHS:-amd64 arm64}; do
+        echo "== $image $arch"
+        # shellcheck disable=SC2086 # DOCKER_ARGS is a list of options
+        docker run --rm ${DOCKER_ARGS:-} \
+            -v "$(pwd):/src" \
+            -e DEB_MAINTAINER="$maintainer" -e SOURCE_DATE_EPOCH="$epoch" \
+            -e DEB_VERSION_BASE="$version" -e DEB_ARCH="$arch" \
+            -e RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-stable}" \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            "$image" /src/scripts/build-deb-container.sh
+    done
 done
