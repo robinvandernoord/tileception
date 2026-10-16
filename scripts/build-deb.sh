@@ -93,6 +93,10 @@ mkdir -p "$root/usr/share/wayland-sessions"
 sed "s|@BINDIR@|/usr/bin|g" resources/tileception.desktop.in \
     > "$root/usr/share/wayland-sessions/tileception.desktop"
 chmod 644 "$root/usr/share/wayland-sessions/tileception.desktop"
+# The badge slick-greeter (Mint's login screen) shows for the session.
+mkdir -p "$root/usr/share/slick-greeter/badges"
+scripts/session-badge.sh > "$root/usr/share/slick-greeter/badges/tileception.svg"
+chmod 644 "$root/usr/share/slick-greeter/badges/tileception.svg"
 install -D -m 644 resources/tileception-portals.conf \
     "$root/usr/share/xdg-desktop-portal/tileception-portals.conf"
 install -D -m 644 resources/tileception.portal \
