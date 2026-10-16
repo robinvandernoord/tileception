@@ -66,6 +66,11 @@ pub enum Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
     Level(Level, Adjust),
+    /// Makes the n-th output (or microphone), counting from 1, the default.
+    Choose {
+        output: bool,
+        which: usize,
+    },
     Player(PlayerCommand),
     /// Prints what is playing and the levels.
     Status,
@@ -107,12 +112,15 @@ pub enum SliderId {
 pub struct Media {
     service: Option<MediaService>,
     events: Option<mpsc::Receiver<Event>>,
+    source: Option<RegistrationToken>,
     pub snapshot: Snapshot,
     pub osd: Option<Osd>,
     /// The key being held and its repeat timer.
     repeat: Option<(u32, RegistrationToken)>,
     /// The panel's list of programs is unfolded.
     pub apps_open: bool,
+    /// The panel's list of devices to choose from is unfolded.
+    pub devices_open: bool,
     /// A slider being dragged, when its value was last sent, and where it is.
     pub drag: Option<(SliderId, Instant, u32)>,
     /// Scrolling not yet worth a whole step.
@@ -133,6 +141,14 @@ pub fn parse(verb: &str, args: &[&str]) -> Result<Control, String> {
             .transpose()
     };
     if let Some(level) = level {
+        if let (Some(&kind @ ("output" | "input")), Level::Volume | Level::Mic) = (args.first(), level) {
+            let which = args
+                .get(1)
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .ok_or(format!("{verb} {kind} needs a device number from `tileception msg volume`"))?;
+            return Ok(Control::Choose { output: kind == "output", which });
+        }
         let adjust = match args.first().copied() {
             None if verb == "volume" => return Ok(Control::Status),
             Some("up" | "+") => Adjust::Up(percent(args.get(1))?),
@@ -171,17 +187,34 @@ impl Tileception {
         let result = (|| {
             let (ping, source) = make_ping().map_err(|e| e.to_string())?;
             let (service, events) = MediaService::start(bus, move || ping.ping());
-            self.loop_handle.insert_source(source, |_, _, state| state.media_events()).map_err(|e| e.to_string())?;
-            Ok::<_, String>((service, events))
+            let token = self
+                .loop_handle
+                .insert_source(source, |_, _, state| state.media_events())
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((service, events, token))
         })();
         match result {
-            Ok((service, events)) => {
+            Ok((service, events, token)) => {
+                self.media.source = Some(token);
                 self.media.snapshot = service.snapshot();
                 self.media.service = Some(service);
                 self.media.events = Some(events);
             }
             Err(error) => tracing::error!("could not start media controls: {error}"),
         }
+    }
+
+    /// Stops the workers; the controls disappear from the panel.
+    pub fn stop_media(&mut self) {
+        if let Some(token) = self.media.source.take() {
+            self.loop_handle.remove(token);
+        }
+        self.stop_media_repeat();
+        self.media.service = None;
+        self.media.events = None;
+        self.media.snapshot = Snapshot::default();
+        self.media.osd = None;
+        self.schedule_render();
     }
 
     fn media_events(&mut self) {
@@ -222,6 +255,9 @@ impl Tileception {
     }
 
     pub fn media_command(&mut self, control: Control) -> Result<String, String> {
+        if !self.shell().media() {
+            return Err("volume and media controls are switched off in [shell]".into());
+        }
         match control {
             Control::Status => return Ok(self.media_status()),
             Control::Level(level, adjust) => {
@@ -235,6 +271,14 @@ impl Tileception {
             Control::Player(command) => {
                 self.media_request(Request::Player(command));
                 self.show_osd(OsdKind::Media);
+            }
+            Control::Choose { output, which } => {
+                let audio = &self.media.snapshot.audio;
+                let list = if output { &audio.outputs } else { &audio.inputs };
+                let choice = list.get(which - 1).ok_or(format!("there is no device {which}"))?;
+                let name = choice.name.clone();
+                self.media_request(Request::Default { output, name });
+                self.show_osd(if output { OsdKind::Volume } else { OsdKind::Mic });
             }
         }
         Ok("ok\n".into())
@@ -264,6 +308,16 @@ impl Tileception {
         };
         if s.audio.connected {
             out += &format!("volume: {}\nmic: {}\n", level(&s.audio.output), level(&s.audio.input));
+            let current =
+                |d: &Option<tileception_media::Device>, name: &str| d.as_ref().is_some_and(|d| d.name == name);
+            for (i, c) in s.audio.outputs.iter().enumerate() {
+                let mark = if current(&s.audio.output, &c.name) { "*" } else { " " };
+                out += &format!("output {}{mark} {}\n", i + 1, c.description);
+            }
+            for (i, c) in s.audio.inputs.iter().enumerate() {
+                let mark = if current(&s.audio.input, &c.name) { "*" } else { " " };
+                out += &format!("input {}{mark} {}\n", i + 1, c.description);
+            }
             for app in &s.audio.apps {
                 out += &format!(
                     "app {}: {} {}%{} ({})\n",
@@ -347,6 +401,10 @@ mod tests {
         assert_eq!(parse("media", &["prev"]), Ok(Control::Player(PlayerCommand::Previous)));
         assert_eq!(parse("media", &[]), Ok(Control::Status));
         assert!(parse("media", &["rewind"]).is_err());
+        assert_eq!(parse("volume", &["output", "2"]), Ok(Control::Choose { output: true, which: 2 }));
+        assert_eq!(parse("mic", &["input", "1"]), Ok(Control::Choose { output: false, which: 1 }));
+        assert!(parse("volume", &["output", "0"]).is_err());
+        assert!(parse("brightness", &["output", "1"]).is_err());
         assert!(Control::Level(Level::Volume, Adjust::Up(None)).repeats());
         assert!(!Control::Level(Level::Volume, Adjust::Mute(Toggle::Flip)).repeats());
     }

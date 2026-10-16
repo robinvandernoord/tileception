@@ -197,9 +197,15 @@ impl Tileception {
         let view = self.world.view(now);
         let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
         elements.extend(self.power_menu_elements(renderer));
-        elements.extend(self.launcher_elements(renderer));
+        // The welcome screen is part of the desktop: notifications go over it.
+        if !self.launcher.home {
+            elements.extend(self.launcher_elements(renderer));
+        }
         elements.extend(self.notification_elements(renderer));
         elements.extend(self.strip_elements(renderer));
+        if self.launcher.home {
+            elements.extend(self.launcher_elements(renderer));
+        }
         elements.extend(self.selection_elements(renderer));
 
         // Topmost: notifications, launchers and bars. A fullscreen window

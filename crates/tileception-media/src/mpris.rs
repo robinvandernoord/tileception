@@ -30,6 +30,8 @@ enum Msg {
     },
     /// A player, by its unique bus name, reported a change.
     Changed(String),
+    /// Cover art finished downloading.
+    ArtReady,
     Stop,
 }
 
@@ -53,8 +55,14 @@ impl Worker {
                         zbus::blocking::connection::Builder::session()?.method_timeout(Duration::from_secs(2)).build()
                     }
                 };
+                let art = {
+                    let sender = sender.clone();
+                    crate::art::Fetcher::start(crate::art::cache_dir(), move |_| {
+                        let _ = sender.send(Msg::ArtReady);
+                    })
+                };
                 match connect() {
-                    Ok(connection) => Players::new(connection, shared, notifier).run(&sender, &incoming),
+                    Ok(connection) => Players::new(connection, shared, notifier, art).run(&sender, &incoming),
                     Err(error) => tracing::warn!("media players unavailable, no session bus: {error}"),
                 }
             })
@@ -90,10 +98,11 @@ struct Players {
     /// The player last controlled from here.
     used: Option<String>,
     clock: u64,
+    art: crate::art::Fetcher,
 }
 
 impl Players {
-    fn new(connection: Connection, shared: Shared, notifier: Notifier) -> Self {
+    fn new(connection: Connection, shared: Shared, notifier: Notifier, art: crate::art::Fetcher) -> Self {
         Self {
             connection,
             shared,
@@ -103,6 +112,7 @@ impl Players {
             started: HashMap::new(),
             used: None,
             clock: 0,
+            art,
         }
     }
 
@@ -141,6 +151,7 @@ impl Players {
                         self.owners.retain(|_, n| *n != name);
                         dirty.insert(name);
                     }
+                    Msg::ArtReady => dirty.extend(self.players.keys().cloned()),
                     Msg::Changed(unique) => {
                         if let Some(name) = self.owners.get(&unique) {
                             dirty.insert(name.clone());
@@ -238,7 +249,8 @@ impl Players {
                 return;
             }
         };
-        let player = parse(name, &root, &props, Instant::now());
+        let art = &mut self.art;
+        let player = parse(name, &root, &props, Instant::now(), &mut |url| art.get(url));
         let was_playing = self.players.get(name).is_some_and(|p| p.status == Status::Playing);
         if player.status == Status::Playing && (!was_playing || !self.started.contains_key(name)) {
             self.clock += 1;
@@ -302,7 +314,13 @@ fn is_player(name: &str) -> bool {
     name.starts_with(PREFIX) && name != "org.mpris.MediaPlayer2.playerctld"
 }
 
-fn parse(name: &str, root: &HashMap<String, OwnedValue>, props: &HashMap<String, OwnedValue>, now: Instant) -> Player {
+fn parse(
+    name: &str,
+    root: &HashMap<String, OwnedValue>,
+    props: &HashMap<String, OwnedValue>,
+    now: Instant,
+    art: &mut dyn FnMut(&str) -> Option<PathBuf>,
+) -> Player {
     let get = |map: &HashMap<String, OwnedValue>, key: &str| map.get(key).map(|v| Value::from(v.clone()));
     let flag = |key: &str| get(props, key).and_then(|v| boolean(&v)).unwrap_or(false);
     let metadata = get(props, "Metadata").map(|v| dict(&v)).unwrap_or_default();
@@ -323,7 +341,7 @@ fn parse(name: &str, root: &HashMap<String, OwnedValue>, props: &HashMap<String,
         title: meta("xesam:title").and_then(string).unwrap_or_default(),
         artist: meta("xesam:artist").map(strings).unwrap_or_default().join(", "),
         album: meta("xesam:album").and_then(string).unwrap_or_default(),
-        art: meta("mpris:artUrl").and_then(string).and_then(|url| local_path(&url)),
+        art: meta("mpris:artUrl").and_then(string).and_then(|url| art(&url)),
         length: micros(meta("mpris:length").and_then(integer)).filter(|d| !d.is_zero()),
         can_next: flag("CanGoNext"),
         can_previous: flag("CanGoPrevious"),
@@ -388,8 +406,8 @@ fn dict<'a>(v: &Value<'a>) -> HashMap<String, Value<'a>> {
     }
 }
 
-/// A `file://` URL as a path; other art (http) is not fetched.
-fn local_path(url: &str) -> Option<PathBuf> {
+/// A `file://` URL as a path.
+pub(crate) fn local_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let bytes = rest.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

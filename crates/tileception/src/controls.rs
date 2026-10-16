@@ -64,11 +64,25 @@ pub struct MediaCard {
     pub progress: Rect,
 }
 
+/// A device that can be made the default.
+pub struct DeviceRow {
+    pub rect: Rect,
+    pub output: bool,
+    pub name: String,
+    pub description: String,
+    pub current: bool,
+}
+
 /// The block's layout, worked out afresh each frame from the media snapshot.
 pub struct Controls {
     pub rect: Rect,
     pub sound: Rect,
     pub device: Option<Rect>,
+    /// Whether the device line opens a list to choose from.
+    pub choosable: bool,
+    /// The opened list: section titles, and a row per device.
+    pub headings: Vec<(Rect, &'static str)>,
+    pub choices: Vec<DeviceRow>,
     pub sliders: Vec<Slider>,
     pub apps: Option<Rect>,
     pub media: Option<MediaCard>,
@@ -77,6 +91,20 @@ pub struct Controls {
 impl Tileception {
     /// The controls block with its top left at (x, y).
     pub fn controls_layout(&self, x: f64, y: f64, w: f64) -> Controls {
+        if !self.shell().media() {
+            let none = Rect::new(x, y, w, 0.0);
+            return Controls {
+                rect: none,
+                sound: none,
+                device: None,
+                choosable: false,
+                headings: Vec::new(),
+                choices: Vec::new(),
+                sliders: Vec::new(),
+                apps: None,
+                media: None,
+            };
+        }
         let s = &self.media.snapshot;
         let max = self.config.file.media.max_volume();
         let inner = Rect::new(x + 12.0, y, w - 24.0, 0.0);
@@ -92,11 +120,38 @@ impl Tileception {
             let track = Rect::new(start, top, label.x - 12.0 - start, ROW);
             Slider { id, button, track, label, value, max, muted, name }
         };
-        let mut device = None;
+        // The output's name, or why there is no sound, heads the block.
+        let device = Some(Rect::new(inner.x - 4.0, cursor - 3.0, inner.w + 8.0, 24.0));
+        cursor += 24.0;
+        let mut headings = Vec::new();
+        let mut choices = Vec::new();
+        let choosable = s.audio.connected && (s.audio.outputs.len() > 1 || s.audio.inputs.len() > 1);
         if s.audio.connected {
+            if choosable && self.media.devices_open {
+                let lists = [
+                    ("OUTPUT", true, &s.audio.outputs, s.audio.output.as_ref()),
+                    ("MICROPHONE", false, &s.audio.inputs, s.audio.input.as_ref()),
+                ];
+                for (title, output, list, current) in lists {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    headings.push((Rect::new(inner.x, cursor + 2.0, inner.w, 18.0), title));
+                    cursor += 22.0;
+                    for choice in list.iter() {
+                        choices.push(DeviceRow {
+                            rect: Rect::new(inner.x - 4.0, cursor, inner.w + 8.0, 28.0),
+                            output,
+                            name: choice.name.clone(),
+                            description: choice.description.clone(),
+                            current: current.is_some_and(|d| d.name == choice.name),
+                        });
+                        cursor += 30.0;
+                    }
+                }
+                cursor += 6.0;
+            }
             if let Some(output) = &s.audio.output {
-                device = Some(Rect::new(inner.x, cursor, inner.w, 18.0));
-                cursor += 22.0;
                 sliders.push(row(SliderId::Volume, cursor, output.percent, max, output.muted, None));
                 cursor += ROW + 4.0;
             }
@@ -104,9 +159,6 @@ impl Tileception {
                 sliders.push(row(SliderId::Mic, cursor, input.percent, 100, input.muted, None));
                 cursor += ROW + 4.0;
             }
-        } else {
-            device = Some(Rect::new(inner.x, cursor, inner.w, 18.0));
-            cursor += 26.0;
         }
         if let Some(backlight) = &s.backlight {
             sliders.push(row(SliderId::Brightness, cursor, backlight.percent, 100, false, None));
@@ -139,32 +191,35 @@ impl Tileception {
         let sound = Rect::new(x, y, w, cursor + 6.0 - y);
         cursor = sound.bottom();
 
-        let media = s.media.active().map(|_| {
-            let rect = Rect::new(x, cursor + 8.0, w, 100.0);
-            let art = Rect::new(rect.x + 12.0, rect.y + 12.0, 64.0, 64.0);
-            let text_x = art.right() + 12.0;
-            let text_w = rect.right() - 12.0 - text_x;
-            let buttons_y = rect.y + 50.0;
-            MediaCard {
-                rect,
-                art,
-                title: Rect::new(text_x, rect.y + 10.0, text_w, 20.0),
-                artist: Rect::new(text_x, rect.y + 30.0, text_w, 18.0),
-                player: Rect::new(text_x + 3.0 * 36.0 + 8.0, buttons_y, text_w - 3.0 * 36.0 - 8.0, 30.0),
-                previous: Rect::new(text_x - 4.0, buttons_y, 30.0, 30.0),
-                play: Rect::new(text_x + 32.0, buttons_y, 30.0, 30.0),
-                next: Rect::new(text_x + 68.0, buttons_y, 30.0, 30.0),
-                progress: Rect::new(rect.x + 12.0, rect.bottom() - 12.0, rect.w - 24.0, 3.0),
-            }
-        });
+        let media = s.media.active().map(|_| media_card_layout(x, cursor + 8.0, w));
         let bottom = media.as_ref().map_or(sound.bottom(), |m| m.rect.bottom());
-        Controls { rect: Rect::new(x, y, w, bottom - y), sound, device, sliders, apps, media }
+        Controls {
+            rect: Rect::new(x, y, w, bottom - y),
+            sound,
+            device,
+            choosable,
+            headings,
+            choices,
+            sliders,
+            apps,
+            media,
+        }
     }
 
     /// A press in the panel; returns whether the controls took it.
     pub fn controls_press(&mut self, controls: &Controls, p: Point) -> bool {
         if !controls.rect.contains(p) {
             return false;
+        }
+        if controls.choosable && controls.device.is_some_and(|r| r.contains(p)) {
+            self.media.devices_open = !self.media.devices_open;
+            return true;
+        }
+        if let Some(choice) = controls.choices.iter().find(|c| c.rect.contains(p)) {
+            if !choice.current {
+                self.media_request(Request::Default { output: choice.output, name: choice.name.clone() });
+            }
+            return true;
         }
         for slider in &controls.sliders {
             if slider.button.contains(p) {
@@ -183,20 +238,25 @@ impl Tileception {
             return true;
         }
         if let Some(card) = &controls.media {
-            let command = if card.previous.contains(p) {
-                Some(PlayerCommand::Previous)
-            } else if card.play.contains(p) {
-                Some(PlayerCommand::PlayPause)
-            } else if card.next.contains(p) {
-                Some(PlayerCommand::Next)
-            } else {
-                None
-            };
-            if let Some(command) = command {
-                self.media_request(Request::Player(command));
-            }
+            self.media_card_press(card, p);
         }
         true
+    }
+
+    /// A press on a playback card's buttons.
+    pub fn media_card_press(&mut self, card: &MediaCard, p: Point) {
+        let command = if card.previous.contains(p) {
+            Some(PlayerCommand::Previous)
+        } else if card.play.contains(p) {
+            Some(PlayerCommand::PlayPause)
+        } else if card.next.contains(p) {
+            Some(PlayerCommand::Next)
+        } else {
+            None
+        };
+        if let Some(command) = command {
+            self.media_request(Request::Player(command));
+        }
     }
 
     /// The pointer moved while a slider is held.
@@ -279,6 +339,9 @@ impl Tileception {
     }
 
     pub fn draw_controls(&self, p: &mut Painter, controls: &Controls, pointer: Point) {
+        if controls.rect.h <= 0.0 {
+            return;
+        }
         let t = &self.theme;
         let s = &self.media.snapshot;
         p.shape(controls.sound, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, t.radius) });
@@ -288,7 +351,30 @@ impl Tileception {
                 Some(output) => output.description.clone(),
                 None => "No audio output".to_string(),
             };
-            p.text(&label, device, Style::new(t.font_size * 0.85, t.muted));
+            let hover = controls.choosable && device.contains(pointer);
+            if hover {
+                p.fill(device, t.surface_raised, t.radius);
+            }
+            let text = Rect::new(device.x + 4.0, device.y, device.w - 30.0, device.h);
+            p.text(&label, text, Style::new(t.font_size * 0.85, if hover { t.text } else { t.muted }));
+            if controls.choosable {
+                let chevron = if self.media.devices_open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
+                p.glyph(chevron, Rect::new(device.right() - 26.0, device.y, 24.0, device.h), 13, t.muted);
+            }
+        }
+        for (rect, title) in &controls.headings {
+            p.text(title, *rect, Style::new(t.font_size * 0.72, t.muted).bold());
+        }
+        for choice in &controls.choices {
+            if choice.rect.contains(pointer) && !choice.current {
+                p.fill(choice.rect, t.surface_raised, t.radius);
+            }
+            if choice.current {
+                p.glyph(glyph::CHECK, Rect::new(choice.rect.x + 4.0, choice.rect.y, 24.0, choice.rect.h), 14, t.accent);
+            }
+            let colour = if choice.current { t.text } else { t.text.alpha(0.8) };
+            let text = Rect::new(choice.rect.x + 32.0, choice.rect.y, choice.rect.w - 36.0, choice.rect.h);
+            p.text(&choice.description, text, Style::new(t.font_size * 0.92, colour));
         }
         for slider in &controls.sliders {
             let hover = slider.button.contains(pointer);
@@ -338,7 +424,7 @@ impl Tileception {
         }
     }
 
-    fn draw_media_card(&self, p: &mut Painter, card: &MediaCard, player: &Player, pointer: Point) {
+    pub fn draw_media_card(&self, p: &mut Painter, card: &MediaCard, player: &Player, pointer: Point) {
         let t = &self.theme;
         p.shape(card.rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, t.radius) });
         self.draw_art(p, card.art, player);
@@ -461,6 +547,26 @@ fn load_cover(path: &std::path::Path, size: u32, radius: f32) -> Option<MemoryRe
         Transform::Normal,
         None,
     ))
+}
+
+/// A playback card with its top left at (x, y).
+pub fn media_card_layout(x: f64, y: f64, w: f64) -> MediaCard {
+    let rect = Rect::new(x, y, w, 100.0);
+    let art = Rect::new(rect.x + 12.0, rect.y + 12.0, 64.0, 64.0);
+    let text_x = art.right() + 12.0;
+    let text_w = rect.right() - 12.0 - text_x;
+    let buttons_y = rect.y + 50.0;
+    MediaCard {
+        rect,
+        art,
+        title: Rect::new(text_x, rect.y + 10.0, text_w, 20.0),
+        artist: Rect::new(text_x, rect.y + 30.0, text_w, 18.0),
+        player: Rect::new(text_x + 3.0 * 36.0 + 8.0, buttons_y, text_w - 3.0 * 36.0 - 8.0, 30.0),
+        previous: Rect::new(text_x - 4.0, buttons_y, 30.0, 30.0),
+        play: Rect::new(text_x + 32.0, buttons_y, 30.0, 30.0),
+        next: Rect::new(text_x + 68.0, buttons_y, 30.0, 30.0),
+        progress: Rect::new(rect.x + 12.0, rect.bottom() - 12.0, rect.w - 24.0, 3.0),
+    }
 }
 
 /// The speaker icon for a level.

@@ -138,11 +138,17 @@ impl crate::state::Tileception {
         self.wallpaper.as_ref().map(|w| w.buffer.clone())
     }
 
+    /// A lock command line with `{wallpaper}` filled in, quoted.
+    pub fn expand_wallpaper(&self, line: &str) -> String {
+        let wallpaper = self.theme.wallpaper.as_ref().map(|p| p.display().to_string());
+        line.replace("{wallpaper}", &shell_quote(wallpaper.as_deref().unwrap_or("")))
+    }
+
     /// The shell command that locks the screen, showing the wallpaper.
     pub fn lock_command(&self) -> String {
         let wallpaper = self.theme.wallpaper.as_ref().map(|p| p.display().to_string());
         if let Some(custom) = &self.config.file.general.lock_command {
-            return custom.replace("{wallpaper}", &shell_quote(wallpaper.as_deref().unwrap_or("")));
+            return self.expand_wallpaper(custom);
         }
         let [r, g, b, _] = self.theme.background.straight_rgba8();
         let [ar, ag, ab, _] = self.theme.accent.straight_rgba8();

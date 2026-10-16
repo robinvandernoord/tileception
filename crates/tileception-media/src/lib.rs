@@ -7,6 +7,7 @@
 //! [`Event`]s; each fails on its own, so a missing backlight only disables
 //! brightness.
 
+mod art;
 mod audio;
 mod backlight;
 mod mpris;
@@ -41,6 +42,13 @@ pub struct Stream {
     pub muted: bool,
 }
 
+/// A device that could become the default, by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Choice {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Audio {
     /// Whether the sound server answers at all.
@@ -48,6 +56,9 @@ pub struct Audio {
     pub output: Option<Device>,
     pub input: Option<Device>,
     pub apps: Vec<Stream>,
+    /// Every output and microphone, to choose the default from.
+    pub outputs: Vec<Choice>,
+    pub inputs: Vec<Choice>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -173,13 +184,19 @@ pub enum PlayerCommand {
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     /// `max` caps how far a volume may go above 100%.
     Volume {
         target: Target,
         change: Change,
         max: Percent,
+    },
+    /// Makes a device the default and moves what plays (or records) to it.
+    /// `output` picks speakers over microphones.
+    Default {
+        output: bool,
+        name: String,
     },
     Player(PlayerCommand),
     Brightness(Change),
@@ -258,6 +275,7 @@ impl MediaService {
     pub fn send(&self, request: Request) {
         match request {
             Request::Volume { target, change, max } => self.audio.send(target, change, max),
+            Request::Default { output, name } => self.audio.choose(output, name),
             Request::Player(command) => self.mpris.send(command),
             Request::Brightness(change) => self.backlight.send(change),
         }

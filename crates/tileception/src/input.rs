@@ -94,13 +94,18 @@ impl Tileception {
                 let size = output.current_mode().map(|m| m.size.to_logical(1)).unwrap_or_default();
                 let pos = event.position_transformed(size);
                 self.on_motion(pos, event.time_msec());
+                self.activate_constraint_under();
             }
             InputEvent::PointerMotion { event } => {
                 let screen = self.output_rect();
                 let mut pos = self.pointer + event.delta();
                 pos.x = pos.x.clamp(screen.x, screen.right() - 1.0);
                 pos.y = pos.y.clamp(screen.y, screen.bottom() - 1.0);
-                self.on_motion(pos, event.time_msec());
+                // A locked or confined pointer may not move; raw motion is reported either way.
+                if let Some(pos) = self.constrained_motion(event.delta(), event.delta_unaccel(), event.time(), pos) {
+                    self.on_motion(pos, event.time_msec());
+                    self.activate_constraint_under();
+                }
             }
             InputEvent::PointerButton { event } => {
                 self.on_button(event.button_code(), event.state(), event.time_msec())
@@ -178,6 +183,23 @@ impl Tileception {
                     // The menu takes every key while it is open.
                     return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
                 }
+                if state.launcher.open && state.launcher.home {
+                    // The welcome screen is the desktop: shortcuts still work,
+                    // and Esc closes the notification panel first.
+                    if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
+                        state.notifications.open = false;
+                        return FilterResult::Intercept(Vec::new());
+                    }
+                    let mut bound = held;
+                    if state.nested && bound.alt && !bound.logo {
+                        bound.alt = false;
+                        bound.logo = true;
+                    }
+                    if let Some(commands) = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym))
+                    {
+                        return FilterResult::Intercept(commands.to_vec());
+                    }
+                }
                 if state.launcher.open {
                     return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
                 }
@@ -214,6 +236,13 @@ impl Tileception {
                 tracing::warn!("{err}");
             }
         }
+    }
+
+    /// Whether the launcher gets the pointer here: all of it when opened on
+    /// purpose; as the welcome screen only over itself and not under the
+    /// notification panel.
+    fn launcher_takes(&self, at: tileception_core::Point) -> bool {
+        !self.launcher.home || (self.home_contains(at) && !self.notifications_contain(at))
     }
 
     /// Follows a modifier pressed on its own. Returns the modifier when it is
@@ -305,9 +334,9 @@ impl Tileception {
             Action::Lock => {
                 self.lock_session(false);
             }
-            Action::PowerMenu => self.open_power_menu(),
-            Action::Launcher => self.toggle_launcher(),
-            Action::Notifications => self.toggle_notifications(),
+            Action::PowerMenu => self.shell_power_menu(),
+            Action::Launcher => self.shell_launcher(),
+            Action::Notifications => self.shell_notifications(),
             Action::DoNotDisturb => self.toggle_dnd(),
             Action::Group => {}
             Action::Minimize => {
@@ -352,8 +381,9 @@ impl Tileception {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
-        if !self.is_locked() && self.launcher.open {
-            self.launcher_motion(tileception_core::Point::new(pos.x, pos.y));
+        let at = tileception_core::Point::new(pos.x, pos.y);
+        if !self.is_locked() && self.launcher.open && self.launcher_takes(at) {
+            self.launcher_motion(at);
             return;
         }
         if self.power_menu.is_some() {
@@ -484,12 +514,13 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        if self.launcher.open {
+        let at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
+            self.launcher_release();
+        }
+        if self.launcher.open && self.launcher_takes(at) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.launcher_click(tileception_core::Point::new(self.pointer.x, self.pointer.y));
-            }
-            if state == ButtonState::Released && button == BTN_LEFT {
-                self.launcher_release();
+                self.launcher_click(at);
             }
             return;
         }
@@ -663,7 +694,10 @@ impl Tileception {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
-        if self.launcher.open && !self.is_locked() {
+        if self.launcher.open
+            && !self.is_locked()
+            && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
+        {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
                 if value != 0.0 {
                     self.launcher_step(if value > 0.0 { 1 } else { -1 });
@@ -770,7 +804,7 @@ impl Tileception {
     }
 
     /// The client surface under a point, for live windows only.
-    fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+    pub(crate) fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_surface_under(pos, &[Layer::Overlay, Layer::Top]) {
             return Some(hit);

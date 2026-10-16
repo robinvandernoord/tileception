@@ -28,14 +28,18 @@ mod minimized;
 mod notifications;
 mod osd;
 mod persistence;
+mod pointer_lock;
 mod power;
 mod render;
+mod rules;
 mod selection;
 mod shapes;
+mod shell;
 mod state;
 mod text;
 mod text_input;
 mod theme;
+mod toplevels;
 mod udev;
 mod ui;
 mod wallpaper;
@@ -92,22 +96,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket.display()
     );
 
+    state.session_services = !nested && !headless;
     if !nested && !headless {
         state.start_appearance();
         export_session_environment(&state);
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
-    if (!nested && !headless) || notification_bus.is_some() {
+    state.notification_bus = notification_bus.clone();
+    let builtin_notifications = state.shell().notifications().is_builtin();
+    if ((!nested && !headless) || notification_bus.is_some()) && builtin_notifications {
         state.start_notifications(notification_bus);
     }
     // TILECEPTION_MEDIA=session starts media controls nested or headless too;
     // any other value is a bus address for media players, for tests.
     let media_bus = std::env::var("TILECEPTION_MEDIA").ok();
-    if (!nested && !headless) || media_bus.is_some() {
+    state.media_bus = media_bus.clone();
+    if ((!nested && !headless) || media_bus.is_some()) && state.shell().media() {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
     for line in state.config.file.general.autostart.clone() {
-        if matches!(line.trim(), "swaync" | "sway-notification-center") {
+        // Old configs start swaync, which would fight the built-in service.
+        if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {
             continue;
         }
         state.spawn("sh", &["-c".to_string(), line]);

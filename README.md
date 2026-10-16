@@ -176,6 +176,24 @@ replaces its built-in command, `"none"` unbinds it, and every other built-in
 shortcut stays, including ones added in later versions. Set
 `default_binds = false` under `[general]` to make `[binds]` the complete list.
 
+The built-in launcher, notifications, power menu, lock screen and volume
+controls can each be kept, switched off or replaced under `[shell]`, for
+example by fuzzel, swaync, wlogout and swaylock:
+
+```toml
+[general]
+autostart = ["swaync"]
+
+[shell]
+launcher = "fuzzel"
+notifications = "swaync-client -t"   # what Super+N runs
+power_menu = "wlogout"
+lock = "swaylock -f -i {wallpaper}"
+```
+
+A replaced notification service gives up its D-Bus name, so the other daemon
+can take it, also after a reload without logging out.
+
 ## Look
 
 Tileception's look is **Tide**: flat graphite, small radii, a teal to blue

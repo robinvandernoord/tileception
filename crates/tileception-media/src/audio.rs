@@ -4,7 +4,7 @@
 //! requests and reads the state back after each change.
 
 use std::collections::HashMap;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::io::BufReader;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -14,13 +14,15 @@ use std::time::{Duration, Instant};
 
 use pulseaudio::protocol::{self, ChannelVolume, Command, CommandReply, Prop, Props, Volume};
 
-use crate::{changed, lock, Audio, Change, Device, Event, Notifier, Percent, Shared, Stream, Target};
+use crate::{changed, lock, Audio, Change, Choice, Device, Event, Notifier, Percent, Shared, Stream, Target};
 
 /// 100%, `PA_VOLUME_NORM`.
 const NORM: u64 = 0x10000;
 
 enum Msg {
     Request(Target, Change, Percent),
+    /// Make this output (true) or microphone the default.
+    Choose(bool, String),
     /// The server reported a change.
     Dirty,
     /// The event connection closed.
@@ -47,6 +49,10 @@ impl Worker {
 
     pub fn send(&self, target: Target, change: Change, max: Percent) {
         let _ = self.messages.send(Msg::Request(target, change, max));
+    }
+
+    pub fn choose(&self, output: bool, name: String) {
+        let _ = self.messages.send(Msg::Choose(output, name));
     }
 }
 
@@ -223,6 +229,12 @@ impl Session {
                         }
                         dirty = true;
                     }
+                    Msg::Choose(output, name) => {
+                        if let Err(error) = self.choose(output, &name) {
+                            tracing::warn!("could not switch to {name}: {error}");
+                        }
+                        dirty = true;
+                    }
                 }
             }
             if dirty && self.refresh(shared, notifier).is_err() {
@@ -251,6 +263,12 @@ impl Session {
             known.input = Some(Level { index: source.index, volume: source.cvolume, muted: source.muted });
             audio.input = Some(device(&source.name, source.description.as_deref(), &source.cvolume, source.muted));
         }
+        audio.outputs = sinks.iter().map(|s| choice(&s.name, s.description.as_deref())).collect();
+        audio.inputs = sources
+            .iter()
+            .filter(|s| s.monitor_of_sink_index.is_none())
+            .map(|s| choice(&s.name, s.description.as_deref()))
+            .collect();
         for input in inputs.iter().filter(|i| i.has_volume && i.volume_writable) {
             known.streams.insert(input.index, Level { index: input.index, volume: input.cvolume, muted: input.muted });
             let app = prop(&input.props, Prop::ApplicationName)
@@ -304,6 +322,30 @@ impl Session {
         })
     }
 
+    /// Switches the default device and brings the streams along, as most
+    /// desktops do, so the change is heard at once.
+    fn choose(&mut self, output: bool, name: &str) -> Result<(), String> {
+        let name = CString::new(name).map_err(|e| e.to_string())?;
+        if output {
+            self.requests.ack(Command::SetDefaultSink(name.clone()))?;
+            let streams: protocol::SinkInputInfoList = self.requests.request(Command::GetSinkInputInfoList)?;
+            for stream in streams {
+                if let Err(error) = self.requests.ack(Command::MoveSinkInput(mover(stream.index, &name))) {
+                    tracing::debug!("stream {} stays: {error}", stream.index);
+                }
+            }
+        } else {
+            self.requests.ack(Command::SetDefaultSource(name.clone()))?;
+            let streams: protocol::SourceOutputInfoList = self.requests.request(Command::GetSourceOutputInfoList)?;
+            for stream in streams {
+                if let Err(error) = self.requests.ack(Command::MoveSourceOutput(mover(stream.index, &name))) {
+                    tracing::debug!("recording {} stays: {error}", stream.index);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn mute(&mut self, target: Target, index: u32, mute: bool) -> Result<(), String> {
         self.requests.ack(match target {
             Target::Output => Command::SetSinkMute(device_mute(index, mute)),
@@ -311,6 +353,14 @@ impl Session {
             Target::App(_) => Command::SetSinkInputMute(protocol::SetStreamMuteParams { index, mute }),
         })
     }
+}
+
+fn mover(index: u32, device: &CStr) -> protocol::MoveStreamParams {
+    protocol::MoveStreamParams { index: Some(index), device_index: None, device_name: Some(device.to_owned()) }
+}
+
+fn choice(name: &CStr, description: Option<&CStr>) -> Choice {
+    Choice { name: text(name), description: description.map(text).unwrap_or_else(|| text(name)) }
 }
 
 fn device_mute(index: u32, mute: bool) -> protocol::SetDeviceMuteParams {

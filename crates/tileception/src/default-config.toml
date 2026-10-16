@@ -40,6 +40,9 @@ autostart = []
 # shortcuts reach you after an update. Set false to make [binds] the
 # complete list instead.
 # default_binds = true
+# On an empty desktop (after login, or after closing the last window) show the
+# launcher with a clock: type to search, Esc for a plain desktop.
+# welcome = true
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -87,6 +90,42 @@ max_volume = 150
 # A small card at the bottom of the screen when a level or playback changes.
 osd = true
 osd_timeout_ms = 1500
+
+[shell]
+# Each part of the desktop is Tileception's own ("builtin"), switched off
+# ("none"), or a command that runs in its place. Changes apply on save.
+#
+# The launcher (tap Super, `launcher`), e.g. "fuzzel". Not builtin: no
+# welcome screen either.
+launcher = "builtin"
+# Notification popups and history. Anything but "builtin" stops the built-in
+# service so another daemon can take over: start it under [general]
+# autostart (autostart = ["swaync"]). A command is what Super+N runs, e.g.
+# "swaync-client -t"; with "none", Super+N shows only the sound controls.
+notifications = "builtin"
+# The power menu (Super+X), e.g. "wlogout".
+power_menu = "builtin"
+# The lock screen (Super+L, and locking when idle), e.g.
+# "swaylock -f -i {wallpaper}". {wallpaper} becomes the wallpaper's path.
+lock = "builtin"
+# Volume, media keys and brightness: "builtin" or "none". To use your own
+# commands instead, bind the keys to them in [binds].
+media = "builtin"
+
+# Window rules decide how matching windows open. app_id is the Wayland app id
+# or X11 class; patterns ignore case, with * for anything and ? for one
+# character. Every matching rule applies, in order, later ones winning.
+# float = true floats, false tiles (whatever the window asks for); size is
+# [width, height] for a floating window; fullscreen and minimized open it so.
+#
+# [[rules]]
+# app_id = "pavucontrol"
+# float = true
+# size = [720, 480]
+#
+# [[rules]]
+# title = "Picture-in-Picture"
+# float = true
 
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.

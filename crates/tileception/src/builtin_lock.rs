@@ -89,8 +89,15 @@ impl Tileception {
         if self.is_locked() {
             return;
         }
-        if self.config.file.general.lock_command.is_some() {
-            let lock = self.lock_command();
+        let command = match self.shell().lock() {
+            crate::shell::Part::Off => {
+                tracing::warn!("locking is switched off in [shell]");
+                return;
+            }
+            crate::shell::Part::Command(line) => Some(self.expand_wallpaper(&line)),
+            crate::shell::Part::Builtin => self.config.file.general.lock_command.is_some().then(|| self.lock_command()),
+        };
+        if let Some(lock) = command {
             let command = if suspend { format!("{lock} && systemctl suspend") } else { lock };
             self.spawn("sh", &["-c".into(), command]);
         } else {

@@ -415,12 +415,30 @@ matrix, credentials and deployment implementation remain pending.
 
 - More monitors: a layout per screen, moving windows between them.
 - HiDPI and fractional scaling.
-- Window rules (always float an app, open an app in a given view).
+- Window rules (always float an app, open an app in a given view). Done
+  2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
+  `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`
+  (true or false), `size` for floats, `fullscreen` or `minimized`; all matching
+  rules apply in order. Checked headless with kitty (floated at 700x400,
+  opened minimized). Decided 2026-10-16: no rules for saved views; views stay
+  purely about the camera.
 - Window lists for other tools (foreign-toplevel) and clipboard history
-  (data-control).
+  (data-control). Protocols done 2026-10-16 on
+  `feature/toplevel-and-clipboard-protocols`: ext-foreign-toplevel-list
+  (titles, app ids, open and close, synced once per frame) and both
+  data-control versions (wlr and ext), so clipboard managers such as cliphist
+  work and `wl-copy`/`wl-paste` no longer open a helper window. Checked
+  headless with a test client and wl-clipboard. Not done: the wlr
+  foreign-toplevel *management* protocol (activating and closing windows from
+  a taskbar), which Smithay does not provide; a built-in clipboard history.
 - Bindings that repeat while held, pass through to the app, or work while
   locked; click-to-kill.
-- Pointer lock for games and input methods.
+- Pointer lock for games and input methods. Pointer lock done 2026-10-16 on
+  `feature/pointer-lock`: pointer-constraints (lock and confine, with regions
+  and the cursor position hint) and relative-pointer raw motion. Constraints
+  only hold while no compositor interface (launcher, menu, panel, lock) is
+  open. Only checked that the globals are offered: needs a game on hardware.
+  Input methods are not done.
 - Better trackpad support: configurable multi-finger actions, swipes and
   pinches for navigation, Overview and window management. Planning only for now.
 - Touchscreen support: touch currently does not work on Robin's laptop,
@@ -432,13 +450,23 @@ matrix, credentials and deployment implementation remain pending.
 
 ### To be planned
 
-- [ ] **Swappable shell components.** Add documented configuration to disable or
+- [x] **Swappable shell components.** Add documented configuration to disable or
   replace each built-in tool independently, including the Super menu/launcher,
   notification bar and popups, power menu and lock screen. External replacements
   must be supported as permanent choices, with configurable shortcuts and
   startup commands. Release shared protocol or service ownership when a built-in
   component is disabled so it does not compete with its replacement. Preserve
   the compositor's window-management features when using external tools.
+  Implemented 2026-10-16 on `feature/swappable-shell`: `[shell]` sets
+  `launcher`, `notifications`, `power_menu` and `lock` to "builtin", "none" or
+  a command (lock commands take `{wallpaper}`), and `media` to builtin or none.
+  Replacing notifications stops the built-in service and frees
+  `org.freedesktop.Notifications`; Super+N then runs the given command, or with
+  "none" shows only the sound controls. Reloading starts and stops services, so
+  no new login is needed; an old `autostart = ["swaync"]` is only skipped while
+  notifications are built in. Shortcuts stay in `[binds]`, startup commands in
+  `autostart`. Checked headless with a private bus: the name was released and
+  taken back across reloads, and each replacement command ran.
 - [x] **Built-in volume and media controls with visual feedback.** Previously these
   were Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
   Add built-in actions and standard hardware-key bindings so they work with the
@@ -460,8 +488,14 @@ matrix, credentials and deployment implementation remain pending.
   the real sound server (volume restored afterwards) and a fake player on a
   private bus; an MPRIS test runs in CI. Not checked: hardware media keys, key
   repeat, brightness (no backlight on the test machine), pointer use of the
-  sliders and the card on the lock screen. Cover art served over http (Spotify)
-  is not fetched; the player's icon shows instead.
+  sliders and the card on the lock screen.
+  Follow-up on `feature/audio-devices`: the device line in Super+N opens a list
+  of outputs and microphones; choosing one makes it the default and moves what
+  is playing or recording to it (also `volume output <n>` / `mic input <n>`,
+  numbered as `tileception msg volume` lists them). Cover art served over
+  http(s), as Spotify does, is fetched with curl (8 s, 8 MB, http(s) only) into
+  `~/.cache/tileception/art`, keeping the newest 64. Checked headless: switching
+  to HDMI and back moved a silent test stream along; web art appeared.
 - [x] **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:
@@ -483,12 +517,21 @@ matrix, credentials and deployment implementation remain pending.
   frames. Checked headless through IPC (exact layout round trip, strip peek);
   pointer use of the strip is not checked yet. Not persisted across logins:
   minimized windows come back as new windows.
-- **A welcome screen instead of nothing.** When no windows are open (right
+- [x] **A welcome screen instead of nothing.** When no windows are open (right
   after login, or after closing the last one), show the built-in launcher in a
   "home" form on the empty desktop: app search, maybe recent or pinned apps and
   the time. Typing searches right away; Esc dismisses it to a plain desktop.
   Depends on the built-in launcher. (Robin's current startup error comes from
   espanso running its X11 build; switching it to the Wayland build is separate.)
+  Implemented 2026-10-16 on `feature/welcome-screen`: the launcher opens in a
+  home form whenever no window is open (`general.welcome`, on by default),
+  over the wallpaper with a large clock and date, the eight most used apps as a
+  grid (arrows move, Enter launches), the usual search once typing starts, and
+  the playback card when something plays. Esc or Super puts it away until the
+  desktop next empties; after a launch it waits 10 s for the window. Shortcuts
+  keep working, notifications draw over it, and clicks beside it reach bars and
+  the panel. Checked headless (shown, gone when a terminal opened, back after
+  closing it, dismissed and reopened); typing and pointer use are not checked.
 - **A "doctor" you can talk to (ACP).** A built-in Tide panel that talks to a
   coding agent such as Claude or Codex over the Agent Client Protocol, so you
   can ask it to change settings, shortcuts and default apps in plain language.
@@ -497,6 +540,15 @@ matrix, credentials and deployment implementation remain pending.
   such as `tree` and `reload`, and read the log. Depends on text rendering and
   a text input in the Tide components; needs a careful permission model so the
   agent can only touch Tileception's own files unless you allow more.
+  Decided 2026-10-16:
+  - Permissions are a mode you switch between, remembered across sessions:
+    "ask" (every change shown and confirmed), "tileception config" (edits
+    Tileception's own files without asking, with backups) and "yolo" (no
+    questions).
+  - Agents come only from the official ACP Registry
+    (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`):
+    a picker that installs through npx, uvx or a checked binary download and
+    remembers the pick. No hard-coded providers and no custom command.
 
 ## 5. Risks and open questions
 

@@ -231,6 +231,22 @@ impl ServerDndGrabHandler for Tileception {}
 
 delegate_data_device!(Tileception);
 
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for Tileception {
+    fn data_control_state(&self) -> &smithay::wayland::selection::wlr_data_control::DataControlState {
+        &self.wlr_data_control_state
+    }
+}
+
+smithay::delegate_data_control!(Tileception);
+
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for Tileception {
+    fn data_control_state(&self) -> &smithay::wayland::selection::ext_data_control::DataControlState {
+        &self.ext_data_control_state
+    }
+}
+
+smithay::delegate_ext_data_control!(Tileception);
+
 impl OutputHandler for Tileception {}
 delegate_output!(Tileception);
 

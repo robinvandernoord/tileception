@@ -31,6 +31,8 @@ pub struct ConfigFile {
     pub keyboard: Keyboard,
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
+    pub shell: crate::shell::ShellConfig,
+    pub rules: Vec<crate::rules::WindowRule>,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 
@@ -75,6 +77,8 @@ pub struct General {
     /// Start from the built-in bindings, with `[binds]` adding to them and
     /// overriding them. Off: `[binds]` is the complete list.
     pub default_binds: bool,
+    /// Show the launcher, with a clock, on an empty desktop.
+    pub welcome: bool,
 }
 
 impl Default for General {
@@ -92,6 +96,7 @@ impl Default for General {
             restore_layout: false,
             suspend_enabled: true,
             default_binds: true,
+            welcome: true,
         }
     }
 }
@@ -192,6 +197,8 @@ impl Config {
         let drag_mod = parse_modifier(&file.general.drag_modifier)
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
+        file.shell.validate()?;
+        crate::rules::validate(&file.rules)?;
         Ok(Config { file, binds, drag_mod, theme })
     }
 
@@ -373,7 +380,8 @@ impl Tileception {
             self.wallpaper = None;
             self.wallpaper_failed = None;
         }
-        self.config = config;
+        let old_shell = std::mem::replace(&mut self.config, config).file.shell;
+        self.apply_shell(&old_shell);
         self.apply_layout();
     }
 }

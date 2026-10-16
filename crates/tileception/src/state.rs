@@ -88,6 +88,13 @@ pub struct Tileception {
     pub seat_state: SeatState<Tileception>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// Clipboard managers and `wl-copy`/`wl-paste` without a window.
+    pub wlr_data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
+    pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
+    /// The window list for taskbars and switchers.
+    pub toplevels: crate::toplevels::Toplevels,
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     pub xwayland_shell_state: XWaylandShellState,
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
@@ -109,6 +116,13 @@ pub struct Tileception {
     pub config: Config,
     /// Running in a window of another desktop rather than as the session.
     pub nested: bool,
+    /// Running as the desktop session (not nested or headless), so desktop
+    /// services such as notifications may be started.
+    pub session_services: bool,
+    /// Private buses for the notification service and media players (tests),
+    /// which also allow starting them nested or headless.
+    pub notification_bus: Option<String>,
+    pub media_bus: Option<String>,
     pub gap_drag: Option<GapDrag>,
     pub move_drag: Option<MoveDrag>,
     pub resize_drag: Option<ResizeDrag>,
@@ -174,6 +188,16 @@ impl Tileception {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            |_| true,
+        );
+        let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            |_| true,
+        );
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -221,6 +245,11 @@ impl Tileception {
             seat_state,
             data_device_state,
             primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
+            toplevels: crate::toplevels::Toplevels::new(&dh),
+            pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh),
+            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh),
             xwayland_shell_state,
             xwm: None,
             xdisplay: None,
@@ -264,6 +293,9 @@ impl Tileception {
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
+            session_services: false,
+            notification_bus: None,
+            media_bus: None,
             appearance: None,
             selection: Default::default(),
             strip: Default::default(),
@@ -365,11 +397,16 @@ impl Tileception {
     /// commit, once they have said what they are.
     pub fn place_window(&mut self, id: WindowId) {
         let Some(window) = self.windows.get(&id) else { return };
-        let placement = if wants_float(window) { Placement::Float } else { Placement::Dock };
+        let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
+        let float = rule.float.unwrap_or_else(|| wants_float(window));
+        let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
         self.world.add_window(id, placement, now);
         self.restore_window_layout(id);
+        if let Some([w, h]) = rule.size.filter(|_| float) {
+            self.world.size_float(id, f64::from(w), f64::from(h));
+        }
         if let Some(x11) = self.windows.get(&id).and_then(|w| w.x11_surface()) {
             let g = x11.geometry();
             if self.world.float_needs_size(id) && g.size.w > 0 && g.size.h > 0 {
@@ -379,6 +416,11 @@ impl Tileception {
         self.apply_layout();
         if let Some(toplevel) = self.windows.get(&id).and_then(|w| w.toplevel()) {
             toplevel.send_configure();
+        }
+        if rule.minimized {
+            self.minimize_window(id);
+        } else if rule.fullscreen {
+            self.set_fullscreen(id, true);
         }
     }
 
@@ -650,6 +692,8 @@ impl Tileception {
         }
         self.popups.cleanup();
         self.update_strip();
+        self.update_home();
+        self.update_toplevels();
         let _ = self.display_handle.flush_clients();
     }
 }
