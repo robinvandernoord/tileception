@@ -439,14 +439,29 @@ matrix, credentials and deployment implementation remain pending.
   startup commands. Release shared protocol or service ownership when a built-in
   component is disabled so it does not compete with its replacement. Preserve
   the compositor's window-management features when using external tools.
-- [ ] **Built-in volume and media controls with visual feedback.** Currently these
-  are Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
+- [x] **Built-in volume and media controls with visual feedback.** Previously these
+  were Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
   Add built-in actions and standard hardware-key bindings so they work with the
   default configuration. Show actual volume and mute state after changes, and
   playback feedback for play/pause, stop and track changes, including the active
   player and track when available. Report missing audio devices or active
   players clearly. Use the Tide visual language; keep personal shell shortcuts
-  unnecessary for normal volume/media-key operation. Planned, not implemented.
+  unnecessary for normal volume/media-key operation.
+  Implemented 2026-10-16 on `feature/volume-media-controls`, with brightness and
+  per-program volume: the `tileception-media` crate speaks the PulseAudio
+  protocol (served by PipeWire; pure Rust, no system libraries), follows MPRIS
+  players on the session bus and sets the backlight through logind. Commands
+  `volume`, `mic`, `brightness` and `media`, bound to the media and brightness
+  keys and to Super+Ctrl+arrows/M/Space/Page_Up/Page_Down; held keys repeat, and
+  they work on the lock screen. A Tide card at the bottom shows the new level
+  (amber past 100%, up to `media.max_volume`), what is playing, or what is
+  missing. Super+N gains volume, microphone and brightness sliders, a list of
+  programs with their own volume, and a playback card. Checked headless against
+  the real sound server (volume restored afterwards) and a fake player on a
+  private bus; an MPRIS test runs in CI. Not checked: hardware media keys, key
+  repeat, brightness (no backlight on the test machine), pointer use of the
+  sliders and the card on the lock screen. Cover art served over http (Spotify)
+  is not fetched; the player's icon shows instead.
 - [x] **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:
