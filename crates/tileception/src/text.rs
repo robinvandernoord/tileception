@@ -29,7 +29,9 @@ struct Key {
     size_tenths: u32,
     colour: [u8; 4],
     max_width: i32,
-    bold: bool,
+    weight: u16,
+    /// 0 for one line shortened with "...", otherwise wrapped to at most this many lines.
+    lines: u8,
     field: Option<Field>,
 }
 
@@ -69,6 +71,23 @@ impl Text {
         max_width: f32,
         bold: bool,
     ) -> Option<TextImage> {
+        let weight = if bold { Weight::SEMIBOLD.0 } else { Weight::NORMAL.0 };
+        self.styled(text, font, size, colour, max_width, weight, 0)
+    }
+
+    /// Text at a given weight (100 to 900). With `lines` above 0 it wraps
+    /// at word boundaries to `max_width` and ends in "..." after that many lines.
+    #[allow(clippy::too_many_arguments, reason = "plain drawing parameters, all needed for the cache key")]
+    pub fn styled(
+        &mut self,
+        text: &str,
+        font: &str,
+        size: f32,
+        colour: Colour,
+        max_width: f32,
+        weight: u16,
+        lines: u8,
+    ) -> Option<TextImage> {
         if text.is_empty() || max_width < 4.0 {
             return None;
         }
@@ -78,7 +97,8 @@ impl Text {
             size_tenths: (size * 10.0).round() as u32,
             colour: colour.straight_rgba8(),
             max_width: max_width.floor() as i32,
-            bold,
+            weight,
+            lines,
             field: None,
         };
         if let Some(hit) = self.cache.get(&key) {
@@ -107,7 +127,8 @@ impl Text {
             size_tenths: (size * 10.0).round() as u32,
             colour: colour.straight_rgba8(),
             max_width: width.floor().max(1.0) as i32,
-            bold: false,
+            weight: Weight::NORMAL.0,
+            lines: 0,
             field: Some(field),
         };
         if let Some(image) = self.cache.get(&key) {
@@ -137,26 +158,41 @@ impl Text {
         let fonts = self.fonts.get_or_insert_with(FontSystem::new);
         let size = key.size_tenths as f32 / 10.0;
         let metrics = Metrics::new(size, (size * 1.3).ceil());
-        let weight = if key.bold { Weight::SEMIBOLD } else { Weight::NORMAL };
-        let attrs = Attrs::new().family(Family::Name(&key.font)).weight(weight);
+        let attrs = Attrs::new().family(Family::Name(&key.font)).weight(Weight(key.weight));
 
-        // Measure; if too wide, drop characters until it fits with "...".
+        // Measure; if too wide (or too many lines), drop characters until it fits with "...".
         let mut shown = key.text.clone();
         let mut buffer = Buffer::new(fonts, metrics);
-        buffer.set_wrap(Wrap::None);
+        let wrapped = key.lines > 0 && key.field.is_none();
+        if wrapped {
+            buffer.set_wrap(Wrap::WordOrGlyph);
+            buffer.set_size(Some(key.max_width as f32), None);
+        } else {
+            buffer.set_wrap(Wrap::None);
+        }
+        let max_lines = key.lines as usize;
         let width_of = |buffer: &mut Buffer, fonts: &mut FontSystem, s: &str| {
             buffer.set_text(s, &attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(fonts, false);
             buffer.layout_runs().map(|r| r.line_w).fold(0.0f32, f32::max)
         };
+        // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
+        let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, s: &str| {
+            let width = width_of(buffer, fonts, s);
+            if wrapped {
+                buffer.layout_runs().count() > max_lines
+            } else {
+                width > key.max_width as f32
+            }
+        };
         let mut width = width_of(&mut buffer, fonts, &shown);
-        if key.field.is_none() && width > key.max_width as f32 {
+        if key.field.is_none() && too_long(&mut buffer, fonts, &shown) {
             let chars: Vec<char> = key.text.chars().collect();
             let (mut lo, mut hi) = (0usize, chars.len());
             while lo < hi {
                 let mid = (lo + hi).div_ceil(2);
                 let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "...";
-                if width_of(&mut buffer, fonts, &candidate) <= key.max_width as f32 {
+                if !too_long(&mut buffer, fonts, &candidate) {
                     lo = mid;
                 } else {
                     hi = mid - 1;
@@ -172,8 +208,13 @@ impl Text {
             .and_then(|field| field.anchor.map(|anchor| (cursor_x(anchor).min(caret), cursor_x(anchor).max(caret))));
         let scroll = if key.field.is_some() { (caret - key.max_width as f32 + 8.0).max(0.0).ceil() } else { 0.0 };
         let w = if key.field.is_some() { key.max_width } else { width.ceil().max(1.0) as i32 };
-        let h = metrics.line_height.ceil() as i32;
-        buffer.set_size(Some(w as f32 + 1.0), Some(h as f32));
+        let rows = if wrapped { buffer.layout_runs().count().max(1) } else { 1 };
+        let h = (metrics.line_height * rows as f32).ceil() as i32;
+        if wrapped {
+            buffer.set_size(Some(key.max_width as f32), Some(h as f32));
+        } else {
+            buffer.set_size(Some(w as f32 + 1.0), Some(h as f32));
+        }
 
         let [r, g, b, a] = key.colour;
         let mut pixels = vec![0u8; (w * h * 4) as usize];

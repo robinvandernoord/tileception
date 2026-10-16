@@ -32,6 +32,12 @@ impl Colour {
         Colour(self.0.map(|c| c * factor))
     }
 
+    /// Partway from this colour to `other`; 0 is this one, 1 the other.
+    pub fn mix(self, other: Colour, t: f32) -> Colour {
+        let t = t.clamp(0.0, 1.0);
+        Colour(std::array::from_fn(|i| self.0[i] + (other.0[i] - self.0[i]) * t))
+    }
+
     /// Straight (not premultiplied) RGBA bytes, for rasterising text.
     pub fn straight_rgba8(self) -> [u8; 4] {
         let [r, g, b, a] = self.0;
@@ -53,6 +59,8 @@ pub struct ThemeFile {
     pub accent: String,
     pub accent_end: String,
     pub on_accent: String,
+    /// Errors, such as a wrong password or a critical notification.
+    pub danger: String,
     pub radius: f32,
     pub popup_radius: f32,
     /// How far the focus glow reaches, in pixels; 0 turns it off.
@@ -77,6 +85,7 @@ impl Default for ThemeFile {
             accent: "#2bd4a7".into(),
             accent_end: "#5c8ff2".into(),
             on_accent: "#0d1117".into(),
+            danger: "#f0646a".into(),
             radius: 6.0,
             popup_radius: 10.0,
             glow: 18.0,
@@ -100,6 +109,7 @@ pub struct Theme {
     pub accent: Colour,
     pub accent_end: Colour,
     pub on_accent: Colour,
+    pub danger: Colour,
     pub radius: f32,
     pub popup_radius: f32,
     pub glow: f32,
@@ -121,6 +131,7 @@ impl Theme {
             accent: Colour::parse(&f.accent)?,
             accent_end: Colour::parse(&f.accent_end)?,
             on_accent: Colour::parse(&f.on_accent)?,
+            danger: Colour::parse(&f.danger)?,
             radius: f.radius.max(0.0),
             popup_radius: f.popup_radius.max(0.0),
             glow: f.glow.max(0.0),
@@ -129,6 +140,13 @@ impl Theme {
             wallpaper: f.wallpaper.as_deref().filter(|w| !w.is_empty()).map(crate::wallpaper::expand_home),
             wallpaper_fit: crate::wallpaper::Scaling::parse(&f.wallpaper_fit)?,
         })
+    }
+}
+
+impl Theme {
+    /// Popups (launcher, notifications, menus) sit a step above tiles.
+    pub fn popup(&self) -> Colour {
+        self.surface.mix(self.surface_raised, 0.5)
     }
 }
 

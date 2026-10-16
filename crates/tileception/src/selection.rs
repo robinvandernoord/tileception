@@ -7,8 +7,9 @@ use tileception_core::{DropTarget, Point, Rect, WindowId};
 
 use crate::{
     input::Action,
-    render::{push_shape, OutputElement},
+    render::{push_image, push_shape, OutputElement},
     shapes::Shape,
+    theme::Colour,
     Tileception,
 };
 
@@ -100,14 +101,36 @@ impl Tileception {
         let t = &self.theme;
         for d in self.drawn_windows(self.now()) {
             if self.selection.windows.contains(&d.id) {
-                let badge = Rect::new(d.slot.right() - 26.0, d.slot.y + 6.0, 20.0, 20.0);
-                self.ui_label(&mut out, renderer, "+", badge.inset(4.0), t.on_accent, true);
-                push_shape(&mut out, shapes.as_ref(), &badge, Shape::filled(t.accent, 4.0));
+                // A tint and accent outline over the window, and a check mark in its top left corner.
+                let badge = Rect::new(d.slot.x + 8.0, d.slot.y + 8.0, 22.0, 22.0);
+                if let Some(check) = self.glyphs.image(crate::ui::glyph::CHECK, 14, t.on_accent) {
+                    push_image(&mut out, renderer, &check, (badge.x + 4.0, badge.y + 4.0));
+                }
+                push_shape(
+                    &mut out,
+                    shapes.as_ref(),
+                    &badge,
+                    Shape {
+                        radius: 11.0,
+                        fill: (t.accent, t.accent_end),
+                        glow_radius: 10.0,
+                        glow: Colour([0.0, 0.0, 0.0, 0.4]),
+                        ..Default::default()
+                    },
+                );
                 push_shape(
                     &mut out,
                     shapes.as_ref(),
                     &d.slot,
-                    Shape { radius: t.radius, border_width: 2.0, border: t.accent, ..Default::default() },
+                    Shape {
+                        radius: t.radius,
+                        fill: (t.accent.alpha(0.10), t.accent_end.alpha(0.10)),
+                        border_width: 2.0,
+                        border: t.accent,
+                        glow_radius: t.glow * 0.6,
+                        glow: t.accent.alpha(0.2),
+                        ..Default::default()
+                    },
                 );
             }
         }

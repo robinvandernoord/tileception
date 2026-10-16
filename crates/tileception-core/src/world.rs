@@ -640,10 +640,12 @@ impl World {
             }
         }
         self.relayout();
-        let leaf = self.tree.leaf_of(win).expect("just added");
-        if !self.tree.is_ancestor_or_self(self.framed, leaf) {
-            let common = self.tree.common_ancestor(self.framed, leaf);
-            self.push_frame(common);
+        // Floating windows show whatever is framed, so only tiles widen the frame.
+        if let Some(tile) = self.tree.tile_of(win) {
+            if !self.tree.is_ancestor_or_self(self.framed, tile) {
+                let common = self.tree.common_ancestor(self.framed, tile);
+                self.push_frame(common);
+            }
         }
         self.set_focus(Some(win));
         self.retarget(now);
@@ -888,7 +890,7 @@ impl World {
         if was_hidden_tab {
             self.relayout();
         }
-        if !self.overview && !self.tree.is_ancestor_or_self(self.framed, leaf) {
+        if !self.overview && !self.tree.is_floating(win) && !self.tree.is_ancestor_or_self(self.framed, leaf) {
             self.push_frame(leaf);
             self.retarget(now);
         }
@@ -1248,6 +1250,21 @@ mod tests {
         assert!(wd.tree().is_ancestor_or_self(wd.framed(), t3));
         let on_screen = wd.screen();
         assert!(on_screen.contains_rect(&rect_of(&wd, w(3))));
+    }
+
+    #[test]
+    fn floating_window_keeps_the_frame() {
+        let mut wd = world();
+        wd.add_window(w(1), Placement::Dock, 0.0);
+        wd.add_window(w(2), Placement::Dock, 0.0);
+        let t1 = wd.tree().tile_of(w(1)).unwrap();
+        wd.frame(t1, 0.0);
+        wd.add_window(w(3), Placement::Float, 0.0);
+        assert_eq!(wd.framed(), t1);
+        assert_eq!(wd.focus(), Some(w(3)));
+        wd.focus_window(w(1), 0.0);
+        wd.focus_window(w(3), 0.0);
+        assert_eq!(wd.framed(), t1);
     }
 
     #[test]

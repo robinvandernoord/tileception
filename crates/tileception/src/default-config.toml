@@ -49,6 +49,8 @@ autostart = []
 # accent = "#2bd4a7"
 # accent_end = "#5c8ff2"
 # on_accent = "#0d1117"
+# Wrong passwords and critical notifications.
+# danger = "#f0646a"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -126,6 +128,8 @@ repeat_rate = 30
 "Super+minus" = "step-out"
 "Super+KP_Add" = "step-in"
 "Super+KP_Subtract" = "step-out"
+"Super+I" = "step-in"
+"Super+U" = "step-out"
 "Super+WheelUp" = "step-in pointer"
 "Super+WheelDown" = "step-out"
 "Super+M" = "maximize"
@@ -158,7 +162,7 @@ repeat_rate = 30
 "Super+Shift+F" = "float"
 "Super+D" = "desktop"
 
-# Screenshots (grim, slurp, wl-copy). Print saves and copies the whole screen;
+# Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"

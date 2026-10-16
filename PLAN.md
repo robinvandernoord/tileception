@@ -324,6 +324,22 @@ phantom splits on Ctrl+C/Ctrl+V. Copy and paste now use compositor selection API
 without creating helper windows. Manual verification in the desktop remains
 pending after installing the updated build.
 
+Follow-up, 2026-10-15 (Claude): restyled the launcher, lock screen,
+notifications, power menu and selection marks after `docs/design.html`, through a
+shared painter (`ui.rs`) with cached line icons, keycaps, text weights and
+wrapping, and short fade/slide animations. Review of the coming-days work fixed:
+plain presses in Overview no longer start a box over windows (window dragging
+there works again, and a click no longer leaves a stray selection); Shift+click
+on a live window reaches the program, with Super+Shift+click for selecting;
+screenshot copying uses the new compositor-owned `copy-image` instead of
+`wl-copy` (whose helper window got tiled); the ask-first chooser is shown with
+Do not disturb on and is not pushed out by newer popups; a relock drops a stale
+password check; Caps Lock no longer hides "Incorrect password"; Super+I/Super+U
+are bound by default. Checked nested on Xvfb with software rendering: launcher,
+lock (with and without wallpaper, typing, checking, wrong password, Caps Lock),
+notifications and history, DND, chooser action click, clipboard round trip, and
+Super+Shift selection. Not checked on hardware.
+
 Follow-up, 2026-10-15: isolated headless checks with real terminal windows confirm
 that opening beside a zoomed tile frames only that pair, selected split toggling
 leaves other branches alone, and selection zoom frames an exact pair even across
@@ -364,10 +380,12 @@ must have sufficient capacity and an explicit retention policy.
   session entries and portal overrides that can shadow packaged files. Preserve
   personal configuration and avoid changing unrelated users' home directories
   from package maintainer scripts.
-- [ ] Build the website in a separate CI deployment and publish to the small OVH
+- [x] Build the website in a separate CI deployment and publish to the small OVH
   host, including a plain-text shell script at `https://tileception.space/install`.
-  Keep website deployment independent of package publishing. Publish the install
-  command only once its referenced repository and packages are available.
+  Keep website deployment independent of package publishing. Done in `website/`
+  and `.github/workflows/website.yml`. The page already shows the install command;
+  until the repository and packages exist, `/install` only prints the source-build
+  steps and exits without changing the system.
 - [ ] Support `curl -fsSL https://tileception.space/install | sh`. Make the script
   compatible with `/bin/sh`, safe to rerun, and able to detect supported OS/base
   releases and architectures before changing the system. Explain the changes,

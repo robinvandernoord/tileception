@@ -206,9 +206,9 @@ impl XwmHandler for Tileception {
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
         let result = match selection {
             SelectionTarget::Clipboard => {
-                let text = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
-                if let Some(text) = text {
-                    crate::launcher::send_clipboard_text(fd, text);
+                let clip = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(clip) = clip {
+                    clip.send(fd);
                     return;
                 }
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| format!("{e:?}"))

@@ -42,7 +42,9 @@ sudo apt install grim slurp \
 
 The launcher, notifications and power menu are built in. Print and Shift+Print
 save screenshots to `~/Pictures/Screenshots`. The screenshot save/copy chooser
-waits for a decision; saved-screenshot feedback remains available for 30 seconds.
+waits for a decision and also shows with Do not disturb on; saved-screenshot
+feedback remains available for 30 seconds. Copying goes through the compositor
+(`tileception msg copy-image`), so no helper window appears.
 
 ## Installing as a session
 
@@ -61,6 +63,35 @@ To try it without the login screen first: switch to a free console
 Getting out: Super+Shift+E quits, Ctrl+Alt+BackSpace always quits, and
 Ctrl+Alt+F1..F12 switch consoles. The log is
 `~/.local/state/tileception/tileception.log` (the previous run's is `.log.old`).
+
+## Debian and Ubuntu packages
+
+```sh
+make deb
+sudo apt install ./target/deb/tileception_*.deb
+```
+
+`make deb` builds with the `dist` profile (fat LTO, one codegen unit), strips
+the binary and puts its debug symbols in a separate `tileception-dbgsym`
+package. Install that one too if you want file and line numbers in panic
+backtraces and gdb. The package installs into `/usr/bin`, adds the login
+screen entry, the PAM service and the portal config, and depends on the
+library versions of the system it was built on.
+
+To build the release set, in clean containers (needs Docker):
+
+```sh
+make deb-docker
+```
+
+That builds amd64 and arm64 packages for Debian 13 (trixie), Ubuntu 24.04 and
+Ubuntu 26.04; `DEB_IMAGES` and `DEB_ARCHS` change the selection. arm64 is
+cross-compiled, so an amd64 machine builds both. Each release gets its own
+`target/deb/<codename>/` with versions like `0.1.0-1~noble`. `make deb`
+cross-compiles too with `DEB_ARCH=arm64`, given the cross compiler and the
+arm64 build dependencies. Use either the package or `install-session.sh`, not both:
+they install the same login screen entry, and the scripts refuse to run while
+the package is installed.
 
 ## Running nested or headless
 
@@ -121,10 +152,16 @@ to a command:
 Tileception's look is **Tide**: flat graphite, small radii, a teal to blue
 accent with a soft glow on the focused window (reference in `docs/design.html`). The
 `[theme]` section of the config sets the colours, corner radius, glow, font,
-and a `wallpaper` (with `wallpaper_fit`), which the lock screen shows too.
+`danger` (wrong passwords, critical notifications), and a `wallpaper` (with
+`wallpaper_fit`), which the lock screen shows too. The launcher, lock screen,
+notifications, power menu and selection marks all follow the same reference:
+popups on a raised graphite surface with a hairline border and soft shadow,
+the accent gradient for whatever is chosen, and keycaps for the keys that work.
 
 The lock screen checks the logged-in user's password through PAM on a worker
-thread. Escape or Ctrl+U clears the input; Enter submits it. Caps Lock is shown,
+thread. It shows the time, date and your initial, one dot per typed character
+(never the characters), a pulse while checking, and a shake with a red edge on a
+wrong password. Escape or Ctrl+U clears the input; Enter submits it. Caps Lock is shown,
 and compose/dead keys follow your locale. A custom `[general].lock_command`
 still overrides the built-in locker. The session installer installs the PAM
 service. If recovery is needed, switch to a console and run
@@ -132,7 +169,9 @@ service. If recovery is needed, switch to a console and run
 
 The launcher has an editable search field with a caret, mouse selection,
 Left/Right, Home/End, Shift selection, Ctrl+A, clipboard shortcuts, and
-Alt/Ctrl+Left/Right word navigation. Up/Down select search results. Usage is
+Alt/Ctrl+Left/Right word navigation. Up/Down select search results. The rest of
+the chosen app's name appears greyed out after what you typed, and each result
+shows its icon and description. Usage is
 saved under `$XDG_STATE_HOME/tileception` (default `~/.local/state/tileception`).
 
 Automatic layout saving/restoration is disabled. The experimental app-matching
@@ -148,9 +187,12 @@ sizes; selecting across branches can rearrange the selected windows into their
 first tile's position. Super+U steps back out; Escape clears selection. Pointer
 zoom keeps targeting the pointer, and Super+G continues to create tabs.
 
-Notifications run inside the compositor, with popups, thumbnails, actions and
-a scrollable history panel. The panel's DND control toggles do not disturb;
-critical notifications still appear. Session startup ignores the old `swaync`
+Notifications run inside the compositor. Popups slide in at the bottom right
+with the app's icon, how long ago they arrived, up to three lines of text,
+pictures such as screenshots at full card width, action buttons, and a bar that
+counts down until they close. A question still waiting for an answer stays in
+the corner. The history panel (Super+N) is scrollable and has a Do not disturb
+switch; critical notifications still appear with it on. Session startup ignores the old `swaync`
 autostart entry. The old default `spawn fuzzel` and `spawn swaync-client -t`
 bindings are translated to their built-in equivalents when loading the config.
 New custom bindings should use `launcher`, `notifications`, `do-not-disturb`
@@ -208,8 +250,11 @@ Mouse:
   float, or at the very edge of the screen to dock beside everything.
 - Alt+drag a floating window to move it anywhere.
 - Alt+right-drag a window to resize it from the nearest corner.
-- Shift+click toggles window selection. Super+Shift+drag draws a selection box;
-  in Overview, plain drag draws the box. A plain click clears the selection.
+- Super+Shift+click toggles window selection and Super+Shift+drag draws a
+  selection box. Shift+click on a tab or an Overview preview toggles it too;
+  on a live window Shift+click goes to the program (to extend a text selection).
+  In Overview, dragging from empty space draws a box and dragging a window moves
+  it. A plain click clears the selection.
 - Drag a tab out of its strip to undock it.
 - Drag the gap between windows to resize.
 
@@ -221,7 +266,7 @@ Mouse:
 `step-out`, `focus <dir>`, `move <dir>`, `resize <dir> <px>`,
 `toggle-split`, `cycle [next|prev]`, `back`, `forward`, `maximize`, `desktop`,
 `float`, `fullscreen`, `next-tab`, `prev-tab`, `save <n>`, `go <n>`, `vt <n>`,
-`drop <x> <y>`, `screenshot <file.png>`, `launcher`, `notifications`,
+`drop <x> <y>`, `screenshot <file.png>`, `copy-image <file.png>`, `launcher`, `notifications`,
 `do-not-disturb`, `select [window-id ...]`, `group`, `lock`, `power-menu`,
 `tree`, `reload`, `quit`. `select` without ids clears the selection; window
 ids and selection/lock/display-sleep status are included in `tree`.

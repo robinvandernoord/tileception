@@ -18,6 +18,8 @@ pub enum Command {
     Drop(f64, f64),
     /// Saves what is on screen to a PNG file.
     Screenshot(std::path::PathBuf),
+    /// Puts a PNG file on the clipboard.
+    CopyImage(std::path::PathBuf),
     ReloadConfig,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
@@ -77,6 +79,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 return Err("screenshot needs a file name".into());
             }
             return Ok(Command::Screenshot(rest.into()));
+        }
+        "copy-image" => {
+            if rest.is_empty() {
+                return Err("copy-image needs a PNG file".into());
+            }
+            return Ok(Command::CopyImage(rest.into()));
         }
         "drop" => {
             let coords: Vec<f64> = args.iter().filter_map(|a| a.parse().ok()).collect();
@@ -160,6 +168,7 @@ impl Tileception {
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
             Command::Screenshot(path) => self.screenshot(path),
+            Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
@@ -193,6 +202,8 @@ mod tests {
     #[test]
     fn parses_commands() {
         assert_eq!(parse("go 3"), Ok(Command::Action(Action::RecallView(3))));
+        assert_eq!(parse("copy-image /tmp/a b.png"), Ok(Command::CopyImage("/tmp/a b.png".into())));
+        assert!(parse("copy-image").is_err());
         assert_eq!(parse("move left"), Ok(Command::Action(Action::Move(Dir::Left))));
         assert_eq!(parse("spawn firefox --new-window"), Ok(Command::Spawn("firefox --new-window".into())));
         assert_eq!(parse("drop 10 20.5"), Ok(Command::Drop(10.0, 20.5)));

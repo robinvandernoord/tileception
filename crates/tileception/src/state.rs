@@ -137,6 +137,8 @@ pub struct Tileception {
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
     pub power_menu: Option<crate::power::PowerMenu>,
     pub launcher: crate::launcher::Launcher,
+    /// Line icons for the compositor's own interface.
+    pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
     pub selection: crate::selection::Selection,
     pub persistence: crate::persistence::Persistence,
@@ -253,6 +255,7 @@ impl Tileception {
             shapes: Default::default(),
             power_menu: None,
             launcher: Default::default(),
+            glyphs: Default::default(),
             notifications: Default::default(),
             selection: Default::default(),
             persistence: crate::persistence::Persistence::load(),

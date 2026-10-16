@@ -23,18 +23,41 @@ use smithay::wayland::selection::{
 };
 
 use crate::{
-    render::{push_image, push_shape, solid, OutputElement},
+    render::OutputElement,
     shapes::Shape,
-    ui::Icons,
+    theme::Colour,
+    ui::{ease_out, glyph, Align, Icons, Painter, Style},
     Tileception,
 };
 
-/// Serve compositor-owned clipboard text without starting a Wayland client.
-pub(crate) fn send_clipboard_text(fd: std::os::fd::OwnedFd, text: String) {
-    use std::io::Write;
-    std::thread::spawn(move || {
-        let _ = std::fs::File::from(fd).write_all(text.as_bytes());
-    });
+/// Clipboard contents the compositor owns itself: launcher text, or a
+/// screenshot from `tileception msg copy-image`.
+#[derive(Debug, Clone)]
+pub enum Clip {
+    Text(String),
+    Png(std::sync::Arc<[u8]>),
+}
+
+impl Clip {
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Clip::Text(text) => Some(text),
+            Clip::Png(_) => None,
+        }
+    }
+
+    /// Serves the contents without starting a Wayland client.
+    pub fn send(&self, fd: std::os::fd::OwnedFd) {
+        use std::io::Write;
+        let clip = self.clone();
+        std::thread::spawn(move || {
+            let bytes = match &clip {
+                Clip::Text(text) => text.as_bytes(),
+                Clip::Png(png) => png,
+            };
+            let _ = std::fs::File::from(fd).write_all(bytes);
+        });
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -47,6 +70,7 @@ pub struct Launcher {
     pub open: bool,
     input: crate::text_input::TextInput,
     edited: Instant,
+    opened: Instant,
     selecting: bool,
     clipboard: Option<smithay::reexports::calloop::channel::Sender<(u64, String)>>,
     epoch: u64,
@@ -66,6 +90,7 @@ impl Default for Launcher {
             open: false,
             input: Default::default(),
             edited: Instant::now(),
+            opened: Instant::now(),
             selecting: false,
             clipboard: None,
             epoch: 0,
@@ -102,6 +127,27 @@ impl Launcher {
 }
 
 impl Tileception {
+    /// Puts a PNG file on the clipboard, owned by the compositor, so copying a
+    /// screenshot needs no helper window.
+    pub fn copy_image(&mut self, path: &std::path::Path) -> Result<(), String> {
+        use std::io::Read;
+        let mut png = Vec::new();
+        std::fs::File::open(path)
+            .and_then(|f| f.take(MAX_IMAGE + 1).read_to_end(&mut png))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if png.len() as u64 > MAX_IMAGE || !png.starts_with(b"\x89PNG") {
+            return Err(format!("{} is not a PNG of at most 64 MB", path.display()));
+        }
+        let mime_types = vec!["image/png".to_string()];
+        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
+                tracing::warn!("could not offer the image to X11: {error:?}");
+            }
+        }
+        Ok(())
+    }
+
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<(u64, String)>();
@@ -135,6 +181,7 @@ impl Tileception {
         self.launcher.epoch = self.launcher.epoch.wrapping_add(1);
         self.launcher.input.clear();
         self.launcher.edited = Instant::now();
+        self.launcher.opened = Instant::now();
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
@@ -178,7 +225,12 @@ impl Tileception {
                 if !range.is_empty() {
                     let text = self.launcher.input.text[range].to_owned();
                     let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
-                    set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(text));
+                    set_data_device_selection(
+                        &self.display_handle,
+                        &self.seat,
+                        mime_types.clone(),
+                        Some(Clip::Text(text)),
+                    );
                     if let Some(xwm) = self.xwm.as_mut() {
                         if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
                             tracing::warn!("could not offer launcher text to X11: {error:?}");
@@ -207,10 +259,13 @@ impl Tileception {
 
     fn launcher_paste(&mut self) {
         use std::os::unix::net::UnixStream;
-        let text = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
-        if let Some(text) = text {
-            self.launcher_insert_paste(&text);
-            return;
+        match current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
+            Some(Clip::Text(text)) => {
+                self.launcher_insert_paste(&text);
+                return;
+            }
+            Some(Clip::Png(_)) => return,
+            None => {}
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
         let epoch = self.launcher.epoch;
@@ -321,20 +376,28 @@ impl Tileception {
         }
     }
 
-    fn launcher_panel(&self) -> Rect {
+    /// Where everything in the launcher goes, for drawing and for the pointer.
+    fn launcher_layout(&self, results: usize) -> LauncherLayout {
         let screen = self.output_rect();
-        let w = (screen.w - 32.0).clamp(1.0, 580.0);
-        let h = (screen.h - 32.0).clamp(1.0, 530.0);
-        Rect::new(screen.x + (screen.w - w) / 2.0, screen.y + (screen.h - h) / 3.0, w, h)
+        let w = (screen.w - 32.0).clamp(1.0, PANEL_W);
+        let list_h = if results == 0 { 2.0 * ROW_H } else { results as f64 * ROW_H };
+        let h = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
+        // A fixed top edge, so the field stays put while results come and go.
+        let top = (screen.y + screen.h * 0.18).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0);
+        let panel = Rect::new(screen.x + (screen.w - w) / 2.0, top, w, h);
+        let field = Rect::new(panel.x + PAD, panel.y + PAD, panel.w - 2.0 * PAD, FIELD_H);
+        let caption = Rect::new(panel.x + PAD + 6.0, field.bottom(), panel.w - 2.0 * PAD - 12.0, CAPTION_H);
+        let rows = (0..results)
+            .map(|i| Rect::new(panel.x + PAD, caption.bottom() + i as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0))
+            .collect();
+        let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
+        let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
+        LauncherLayout { panel, field, text, caption, rows, footer }
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
-        let panel = self.launcher_panel();
-        if point.x < panel.x + 12.0 || point.x > panel.right() - 12.0 || point.y < panel.y + 76.0 {
-            return None;
-        }
-        let i = ((point.y - panel.y - 76.0) / 50.0) as usize;
-        (i < self.launcher.matches().len() && point.y < panel.bottom() - 36.0).then_some(i)
+        let layout = self.launcher_layout(self.launcher.matches().len());
+        layout.rows.iter().position(|row| row.contains(point))
     }
 
     pub fn launcher_motion(&mut self, point: Point) {
@@ -348,12 +411,8 @@ impl Tileception {
     }
 
     pub fn launcher_click(&mut self, point: Point) {
-        let panel = self.launcher_panel();
-        if point.x >= panel.x + 16.0
-            && point.x < panel.right() - 16.0
-            && point.y >= panel.y + 12.0
-            && point.y < panel.y + 64.0
-        {
+        let layout = self.launcher_layout(self.launcher.matches().len());
+        if layout.field.contains(point) {
             let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
             self.launcher_cursor_at(point, extend);
             self.launcher.selecting = true;
@@ -363,7 +422,7 @@ impl Tileception {
         if let Some(i) = self.launcher_at(point) {
             self.launcher.selected = i;
             self.launch_app();
-        } else if !self.launcher_panel().contains(point) {
+        } else if !layout.panel.contains(point) {
             self.close_launcher();
         }
     }
@@ -373,15 +432,15 @@ impl Tileception {
     }
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
-        let panel = self.launcher_panel();
+        let text = self.launcher_layout(self.launcher.matches().len()).text;
         let input = &self.launcher.input;
         let position = self.text.borrow_mut().field_hit(
             &input.text,
             &self.theme.font,
-            self.theme.font_size,
-            (panel.w - 48.0) as f32,
+            self.theme.font_size * SEARCH_SCALE,
+            text.w as f32,
             input.cursor,
-            (point.x - panel.x - 24.0) as f32,
+            (point.x - text.x) as f32,
         );
         self.launcher.input.move_to(position, extend);
         self.launcher.edited = Instant::now();
@@ -391,104 +450,184 @@ impl Tileception {
         if !self.launcher.open {
             return Vec::new();
         }
-        let panel = self.launcher_panel();
         let t = &self.theme;
-        let shapes = self.shapes(renderer);
-        let mut out = Vec::new();
+        let matches = self.launcher.matches();
+        let layout = self.launcher_layout(matches.len());
         let input = &self.launcher.input;
-        if input.text.is_empty() {
-            self.ui_label(
-                &mut out,
-                renderer,
-                "Search applications...",
-                Rect::new(panel.x + 24.0, panel.y + 16.0, panel.w - 48.0, 42.0),
-                t.muted,
-                false,
-            );
+        let mut p = Painter::new(self, renderer);
+
+        // Fades in while dropping into place.
+        let shown = ease_out(self.launcher.opened.elapsed().as_secs_f64() / 0.16);
+        p.alpha = shown as f32;
+        p.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
+        p.offset = (0.0, (shown - 1.0) * 12.0);
+        p.popup(layout.panel);
+
+        // The search field, glowing softly as the place where typing goes.
+        p.shape(
+            layout.field,
+            Shape {
+                border_width: 1.0,
+                border: t.accent.alpha(0.45),
+                glow_radius: t.glow * 0.6,
+                glow: t.accent.alpha(0.12),
+                ..Shape::filled(t.background, t.radius)
+            },
+        );
+        let typing = !input.text.is_empty();
+        p.glyph(
+            glyph::SEARCH,
+            Rect::new(layout.field.x + 8.0, layout.field.y, 28.0, layout.field.h),
+            18,
+            if typing { t.accent } else { t.muted },
+        );
+        let size = t.font_size * SEARCH_SCALE;
+        if !typing {
+            let hint = Rect::new(layout.text.x + 4.0, layout.text.y, layout.text.w - 4.0, layout.text.h);
+            p.text("Search applications", hint, Style::new(size, t.muted));
         }
-        if let Some(image) = self.text.borrow_mut().field(
+        let field = self.text.borrow_mut().field(
             &input.text,
             &t.font,
-            t.font_size,
+            size,
             t.text,
-            (panel.w - 48.0) as f32,
+            layout.text.w as f32,
             crate::text::Field {
                 cursor: input.cursor,
                 anchor: input.anchor,
                 visible: self.launcher.edited.elapsed().as_millis() % 1000 < 600,
                 accent: t.accent.straight_rgba8(),
             },
-        ) {
-            push_image(
-                &mut out,
-                renderer,
-                &image.buffer,
-                (panel.x + 24.0, panel.y + 16.0 + (42.0 - image.height as f64) / 2.0),
-            );
+        );
+        if let Some(image) = field {
+            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height as f64) / 2.0));
         }
-        let matches = self.launcher.matches();
+        // The rest of the chosen name, greyed out after what was typed.
+        let chosen = matches.get(self.launcher.selected);
+        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name)) {
+            if input.cursor == input.text.len() && input.anchor.is_none() {
+                let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
+                let room = layout.text.w - typed - 4.0;
+                if room > 24.0 {
+                    let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
+                    p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
+                }
+            }
+        }
+
+        let caption = if typing {
+            "RESULTS"
+        } else if self.launcher.usage.is_empty() {
+            "APPLICATIONS"
+        } else {
+            "FREQUENTLY USED"
+        };
+        p.text(caption, layout.caption, Style::new(t.font_size * 0.75, t.muted).bold());
+
         if matches.is_empty() {
-            self.ui_label(
-                &mut out,
-                renderer,
-                "No matching applications",
-                Rect::new(panel.x + 24.0, panel.y + 80.0, panel.w - 48.0, 42.0),
-                t.muted,
-                false,
+            let area = Rect::new(layout.panel.x, layout.caption.bottom(), layout.panel.w, 2.0 * ROW_H);
+            p.glyph(glyph::SEARCH, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
+            let message = format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim());
+            p.text(
+                &message,
+                Rect::new(area.x + 24.0, area.y + 52.0, area.w - 48.0, 28.0),
+                Style::new(t.font_size, t.muted).align(Align::Centre),
             );
         }
-        for (i, app) in matches.iter().enumerate() {
-            let row = Rect::new(panel.x + 12.0, panel.y + 76.0 + i as f64 * 50.0, panel.w - 24.0, 48.0);
-            if row.bottom() > panel.bottom() - 36.0 {
-                break;
-            }
-            self.ui_label(
-                &mut out,
-                renderer,
-                &app.name,
-                Rect::new(row.x + 52.0, row.y, row.w - 64.0, row.h),
-                t.text,
-                i == self.launcher.selected,
-            );
-            if let Some(image) = self.launcher.app_icon(&app.id, 32) {
-                push_image(&mut out, renderer, &image, (row.x + 10.0, row.y + 8.0));
-            } else {
-                self.ui_label(
-                    &mut out,
-                    renderer,
-                    &app.name.chars().take(1).collect::<String>(),
-                    Rect::new(row.x + 18.0, row.y, 28.0, row.h),
-                    t.accent,
-                    true,
+        for (i, (app, row)) in matches.iter().zip(&layout.rows).enumerate() {
+            let selected = i == self.launcher.selected;
+            if selected {
+                p.shape(
+                    *row,
+                    Shape {
+                        radius: t.radius,
+                        fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
+                        ..Default::default()
+                    },
                 );
+                p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
             }
-            if i == self.launcher.selected {
-                push_shape(&mut out, shapes.as_ref(), &row, Shape::filled(t.accent.alpha(0.14), t.radius));
+            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
+            if let Some(image) = self.launcher.app_icon(&app.id, 32) {
+                p.image(&image, (icon.x, icon.y));
+            } else {
+                p.shape(icon, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
+                let initial: String = app.name.chars().take(1).collect::<String>().to_uppercase();
+                p.text(&initial, icon, Style::new(t.font_size * 1.2, t.on_accent).bold().align(Align::Centre));
+            }
+            let enter_w = if selected { 64.0 } else { 0.0 };
+            let text_x = icon.right() + 14.0;
+            let text_w = row.right() - text_x - 12.0 - enter_w;
+            let name_style = Style::new(t.font_size * 1.05, if selected { t.text } else { t.text.alpha(0.88) });
+            let name_style = if selected { name_style.bold() } else { name_style };
+            match subtitle(app) {
+                Some(sub) => {
+                    p.text(&app.name, Rect::new(text_x, row.y + 7.0, text_w, 22.0), name_style);
+                    p.text(sub, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
+                }
+                None => {
+                    p.text(&app.name, Rect::new(text_x, row.y, text_w, row.h), name_style);
+                }
+            }
+            if selected {
+                let w = p.keycap_width("Enter");
+                p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
             }
         }
-        self.ui_label(
-            &mut out,
-            renderer,
-            "Arrows to choose, Enter to launch, Esc to close",
-            Rect::new(panel.x + 24.0, panel.bottom() - 32.0, panel.w - 48.0, 26.0),
-            t.muted,
-            false,
-        );
-        push_shape(
-            &mut out,
-            shapes.as_ref(),
-            &panel,
-            Shape {
-                border_width: 1.0,
-                border: t.border,
-                glow_radius: t.glow,
-                glow: t.accent.alpha(0.15),
-                ..Shape::filled(t.surface, t.popup_radius)
-            },
-        );
-        out.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 0.45]));
-        out
+
+        // Keys along the bottom, under a hairline.
+        let footer = layout.footer;
+        p.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), t.border, 0.0);
+        let hints = [("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Close")];
+        p.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        p.finish()
     }
+}
+
+/// The part of `name` still to come after `typed`, when `name` starts with it.
+fn completion<'a>(typed: &str, name: &'a str) -> Option<&'a str> {
+    if typed.is_empty() {
+        return None;
+    }
+    let mut rest = name.char_indices();
+    for typed in typed.chars() {
+        let (_, c) = rest.next()?;
+        if !c.to_lowercase().eq(typed.to_lowercase()) {
+            return None;
+        }
+    }
+    let at = rest.next().map(|(i, _)| i)?;
+    Some(&name[at..])
+}
+
+/// A short description under the name: the generic name, or else the comment.
+fn subtitle(app: &tileception_apps::App) -> Option<&str> {
+    app.generic_name
+        .as_deref()
+        .filter(|g| !g.is_empty() && !g.eq_ignore_ascii_case(&app.name))
+        .or(app.comment.as_deref())
+        .filter(|s| !s.is_empty())
+}
+
+/// The largest image `copy-image` takes.
+const MAX_IMAGE: u64 = 64 * 1024 * 1024;
+const PANEL_W: f64 = 620.0;
+const PAD: f64 = 10.0;
+const FIELD_H: f64 = 52.0;
+const CAPTION_H: f64 = 32.0;
+const ROW_H: f64 = 54.0;
+const FOOTER_H: f64 = 44.0;
+/// The search text is a little larger than the rest of the interface.
+const SEARCH_SCALE: f32 = 1.2;
+
+struct LauncherLayout {
+    panel: Rect,
+    field: Rect,
+    /// Where the typed text goes inside the field.
+    text: Rect,
+    caption: Rect,
+    rows: Vec<Rect>,
+    footer: Rect,
 }
 
 fn usage_path() -> PathBuf {
@@ -496,4 +635,19 @@ fn usage_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
     root.join("tileception/launcher-usage.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completion;
+
+    #[test]
+    fn completes_names_that_start_with_the_query() {
+        assert_eq!(completion("viv", "Vivaldi"), Some("aldi"));
+        assert_eq!(completion("VIV", "Vivaldi"), Some("aldi"));
+        assert_eq!(completion("ée", "Éether"), Some("ther"));
+        assert_eq!(completion("ald", "Vivaldi"), None);
+        assert_eq!(completion("vivaldi", "Vivaldi"), None);
+        assert_eq!(completion("", "Vivaldi"), None);
+    }
 }

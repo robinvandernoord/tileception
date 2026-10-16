@@ -165,7 +165,7 @@ impl Tileception {
         let focus = self.world.focus();
         let view = self.world.view(now);
         let mut elements: Vec<OutputElement> = Vec::new();
-        elements.extend(self.power_menu_elements(renderer, shapes.as_ref()));
+        elements.extend(self.power_menu_elements(renderer));
         elements.extend(self.launcher_elements(renderer));
         elements.extend(self.notification_elements(renderer));
         elements.extend(self.selection_elements(renderer));

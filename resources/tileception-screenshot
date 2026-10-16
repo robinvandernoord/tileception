@@ -1,5 +1,5 @@
 #!/bin/sh
-# Screenshots for Tileception, with grim, slurp and wl-copy, and a notification
+# Screenshots for Tileception, with grim and slurp, and a notification
 # that shows it worked.
 #
 #   tileception-screenshot          the whole screen: saved to Pictures/Screenshots
@@ -40,11 +40,16 @@ if [ "${capture_failed:-no}" = yes ] || [ ! -s "$tmp" ]; then
     exit 1
 fi
 
-copy() { wl-copy --type image/png < "$tmp"; }
+# The compositor owns the copy itself; wl-copy would open a helper window
+# that Tileception tiles. wl-copy is only the fallback for other desktops.
+copy_file() { tileception msg copy-image "$1" >/dev/null 2>&1 || wl-copy --type image/png < "$1"; }
+copy() { copy_file "$tmp"; }
 save() { mkdir -p "$dir" && cp "$tmp" "$file"; }
 
 if [ "$ask" = yes ]; then
-    choice=$(notify-send -a Screenshot -t 0 -i "$tmp" -h "string:image-path:$tmp" \
+    # Critical, so the question also shows with Do not disturb on; the category
+    # keeps the usual accent instead of the critical red.
+    choice=$(notify-send -a Screenshot -t 0 -u critical -c x-tileception.prompt -i "$tmp" -h "string:image-path:$tmp" \
         -A copy=Copy -A save=Save -A both="Save and copy" \
         "Screenshot taken" "Copy it, save it, or both?")
     case "$choice" in
@@ -60,7 +65,7 @@ choice=$(notify-send -a Screenshot -t 30000 -i "$file" -h "string:image-path:$fi
     -A copy=Copy -A open=Open -A folder="Show in folder" -A delete=Delete \
     "Screenshot saved and copied" "$file")
 case "$choice" in
-    copy) wl-copy --type image/png < "$file" ;;
+    copy) copy_file "$file" ;;
     open) xdg-open "$file" ;;
     folder) xdg-open "$dir" ;;
     delete) rm -f "$file" && notify-send -a Screenshot "Screenshot deleted" "Still on the clipboard" ;;
