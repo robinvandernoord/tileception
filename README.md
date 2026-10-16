@@ -68,7 +68,8 @@ Ctrl+Alt+F1..F12 switch consoles. The log is
 
 ## Debian and Ubuntu packages
 
-On Debian 13 (trixie), Ubuntu 24.04 (noble) or 26.04 (resolute), amd64 or arm64:
+On Debian 13 (trixie), Debian unstable (sid), Ubuntu 24.04 (noble) or 26.04
+(resolute), amd64 or arm64, including PikaOS 4 (`DEBIAN_CODENAME=sid`):
 
 ```sh
 curl -fsSL https://tileception.space/install | sh
@@ -107,14 +108,26 @@ To build the release set, in clean containers (needs Docker):
 make deb-docker
 ```
 
-That builds amd64 and arm64 packages for Debian 13 (trixie), Ubuntu 24.04 and
-Ubuntu 26.04; `DEB_IMAGES` and `DEB_ARCHS` change the selection. arm64 is
+That builds amd64 and arm64 packages for Debian 13 (trixie), Debian unstable
+(sid), Ubuntu 24.04 and Ubuntu 26.04; `DEB_IMAGES` and `DEB_ARCHS` change the
+selection. arm64 is
 cross-compiled, so an amd64 machine builds both. Each release gets its own
 `target/deb/<codename>/` with versions like `0.1.0-1~noble`. `make deb`
 cross-compiles too with `DEB_ARCH=arm64`, given the cross compiler and the
 arm64 build dependencies. Use either the package or `install-session.sh`, not both:
 they install the same login screen entry, and the scripts refuse to run while
 the package is installed.
+
+To build only the sid amd64 package:
+
+```sh
+make deb-docker DEB_IMAGES=debian:sid DEB_ARCHS=amd64
+```
+
+The sid image is explicitly labelled `sid`; other images use their
+`VERSION_CODENAME` unless `DEB_SUITE` overrides it. The release workflow
+passes each suite explicitly. Sid packages may need rebuilding as its libraries
+change; check dependency resolution on PikaOS before installing.
 
 ## Running nested or headless
 
