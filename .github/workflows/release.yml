@@ -101,9 +101,13 @@ jobs:
             suite=${suite#dist/}
             curl -fsS -o /dev/null "$APT_URL/dists/$suite/InRelease"
             for arch in amd64 arm64; do
-              curl -fsS "$APT_URL/dists/$suite/main/binary-$arch/Packages" \
-                | grep -qx "Version: $version-1~$suite" \
+              curl -fsS "$APT_URL/dists/$suite/main/binary-$arch/Packages" > Packages
+              grep -qx "Version: $version-1~$suite" Packages \
                 || { echo "$suite/$arch does not list $version-1~$suite" >&2; exit 1; }
+              # pool/ redirects to the R2 bucket: the package must be there.
+              file=$(awk -v v="$version-1~$suite" '$1 == "Version:" { hit = ($2 == v) } hit && $1 == "Filename:" { print $2; exit }' Packages)
+              curl -fsSL -o /dev/null --head "$APT_URL/$file" \
+                || { echo "$APT_URL/$file does not download" >&2; exit 1; }
             done
           done
 
