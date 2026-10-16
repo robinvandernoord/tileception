@@ -138,14 +138,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Lets D-Bus and systemd started programs (portals, notification daemons,
 /// gnome-terminal-server) find this session.
 fn export_session_environment(state: &Tileception) {
-    std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
-    std::env::set_var("XDG_SESSION_TYPE", "wayland");
-    if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
-        std::env::set_var("XDG_CURRENT_DESKTOP", "Tileception");
-    }
-    std::env::remove_var("DISPLAY");
     let vars = ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
-    let status = std::process::Command::new("dbus-update-activation-environment").arg("--systemd").args(vars).status();
+    let status = std::process::Command::new("dbus-update-activation-environment")
+        .env("WAYLAND_DISPLAY", &state.socket_name)
+        .env("XDG_SESSION_TYPE", "wayland")
+        .env("XDG_CURRENT_DESKTOP", std::env::var_os("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "Tileception".into()))
+        .env_remove("DISPLAY")
+        .arg("--systemd")
+        .args(vars)
+        .status();
     if !matches!(status, Ok(s) if s.success()) {
         tracing::warn!("could not export the session environment to D-Bus");
     }
