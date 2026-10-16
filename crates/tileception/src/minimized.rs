@@ -153,7 +153,7 @@ impl Tileception {
     }
 
     fn strip_hit(&self, p: Point) -> Option<Hit> {
-        if !self.strip.open {
+        if !self.strip.open || self.overlay_under(p) {
             return None;
         }
         for card in self.strip_cards() {

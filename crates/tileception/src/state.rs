@@ -529,13 +529,15 @@ impl Tileception {
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
             self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
-        } else if self.power_menu.is_some() || self.launcher.open || (self.doctor.open && self.doctor.focused) {
+        } else if self.power_menu.is_some() {
+            None
+        } else if let Some(layer) = &self.layer_focus {
+            // Over the launcher and the Doctor too: slurp needs its Esc.
+            Some(KeyboardFocus::Wayland(layer.clone()))
+        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) {
             None
         } else {
-            match &self.layer_focus {
-                Some(layer) => Some(KeyboardFocus::Wayland(layer.clone())),
-                None => focus.and_then(|id| self.windows.get(&id)).and_then(focus_target),
-            }
+            focus.and_then(|id| self.windows.get(&id)).and_then(focus_target)
         };
         if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
             let _ = xwm.raise_window(x11);

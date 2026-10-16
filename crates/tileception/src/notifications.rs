@@ -241,6 +241,9 @@ impl Tileception {
     }
 
     pub fn notifications_contain(&self, p: Point) -> bool {
+        if self.overlay_under(p) {
+            return false;
+        }
         if self.notifications.open && self.notification_panel().contains(p) {
             return true;
         }

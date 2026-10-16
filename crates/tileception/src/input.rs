@@ -177,7 +177,9 @@ impl Tileception {
                 // The menu takes every key while it is open.
                 return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
             }
-            if state.launcher.open && state.launcher.home {
+            // A layer surface with the keyboard (slurp) gets it over the panels.
+            let panels = state.layer_focus.is_none();
+            if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
                 // and Esc closes the notification panel first.
                 if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
@@ -193,11 +195,12 @@ impl Tileception {
                     return FilterResult::Intercept(commands.to_vec());
                 }
             }
-            if state.launcher.open {
+            if panels && state.launcher.open {
                 return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
             }
-            if state.doctor.open && state.doctor.focused {
-                // Typing goes to the panel; Super shortcuts still work.
+            if panels && state.doctor.open && state.doctor.focused {
+                // Typing goes to the panel; Super shortcuts and keys that do
+                // not type (Print, volume, media) still work.
                 let mut bound = held;
                 if state.nested && bound.alt && !bound.logo {
                     bound.alt = false;
@@ -207,11 +210,8 @@ impl Tileception {
                 if bound.logo {
                     return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
                 }
-                // Volume, brightness and media keys are not typing either.
-                if let Some(media) =
-                    commands.filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))))
-                {
-                    return FilterResult::Intercept(media.to_vec());
+                if let Some(commands) = commands.filter(|c| !c.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
             }
@@ -251,8 +251,11 @@ impl Tileception {
 
     /// Whether the launcher gets the pointer here: all of it when opened on
     /// purpose; as the welcome screen only over itself and not under the
-    /// notification panel.
+    /// notification panel. Never under an overlay layer surface.
     fn launcher_takes(&self, at: tileception_core::Point) -> bool {
+        if self.overlay_under(at) {
+            return false;
+        }
         !self.launcher.home || (self.home_contains(at) && !self.notifications_contain(at))
     }
 
@@ -937,4 +940,29 @@ fn builtin(held: Mods, sym: u32, raw: u32, in_overview: bool) -> Option<Command>
         }
     }
     None
+}
+
+/// Whether a key is one the Doctor's text field uses: text, or editing and
+/// moving around in it. Everything else may run its shortcut.
+fn types(sym: u32) -> bool {
+    use keysyms::*;
+    let editing = [
+        KEY_Return,
+        KEY_KP_Enter,
+        KEY_BackSpace,
+        KEY_Delete,
+        KEY_Tab,
+        KEY_ISO_Left_Tab,
+        KEY_Escape,
+        KEY_Left,
+        KEY_Right,
+        KEY_Up,
+        KEY_Down,
+        KEY_Home,
+        KEY_End,
+        KEY_Page_Up,
+        KEY_Page_Down,
+        KEY_Insert,
+    ];
+    editing.contains(&sym) || smithay::input::keyboard::Keysym::new(sym).key_char().is_some_and(|c| !c.is_control())
 }

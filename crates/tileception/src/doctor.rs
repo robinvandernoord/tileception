@@ -182,7 +182,7 @@ const COMMANDS: [(&str, &str, &str); 7] = [
     ("help", "", "Show these commands"),
     ("clear", "", "Start a new conversation"),
     ("model", "[name]", "Choose the agent's model"),
-    ("mode", "[ask|config|yolo]", "What the agent may do without asking"),
+    ("mode", "[ask|tweak|yolo]", "What the agent may do without asking"),
     ("agent", "[id]", "Choose another agent"),
     ("restart", "", "Restart the agent, as after logging in elsewhere"),
     ("image", "<file>", "Send a picture with the next message"),
@@ -1162,13 +1162,13 @@ impl Tileception {
     }
 
     pub fn doctor_contains(&self, p: Point) -> bool {
-        self.doctor.open && self.doctor_frame().panel.contains(p)
+        self.doctor.open && self.doctor_frame().panel.contains(p) && !self.overlay_under(p)
     }
 
     /// A press anywhere: inside, the panel takes the keyboard and acts on
     /// what was clicked; outside, the desktop gets the keyboard back.
     pub fn doctor_press(&mut self, p: Point) -> bool {
-        if !self.doctor.open {
+        if !self.doctor.open || self.overlay_under(p) {
             return false;
         }
         let frame = self.doctor_frame();
@@ -1391,13 +1391,13 @@ impl Tileception {
                     note(
                         self,
                         format!(
-                            "Mode: {}. {}. Change it with /mode ask, config or yolo.",
+                            "Mode: {}. {}. Change it with /mode ask, tweak or yolo.",
                             mode.short(),
                             mode.description()
                         ),
                     );
                 }
-                None => note(self, format!("There is no mode {arg}: use ask, config or yolo.")),
+                None => note(self, format!("There is no mode {arg}: use ask, tweak or yolo.")),
             },
             "agent" if arg.is_empty() => self.doctor_hit(Hit::OpenPicker),
             "agent" => {

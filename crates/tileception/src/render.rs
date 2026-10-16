@@ -197,6 +197,9 @@ impl Tileception {
         let view = self.world.view(now);
         let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
         elements.extend(self.power_menu_elements(renderer));
+        // Overlay layers (slurp, launchers) go over Tileception's own panels,
+        // so a region pick can include the Doctor or the notifications.
+        elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
         // The welcome screen is part of the desktop: notifications go over it.
         if !self.launcher.home {
             elements.extend(self.launcher_elements(renderer));
@@ -209,10 +212,8 @@ impl Tileception {
         }
         elements.extend(self.selection_elements(renderer));
 
-        // Topmost: notifications, launchers and bars. A fullscreen window
-        // covers everything but notifications.
+        // Then bars. A fullscreen window covers everything but the above.
         if self.fullscreen.is_some() {
-            elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
             for d in &drawn {
                 if let Some(window) = self.windows.get(&d.id) {
                     let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
@@ -223,7 +224,7 @@ impl Tileception {
             }
             return elements;
         }
-        elements.extend(self.layer_elements(renderer, &[Layer::Overlay, Layer::Top]));
+        elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
         // X11 menus and tooltips, at the place they chose.
         for overlay in self.x11_overlays.iter().rev() {

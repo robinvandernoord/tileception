@@ -88,7 +88,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return match sub {
                 "mode" => crate::doctor_policy::Mode::parse(tail)
                     .map(Command::DoctorMode)
-                    .ok_or_else(|| format!("doctor mode takes ask, config or yolo, not {tail:?}")),
+                    .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
                 "use" if tail.is_empty() => Err("doctor use needs an agent id from the ACP Registry".into()),
                 "use" => Ok(Command::DoctorUse(tail.to_string())),
                 "ask" if tail.is_empty() => Err("doctor ask needs a question".into()),

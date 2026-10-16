@@ -23,7 +23,7 @@ impl Mode {
     pub fn label(self) -> &'static str {
         match self {
             Mode::Ask => "Ask first",
-            Mode::Config => "Tileception config",
+            Mode::Config => "Desktop tweaks",
             Mode::Yolo => "Yolo",
         }
     }
@@ -34,7 +34,7 @@ impl Mode {
     pub fn short(self) -> &'static str {
         match self {
             Mode::Ask => "Ask",
-            Mode::Config => "Config",
+            Mode::Config => "Tweak",
             Mode::Yolo => "Yolo",
         }
     }
@@ -42,7 +42,7 @@ impl Mode {
     pub fn description(self) -> &'static str {
         match self {
             Mode::Ask => "Every change is shown and confirmed first",
-            Mode::Config => "Changes to Tileception's own files go ahead; the rest asks",
+            Mode::Config => "Tweaks to Tileception's own settings go ahead; the rest asks",
             Mode::Yolo => "Nothing asks; backups and undo still apply",
         }
     }
@@ -58,7 +58,7 @@ impl Mode {
     pub fn parse(s: &str) -> Option<Mode> {
         match s {
             "ask" => Some(Mode::Ask),
-            "config" | "tileception" => Some(Mode::Config),
+            "tweak" | "config" | "tileception" => Some(Mode::Config),
             "yolo" => Some(Mode::Yolo),
             _ => None,
         }

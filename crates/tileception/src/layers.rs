@@ -136,6 +136,12 @@ impl Tileception {
         out
     }
 
+    /// Whether an overlay layer surface (slurp, a launcher) takes the pointer
+    /// here, ahead of Tileception's own panels.
+    pub fn overlay_under(&self, p: tileception_core::Point) -> bool {
+        self.layer_surface_under((p.x, p.y).into(), &[Layer::Overlay]).is_some()
+    }
+
     /// The layer surface under a point, among the given kinds.
     pub fn layer_surface_under(
         &self,

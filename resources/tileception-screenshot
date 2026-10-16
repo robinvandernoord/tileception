@@ -4,7 +4,8 @@
 #
 #   tileception-screenshot          the whole screen: saved to Pictures/Screenshots
 #                                   and copied; the notification offers Open,
-#                                   Show in folder and Delete
+#                                   Show in folder and Delete, and clicking it
+#                                   shows the file in the file manager
 #   tileception-screenshot region   drag a region first
 #   ... --ask                       ask first: Copy, Save, or Save and copy
 #                                   (closing the notification discards it)
@@ -45,6 +46,17 @@ fi
 copy_file() { tileception msg copy-image "$1" >/dev/null 2>&1 || wl-copy --type image/png < "$1"; }
 copy() { copy_file "$tmp"; }
 save() { mkdir -p "$dir" && cp "$tmp" "$file"; }
+# The file manager opens on the folder with the file selected; one without
+# the FileManager1 interface just opens the folder.
+show() {
+    uri="file://$(printf '%s' "$file" | sed 's/%/%25/g; s/ /%20/g')"
+    gdbus call --session --dest org.freedesktop.FileManager1 --object-path /org/freedesktop/FileManager1 \
+        --method org.freedesktop.FileManager1.ShowItems "['$uri']" "" >/dev/null 2>&1 || xdg-open "$dir"
+}
+# A saved notice waits for a click, which shows the file.
+saved() {
+    [ "$(notify-send -a Screenshot -t 30000 -i "$file" -A default="Show in folder" "$1" "$file")" = default ] && show
+}
 
 if [ "$ask" = yes ]; then
     # Critical, so the question also shows with Do not disturb on; the category
@@ -54,19 +66,19 @@ if [ "$ask" = yes ]; then
         "Screenshot taken" "Copy it, save it, or both?")
     case "$choice" in
         copy) copy && notify-send -a Screenshot -i "$tmp" "Screenshot copied" "Paste it anywhere" ;;
-        save) save && notify-send -a Screenshot -i "$file" "Screenshot saved" "$file" ;;
-        both) save && copy && notify-send -a Screenshot -i "$file" "Screenshot saved and copied" "$file" ;;
+        save) save && saved "Screenshot saved" ;;
+        both) save && copy && saved "Screenshot saved and copied" ;;
     esac
     exit 0
 fi
 
 save && copy
 choice=$(notify-send -a Screenshot -t 30000 -i "$file" -h "string:image-path:$file" \
-    -A copy=Copy -A open=Open -A folder="Show in folder" -A delete=Delete \
+    -A default="Show in folder" -A copy=Copy -A open=Open -A folder="Show in folder" -A delete=Delete \
     "Screenshot saved and copied" "$file")
 case "$choice" in
     copy) copy_file "$file" ;;
     open) xdg-open "$file" ;;
-    folder) xdg-open "$dir" ;;
+    default | folder) show ;;
     delete) rm -f "$file" && notify-send -a Screenshot "Screenshot deleted" "Still on the clipboard" ;;
 esac
