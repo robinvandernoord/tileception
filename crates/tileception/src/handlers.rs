@@ -133,7 +133,9 @@ impl CompositorHandler for Tileception {
                     // a preview that takes no clicks. Not while being resized.
                     let (w, h) = (geo.size.w as f64, geo.size.h as f64);
                     let resizing = self.resize_drag.is_some_and(|d| d.window == id);
-                    if !resizing && (w > rect.w + 0.5 || h > rect.h + 0.5) {
+                    // Fullscreen is the screen's size, not the window's own.
+                    let fullscreen = self.fullscreen == Some(id);
+                    if !resizing && !fullscreen && (w > rect.w + 0.5 || h > rect.h + 0.5) {
                         self.world.grow_float(id, w, h);
                         self.apply_layout();
                     }

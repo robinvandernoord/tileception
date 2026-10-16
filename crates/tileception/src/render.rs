@@ -202,6 +202,7 @@ impl Tileception {
             elements.extend(self.launcher_elements(renderer));
         }
         elements.extend(self.notification_elements(renderer));
+        elements.extend(self.doctor_elements(renderer));
         elements.extend(self.strip_elements(renderer));
         if self.launcher.home {
             elements.extend(self.launcher_elements(renderer));

@@ -168,6 +168,10 @@ repeat_rate = 30
 #   fullscreen            cover the whole screen with the focused window
 #   lock                  lock the screen (see lock_command)
 #   power-menu            lock, log out, suspend, restart or power off
+#   doctor [ask <text>]   the panel for asking about your setup
+#   doctor use <agent>    pick its agent by ACP Registry id (e.g. claude-acp)
+#   doctor mode <mode>    what it may do unasked: ask, config (Tileception's
+#                         own files and commands) or yolo; backups either way
 #   volume up|down [n]    change the output volume by n percent (or the step)
 #   volume set <n>        set it; volume mute [on|off|toggle]
 #   mic mute [on|off]     the microphone; mic up/down/set work too
@@ -189,6 +193,7 @@ repeat_rate = 30
 "Super+L" = "lock"
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
+"Super+slash" = "doctor"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]

@@ -523,6 +523,12 @@ impl Tileception {
 
 fn load_cover(path: &std::path::Path, size: u32, radius: f32) -> Option<MemoryRenderBuffer> {
     use smithay::{backend::allocator::Fourcc, utils::Transform};
+    // Players name the file, so it may be anything: only a regular file of a
+    // sensible size is opened (a pipe would block drawing).
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 16 * 1024 * 1024 {
+        return None;
+    }
     let image = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
     let mut image = image.resize_to_fill(size, size, image::imageops::FilterType::Triangle).to_rgba8();
     let r = f64::from(radius);

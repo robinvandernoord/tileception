@@ -431,6 +431,8 @@ matrix, credentials and deployment implementation remain pending.
   headless with a test client and wl-clipboard. Not done: the wlr
   foreign-toplevel *management* protocol (activating and closing windows from
   a taskbar), which Smithay does not provide; a built-in clipboard history.
+  Every client can use data-control, as on sway: telling sandboxed programs
+  apart needs the security-context protocol, which Tileception lacks.
 - Bindings that repeat while held, pass through to the app, or work while
   locked; click-to-kill.
 - Pointer lock for games and input methods. Pointer lock done 2026-10-16 on
@@ -554,6 +556,33 @@ matrix, credentials and deployment implementation remain pending.
     so changes can be watched as they land. Super+/ opens it (the `doctor`
     command); in the launcher, typing a question or "?" offers "Ask
     Tileception", opening the panel with that question.
+  Step 1 of 3 done 2026-10-16 on `feature/acp-doctor`: the panel (conversation
+  with streaming replies, a text field, scrolling, clickable example
+  questions), Super+/ and `doctor [ask <text>]`, and the launcher's "Ask
+  Tileception" row. It takes the keyboard only while you work in it; a click
+  elsewhere gives the desktop back, and Super shortcuts keep working. It
+  talks to a stand-in test agent for now.
+  Steps 2 and 3 done 2026-10-16, same branch. The `tileception-acp` crate reads
+  the ACP Registry (cached a day; binary agents need a build for this machine
+  and a sha256), installs agents through npx, uvx or a checked https download
+  into `~/.local/share/tileception/agents`, and speaks ACP v1 over stdio:
+  initialize, logins (the agent's own, terminal logins, and descriptions that
+  name the agent's own command, as goose's `goose configure` does), sessions
+  in the config folder, streamed answers, tool calls, permission requests and
+  cancelling. The panel has a picker (saying what each agent needs: Claude
+  and Codex need Node.js), remembers the agent and the mode in
+  `~/.local/state/tileception/doctor.toml`, and shows tool calls, permission
+  cards with diffs, and every change with Undo. Files go through Tileception:
+  reads of its own places go ahead; writes follow the mode (ask: only after
+  you allowed that file; config: inside `~/.config/tileception`; yolo:
+  anywhere), always with a backup in `doctor-backups`, and a config that would
+  not load is refused in every mode. In config mode the agent's own requests
+  go ahead for its reads, edits of Tileception's files and `tileception msg`
+  commands; anything else asks. `doctor use <id>` and `doctor mode <mode>`
+  script it. Checked: a fake agent (tests/fake_agent.py) in CI, and headless
+  with it in all three modes; goose installed, verified and started from the
+  real registry and asked to be configured. Not checked: a conversation with
+  a real AI (needs an account; Node.js for Claude or Codex).
 
 ## 5. Risks and open questions
 

@@ -121,7 +121,22 @@ impl Default for Launcher {
 
 impl Launcher {
     fn matches(&self) -> Vec<&tileception_apps::App> {
+        // "?" starts a question for the doctor, not an app search.
+        if self.input.text.trim_start().starts_with('?') {
+            return Vec::new();
+        }
         self.index.search(&self.input.text, &self.usage, 8)
+    }
+
+    /// What typing would ask the doctor: anything after "?", or text that
+    /// reads like a question (ending in "?", or three words or more).
+    fn question(&self) -> Option<String> {
+        question_in(&self.input.text)
+    }
+
+    /// Rows in the list: the apps, then "Ask Tileception" when there is a question.
+    fn entries(&self) -> usize {
+        self.matches().len() + usize::from(self.question().is_some())
     }
 
     pub fn app_icon(
@@ -211,6 +226,7 @@ impl Tileception {
             && !quiet
             && !self.is_locked()
             && self.power_menu.is_none()
+            && !self.doctor.open
         {
             self.open_launcher(true);
         }
@@ -394,7 +410,7 @@ impl Tileception {
     }
 
     pub fn launcher_step(&mut self, delta: isize) {
-        let len = self.launcher.matches().len();
+        let len = self.launcher.entries();
         if len > 0 {
             self.launcher.selected = (self.launcher.selected as isize + delta).rem_euclid(len as isize) as usize;
         }
@@ -410,6 +426,13 @@ impl Tileception {
     }
 
     fn launch_app(&mut self) {
+        if self.launcher.selected == self.launcher.matches().len() {
+            if let Some(question) = self.launcher.question() {
+                self.close_launcher();
+                self.ask_doctor(&question);
+            }
+            return;
+        }
         let Some((id, command)) = self
             .launcher
             .matches()
@@ -505,12 +528,12 @@ impl Tileception {
     /// Whether the welcome screen takes the pointer here. Elsewhere the
     /// desktop (bars, the notification panel) gets it as usual.
     pub fn home_contains(&self, point: Point) -> bool {
-        let layout = self.launcher_layout(self.launcher.matches().len());
+        let layout = self.launcher_layout(self.launcher.entries());
         layout.panel.contains(point) || layout.media.is_some_and(|m| m.rect.contains(point))
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
-        let layout = self.launcher_layout(self.launcher.matches().len());
+        let layout = self.launcher_layout(self.launcher.entries());
         layout.rows.iter().position(|row| row.contains(point))
     }
 
@@ -525,7 +548,7 @@ impl Tileception {
     }
 
     pub fn launcher_click(&mut self, point: Point) {
-        let layout = self.launcher_layout(self.launcher.matches().len());
+        let layout = self.launcher_layout(self.launcher.entries());
         if layout.field.contains(point) {
             let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
             self.launcher_cursor_at(point, extend);
@@ -552,7 +575,7 @@ impl Tileception {
     }
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
-        let text = self.launcher_layout(self.launcher.matches().len()).text;
+        let text = self.launcher_layout(self.launcher.entries()).text;
         let input = &self.launcher.input;
         let position = self.text.borrow_mut().field_hit(
             &input.text,
@@ -572,7 +595,8 @@ impl Tileception {
         }
         let t = &self.theme;
         let matches = self.launcher.matches();
-        let layout = self.launcher_layout(matches.len());
+        let question = self.launcher.question();
+        let layout = self.launcher_layout(self.launcher.entries());
         let input = &self.launcher.input;
         let mut p = Painter::new(self, renderer);
 
@@ -671,7 +695,7 @@ impl Tileception {
         };
         p.text(caption, layout.caption, Style::new(t.font_size * 0.75, t.muted).bold());
 
-        if matches.is_empty() {
+        if matches.is_empty() && question.is_none() {
             let area = Rect::new(layout.panel.x, layout.caption.bottom(), layout.panel.w, 2.0 * ROW_H);
             p.glyph(glyph::SEARCH, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
             let message = format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim());
@@ -720,6 +744,37 @@ impl Tileception {
                     p.text(&app.name, Rect::new(text_x, row.y, text_w, row.h), name_style);
                 }
             }
+            if selected {
+                let w = p.keycap_width("Enter");
+                p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
+            }
+        }
+
+        if let (Some(question), Some(row)) = (&question, layout.rows.get(matches.len())) {
+            let selected = self.launcher.selected == matches.len();
+            if selected {
+                p.shape(
+                    *row,
+                    Shape {
+                        radius: t.radius,
+                        fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
+                        ..Default::default()
+                    },
+                );
+                p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
+            }
+            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
+            p.fill(icon, t.surface_raised, t.radius);
+            p.glyph(glyph::CHAT, icon, 18, t.accent);
+            let enter_w = if selected { 64.0 } else { 0.0 };
+            let text_x = icon.right() + 14.0;
+            let text_w = row.right() - text_x - 12.0 - enter_w;
+            p.text(
+                "Ask Tileception",
+                Rect::new(text_x, row.y + 7.0, text_w, 22.0),
+                Style::new(t.font_size * 1.05, t.text).bold(),
+            );
+            p.text(question, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
             if selected {
                 let w = p.keycap_width("Enter");
                 p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
@@ -777,6 +832,15 @@ impl Tileception {
             Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) }).align(Align::Centre);
         p.text(&app.name, name, if selected { style.bold() } else { style });
     }
+}
+
+/// See [`Launcher::question`].
+fn question_in(typed: &str) -> Option<String> {
+    let typed = typed.trim();
+    if let Some(rest) = typed.strip_prefix('?') {
+        return Some(rest.trim().to_string()).filter(|q| !q.is_empty());
+    }
+    (typed.ends_with('?') || typed.split_whitespace().count() >= 3).then(|| typed.to_string())
 }
 
 /// The part of `name` still to come after `typed`, when `name` starts with it.
@@ -841,7 +905,17 @@ fn usage_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::completion;
+    use super::{completion, question_in};
+
+    #[test]
+    fn questions_go_to_the_doctor() {
+        assert_eq!(question_in("? make gaps smaller"), Some("make gaps smaller".into()));
+        assert_eq!(question_in("?"), None);
+        assert_eq!(question_in("why is it dark?"), Some("why is it dark?".into()));
+        assert_eq!(question_in("use ghostty please"), Some("use ghostty please".into()));
+        assert_eq!(question_in("viv"), None);
+        assert_eq!(question_in("text editor"), None);
+    }
 
     #[test]
     fn completes_names_that_start_with_the_query() {

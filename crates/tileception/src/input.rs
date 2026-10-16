@@ -116,112 +116,124 @@ impl Tileception {
     }
 
     fn on_key<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        self.handle_key(event.key_code(), event.state(), Event::time_msec(&event));
+    }
+
+    /// A key, from a keyboard or from `tileception msg key` in tests.
+    pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time_msec(&event);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-        let pressed = event.state() == KeyState::Pressed;
-        let keycode = event.key_code().raw();
-        let commands = keyboard.input::<Vec<Command>, _>(
-            self,
-            event.key_code(),
-            event.state(),
-            serial,
-            time,
-            |state, mods, handle| {
-                let sym = handle.modified_sym().raw();
-                let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
-                if state.is_locked() {
-                    state.tap_armed = None;
-                    state.tap_fired.clear();
-                    if let Some(command @ Command::Action(Action::Vt(_))) =
-                        builtin(Mods::from_state(mods), sym, raw_sym, false)
-                    {
-                        if pressed {
-                            return FilterResult::Intercept(vec![command]);
-                        }
-                    }
-                    // Volume, brightness and media keys work on the lock screen.
+        let pressed = key_state == KeyState::Pressed;
+        let keycode = code.raw();
+        let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
+            let sym = handle.modified_sym().raw();
+            let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            if state.is_locked() {
+                state.tap_armed = None;
+                state.tap_fired.clear();
+                if let Some(command @ Command::Action(Action::Vt(_))) =
+                    builtin(Mods::from_state(mods), sym, raw_sym, false)
+                {
                     if pressed {
-                        let held = Mods::from_state(mods);
-                        let media = state
-                            .config
-                            .lookup(held, raw_sym)
-                            .or_else(|| state.config.lookup(held, sym))
-                            .filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))));
-                        if let Some(commands) = media {
-                            return FilterResult::Intercept(commands.to_vec());
-                        }
+                        return FilterResult::Intercept(vec![command]);
                     }
-                    if matches!(state.lock, crate::lock::LockState::BuiltIn) {
-                        if pressed {
-                            state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
-                        }
-                        return FilterResult::Intercept(Vec::new());
-                    }
-                    return FilterResult::Forward;
                 }
-                if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
-                    // The release still goes to the client, so it does not
-                    // think the modifier is stuck; the binding runs after.
-                    state.tap_fired = state.config.lookup(tap, TAP).map(<[Command]>::to_vec).unwrap_or_default();
-                }
-                if !pressed {
-                    return FilterResult::Forward;
-                }
-                let mut held = Mods::from_state(mods);
-                // Unmodified, so Super+Shift+1 is "1" and not "!".
-                let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
-                if let Some(command) = builtin(
-                    held,
-                    sym,
-                    raw,
-                    state.world.in_overview() && !state.launcher.open && state.power_menu.is_none(),
-                ) {
-                    return FilterResult::Intercept(vec![command]);
-                }
-                if state.power_menu.is_some() {
-                    // The menu takes every key while it is open.
-                    return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
-                }
-                if state.launcher.open && state.launcher.home {
-                    // The welcome screen is the desktop: shortcuts still work,
-                    // and Esc closes the notification panel first.
-                    if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
-                        state.notifications.open = false;
-                        return FilterResult::Intercept(Vec::new());
-                    }
-                    let mut bound = held;
-                    if state.nested && bound.alt && !bound.logo {
-                        bound.alt = false;
-                        bound.logo = true;
-                    }
-                    if let Some(commands) = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym))
-                    {
+                // Volume, brightness and media keys work on the lock screen.
+                if pressed {
+                    let held = Mods::from_state(mods);
+                    let media = state
+                        .config
+                        .lookup(held, raw_sym)
+                        .or_else(|| state.config.lookup(held, sym))
+                        .filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))));
+                    if let Some(commands) = media {
                         return FilterResult::Intercept(commands.to_vec());
                     }
                 }
-                if state.launcher.open {
-                    return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
-                }
-                if sym == keysyms::KEY_Escape
-                    && held == Mods::default()
-                    && (state.notifications.open || !state.selection.windows.is_empty())
-                {
-                    state.notifications.open = false;
-                    state.selection.windows.clear();
+                if matches!(state.lock, crate::lock::LockState::BuiltIn) {
+                    if pressed {
+                        state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
+                    }
                     return FilterResult::Intercept(Vec::new());
                 }
-                if state.nested && held.alt && !held.logo {
-                    // The host desktop keeps Super for itself; Alt stands in.
-                    held.alt = false;
-                    held.logo = true;
+                return FilterResult::Forward;
+            }
+            if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
+                // The release still goes to the client, so it does not
+                // think the modifier is stuck; the binding runs after.
+                state.tap_fired = state.config.lookup(tap, TAP).map(<[Command]>::to_vec).unwrap_or_default();
+            }
+            if !pressed {
+                return FilterResult::Forward;
+            }
+            let mut held = Mods::from_state(mods);
+            // Unmodified, so Super+Shift+1 is "1" and not "!".
+            let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            if let Some(command) =
+                builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
+            {
+                return FilterResult::Intercept(vec![command]);
+            }
+            if state.power_menu.is_some() {
+                // The menu takes every key while it is open.
+                return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
+            }
+            if state.launcher.open && state.launcher.home {
+                // The welcome screen is the desktop: shortcuts still work,
+                // and Esc closes the notification panel first.
+                if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
+                    state.notifications.open = false;
+                    return FilterResult::Intercept(Vec::new());
                 }
-                match state.config.lookup(held, raw).or_else(|| state.config.lookup(held, sym)) {
-                    Some(commands) => FilterResult::Intercept(commands.to_vec()),
-                    None => FilterResult::Forward,
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
                 }
-            },
-        );
+                if let Some(commands) = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+            }
+            if state.launcher.open {
+                return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
+            }
+            if state.doctor.open && state.doctor.focused {
+                // Typing goes to the panel; Super shortcuts still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                // Volume, brightness and media keys are not typing either.
+                if let Some(media) =
+                    commands.filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))))
+                {
+                    return FilterResult::Intercept(media.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
+            }
+            if sym == keysyms::KEY_Escape
+                && held == Mods::default()
+                && (state.notifications.open || !state.selection.windows.is_empty())
+            {
+                state.notifications.open = false;
+                state.selection.windows.clear();
+                return FilterResult::Intercept(Vec::new());
+            }
+            if state.nested && held.alt && !held.logo {
+                // The host desktop keeps Super for itself; Alt stands in.
+                held.alt = false;
+                held.logo = true;
+            }
+            match state.config.lookup(held, raw).or_else(|| state.config.lookup(held, sym)) {
+                Some(commands) => FilterResult::Intercept(commands.to_vec()),
+                None => FilterResult::Forward,
+            }
+        });
         let tapped = std::mem::take(&mut self.tap_fired);
         let commands = commands.unwrap_or_default();
         if !pressed {
@@ -376,7 +388,7 @@ impl Tileception {
         }
     }
 
-    fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
+    pub(crate) fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer = pos;
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
@@ -405,6 +417,12 @@ impl Tileception {
         if self.media.drag.is_some() {
             // A held slider follows the pointer even outside the panel.
             self.controls_drag(pos.x);
+            return;
+        }
+        if self.doctor_contains(at) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
             return;
         }
         if self.notifications_contain(tileception_core::Point::new(pos.x, pos.y)) {
@@ -502,8 +520,12 @@ impl Tileception {
         self.move_drag = Some(MoveDrag { window, grab, size, target: None, free, last: at });
     }
 
-    fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
+    pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        // A held slider lets go wherever the button comes up.
+        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+            return;
+        }
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
@@ -537,6 +559,12 @@ impl Tileception {
         let now = self.now();
         let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+            return;
+        }
+        if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(p) {
+            return;
+        }
+        if self.doctor_contains(p) {
             return;
         }
         if self.notifications_contain(p) {
@@ -702,6 +730,13 @@ impl Tileception {
                 if value != 0.0 {
                     self.launcher_step(if value > 0.0 { 1 } else { -1 });
                 }
+            }
+            return;
+        }
+        if !self.is_locked() && self.doctor_contains(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+            let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
+            if amount != 0.0 {
+                self.doctor_scroll(if amount > 0.0 { 1.0 } else { -1.0 });
             }
             return;
         }

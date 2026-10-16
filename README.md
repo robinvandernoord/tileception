@@ -136,6 +136,11 @@ tileception msg terminal
 tileception msg screenshot /tmp/shot.png
 ```
 
+Scripts can also pretend to use the mouse and keyboard there (headless or
+nested only, never in a real session): `tileception msg pointer 640 400`,
+`click [x y] [left|right|middle]`, `key Super+slash` and `type some text`.
+Keys go through the same handling as real ones.
+
 ## Lint policy
 
 Run `make lint` to check formatting and all Clippy targets, including the independent

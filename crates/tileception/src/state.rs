@@ -156,6 +156,8 @@ pub struct Tileception {
     pub notifications: crate::notifications::Notifications,
     /// Volume, media players and brightness.
     pub media: crate::media::Media,
+    /// The panel for asking an agent about the setup.
+    pub doctor: crate::doctor::Doctor,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
@@ -293,6 +295,7 @@ impl Tileception {
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
+            doctor: Default::default(),
             session_services: false,
             notification_bus: None,
             media_bus: None,
@@ -519,7 +522,7 @@ impl Tileception {
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
             self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
-        } else if self.power_menu.is_some() || self.launcher.open {
+        } else if self.power_menu.is_some() || self.launcher.open || (self.doctor.open && self.doctor.focused) {
             None
         } else {
             match &self.layer_focus {
