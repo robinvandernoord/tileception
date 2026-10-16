@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds the Debian/Ubuntu packages for this machine's architecture:
+# Builds the Debian/Ubuntu packages, for this machine's architecture or,
+# cross-compiled, for DEB_ARCH:
 #
 #   target/deb/tileception_<version>_<arch>.deb          the session
 #   target/deb/tileception-dbgsym_<version>_<arch>.deb    its debug symbols
@@ -14,17 +15,39 @@
 #   DEB_VERSION     full package version (default: Cargo version + "-1")
 #   DEB_MAINTAINER  Maintainer field (default: the last commit's author)
 #   DEB_OUT         where the packages go (default: target/deb)
+#   DEB_ARCH        Debian architecture to build for (default: this machine's).
+#                   Cross builds need the cross compiler (crossbuild-essential-
+#                   <arch>) and the build dependencies for that architecture
+#                   (dpkg --add-architecture); build-deb-docker.sh sets that up.
 #   CARGO_TARGET_DIR is honoured as usual.
 set -eu
 cd "$(dirname "$0")/.."
 
-for tool in cargo dpkg-deb dpkg-shlibdeps objcopy readelf; do
+native_arch=$(dpkg --print-architecture)
+arch="${DEB_ARCH:-$native_arch}"
+# The dpkg variables for the target (DEB_HOST_MULTIARCH and the rest); they
+# also tell dpkg-shlibdeps where that architecture's libraries live.
+eval "$(dpkg-architecture -f -a"$arch" -s 2>/dev/null)"
+binutils_prefix=""
+cargo_target=""
+if [ "$arch" != "$native_arch" ]; then
+    binutils_prefix="$DEB_HOST_GNU_TYPE-"
+    case "$arch" in
+        amd64) cargo_target=x86_64-unknown-linux-gnu ;;
+        arm64) cargo_target=aarch64-unknown-linux-gnu ;;
+        armhf) cargo_target=armv7-unknown-linux-gnueabihf ;;
+        *) echo "build-deb: no Rust target known for $arch" >&2; exit 1 ;;
+    esac
+fi
+
+for tool in cargo dpkg-deb dpkg-shlibdeps "${binutils_prefix}objcopy" readelf; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build-deb: $tool is missing (dpkg-dev and binutils provide the non-cargo ones)" >&2
         exit 1
     fi
 done
-if ! scripts/deps.sh check build; then
+# deps.sh only knows this machine's architecture.
+if [ -z "$cargo_target" ] && ! scripts/deps.sh check build; then
     echo "Run 'make deps' first, then try again." >&2
     exit 1
 fi
@@ -37,22 +60,32 @@ if [ -z "$maintainer" ]; then
     echo "build-deb: set DEB_MAINTAINER (no git history to take it from)" >&2
     exit 1
 fi
-arch=$(dpkg --print-architecture)
 # Reproducible timestamps: dpkg-deb clamps file times to this.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || date +%s)}"
 export SOURCE_DATE_EPOCH
 
 target_dir="${CARGO_TARGET_DIR:-target}"
-cargo build --locked --profile dist -p tileception
+if [ -n "$cargo_target" ]; then
+    # Link with the cross compiler and find the target's libraries.
+    target_env=$(echo "$cargo_target" | tr 'a-z-' 'A-Z_')
+    export "CARGO_TARGET_${target_env}_LINKER=$DEB_HOST_GNU_TYPE-gcc"
+    export PKG_CONFIG_ALLOW_CROSS=1
+    export PKG_CONFIG_LIBDIR="/usr/lib/$DEB_HOST_MULTIARCH/pkgconfig:/usr/share/pkgconfig"
+    cargo build --locked --profile dist -p tileception --target "$cargo_target"
+    built="$target_dir/$cargo_target/dist/tileception"
+else
+    cargo build --locked --profile dist -p tileception
+    built="$target_dir/dist/tileception"
+fi
 
 out="${DEB_OUT:-$target_dir/deb}"
-root="$out/$package"
-dbg="$out/$package-dbgsym"
+root="$out/staging-$arch/$package"
+dbg="$out/staging-$arch/$package-dbgsym"
 rm -rf "$root" "$dbg"
 mkdir -p "$root/DEBIAN" "$dbg/DEBIAN"
 
 # Files. The same set install-session.sh puts in ~/.local, at system paths.
-install -D -m 755 "$target_dir/dist/tileception" "$root/usr/bin/tileception"
+install -D -m 755 "$built" "$root/usr/bin/tileception"
 for helper in tileception-session tileception-power tileception-screenshot; do
     install -D -m 755 "resources/$helper" "$root/usr/bin/$helper"
 done
@@ -81,10 +114,10 @@ if [ -z "$build_id" ]; then
 fi
 debug_file="$dbg/usr/lib/debug/.build-id/$(echo "$build_id" | cut -c1-2)/$(echo "$build_id" | cut -c3-).debug"
 mkdir -p "$(dirname "$debug_file")"
-objcopy --only-keep-debug --compress-debug-sections "$bin" "$debug_file"
+"${binutils_prefix}objcopy" --only-keep-debug --compress-debug-sections "$bin" "$debug_file"
 chmod 644 "$debug_file"
-objcopy --strip-unneeded --remove-section=.comment --remove-section=.note "$bin"
-objcopy --add-gnu-debuglink="$debug_file" "$bin"
+"${binutils_prefix}objcopy" --strip-unneeded --remove-section=.comment --remove-section=.note "$bin"
+"${binutils_prefix}objcopy" --add-gnu-debuglink="$debug_file" "$bin"
 mkdir -p "$dbg/usr/share/doc"
 ln -s "$package" "$dbg/usr/share/doc/$package-dbgsym"
 

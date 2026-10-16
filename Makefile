@@ -48,9 +48,9 @@ uninstall:
 nested:
 	cargo run -p tileception -- --nested
 
-# Optimised, stripped packages in target/deb. deb-docker builds one set per
-# release; override the list with DEB_IMAGES="debian:bookworm ...".
-DEB_IMAGES ?= debian:trixie ubuntu:24.04
+# Optimised, stripped packages in target/deb. deb-docker builds amd64 and
+# arm64 for each release; override with DEB_IMAGES="..." DEB_ARCHS="...".
+DEB_IMAGES ?= debian:trixie ubuntu:24.04 ubuntu:26.04
 
 deb:
 	scripts/build-deb.sh

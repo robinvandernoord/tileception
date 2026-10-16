@@ -76,14 +76,18 @@ backtraces and gdb. The package installs into `/usr/bin`, adds the login
 screen entry, the PAM service and the portal config, and depends on the
 library versions of the system it was built on.
 
-To build for other releases, in clean containers (needs Docker):
+To build the release set, in clean containers (needs Docker):
 
 ```sh
-make deb-docker DEB_IMAGES="debian:trixie ubuntu:24.04"
+make deb-docker
 ```
 
-Each release gets its own `target/deb/<codename>/` with versions like
-`0.1.0-1~noble`. Use either the package or `install-session.sh`, not both:
+That builds amd64 and arm64 packages for Debian 13 (trixie), Ubuntu 24.04 and
+Ubuntu 26.04; `DEB_IMAGES` and `DEB_ARCHS` change the selection. arm64 is
+cross-compiled, so an amd64 machine builds both. Each release gets its own
+`target/deb/<codename>/` with versions like `0.1.0-1~noble`. `make deb`
+cross-compiles too with `DEB_ARCH=arm64`, given the cross compiler and the
+arm64 build dependencies. Use either the package or `install-session.sh`, not both:
 they install the same login screen entry, and the scripts refuse to run while
 the package is installed.
 
