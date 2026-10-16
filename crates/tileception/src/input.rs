@@ -115,6 +115,7 @@ impl Tileception {
         let time = Event::time_msec(&event);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = event.state() == KeyState::Pressed;
+        let keycode = event.key_code().raw();
         let commands = keyboard.input::<Vec<Command>, _>(
             self,
             event.key_code(),
@@ -132,6 +133,18 @@ impl Tileception {
                     {
                         if pressed {
                             return FilterResult::Intercept(vec![command]);
+                        }
+                    }
+                    // Volume, brightness and media keys work on the lock screen.
+                    if pressed {
+                        let held = Mods::from_state(mods);
+                        let media = state
+                            .config
+                            .lookup(held, raw_sym)
+                            .or_else(|| state.config.lookup(held, sym))
+                            .filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))));
+                        if let Some(commands) = media {
+                            return FilterResult::Intercept(commands.to_vec());
                         }
                     }
                     if matches!(state.lock, crate::lock::LockState::BuiltIn) {
@@ -188,7 +201,15 @@ impl Tileception {
             },
         );
         let tapped = std::mem::take(&mut self.tap_fired);
-        for command in commands.unwrap_or_default().into_iter().chain(tapped) {
+        let commands = commands.unwrap_or_default();
+        if !pressed {
+            self.media_key_released(keycode);
+        } else if !commands.is_empty() && commands.iter().all(|c| matches!(c, Command::Media(m) if m.repeats())) {
+            self.start_media_repeat(keycode, commands.clone());
+        } else {
+            self.stop_media_repeat();
+        }
+        for command in commands.into_iter().chain(tapped) {
             if let Err(err) = self.execute(command) {
                 tracing::warn!("{err}");
             }
@@ -351,6 +372,11 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.media.drag.is_some() {
+            // A held slider follows the pointer even outside the panel.
+            self.controls_drag(pos.x);
+            return;
+        }
         if self.notifications_contain(tileception_core::Point::new(pos.x, pos.y)) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -479,6 +505,9 @@ impl Tileception {
         }
         let now = self.now();
         let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+            return;
+        }
         if self.notifications_contain(p) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
@@ -646,10 +675,14 @@ impl Tileception {
             && self.notifications.open
             && self.notifications_contain(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
-            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
-                if value != 0.0 {
-                    self.notification_scroll(if value > 0.0 { 1 } else { -1 });
-                }
+            let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+            let discrete = event.amount_v120(Axis::Vertical).is_some() && event.source() == AxisSource::Wheel;
+            let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
+            if amount != 0.0 && self.controls_scroll(p, amount, discrete) {
+                return;
+            }
+            if amount != 0.0 {
+                self.notification_scroll(if amount > 0.0 { 1 } else { -1 });
             }
             return;
         }

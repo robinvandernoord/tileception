@@ -38,6 +38,25 @@ pub mod glyph {
     pub const ARROW_RIGHT: &str = r#"<path d="M5 12h14M13 6l6 6-6 6"/>"#;
     pub const CAPS: &str = r#"<path d="M12 4l8 8h-4v5H8v-5H4z"/><path d="M8 21h8"/>"#;
     pub const CLEAR: &str = r#"<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>"#;
+    pub const VOLUME_OFF: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/>"#;
+    pub const VOLUME_LOW: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>"#;
+    pub const VOLUME_HIGH: &str =
+        r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9.5 9.5 0 0 1 0 13"/>"#;
+    pub const VOLUME_NONE: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/>"#;
+    pub const MIC: &str =
+        r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"/>"#;
+    pub const MIC_OFF: &str = r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8M3 3l18 18"/>"#;
+    pub const SUN: &str = r#"<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>"#;
+    pub const PLAY: &str = r#"<path d="M7 4.5l12 7.5-12 7.5z"/>"#;
+    pub const PAUSE: &str = r#"<path d="M8 5v14M16 5v14"/>"#;
+    pub const NEXT: &str = r#"<path d="M5 5l10 7-10 7zM19 5v14"/>"#;
+    pub const PREVIOUS: &str = r#"<path d="M19 19L9 12l10-7zM5 19V5"/>"#;
+    pub const STOP: &str = r#"<rect x="6" y="6" width="12" height="12" rx="1.5"/>"#;
+    pub const MUSIC: &str =
+        r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#;
+    pub const CHEVRON_DOWN: &str = r#"<path d="M6 9l6 6 6-6"/>"#;
+    pub const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
+    pub const ALERT: &str = r#"<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/>"#;
 }
 
 #[derive(Default)]

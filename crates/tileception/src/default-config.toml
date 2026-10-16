@@ -55,6 +55,8 @@ autostart = []
 # on_accent = "#0d1117"
 # Wrong passwords and critical notifications.
 # danger = "#f0646a"
+# Cautions, such as volume boosted past 100%.
+# warning = "#f2b04c"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -74,6 +76,17 @@ autostart = []
 # Visible video players can inhibit both through the Wayland idle-inhibit protocol.
 lock_after = 0
 off_after = 600
+
+[media]
+# Percent per volume or brightness key press. Held keys repeat.
+volume_step = 5
+brightness_step = 5
+# How far volume may be boosted past 100% (up to 200). Boosted volume shows
+# in the warning colour; loud boosts can distort.
+max_volume = 150
+# A small card at the bottom of the screen when a level or playback changes.
+osd = true
+osd_timeout_ms = 1500
 
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
@@ -116,6 +129,12 @@ repeat_rate = 30
 #   fullscreen            cover the whole screen with the focused window
 #   lock                  lock the screen (see lock_command)
 #   power-menu            lock, log out, suspend, restart or power off
+#   volume up|down [n]    change the output volume by n percent (or the step)
+#   volume set <n>        set it; volume mute [on|off|toggle]
+#   mic mute [on|off]     the microphone; mic up/down/set work too
+#   brightness up|down    the screen's backlight; brightness set <n>
+#   media <what>          the last-played player: play-pause, play, pause,
+#                         next, previous, stop; plain "media" prints status
 #   desktop               show or hide the Desktop tile
 #   reload                reload this file
 #   quit                  leave Tileception
@@ -178,6 +197,26 @@ repeat_rate = 30
 
 # Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.
+"XF86AudioRaiseVolume" = "volume up"
+"XF86AudioLowerVolume" = "volume down"
+"XF86AudioMute" = "volume mute"
+"XF86AudioMicMute" = "mic mute"
+"XF86AudioPlay" = "media play-pause"
+"XF86AudioPause" = "media pause"
+"XF86AudioStop" = "media stop"
+"XF86AudioNext" = "media next"
+"XF86AudioPrev" = "media previous"
+"XF86MonBrightnessUp" = "brightness up"
+"XF86MonBrightnessDown" = "brightness down"
+# The same for keyboards without media keys.
+"Super+Ctrl+Up" = "volume up"
+"Super+Ctrl+Down" = "volume down"
+"Super+Ctrl+M" = "volume mute"
+"Super+Ctrl+space" = "media play-pause"
+"Super+Ctrl+Left" = "media previous"
+"Super+Ctrl+Right" = "media next"
+"Super+Ctrl+Page_Up" = "brightness up"
+"Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"
 

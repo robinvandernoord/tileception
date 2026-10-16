@@ -122,12 +122,15 @@ impl Tileception {
     }
 
     /// The history panel's own controls.
-    fn panel_controls(&self) -> PanelControls {
+    pub fn panel_controls(&self) -> PanelControls {
         let panel = self.notification_panel();
+        let controls = self.controls_layout(panel.x + 12.0, panel.y + 58.0, panel.w - 24.0);
+        let dnd = Rect::new(panel.x + 12.0, controls.rect.bottom() + 10.0, panel.w - 24.0, 48.0);
         PanelControls {
             clear: Rect::new(panel.right() - 16.0 - 96.0, panel.y + 14.0, 96.0, 32.0),
-            dnd: Rect::new(panel.x + 12.0, panel.y + 58.0, panel.w - 24.0, 48.0),
-            cards_top: panel.y + 124.0,
+            controls,
+            dnd,
+            cards_top: dnd.bottom() + 18.0,
         }
     }
 
@@ -232,6 +235,9 @@ impl Tileception {
                 self.toggle_dnd();
                 return;
             }
+            if self.controls_press(&controls.controls, p) {
+                return;
+            }
         }
         for card in self.notification_cards() {
             if !card.rect.contains(p) {
@@ -288,6 +294,8 @@ impl Tileception {
                     Style::new(t.font_size * 0.95, colour),
                 );
             }
+
+            self.draw_controls(&mut p, &controls.controls, pointer);
 
             // Do not disturb, as a row with a switch.
             let row = controls.dnd;
@@ -508,8 +516,10 @@ const BODY_LINES: u8 = 3;
 const PREVIEW_W: u32 = 348;
 const PREVIEW_H: u32 = 190;
 
-struct PanelControls {
+pub struct PanelControls {
     clear: Rect,
+    /// Sound, brightness and playback, under the title.
+    pub controls: crate::controls::Controls,
     dnd: Rect,
     cards_top: f64,
 }

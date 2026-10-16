@@ -30,6 +30,7 @@ pub struct ConfigFile {
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub idle: crate::idle::IdleConfig,
+    pub media: crate::media::MediaConfig,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 

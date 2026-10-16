@@ -140,6 +140,8 @@ pub struct Tileception {
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
+    /// Volume, media players and brightness.
+    pub media: crate::media::Media,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
@@ -261,6 +263,7 @@ impl Tileception {
             launcher: Default::default(),
             glyphs: Default::default(),
             notifications: Default::default(),
+            media: Default::default(),
             appearance: None,
             selection: Default::default(),
             strip: Default::default(),

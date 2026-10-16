@@ -1,0 +1,15 @@
+[package]
+name = "tileception-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Volume, media player and backlight control for Tileception"
+
+[lints]
+workspace = true
+
+[dependencies]
+pulseaudio = "0.3"
+serde = "1"
+tracing = "0.1"
+zbus = "5"

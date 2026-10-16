@@ -61,6 +61,8 @@ pub struct ThemeFile {
     pub on_accent: String,
     /// Errors, such as a wrong password or a critical notification.
     pub danger: String,
+    /// Cautions, such as volume boosted past 100%.
+    pub warning: String,
     pub radius: f32,
     pub popup_radius: f32,
     /// How far the focus glow reaches, in pixels; 0 turns it off.
@@ -89,6 +91,7 @@ impl Default for ThemeFile {
             accent_end: "#5c8ff2".into(),
             on_accent: "#0d1117".into(),
             danger: "#f0646a".into(),
+            warning: "#f2b04c".into(),
             radius: 6.0,
             popup_radius: 10.0,
             glow: 18.0,
@@ -114,6 +117,7 @@ pub struct Theme {
     pub accent_end: Colour,
     pub on_accent: Colour,
     pub danger: Colour,
+    pub warning: Colour,
     pub radius: f32,
     pub popup_radius: f32,
     pub glow: f32,
@@ -157,6 +161,7 @@ impl Theme {
             accent_end: Colour::parse(&f.accent_end)?,
             on_accent: Colour::parse(&f.on_accent)?,
             danger: Colour::parse(&f.danger)?,
+            warning: Colour::parse(&f.warning)?,
             radius: f.radius.max(0.0),
             popup_radius: f.popup_radius.max(0.0),
             glow: f.glow.max(0.0),

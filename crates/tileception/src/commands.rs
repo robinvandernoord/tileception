@@ -30,6 +30,8 @@ pub enum Command {
     LauncherKey(u32, crate::config::Mods),
     /// Replaces the window selection with these ids (empty clears it).
     Select(Vec<tileception_core::WindowId>),
+    /// Volume, brightness and media players; these also work while locked.
+    Media(crate::media::Control),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -68,6 +70,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(Command::Select(ids));
         }
+        "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "spawn" | "exec" => {
             if rest.is_empty() {
                 return Err("spawn needs a command".into());
@@ -166,6 +169,7 @@ impl Tileception {
                     | Command::Screenshot(_)
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
+                    | Command::Media(_)
             )
         {
             return Err("session is locked".into());
@@ -178,6 +182,7 @@ impl Tileception {
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
+            Command::Media(control) => return self.media_command(control),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::Select(ids) => {

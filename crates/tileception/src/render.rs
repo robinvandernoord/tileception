@@ -184,8 +184,9 @@ impl Tileception {
 
     pub fn render_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
         if self.is_locked() {
-            // Only the locker; black where it has not drawn yet.
-            let mut elements = self.lock_elements(renderer);
+            // Only the locker (and the volume card); black where it has not drawn yet.
+            let mut elements = self.osd_elements(renderer);
+            elements.extend(self.lock_elements(renderer));
             elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0]));
             return elements;
         }
@@ -194,7 +195,7 @@ impl Tileception {
         let drawn = self.drawn_windows(now);
         let focus = self.world.focus();
         let view = self.world.view(now);
-        let mut elements: Vec<OutputElement> = Vec::new();
+        let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
         elements.extend(self.power_menu_elements(renderer));
         elements.extend(self.launcher_elements(renderer));
         elements.extend(self.notification_elements(renderer));
@@ -257,6 +258,10 @@ impl Tileception {
         }
 
         let strips = self.world.tab_strips(view);
+        // Menus and tooltips go above every window and frame, even when they
+        // reach over a neighbour or past their own window's border.
+        let above_windows = elements.len();
+        let mut popups = Vec::new();
         for d in &drawn {
             let Some(window) = self.windows.get(&d.id) else { continue };
             let focused = Some(d.id) == focus && self.windows.len() > 1;
@@ -267,13 +272,9 @@ impl Tileception {
                 frame_rect = Rect::new(d.content.x, strip.rect.y, d.content.w, d.content.bottom() - strip.rect.y);
             }
             push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
-            if d.live && d.clipped {
-                elements.extend(clipped(renderer, window, d));
-            } else if d.live {
-                let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
-                let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-                elements.extend(surfaces.into_iter().map(OutputElement::Live));
+            if d.live {
+                popups.extend(popup_elements(renderer, window, d));
+                elements.extend(live(renderer, window, d));
             } else {
                 elements.extend(self.picture(renderer, d.id, &d.content));
             }
@@ -288,6 +289,8 @@ impl Tileception {
                 push_shape(&mut elements, shapes.as_ref(), &d.content, shadow);
             }
         }
+
+        elements.splice(above_windows..above_windows, popups);
 
         for strip in &strips {
             elements.extend(self.tab_strip_elements(renderer, shapes.as_ref(), strip, focus));
@@ -494,35 +497,38 @@ impl Tileception {
     }
 }
 
-/// A live window cut off at `d.content`. Its popups may reach past the cut,
-/// as for any live window.
-fn clipped(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+/// A live window's popups, which may reach past the window's own rectangle.
+/// X11 windows draw their menus as separate overlays instead.
+fn popup_elements(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+    let Some(toplevel) = window.toplevel() else { return Vec::new() };
     let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
-    let Some(toplevel) = window.toplevel() else {
-        // X11 windows draw their menus as separate overlays.
-        let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-        let crop = physical(&d.content);
-        return surfaces
-            .into_iter()
-            .filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped))
-            .collect();
-    };
-    let surface = toplevel.wl_surface();
-    let mut out: Vec<OutputElement> = smithay::desktop::PopupManager::popups_for_surface(surface)
+    smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
         .flat_map(|(popup, offset)| {
             let at = origin + (window.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(1.0);
             render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified)
         })
         .map(OutputElement::Live)
-        .collect();
+        .collect()
+}
+
+/// A live window without its popups, cut off at `d.content` when it is
+/// larger than its slot.
+fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
+        Some(toplevel) => {
+            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
+        }
+        None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
+    };
+    if !d.clipped {
+        return surfaces.into_iter().map(OutputElement::Live).collect();
+    }
     let crop = physical(&d.content);
-    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-        render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Unspecified);
-    out.extend(
-        surfaces.into_iter().filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped)),
-    );
-    out
+    surfaces
+        .into_iter()
+        .filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped))
+        .collect()
 }
 
 pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &Rect, shape: Shape) {

@@ -12,6 +12,7 @@ mod builtin_lock;
 mod capture;
 mod commands;
 mod config;
+mod controls;
 mod cursor;
 mod focus;
 mod handlers;
@@ -22,8 +23,10 @@ mod ipc;
 mod launcher;
 mod layers;
 mod lock;
+mod media;
 mod minimized;
 mod notifications;
+mod osd;
 mod persistence;
 mod power;
 mod render;
@@ -96,6 +99,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     if (!nested && !headless) || notification_bus.is_some() {
         state.start_notifications(notification_bus);
+    }
+    // TILECEPTION_MEDIA=session starts media controls nested or headless too;
+    // any other value is a bus address for media players, for tests.
+    let media_bus = std::env::var("TILECEPTION_MEDIA").ok();
+    if (!nested && !headless) || media_bus.is_some() {
+        state.start_media(media_bus.filter(|bus| bus != "session"));
     }
     for line in state.config.file.general.autostart.clone() {
         if matches!(line.trim(), "swaync" | "sway-notification-center") {
