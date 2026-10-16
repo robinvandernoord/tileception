@@ -18,10 +18,10 @@ use tileception_core::Rect;
 use zeroize::Zeroizing;
 
 use crate::{
-    render::{push_image, OutputElement},
+    Tileception,
+    render::{OutputElement, push_image},
     shapes::{Shape, Shapes},
     theme::Colour,
-    Tileception,
 };
 
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).
@@ -38,6 +38,27 @@ pub mod glyph {
     pub const ARROW_RIGHT: &str = r#"<path d="M5 12h14M13 6l6 6-6 6"/>"#;
     pub const CAPS: &str = r#"<path d="M12 4l8 8h-4v5H8v-5H4z"/><path d="M8 21h8"/>"#;
     pub const CLEAR: &str = r#"<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>"#;
+    pub const VOLUME_OFF: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/>"#;
+    pub const VOLUME_LOW: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>"#;
+    pub const VOLUME_HIGH: &str =
+        r#"<path d="M11 5L6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9.5 9.5 0 0 1 0 13"/>"#;
+    pub const VOLUME_NONE: &str = r#"<path d="M11 5L6 9H2v6h4l5 4z"/>"#;
+    pub const MIC: &str =
+        r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"/>"#;
+    pub const MIC_OFF: &str = r#"<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8M3 3l18 18"/>"#;
+    pub const SUN: &str = r#"<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>"#;
+    pub const PLAY: &str = r#"<path d="M7 4.5l12 7.5-12 7.5z"/>"#;
+    pub const PAUSE: &str = r#"<path d="M8 5v14M16 5v14"/>"#;
+    pub const NEXT: &str = r#"<path d="M5 5l10 7-10 7zM19 5v14"/>"#;
+    pub const PREVIOUS: &str = r#"<path d="M19 19L9 12l10-7zM5 19V5"/>"#;
+    pub const STOP: &str = r#"<rect x="6" y="6" width="12" height="12" rx="1.5"/>"#;
+    pub const MUSIC: &str =
+        r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#;
+    pub const CHEVRON_DOWN: &str = r#"<path d="M6 9l6 6 6-6"/>"#;
+    pub const CHEVRON_UP: &str = r#"<path d="M6 15l6-6 6 6"/>"#;
+    pub const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
+    pub const CHAT: &str = r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.4A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>"#;
+    pub const ALERT: &str = r#"<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/>"#;
 }
 
 #[derive(Default)]
@@ -232,6 +253,9 @@ impl Style {
     pub fn weight(self, weight: u16) -> Style {
         Style { weight, ..self }
     }
+    pub fn colour(self, colour: Colour) -> Style {
+        Style { colour, ..self }
+    }
     pub fn bold(self) -> Style {
         self.weight(600)
     }
@@ -307,6 +331,17 @@ impl<'a> Painter<'a> {
         ) {
             self.layers.push(OutputElement::Memory(e));
         }
+    }
+
+    /// A window's picture fitted into `rect`.
+    pub fn window(&mut self, id: tileception_core::WindowId, rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let rect = self.shifted(rect);
+        let elements = self.state.picture_faded(self.renderer, id, &rect, self.alpha);
+        // Pictures come topmost first; layers are kept in painting order.
+        self.layers.extend(elements.into_iter().rev());
     }
 
     pub fn image(&mut self, buffer: &MemoryRenderBuffer, at: (f64, f64)) {
@@ -409,6 +444,16 @@ impl<'a> Painter<'a> {
             },
         );
         self.shape(rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.popup(), t.popup_radius) });
+    }
+
+    /// A panel against a screen edge, full height: square, with a hairline
+    /// and a soft shadow only on the side that faces the desktop.
+    pub fn edge_panel(&mut self, rect: Rect, left: bool) {
+        let t = self.theme();
+        self.shape(rect, Shape { glow_radius: 28.0, glow: Colour([0.0, 0.0, 0.0, 0.42]), ..Default::default() });
+        self.fill(rect, t.popup(), 0.0);
+        let edge = if left { rect.right() - 1.0 } else { rect.x };
+        self.fill(Rect::new(edge, rect.y, 1.0, rect.h), t.border, 0.0);
     }
 }
 

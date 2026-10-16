@@ -415,12 +415,32 @@ matrix, credentials and deployment implementation remain pending.
 
 - More monitors: a layout per screen, moving windows between them.
 - HiDPI and fractional scaling.
-- Window rules (always float an app, open an app in a given view).
+- Window rules (always float an app, open an app in a given view). Done
+  2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
+  `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`
+  (true or false), `size` for floats, `fullscreen` or `minimized`; all matching
+  rules apply in order. Checked headless with kitty (floated at 700x400,
+  opened minimized). Decided 2026-10-16: no rules for saved views; views stay
+  purely about the camera.
 - Window lists for other tools (foreign-toplevel) and clipboard history
-  (data-control).
+  (data-control). Protocols done 2026-10-16 on
+  `feature/toplevel-and-clipboard-protocols`: ext-foreign-toplevel-list
+  (titles, app ids, open and close, synced once per frame) and both
+  data-control versions (wlr and ext), so clipboard managers such as cliphist
+  work and `wl-copy`/`wl-paste` no longer open a helper window. Checked
+  headless with a test client and wl-clipboard. Not done: the wlr
+  foreign-toplevel *management* protocol (activating and closing windows from
+  a taskbar), which Smithay does not provide; a built-in clipboard history.
+  Every client can use data-control, as on sway: telling sandboxed programs
+  apart needs the security-context protocol, which Tileception lacks.
 - Bindings that repeat while held, pass through to the app, or work while
   locked; click-to-kill.
-- Pointer lock for games and input methods.
+- Pointer lock for games and input methods. Pointer lock done 2026-10-16 on
+  `feature/pointer-lock`: pointer-constraints (lock and confine, with regions
+  and the cursor position hint) and relative-pointer raw motion. Constraints
+  only hold while no compositor interface (launcher, menu, panel, lock) is
+  open. Only checked that the globals are offered: needs a game on hardware.
+  Input methods are not done.
 - Better trackpad support: configurable multi-finger actions, swipes and
   pinches for navigation, Overview and window management. Planning only for now.
 - Touchscreen support: touch currently does not work on Robin's laptop,
@@ -432,22 +452,53 @@ matrix, credentials and deployment implementation remain pending.
 
 ### To be planned
 
-- [ ] **Swappable shell components.** Add documented configuration to disable or
+- [x] **Swappable shell components.** Add documented configuration to disable or
   replace each built-in tool independently, including the Super menu/launcher,
   notification bar and popups, power menu and lock screen. External replacements
   must be supported as permanent choices, with configurable shortcuts and
   startup commands. Release shared protocol or service ownership when a built-in
   component is disabled so it does not compete with its replacement. Preserve
   the compositor's window-management features when using external tools.
-- [ ] **Built-in volume and media controls with visual feedback.** Currently these
-  are Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
+  Implemented 2026-10-16 on `feature/swappable-shell`: `[shell]` sets
+  `launcher`, `notifications`, `power_menu` and `lock` to "builtin", "none" or
+  a command (lock commands take `{wallpaper}`), and `media` to builtin or none.
+  Replacing notifications stops the built-in service and frees
+  `org.freedesktop.Notifications`; Super+N then runs the given command, or with
+  "none" shows only the sound controls. Reloading starts and stops services, so
+  no new login is needed; an old `autostart = ["swaync"]` is only skipped while
+  notifications are built in. Shortcuts stay in `[binds]`, startup commands in
+  `autostart`. Checked headless with a private bus: the name was released and
+  taken back across reloads, and each replacement command ran.
+- [x] **Built-in volume and media controls with visual feedback.** Previously these
+  were Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
   Add built-in actions and standard hardware-key bindings so they work with the
   default configuration. Show actual volume and mute state after changes, and
   playback feedback for play/pause, stop and track changes, including the active
   player and track when available. Report missing audio devices or active
   players clearly. Use the Tide visual language; keep personal shell shortcuts
-  unnecessary for normal volume/media-key operation. Planned, not implemented.
-- **Minimizing windows.** Hide a window without closing it, and bring it back
+  unnecessary for normal volume/media-key operation.
+  Implemented 2026-10-16 on `feature/volume-media-controls`, with brightness and
+  per-program volume: the `tileception-media` crate speaks the PulseAudio
+  protocol (served by PipeWire; pure Rust, no system libraries), follows MPRIS
+  players on the session bus and sets the backlight through logind. Commands
+  `volume`, `mic`, `brightness` and `media`, bound to the media and brightness
+  keys and to Super+Ctrl+arrows/M/Space/Page_Up/Page_Down; held keys repeat, and
+  they work on the lock screen. A Tide card at the bottom shows the new level
+  (amber past 100%, up to `media.max_volume`), what is playing, or what is
+  missing. Super+N gains volume, microphone and brightness sliders, a list of
+  programs with their own volume, and a playback card. Checked headless against
+  the real sound server (volume restored afterwards) and a fake player on a
+  private bus; an MPRIS test runs in CI. Not checked: hardware media keys, key
+  repeat, brightness (no backlight on the test machine), pointer use of the
+  sliders and the card on the lock screen.
+  Follow-up on `feature/audio-devices`: the device line in Super+N opens a list
+  of outputs and microphones; choosing one makes it the default and moves what
+  is playing or recording to it (also `volume output <n>` / `mic input <n>`,
+  numbered as `tileception msg volume` lists them). Cover art served over
+  http(s), as Spotify does, is fetched with curl (8 s, 8 MB, http(s) only) into
+  `~/.cache/tileception/art`, keeping the newest 64. Checked headless: switching
+  to HDMI and back moved a silent test stream along; web art appeared.
+- [x] **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:
   - While a window is minimized, its neighbours take its space (as when it
@@ -456,16 +507,33 @@ matrix, credentials and deployment implementation remain pending.
   - A saved view keeps counting a minimized window as part of it: going to that
     view restores the window into it. Going to a view never minimizes
     anything; windows that are out stay out.
-- **Seeing minimized windows.** A taskbar-like strip that hides itself and
+- [x] **Seeing minimized windows.** A taskbar-like strip that hides itself and
   slides in when the pointer touches the screen edge, showing minimized
   windows (icon, name, maybe a small preview); click to restore, drag to place.
   Depends on text rendering and the Tide components.
-- **A welcome screen instead of nothing.** When no windows are open (right
+  Implemented 2026-10-16 on `feature/minimize-windows`: `minimize` (Super+H,
+  also the program's own minimize button and X11 iconify) and `restore
+  [window-id]` (Super+Shift+H); the strip at the bottom edge, which also peeks
+  for a moment after minimizing, with previews, click to restore, drag to place
+  and a close button. Minimized windows are told they are hidden and get no
+  frames. Checked headless through IPC (exact layout round trip, strip peek);
+  pointer use of the strip is not checked yet. Not persisted across logins:
+  minimized windows come back as new windows.
+- [x] **A welcome screen instead of nothing.** When no windows are open (right
   after login, or after closing the last one), show the built-in launcher in a
   "home" form on the empty desktop: app search, maybe recent or pinned apps and
   the time. Typing searches right away; Esc dismisses it to a plain desktop.
   Depends on the built-in launcher. (Robin's current startup error comes from
   espanso running its X11 build; switching it to the Wayland build is separate.)
+  Implemented 2026-10-16 on `feature/welcome-screen`: the launcher opens in a
+  home form whenever no window is open (`general.welcome`, on by default),
+  over the wallpaper with a large clock and date, the eight most used apps as a
+  grid (arrows move, Enter launches), the usual search once typing starts, and
+  the playback card when something plays. Esc or Super puts it away until the
+  desktop next empties; after a launch it waits 10 s for the window. Shortcuts
+  keep working, notifications draw over it, and clicks beside it reach bars and
+  the panel. Checked headless (shown, gone when a terminal opened, back after
+  closing it, dismissed and reopened); typing and pointer use are not checked.
 - **A "doctor" you can talk to (ACP).** A built-in Tide panel that talks to a
   coding agent such as Claude or Codex over the Agent Client Protocol, so you
   can ask it to change settings, shortcuts and default apps in plain language.
@@ -474,6 +542,138 @@ matrix, credentials and deployment implementation remain pending.
   such as `tree` and `reload`, and read the log. Depends on text rendering and
   a text input in the Tide components; needs a careful permission model so the
   agent can only touch Tileception's own files unless you allow more.
+  Decided 2026-10-16:
+  - Permissions are a mode you switch between, remembered across sessions:
+    "ask" (every change shown and confirmed), "tileception config" (edits
+    Tileception's own files without asking, with backups) and "yolo" (no
+    questions).
+  - Agents come only from the official ACP Registry
+    (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`):
+    a picker that installs through npx, uvx or a checked binary download and
+    remembers the pick. No hard-coded providers and no custom command.
+  - The conversation lives in its own panel along the left edge (the
+    counterpart of Super+N on the right), which does not block the desktop
+    so changes can be watched as they land. Super+/ opens it (the `doctor`
+    command); in the launcher, typing a question or "?" offers "Ask
+    Tileception", opening the panel with that question.
+  Step 1 of 3 done 2026-10-16 on `feature/acp-doctor`: the panel (conversation
+  with streaming replies, a text field, scrolling, clickable example
+  questions), Super+/ and `doctor [ask <text>]`, and the launcher's "Ask
+  Tileception" row. It takes the keyboard only while you work in it; a click
+  elsewhere gives the desktop back, and Super shortcuts keep working. It
+  talks to a stand-in test agent for now.
+  Steps 2 and 3 done 2026-10-16, same branch. The `tileception-acp` crate reads
+  the ACP Registry (cached a day; binary agents need a build for this machine
+  and a sha256), installs agents through npx, uvx or a checked https download
+  into `~/.local/share/tileception/agents`, and speaks ACP v1 over stdio:
+  initialize, logins (the agent's own, terminal logins, and descriptions that
+  name the agent's own command, as goose's `goose configure` does), sessions
+  in the config folder, streamed answers, tool calls, permission requests and
+  cancelling. The panel has a picker (saying what each agent needs: Claude
+  and Codex need Node.js), remembers the agent and the mode in
+  `~/.local/state/tileception/doctor.toml`, and shows tool calls, permission
+  cards with diffs, and every change with Undo. Files go through Tileception:
+  reads of its own places go ahead; writes follow the mode (ask: only after
+  you allowed that file; config: inside `~/.config/tileception`; yolo:
+  anywhere), always with a backup in `doctor-backups`, and a config that would
+  not load is refused in every mode. In config mode the agent's own requests
+  go ahead for its reads, edits of Tileception's files and `tileception msg`
+  commands; anything else asks. `doctor use <id>` and `doctor mode <mode>`
+  script it. Checked: a fake agent (tests/fake_agent.py) in CI, and headless
+  with it in all three modes; goose installed, verified and started from the
+  real registry and asked to be configured. Not checked: a conversation with
+  a real AI (needs an account; Node.js for Claude or Codex).
+
+- **A bar along the top.** A thin Tide bar (about 28 px, reserving its edge like
+  a layer-shell bar) that shows where the camera is in the tree, not a copy of
+  a Windows or macOS taskbar. The minimized strip keeps the bottom edge. Like
+  the rest of `[shell]`: `bar = "builtin" | "none" | "<command>"` (e.g. waybar).
+  Proposed 2026-10-16, left to right:
+  - **Doctor button at the far left**, where its panel slides out, doubling as
+    a health light: calm normally, amber after a failed config reload or new
+    errors in the log, with "ask about this" opening the doctor with that
+    question.
+  - **Back and forward** (history).
+  - **A breadcrumb of the camera's path**: the framed node and its ancestors,
+    root first. Clicking a crumb frames that node; scrolling on the bar steps
+    in and out. The tree has no names (splits are only an axis, children and
+    weights), and nothing gets named by hand: a crumb shows its contents (app
+    icons of the windows inside, most used first, with "+N" for the rest),
+    marked with the slot number when a saved view frames that node. The root
+    reads "Everything" and a framed window shows its title. Splits made only by
+    splitting along the longer side add levels nobody thinks of as places, so a
+    crumb is shown only for levels the camera stops at, and long paths
+    collapse in the middle.
+  - **Saved views 1 to 9** as slots: filled when saved, a preview on hover,
+    click to go there. They play the role workspaces have elsewhere.
+  - **Chips that only appear when relevant**: now playing, a screen capture or
+    screen sharing indicator while screencopy is in use, do not disturb, and
+    the number of minimized windows (click peeks the bottom strip).
+  - **Clock**; clicking it zooms it into a calendar (month grid, maybe a second
+    time zone) with the camera's own animation instead of a popup. Events from
+    an .ics file or URL later.
+  - **Notifications at the far right**, where their panel slides out: count and
+    do not disturb.
+  - Depends on zoom: shrinks to a hairline or hides while one window is framed
+    on its own or fullscreen; in Overview it may show more.
+  Later: a minimap (a live outline of the whole tree with the camera's frame;
+  click to fly there, drag to pan), from the last crumb or in Overview; a
+  `position = "bottom"` option that moves the minimized strip to the top.
+
+- **A smarter launcher.** Tapping Super should answer small things itself, not
+  only find apps. Everything here is local and instant: no ACP, no network
+  (the "Ask Tileception" row stays for real questions, below these results).
+  Proposed 2026-10-16:
+  - **One shared launcher component for Super and the welcome screen.** Both
+    show the same app grid when the search is empty, switch to results while
+    typing, and share styling and keyboard navigation. Both include the media
+    control widget whenever a player is active. Super opens a compact version
+    over the current windows; the welcome screen places the same component on
+    the desktop, adding the clock, date and optional desktop widgets around it.
+    Build on the existing shared launcher implementation so improvements apply
+    to both modes.
+  - **Calculator**: sums as you type (`12*7+3`, `15% of 80`, `2^10`,
+    brackets), shown as the top row; Enter copies the result. Also hex and
+    binary (`0xff`, `255 in hex`) and offline unit conversions (`5 km in mi`,
+    `30 c in f`, `2 GiB in MB`).
+  - **Open windows**: typing finds open and minimized windows by title or app;
+    Enter flies the camera to the window (or restores it), so the launcher is
+    also the quickest way to get around the tree.
+  - **Tileception's own commands**: Overview, lock, suspend, do not disturb,
+    screenshot, dark or light, reload config and the rest of `tileception
+    msg`, each showing its shortcut so the launcher teaches the bindings.
+  - **App actions** from desktop files (e.g. "New private window").
+  - **Dates and times**: `time in tokyo`, `days until 2026-12-25`, a unix
+    timestamp to a date and back.
+  - **Paths and links**: `~/` or `/` completes paths and opens them in the
+    default program; a URL opens in the browser.
+  - **Colours**: `#ff8800` or `rgb(...)` shows a swatch and the other notations;
+    Enter copies.
+  - **Characters**: `:` searches emoji and symbols by name.
+  - **Run a command**: `>` runs the rest in a shell (or in a terminal with a
+    modifier).
+  - Later, with a built-in clipboard history: search past clipboard entries.
+  Question detection must come after these, so a sum or a conversion with
+  three words (`5 km in mi`) is not sent to the doctor.
+
+- **Configurable per-app launch arguments.**
+  Status: agreed 2026-10-16, not implemented.
+  - [ ] Add configuration keyed by desktop-file app identity for extra launch
+    arguments, shared by the Super launcher and welcome screen. Preserve desktop
+    entry arguments and file/URL forwarding; pass configured arguments as literal
+    arguments rather than shell code.
+  - [ ] Use Spotify as the first default: add `--ozone-platform=wayland` when
+    launched through Tileception, with a user override to change or disable it.
+    Account for native, Snap and Flatpak desktop entries without changing their
+    installed files, and respect an explicitly selected Ozone platform.
+  - [ ] Document the setting and manually verify Spotify launches natively on
+    Wayland, configured overrides work, and file/URL arguments still arrive.
+  Decision: retain the existing toolkit environment preferences. Spotify uses
+  CEF and does not obey `ELECTRON_OZONE_PLATFORM_HINT`; use per-app arguments
+  instead of adding global GPU flags or disabling hardware acceleration.
+  Log, 2026-10-16: Robin approved adding this after investigating intermittent
+  black flicker with NVIDIA and Xwayland 23.2.6. Native Wayland is a proposed
+  workaround; its effect on the flicker still needs manual confirmation.
 
 ## 5. Risks and open questions
 

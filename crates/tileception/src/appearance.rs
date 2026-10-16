@@ -11,8 +11,8 @@ use std::{
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::{
-    theme::{ColourScheme, Theme},
     Tileception,
+    theme::{ColourScheme, Theme},
 };
 
 const NAME: &str = "org.freedesktop.impl.portal.desktop.tileception";
@@ -155,7 +155,7 @@ mod tests {
         time::Duration,
     };
 
-    use zbus::blocking::{connection::Builder, Connection, MessageIterator, Proxy};
+    use zbus::blocking::{Connection, MessageIterator, Proxy, connection::Builder};
 
     use super::*;
 

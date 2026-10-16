@@ -5,7 +5,7 @@
 
 use tileception_core::Dir;
 
-use crate::{input::Action, Tileception};
+use crate::{Tileception, input::Action};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -30,6 +30,18 @@ pub enum Command {
     LauncherKey(u32, crate::config::Mods),
     /// Replaces the window selection with these ids (empty clears it).
     Select(Vec<tileception_core::WindowId>),
+    /// Volume, brightness and media players; these also work while locked.
+    Media(crate::media::Control),
+    /// Opens or closes the doctor panel, or asks it a question.
+    Doctor(Option<String>),
+    /// Pretend input, for scripted tests (headless or nested only).
+    Inject(crate::inject::Inject),
+    /// Makes this ACP Registry agent the doctor's.
+    DoctorUse(String),
+    /// How much the doctor's agent may do without asking.
+    DoctorMode(crate::doctor_policy::Mode),
+    /// A key pressed while the doctor panel has the keyboard (not available as text).
+    DoctorKey(u32, crate::config::Mods),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -68,6 +80,24 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 .collect::<Result<Vec<_>, _>>()?;
             return Ok(Command::Select(ids));
         }
+        "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
+        "doctor" => {
+            // Whole words only: "doctor user" is not "doctor use r".
+            let (sub, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let tail = tail.trim();
+            return match sub {
+                "mode" => crate::doctor_policy::Mode::parse(tail)
+                    .map(Command::DoctorMode)
+                    .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
+                "use" if tail.is_empty() => Err("doctor use needs an agent id from the ACP Registry".into()),
+                "use" => Ok(Command::DoctorUse(tail.to_string())),
+                "ask" if tail.is_empty() => Err("doctor ask needs a question".into()),
+                "ask" => Ok(Command::Doctor(Some(tail.to_string()))),
+                "" => Ok(Command::Doctor(None)),
+                _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
+            };
+        }
+        "pointer" | "click" | "key" | "type" => return crate::inject::parse(verb, rest).map(Command::Inject),
         "spawn" | "exec" => {
             if rest.is_empty() {
                 return Err("spawn needs a command".into());
@@ -135,6 +165,13 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "notifications" => Action::Notifications,
         "do-not-disturb" => Action::DoNotDisturb,
         "group" => Action::Group,
+        "minimize" => Action::Minimize,
+        "restore" => match args.first() {
+            None => Action::Restore(None),
+            Some(id) => Action::Restore(Some(tileception_core::WindowId(
+                id.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
+            ))),
+        },
         "next-tab" => Action::NextTab,
         "prev-tab" => Action::PrevTab,
         "save" => Action::SaveView(slot()?),
@@ -159,6 +196,7 @@ impl Tileception {
                     | Command::Screenshot(_)
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
+                    | Command::Media(_)
             )
         {
             return Err("session is locked".into());
@@ -171,6 +209,13 @@ impl Tileception {
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
+            Command::Media(control) => return self.media_command(control),
+            Command::Doctor(None) => self.toggle_doctor(),
+            Command::Doctor(Some(question)) => self.ask_doctor(&question),
+            Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),
+            Command::DoctorUse(id) => self.use_doctor_agent(id),
+            Command::Inject(input) => self.inject(input)?,
+            Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::Select(ids) => {
@@ -212,6 +257,15 @@ mod tests {
         assert_eq!(parse("cycle prev"), Ok(Command::Action(Action::Cycle(false))));
         assert!(parse("go 0").is_err());
         assert!(parse("bogus").is_err());
+        assert_eq!(parse("doctor"), Ok(Command::Doctor(None)));
+        assert_eq!(parse("doctor ask why so slow?"), Ok(Command::Doctor(Some("why so slow?".into()))));
+        assert!(parse("doctor ask").is_err());
+        assert!(parse("doctor now").is_err());
+        assert_eq!(parse("doctor mode yolo"), Ok(Command::DoctorMode(crate::doctor_policy::Mode::Yolo)));
+        assert!(parse("doctor mode loud").is_err());
+        assert!(parse("doctor user").is_err());
+        assert!(parse("doctor asking").is_err());
+        assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
         assert!(parse("").is_err());
     }
 }

@@ -11,13 +11,13 @@
 use smithay::{
     backend::renderer::{
         element::{
+            AsRenderElements, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
-            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             utils::{CropRenderElement, RescaleRenderElement},
-            AsRenderElements, Id, Kind,
         },
-        gles::{element::PixelShaderElement, GlesRenderer},
+        gles::{GlesRenderer, element::PixelShaderElement},
     },
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
@@ -35,6 +35,7 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputElement<=GlesRenderer>;
     Live = WaylandSurfaceRenderElement<GlesRenderer>,
     Scaled = CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Clipped = CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Solid = SolidColorRenderElement,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
@@ -55,7 +56,13 @@ pub struct Drawn {
     pub scale: (f64, f64),
     /// Drawn 1:1 and accepting pointer input.
     pub live: bool,
+    /// Live but larger than its slot, so cut off at `content`.
+    pub clipped: bool,
 }
+
+/// How many pixels a resting tiled window may be too big for its slot and still be
+/// drawn live, cut off, rather than as a scaled preview.
+const MAX_CLIP: f64 = 32.0;
 
 impl Tileception {
     /// The colour behind everything.
@@ -71,24 +78,25 @@ impl Tileception {
         let screen = self.world.screen();
         let focus = self.world.focus();
 
-        if let Some(id) = self.fullscreen {
-            if let Some(window) = self.windows.get(&id) {
-                let geo = window.geometry();
-                let out = self.output_rect();
-                let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
-                let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
-                let leaf = self.world.tree().leaf_of(id).unwrap_or(self.world.tree().root());
-                return vec![Drawn {
-                    id,
-                    role: WindowRole::Tiled,
-                    leaf,
-                    slot: out,
-                    content,
-                    origin,
-                    scale: (1.0, 1.0),
-                    live: true,
-                }];
-            }
+        if let Some(id) = self.fullscreen
+            && let Some(window) = self.windows.get(&id)
+        {
+            let geo = window.geometry();
+            let out = self.output_rect();
+            let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
+            let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
+            let leaf = self.world.tree().leaf_of(id).unwrap_or(self.world.tree().root());
+            return vec![Drawn {
+                id,
+                role: WindowRole::Tiled,
+                leaf,
+                slot: out,
+                content,
+                origin,
+                scale: (1.0, 1.0),
+                live: true,
+                clipped: false,
+            }];
         }
 
         let dragged = self.move_drag.filter(|d| !d.free).map(|d| d.window);
@@ -105,6 +113,27 @@ impl Tileception {
             let (gw, gh) = (geo.size.w as f64, geo.size.h as f64);
             // Floating windows hang still while the camera moves.
             let moving = moving && p.role == WindowRole::Tiled;
+            let (over_w, over_h) = (gw - p.rect.w, gh - p.rect.h);
+            let tiled = p.role == WindowRole::Tiled;
+            if tiled && !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
+                // Just too big, usually from a minimum size: drawn 1:1 from
+                // the slot's top left and cut off at its edges, so it stays
+                // sharp and usable instead of becoming a preview.
+                let content = Rect::new(p.rect.x, p.rect.y, gw.min(p.rect.w), gh.min(p.rect.h));
+                let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
+                out.push(Drawn {
+                    id: p.window,
+                    role: p.role,
+                    leaf: p.leaf,
+                    slot: p.rect,
+                    content,
+                    origin,
+                    scale: (1.0, 1.0),
+                    live: true,
+                    clipped: true,
+                });
+                continue;
+            }
             let (sx, sy) = if moving {
                 // Stretch into the moving slot; the client catches up after.
                 (p.rect.w / gw, p.rect.h / gh)
@@ -131,6 +160,7 @@ impl Tileception {
                 origin,
                 scale: (sx, sy),
                 live,
+                clipped: false,
             });
         }
         // Floating windows above tiles, the focused one above its peers.
@@ -154,8 +184,9 @@ impl Tileception {
 
     pub fn render_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
         if self.is_locked() {
-            // Only the locker; black where it has not drawn yet.
-            let mut elements = self.lock_elements(renderer);
+            // Only the locker (and the volume card); black where it has not drawn yet.
+            let mut elements = self.osd_elements(renderer);
+            elements.extend(self.lock_elements(renderer));
             elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0]));
             return elements;
         }
@@ -164,16 +195,25 @@ impl Tileception {
         let drawn = self.drawn_windows(now);
         let focus = self.world.focus();
         let view = self.world.view(now);
-        let mut elements: Vec<OutputElement> = Vec::new();
+        let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
         elements.extend(self.power_menu_elements(renderer));
-        elements.extend(self.launcher_elements(renderer));
+        // Overlay layers (slurp, launchers) go over Tileception's own panels,
+        // so a region pick can include the Doctor or the notifications.
+        elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
+        // The welcome screen is part of the desktop: notifications go over it.
+        if !self.launcher.home {
+            elements.extend(self.launcher_elements(renderer));
+        }
         elements.extend(self.notification_elements(renderer));
+        elements.extend(self.doctor_elements(renderer));
+        elements.extend(self.strip_elements(renderer));
+        if self.launcher.home {
+            elements.extend(self.launcher_elements(renderer));
+        }
         elements.extend(self.selection_elements(renderer));
 
-        // Topmost: notifications, launchers and bars. A fullscreen window
-        // covers everything but notifications.
+        // Then bars. A fullscreen window covers everything but the above.
         if self.fullscreen.is_some() {
-            elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
             for d in &drawn {
                 if let Some(window) = self.windows.get(&d.id) {
                     let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
@@ -184,7 +224,7 @@ impl Tileception {
             }
             return elements;
         }
-        elements.extend(self.layer_elements(renderer, &[Layer::Overlay, Layer::Top]));
+        elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
         // X11 menus and tooltips, at the place they chose.
         for overlay in self.x11_overlays.iter().rev() {
@@ -226,6 +266,10 @@ impl Tileception {
         }
 
         let strips = self.world.tab_strips(view);
+        // Menus and tooltips go above every window and frame, even when they
+        // reach over a neighbour or past their own window's border.
+        let above_windows = elements.len();
+        let mut popups = Vec::new();
         for d in &drawn {
             let Some(window) = self.windows.get(&d.id) else { continue };
             let focused = Some(d.id) == focus && self.windows.len() > 1;
@@ -237,10 +281,8 @@ impl Tileception {
             }
             push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
             if d.live {
-                let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
-                let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-                elements.extend(surfaces.into_iter().map(OutputElement::Live));
+                popups.extend(popup_elements(renderer, window, d));
+                elements.extend(live(renderer, window, d));
             } else {
                 elements.extend(self.picture(renderer, d.id, &d.content));
             }
@@ -255,6 +297,8 @@ impl Tileception {
                 push_shape(&mut elements, shapes.as_ref(), &d.content, shadow);
             }
         }
+
+        elements.splice(above_windows..above_windows, popups);
 
         for strip in &strips {
             elements.extend(self.tab_strip_elements(renderer, shapes.as_ref(), strip, focus));
@@ -343,12 +387,10 @@ impl Tileception {
                 let y = tab.y + (tab.h - img.height as f64) / 2.0;
                 push_image(&mut out, renderer, &img.buffer, (text_x, y));
             }
-            if active {
-                if let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
-                    let x = tab.right() - close_w + (close_w - img.width as f64) / 2.0 - 2.0;
-                    let y = tab.y + (tab.h - img.height as f64) / 2.0;
-                    push_image(&mut out, renderer, &img.buffer, (x, y));
-                }
+            if active && let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
+                let x = tab.right() - close_w + (close_w - img.width as f64) / 2.0 - 2.0;
+                let y = tab.y + (tab.h - img.height as f64) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (x, y));
             }
             drop(text);
             let mark_shape = if active {
@@ -383,10 +425,10 @@ impl Tileception {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             self.cursor_status = CursorImageStatus::default_named();
         }
-        if let CursorImageStatus::Surface(surface) = &self.cursor_status {
-            if !surface.alive() {
-                self.cursor_status = CursorImageStatus::default_named();
-            }
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status
+            && !surface.alive()
+        {
+            self.cursor_status = CursorImageStatus::default_named();
         }
         let pos = self.pointer;
         match &self.cursor_status {
@@ -425,7 +467,18 @@ impl Tileception {
     }
 
     /// A window scaled into `content`, which is where its visible geometry goes.
-    fn picture(&self, renderer: &mut GlesRenderer, id: WindowId, content: &Rect) -> Vec<OutputElement> {
+    pub fn picture(&self, renderer: &mut GlesRenderer, id: WindowId, content: &Rect) -> Vec<OutputElement> {
+        self.picture_faded(renderer, id, content, 1.0)
+    }
+
+    /// A window picture at some opacity.
+    pub fn picture_faded(
+        &self,
+        renderer: &mut GlesRenderer,
+        id: WindowId,
+        content: &Rect,
+        alpha: f32,
+    ) -> Vec<OutputElement> {
         let Some(window) = self.windows.get(&id) else { return Vec::new() };
         let geo = window.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
@@ -439,7 +492,7 @@ impl Tileception {
             .into();
         let crop = physical(content);
         let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
+            window.render_elements(renderer, origin, Scale::from(1.0), alpha);
         surfaces
             .into_iter()
             .filter_map(|s| {
@@ -448,6 +501,40 @@ impl Tileception {
             })
             .collect()
     }
+}
+
+/// A live window's popups, which may reach past the window's own rectangle.
+/// X11 windows draw their menus as separate overlays instead.
+fn popup_elements(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+    let Some(toplevel) = window.toplevel() else { return Vec::new() };
+    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+    smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
+        .flat_map(|(popup, offset)| {
+            let at = origin + (window.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(1.0);
+            render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified)
+        })
+        .map(OutputElement::Live)
+        .collect()
+}
+
+/// A live window without its popups, cut off at `d.content` when it is
+/// larger than its slot.
+fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
+        Some(toplevel) => {
+            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
+        }
+        None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
+    };
+    if !d.clipped {
+        return surfaces.into_iter().map(OutputElement::Live).collect();
+    }
+    let crop = physical(&d.content);
+    surfaces
+        .into_iter()
+        .filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped))
+        .collect()
 }
 
 pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &Rect, shape: Shape) {

@@ -6,7 +6,7 @@ use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::{Logical, Point, Transform},
 };
-use xcursor::{parser::parse_xcursor, CursorTheme};
+use xcursor::{CursorTheme, parser::parse_xcursor};
 
 pub struct Cursor {
     pub buffer: MemoryRenderBuffer,

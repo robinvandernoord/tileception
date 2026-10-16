@@ -6,7 +6,7 @@ use smithay::{
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::{keysyms, FilterResult},
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -20,10 +20,10 @@ use crate::{
     state::{GapDrag, MoveDrag, PendingPress, ResizeDrag, Tileception},
 };
 
-const BTN_LEFT: u32 = 0x110;
+pub(crate) const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 /// Pixels the pointer must travel before a press becomes a drag.
-const DRAG_THRESHOLD: f64 = 6.0;
+pub(crate) const DRAG_THRESHOLD: f64 = 6.0;
 /// Largest share of the screen a dragged window's picture takes.
 const DRAG_PICTURE: f64 = 0.3;
 
@@ -68,6 +68,10 @@ pub enum Action {
     Notifications,
     DoNotDisturb,
     Group,
+    /// Take the focused window out of the layout without closing it.
+    Minimize,
+    /// Put a minimized window back where it was: this one, or the last.
+    Restore(Option<WindowId>),
 }
 
 impl Tileception {
@@ -90,13 +94,18 @@ impl Tileception {
                 let size = output.current_mode().map(|m| m.size.to_logical(1)).unwrap_or_default();
                 let pos = event.position_transformed(size);
                 self.on_motion(pos, event.time_msec());
+                self.activate_constraint_under();
             }
             InputEvent::PointerMotion { event } => {
                 let screen = self.output_rect();
                 let mut pos = self.pointer + event.delta();
                 pos.x = pos.x.clamp(screen.x, screen.right() - 1.0);
                 pos.y = pos.y.clamp(screen.y, screen.bottom() - 1.0);
-                self.on_motion(pos, event.time_msec());
+                // A locked or confined pointer may not move; raw motion is reported either way.
+                if let Some(pos) = self.constrained_motion(event.delta(), event.delta_unaccel(), event.time(), pos) {
+                    self.on_motion(pos, event.time_msec());
+                    self.activate_constraint_under();
+                }
             }
             InputEvent::PointerButton { event } => {
                 self.on_button(event.button_code(), event.state(), event.time_msec())
@@ -107,88 +116,147 @@ impl Tileception {
     }
 
     fn on_key<I: InputBackend>(&mut self, event: I::KeyboardKeyEvent) {
+        self.handle_key(event.key_code(), event.state(), Event::time_msec(&event));
+    }
+
+    /// A key, from a keyboard or from `tileception msg key` in tests.
+    pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time_msec(&event);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-        let pressed = event.state() == KeyState::Pressed;
-        let commands = keyboard.input::<Vec<Command>, _>(
-            self,
-            event.key_code(),
-            event.state(),
-            serial,
-            time,
-            |state, mods, handle| {
-                let sym = handle.modified_sym().raw();
-                let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
-                if state.is_locked() {
-                    state.tap_armed = None;
-                    state.tap_fired.clear();
-                    if let Some(command @ Command::Action(Action::Vt(_))) =
-                        builtin(Mods::from_state(mods), sym, raw_sym, false)
-                    {
-                        if pressed {
-                            return FilterResult::Intercept(vec![command]);
-                        }
-                    }
-                    if matches!(state.lock, crate::lock::LockState::BuiltIn) {
-                        if pressed {
-                            state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
-                        }
-                        return FilterResult::Intercept(Vec::new());
-                    }
-                    return FilterResult::Forward;
-                }
-                if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
-                    // The release still goes to the client, so it does not
-                    // think the modifier is stuck; the binding runs after.
-                    state.tap_fired = state.config.lookup(tap, TAP).map(<[Command]>::to_vec).unwrap_or_default();
-                }
-                if !pressed {
-                    return FilterResult::Forward;
-                }
-                let mut held = Mods::from_state(mods);
-                // Unmodified, so Super+Shift+1 is "1" and not "!".
-                let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
-                if let Some(command) = builtin(
-                    held,
-                    sym,
-                    raw,
-                    state.world.in_overview() && !state.launcher.open && state.power_menu.is_none(),
-                ) {
+        let pressed = key_state == KeyState::Pressed;
+        let keycode = code.raw();
+        let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
+            let sym = handle.modified_sym().raw();
+            let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            if state.is_locked() {
+                state.tap_armed = None;
+                state.tap_fired.clear();
+                if let Some(command @ Command::Action(Action::Vt(_))) =
+                    builtin(Mods::from_state(mods), sym, raw_sym, false)
+                    && pressed
+                {
                     return FilterResult::Intercept(vec![command]);
                 }
-                if state.power_menu.is_some() {
-                    // The menu takes every key while it is open.
-                    return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
+                // Volume, brightness and media keys work on the lock screen.
+                if pressed {
+                    let held = Mods::from_state(mods);
+                    let media = state
+                        .config
+                        .lookup(held, raw_sym)
+                        .or_else(|| state.config.lookup(held, sym))
+                        .filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))));
+                    if let Some(commands) = media {
+                        return FilterResult::Intercept(commands.to_vec());
+                    }
                 }
-                if state.launcher.open {
-                    return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
-                }
-                if sym == keysyms::KEY_Escape
-                    && held == Mods::default()
-                    && (state.notifications.open || !state.selection.windows.is_empty())
-                {
-                    state.notifications.open = false;
-                    state.selection.windows.clear();
+                if matches!(state.lock, crate::lock::LockState::BuiltIn) {
+                    if pressed {
+                        state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
+                    }
                     return FilterResult::Intercept(Vec::new());
                 }
-                if state.nested && held.alt && !held.logo {
-                    // The host desktop keeps Super for itself; Alt stands in.
-                    held.alt = false;
-                    held.logo = true;
+                return FilterResult::Forward;
+            }
+            if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
+                // The release still goes to the client, so it does not
+                // think the modifier is stuck; the binding runs after.
+                state.tap_fired = state.config.lookup(tap, TAP).map(<[Command]>::to_vec).unwrap_or_default();
+            }
+            if !pressed {
+                return FilterResult::Forward;
+            }
+            let mut held = Mods::from_state(mods);
+            // Unmodified, so Super+Shift+1 is "1" and not "!".
+            let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            if let Some(command) =
+                builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
+            {
+                return FilterResult::Intercept(vec![command]);
+            }
+            if state.power_menu.is_some() {
+                // The menu takes every key while it is open.
+                return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
+            }
+            // A layer surface with the keyboard (slurp) gets it over the panels.
+            let panels = state.layer_focus.is_none();
+            if panels && state.launcher.open && state.launcher.home {
+                // The welcome screen is the desktop: shortcuts still work,
+                // and Esc closes the notification panel first.
+                if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
+                    state.notifications.open = false;
+                    return FilterResult::Intercept(Vec::new());
                 }
-                match state.config.lookup(held, raw).or_else(|| state.config.lookup(held, sym)) {
-                    Some(commands) => FilterResult::Intercept(commands.to_vec()),
-                    None => FilterResult::Forward,
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
                 }
-            },
-        );
+                if let Some(commands) = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+            }
+            if panels && state.launcher.open {
+                return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
+            }
+            if panels && state.doctor.open && state.doctor.focused {
+                // Typing goes to the panel; Super shortcuts and keys that do
+                // not type (Print, volume, media) still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|c| !c.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
+            }
+            if sym == keysyms::KEY_Escape
+                && held == Mods::default()
+                && (state.notifications.open || !state.selection.windows.is_empty())
+            {
+                state.notifications.open = false;
+                state.selection.windows.clear();
+                return FilterResult::Intercept(Vec::new());
+            }
+            if state.nested && held.alt && !held.logo {
+                // The host desktop keeps Super for itself; Alt stands in.
+                held.alt = false;
+                held.logo = true;
+            }
+            match state.config.lookup(held, raw).or_else(|| state.config.lookup(held, sym)) {
+                Some(commands) => FilterResult::Intercept(commands.to_vec()),
+                None => FilterResult::Forward,
+            }
+        });
         let tapped = std::mem::take(&mut self.tap_fired);
-        for command in commands.unwrap_or_default().into_iter().chain(tapped) {
+        let commands = commands.unwrap_or_default();
+        if !pressed {
+            self.media_key_released(keycode);
+        } else if !commands.is_empty() && commands.iter().all(|c| matches!(c, Command::Media(m) if m.repeats())) {
+            self.start_media_repeat(keycode, commands.clone());
+        } else {
+            self.stop_media_repeat();
+        }
+        for command in commands.into_iter().chain(tapped) {
             if let Err(err) = self.execute(command) {
                 tracing::warn!("{err}");
             }
         }
+    }
+
+    /// Whether the launcher gets the pointer here: all of it when opened on
+    /// purpose; as the welcome screen only over itself and not under the
+    /// notification panel. Never under an overlay layer surface.
+    fn launcher_takes(&self, at: tileception_core::Point) -> bool {
+        if self.overlay_under(at) {
+            return false;
+        }
+        !self.launcher.home || (self.home_contains(at) && !self.notifications_contain(at))
     }
 
     /// Follows a modifier pressed on its own. Returns the modifier when it is
@@ -280,11 +348,22 @@ impl Tileception {
             Action::Lock => {
                 self.lock_session(false);
             }
-            Action::PowerMenu => self.open_power_menu(),
-            Action::Launcher => self.toggle_launcher(),
-            Action::Notifications => self.toggle_notifications(),
+            Action::PowerMenu => self.shell_power_menu(),
+            Action::Launcher => self.shell_launcher(),
+            Action::Notifications => self.shell_notifications(),
             Action::DoNotDisturb => self.toggle_dnd(),
             Action::Group => {}
+            Action::Minimize => {
+                if let Some(id) = self.world.focus() {
+                    self.minimize_window(id);
+                }
+            }
+            Action::Restore(id) => {
+                match id {
+                    Some(id) => self.world.restore(id, now),
+                    None => self.world.restore_last(now),
+                };
+            }
             Action::Fullscreen => {
                 if let Some(id) = self.world.focus() {
                     let on = self.fullscreen != Some(id);
@@ -304,18 +383,21 @@ impl Tileception {
                 | Action::NextTab
                 | Action::PrevTab
                 | Action::ToggleDesktop
+                | Action::Minimize
+                | Action::Restore(_)
         ) {
             self.persist_layout();
         }
     }
 
-    fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
+    pub(crate) fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer = pos;
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
-        if !self.is_locked() && self.launcher.open {
-            self.launcher_motion(tileception_core::Point::new(pos.x, pos.y));
+        let at = tileception_core::Point::new(pos.x, pos.y);
+        if !self.is_locked() && self.launcher.open && self.launcher_takes(at) {
+            self.launcher_motion(at);
             return;
         }
         if self.power_menu.is_some() {
@@ -334,10 +416,24 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.media.drag.is_some() {
+            // A held slider follows the pointer even outside the panel.
+            self.controls_drag(pos.x);
+            return;
+        }
+        if self.doctor_contains(at) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if self.notifications_contain(tileception_core::Point::new(pos.x, pos.y)) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
+            return;
+        }
+        if self.strip_motion(pos, time) {
             return;
         }
         let now = self.now();
@@ -409,7 +505,7 @@ impl Tileception {
     }
 
     /// Picks a window up so it follows the pointer as a picture.
-    fn start_move_drag(&mut self, window: WindowId, at: Point<f64, Logical>) {
+    pub(crate) fn start_move_drag(&mut self, window: WindowId, at: Point<f64, Logical>) {
         let now = self.now();
         let screen = self.world.screen();
         let shown = self.drawn_windows(now).into_iter().find(|d| d.id == window).map(|d| d.content);
@@ -426,8 +522,12 @@ impl Tileception {
         self.move_drag = Some(MoveDrag { window, grab, size, target: None, free, last: at });
     }
 
-    fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
+    pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        // A held slider lets go wherever the button comes up.
+        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+            return;
+        }
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
@@ -438,12 +538,13 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        if self.launcher.open {
+        let at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
+            self.launcher_release();
+        }
+        if self.launcher.open && self.launcher_takes(at) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.launcher_click(tileception_core::Point::new(self.pointer.x, self.pointer.y));
-            }
-            if state == ButtonState::Released && button == BTN_LEFT {
-                self.launcher_release();
+                self.launcher_click(at);
             }
             return;
         }
@@ -459,10 +560,22 @@ impl Tileception {
         }
         let now = self.now();
         let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+            return;
+        }
+        if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(p) {
+            return;
+        }
+        if self.doctor_contains(p) {
+            return;
+        }
         if self.notifications_contain(p) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
             }
+            return;
+        }
+        if self.move_drag.is_none() && self.strip_button(button, state == ButtonState::Pressed) {
             return;
         }
 
@@ -549,11 +662,12 @@ impl Tileception {
             }
             // Shift+click selects tabs and previews; on a live window it belongs
             // to the program, for example to extend a text selection.
-            if mods.shift && (tab.is_some() || under.is_some_and(|d| !d.live)) {
-                if let Some(window) = tab.or(under.map(|d| d.id)) {
-                    self.toggle_selection(window);
-                    return;
-                }
+            if mods.shift
+                && (tab.is_some() || under.is_some_and(|d| !d.live))
+                && let Some(window) = tab.or(under.map(|d| d.id))
+            {
+                self.toggle_selection(window);
+                return;
             }
             if !mods.shift {
                 self.selection.windows.clear();
@@ -611,11 +725,21 @@ impl Tileception {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             return;
         }
-        if self.launcher.open && !self.is_locked() {
-            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
-                if value != 0.0 {
-                    self.launcher_step(if value > 0.0 { 1 } else { -1 });
-                }
+        if self.launcher.open
+            && !self.is_locked()
+            && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
+        {
+            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
+                && value != 0.0
+            {
+                self.launcher_step(if value > 0.0 { 1 } else { -1 });
+            }
+            return;
+        }
+        if !self.is_locked() && self.doctor_contains(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+            let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
+            if amount != 0.0 {
+                self.doctor_scroll(if amount > 0.0 { 1.0 } else { -1.0 });
             }
             return;
         }
@@ -623,10 +747,14 @@ impl Tileception {
             && self.notifications.open
             && self.notifications_contain(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
-            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
-                if value != 0.0 {
-                    self.notification_scroll(if value > 0.0 { 1 } else { -1 });
-                }
+            let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+            let discrete = event.amount_v120(Axis::Vertical).is_some() && event.source() == AxisSource::Wheel;
+            let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
+            if amount != 0.0 && self.controls_scroll(p, amount, discrete) {
+                return;
+            }
+            if amount != 0.0 {
+                self.notification_scroll(if amount > 0.0 { 1 } else { -1 });
             }
             return;
         }
@@ -714,7 +842,7 @@ impl Tileception {
     }
 
     /// The client surface under a point, for live windows only.
-    fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+    pub(crate) fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         use smithay::wayland::shell::wlr_layer::Layer;
         if let Some(hit) = self.layer_surface_under(pos, &[Layer::Overlay, Layer::Top]) {
             return Some(hit);
@@ -812,4 +940,29 @@ fn builtin(held: Mods, sym: u32, raw: u32, in_overview: bool) -> Option<Command>
         }
     }
     None
+}
+
+/// Whether a key is one the Doctor's text field uses: text, or editing and
+/// moving around in it. Everything else may run its shortcut.
+fn types(sym: u32) -> bool {
+    use keysyms::*;
+    let editing = [
+        KEY_Return,
+        KEY_KP_Enter,
+        KEY_BackSpace,
+        KEY_Delete,
+        KEY_Tab,
+        KEY_ISO_Left_Tab,
+        KEY_Escape,
+        KEY_Left,
+        KEY_Right,
+        KEY_Up,
+        KEY_Down,
+        KEY_Home,
+        KEY_End,
+        KEY_Page_Up,
+        KEY_Page_Down,
+        KEY_Insert,
+    ];
+    editing.contains(&sym) || smithay::input::keyboard::Keysym::new(sym).key_char().is_some_and(|c| !c.is_control())
 }

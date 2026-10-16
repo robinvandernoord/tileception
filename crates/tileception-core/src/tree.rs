@@ -297,11 +297,7 @@ impl Tree {
 
     /// The leaf (tile or Desktop) that holds `win`.
     pub fn leaf_of(&self, win: WindowId) -> Option<NodeId> {
-        if self.is_floating(win) {
-            Some(self.desktop)
-        } else {
-            self.tile_of(win)
-        }
+        if self.is_floating(win) { Some(self.desktop) } else { self.tile_of(win) }
     }
 
     /// All windows in the subtree, in layout order; floating windows included.
@@ -339,11 +335,11 @@ impl Tree {
 
     /// Puts a floating window above the others.
     pub fn raise_float(&mut self, win: WindowId) {
-        if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node {
-            if let Some(i) = floats.iter().position(|w| *w == win) {
-                let w = floats.remove(i);
-                floats.push(w);
-            }
+        if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node
+            && let Some(i) = floats.iter().position(|w| *w == win)
+        {
+            let w = floats.remove(i);
+            floats.push(w);
         }
     }
 
@@ -364,17 +360,17 @@ impl Tree {
     pub fn boundary(&self, id: NodeId, side: Side) -> Option<(NodeId, usize)> {
         let mut cur = id;
         while let Some(parent) = self.parent(cur) {
-            if let Node::Split { axis, children, .. } = self.node(parent) {
-                if *axis == side.axis() {
-                    let i = children.iter().position(|c| *c == cur).expect("child of its parent");
-                    let shown = |j: &usize| self.is_visible(children[*j]);
-                    if side.is_leading() {
-                        if let Some(j) = (0..i).rev().find(shown) {
-                            return Some((parent, j));
-                        }
-                    } else if (i + 1..children.len()).any(|j| shown(&j)) {
-                        return Some((parent, i));
+            if let Node::Split { axis, children, .. } = self.node(parent)
+                && *axis == side.axis()
+            {
+                let i = children.iter().position(|c| *c == cur).expect("child of its parent");
+                let shown = |j: &usize| self.is_visible(children[*j]);
+                if side.is_leading() {
+                    if let Some(j) = (0..i).rev().find(shown) {
+                        return Some((parent, j));
                     }
+                } else if (i + 1..children.len()).any(|j| shown(&j)) {
+                    return Some((parent, i));
                 }
             }
             cur = parent;
@@ -578,6 +574,72 @@ impl Tree {
         Some(group)
     }
 
+    /// The node holding exactly these tiled windows, without moving any
+    /// window: an existing node, or a new split grouping a run of adjacent
+    /// siblings, to dock something beside along `across`. A run is only
+    /// grouped in a split along the other axis: grouping along the same axis
+    /// would nest a split in one like it. None when the windows are not
+    /// together like that.
+    pub fn node_holding(&mut self, windows: &[WindowId], across: Axis) -> Option<NodeId> {
+        let tiles: Vec<_> = windows.iter().filter_map(|w| self.tile_of(*w)).collect();
+        if tiles.len() != windows.len() || tiles.is_empty() {
+            return None;
+        }
+        let common = tiles.iter().copied().reduce(|a, b| self.common_ancestor(a, b))?;
+        if self.windows_in(common).iter().all(|w| windows.contains(w)) {
+            return Some(common);
+        }
+        let Node::Split { axis, children, weights } = self.node(common).clone() else { return None };
+        if axis == across {
+            return None;
+        }
+        let whole = |child: &NodeId| {
+            let contents = self.windows_in(*child);
+            !contents.is_empty() && contents.iter().all(|w| windows.contains(w))
+        };
+        let first = children.iter().position(whole)?;
+        let run = children[first..].iter().take_while(|c| whole(c)).count();
+        let covered: Vec<_> = children[first..first + run].iter().flat_map(|c| self.windows_in(*c)).collect();
+        if run < 2 || !windows.iter().all(|w| covered.contains(w)) {
+            return None;
+        }
+        let grouped = children[first..first + run].to_vec();
+        let sizes = weights[first..first + run].to_vec();
+        let size = sizes.iter().sum();
+        let group = self.alloc(Node::Split { axis, children: grouped.clone(), weights: sizes }, Some(common));
+        for child in grouped {
+            self.slot_mut(child).parent = Some(group);
+        }
+        let (mut children, mut weights) = (children, weights);
+        children.splice(first..first + run, [group]);
+        weights.splice(first..first + run, [size]);
+        self.slot_mut(common).node = Node::Split { axis, children, weights };
+        Some(group)
+    }
+
+    /// A node's share of its split, among the children that take up room.
+    pub fn share_of(&self, id: NodeId) -> Option<f64> {
+        let parent = self.parent(id)?;
+        let Node::Split { children, weights, .. } = self.node(parent) else { return None };
+        let total: f64 = children.iter().zip(weights).filter(|(c, _)| self.is_visible(**c)).map(|(_, w)| *w).sum();
+        let i = children.iter().position(|c| *c == id)?;
+        (total > 0.0).then(|| weights[i] / total)
+    }
+
+    /// Gives a node this share of its split; the others keep their proportions.
+    pub fn set_share(&mut self, id: NodeId, share: f64) {
+        let Some(parent) = self.parent(id) else { return };
+        let visible: Vec<bool> = self.children(parent).iter().map(|c| self.is_visible(*c)).collect();
+        let Node::Split { children, weights, .. } = &mut self.slot_mut(parent).node else { return };
+        let Some(i) = children.iter().position(|c| *c == id) else { return };
+        let others: f64 =
+            weights.iter().zip(&visible).enumerate().filter(|(j, (_, v))| *j != i && **v).map(|(_, (w, _))| *w).sum();
+        let share = share.clamp(MIN_WEIGHT_FRACTION, 1.0 - MIN_WEIGHT_FRACTION);
+        if others > 0.0 {
+            weights[i] = share / (1.0 - share) * others;
+        }
+    }
+
     /// Puts `win` on the Desktop as a floating window.
     pub fn float(&mut self, win: WindowId) {
         debug_assert!(self.leaf_of(win).is_none(), "window must be detached before floating");
@@ -712,23 +774,22 @@ impl Tree {
         if let Some(parent) = self.parent(target) {
             let visible: Vec<bool> = self.children(parent).iter().map(|c| self.is_visible(*c)).collect();
             let share = self.share_removed_space;
-            if let Node::Split { axis: pa, children, weights } = &mut self.slot_mut(parent).node {
-                if *pa == axis {
-                    let idx = children.iter().position(|c| *c == target).expect("child of its parent");
-                    let weight = if share {
-                        let shown: Vec<f64> =
-                            weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).collect();
-                        shown.iter().sum::<f64>() / shown.len().max(1) as f64
-                    } else {
-                        weights[idx] /= 2.0;
-                        weights[idx]
-                    };
-                    let at = if side.is_leading() { idx } else { idx + 1 };
-                    children.insert(at, new);
-                    weights.insert(at, weight);
-                    self.slot_mut(new).parent = Some(parent);
-                    return;
-                }
+            if let Node::Split { axis: pa, children, weights } = &mut self.slot_mut(parent).node
+                && *pa == axis
+            {
+                let idx = children.iter().position(|c| *c == target).expect("child of its parent");
+                let weight = if share {
+                    let shown: Vec<f64> = weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).collect();
+                    shown.iter().sum::<f64>() / shown.len().max(1) as f64
+                } else {
+                    weights[idx] /= 2.0;
+                    weights[idx]
+                };
+                let at = if side.is_leading() { idx } else { idx + 1 };
+                children.insert(at, new);
+                weights.insert(at, weight);
+                self.slot_mut(new).parent = Some(parent);
+                return;
             }
         }
         self.wrap_beside(new, target, side);

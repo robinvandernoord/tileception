@@ -16,10 +16,15 @@ fi
 bindir="$HOME/.local/bin"
 desktop=/usr/share/wayland-sessions/tileception.desktop
 portal=/usr/share/xdg-desktop-portal/portals/tileception.portal
+badge=/usr/share/slick-greeter/badges/tileception.svg
 
 if [ -e "$desktop" ]; then
     sudo rm -f "$desktop"
     echo "Removed the Tileception session from the login screen"
+fi
+if [ -e "$badge" ]; then
+    sudo rm -f "$badge"
+    echo "Removed the login screen badge"
 fi
 if [ -e "$portal" ]; then
     sudo rm -f "$portal"

@@ -71,3 +71,15 @@ else
     sudo install -m 644 target/tileception.desktop "$desktop"
     echo "Added the Tileception session to the login screen"
 fi
+
+# The session's badge on Mint's (slick-greeter) login screen, generated.
+badge=/usr/share/slick-greeter/badges/tileception.svg
+if [ -d /usr/share/slick-greeter/badges ]; then
+    scripts/session-badge.sh > target/tileception-badge.svg
+    if cmp -s target/tileception-badge.svg "$badge"; then
+        echo "The login screen badge is up to date"
+    else
+        sudo install -m 644 target/tileception-badge.svg "$badge"
+        echo "Added the Tileception badge to the login screen"
+    fi
+fi

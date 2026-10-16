@@ -1,27 +1,27 @@
 use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
-    desktop::{space::SpaceElement, PopupManager, Window},
-    input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
+    desktop::{PopupManager, Window, space::SpaceElement},
+    input::{Seat, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     output::Output,
     reexports::{
-        calloop::{generic::Generic, EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction},
+        calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
+            Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Display, DisplayHandle,
         },
     },
-    utils::{Logical, Point, Rectangle, Size, SERIAL_COUNTER},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size},
     wayland::{
-        compositor::{with_states, CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         dmabuf::{DmabufGlobal, DmabufState},
         drm_syncobj::DrmSyncobjState,
         output::OutputManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::wlr_layer::WlrLayerShellState,
-        shell::xdg::{decoration::XdgDecorationState, SurfaceCachedState, ToplevelSurface, XdgShellState},
+        shell::xdg::{SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
         xwayland_shell::XWaylandShellState,
@@ -88,6 +88,13 @@ pub struct Tileception {
     pub seat_state: SeatState<Tileception>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// Clipboard managers and `wl-copy`/`wl-paste` without a window.
+    pub wlr_data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
+    pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
+    /// The window list for taskbars and switchers.
+    pub toplevels: crate::toplevels::Toplevels,
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     pub xwayland_shell_state: XWaylandShellState,
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
@@ -109,6 +116,13 @@ pub struct Tileception {
     pub config: Config,
     /// Running in a window of another desktop rather than as the session.
     pub nested: bool,
+    /// Running as the desktop session (not nested or headless), so desktop
+    /// services such as notifications may be started.
+    pub session_services: bool,
+    /// Private buses for the notification service and media players (tests),
+    /// which also allow starting them nested or headless.
+    pub notification_bus: Option<String>,
+    pub media_bus: Option<String>,
     pub gap_drag: Option<GapDrag>,
     pub move_drag: Option<MoveDrag>,
     pub resize_drag: Option<ResizeDrag>,
@@ -140,9 +154,15 @@ pub struct Tileception {
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
+    /// Volume, media players and brightness.
+    pub media: crate::media::Media,
+    /// The panel for asking an agent about the setup.
+    pub doctor: crate::doctor::Doctor,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
+    /// The strip of minimized windows at the bottom edge.
+    pub strip: crate::minimized::Strip,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -170,6 +190,16 @@ impl Tileception {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            |_| true,
+        );
+        let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            |_| true,
+        );
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -217,6 +247,11 @@ impl Tileception {
             seat_state,
             data_device_state,
             primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
+            toplevels: crate::toplevels::Toplevels::new(&dh),
+            pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh),
+            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh),
             xwayland_shell_state,
             xwm: None,
             xdisplay: None,
@@ -259,8 +294,14 @@ impl Tileception {
             launcher: Default::default(),
             glyphs: Default::default(),
             notifications: Default::default(),
+            media: Default::default(),
+            doctor: Default::default(),
+            session_services: false,
+            notification_bus: None,
+            media_bus: None,
             appearance: None,
             selection: Default::default(),
+            strip: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             wallpaper: None,
@@ -312,6 +353,13 @@ impl Tileception {
             .env("MOZ_ENABLE_WAYLAND", "1")
             .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
             .envs(self.ipc_socket.iter().map(|p| ("TILECEPTION_SOCKET", p)));
+        if self.session_services {
+            command.env("XDG_SESSION_TYPE", "wayland");
+            command.env(
+                "XDG_CURRENT_DESKTOP",
+                std::env::var_os("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "Tileception".into()),
+            );
+        }
         // X11 programs go to our Xwayland, never to a host X server.
         match self.xdisplay {
             Some(n) => command.env("DISPLAY", format!(":{n}")),
@@ -359,11 +407,16 @@ impl Tileception {
     /// commit, once they have said what they are.
     pub fn place_window(&mut self, id: WindowId) {
         let Some(window) = self.windows.get(&id) else { return };
-        let placement = if wants_float(window) { Placement::Float } else { Placement::Dock };
+        let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
+        let float = rule.float.unwrap_or_else(|| wants_float(window));
+        let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
         self.world.add_window(id, placement, now);
         self.restore_window_layout(id);
+        if let Some([w, h]) = rule.size.filter(|_| float) {
+            self.world.size_float(id, f64::from(w), f64::from(h));
+        }
         if let Some(x11) = self.windows.get(&id).and_then(|w| w.x11_surface()) {
             let g = x11.geometry();
             if self.world.float_needs_size(id) && g.size.w > 0 && g.size.h > 0 {
@@ -373,6 +426,11 @@ impl Tileception {
         self.apply_layout();
         if let Some(toplevel) = self.windows.get(&id).and_then(|w| w.toplevel()) {
             toplevel.send_configure();
+        }
+        if rule.minimized {
+            self.minimize_window(id);
+        } else if rule.fullscreen {
+            self.set_fullscreen(id, true);
         }
     }
 
@@ -436,7 +494,19 @@ impl Tileception {
         }
         for (id, window) in &self.windows {
             window.set_activated(Some(*id) == focus);
+            // Minimized windows are told they are hidden, so they can stop drawing.
+            let hidden = self.world.is_minimized(*id);
+            if let Some(x11) = window.x11_surface().filter(|x| x.is_minimized() != hidden) {
+                let _ = x11.set_suspended(hidden);
+            }
             if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|s| {
+                    if hidden {
+                        s.states.set(xdg_toplevel::State::Suspended);
+                    } else {
+                        s.states.unset(xdg_toplevel::State::Suspended);
+                    }
+                });
                 if toplevel.is_initial_configure_sent() {
                     toplevel.send_pending_configure();
                 }
@@ -459,13 +529,15 @@ impl Tileception {
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
             self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
-        } else if self.power_menu.is_some() || self.launcher.open {
+        } else if self.power_menu.is_some() {
+            None
+        } else if let Some(layer) = &self.layer_focus {
+            // Over the launcher and the Doctor too: slurp needs its Esc.
+            Some(KeyboardFocus::Wayland(layer.clone()))
+        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) {
             None
         } else {
-            match &self.layer_focus {
-                Some(layer) => Some(KeyboardFocus::Wayland(layer.clone())),
-                None => focus.and_then(|id| self.windows.get(&id)).and_then(focus_target),
-            }
+            focus.and_then(|id| self.windows.get(&id)).and_then(focus_target)
         };
         if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
             let _ = xwm.raise_window(x11);
@@ -514,14 +586,25 @@ impl Tileception {
         self.apply_layout();
     }
 
+    /// Takes a window out of the layout without closing it, leaving
+    /// fullscreen first.
+    pub fn minimize_window(&mut self, id: WindowId) {
+        if self.fullscreen == Some(id) {
+            self.set_fullscreen(id, false);
+        }
+        self.selection.windows.remove(&id);
+        let now = self.now();
+        if self.world.minimize(id, now) {
+            tracing::info!(window = id.0, "minimized");
+            self.peek_minimized();
+        }
+        self.apply_layout();
+    }
+
     /// The whole output, including what bars reserve.
     pub fn output_rect(&self) -> Rect {
         let size = self.output.as_ref().and_then(|o| o.current_mode()).map(|m| m.size).unwrap_or_default();
-        if size.w > 0 && size.h > 0 {
-            Rect::new(0.0, 0.0, size.w as f64, size.h as f64)
-        } else {
-            self.world.screen()
-        }
+        if size.w > 0 && size.h > 0 { Rect::new(0.0, 0.0, size.w as f64, size.h as f64) } else { self.world.screen() }
     }
 
     pub fn close_focused(&self) {
@@ -583,11 +666,7 @@ pub fn window_title(window: &Window) -> String {
     } else {
         window.x11_surface().map(|x| x.title()).unwrap_or_default()
     };
-    if title.trim().is_empty() {
-        app_id(window)
-    } else {
-        title
-    }
+    if title.trim().is_empty() { app_id(window) } else { title }
 }
 
 /// The app id (Wayland) or class (X11) of a window.
@@ -616,6 +695,9 @@ impl Tileception {
             window.refresh();
         }
         self.popups.cleanup();
+        self.update_strip();
+        self.update_home();
+        self.update_toplevels();
         let _ = self.display_handle.flush_clients();
     }
 }

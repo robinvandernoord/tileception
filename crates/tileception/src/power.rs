@@ -9,7 +9,7 @@ use crate::{
     shapes::Shape,
     state::Tileception,
     theme::Colour,
-    ui::{ease_out, glyph, Align, Painter, Style},
+    ui::{Align, Painter, Style, ease_out, glyph},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

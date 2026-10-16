@@ -8,16 +8,16 @@ use std::{
 
 use serde::Deserialize;
 use smithay::{
-    input::keyboard::{xkb, ModifiersState},
+    input::keyboard::{ModifiersState, xkb},
     reexports::calloop::{
-        timer::{TimeoutAction, Timer},
         LoopHandle,
+        timer::{TimeoutAction, Timer},
     },
 };
 
 use crate::{
-    commands::{self, Command},
     Tileception,
+    commands::{self, Command},
 };
 
 pub const DEFAULT: &str = include_str!("default-config.toml");
@@ -30,6 +30,9 @@ pub struct ConfigFile {
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub idle: crate::idle::IdleConfig,
+    pub media: crate::media::MediaConfig,
+    pub shell: crate::shell::ShellConfig,
+    pub rules: Vec<crate::rules::WindowRule>,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 
@@ -71,6 +74,11 @@ pub struct General {
     pub restore_layout: bool,
     /// Enable suspend/resume through the power menu; enabled by default.
     pub suspend_enabled: bool,
+    /// Start from the built-in bindings, with `[binds]` adding to them and
+    /// overriding them. Off: `[binds]` is the complete list.
+    pub default_binds: bool,
+    /// Show the launcher, with a clock, on an empty desktop.
+    pub welcome: bool,
 }
 
 impl Default for General {
@@ -87,6 +95,8 @@ impl Default for General {
             lock_command: None,
             restore_layout: false,
             suspend_enabled: true,
+            default_binds: true,
+            welcome: true,
         }
     }
 }
@@ -142,10 +152,27 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
         let file: ConfigFile = toml::from_str(text).map_err(|e| e.to_string())?;
         let defaults: ConfigFile = toml::from_str(DEFAULT).expect("built-in config parses");
-        let table = file.binds.clone().or(defaults.binds).unwrap_or_default();
-        let mut binds = Vec::new();
+        let mut binds: Vec<Bind> = Vec::new();
         let mut errors = Vec::new();
-        for (combo, value) in &table {
+        // The built-in bindings, then yours on top: a key you list replaces
+        // its default, and "none" removes it.
+        let mut tables = Vec::new();
+        if file.general.default_binds || file.binds.is_none() {
+            tables.push(defaults.binds.unwrap_or_default());
+        }
+        tables.extend(file.binds.clone());
+        for (combo, value) in tables.iter().flatten() {
+            let combo_keys = match parse_combo(combo) {
+                Ok(keys) => keys,
+                Err(e) => {
+                    errors.push(format!("{combo:?}: {e}"));
+                    continue;
+                }
+            };
+            binds.retain(|b| (b.mods, b.key) != combo_keys);
+            if matches!(value, BindValue::One(s) if s.trim() == "none") {
+                continue;
+            }
             let parsed: Result<Vec<Command>, String> = value
                 .lines()
                 .into_iter()
@@ -159,9 +186,9 @@ impl Config {
                     commands::parse(line)
                 })
                 .collect();
-            match (parse_combo(combo), parsed) {
-                (Ok((mods, key)), Ok(commands)) => binds.push(Bind { mods, key, commands }),
-                (Err(e), _) | (_, Err(e)) => errors.push(format!("{combo:?}: {e}")),
+            match parsed {
+                Ok(commands) => binds.push(Bind { mods: combo_keys.0, key: combo_keys.1, commands }),
+                Err(e) => errors.push(format!("{combo:?}: {e}")),
             }
         }
         if !errors.is_empty() {
@@ -170,6 +197,8 @@ impl Config {
         let drag_mod = parse_modifier(&file.general.drag_modifier)
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
+        file.shell.validate()?;
+        crate::rules::validate(&file.rules)?;
         Ok(Config { file, binds, drag_mod, theme })
     }
 
@@ -351,7 +380,8 @@ impl Tileception {
             self.wallpaper = None;
             self.wallpaper_failed = None;
         }
-        self.config = config;
+        let old_shell = std::mem::replace(&mut self.config, config).file.shell;
+        self.apply_shell(&old_shell);
         self.apply_layout();
     }
 }
@@ -404,11 +434,25 @@ mod tests {
     }
 
     #[test]
-    fn user_binds_replace_the_defaults() {
+    fn user_binds_add_to_and_override_the_defaults() {
+        let defaults = Config::default_config().binds.len();
+        let logo = Mods { logo: true, ..Default::default() };
+        let key = |name| xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS).raw();
         let c = Config::parse("[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
-        assert_eq!(c.binds.len(), 1);
+        assert_eq!(c.binds.len(), defaults + 1, "a new key joins the defaults");
+        assert_eq!(c.lookup(logo, key("h")), Some(&[Command::Action(crate::input::Action::Minimize)][..]));
+        // The same key written another way still replaces its default.
+        let c = Config::parse("[binds]\n\"Shift+Super+h\" = \"close\"").unwrap();
+        let logo_shift = Mods { logo: true, shift: true, ..Default::default() };
+        assert_eq!(c.binds.len(), defaults);
+        assert_eq!(c.lookup(logo_shift, key("h")), Some(&[Command::Action(crate::input::Action::Close)][..]));
+        let c = Config::parse("[binds]\n\"Super+H\" = \"none\"").unwrap();
+        assert_eq!(c.binds.len(), defaults - 1);
+        assert_eq!(c.lookup(logo, key("h")), None);
+        let c = Config::parse("[general]\ndefault_binds = false\n[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
+        assert_eq!(c.binds.len(), 1, "without defaults the table is the whole list");
         let c = Config::parse("[general]\ngap = 4").unwrap();
-        assert!(c.binds.len() > 30);
+        assert_eq!(c.binds.len(), defaults);
         assert_eq!(c.world_settings().gap, 4.0);
     }
 }

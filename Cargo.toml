@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/tileception-core", "crates/tileception"]
+members = ["crates/tileception-core", "crates/tileception-media", "crates/tileception-acp", "crates/tileception"]
 exclude = ["crates/tileception-apps", "crates/tileception-auth", "crates/tileception-notify"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 
 [workspace.lints.rust]

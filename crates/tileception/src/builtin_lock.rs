@@ -16,12 +16,12 @@ use tileception_core::Rect;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
+    Tileception,
     lock::LockState,
     render::OutputElement,
     shapes::Shape,
     theme::Colour,
-    ui::{glyph, Align, LocalTime, Painter, Style},
-    Tileception,
+    ui::{Align, LocalTime, Painter, Style, glyph},
 };
 
 pub struct BuiltinLocker {
@@ -89,8 +89,15 @@ impl Tileception {
         if self.is_locked() {
             return;
         }
-        if self.config.file.general.lock_command.is_some() {
-            let lock = self.lock_command();
+        let command = match self.shell().lock() {
+            crate::shell::Part::Off => {
+                tracing::warn!("locking is switched off in [shell]");
+                return;
+            }
+            crate::shell::Part::Command(line) => Some(self.expand_wallpaper(&line)),
+            crate::shell::Part::Builtin => self.config.file.general.lock_command.is_some().then(|| self.lock_command()),
+        };
+        if let Some(lock) = command {
             let command = if suspend { format!("{lock} && systemctl suspend") } else { lock };
             self.spawn("sh", &["-c".into(), command]);
         } else {
@@ -165,11 +172,11 @@ impl Tileception {
         match sym {
             keysyms::KEY_Escape => locker.clear(),
             keysyms::KEY_BackSpace => {
-                if let Some(compose) = &mut locker.compose {
-                    if compose.status() == xkb::compose::Status::Composing {
-                        compose.reset();
-                        return;
-                    }
+                if let Some(compose) = &mut locker.compose
+                    && compose.status() == xkb::compose::Status::Composing
+                {
+                    compose.reset();
+                    return;
                 }
                 if locker.len > 0 {
                     let text = std::str::from_utf8(&locker.password[..locker.len]).expect("typed UTF-8");
@@ -200,13 +207,13 @@ impl Tileception {
                 }
             }
             _ => {
-                if let Some(encoded) = crate::ui::compose_text(&mut locker.compose, sym) {
-                    if locker.len + encoded.len() <= locker.password.len() {
-                        locker.password[locker.len..locker.len + encoded.len()].copy_from_slice(encoded.as_bytes());
-                        locker.len += encoded.len();
-                        locker.message = "Enter to unlock";
-                        locker.error = false;
-                    }
+                if let Some(encoded) = crate::ui::compose_text(&mut locker.compose, sym)
+                    && locker.len + encoded.len() <= locker.password.len()
+                {
+                    locker.password[locker.len..locker.len + encoded.len()].copy_from_slice(encoded.as_bytes());
+                    locker.len += encoded.len();
+                    locker.message = "Enter to unlock";
+                    locker.error = false;
                 }
             }
         }

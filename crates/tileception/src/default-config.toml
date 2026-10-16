@@ -36,6 +36,13 @@ autostart = []
 # restore_layout = false
 # Suspend is enabled by default. Set false to disable the power-menu action.
 # suspend_enabled = true
+# [binds] below adds to and overrides the built-in bindings, so new built-in
+# shortcuts reach you after an update. Set false to make [binds] the
+# complete list instead.
+# default_binds = true
+# On an empty desktop (after login, or after closing the last window) show the
+# launcher with a clock: type to search, tap Super for a plain desktop.
+# welcome = true
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -51,6 +58,8 @@ autostart = []
 # on_accent = "#0d1117"
 # Wrong passwords and critical notifications.
 # danger = "#f0646a"
+# Cautions, such as volume boosted past 100%.
+# warning = "#f2b04c"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -71,6 +80,53 @@ autostart = []
 lock_after = 0
 off_after = 600
 
+[media]
+# Percent per volume or brightness key press. Held keys repeat.
+volume_step = 5
+brightness_step = 5
+# How far volume may be boosted past 100% (up to 200). Boosted volume shows
+# in the warning colour; loud boosts can distort.
+max_volume = 150
+# A small card at the bottom of the screen when a level or playback changes.
+osd = true
+osd_timeout_ms = 1500
+
+[shell]
+# Each part of the desktop is Tileception's own ("builtin"), switched off
+# ("none"), or a command that runs in its place. Changes apply on save.
+#
+# The launcher (tap Super, `launcher`), e.g. "fuzzel". Not builtin: no
+# welcome screen either.
+launcher = "builtin"
+# Notification popups and history. Anything but "builtin" stops the built-in
+# service so another daemon can take over: start it under [general]
+# autostart (autostart = ["swaync"]). A command is what Super+N runs, e.g.
+# "swaync-client -t"; with "none", Super+N shows only the sound controls.
+notifications = "builtin"
+# The power menu (Super+X), e.g. "wlogout".
+power_menu = "builtin"
+# The lock screen (Super+L, and locking when idle), e.g.
+# "swaylock -f -i {wallpaper}". {wallpaper} becomes the wallpaper's path.
+lock = "builtin"
+# Volume, media keys and brightness: "builtin" or "none". To use your own
+# commands instead, bind the keys to them in [binds].
+media = "builtin"
+
+# Window rules decide how matching windows open. app_id is the Wayland app id
+# or X11 class; patterns ignore case, with * for anything and ? for one
+# character. Every matching rule applies, in order, later ones winning.
+# float = true floats, false tiles (whatever the window asks for); size is
+# [width, height] for a floating window; fullscreen and minimized open it so.
+#
+# [[rules]]
+# app_id = "pavucontrol"
+# float = true
+# size = [720, 480]
+#
+# [[rules]]
+# title = "Picture-in-Picture"
+# float = true
+
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
 # layout = "us"
@@ -81,6 +137,9 @@ repeat_rate = 30
 
 # Key bindings: "Modifiers+Key" = "command", or a list of commands run in
 # order: "Super+Escape" = ["reload", "spawn notify-send 'Reloaded'"].
+# These come on top of the built-in bindings (unless default_binds = false):
+# a key listed here replaces its built-in command, "none" unbinds it
+# ("Super+H" = "none"), and keys not listed keep their built-in command.
 #
 # Modifiers: Super, Alt, Ctrl, Shift. Keys are xkb keysym names (T, Return,
 # Left, bracketleft, Page_Up, F1, XF86AudioRaiseVolume, ...), or WheelUp,
@@ -100,6 +159,8 @@ repeat_rate = 30
 #   toggle-split          stack the focused row, or lay the column side by side
 #   cycle [next|prev]     focus the next or previous window
 #   maximize              frame the focused window on its own (again: back)
+#   minimize              take the focused or selected windows out of the layout
+#   restore [window-id]   put the last minimized window (or this one) back
 #   back, forward         through the spaces you have framed
 #   save <n>, go <n>      save the current view in slot 1-9, or go to it
 #   next-tab, prev-tab    in the focused tile
@@ -107,6 +168,16 @@ repeat_rate = 30
 #   fullscreen            cover the whole screen with the focused window
 #   lock                  lock the screen (see lock_command)
 #   power-menu            lock, log out, suspend, restart or power off
+#   doctor [ask <text>]   the panel for asking about your setup
+#   doctor use <agent>    pick its agent by ACP Registry id (e.g. claude-acp)
+#   doctor mode <mode>    what it may do unasked: ask, config (Tileception's
+#                         own files and commands) or yolo; backups either way
+#   volume up|down [n]    change the output volume by n percent (or the step)
+#   volume set <n>        set it; volume mute [on|off|toggle]
+#   mic mute [on|off]     the microphone; mic up/down/set work too
+#   brightness up|down    the screen's backlight; brightness set <n>
+#   media <what>          the last-played player: play-pause, play, pause,
+#                         next, previous, stop; plain "media" prints status
 #   desktop               show or hide the Desktop tile
 #   reload                reload this file
 #   quit                  leave Tileception
@@ -122,6 +193,7 @@ repeat_rate = 30
 "Super+L" = "lock"
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
+"Super+slash" = "doctor"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
@@ -136,6 +208,8 @@ repeat_rate = 30
 "Super+WheelUp" = "step-in pointer"
 "Super+WheelDown" = "step-out"
 "Super+M" = "maximize"
+"Super+H" = "minimize"
+"Super+Shift+H" = "restore"
 "Super+bracketleft" = "back"
 "Super+bracketright" = "forward"
 
@@ -167,6 +241,26 @@ repeat_rate = 30
 
 # Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.
+"XF86AudioRaiseVolume" = "volume up"
+"XF86AudioLowerVolume" = "volume down"
+"XF86AudioMute" = "volume mute"
+"XF86AudioMicMute" = "mic mute"
+"XF86AudioPlay" = "media play-pause"
+"XF86AudioPause" = "media pause"
+"XF86AudioStop" = "media stop"
+"XF86AudioNext" = "media next"
+"XF86AudioPrev" = "media previous"
+"XF86MonBrightnessUp" = "brightness up"
+"XF86MonBrightnessDown" = "brightness down"
+# The same for keyboards without media keys.
+"Super+Ctrl+Up" = "volume up"
+"Super+Ctrl+Down" = "volume down"
+"Super+Ctrl+M" = "volume mute"
+"Super+Ctrl+space" = "media play-pause"
+"Super+Ctrl+Left" = "media previous"
+"Super+Ctrl+Right" = "media next"
+"Super+Ctrl+Page_Up" = "brightness up"
+"Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"
 

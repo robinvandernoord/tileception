@@ -149,6 +149,11 @@ tileception msg terminal
 tileception msg screenshot /tmp/shot.png
 ```
 
+Scripts can also pretend to use the mouse and keyboard there (headless or
+nested only, never in a real session): `tileception msg pointer 640 400`,
+`click [x y] [left|right|middle]`, `key Super+slash` and `type some text`.
+Keys go through the same handling as real ones.
+
 ## Lint policy
 
 Run `make lint` to check formatting and all Clippy targets, including the independent
@@ -181,7 +186,31 @@ to a command:
 "Super+Return" = "spawn firefox"
 "Super+1" = "go 1"
 "Super+Shift+1" = "save 1"
+"Super+H" = "none"
 ```
+
+`[binds]` adds to and overrides the built-in bindings: a key you list
+replaces its built-in command, `"none"` unbinds it, and every other built-in
+shortcut stays, including ones added in later versions. Set
+`default_binds = false` under `[general]` to make `[binds]` the complete list.
+
+The built-in launcher, notifications, power menu, lock screen and volume
+controls can each be kept, switched off or replaced under `[shell]`, for
+example by fuzzel, swaync, wlogout and swaylock:
+
+```toml
+[general]
+autostart = ["swaync"]
+
+[shell]
+launcher = "fuzzel"
+notifications = "swaync-client -t"   # what Super+N runs
+power_menu = "wlogout"
+lock = "swaylock -f -i {wallpaper}"
+```
+
+A replaced notification service gives up its D-Bus name, so the other daemon
+can take it, also after a reload without logging out.
 
 ## Look
 
@@ -264,6 +293,7 @@ reloads automatically.
 | Super+I / Super+U | frame the selection or step in toward focus / step out a level |
 | Super+WheelUp / Super+WheelDown | step in toward the pointer / step out |
 | Super+M | frame the focused window on its own (again: back) |
+| Super+H / Super+Shift+H | minimize the focused or selected windows / restore the last one |
 | Super+[ / Super+] | back / forward through framed spaces |
 | Super+Arrows | neighbouring space |
 | Super+Shift+Arrows | move the focused or selected windows that way |
@@ -300,7 +330,8 @@ Mouse:
 `TILECEPTION_SOCKET` is set). Bindings use the same commands: `terminal`,
 `spawn <command line>`, `close`, `overview`, `step-in [pointer]`,
 `step-out`, `focus <dir>`, `move <dir>`, `resize <dir> <px>`,
-`toggle-split`, `cycle [next|prev]`, `back`, `forward`, `maximize`, `desktop`,
+`toggle-split`, `cycle [next|prev]`, `back`, `forward`, `maximize`, `minimize`,
+`restore [window-id]`, `desktop`,
 `float`, `fullscreen`, `next-tab`, `prev-tab`, `save <n>`, `go <n>`, `vt <n>`,
 `drop <x> <y>`, `screenshot <file.png>`, `copy-image <file.png>`, `launcher`, `notifications`,
 `do-not-disturb`, `select [window-id ...]`, `group`, `lock`, `power-menu`,

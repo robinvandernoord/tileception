@@ -3,7 +3,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tileception_core::{world::LayoutSnapshot, Placement, WindowId};
+use tileception_core::{Placement, WindowId, world::LayoutSnapshot};
 
 use crate::Tileception;
 
@@ -48,12 +48,11 @@ impl Tileception {
             return;
         };
         let app = self.windows.get(&id).map(crate::state::app_id).unwrap_or_default();
-        if !app.is_empty() {
-            if let Some(record) =
+        if !app.is_empty()
+            && let Some(record) =
                 saved.windows.iter().find(|r| r.app == app && !self.persistence.matched.contains_key(&r.id))
-            {
-                self.persistence.matched.insert(record.id, id);
-            }
+        {
+            self.persistence.matched.insert(record.id, id);
         }
         let extras: Vec<_> = self
             .world

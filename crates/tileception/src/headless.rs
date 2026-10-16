@@ -11,12 +11,12 @@ use smithay::{
         allocator::gbm::GbmDevice,
         drm::{DrmDeviceFd, DrmNode},
         egl::{EGLContext, EGLDisplay},
-        renderer::{gles::GlesRenderer, ImportDma, ImportMemWl},
+        renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::{
-        timer::{TimeoutAction, Timer},
         EventLoop,
+        timer::{TimeoutAction, Timer},
     },
     utils::{DeviceFd, Transform},
     wayland::dmabuf::{DmabufFeedbackBuilder, DmabufState},
@@ -90,7 +90,8 @@ impl Tileception {
         let Some(mut headless) = self.headless.take() else { return };
         self.process_captures(&mut headless.renderer);
         let elapsed = self.start.elapsed();
-        for window in self.windows.values() {
+        // Minimized windows are hidden: no frames, so they need not draw.
+        for (_, window) in self.windows.iter().filter(|(id, _)| !self.world.is_minimized(**id)) {
             window.send_frame(&headless.output, elapsed, Some(Duration::ZERO), |_, _| Some(headless.output.clone()));
         }
         self.headless = Some(headless);

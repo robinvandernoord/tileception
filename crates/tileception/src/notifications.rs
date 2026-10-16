@@ -3,7 +3,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
     time::Instant,
 };
 
@@ -19,16 +19,17 @@ use tileception_core::{Point, Rect};
 use tileception_notify::{Event, Image, Notification, NotifyService, Request, Urgency};
 
 use crate::{
+    Tileception,
     render::OutputElement,
     shapes::Shape,
-    ui::{ago, ease_out, glyph, Align, Painter, Style},
-    Tileception,
+    ui::{Align, Painter, Style, ago, ease_out, glyph},
 };
 
 #[derive(Default)]
 pub struct Notifications {
     service: Option<NotifyService>,
     events: Option<mpsc::Receiver<Event>>,
+    source: Option<smithay::reexports::calloop::RegistrationToken>,
     active: BTreeMap<u32, Arc<Notification>>,
     history: Vec<Arc<Notification>>,
     pub open: bool,
@@ -42,18 +43,38 @@ impl Tileception {
             let (ping, source) = make_ping().map_err(|e| e.to_string())?;
             let (service, events) =
                 NotifyService::start(Default::default(), address, move || ping.ping()).map_err(|e| e.to_string())?;
-            self.loop_handle
+            let token = self
+                .loop_handle
                 .insert_source(source, |_, _, state| state.notification_events())
                 .map_err(|e| e.to_string())?;
-            Ok::<_, String>((service, events))
+            Ok::<_, String>((service, events, token))
         })();
         match result {
-            Ok((service, events)) => {
+            Ok((service, events, token)) => {
                 self.notifications.service = Some(service);
                 self.notifications.events = Some(events);
+                self.notifications.source = Some(token);
             }
             Err(error) => tracing::error!("could not start notifications: {error}"),
         }
+    }
+
+    /// Stops the service, releasing its bus name for another daemon.
+    pub fn stop_notifications(&mut self) {
+        if let Some(token) = self.notifications.source.take() {
+            self.loop_handle.remove(token);
+        }
+        self.notifications.service = None;
+        self.notifications.events = None;
+        self.notifications.active.clear();
+        self.notifications.history.clear();
+        self.schedule_render();
+    }
+
+    /// Whether Tileception's own notifications are in use (rather than
+    /// switched off or replaced in `[shell]`).
+    pub fn builtin_notifications(&self) -> bool {
+        self.shell().notifications().is_builtin()
     }
 
     fn notification_events(&mut self) {
@@ -114,20 +135,26 @@ impl Tileception {
         self.notifications.offset = self.notifications.offset.saturating_add_signed(delta).min(len.saturating_sub(1));
     }
 
-    /// The history panel, floating along the right edge.
+    /// The history panel, against the right edge.
     fn notification_panel(&self) -> Rect {
         let screen = self.world.screen();
-        let w = (screen.w - 24.0).clamp(1.0, PANEL_W);
-        Rect::new(screen.right() - w - 12.0, screen.y + 12.0, w, (screen.h - 24.0).max(1.0))
+        let w = screen.w.clamp(1.0, PANEL_W);
+        Rect::new(screen.right() - w, screen.y, w, screen.h.max(1.0))
     }
 
     /// The history panel's own controls.
-    fn panel_controls(&self) -> PanelControls {
+    pub fn panel_controls(&self) -> PanelControls {
         let panel = self.notification_panel();
+        let controls = self.controls_layout(panel.x + 12.0, panel.y + 58.0, panel.w - 24.0);
+        let below = if controls.rect.h > 0.0 { controls.rect.bottom() + 10.0 } else { panel.y + 58.0 };
+        // Without the built-in service there is no Do not disturb to switch.
+        let dnd_h = if self.builtin_notifications() { 48.0 } else { 0.0 };
+        let dnd = Rect::new(panel.x + 12.0, below, panel.w - 24.0, dnd_h);
         PanelControls {
             clear: Rect::new(panel.right() - 16.0 - 96.0, panel.y + 14.0, 96.0, 32.0),
-            dnd: Rect::new(panel.x + 12.0, panel.y + 58.0, panel.w - 24.0, 48.0),
-            cards_top: panel.y + 124.0,
+            controls,
+            dnd,
+            cards_top: dnd.bottom() + 18.0,
         }
     }
 
@@ -214,6 +241,9 @@ impl Tileception {
     }
 
     pub fn notifications_contain(&self, p: Point) -> bool {
+        if self.overlay_under(p) {
+            return false;
+        }
         if self.notifications.open && self.notification_panel().contains(p) {
             return true;
         }
@@ -228,8 +258,11 @@ impl Tileception {
                 self.notification_request(Request::DismissAll);
                 return;
             }
-            if controls.dnd.contains(p) {
+            if self.builtin_notifications() && controls.dnd.contains(p) {
                 self.toggle_dnd();
+                return;
+            }
+            if self.controls_press(&controls.controls, p) {
                 return;
             }
         }
@@ -262,10 +295,13 @@ impl Tileception {
         if self.notifications.open {
             let panel = self.notification_panel();
             let controls = self.panel_controls();
-            p.popup(panel);
+            p.edge_panel(panel, false);
             let title = Style::new(t.font_size * 1.3, t.text).bold();
-            let (title_w, _) =
-                p.text("Notifications", Rect::new(panel.x + 18.0, panel.y + 14.0, panel.w - 150.0, 32.0), title);
+            let (title_w, _) = p.text(
+                if self.builtin_notifications() { "Notifications" } else { "Controls" },
+                Rect::new(panel.x + 18.0, panel.y + 14.0, panel.w - 150.0, 32.0),
+                title,
+            );
             let count = self.notifications.history.len();
             if count > 0 {
                 let label = count.to_string();
@@ -289,53 +325,64 @@ impl Tileception {
                 );
             }
 
-            // Do not disturb, as a row with a switch.
-            let row = controls.dnd;
-            let hover = row.contains(pointer);
-            p.shape(
-                row,
-                Shape {
-                    border_width: 1.0,
-                    border: if dnd { t.accent.alpha(0.4) } else { t.border },
-                    ..Shape::filled(if hover { t.surface_raised } else { t.surface }, t.radius)
-                },
-            );
-            p.glyph(glyph::MOON, Rect::new(row.x + 8.0, row.y, 32.0, row.h), 17, if dnd { t.accent } else { t.muted });
-            p.text(
-                "Do not disturb",
-                Rect::new(row.x + 44.0, row.y + 5.0, row.w - 110.0, 20.0),
-                Style::new(t.font_size, t.text),
-            );
-            let sub = if dnd { "Popups are silenced" } else { "Popups are shown" };
-            p.text(
-                sub,
-                Rect::new(row.x + 44.0, row.y + 24.0, row.w - 110.0, 18.0),
-                Style::new(t.font_size * 0.82, t.muted),
-            );
-            let track = Rect::new(row.right() - 56.0, row.y + (row.h - 24.0) / 2.0, 42.0, 24.0);
-            let knob_x = if dnd { track.right() - 21.0 } else { track.x + 3.0 };
-            if dnd {
+            self.draw_controls(&mut p, &controls.controls, pointer);
+
+            if self.builtin_notifications() {
+                // Do not disturb, as a row with a switch.
+                let row = controls.dnd;
+                let hover = row.contains(pointer);
                 p.shape(
-                    track,
+                    row,
                     Shape {
-                        radius: 12.0,
-                        fill: (t.accent, t.accent_end),
-                        glow_radius: 10.0,
-                        glow: t.accent.alpha(0.25),
-                        ..Default::default()
+                        border_width: 1.0,
+                        border: if dnd { t.accent.alpha(0.4) } else { t.border },
+                        ..Shape::filled(if hover { t.surface_raised } else { t.surface }, t.radius)
                     },
                 );
-            } else {
-                p.shape(track, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, 12.0) });
+                p.glyph(
+                    glyph::MOON,
+                    Rect::new(row.x + 8.0, row.y, 32.0, row.h),
+                    17,
+                    if dnd { t.accent } else { t.muted },
+                );
+                p.text(
+                    "Do not disturb",
+                    Rect::new(row.x + 44.0, row.y + 5.0, row.w - 110.0, 20.0),
+                    Style::new(t.font_size, t.text),
+                );
+                let sub = if dnd { "Popups are silenced" } else { "Popups are shown" };
+                p.text(
+                    sub,
+                    Rect::new(row.x + 44.0, row.y + 24.0, row.w - 110.0, 18.0),
+                    Style::new(t.font_size * 0.82, t.muted),
+                );
+                let track = Rect::new(row.right() - 56.0, row.y + (row.h - 24.0) / 2.0, 42.0, 24.0);
+                let knob_x = if dnd { track.right() - 21.0 } else { track.x + 3.0 };
+                if dnd {
+                    p.shape(
+                        track,
+                        Shape {
+                            radius: 12.0,
+                            fill: (t.accent, t.accent_end),
+                            glow_radius: 10.0,
+                            glow: t.accent.alpha(0.25),
+                            ..Default::default()
+                        },
+                    );
+                } else {
+                    p.shape(track, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, 12.0) });
+                }
+                p.fill(Rect::new(knob_x, track.y + 3.0, 18.0, 18.0), if dnd { t.on_accent } else { t.muted }, 9.0);
             }
-            p.fill(Rect::new(knob_x, track.y + 3.0, 18.0, 18.0), if dnd { t.on_accent } else { t.muted }, 9.0);
             p.fill(Rect::new(panel.x + 12.0, controls.cards_top - 10.0, panel.w - 24.0, 1.0), t.border, 0.0);
 
             if self.notifications.history.is_empty() {
                 let mid = (controls.cards_top + panel.bottom()) / 2.0 - 40.0;
                 p.fill(Rect::new(panel.x + panel.w / 2.0 - 32.0, mid - 32.0, 64.0, 64.0), t.surface_raised, 32.0);
                 p.glyph(glyph::BELL, Rect::new(panel.x, mid - 32.0, panel.w, 64.0), 28, t.muted);
-                let (headline, detail) = if self.notifications.service.is_some() {
+                let (headline, detail) = if !self.builtin_notifications() {
+                    ("Notifications are handled elsewhere", "Switched off or replaced in [shell]")
+                } else if self.notifications.service.is_some() {
                     ("No notifications", "You're all caught up")
                 } else {
                     ("Notifications unavailable", "The notification service did not start")
@@ -351,8 +398,12 @@ impl Tileception {
                     Style::new(t.font_size * 0.9, t.muted).align(Align::Centre),
                 );
             }
-            let hints = [("Esc", "Close"), ("Scroll", "Older")];
-            p.key_hints(&hints, panel.x + 18.0, panel.bottom() - 26.0, false);
+            let hints: &[(&str, &str)] = if self.builtin_notifications() {
+                &[("Esc", "Close"), ("Scroll", "Older")]
+            } else {
+                &[("Esc", "Close")]
+            };
+            p.key_hints(hints, panel.x + 18.0, panel.bottom() - 26.0, false);
         }
 
         for card in self.notification_cards() {
@@ -467,12 +518,11 @@ impl Tileception {
                 self.launcher.app_icon(path, size)
             }
         };
-        if let Some(Image::Path(path)) = &n.image {
-            if !is_file(path) {
-                if let Some(icon) = named(path) {
-                    return Some(icon);
-                }
-            }
+        if let Some(Image::Path(path)) = &n.image
+            && !is_file(path)
+            && let Some(icon) = named(path)
+        {
+            return Some(icon);
         }
         // A picture file given as the icon is shown as the preview instead.
         n.app_icon
@@ -508,8 +558,10 @@ const BODY_LINES: u8 = 3;
 const PREVIEW_W: u32 = 348;
 const PREVIEW_H: u32 = 190;
 
-struct PanelControls {
+pub struct PanelControls {
     clear: Rect,
+    /// Sound, brightness and playback, under the title.
+    pub controls: crate::controls::Controls,
     dnd: Rect,
     cards_top: f64,
 }

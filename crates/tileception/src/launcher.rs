@@ -15,19 +15,19 @@ use tileception_apps::{AppIndex, IconLookup, Usage};
 use tileception_core::{Point, Rect};
 
 use smithay::wayland::selection::{
-    data_device::{
-        current_data_device_selection_userdata, request_data_device_client_selection, set_data_device_selection,
-        SelectionRequestError,
-    },
     SelectionTarget,
+    data_device::{
+        SelectionRequestError, current_data_device_selection_userdata, request_data_device_client_selection,
+        set_data_device_selection,
+    },
 };
 
 use crate::{
+    Tileception,
     render::OutputElement,
     shapes::Shape,
     theme::Colour,
-    ui::{ease_out, glyph, Align, Icons, Painter, Style},
-    Tileception,
+    ui::{Align, Icons, LocalTime, Painter, Style, ease_out, glyph},
 };
 
 /// Clipboard contents the compositor owns itself: launcher text, or a
@@ -66,13 +66,28 @@ struct StoredUsage {
     last_used: u64,
 }
 
+/// Where a paste goes: the launcher as opened then, or the doctor (which
+/// also takes pictures).
+#[derive(Debug, Clone, Copy)]
+pub enum Paste {
+    Launcher(u64),
+    Doctor,
+}
+
 pub struct Launcher {
     pub open: bool,
+    /// Open as the welcome screen on an empty desktop.
+    pub home: bool,
+    /// Super put the welcome screen away until the desktop next becomes empty.
+    home_dismissed: bool,
+    /// Just launched something from the welcome screen: give it time to open
+    /// a window before the welcome screen comes back.
+    quiet_until: Option<Instant>,
     input: crate::text_input::TextInput,
     edited: Instant,
     opened: Instant,
     selecting: bool,
-    clipboard: Option<smithay::reexports::calloop::channel::Sender<(u64, String)>>,
+    clipboard: Option<smithay::reexports::calloop::channel::Sender<(Paste, Clip)>>,
     epoch: u64,
     selected: usize,
     index: AppIndex,
@@ -88,6 +103,9 @@ impl Default for Launcher {
             std::fs::read_to_string(usage_path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
         Self {
             open: false,
+            home: false,
+            home_dismissed: false,
+            quiet_until: None,
             input: Default::default(),
             edited: Instant::now(),
             opened: Instant::now(),
@@ -111,7 +129,22 @@ impl Default for Launcher {
 
 impl Launcher {
     fn matches(&self) -> Vec<&tileception_apps::App> {
+        // "?" starts a question for the doctor, not an app search.
+        if self.input.text.trim_start().starts_with('?') {
+            return Vec::new();
+        }
         self.index.search(&self.input.text, &self.usage, 8)
+    }
+
+    /// What typing would ask the doctor: anything after "?", or text that
+    /// reads like a question (ending in "?", or three words or more).
+    fn question(&self) -> Option<String> {
+        question_in(&self.input.text)
+    }
+
+    /// Rows in the list: the apps, then "Ask Tileception" when there is a question.
+    fn entries(&self) -> usize {
+        self.matches().len() + usize::from(self.question().is_some())
     }
 
     pub fn app_icon(
@@ -140,28 +173,38 @@ impl Tileception {
         }
         let mime_types = vec!["image/png".to_string()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
-        if let Some(xwm) = self.xwm.as_mut() {
-            if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
-                tracing::warn!("could not offer the image to X11: {error:?}");
-            }
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
+        {
+            tracing::warn!("could not offer the image to X11: {error:?}");
         }
         Ok(())
     }
 
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
-        let (sender, receiver) = channel::channel::<(u64, String)>();
+        let (sender, receiver) = channel::channel::<(Paste, Clip)>();
         self.launcher.clipboard = Some(sender);
         self.loop_handle
             .insert_source(receiver, |event, _, state| {
-                if let channel::Event::Msg((epoch, text)) = event {
-                    if state.launcher.open && state.launcher.epoch == epoch {
-                        state.launcher_insert_paste(&text);
-                        state.schedule_render();
-                    }
+                if let channel::Event::Msg((target, clip)) = event {
+                    state.insert_paste(target, clip);
                 }
             })
             .expect("clipboard event source");
+    }
+
+    /// A paste arriving, if what it was meant for is still there.
+    fn insert_paste(&mut self, target: Paste, clip: Clip) {
+        match (target, clip) {
+            (Paste::Launcher(epoch), Clip::Text(text)) if self.launcher.open && self.launcher.epoch == epoch => {
+                self.launcher_insert_paste(&text);
+            }
+            (Paste::Doctor, Clip::Text(text)) if self.doctor.open => self.doctor_insert_paste(&text),
+            (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
+            _ => return,
+        }
+        self.schedule_render();
     }
 
     pub fn toggle_launcher(&mut self) {
@@ -169,14 +212,51 @@ impl Tileception {
             return;
         }
         if self.launcher.open {
+            if self.launcher.home {
+                self.launcher.home_dismissed = true;
+            }
             self.close_launcher();
             return;
         }
+        self.open_launcher(false);
+    }
+
+    /// Shows the launcher as the welcome screen while nothing is open.
+    /// Minimized windows and windows that never showed do not count: what
+    /// matters is an empty layout.
+    pub fn update_home(&mut self) {
+        if self.windows.keys().any(|id| self.world.contains_window(*id)) {
+            self.launcher.home_dismissed = false;
+            self.launcher.quiet_until = None;
+            if self.launcher.home {
+                self.close_launcher();
+            }
+            return;
+        }
+        let welcome = self.config.file.general.welcome && self.shell().launcher().is_builtin();
+        if self.launcher.home && !welcome {
+            self.close_launcher();
+        }
+        let quiet = self.launcher.quiet_until.is_some_and(|until| Instant::now() < until);
+        if welcome
+            && !self.launcher.open
+            && !self.launcher.home_dismissed
+            && !quiet
+            && !self.is_locked()
+            && self.power_menu.is_none()
+            && !self.doctor.open
+        {
+            self.open_launcher(true);
+        }
+    }
+
+    fn open_launcher(&mut self, home: bool) {
         if self.launcher.index.changed_since_scan() {
             self.launcher.index.refresh();
         }
         self.power_menu = None;
         self.launcher.open = true;
+        self.launcher.home = home;
         self.launcher.selecting = false;
         self.launcher.epoch = self.launcher.epoch.wrapping_add(1);
         self.launcher.input.clear();
@@ -195,6 +275,7 @@ impl Tileception {
 
     pub fn close_launcher(&mut self) {
         self.launcher.open = false;
+        self.launcher.home = false;
         self.launcher.selecting = false;
         self.force_keyboard_focus_sync();
     }
@@ -202,7 +283,23 @@ impl Tileception {
     pub fn launcher_key(&mut self, sym: u32, mods: crate::config::Mods) {
         self.launcher.edited = Instant::now();
         let word = mods.ctrl || mods.alt;
+        // On the welcome screen's grid, arrows move between the tiles.
+        if self.launcher.home && self.launcher.input.text.is_empty() {
+            match sym {
+                keysyms::KEY_Left => return self.launcher_step(-1),
+                keysyms::KEY_Right => return self.launcher_step(1),
+                keysyms::KEY_Up => return self.home_row_step(-1),
+                keysyms::KEY_Down => return self.home_row_step(1),
+                _ => {}
+            }
+        }
         match sym {
+            // The welcome screen is the desktop, not something to close:
+            // Esc only clears the search there. Super still hides it.
+            keysyms::KEY_Escape if self.launcher.home => {
+                self.launcher.input.clear();
+                self.launcher.selected = 0;
+            }
             keysyms::KEY_Escape => self.close_launcher(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_app(),
             keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.launcher_step(-1),
@@ -231,10 +328,10 @@ impl Tileception {
                         mime_types.clone(),
                         Some(Clip::Text(text)),
                     );
-                    if let Some(xwm) = self.xwm.as_mut() {
-                        if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
-                            tracing::warn!("could not offer launcher text to X11: {error:?}");
-                        }
+                    if let Some(xwm) = self.xwm.as_mut()
+                        && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
+                    {
+                        tracing::warn!("could not offer launcher text to X11: {error:?}");
                     }
                     if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
                         self.launcher.input.insert("");
@@ -242,7 +339,9 @@ impl Tileception {
                     }
                 }
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => self.launcher_paste(),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
+                self.paste(Paste::Launcher(self.launcher.epoch));
+            }
             _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => {
                 self.launcher.input.clear();
                 self.launcher.selected = 0;
@@ -257,25 +356,31 @@ impl Tileception {
         }
     }
 
-    fn launcher_paste(&mut self) {
+    /// Pastes the clipboard's text into the launcher's or the doctor's
+    /// field, or a picture into the doctor's next message.
+    pub fn paste(&mut self, target: Paste) {
         use std::os::unix::net::UnixStream;
-        match current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
-            Some(Clip::Text(text)) => {
-                self.launcher_insert_paste(&text);
-                return;
-            }
-            Some(Clip::Png(_)) => return,
-            None => {}
+        if let Some(clip) = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
+            self.insert_paste(target, clip);
+            return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
-        let epoch = self.launcher.epoch;
         let Ok((reader, writer)) = UnixStream::pair() else { return };
         // Bound stalled or oversized transfers without blocking the compositor.
         if reader.set_read_timeout(Some(Duration::from_secs(3))).is_err() {
             return;
         }
         let mut requested = false;
-        for mime_type in ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"] {
+        let text = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
+        // Pictures first where they are welcome: a copied image often also
+        // offers its address as text.
+        let mime_types = match target {
+            Paste::Doctor => [&["image/png"][..], &text].concat(),
+            Paste::Launcher(_) => text.to_vec(),
+        };
+        let mut wanted = "";
+        for mime_type in mime_types {
+            wanted = mime_type;
             let Ok(fd) = writer.try_clone() else { return };
             match request_data_device_client_selection(&self.seat, mime_type.into(), fd.into()) {
                 Ok(()) => {
@@ -283,6 +388,8 @@ impl Tileception {
                     break;
                 }
                 Err(SelectionRequestError::InvalidMimetype) => continue,
+                // From X11, where offered types are not known: text only.
+                Err(SelectionRequestError::ServerSideSelection) if mime_type.starts_with("image/") => continue,
                 Err(SelectionRequestError::ServerSideSelection) => {
                     if let Some(xwm) = self.xwm.as_mut() {
                         requested = xwm
@@ -296,7 +403,7 @@ impl Tileception {
                     }
                     // This writer is transferred to Xwayland or dropped here.
                     if requested {
-                        self.launcher_read_paste(reader, sender, epoch);
+                        self.launcher_read_paste(reader, sender, target, false);
                     }
                     return;
                 }
@@ -305,21 +412,29 @@ impl Tileception {
         }
         drop(writer);
         if requested {
-            self.launcher_read_paste(reader, sender, epoch);
+            self.launcher_read_paste(reader, sender, target, wanted.starts_with("image/"));
         }
     }
 
     fn launcher_read_paste(
         &self,
         reader: std::os::unix::net::UnixStream,
-        sender: smithay::reexports::calloop::channel::Sender<(u64, String)>,
-        epoch: u64,
+        sender: smithay::reexports::calloop::channel::Sender<(Paste, Clip)>,
+        target: Paste,
+        picture: bool,
     ) {
         use std::io::Read;
         std::thread::spawn(move || {
+            if picture {
+                let mut png = Vec::new();
+                if reader.take(MAX_IMAGE + 1).read_to_end(&mut png).is_ok() && png.len() as u64 <= MAX_IMAGE {
+                    let _ = sender.send((target, Clip::Png(png.into())));
+                }
+                return;
+            }
             let mut text = String::new();
             if reader.take(4097).read_to_string(&mut text).is_ok() && text.len() <= 4096 {
-                let _ = sender.send((epoch, text));
+                let _ = sender.send((target, Clip::Text(text)));
             }
         });
     }
@@ -332,13 +447,29 @@ impl Tileception {
     }
 
     pub fn launcher_step(&mut self, delta: isize) {
-        let len = self.launcher.matches().len();
+        let len = self.launcher.entries();
         if len > 0 {
             self.launcher.selected = (self.launcher.selected as isize + delta).rem_euclid(len as isize) as usize;
         }
     }
 
+    /// Up or down a row of the welcome screen's grid, staying on the grid.
+    fn home_row_step(&mut self, rows: isize) {
+        let len = self.launcher.matches().len() as isize;
+        let next = self.launcher.selected as isize + rows * HOME_COLUMNS as isize;
+        if (0..len).contains(&next) {
+            self.launcher.selected = next as usize;
+        }
+    }
+
     fn launch_app(&mut self) {
+        if self.launcher.selected == self.launcher.matches().len() {
+            if let Some(question) = self.launcher.question() {
+                self.close_launcher();
+                self.ask_doctor(&question);
+            }
+            return;
+        }
         let Some((id, command)) = self
             .launcher
             .matches()
@@ -347,6 +478,9 @@ impl Tileception {
         else {
             return;
         };
+        if self.launcher.home {
+            self.launcher.quiet_until = Some(Instant::now() + HOME_QUIET);
+        }
         self.close_launcher();
         self.spawn("sh", &["-c".into(), command]);
         let entry = self.launcher.usage.entry(id).or_insert(Usage { count: 0, last_used: UNIX_EPOCH });
@@ -368,10 +502,10 @@ impl Tileception {
             .collect();
         if let Ok(data) = toml::to_string(&stored) {
             let path = usage_path();
-            if let Some(parent) = path.parent() {
-                if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&path, data)) {
-                    tracing::warn!("could not save launcher usage: {error}");
-                }
+            if let Some(parent) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&path, data))
+            {
+                tracing::warn!("could not save launcher usage: {error}");
             }
         }
     }
@@ -380,23 +514,63 @@ impl Tileception {
     fn launcher_layout(&self, results: usize) -> LauncherLayout {
         let screen = self.output_rect();
         let w = (screen.w - 32.0).clamp(1.0, PANEL_W);
-        let list_h = if results == 0 { 2.0 * ROW_H } else { results as f64 * ROW_H };
+        let grid = self.home_grid();
+        let list_h = if grid {
+            results.div_ceil(HOME_COLUMNS).max(1) as f64 * TILE_H
+        } else if results == 0 {
+            2.0 * ROW_H
+        } else {
+            results as f64 * ROW_H
+        };
         let h = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
         // A fixed top edge, so the field stays put while results come and go.
-        let top = (screen.y + screen.h * 0.18).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0);
+        // The welcome screen sits lower, under its clock.
+        let top = if self.launcher.home {
+            (screen.y + screen.h * 0.30).max(screen.y + 180.0).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0)
+        } else {
+            (screen.y + screen.h * 0.18).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0)
+        };
         let panel = Rect::new(screen.x + (screen.w - w) / 2.0, top, w, h);
         let field = Rect::new(panel.x + PAD, panel.y + PAD, panel.w - 2.0 * PAD, FIELD_H);
         let caption = Rect::new(panel.x + PAD + 6.0, field.bottom(), panel.w - 2.0 * PAD - 12.0, CAPTION_H);
-        let rows = (0..results)
-            .map(|i| Rect::new(panel.x + PAD, caption.bottom() + i as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0))
-            .collect();
+        let rows = if grid {
+            let tile_w = (panel.w - 2.0 * PAD) / HOME_COLUMNS as f64;
+            (0..results)
+                .map(|i| {
+                    let (column, row) = ((i % HOME_COLUMNS) as f64, (i / HOME_COLUMNS) as f64);
+                    let x = panel.x + PAD + column * tile_w;
+                    Rect::new(x + 2.0, caption.bottom() + row * TILE_H, tile_w - 4.0, TILE_H - 4.0)
+                })
+                .collect()
+        } else {
+            (0..results)
+                .map(|i| {
+                    Rect::new(panel.x + PAD, caption.bottom() + i as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0)
+                })
+                .collect()
+        };
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
-        LauncherLayout { panel, field, text, caption, rows, footer }
+        let media = (self.launcher.home && self.media.snapshot.media.active().is_some())
+            .then(|| crate::controls::media_card_layout(panel.x, panel.bottom() + 12.0, panel.w))
+            .filter(|card| card.rect.bottom() <= screen.bottom() - 8.0);
+        LauncherLayout { panel, field, text, caption, rows, footer, media }
+    }
+
+    /// The welcome screen with nothing typed: apps as a grid of tiles.
+    fn home_grid(&self) -> bool {
+        self.launcher.home && self.launcher.input.text.is_empty()
+    }
+
+    /// Whether the welcome screen takes the pointer here. Elsewhere the
+    /// desktop (bars, the notification panel) gets it as usual.
+    pub fn home_contains(&self, point: Point) -> bool {
+        let layout = self.launcher_layout(self.launcher.entries());
+        layout.panel.contains(point) || layout.media.is_some_and(|m| m.rect.contains(point))
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
-        let layout = self.launcher_layout(self.launcher.matches().len());
+        let layout = self.launcher_layout(self.launcher.entries());
         layout.rows.iter().position(|row| row.contains(point))
     }
 
@@ -411,7 +585,7 @@ impl Tileception {
     }
 
     pub fn launcher_click(&mut self, point: Point) {
-        let layout = self.launcher_layout(self.launcher.matches().len());
+        let layout = self.launcher_layout(self.launcher.entries());
         if layout.field.contains(point) {
             let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
             self.launcher_cursor_at(point, extend);
@@ -419,10 +593,16 @@ impl Tileception {
             self.launcher.input.anchor.get_or_insert(self.launcher.input.cursor);
             return;
         }
+        if let Some(card) = &layout.media
+            && card.rect.contains(point)
+        {
+            self.media_card_press(card, point);
+            return;
+        }
         if let Some(i) = self.launcher_at(point) {
             self.launcher.selected = i;
             self.launch_app();
-        } else if !layout.panel.contains(point) {
+        } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
         }
     }
@@ -432,7 +612,7 @@ impl Tileception {
     }
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
-        let text = self.launcher_layout(self.launcher.matches().len()).text;
+        let text = self.launcher_layout(self.launcher.entries()).text;
         let input = &self.launcher.input;
         let position = self.text.borrow_mut().field_hit(
             &input.text,
@@ -452,14 +632,41 @@ impl Tileception {
         }
         let t = &self.theme;
         let matches = self.launcher.matches();
-        let layout = self.launcher_layout(matches.len());
+        let question = self.launcher.question();
+        let layout = self.launcher_layout(self.launcher.entries());
         let input = &self.launcher.input;
         let mut p = Painter::new(self, renderer);
 
         // Fades in while dropping into place.
         let shown = ease_out(self.launcher.opened.elapsed().as_secs_f64() / 0.16);
         p.alpha = shown as f32;
-        p.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
+        if self.launcher.home {
+            // The welcome screen leaves the wallpaper as it is, under a clock.
+            let now = LocalTime::now();
+            let clock = now.as_ref().map(LocalTime::clock).unwrap_or_default();
+            let date = now.as_ref().map(LocalTime::date).unwrap_or_default();
+            let top = layout.panel.y - 156.0;
+            let shadow = Colour([0.0, 0.0, 0.0, 0.45]);
+            let clock_style = Style::new(t.font_size * 5.4, t.text).weight(300).align(Align::Centre);
+            let date_style = Style::new(t.font_size * 1.25, t.text.alpha(0.85)).align(Align::Centre);
+            let clock_rect = Rect::new(layout.panel.x, top, layout.panel.w, 96.0);
+            let date_rect = Rect::new(layout.panel.x, top + 96.0, layout.panel.w, 30.0);
+            // A soft shadow keeps the clock readable on any wallpaper.
+            p.text(
+                &clock,
+                Rect::new(clock_rect.x + 1.5, clock_rect.y + 2.0, clock_rect.w, clock_rect.h),
+                Style { colour: shadow, ..clock_style },
+            );
+            p.text(&clock, clock_rect, clock_style);
+            p.text(
+                &date,
+                Rect::new(date_rect.x + 1.0, date_rect.y + 1.5, date_rect.w, date_rect.h),
+                Style { colour: shadow, ..date_style },
+            );
+            p.text(&date, date_rect, date_style);
+        } else {
+            p.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
+        }
         p.offset = (0.0, (shown - 1.0) * 12.0);
         p.popup(layout.panel);
 
@@ -504,17 +711,19 @@ impl Tileception {
         }
         // The rest of the chosen name, greyed out after what was typed.
         let chosen = matches.get(self.launcher.selected);
-        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name)) {
-            if input.cursor == input.text.len() && input.anchor.is_none() {
-                let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
-                let room = layout.text.w - typed - 4.0;
-                if room > 24.0 {
-                    let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
-                    p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
-                }
+        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name))
+            && input.cursor == input.text.len()
+            && input.anchor.is_none()
+        {
+            let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
+            let room = layout.text.w - typed - 4.0;
+            if room > 24.0 {
+                let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
+                p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
             }
         }
 
+        let grid = self.home_grid();
         let caption = if typing {
             "RESULTS"
         } else if self.launcher.usage.is_empty() {
@@ -524,7 +733,7 @@ impl Tileception {
         };
         p.text(caption, layout.caption, Style::new(t.font_size * 0.75, t.muted).bold());
 
-        if matches.is_empty() {
+        if matches.is_empty() && question.is_none() {
             let area = Rect::new(layout.panel.x, layout.caption.bottom(), layout.panel.w, 2.0 * ROW_H);
             p.glyph(glyph::SEARCH, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
             let message = format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim());
@@ -536,6 +745,10 @@ impl Tileception {
         }
         for (i, (app, row)) in matches.iter().zip(&layout.rows).enumerate() {
             let selected = i == self.launcher.selected;
+            if grid {
+                self.draw_tile(&mut p, app, *row, selected);
+                continue;
+            }
             if selected {
                 p.shape(
                     *row,
@@ -575,13 +788,97 @@ impl Tileception {
             }
         }
 
+        if let (Some(question), Some(row)) = (&question, layout.rows.get(matches.len())) {
+            let selected = self.launcher.selected == matches.len();
+            if selected {
+                p.shape(
+                    *row,
+                    Shape {
+                        radius: t.radius,
+                        fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
+                        ..Default::default()
+                    },
+                );
+                p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
+            }
+            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
+            p.fill(icon, t.surface_raised, t.radius);
+            p.glyph(glyph::CHAT, icon, 18, t.accent);
+            let enter_w = if selected { 64.0 } else { 0.0 };
+            let text_x = icon.right() + 14.0;
+            let text_w = row.right() - text_x - 12.0 - enter_w;
+            p.text(
+                "Ask Tileception",
+                Rect::new(text_x, row.y + 7.0, text_w, 22.0),
+                Style::new(t.font_size * 1.05, t.text).bold(),
+            );
+            p.text(question, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
+            if selected {
+                let w = p.keycap_width("Enter");
+                p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
+            }
+        }
+
         // Keys along the bottom, under a hairline.
         let footer = layout.footer;
         p.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), t.border, 0.0);
-        let hints = [("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Close")];
-        p.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        let hints: &[(&str, &str)] = if self.launcher.home && !typing {
+            &[("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
+        } else if self.launcher.home {
+            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Esc", "Clear")]
+        } else {
+            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Close")]
+        };
+        p.key_hints(hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+
+        if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
+            p.popup(card.rect);
+            let pointer = Point::new(self.pointer.x, self.pointer.y);
+            self.draw_media_card(&mut p, card, player, pointer);
+        }
         p.finish()
     }
+
+    /// One app on the welcome screen's grid: its icon over its name.
+    fn draw_tile(&self, p: &mut Painter, app: &tileception_apps::App, tile: Rect, selected: bool) {
+        let t = &self.theme;
+        let hover = tile.contains(Point::new(self.pointer.x, self.pointer.y));
+        if selected {
+            p.shape(
+                tile,
+                Shape {
+                    radius: t.radius,
+                    fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.08)),
+                    border_width: 1.0,
+                    border: t.accent.alpha(0.35),
+                    ..Default::default()
+                },
+            );
+        } else if hover {
+            p.fill(tile, t.surface_raised, t.radius);
+        }
+        let icon = Rect::new(tile.x + (tile.w - 48.0) / 2.0, tile.y + 12.0, 48.0, 48.0);
+        if let Some(image) = self.launcher.app_icon(&app.id, 48) {
+            p.image(&image, (icon.x, icon.y));
+        } else {
+            p.shape(icon, Shape { radius: t.radius * 1.5, fill: (t.accent, t.accent_end), ..Default::default() });
+            let initial: String = app.name.chars().take(1).collect::<String>().to_uppercase();
+            p.text(&initial, icon, Style::new(t.font_size * 1.6, t.on_accent).bold().align(Align::Centre));
+        }
+        let name = Rect::new(tile.x + 6.0, icon.bottom() + 6.0, tile.w - 12.0, 20.0);
+        let style =
+            Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) }).align(Align::Centre);
+        p.text(&app.name, name, if selected { style.bold() } else { style });
+    }
+}
+
+/// See [`Launcher::question`].
+fn question_in(typed: &str) -> Option<String> {
+    let typed = typed.trim();
+    if let Some(rest) = typed.strip_prefix('?') {
+        return Some(rest.trim().to_string()).filter(|q| !q.is_empty());
+    }
+    (typed.ends_with('?') || typed.split_whitespace().count() >= 3).then(|| typed.to_string())
 }
 
 /// The part of `name` still to come after `typed`, when `name` starts with it.
@@ -617,11 +914,18 @@ const FIELD_H: f64 = 52.0;
 const CAPTION_H: f64 = 32.0;
 const ROW_H: f64 = 54.0;
 const FOOTER_H: f64 = 44.0;
+/// Tiles per row on the welcome screen.
+const HOME_COLUMNS: usize = 4;
+const TILE_H: f64 = 100.0;
+/// How long the welcome screen waits for a launched app's window.
+const HOME_QUIET: Duration = Duration::from_secs(10);
 /// The search text is a little larger than the rest of the interface.
 const SEARCH_SCALE: f32 = 1.2;
 
 struct LauncherLayout {
     panel: Rect,
+    /// What is playing, under the welcome screen.
+    media: Option<crate::controls::MediaCard>,
     field: Rect,
     /// Where the typed text goes inside the field.
     text: Rect,
@@ -639,7 +943,17 @@ fn usage_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::completion;
+    use super::{completion, question_in};
+
+    #[test]
+    fn questions_go_to_the_doctor() {
+        assert_eq!(question_in("? make gaps smaller"), Some("make gaps smaller".into()));
+        assert_eq!(question_in("?"), None);
+        assert_eq!(question_in("why is it dark?"), Some("why is it dark?".into()));
+        assert_eq!(question_in("use ghostty please"), Some("use ghostty please".into()));
+        assert_eq!(question_in("viv"), None);
+        assert_eq!(question_in("text editor"), None);
+    }
 
     #[test]
     fn completes_names_that_start_with_the_query() {

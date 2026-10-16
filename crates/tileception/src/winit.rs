@@ -68,7 +68,8 @@ pub fn init(
             }
 
             let elapsed = state.start.elapsed();
-            for window in state.windows.values() {
+            // Minimized windows are hidden: no frames, so they need not draw.
+            for (_, window) in state.windows.iter().filter(|(id, _)| !state.world.is_minimized(**id)) {
                 window.send_frame(&output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
             }
             state.send_layer_frames(elapsed);

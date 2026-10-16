@@ -69,11 +69,7 @@ impl Rect {
     pub fn zoom_lerp(&self, to: &Rect, t: f64) -> Rect {
         let lerp = |a: f64, b: f64| a + (b - a) * t;
         let glerp = |a: f64, b: f64| {
-            if a > 0.0 && b > 0.0 {
-                (a.ln() + (b.ln() - a.ln()) * t).exp()
-            } else {
-                lerp(a, b)
-            }
+            if a > 0.0 && b > 0.0 { (a.ln() + (b.ln() - a.ln()) * t).exp() } else { lerp(a, b) }
         };
         let w = glerp(self.w, to.w);
         let h = glerp(self.h, to.h);
@@ -82,11 +78,7 @@ impl Rect {
         // Moving the centre with the same weighting as the size, per axis, keeps
         // shared edges fixed and the point being zoomed toward steady on screen.
         let progress = |size: f64, from: f64, to: f64| {
-            if (to - from).abs() > 1e-12 {
-                ((size - from) / (to - from)).clamp(0.0, 1.0)
-            } else {
-                t
-            }
+            if (to - from).abs() > 1e-12 { ((size - from) / (to - from)).clamp(0.0, 1.0) } else { t }
         };
         let cx = c0.x + (c1.x - c0.x) * progress(w, self.w, to.w);
         let cy = c0.y + (c1.y - c0.y) * progress(h, self.h, to.h);

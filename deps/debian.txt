@@ -27,6 +27,7 @@ grim                    # screenshots (tileception-screenshot)
 slurp                   # selecting a region for Shift+Print
 wl-clipboard            # copying screenshots to the clipboard
 libnotify-bin           # notify-send, for screenshot and reload notifications
+curl                    # cover art that media players serve over the web
 
 [optional]
 playerctl               # media keys (play, pause, next, previous)
