@@ -35,6 +35,7 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputElement<=GlesRenderer>;
     Live = WaylandSurfaceRenderElement<GlesRenderer>,
     Scaled = CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Clipped = CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Solid = SolidColorRenderElement,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
@@ -55,7 +56,13 @@ pub struct Drawn {
     pub scale: (f64, f64),
     /// Drawn 1:1 and accepting pointer input.
     pub live: bool,
+    /// Live but larger than its slot, so cut off at `content`.
+    pub clipped: bool,
 }
+
+/// How many pixels a resting window may be too big for its slot and still be
+/// drawn live, cut off, rather than as a scaled preview.
+const MAX_CLIP: f64 = 32.0;
 
 impl Tileception {
     /// The colour behind everything.
@@ -87,6 +94,7 @@ impl Tileception {
                     origin,
                     scale: (1.0, 1.0),
                     live: true,
+                    clipped: false,
                 }];
             }
         }
@@ -105,6 +113,26 @@ impl Tileception {
             let (gw, gh) = (geo.size.w as f64, geo.size.h as f64);
             // Floating windows hang still while the camera moves.
             let moving = moving && p.role == WindowRole::Tiled;
+            let (over_w, over_h) = (gw - p.rect.w, gh - p.rect.h);
+            if !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
+                // Just too big, usually from a minimum size: drawn 1:1 from
+                // the slot's top left and cut off at its edges, so it stays
+                // sharp and usable instead of becoming a preview.
+                let content = Rect::new(p.rect.x, p.rect.y, gw.min(p.rect.w), gh.min(p.rect.h));
+                let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
+                out.push(Drawn {
+                    id: p.window,
+                    role: p.role,
+                    leaf: p.leaf,
+                    slot: p.rect,
+                    content,
+                    origin,
+                    scale: (1.0, 1.0),
+                    live: true,
+                    clipped: true,
+                });
+                continue;
+            }
             let (sx, sy) = if moving {
                 // Stretch into the moving slot; the client catches up after.
                 (p.rect.w / gw, p.rect.h / gh)
@@ -131,6 +159,7 @@ impl Tileception {
                 origin,
                 scale: (sx, sy),
                 live,
+                clipped: false,
             });
         }
         // Floating windows above tiles, the focused one above its peers.
@@ -236,7 +265,9 @@ impl Tileception {
                 frame_rect = Rect::new(d.content.x, strip.rect.y, d.content.w, d.content.bottom() - strip.rect.y);
             }
             push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
-            if d.live {
+            if d.live && d.clipped {
+                elements.extend(clipped(renderer, window, d));
+            } else if d.live {
                 let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
                 let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
@@ -448,6 +479,37 @@ impl Tileception {
             })
             .collect()
     }
+}
+
+/// A live window cut off at `d.content`. Its popups may reach past the cut,
+/// as for any live window.
+fn clipped(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+    let Some(toplevel) = window.toplevel() else {
+        // X11 windows draw their menus as separate overlays.
+        let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
+        let crop = physical(&d.content);
+        return surfaces
+            .into_iter()
+            .filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped))
+            .collect();
+    };
+    let surface = toplevel.wl_surface();
+    let mut out: Vec<OutputElement> = smithay::desktop::PopupManager::popups_for_surface(surface)
+        .flat_map(|(popup, offset)| {
+            let at = origin + (window.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(1.0);
+            render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified)
+        })
+        .map(OutputElement::Live)
+        .collect();
+    let crop = physical(&d.content);
+    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Unspecified);
+    out.extend(
+        surfaces.into_iter().filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped)),
+    );
+    out
 }
 
 pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &Rect, shape: Shape) {

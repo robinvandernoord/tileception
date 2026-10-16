@@ -12,7 +12,7 @@ use smithay::{
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER},
 };
-use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId};
+use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId, WindowRole};
 
 use crate::{
     commands::Command,
@@ -592,7 +592,12 @@ impl Tileception {
                 return;
             }
             if !d.live {
-                // A click on a preview only focuses it.
+                // A preview is a window too big for its tile at this level:
+                // a click zooms in to its tile, where it may fit and be live.
+                if d.role == WindowRole::Tiled && self.world.framed() != d.leaf {
+                    self.world.frame(d.leaf, now);
+                    self.apply_layout();
+                }
                 return;
             }
         }
