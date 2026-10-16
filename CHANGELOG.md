@@ -2,6 +2,35 @@
 
 <!-- next-version-placeholder -->
 
+## v0.2.0 (2026-10-16)
+
+### Features
+* **overlays:** respect overlay surfaces across panels and input
+* **packaging:** add Debian sid package support
+* **launcher:** support clipboard paste and media change notices
+* **doctor:** add agent login, image, and session controls
+* **session:** add login screen badge
+* **doctor:** add ACP-powered setup assistant
+* **desktop:** add configurable shell and compositor integrations
+* **media:** add built-in volume, brightness, and playback controls
+* **windows:** add minimize and restore support
+* **windows:** keep slightly oversized tiled windows live
+* **portal:** serve desktop appearance settings
+
+### Fixes
+* **website:** use relative paths for local previews
+* **dbus:** pass session variables to activation environment
+* **compositor:** harden media controls and window handling
+* **launcher:** show home when no windows remain in the layout
+* **floats:** expand floating windows when their content grows
+* **wayland:** support dmabuf screencopy and wait for active seat
+
+### Documentation
+* **plan:** record launcher and app launch proposals
+* **plan:** propose top bar and smarter launcher
+* **plan:** mark media controls implemented
+* **website:** label releases as alpha
+
 ## v0.1.0 (2026-10-16)
 
 ### Features

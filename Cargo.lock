@@ -2921,7 +2921,7 @@ dependencies = [
 
 [[package]]
 name = "tileception"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cosmic-text",
  "html-escape",
@@ -2950,7 +2950,7 @@ dependencies = [
 
 [[package]]
 name = "tileception-acp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "serde",
@@ -2976,14 +2976,14 @@ dependencies = [
 
 [[package]]
 name = "tileception-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tileception-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pulseaudio",
  "serde",
