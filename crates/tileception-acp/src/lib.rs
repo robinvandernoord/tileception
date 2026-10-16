@@ -21,8 +21,37 @@ pub struct Login {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub how: LoginHow,
+}
+
+/// What logging in takes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginHow {
+    /// The agent does it (often in a browser) when asked.
+    Agent,
     /// Runs the agent's own login in a terminal, rather than asking the agent.
-    pub terminal: Option<install::Program>,
+    Terminal(install::Program),
+    /// An API key, handed to the agent when asking it to log in.
+    Key,
+    /// Values for these environment variables; the agent restarts with them.
+    Env(Vec<EnvVar>),
+}
+
+impl LoginHow {
+    /// What to type before logging in: the labels of the secrets asked for.
+    pub fn asks(&self) -> Vec<String> {
+        match self {
+            LoginHow::Key => vec!["API key".into()],
+            LoginHow::Env(vars) => vars.iter().map(|v| v.label.clone().unwrap_or_else(|| v.name.clone())).collect(),
+            LoginHow::Agent | LoginHow::Terminal(_) => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvVar {
+    pub name: String,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,8 +60,10 @@ pub enum Status {
     Starting(String),
     /// The agent wants a login first.
     NeedsLogin(Vec<Login>),
-    /// Waiting for a terminal login to finish.
-    LoggingIn,
+    /// Waiting for a login to finish; `terminal` when it runs in one.
+    LoggingIn {
+        terminal: bool,
+    },
     Ready,
     /// The agent stopped or never started.
     Failed(String),
@@ -56,6 +87,41 @@ pub struct Action {
 pub enum FileOp {
     Read { path: PathBuf, line: Option<u64>, limit: Option<u64> },
     Write { path: PathBuf, content: String },
+}
+
+/// A setting the agent offers for its session, such as the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOption {
+    pub id: String,
+    pub name: String,
+    /// model, mode, thought_level, ...
+    pub category: Option<String>,
+    pub current: String,
+    pub values: Vec<OptionValue>,
+}
+
+impl SessionOption {
+    pub fn is_model(&self) -> bool {
+        self.category.as_deref() == Some("model") || self.id == "model"
+    }
+
+    pub fn current_name(&self) -> &str {
+        self.values.iter().find(|v| v.value == self.current).map_or(&self.current, |v| &v.name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionValue {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// A slash command the agent offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCommand {
+    pub name: String,
+    pub description: String,
 }
 
 /// A choice offered when the agent asks for permission.
@@ -100,21 +166,50 @@ pub enum Event {
     Note(String),
     /// Run this in a terminal for a terminal login, then send [`Request::Retry`].
     Terminal(install::Program),
+    /// The session's settings, when they are first known or change.
+    Options(Vec<SessionOption>),
+    /// The agent's own slash commands.
+    Commands(Vec<AgentCommand>),
+    /// Whether the agent takes pictures in a prompt, once it has said.
+    Images(bool),
+}
+
+/// A picture sent along with a prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    /// image/png, image/jpeg, ...
+    pub mime: String,
+    pub data: std::sync::Arc<[u8]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
-    Prompt(String),
+    /// A message, with pictures for agents that take them ([`Event::Images`]).
+    Prompt {
+        text: String,
+        images: Vec<Image>,
+    },
     Cancel,
     /// `None` declines.
     Permission {
         id: serde_json::Value,
         choice: Option<String>,
     },
-    /// Logs in with one of the agent's methods.
-    Login(String),
-    /// Tries again after a terminal login.
+    /// Logs in with one of the agent's methods, with the secrets it asks for
+    /// ([`LoginHow::asks`]), in order.
+    Login {
+        method: String,
+        secrets: Vec<String>,
+    },
+    /// Restarts the agent after a terminal login, so it sees the new login.
     Retry,
+    /// Starts a fresh conversation with the same agent.
+    NewSession,
+    /// Changes a [`SessionOption`].
+    SetOption {
+        id: String,
+        value: String,
+    },
     /// Answers an [`Event::File`]: the result, or why not.
     Reply {
         id: serde_json::Value,
@@ -150,7 +245,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Downloads `url` to `to` over http(s), bounded in size and time.
-pub(crate) fn curl(url: &str, to: &Path, max_bytes: &str) -> Result<(), String> {
+pub fn curl(url: &str, to: &Path, max_bytes: &str) -> Result<(), String> {
     let agent = concat!("Tileception/", env!("CARGO_PKG_VERSION"), " (doctor; +https://tileception.space)");
     let out = std::process::Command::new("curl")
         .args(["--fail", "--silent", "--show-error", "--location", "--max-redirs", "5"])

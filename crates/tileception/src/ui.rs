@@ -55,6 +55,7 @@ pub mod glyph {
     pub const MUSIC: &str =
         r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#;
     pub const CHEVRON_DOWN: &str = r#"<path d="M6 9l6 6 6-6"/>"#;
+    pub const CHEVRON_UP: &str = r#"<path d="M6 15l6-6 6 6"/>"#;
     pub const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
     pub const CHAT: &str = r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.4A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>"#;
     pub const ALERT: &str = r#"<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/>"#;
@@ -252,6 +253,9 @@ impl Style {
     pub fn weight(self, weight: u16) -> Style {
         Style { weight, ..self }
     }
+    pub fn colour(self, colour: Colour) -> Style {
+        Style { colour, ..self }
+    }
     pub fn bold(self) -> Style {
         self.weight(600)
     }
@@ -440,6 +444,16 @@ impl<'a> Painter<'a> {
             },
         );
         self.shape(rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.popup(), t.popup_radius) });
+    }
+
+    /// A panel against a screen edge, full height: square, with a hairline
+    /// and a soft shadow only on the side that faces the desktop.
+    pub fn edge_panel(&mut self, rect: Rect, left: bool) {
+        let t = self.theme();
+        self.shape(rect, Shape { glow_radius: 28.0, glow: Colour([0.0, 0.0, 0.0, 0.42]), ..Default::default() });
+        self.fill(rect, t.popup(), 0.0);
+        let edge = if left { rect.right() - 1.0 } else { rect.x };
+        self.fill(Rect::new(edge, rect.y, 1.0, rect.h), t.border, 0.0);
     }
 }
 

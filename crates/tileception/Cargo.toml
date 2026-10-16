@@ -30,6 +30,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 zbus = "5"
 png = "0.18"
+pulldown-cmark = { version = "0.13", default-features = false }
 cosmic-text = "0.19"
 resvg = "0.45"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }

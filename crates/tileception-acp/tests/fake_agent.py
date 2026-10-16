@@ -8,6 +8,12 @@ import sys
 logged_in = os.environ.get("FAKE_AGENT_NO_LOGIN") == "1"
 FILE = os.environ.get("FAKE_AGENT_FILE", "/cfg/config.toml")
 asked = None  # (prompt request id, permission request id)
+model = "fast"
+
+
+def options():
+    values = [{"value": "fast", "name": "Fast"}, {"value": "smart", "name": "Smart", "description": "Thinks longer"}]
+    return [{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": model, "options": values}]
 
 
 def send(message):
@@ -28,15 +34,25 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": mid, "result": {
             "protocolVersion": 1,
             "agentCapabilities": {},
-            "authMethods": [{"id": "fake-login", "name": "Log in", "description": "Pretend to log in"}],
+            "authMethods": [
+                {"id": "fake-login", "name": "Log in", "description": "Pretend to log in"},
+                {"id": "fake-key", "name": "API key", "_meta": {"api-key": {"provider": "fake"}}},
+            ],
         }})
     elif method == "session/new":
         if logged_in:
-            send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s1"}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s1", "configOptions": options()}})
+            update("s1", {"sessionUpdate": "available_commands_update",
+                          "availableCommands": [{"name": "review", "description": "Review the configuration"}]})
         else:
             send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": "Authentication required"}})
+    elif method == "session/set_config_option":
+        assert params["configId"] == "model"
+        model = params["value"]
+        send({"jsonrpc": "2.0", "id": mid, "result": {"configOptions": options()}})
     elif method == "authenticate":
-        logged_in = params.get("methodId") == "fake-login"
+        key = (params.get("_meta") or {}).get("api-key")
+        logged_in = params.get("methodId") == "fake-login" or (params.get("methodId") == "fake-key" and key == "secret")
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
     elif method == "session/prompt" and params["prompt"][-1]["text"] == "edit":
         assert params.get("sessionId") == "s1"

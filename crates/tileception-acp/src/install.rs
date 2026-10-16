@@ -38,7 +38,7 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
             let command = inside(&dir, cmd)?;
             if !command.is_file() {
                 report(&format!("Downloading {} {}\u{2026}", agent.name, agent.version));
-                download(archive, sha256, &dir)?;
+                download(archive, sha256, cmd, &dir)?;
             }
             if !command.is_file() {
                 return Err(format!("{} is not in the downloaded archive", cmd));
@@ -62,7 +62,7 @@ fn safe(name: &str) -> String {
     name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect()
 }
 
-fn download(url: &str, sha256: &str, dir: &Path) -> Result<(), String> {
+fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err(format!("refusing a download that is not https: {url}"));
     }
@@ -92,6 +92,13 @@ fn download(url: &str, sha256: &str, dir: &Path) -> Result<(), String> {
     {
         // tar picks the compression itself; --no-same-owner keeps files ours.
         run("tar", &[OsStr::new("-xf"), a, OsStr::new("-C"), to, OsStr::new("--no-same-owner")])?;
+    } else if Path::new(cmd.trim_start_matches("./")).file_name() == Some(OsStr::new(name)) {
+        // Not an archive but the program itself (sigit ships so).
+        let program = partial.join(name);
+        std::fs::rename(&archive, &program).map_err(|e| format!("{}: {e}", program.display()))?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", program.display()))?;
     } else {
         return Err(format!("unknown archive type: {name}"));
     }

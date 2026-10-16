@@ -26,6 +26,7 @@ mod ipc;
 mod launcher;
 mod layers;
 mod lock;
+mod markdown;
 mod media;
 mod minimized;
 mod notifications;

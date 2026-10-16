@@ -8,9 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::{install, Action, Agent, Choice, Emit, Event, FileOp, Login, Request, Status};
+use crate::{
+    install, Action, Agent, AgentCommand, Choice, Emit, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue,
+    Request, SessionOption, Status,
+};
 
 /// The protocol version spoken here.
 const PROTOCOL_VERSION: u64 = 1;
@@ -18,11 +22,14 @@ const PROTOCOL_VERSION: u64 = 1;
 const AUTH_REQUIRED: i64 = -32000;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
+/// The id given to an agent's model list from before session options.
+const LEGACY_MODEL: &str = "model";
 
 enum Msg {
     User(Request),
-    Line(Value),
-    Closed,
+    /// A message from the agent program started as this generation.
+    Line(u64, Value),
+    Closed(u64),
     Stop,
 }
 
@@ -108,6 +115,7 @@ enum Pending {
     NewSession,
     Authenticate,
     Prompt,
+    SetOption { id: String, value: String },
 }
 
 /// Where the agent program comes from.
@@ -125,12 +133,23 @@ struct Worker {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     program: Option<install::Program>,
+    /// Counts restarts, so a stopped program's last words are not mistaken
+    /// for the new one's.
+    generation: u64,
+    /// Variables from an environment login, for every start from then on.
+    login_env: std::collections::BTreeMap<String, String>,
+    sender: Option<mpsc::Sender<Msg>>,
+    /// Sent along with the first prompt of every session.
+    context_text: Option<String>,
+    /// The agent lists its models the old way (`session/set_model`).
+    legacy_model: bool,
+    options: Vec<SessionOption>,
     next_id: u64,
     pending: HashMap<u64, Pending>,
     logins: Vec<Login>,
     session: Option<String>,
     /// A prompt typed before the session was ready.
-    queued: Option<String>,
+    queued: Option<(String, Vec<Image>)>,
     /// Permission requests not yet answered, to cancel on Cancel.
     asking: Vec<Value>,
     /// The last lines the agent wrote to stderr, for errors.
@@ -153,11 +172,17 @@ impl Worker {
             name,
             source: Some(source),
             cwd,
-            context: Some(context).filter(|c| !c.is_empty()),
+            context: Some(context.clone()).filter(|c| !c.is_empty()),
+            context_text: Some(context).filter(|c| !c.is_empty()),
             emit,
             child: None,
             stdin: None,
             program: None,
+            generation: 0,
+            login_env: Default::default(),
+            sender: None,
+            legacy_model: false,
+            options: Vec::new(),
             next_id: 1,
             pending: HashMap::new(),
             logins: Vec::new(),
@@ -183,8 +208,22 @@ impl Worker {
             None => return Err("the agent was already started".into()),
         };
         self.installing.store(false, Ordering::Release);
-        self.spawn(&program, sender)?;
+        self.sender = Some(sender.clone());
+        self.spawn(&program)?;
         self.program = Some(program);
+        self.initialize()?;
+        loop {
+            match incoming.recv() {
+                Ok(Msg::Stop) | Err(_) => return Ok(()),
+                Ok(Msg::Closed(generation)) if generation == self.generation => return Err(self.exit_reason()),
+                Ok(Msg::Line(generation, message)) if generation == self.generation => self.message(message)?,
+                Ok(Msg::Closed(_) | Msg::Line(..)) => {}
+                Ok(Msg::User(request)) => self.user(request)?,
+            }
+        }
+    }
+
+    fn initialize(&mut self) -> Result<(), String> {
         self.request(
             "initialize",
             json!({
@@ -199,21 +238,28 @@ impl Worker {
                 "clientInfo": { "name": "tileception", "title": "Tileception", "version": env!("CARGO_PKG_VERSION") },
             }),
             Pending::Initialize,
-        )?;
-        loop {
-            match incoming.recv() {
-                Ok(Msg::Stop) | Err(_) => return Ok(()),
-                Ok(Msg::Closed) => return Err(self.exit_reason()),
-                Ok(Msg::Line(message)) => self.message(message)?,
-                Ok(Msg::User(request)) => self.user(request)?,
-            }
-        }
+        )
     }
 
-    fn spawn(&mut self, program: &install::Program, sender: &mpsc::Sender<Msg>) -> Result<(), String> {
+    /// Stops the agent program and starts it again, as after a login that
+    /// only a fresh start notices.
+    fn restart(&mut self) -> Result<(), String> {
+        let program = self.program.clone().ok_or("the agent is not running")?;
+        self.status(Status::Starting(format!("Restarting {}...", self.name)));
+        self.stop();
+        self.generation += 1;
+        self.pending.clear();
+        self.asking.clear();
+        self.session = None;
+        self.spawn(&program)?;
+        self.initialize()
+    }
+
+    fn spawn(&mut self, program: &install::Program) -> Result<(), String> {
         let mut command = Command::new(&program.command);
         command.args(&program.args).current_dir(&self.cwd);
         crate::with_env(&mut command, &program.env);
+        crate::with_env(&mut command, &self.login_env);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -225,7 +271,8 @@ impl Worker {
         self.stdin = child.stdin.take();
         self.child = Some(child);
 
-        let lines = sender.clone();
+        let lines = self.sender.clone().ok_or("the agent has no way to answer")?;
+        let generation = self.generation;
         thread::Builder::new()
             .name("tileception-acp-read".into())
             .spawn(move || {
@@ -236,14 +283,14 @@ impl Worker {
                     }
                     match serde_json::from_str::<Value>(&line) {
                         Ok(value) => {
-                            if lines.send(Msg::Line(value)).is_err() {
+                            if lines.send(Msg::Line(generation, value)).is_err() {
                                 return;
                             }
                         }
                         Err(_) => tracing::debug!("agent wrote something that is not JSON: {line}"),
                     }
                 }
-                let _ = lines.send(Msg::Closed);
+                let _ = lines.send(Msg::Closed(generation));
             })
             .map_err(|e| e.to_string())?;
         let log = self.stderr.clone();
@@ -313,18 +360,24 @@ impl Worker {
     }
 
     fn new_session(&mut self) -> Result<(), String> {
+        // Every conversation starts by saying what the agent helps with.
+        self.context.clone_from(&self.context_text);
         let cwd = self.cwd.display().to_string();
         self.request("session/new", json!({ "cwd": cwd, "mcpServers": [] }), Pending::NewSession)
     }
 
-    fn prompt(&mut self, text: String) -> Result<(), String> {
+    fn prompt(&mut self, text: String, images: Vec<Image>) -> Result<(), String> {
         let Some(session) = self.session.clone() else {
-            self.queued = Some(text);
+            self.queued = Some((text, images));
             return Ok(());
         };
         let mut blocks = Vec::new();
         if let Some(context) = self.context.take() {
             blocks.push(json!({ "type": "text", "text": context }));
+        }
+        for image in images {
+            let data = base64::engine::general_purpose::STANDARD.encode(&image.data);
+            blocks.push(json!({ "type": "image", "mimeType": image.mime, "data": data }));
         }
         blocks.push(json!({ "type": "text", "text": text }));
         self.request("session/prompt", json!({ "sessionId": session, "prompt": blocks }), Pending::Prompt)
@@ -332,7 +385,7 @@ impl Worker {
 
     fn user(&mut self, request: Request) -> Result<(), String> {
         match request {
-            Request::Prompt(text) => self.prompt(text)?,
+            Request::Prompt { text, images } => self.prompt(text, images)?,
             Request::Cancel => {
                 if let Some(session) = self.session.clone() {
                     self.notify("session/cancel", json!({ "sessionId": session }))?;
@@ -349,18 +402,51 @@ impl Worker {
                 };
                 self.respond(id, json!({ "outcome": outcome }))?;
             }
-            Request::Login(method) => match self.logins.iter().find(|l| l.id == method).cloned() {
-                Some(Login { terminal: Some(program), .. }) => {
-                    self.status(Status::LoggingIn);
+            Request::Login { method, secrets } => match self.logins.iter().find(|l| l.id == method).cloned() {
+                Some(Login { how: LoginHow::Terminal(program), .. }) => {
+                    self.status(Status::LoggingIn { terminal: true });
                     (self.emit)(Event::Terminal(program));
                 }
-                Some(_) => {
-                    self.status(Status::LoggingIn);
-                    self.request("authenticate", json!({ "methodId": method }), Pending::Authenticate)?;
+                Some(Login { how: LoginHow::Env(vars), .. }) => {
+                    for (var, value) in vars.iter().zip(secrets) {
+                        self.login_env.insert(var.name.clone(), value);
+                    }
+                    self.restart()?;
+                }
+                Some(Login { how, .. }) => {
+                    self.status(Status::LoggingIn { terminal: false });
+                    let mut params = json!({ "methodId": method });
+                    if let (LoginHow::Key, Some(key)) = (how, secrets.into_iter().next()) {
+                        params["_meta"] = json!({ "api-key": key });
+                    }
+                    self.request("authenticate", params, Pending::Authenticate)?;
                 }
                 None => (self.emit)(Event::Note(format!("{method} is not one of the agent's logins"))),
             },
-            Request::Retry => self.new_session()?,
+            Request::Retry => self.restart()?,
+            Request::NewSession => {
+                if let Some(session) = self.session.take() {
+                    self.notify("session/cancel", json!({ "sessionId": session }))?;
+                }
+                for id in std::mem::take(&mut self.asking) {
+                    self.respond(id, json!({ "outcome": { "outcome": "cancelled" } }))?;
+                }
+                self.queued = None;
+                self.new_session()?;
+            }
+            Request::SetOption { id, value } => {
+                let Some(session) = self.session.clone() else {
+                    (self.emit)(Event::Note("The agent is not ready yet.".into()));
+                    return Ok(());
+                };
+                let pending = Pending::SetOption { id: id.clone(), value: value.clone() };
+                if self.legacy_model && id == LEGACY_MODEL {
+                    self.request("session/set_model", json!({ "sessionId": session, "modelId": value }), pending)?;
+                } else {
+                    let params = json!({ "sessionId": session, "configId": id, "value": value });
+                    self.request("session/set_config_option", params, pending)?;
+                }
+            }
             Request::Reply { id, result } => match result {
                 Ok(value) => self.respond(id, value)?,
                 Err(message) => self.respond_error(id, INTERNAL_ERROR, &message)?,
@@ -406,6 +492,8 @@ impl Worker {
                     ));
                 }
                 self.logins = logins(&result, self.program.as_ref());
+                let images = result.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool);
+                (self.emit)(Event::Images(images.unwrap_or(false)));
                 self.new_session()
             }
             Pending::NewSession => {
@@ -414,8 +502,11 @@ impl Worker {
                 };
                 self.session = Some(session.to_string());
                 self.status(Status::Ready);
-                if let Some(text) = self.queued.take() {
-                    self.prompt(text)?;
+                let (options, legacy) = session_options(&result);
+                self.legacy_model = legacy;
+                self.set_options(options);
+                if let Some((text, images)) = self.queued.take() {
+                    self.prompt(text, images)?;
                 }
                 Ok(())
             }
@@ -425,7 +516,30 @@ impl Worker {
                 (self.emit)(Event::TurnEnded(reason.to_string()));
                 Ok(())
             }
+            Pending::SetOption { id, value } => {
+                // Options come back whole; the old way, only the change.
+                if result.get("configOptions").is_some() {
+                    self.set_options(session_options(&result).0);
+                } else {
+                    self.options_changed(&id, &value);
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// Reports one option's new value, keeping the others.
+    fn options_changed(&mut self, id: &str, value: &str) {
+        let mut options = self.options.clone();
+        if let Some(option) = options.iter_mut().find(|o| o.id == id) {
+            option.current = value.to_string();
+        }
+        self.set_options(options);
+    }
+
+    fn set_options(&mut self, options: Vec<SessionOption>) {
+        self.options.clone_from(&options);
+        (self.emit)(Event::Options(options));
     }
 
     fn failed(&mut self, purpose: Pending, error: &Value) -> Result<(), String> {
@@ -466,6 +580,10 @@ impl Worker {
             Pending::Prompt => {
                 (self.emit)(Event::Note(format!("The agent could not answer: {text}")));
                 (self.emit)(Event::TurnEnded("error".into()));
+                Ok(())
+            }
+            Pending::SetOption { .. } => {
+                (self.emit)(Event::Note(format!("The agent kept its setting: {text}")));
                 Ok(())
             }
             _ => Err(format!("{}: {text}", self.name)),
@@ -526,6 +644,33 @@ impl Worker {
 
     fn update(&mut self, update: &Value) {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("");
+        match kind {
+            "config_option_update" => return self.set_options(session_options(update).0),
+            "current_model_update" if self.legacy_model => {
+                if let Some(model) = update.get("currentModelId").and_then(Value::as_str) {
+                    self.options_changed(LEGACY_MODEL, model);
+                }
+                return;
+            }
+            "available_commands_update" => {
+                let commands = update
+                    .get("availableCommands")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|c| {
+                                Some(AgentCommand {
+                                    name: c.get("name")?.as_str()?.trim_start_matches('/').to_string(),
+                                    description: c.get("description").and_then(Value::as_str).unwrap_or("").into(),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return (self.emit)(Event::Commands(commands));
+            }
+            _ => {}
+        }
         let text = || {
             let content = update.get("content")?;
             (content.get("type").and_then(Value::as_str) == Some("text"))
@@ -590,7 +735,20 @@ fn logins(result: &Value, program: Option<&install::Program>) -> Vec<Login> {
             let name = m.get("name").and_then(Value::as_str).unwrap_or(&id).to_string();
             let description = m.get("description").and_then(Value::as_str).map(str::to_string);
             let suggested = description.as_deref().and_then(|d| suggested_command(d, program));
-            let terminal = (m.get("type").and_then(Value::as_str) == Some("terminal")).then(|| {
+            let kind = m.get("type").and_then(Value::as_str);
+            let meta = m.get("_meta");
+            if kind == Some("env_var") {
+                let vars = env_vars(m);
+                return (!vars.is_empty()).then_some(Login { id, name, description, how: LoginHow::Env(vars) });
+            }
+            if meta.and_then(|m| m.get("api-key")).is_some() {
+                return Some(Login { id, name, description, how: LoginHow::Key });
+            }
+            // The older way to ask for a terminal login: its own command line.
+            if let Some(own) = meta.and_then(|m| m.get("terminal-auth")).and_then(terminal_auth) {
+                return Some(Login { id, name, description, how: LoginHow::Terminal(own) });
+            }
+            let terminal = (kind == Some("terminal")).then(|| {
                 let base = program.cloned().unwrap_or(install::Program {
                     command: PathBuf::new(),
                     args: Vec::new(),
@@ -614,9 +772,114 @@ fn logins(result: &Value, program: Option<&install::Program>) -> Vec<Login> {
                     env,
                 }
             });
-            Some(Login { id, name, description, terminal: terminal.or(suggested) })
+            let how = terminal.or(suggested).map_or(LoginHow::Agent, LoginHow::Terminal);
+            Some(Login { id, name, description, how })
         })
         .collect()
+}
+
+/// `_meta["terminal-auth"]`: `{ command, args, env }`.
+fn terminal_auth(meta: &Value) -> Option<install::Program> {
+    let command = meta.get("command")?.as_str()?;
+    let strings = |v: Option<&Value>| -> Vec<String> {
+        v.and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let env = meta
+        .get("env")
+        .and_then(Value::as_object)
+        .map(|e| e.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    Some(install::Program { command: command.into(), args: strings(meta.get("args")), env })
+}
+
+/// The variables an `env_var` login asks for: `vars`, or a single `varName`.
+fn env_vars(method: &Value) -> Vec<EnvVar> {
+    let name_of = |v: &Value| v.get("name").or_else(|| v.get("varName")).and_then(Value::as_str).map(str::to_string);
+    match method.get("vars").and_then(Value::as_array) {
+        Some(vars) => vars
+            .iter()
+            .filter(|v| !v.get("optional").and_then(Value::as_bool).unwrap_or(false))
+            .filter_map(|v| {
+                Some(EnvVar { name: name_of(v)?, label: v.get("label").and_then(Value::as_str).map(str::to_string) })
+            })
+            .collect(),
+        None => method
+            .get("varName")
+            .and_then(Value::as_str)
+            .map(|name| vec![EnvVar { name: name.into(), label: None }])
+            .unwrap_or_default(),
+    }
+}
+
+/// The session's settings from `session/new` or an update: `configOptions`
+/// (selects only), or else the older `models`. Says which it was.
+fn session_options(result: &Value) -> (Vec<SessionOption>, bool) {
+    let s = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
+    if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
+        let options = options
+            .iter()
+            .filter(|o| o.get("type").and_then(Value::as_str).is_none_or(|t| t == "select"))
+            .filter_map(|o| {
+                let values = o
+                    .get("options")
+                    .and_then(Value::as_array)?
+                    .iter()
+                    // Grouped values: flattened.
+                    .flat_map(|v| match v.get("options").and_then(Value::as_array) {
+                        Some(group) => group.clone(),
+                        None => vec![v.clone()],
+                    })
+                    .filter_map(|v| {
+                        let value = s(&v, "value")?;
+                        Some(OptionValue {
+                            name: s(&v, "name").unwrap_or_else(|| value.clone()),
+                            value,
+                            description: s(&v, "description"),
+                        })
+                    })
+                    .collect();
+                let id = s(o, "id")?;
+                Some(SessionOption {
+                    name: s(o, "name").unwrap_or_else(|| id.clone()),
+                    category: s(o, "category"),
+                    current: s(o, "currentValue").unwrap_or_default(),
+                    values,
+                    id,
+                })
+            })
+            .collect();
+        return (options, false);
+    }
+    let Some(models) = result.get("models") else { return (Vec::new(), false) };
+    let values: Vec<OptionValue> = models
+        .get("availableModels")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| {
+                    let value = s(m, "modelId")?;
+                    Some(OptionValue {
+                        name: s(m, "name").unwrap_or_else(|| value.clone()),
+                        value,
+                        description: s(m, "description"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if values.is_empty() {
+        return (Vec::new(), false);
+    }
+    let option = SessionOption {
+        id: LEGACY_MODEL.into(),
+        name: "Model".into(),
+        category: Some("model".into()),
+        current: s(models, "currentModelId").unwrap_or_default(),
+        values,
+    };
+    (vec![option], true)
 }
 
 /// A login whose description says to run the agent's own program, like
@@ -654,8 +917,8 @@ mod tests {
         ]});
         let found = logins(&result, Some(&program));
         assert_eq!(found.len(), 2);
-        assert_eq!((found[0].id.as_str(), found[0].terminal.is_none()), ("claude-login", true));
-        let terminal = found[1].terminal.as_ref().expect("terminal login");
+        assert_eq!((found[0].id.as_str(), &found[0].how), ("claude-login", &LoginHow::Agent));
+        let LoginHow::Terminal(terminal) = &found[1].how else { panic!("terminal login") };
         let goose = install::Program {
             command: "/agents/goose/1/goose".into(),
             args: vec!["acp".into()],
@@ -666,7 +929,7 @@ mod tests {
                 "description": "Run `goose configure` to set up your AI provider and API key" }] }),
             Some(&goose),
         );
-        let configure = hinted[0].terminal.as_ref().expect("suggested terminal login");
+        let LoginHow::Terminal(configure) = &hinted[0].how else { panic!("suggested terminal login") };
         assert_eq!(
             (configure.command.to_str(), configure.args.as_slice()),
             (Some("/agents/goose/1/goose"), &["configure".to_string()][..])
@@ -675,5 +938,47 @@ mod tests {
         assert!(suggested_command("Run `goose x; rm -rf /`", Some(&goose)).is_none());
         assert_eq!(terminal.args, ["-y", "agent", "--login"]);
         assert_eq!(terminal.env["A"], "1");
+    }
+
+    #[test]
+    fn reads_other_login_kinds() {
+        let found = logins(
+            &json!({ "authMethods": [
+                { "id": "setup", "name": "Setup", "_meta": { "terminal-auth": { "command": "/a/amp-acp", "args": ["--setup"] } } },
+                { "id": "key", "name": "API key", "_meta": { "api-key": { "provider": "google" } } },
+                { "id": "env", "name": "OpenAI", "type": "env_var",
+                  "vars": [{ "name": "OPENAI_API_KEY", "label": "OpenAI key" }, { "name": "OPTIONAL", "optional": true }] },
+                { "id": "old-env", "name": "Old", "type": "env_var", "varName": "OLD_KEY" }
+            ]}),
+            None,
+        );
+        let LoginHow::Terminal(setup) = &found[0].how else { panic!("terminal-auth login") };
+        assert_eq!((setup.command.to_str(), setup.args.as_slice()), (Some("/a/amp-acp"), &["--setup".to_string()][..]));
+        assert_eq!(found[1].how, LoginHow::Key);
+        assert_eq!(found[1].how.asks(), ["API key"]);
+        assert_eq!(
+            found[2].how,
+            LoginHow::Env(vec![EnvVar { name: "OPENAI_API_KEY".into(), label: Some("OpenAI key".into()) }])
+        );
+        assert_eq!(found[3].how, LoginHow::Env(vec![EnvVar { name: "OLD_KEY".into(), label: None }]));
+    }
+
+    #[test]
+    fn reads_session_options() {
+        let (options, legacy) = session_options(&json!({ "configOptions": [
+            { "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "opus",
+              "options": [{ "value": "opus", "name": "Opus" }, { "group": "Old", "options": [{ "value": "old", "name": "Old" }] }] },
+            { "id": "flag", "name": "Flag", "type": "boolean", "currentValue": true }
+        ]}));
+        assert!(!legacy);
+        assert_eq!(options.len(), 1);
+        assert!(options[0].is_model());
+        assert_eq!(options[0].current_name(), "Opus");
+        assert_eq!(options[0].values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["opus", "old"]);
+
+        let (options, legacy) = session_options(&json!({ "models": {
+            "currentModelId": "b", "availableModels": [{ "modelId": "a", "name": "A" }, { "modelId": "b", "name": "B" }] } }));
+        assert!(legacy);
+        assert_eq!((options[0].id.as_str(), options[0].current_name()), (LEGACY_MODEL, "B"));
     }
 }

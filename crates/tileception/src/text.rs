@@ -3,13 +3,15 @@
 
 use std::collections::HashMap;
 
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap};
+use cosmic_text::{
+    Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, UnderlineStyle, Weight, Wrap,
+};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,
 };
 
-use crate::theme::Colour;
+use crate::{markdown::Span, theme::Colour};
 
 /// Cached images beyond this count are all dropped and redrawn on demand.
 const CACHE_LIMIT: usize = 512;
@@ -43,22 +45,234 @@ pub struct TextImage {
     pub height: i32,
 }
 
+/// How to draw styled spans with [`Text::rich`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RichStyle {
+    pub size: f32,
+    pub colour: Colour,
+    /// For links.
+    pub accent: Colour,
+    pub weight: u16,
+    /// Wrapped to at most this many lines, then ended in "...".
+    pub lines: u8,
+    /// All in the monospace font, as code.
+    pub mono: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RichKey {
+    spans: Vec<Span>,
+    font: String,
+    size_tenths: u32,
+    colour: [u8; 4],
+    accent: [u8; 4],
+    max_width: i32,
+    weight: u16,
+    lines: u8,
+    mono: bool,
+}
+
+/// Styled text as an image, with where its links are in it.
+#[derive(Debug, Clone)]
+pub struct RichImage {
+    pub image: TextImage,
+    /// x, y, width and height within the image, and the address.
+    pub links: Vec<([f32; 4], String)>,
+}
+
 pub struct Text {
     fonts: Option<FontSystem>,
     swash: SwashCache,
     cache: HashMap<Key, TextImage>,
+    rich: HashMap<RichKey, RichImage>,
 }
 
 impl Default for Text {
     fn default() -> Self {
-        Text { fonts: None, swash: SwashCache::new(), cache: HashMap::new() }
+        Text { fonts: None, swash: SwashCache::new(), cache: HashMap::new(), rich: HashMap::new() }
     }
+}
+
+/// Paints a glyph's coverage `c` at (`x`, `y`), premultiplied "over" what is
+/// already in the `w` x `h` pixels.
+fn blend(pixels: &mut [u8], w: i32, h: i32, (x, y): (i32, i32), c: Color) {
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return;
+    }
+    let i = ((y * w + x) * 4) as usize;
+    let alpha = c.a() as f32 / 255.0;
+    let src = [c.r() as f32 * alpha, c.g() as f32 * alpha, c.b() as f32 * alpha, c.a() as f32];
+    for k in 0..4 {
+        let dst = pixels[i + k] as f32;
+        pixels[i + k] = (src[k] + dst * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// The first `chars` characters of `spans`, ended in "...".
+fn cut_spans(spans: &[Span], mut chars: usize) -> Vec<Span> {
+    let mut out = Vec::new();
+    for span in spans {
+        let n = span.text.chars().count();
+        if n < chars {
+            out.push(span.clone());
+            chars -= n;
+            continue;
+        }
+        let text: String = span.text.chars().take(chars).collect();
+        out.push(Span { text: text.trim_end().to_string() + "...", ..span.clone() });
+        return out;
+    }
+    out
 }
 
 impl Text {
     /// Drops cached images, for example after the theme changed.
     pub fn clear(&mut self) {
         self.cache.clear();
+        self.rich.clear();
+    }
+
+    /// Spans of bold, italic, code and links, wrapped at word boundaries
+    /// to `max_width`.
+    pub fn rich(&mut self, spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<RichImage> {
+        if spans.iter().all(|s| s.text.is_empty()) || max_width < 4.0 {
+            return None;
+        }
+        let key = RichKey {
+            spans: spans.to_vec(),
+            font: font.to_string(),
+            size_tenths: (style.size * 10.0).round() as u32,
+            colour: style.colour.straight_rgba8(),
+            accent: style.accent.straight_rgba8(),
+            max_width: max_width.floor() as i32,
+            weight: style.weight,
+            lines: style.lines.max(1),
+            mono: style.mono,
+        };
+        if let Some(hit) = self.rich.get(&key) {
+            return Some(hit.clone());
+        }
+        if self.rich.len() >= CACHE_LIMIT {
+            self.rich.clear();
+        }
+        let image = self.render_rich(&key)?;
+        self.rich.insert(key, image.clone());
+        Some(image)
+    }
+
+    fn render_rich(&mut self, key: &RichKey) -> Option<RichImage> {
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        let size = key.size_tenths as f32 / 10.0;
+        let metrics = Metrics::new(size, (size * 1.4).ceil());
+        let family = if key.mono { Family::Monospace } else { Family::Name(&key.font) };
+        let base = Attrs::new().family(family).weight(Weight(key.weight));
+        let [ar, ag, ab, aa] = key.accent;
+        let accent = Color::rgba(ar, ag, ab, aa);
+        let [r, g, b, a] = key.colour;
+        // Links and code by their place in the spans, counted from 1 (0 is
+        // neither), to find them in the layout.
+        let attrs = |span: &Span, index: usize| {
+            let mut attrs = base.clone();
+            if span.marks.bold {
+                attrs = attrs.weight(Weight(key.weight.max(Weight::SEMIBOLD.0) + 100));
+            }
+            if span.marks.italic {
+                attrs = attrs.style(cosmic_text::Style::Italic);
+            }
+            if span.marks.code {
+                attrs = attrs.family(Family::Monospace).color(Color::rgba(r, g, b, (a as u32 * 85 / 100) as u8));
+            }
+            if span.marks.strike {
+                attrs = attrs.strikethrough();
+            }
+            if span.link.is_some() {
+                attrs = attrs.color(accent).underline(UnderlineStyle::Single);
+            }
+            if span.link.is_some() || span.marks.code {
+                attrs = attrs.metadata(index + 1);
+            }
+            attrs
+        };
+        let mut buffer = Buffer::new(fonts, metrics);
+        buffer.set_wrap(Wrap::WordOrGlyph);
+        buffer.set_size(Some(key.max_width as f32), None);
+        let layout = |buffer: &mut Buffer, fonts: &mut FontSystem, spans: &[Span]| {
+            let list: Vec<(&str, Attrs)> =
+                spans.iter().enumerate().map(|(i, s)| (s.text.as_str(), attrs(s, i))).collect();
+            buffer.set_rich_text(list, &base, Shaping::Advanced, None);
+            buffer.shape_until_scroll(fonts, false);
+            buffer.layout_runs().count()
+        };
+        let mut spans = key.spans.clone();
+        if layout(&mut buffer, fonts, &spans) > key.lines as usize {
+            let total: usize = key.spans.iter().map(|s| s.text.chars().count()).sum();
+            let (mut lo, mut hi) = (0usize, total);
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                if layout(&mut buffer, fonts, &cut_spans(&key.spans, mid)) <= key.lines as usize {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            spans = cut_spans(&key.spans, lo);
+            layout(&mut buffer, fonts, &spans);
+        }
+        let width = buffer.layout_runs().map(|r| r.line_w).fold(0.0f32, f32::max);
+        let rows = buffer.layout_runs().count().max(1);
+        // Room for the shading behind code at the end of a line.
+        let w = width.ceil().max(1.0) as i32 + 3;
+        let h = (metrics.line_height * rows as f32).ceil() as i32;
+        buffer.set_size(Some(key.max_width as f32), Some(h as f32));
+
+        // Where the links and code are: their glyphs, a rectangle per line.
+        let mut marked: Vec<([f32; 4], &Span)> = Vec::new();
+        for run in buffer.layout_runs() {
+            let mut current: Option<(usize, f32, f32)> = None;
+            let mut close = |current: &mut Option<(usize, f32, f32)>| {
+                if let Some((index, x0, x1)) = current.take() {
+                    if let Some(span) = spans.get(index - 1) {
+                        marked.push(([x0, run.line_top, x1 - x0, run.line_height], span));
+                    }
+                }
+            };
+            for glyph in run.glyphs {
+                match current {
+                    Some((index, _, ref mut x1)) if index == glyph.metadata => *x1 = glyph.x + glyph.w,
+                    _ => {
+                        close(&mut current);
+                        if glyph.metadata > 0 {
+                            current = Some((glyph.metadata, glyph.x, glyph.x + glyph.w));
+                        }
+                    }
+                }
+            }
+            close(&mut current);
+        }
+
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        // Code is shaded, faintly in the text's own colour.
+        let shade = [r, g, b].map(|c| (c as u32 * 28 / 255) as u8);
+        for ([x, y, cw, ch], _) in marked.iter().filter(|(_, s)| s.marks.code && s.link.is_none()) {
+            let (x0, x1) = (((x - 2.0).floor() as i32).max(0), ((x + cw + 2.0).ceil() as i32).min(w));
+            let (y0, y1) = (((y + ch * 0.12).floor() as i32).max(0), ((y + ch * 0.92).ceil() as i32).min(h));
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    let i = ((py * w + px) * 4) as usize;
+                    pixels[i..i + 4].copy_from_slice(&[shade[0], shade[1], shade[2], 28]);
+                }
+            }
+        }
+        buffer.draw(fonts, &mut self.swash, Color::rgba(r, g, b, a), |x, y, cw, ch, c| {
+            for dy in 0..ch as i32 {
+                for dx in 0..cw as i32 {
+                    blend(&mut pixels, w, h, (x + dx, y + dy), c);
+                }
+            }
+        });
+        let links = marked.into_iter().filter_map(|(rect, s)| Some((rect, s.link.clone()?))).collect();
+        let buffer = MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (w, h), 1, Transform::Normal, None);
+        Some(RichImage { image: TextImage { buffer, width: w, height: h }, links })
     }
 
     /// One line of text, shortened with "..." to fit `max_width` pixels.
@@ -237,18 +451,7 @@ impl Text {
         buffer.draw(fonts, &mut self.swash, Color::rgba(r, g, b, a), |x, y, cw, ch, c| {
             for dy in 0..ch as i32 {
                 for dx in 0..cw as i32 {
-                    let (px, py) = (x + dx - scroll as i32, y + dy);
-                    if px < 0 || py < 0 || px >= w || py >= h {
-                        continue;
-                    }
-                    let i = ((py * w + px) * 4) as usize;
-                    let alpha = c.a() as f32 / 255.0;
-                    // Premultiplied "over" onto what is already there.
-                    let src = [c.r() as f32 * alpha, c.g() as f32 * alpha, c.b() as f32 * alpha, c.a() as f32];
-                    for k in 0..4 {
-                        let dst = pixels[i + k] as f32;
-                        pixels[i + k] = (src[k] + dst * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
-                    }
+                    blend(&mut pixels, w, h, (x + dx - scroll as i32, y + dy), c);
                 }
             }
         });

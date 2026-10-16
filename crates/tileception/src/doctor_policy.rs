@@ -28,6 +28,25 @@ impl Mode {
         }
     }
 
+    pub const ALL: [Mode; 3] = [Mode::Ask, Mode::Config, Mode::Yolo];
+
+    /// The name on the panel's switch.
+    pub fn short(self) -> &'static str {
+        match self {
+            Mode::Ask => "Ask",
+            Mode::Config => "Config",
+            Mode::Yolo => "Yolo",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Mode::Ask => "Every change is shown and confirmed first",
+            Mode::Config => "Changes to Tileception's own files go ahead; the rest asks",
+            Mode::Yolo => "Nothing asks; backups and undo still apply",
+        }
+    }
+
     pub fn next(self) -> Mode {
         match self {
             Mode::Ask => Mode::Config,
