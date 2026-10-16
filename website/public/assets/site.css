@@ -187,3 +187,11 @@ html.zoom.portrait .hud-top { display: none; }
 html.zoom .l0 { position: relative; }
 html.zoom .portal { cursor: zoom-in; }
 html.zoom .portal .portal { cursor: inherit; }
+
+/* alpha warning: 0.x is unstable, 1.x will be the first stable line */
+.brandline { display: inline-flex; align-items: center; gap: .6em; }
+.tag { font: 500 .6em/1 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; text-decoration: none;
+  background: var(--yellow); color: var(--ink); border: .18em solid var(--ink); padding: .3em .5em; }
+.a-nav .tag { font-size: .62em; }
+.hud-top .tag { font-size: 13px; border-width: 3px; padding: 6px 8px; }
+.warn { background: var(--yellow); border-left: .4em solid var(--ink); padding: .55em .8em; margin: .8em 0; font-size: .82em; line-height: 1.3; }

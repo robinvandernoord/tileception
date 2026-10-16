@@ -71,7 +71,7 @@
 <a class="skip" href="#get">Skip to install</a>
 
 <header class="hud-top" aria-label="Site">
-  <a class="brand" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a>
+  <span class="brandline"><a class="brand" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a><a class="tag" href="#get" title="0.x releases are unstable">Alpha</a></span>
   <a class="hud-get" href="#get">Get it</a>
 </header>
 
@@ -83,7 +83,7 @@
   <!-- Level 0 -->
   <section class="lvl l0" id="home" aria-labelledby="h-home" data-name="Start" data-color="ink">
     <nav class="blk a-nav" aria-label="Main">
-      <a class="logo" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a>
+      <span class="brandline"><a class="logo" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a><a class="tag" href="#get" title="0.x releases are unstable">Alpha</a></span>
       <span class="links"><a href="#tile">How it works</a><a href="#run">Features</a><a href="https://github.com/robinvandernoord/tileception">Source</a></span>
     </nav>
     <div class="blk r deco a-red"></div>
@@ -168,9 +168,9 @@
   <section class="lvl l5" id="get" aria-labelledby="h-get" data-name="Get it" data-color="r">
     <div class="blk a-head get">
       <h2 id="h-get" class="display"><span class="sq sq-r">Get it.</span></h2>
-      <p>On Debian 13, Ubuntu 24.04 or 26.04 (amd64 or arm64):</p>
+      <p class="warn"><strong>Alpha.</strong> 0.x releases are unstable and may break between versions. 1.0 will be the first stable one.</p>
+      <p>On Debian 13, Ubuntu 24.04 or 26.04:</p>
       <div class="cmd"><code id="install-cmd">curl -fsSL https://tileception.space/install | sh</code><button type="button" class="copy" data-copy="install-cmd">Copy</button></div>
-      <p class="small">It adds the apt repository at <code>apt.tileception.space</code> and installs the <code>tileception</code> package, so updates arrive with your system updates. Then reboot and pick Tileception on the login screen.</p>
       <p class="small">Rather build it yourself? Clone <a href="https://github.com/robinvandernoord/tileception#installing-as-a-session">the repository</a> and run <code>./install-session.sh</code>, then pick Tileception on the login screen.</p>
     </div>
     <div class="blk portal loop a-loop" id="loop"><a class="loop-link" href="#home">Back to the top</a></div>
