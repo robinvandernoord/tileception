@@ -35,8 +35,8 @@ Colours have meanings: red is tile, yellow is nest, blue is zoom.
 python3 -m http.server -d website/public 8000
 ```
 
-Then open http://localhost:8000. Paths are absolute (`/assets/...`), so opening
-`index.html` as a file will not load the styles.
+Then open http://localhost:8000. You can also open `website/public/index.html`
+directly in your browser; its stylesheet and script use relative paths.
 
 After changing `tools/og.html` or `public/favicon.svg`:
 
