@@ -364,10 +364,12 @@ must have sufficient capacity and an explicit retention policy.
   session entries and portal overrides that can shadow packaged files. Preserve
   personal configuration and avoid changing unrelated users' home directories
   from package maintainer scripts.
-- [ ] Build the website in a separate CI deployment and publish to the small OVH
+- [x] Build the website in a separate CI deployment and publish to the small OVH
   host, including a plain-text shell script at `https://tileception.space/install`.
-  Keep website deployment independent of package publishing. Publish the install
-  command only once its referenced repository and packages are available.
+  Keep website deployment independent of package publishing. Done in `website/`
+  and `.github/workflows/website.yml`. The page already shows the install command;
+  until the repository and packages exist, `/install` only prints the source-build
+  steps and exits without changing the system.
 - [ ] Support `curl -fsSL https://tileception.space/install | sh`. Make the script
   compatible with `/bin/sh`, safe to rerun, and able to detect supported OS/base
   releases and architectures before changing the system. Explain the changes,
