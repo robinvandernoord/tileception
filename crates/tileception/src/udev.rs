@@ -413,7 +413,8 @@ impl Tileception {
                 Err(err) => tracing::warn!("render: {err:?}"),
             }
             let elapsed = self.start.elapsed();
-            for window in self.windows.values() {
+            // Minimized windows are hidden: no frames, so they need not draw.
+            for (_, window) in self.windows.iter().filter(|(id, _)| !self.world.is_minimized(**id)) {
                 window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
             }
             udev.surface = Some(lit);

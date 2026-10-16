@@ -309,6 +309,17 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// A window's picture fitted into `rect`.
+    pub fn window(&mut self, id: tileception_core::WindowId, rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let rect = self.shifted(rect);
+        let elements = self.state.picture_faded(self.renderer, id, &rect, self.alpha);
+        // Pictures come topmost first; layers are kept in painting order.
+        self.layers.extend(elements.into_iter().rev());
+    }
+
     pub fn image(&mut self, buffer: &MemoryRenderBuffer, at: (f64, f64)) {
         self.image_sized(buffer, at, None);
     }

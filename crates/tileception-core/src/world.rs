@@ -109,6 +109,25 @@ struct SavedView {
     windows: Vec<WindowId>,
 }
 
+/// Where a minimized window was, to put it back there.
+#[derive(Debug, Clone)]
+enum Home {
+    /// A tab of the tile holding these windows.
+    Tab(Vec<WindowId>),
+    /// On `side` of the node holding these windows, with this share of the split.
+    Beside { windows: Vec<WindowId>, side: Side, share: f64 },
+    /// Floating at this rectangle.
+    Float(Rect),
+    /// The only tiled window: it docks like a new one.
+    Alone,
+}
+
+#[derive(Debug, Clone)]
+struct Minimized {
+    window: WindowId,
+    home: Home,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Camera {
     from: Rect,
@@ -151,6 +170,8 @@ pub struct World {
     floats: HashMap<WindowId, Float>,
     /// Where docked windows floated last, to float them there again.
     last_float: HashMap<WindowId, Rect>,
+    /// Minimized windows, out of the tree, oldest first.
+    minimized: Vec<Minimized>,
     /// The output area the framed space fills, in pixels.
     screen: Rect,
 }
@@ -240,6 +261,7 @@ impl World {
             camera: Camera { from: Rect::UNIT, to: Rect::UNIT, start: 0.0, duration: 0.0 },
             floats: HashMap::new(),
             last_float: HashMap::new(),
+            minimized: Vec::new(),
             screen,
         }
     }
@@ -472,7 +494,10 @@ impl World {
         }
     }
 
+    /// Lets go of a dragged window: a window in the layout moves, a minimized
+    /// one is restored at the target instead of where it was.
     pub fn apply_drop(&mut self, win: WindowId, target: DropTarget, now: f64) {
+        self.minimized.retain(|m| m.window != win);
         match target {
             DropTarget::Edge(node, side) => self.move_window(win, node, side, now),
             DropTarget::Tab(tile) => {
@@ -629,15 +654,7 @@ impl World {
                 let r = self.default_float_rect();
                 self.floats.insert(win, Float { rect: r, sized: false });
             }
-            Placement::Dock => {
-                let target = self.dock_target();
-                let side = self.split_side(target);
-                if !self.overview && target == self.framed && target != self.tree.desktop() {
-                    self.tree.dock_local(win, target, side);
-                } else {
-                    self.tree.dock(win, target, side);
-                }
-            }
+            Placement::Dock => self.dock_new(win),
         }
         self.relayout();
         // Floating windows show whatever is framed, so only tiles widen the frame.
@@ -649,6 +666,17 @@ impl World {
         }
         self.set_focus(Some(win));
         self.retarget(now);
+    }
+
+    /// Docks a detached window where a new one would go.
+    fn dock_new(&mut self, win: WindowId) {
+        let target = self.dock_target();
+        let side = self.split_side(target);
+        if !self.overview && target == self.framed && target != self.tree.desktop() {
+            self.tree.dock_local(win, target, side);
+        } else {
+            self.tree.dock(win, target, side);
+        }
     }
 
     /// The leaf a new window docks beside: the focused one when it is in view,
@@ -677,11 +705,18 @@ impl World {
     }
 
     pub fn remove_window(&mut self, win: WindowId, now: f64) {
+        self.minimized.retain(|m| m.window != win);
         if !self.tree.detach(win) {
             return;
         }
         self.floats.remove(&win);
         self.last_float.remove(&win);
+        self.left_layout(win, now);
+    }
+
+    /// After a window left the tree: forget it in focus history, lay out the
+    /// rest and focus the next window in view.
+    fn left_layout(&mut self, win: WindowId, now: f64) {
         self.mru.retain(|w| *w != win);
         self.relayout();
         if self.focus == Some(win) {
@@ -691,6 +726,114 @@ impl World {
             self.set_focus(next);
         }
         self.retarget(now);
+    }
+
+    // ----- minimizing -----
+
+    /// Minimized windows, oldest first.
+    pub fn minimized(&self) -> impl DoubleEndedIterator<Item = WindowId> + '_ {
+        self.minimized.iter().map(|m| m.window)
+    }
+
+    pub fn is_minimized(&self, win: WindowId) -> bool {
+        self.minimized.iter().any(|m| m.window == win)
+    }
+
+    /// Takes a window out of the layout without closing it; its neighbours
+    /// take its space, as when it closes. Returns whether it was minimized.
+    pub fn minimize(&mut self, win: WindowId, now: f64) -> bool {
+        let Some(home) = self.home_of(win) else { return false };
+        self.tree.detach(win);
+        if let Some(f) = self.floats.remove(&win) {
+            self.last_float.insert(win, f.rect);
+        }
+        self.minimized.push(Minimized { window: win, home });
+        self.left_layout(win, now);
+        true
+    }
+
+    /// Where a window in the layout is, put so that it can go back there
+    /// after its neighbours have changed.
+    fn home_of(&self, win: WindowId) -> Option<Home> {
+        if let Some(f) = self.floats.get(&win) {
+            return Some(Home::Float(f.rect));
+        }
+        let tile = self.tree.tile_of(win)?;
+        let views = self.tree.windows_in(tile);
+        if views.len() > 1 {
+            return Some(Home::Tab(views.into_iter().filter(|w| *w != win).collect()));
+        }
+        let Some(parent) = self.tree.parent(tile) else { return Some(Home::Alone) };
+        let Node::Split { axis, children, .. } = self.tree.node(parent) else { return Some(Home::Alone) };
+        let tiled = |node: NodeId| -> Vec<WindowId> {
+            self.tree.windows_in(node).into_iter().filter(|w| !self.tree.is_floating(*w)).collect()
+        };
+        let i = children.iter().position(|c| *c == tile)?;
+        let usable = |c: &&NodeId| self.tree.is_visible(**c) && !tiled(**c).is_empty();
+        let (trailing, leading) = match axis {
+            Axis::Horizontal => (Side::Right, Side::Left),
+            Axis::Vertical => (Side::Bottom, Side::Top),
+        };
+        // Beside the neighbour before it, or else the one after it.
+        let (neighbour, side) = match children[..i].iter().rev().find(usable) {
+            Some(before) => (*before, trailing),
+            None => match children[i + 1..].iter().find(usable) {
+                Some(after) => (*after, leading),
+                None => return Some(Home::Alone),
+            },
+        };
+        let share = self.tree.share_of(tile).unwrap_or(0.5);
+        Some(Home::Beside { windows: tiled(neighbour), side, share })
+    }
+
+    /// Puts a minimized window back where it was and focuses it. Returns
+    /// false when it is not minimized.
+    pub fn restore(&mut self, win: WindowId, now: f64) -> bool {
+        let Some(i) = self.minimized.iter().position(|m| m.window == win) else { return false };
+        let home = self.minimized.remove(i).home;
+        self.place_home(win, home);
+        if self.tree.is_floating(win) {
+            // Floating windows hang over whatever is framed.
+            self.relayout();
+            self.set_focus(Some(win));
+            self.retarget(now);
+        } else {
+            self.after_move(win, now);
+        }
+        true
+    }
+
+    /// Puts the most recently minimized window back.
+    pub fn restore_last(&mut self, now: f64) -> bool {
+        match self.minimized.last() {
+            Some(m) => self.restore(m.window, now),
+            None => false,
+        }
+    }
+
+    fn place_home(&mut self, win: WindowId, home: Home) {
+        match home {
+            Home::Float(rect) => self.add_float(win, Some(rect)),
+            Home::Tab(others) => match others.iter().find_map(|w| self.tree.tile_of(*w)) {
+                Some(tile) => self.tree.tab(win, tile),
+                None => self.dock_new(win),
+            },
+            Home::Beside { windows, side, share } => {
+                let alive: Vec<_> = windows.into_iter().filter(|w| self.tree.tile_of(*w).is_some()).collect();
+                // The neighbour as it was, or failing that its window nearest
+                // to where this one sat.
+                let nearest = if side.is_leading() { alive.first() } else { alive.last() };
+                let nearest = nearest.and_then(|w| self.tree.tile_of(*w));
+                match self.tree.node_holding(&alive, side.axis()).or(nearest) {
+                    Some(target) => {
+                        let tile = self.tree.dock(win, target, side);
+                        self.tree.set_share(tile, share);
+                    }
+                    None => self.dock_new(win),
+                }
+            }
+            Home::Alone => self.dock_new(win),
+        }
     }
 
     /// Moves a window to dock beside `target` on `side`.
@@ -1087,6 +1230,16 @@ impl World {
     /// Goes to the view saved in slot 1..=9. Returns false when the slot is empty.
     pub fn recall_view(&mut self, slot: usize, now: f64) -> bool {
         let Some(Some(view)) = slot.checked_sub(1).and_then(|i| self.saved.get(i)) else { return false };
+        let view = view.clone();
+        // Minimized windows still belong to the view: they come back into it.
+        // Going to a view never minimizes anything.
+        let back: Vec<_> = self.minimized().filter(|w| view.windows.contains(w)).collect();
+        for win in back {
+            let i = self.minimized.iter().position(|m| m.window == win).expect("listed as minimized");
+            let home = self.minimized.remove(i).home;
+            self.place_home(win, home);
+        }
+        self.relayout();
         let mut node = self.tree.resolve(view.node);
         let leaves: Vec<NodeId> = view.windows.iter().filter_map(|w| self.tree.leaf_of(*w)).collect();
         if let Some(first) = leaves.first() {
@@ -1424,5 +1577,207 @@ mod tests {
         wd.cycle_tab(1);
         assert_eq!(wd.focus(), Some(w(1)));
         assert_eq!(wd.tree().shown_windows_in(t), vec![w(1)]);
+    }
+
+    fn rects(world: &World) -> Vec<(WindowId, Rect)> {
+        let mut out: Vec<_> = world.placements(world.view(1e9)).into_iter().map(|p| (p.window, p.rect)).collect();
+        out.sort_by_key(|(w, _)| *w);
+        out
+    }
+
+    fn same_rects(a: &[(WindowId, Rect)], b: &[(WindowId, Rect)]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|((wa, ra), (wb, rb))| wa == wb && ra.approx_eq(rb, 1e-6))
+    }
+
+    /// [1 | [2 / [3 | 4]]], with the column resized off centre.
+    fn four() -> World {
+        let mut wd = world();
+        for n in 1..=4 {
+            wd.add_window(w(n), Placement::Dock, 0.0);
+        }
+        let (split, index) = wd.tree().boundary(wd.tree().tile_of(w(1)).unwrap(), Side::Right).unwrap();
+        assert!(wd.resize_gap(split, index, 160.0, 0.0));
+        wd
+    }
+
+    #[test]
+    fn minimizing_gives_the_space_away_and_restoring_takes_it_back() {
+        let mut wd = four();
+        let before = rects(&wd);
+        wd.focus_window(w(3), 0.0);
+        assert!(wd.minimize(w(3), 0.0));
+        wd.tree().check_invariants();
+        assert!(wd.is_minimized(w(3)));
+        assert!(!wd.contains_window(w(3)));
+        assert!(rects(&wd).iter().all(|(id, _)| *id != w(3)));
+        // Its neighbour takes the space, and focus moves on.
+        assert!(rect_of(&wd, w(4)).approx_eq(&Rect::new(960.0, 450.0, 640.0, 450.0), 1e-6));
+        assert_ne!(wd.focus(), Some(w(3)));
+        assert!(wd.restore(w(3), 0.0));
+        wd.tree().check_invariants();
+        assert!(!wd.is_minimized(w(3)));
+        assert_eq!(wd.focus(), Some(w(3)));
+        assert!(same_rects(&rects(&wd), &before), "{:?}\nvs {before:?}", rects(&wd));
+    }
+
+    #[test]
+    fn restoring_rebuilds_a_split_that_collapsed() {
+        let mut wd = four();
+        let before = rects(&wd);
+        // Without 2, its column collapses and [3 | 4] joins the top row.
+        wd.minimize(w(2), 0.0);
+        wd.tree().check_invariants();
+        assert_eq!(wd.tree().children(wd.tree().root()).len(), 4, "desktop, 1, 3, 4");
+        wd.restore(w(2), 0.0);
+        wd.tree().check_invariants();
+        assert!(same_rects(&rects(&wd), &before), "{:?}\nvs {before:?}", rects(&wd));
+    }
+
+    #[test]
+    fn restoring_after_the_neighbour_closed_still_finds_a_place() {
+        let mut wd = four();
+        wd.minimize(w(4), 0.0);
+        wd.remove_window(w(3), 0.0);
+        wd.restore(w(4), 0.0);
+        wd.tree().check_invariants();
+        assert!(wd.contains_window(w(4)));
+        assert_eq!(wd.focus(), Some(w(4)));
+    }
+
+    #[test]
+    fn tabs_and_floats_go_back_where_they_were() {
+        let mut wd = world();
+        wd.add_window(w(1), Placement::Dock, 0.0);
+        let t = wd.tree().tile_of(w(1)).unwrap();
+        wd.apply_drop(w(2), DropTarget::Tab(t), 0.0);
+        wd.add_window(w(3), Placement::Float, 0.0);
+        let float = Rect::new(100.0, 120.0, 400.0, 300.0);
+        wd.set_float_rect(w(3), float);
+        wd.minimize(w(2), 0.0);
+        wd.minimize(w(3), 0.0);
+        assert_eq!(wd.tree().windows_in(t), vec![w(1)]);
+        assert!(wd.tree().floats().is_empty());
+        assert_eq!(wd.minimized().collect::<Vec<_>>(), vec![w(2), w(3)]);
+        let framed = wd.framed();
+        assert!(wd.restore_last(0.0));
+        assert_eq!(wd.float_rect(w(3)), Some(float));
+        assert_eq!(wd.framed(), framed, "a floating window does not move the camera");
+        assert!(wd.restore_last(0.0));
+        assert_eq!(wd.tree().windows_in(t), vec![w(1), w(2)]);
+        assert!(!wd.restore_last(0.0));
+        wd.tree().check_invariants();
+    }
+
+    #[test]
+    fn going_to_a_saved_view_brings_its_minimized_windows_back() {
+        let mut wd = four();
+        let column = wd.tree().parent(wd.tree().tile_of(w(2)).unwrap()).unwrap();
+        wd.frame(column, 0.0);
+        wd.save_view(1);
+        wd.minimize(w(2), 0.0);
+        wd.minimize(w(1), 0.0);
+        wd.frame(wd.tree().tile_of(w(4)).unwrap(), 0.0);
+        assert!(wd.recall_view(1, 0.0));
+        wd.tree().check_invariants();
+        assert!(!wd.is_minimized(w(2)), "part of the view: restored");
+        assert!(wd.is_minimized(w(1)), "not part of the view: stays out");
+        assert_eq!(wd.tree().windows_in(wd.framed()), vec![w(2), w(3), w(4)]);
+    }
+
+    #[test]
+    fn dropping_a_minimized_window_restores_it_there() {
+        let mut wd = four();
+        wd.minimize(w(1), 0.0);
+        let t4 = wd.tree().tile_of(w(4)).unwrap();
+        wd.apply_drop(w(1), DropTarget::Edge(t4, Side::Right), 0.0);
+        wd.tree().check_invariants();
+        assert!(!wd.is_minimized(w(1)));
+        assert_eq!(wd.tree().parent(wd.tree().tile_of(w(1)).unwrap()), wd.tree().parent(t4));
+        assert_eq!(wd.focus(), Some(w(1)));
+    }
+
+    #[test]
+    fn closing_a_minimized_window_forgets_it() {
+        let mut wd = four();
+        wd.minimize(w(2), 0.0);
+        wd.remove_window(w(2), 0.0);
+        assert!(!wd.is_minimized(w(2)));
+        assert!(!wd.restore(w(2), 0.0));
+        assert!(!wd.minimize(w(2), 0.0));
+    }
+
+    /// Docking and closing never leave a split directly inside one along the
+    /// same axis; restoring must not either.
+    fn assert_no_nested_same_axis(tree: &Tree) {
+        for id in tree.subtree(tree.root()) {
+            if let Node::Split { axis, children, .. } = tree.node(id) {
+                for c in children {
+                    assert!(
+                        !matches!(tree.node(*c), Node::Split { axis: a, .. } if a == axis),
+                        "split {c:?} nested in split {id:?} along the same axis"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restoring_beside_a_row_does_not_nest_a_row_in_it() {
+        let mut wd = world();
+        // [1 | [2 / 3] | 4]
+        let d = wd.tree().desktop();
+        let t1 = wd.tree.dock(w(1), d, Side::Right);
+        let t2 = wd.tree.dock(w(2), t1, Side::Right);
+        wd.tree.dock(w(3), t2, Side::Bottom);
+        let column = wd.tree().parent(t2).unwrap();
+        wd.tree.dock(w(4), column, Side::Right);
+        wd.relayout();
+        // 4 remembers the column [2 / 3] as its neighbour.
+        wd.minimize(w(4), 0.0);
+        // Then 2 and 3 end up side by side in the top row: [1 | 2 | 3].
+        wd.tree.detach(w(3));
+        let t2 = wd.tree().tile_of(w(2)).unwrap();
+        wd.tree.dock(w(3), t2, Side::Right);
+        wd.relayout();
+        wd.restore(w(4), 0.0);
+        wd.tree().check_invariants();
+        assert_no_nested_same_axis(wd.tree());
+        assert_eq!(wd.tree().children(wd.tree().root()).len(), 5, "desktop, 1, 2, 3, 4 in one row");
+    }
+
+    #[test]
+    fn random_minimizing_keeps_every_window() {
+        let mut seed: u64 = 7;
+        let mut next = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) % n as u64) as usize
+        };
+        for _ in 0..50 {
+            let mut wd = world();
+            let mut count = 0;
+            for _ in 0..40 {
+                match next(6) {
+                    0 | 1 => {
+                        count += 1;
+                        let placement = if next(4) == 0 { Placement::Float } else { Placement::Dock };
+                        wd.add_window(w(count), placement, 0.0);
+                    }
+                    2 | 3 if count > 0 => {
+                        wd.minimize(w(1 + next(count as usize) as u64), 0.0);
+                    }
+                    _ => {
+                        let out: Vec<_> = wd.minimized().collect();
+                        if !out.is_empty() {
+                            assert!(wd.restore(out[next(out.len())], 0.0));
+                        }
+                    }
+                }
+                wd.tree().check_invariants();
+                let mut all = wd.tree().windows_in(wd.tree().root());
+                all.extend(wd.minimized());
+                all.sort();
+                assert_eq!(all, (1..=count).map(w).collect::<Vec<_>>());
+            }
+        }
     }
 }

@@ -185,9 +185,22 @@ impl XwmHandler for Tileception {
         }
     }
 
-    fn minimize_request(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(id) = self.x11_window_id(&window) {
+            self.minimize_window(id);
+            self.persist_layout();
+        }
+    }
 
-    fn unminimize_request(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(id) = self.x11_window_id(&window) {
+            let now = self.now();
+            if self.world.restore(id, now) {
+                self.apply_layout();
+                self.persist_layout();
+            }
+        }
+    }
 
     fn resize_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32, _edges: ResizeEdge) {}
 

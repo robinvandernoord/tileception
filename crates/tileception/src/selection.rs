@@ -86,6 +86,12 @@ impl Tileception {
                     }
                 }
             }
+            Action::Minimize => {
+                for window in windows {
+                    self.minimize_window(window);
+                }
+                self.selection.windows.clear();
+            }
             _ => return false,
         }
         self.apply_layout();

@@ -285,6 +285,14 @@ impl XdgShellHandler for Tileception {
         }
     }
 
+    /// The minimize button in a program's own title bar.
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.window_id(surface.wl_surface()) {
+            self.minimize_window(id);
+            self.persist_layout();
+        }
+    }
+
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         if let Some(id) = self.window_id(surface.wl_surface()) {
             self.set_fullscreen(id, false);

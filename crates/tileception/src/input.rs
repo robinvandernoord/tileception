@@ -12,7 +12,7 @@ use smithay::{
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER},
 };
-use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId, WindowRole};
+use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId};
 
 use crate::{
     commands::Command,
@@ -20,10 +20,10 @@ use crate::{
     state::{GapDrag, MoveDrag, PendingPress, ResizeDrag, Tileception},
 };
 
-const BTN_LEFT: u32 = 0x110;
+pub(crate) const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 /// Pixels the pointer must travel before a press becomes a drag.
-const DRAG_THRESHOLD: f64 = 6.0;
+pub(crate) const DRAG_THRESHOLD: f64 = 6.0;
 /// Largest share of the screen a dragged window's picture takes.
 const DRAG_PICTURE: f64 = 0.3;
 
@@ -68,6 +68,10 @@ pub enum Action {
     Notifications,
     DoNotDisturb,
     Group,
+    /// Take the focused window out of the layout without closing it.
+    Minimize,
+    /// Put a minimized window back where it was: this one, or the last.
+    Restore(Option<WindowId>),
 }
 
 impl Tileception {
@@ -285,6 +289,17 @@ impl Tileception {
             Action::Notifications => self.toggle_notifications(),
             Action::DoNotDisturb => self.toggle_dnd(),
             Action::Group => {}
+            Action::Minimize => {
+                if let Some(id) = self.world.focus() {
+                    self.minimize_window(id);
+                }
+            }
+            Action::Restore(id) => {
+                match id {
+                    Some(id) => self.world.restore(id, now),
+                    None => self.world.restore_last(now),
+                };
+            }
             Action::Fullscreen => {
                 if let Some(id) = self.world.focus() {
                     let on = self.fullscreen != Some(id);
@@ -304,6 +319,8 @@ impl Tileception {
                 | Action::NextTab
                 | Action::PrevTab
                 | Action::ToggleDesktop
+                | Action::Minimize
+                | Action::Restore(_)
         ) {
             self.persist_layout();
         }
@@ -338,6 +355,9 @@ impl Tileception {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
+            return;
+        }
+        if self.strip_motion(pos, time) {
             return;
         }
         let now = self.now();
@@ -409,7 +429,7 @@ impl Tileception {
     }
 
     /// Picks a window up so it follows the pointer as a picture.
-    fn start_move_drag(&mut self, window: WindowId, at: Point<f64, Logical>) {
+    pub(crate) fn start_move_drag(&mut self, window: WindowId, at: Point<f64, Logical>) {
         let now = self.now();
         let screen = self.world.screen();
         let shown = self.drawn_windows(now).into_iter().find(|d| d.id == window).map(|d| d.content);
@@ -463,6 +483,9 @@ impl Tileception {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
             }
+            return;
+        }
+        if self.move_drag.is_none() && self.strip_button(button, state == ButtonState::Pressed) {
             return;
         }
 
@@ -592,12 +615,7 @@ impl Tileception {
                 return;
             }
             if !d.live {
-                // A preview is a window too big for its tile at this level:
-                // a click zooms in to its tile, where it may fit and be live.
-                if d.role == WindowRole::Tiled && self.world.framed() != d.leaf {
-                    self.world.frame(d.leaf, now);
-                    self.apply_layout();
-                }
+                // A click on a preview only focuses it.
                 return;
             }
         }

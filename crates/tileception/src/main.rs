@@ -22,6 +22,7 @@ mod ipc;
 mod launcher;
 mod layers;
 mod lock;
+mod minimized;
 mod notifications;
 mod persistence;
 mod power;

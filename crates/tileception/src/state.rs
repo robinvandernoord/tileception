@@ -143,6 +143,8 @@ pub struct Tileception {
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
+    /// The strip of minimized windows at the bottom edge.
+    pub strip: crate::minimized::Strip,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -261,6 +263,7 @@ impl Tileception {
             notifications: Default::default(),
             appearance: None,
             selection: Default::default(),
+            strip: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             wallpaper: None,
@@ -436,7 +439,19 @@ impl Tileception {
         }
         for (id, window) in &self.windows {
             window.set_activated(Some(*id) == focus);
+            // Minimized windows are told they are hidden, so they can stop drawing.
+            let hidden = self.world.is_minimized(*id);
+            if let Some(x11) = window.x11_surface().filter(|x| x.is_minimized() != hidden) {
+                let _ = x11.set_suspended(hidden);
+            }
             if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|s| {
+                    if hidden {
+                        s.states.set(xdg_toplevel::State::Suspended);
+                    } else {
+                        s.states.unset(xdg_toplevel::State::Suspended);
+                    }
+                });
                 if toplevel.is_initial_configure_sent() {
                     toplevel.send_pending_configure();
                 }
@@ -510,6 +525,21 @@ impl Tileception {
         self.fullscreen = on.then_some(id);
         if on {
             self.world.focus_window(id, self.now());
+        }
+        self.apply_layout();
+    }
+
+    /// Takes a window out of the layout without closing it, leaving
+    /// fullscreen first.
+    pub fn minimize_window(&mut self, id: WindowId) {
+        if self.fullscreen == Some(id) {
+            self.set_fullscreen(id, false);
+        }
+        self.selection.windows.remove(&id);
+        let now = self.now();
+        if self.world.minimize(id, now) {
+            tracing::info!(window = id.0, "minimized");
+            self.peek_minimized();
         }
         self.apply_layout();
     }
@@ -616,6 +646,7 @@ impl Tileception {
             window.refresh();
         }
         self.popups.cleanup();
+        self.update_strip();
         let _ = self.display_handle.flush_clients();
     }
 }

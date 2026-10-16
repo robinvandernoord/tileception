@@ -90,7 +90,8 @@ impl Tileception {
         let Some(mut headless) = self.headless.take() else { return };
         self.process_captures(&mut headless.renderer);
         let elapsed = self.start.elapsed();
-        for window in self.windows.values() {
+        // Minimized windows are hidden: no frames, so they need not draw.
+        for (_, window) in self.windows.iter().filter(|(id, _)| !self.world.is_minimized(**id)) {
             window.send_frame(&headless.output, elapsed, Some(Duration::ZERO), |_, _| Some(headless.output.clone()));
         }
         self.headless = Some(headless);

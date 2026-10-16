@@ -135,6 +135,13 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "notifications" => Action::Notifications,
         "do-not-disturb" => Action::DoNotDisturb,
         "group" => Action::Group,
+        "minimize" => Action::Minimize,
+        "restore" => match args.first() {
+            None => Action::Restore(None),
+            Some(id) => Action::Restore(Some(tileception_core::WindowId(
+                id.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
+            ))),
+        },
         "next-tab" => Action::NextTab,
         "prev-tab" => Action::PrevTab,
         "save" => Action::SaveView(slot()?),

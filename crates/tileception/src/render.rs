@@ -60,7 +60,7 @@ pub struct Drawn {
     pub clipped: bool,
 }
 
-/// How many pixels a resting window may be too big for its slot and still be
+/// How many pixels a resting tiled window may be too big for its slot and still be
 /// drawn live, cut off, rather than as a scaled preview.
 const MAX_CLIP: f64 = 32.0;
 
@@ -114,7 +114,8 @@ impl Tileception {
             // Floating windows hang still while the camera moves.
             let moving = moving && p.role == WindowRole::Tiled;
             let (over_w, over_h) = (gw - p.rect.w, gh - p.rect.h);
-            if !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
+            let tiled = p.role == WindowRole::Tiled;
+            if tiled && !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
                 // Just too big, usually from a minimum size: drawn 1:1 from
                 // the slot's top left and cut off at its edges, so it stays
                 // sharp and usable instead of becoming a preview.
@@ -197,6 +198,7 @@ impl Tileception {
         elements.extend(self.power_menu_elements(renderer));
         elements.extend(self.launcher_elements(renderer));
         elements.extend(self.notification_elements(renderer));
+        elements.extend(self.strip_elements(renderer));
         elements.extend(self.selection_elements(renderer));
 
         // Topmost: notifications, launchers and bars. A fullscreen window
@@ -456,7 +458,18 @@ impl Tileception {
     }
 
     /// A window scaled into `content`, which is where its visible geometry goes.
-    fn picture(&self, renderer: &mut GlesRenderer, id: WindowId, content: &Rect) -> Vec<OutputElement> {
+    pub fn picture(&self, renderer: &mut GlesRenderer, id: WindowId, content: &Rect) -> Vec<OutputElement> {
+        self.picture_faded(renderer, id, content, 1.0)
+    }
+
+    /// A window picture at some opacity.
+    pub fn picture_faded(
+        &self,
+        renderer: &mut GlesRenderer,
+        id: WindowId,
+        content: &Rect,
+        alpha: f32,
+    ) -> Vec<OutputElement> {
         let Some(window) = self.windows.get(&id) else { return Vec::new() };
         let geo = window.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
@@ -470,7 +483,7 @@ impl Tileception {
             .into();
         let crop = physical(content);
         let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
+            window.render_elements(renderer, origin, Scale::from(1.0), alpha);
         surfaces
             .into_iter()
             .filter_map(|s| {

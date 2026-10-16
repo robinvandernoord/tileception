@@ -36,6 +36,10 @@ autostart = []
 # restore_layout = false
 # Suspend is enabled by default. Set false to disable the power-menu action.
 # suspend_enabled = true
+# [binds] below adds to and overrides the built-in bindings, so new built-in
+# shortcuts reach you after an update. Set false to make [binds] the
+# complete list instead.
+# default_binds = true
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -81,6 +85,9 @@ repeat_rate = 30
 
 # Key bindings: "Modifiers+Key" = "command", or a list of commands run in
 # order: "Super+Escape" = ["reload", "spawn notify-send 'Reloaded'"].
+# These come on top of the built-in bindings (unless default_binds = false):
+# a key listed here replaces its built-in command, "none" unbinds it
+# ("Super+H" = "none"), and keys not listed keep their built-in command.
 #
 # Modifiers: Super, Alt, Ctrl, Shift. Keys are xkb keysym names (T, Return,
 # Left, bracketleft, Page_Up, F1, XF86AudioRaiseVolume, ...), or WheelUp,
@@ -100,6 +107,8 @@ repeat_rate = 30
 #   toggle-split          stack the focused row, or lay the column side by side
 #   cycle [next|prev]     focus the next or previous window
 #   maximize              frame the focused window on its own (again: back)
+#   minimize              take the focused or selected windows out of the layout
+#   restore [window-id]   put the last minimized window (or this one) back
 #   back, forward         through the spaces you have framed
 #   save <n>, go <n>      save the current view in slot 1-9, or go to it
 #   next-tab, prev-tab    in the focused tile
@@ -136,6 +145,8 @@ repeat_rate = 30
 "Super+WheelUp" = "step-in pointer"
 "Super+WheelDown" = "step-out"
 "Super+M" = "maximize"
+"Super+H" = "minimize"
+"Super+Shift+H" = "restore"
 "Super+bracketleft" = "back"
 "Super+bracketright" = "forward"
 

@@ -447,7 +447,7 @@ matrix, credentials and deployment implementation remain pending.
   player and track when available. Report missing audio devices or active
   players clearly. Use the Tide visual language; keep personal shell shortcuts
   unnecessary for normal volume/media-key operation. Planned, not implemented.
-- **Minimizing windows.** Hide a window without closing it, and bring it back
+- [x] **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:
   - While a window is minimized, its neighbours take its space (as when it
@@ -456,10 +456,18 @@ matrix, credentials and deployment implementation remain pending.
   - A saved view keeps counting a minimized window as part of it: going to that
     view restores the window into it. Going to a view never minimizes
     anything; windows that are out stay out.
-- **Seeing minimized windows.** A taskbar-like strip that hides itself and
+- [x] **Seeing minimized windows.** A taskbar-like strip that hides itself and
   slides in when the pointer touches the screen edge, showing minimized
   windows (icon, name, maybe a small preview); click to restore, drag to place.
   Depends on text rendering and the Tide components.
+  Implemented 2026-10-16 on `feature/minimize-windows`: `minimize` (Super+H,
+  also the program's own minimize button and X11 iconify) and `restore
+  [window-id]` (Super+Shift+H); the strip at the bottom edge, which also peeks
+  for a moment after minimizing, with previews, click to restore, drag to place
+  and a close button. Minimized windows are told they are hidden and get no
+  frames. Checked headless through IPC (exact layout round trip, strip peek);
+  pointer use of the strip is not checked yet. Not persisted across logins:
+  minimized windows come back as new windows.
 - **A welcome screen instead of nothing.** When no windows are open (right
   after login, or after closing the last one), show the built-in launcher in a
   "home" form on the empty desktop: app search, maybe recent or pinned apps and
