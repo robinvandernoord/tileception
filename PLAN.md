@@ -624,6 +624,14 @@ matrix, credentials and deployment implementation remain pending.
   only find apps. Everything here is local and instant: no ACP, no network
   (the "Ask Tileception" row stays for real questions, below these results).
   Proposed 2026-10-16:
+  - **One shared launcher component for Super and the welcome screen.** Both
+    show the same app grid when the search is empty, switch to results while
+    typing, and share styling and keyboard navigation. Both include the media
+    control widget whenever a player is active. Super opens a compact version
+    over the current windows; the welcome screen places the same component on
+    the desktop, adding the clock, date and optional desktop widgets around it.
+    Build on the existing shared launcher implementation so improvements apply
+    to both modes.
   - **Calculator**: sums as you type (`12*7+3`, `15% of 80`, `2^10`,
     brackets), shown as the top row; Enter copies the result. Also hex and
     binary (`0xff`, `255 in hex`) and offline unit conversions (`5 km in mi`,
@@ -647,6 +655,25 @@ matrix, credentials and deployment implementation remain pending.
   - Later, with a built-in clipboard history: search past clipboard entries.
   Question detection must come after these, so a sum or a conversion with
   three words (`5 km in mi`) is not sent to the doctor.
+
+- **Configurable per-app launch arguments.**
+  Status: agreed 2026-10-16, not implemented.
+  - [ ] Add configuration keyed by desktop-file app identity for extra launch
+    arguments, shared by the Super launcher and welcome screen. Preserve desktop
+    entry arguments and file/URL forwarding; pass configured arguments as literal
+    arguments rather than shell code.
+  - [ ] Use Spotify as the first default: add `--ozone-platform=wayland` when
+    launched through Tileception, with a user override to change or disable it.
+    Account for native, Snap and Flatpak desktop entries without changing their
+    installed files, and respect an explicitly selected Ozone platform.
+  - [ ] Document the setting and manually verify Spotify launches natively on
+    Wayland, configured overrides work, and file/URL arguments still arrive.
+  Decision: retain the existing toolkit environment preferences. Spotify uses
+  CEF and does not obey `ELECTRON_OZONE_PLATFORM_HINT`; use per-app arguments
+  instead of adding global GPU flags or disabling hardware acceleration.
+  Log, 2026-10-16: Robin approved adding this after investigating intermittent
+  black flicker with NVIDIA and Xwayland 23.2.6. Native Wayland is a proposed
+  workaround; its effect on the flicker still needs manual confirmation.
 
 ## 5. Risks and open questions
 
