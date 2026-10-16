@@ -8,6 +8,7 @@ use smithay::{
     utils::{Logical, Rectangle},
     wayland::{
         selection::{
+            SelectionTarget,
             data_device::{
                 clear_data_device_selection, current_data_device_selection_userdata,
                 request_data_device_client_selection, set_data_device_selection,
@@ -16,17 +17,16 @@ use smithay::{
                 clear_primary_selection, current_primary_selection_userdata, request_primary_client_selection,
                 set_primary_selection,
             },
-            SelectionTarget,
         },
         xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     },
     xwayland::{
-        xwm::{Reorder, ResizeEdge, XwmId},
         X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
+        xwm::{Reorder, ResizeEdge, XwmId},
     },
 };
 
-use crate::{focus::KeyboardFocus, Tileception};
+use crate::{Tileception, focus::KeyboardFocus};
 
 impl Tileception {
     /// Starts Xwayland; X11 programs can run once it reports ready.
@@ -55,8 +55,8 @@ impl Tileception {
                         state.xdisplay = Some(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
                         if !state.nested {
-                            std::env::set_var("DISPLAY", format!(":{display_number}"));
                             let _ = std::process::Command::new("dbus-update-activation-environment")
+                                .env("DISPLAY", format!(":{display_number}"))
                                 .args(["--systemd", "DISPLAY"])
                                 .status();
                         }

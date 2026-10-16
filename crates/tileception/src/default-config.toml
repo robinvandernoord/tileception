@@ -41,7 +41,7 @@ autostart = []
 # complete list instead.
 # default_binds = true
 # On an empty desktop (after login, or after closing the last window) show the
-# launcher with a clock: type to search, Esc for a plain desktop.
+# launcher with a clock: type to search, tap Super for a plain desktop.
 # welcome = true
 
 [theme]

@@ -6,12 +6,12 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use zbus::MatchRule;
 use zbus::blocking::Connection;
 use zbus::message::Type;
 use zbus::zvariant::{OwnedValue, Value};
-use zbus::MatchRule;
 
-use crate::{lock, Event, Media, Notifier, Player, PlayerCommand, Shared, Status};
+use crate::{Event, Media, Notifier, Player, PlayerCommand, Shared, Status, lock};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2.";
 const PATH: &str = "/org/mpris/MediaPlayer2";

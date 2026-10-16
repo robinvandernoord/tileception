@@ -66,11 +66,7 @@ impl TextInput {
     pub fn move_horizontal(&mut self, right: bool, word: bool, extend: bool) {
         let range = self.selection();
         let position = if !extend && !range.is_empty() {
-            if right {
-                range.end
-            } else {
-                range.start
-            }
+            if right { range.end } else { range.start }
         } else if right {
             self.next(word)
         } else {

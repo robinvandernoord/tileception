@@ -1,10 +1,10 @@
 //! Runs the ACP client against a pretend agent (tests/fake_agent.py).
 #![allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use tileception_acp::{install::Program, Event, FileOp, Request, Session, Status};
+use tileception_acp::{Event, FileOp, Request, Session, Status, install::Program};
 
 fn next(events: &mpsc::Receiver<Event>, want: impl Fn(&Event) -> bool) -> Event {
     loop {

@@ -10,8 +10,8 @@ use smithay::{
 use tileception_core::WindowId;
 
 use crate::{
-    state::{app_id, window_title},
     Tileception,
+    state::{app_id, window_title},
 };
 
 pub struct Toplevels {

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use image::{imageops::FilterType, DynamicImage, GenericImageView, RgbaImage};
+use image::{DynamicImage, GenericImageView, RgbaImage, imageops::FilterType};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     utils::Transform,

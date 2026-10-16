@@ -5,7 +5,7 @@
 use smithay::{
     backend::renderer::{
         element::Kind,
-        gles::{element::PixelShaderElement, GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType},
+        gles::{GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType, element::PixelShaderElement},
     },
     utils::{Logical, Rectangle},
 };

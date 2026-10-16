@@ -5,15 +5,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    install, Action, Agent, AgentCommand, Choice, Emit, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue,
-    Request, SessionOption, Status,
+    Action, Agent, AgentCommand, Choice, Emit, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue, Request,
+    SessionOption, Status, install,
 };
 
 /// The protocol version spoken here.
@@ -463,10 +463,10 @@ impl Worker {
                 self.agent_request(&method, id, message.get("params").cloned().unwrap_or(Value::Null))
             }
             (Some(method), None) => {
-                if method == "session/update" {
-                    if let Some(update) = message.get("params").and_then(|p| p.get("update")) {
-                        self.update(update);
-                    }
+                if method == "session/update"
+                    && let Some(update) = message.get("params").and_then(|p| p.get("update"))
+                {
+                    self.update(update);
                 }
                 Ok(())
             }

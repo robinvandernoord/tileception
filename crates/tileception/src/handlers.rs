@@ -5,36 +5,36 @@ use smithay::{
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_output,
     delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
-    desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind},
-    input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
+    desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
+    input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
         calloop::Interest,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         wayland_server::{
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
             Client, Resource,
+            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
         },
     },
     utils::{Rectangle, Serial},
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states, BufferAssignment,
-            CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
+            add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
         },
-        dmabuf::{get_dmabuf, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
         drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
         output::OutputHandler,
         selection::{
-            data_device::{
-                set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-            },
-            primary_selection::{set_primary_focus, PrimarySelectionHandler, PrimarySelectionState},
             SelectionHandler, SelectionSource, SelectionTarget,
+            data_device::{
+                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler, set_data_device_focus,
+            },
+            primary_selection::{PrimarySelectionHandler, PrimarySelectionState, set_primary_focus},
         },
         shell::xdg::{
-            decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler,
-            XdgShellState,
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+            decoration::XdgDecorationHandler,
         },
         shm::{ShmHandler, ShmState},
     },
@@ -74,23 +74,10 @@ impl CompositorHandler for Tileception {
                 let dh = state.display_handle.clone();
                 state.client_compositor_state(&client).blocker_cleared(state, &dh);
             };
-            if let Some(point) = acquire {
-                if let Ok((blocker, source)) = point.generate_blocker() {
-                    let release = release.clone();
-                    if state
-                        .loop_handle
-                        .insert_source(source, move |_, _, state| {
-                            release(state);
-                            Ok(())
-                        })
-                        .is_ok()
-                    {
-                        add_blocker(surface, blocker);
-                        return;
-                    }
-                }
-            }
-            if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ) {
+            if let Some(point) = acquire
+                && let Ok((blocker, source)) = point.generate_blocker()
+            {
+                let release = release.clone();
                 if state
                     .loop_handle
                     .insert_source(source, move |_, _, state| {
@@ -100,7 +87,19 @@ impl CompositorHandler for Tileception {
                     .is_ok()
                 {
                     add_blocker(surface, blocker);
+                    return;
                 }
+            }
+            if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ)
+                && state
+                    .loop_handle
+                    .insert_source(source, move |_, _, state| {
+                        release(state);
+                        Ok(())
+                    })
+                    .is_ok()
+            {
+                add_blocker(surface, blocker);
             }
         });
     }
@@ -144,11 +143,11 @@ impl CompositorHandler for Tileception {
         }
 
         self.popups.commit(surface);
-        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface) {
-            if !popup.is_initial_configure_sent() {
-                // The initial configure is always allowed.
-                let _ = popup.send_configure();
-            }
+        if let Some(PopupKind::Xdg(popup)) = self.popups.find_popup(surface)
+            && !popup.is_initial_configure_sent()
+        {
+            // The initial configure is always allowed.
+            let _ = popup.send_configure();
         }
     }
 }
@@ -196,10 +195,10 @@ impl SelectionHandler for Tileception {
 
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
-        if let Some(xwm) = self.xwm.as_mut() {
-            if let Err(err) = xwm.new_selection(ty, source.map(|s| s.mime_types())) {
-                tracing::warn!("could not offer the selection to X11: {err:?}");
-            }
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(err) = xwm.new_selection(ty, source.map(|s| s.mime_types()))
+        {
+            tracing::warn!("could not offer the selection to X11: {err:?}");
         }
     }
 
@@ -216,10 +215,10 @@ impl SelectionHandler for Tileception {
             clip.send(fd);
             return;
         }
-        if let Some(xwm) = self.xwm.as_mut() {
-            if let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone()) {
-                tracing::warn!("could not paste from X11: {err:?}");
-            }
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone())
+        {
+            tracing::warn!("could not paste from X11: {err:?}");
         }
     }
 }

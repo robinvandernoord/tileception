@@ -7,11 +7,11 @@
 
 use smithay::{
     backend::renderer::{
-        element::{surface::WaylandSurfaceRenderElement, AsRenderElements},
+        element::{AsRenderElements, surface::WaylandSurfaceRenderElement},
         gles::GlesRenderer,
     },
     delegate_layer_shell,
-    desktop::{layer_map_for_output, LayerSurface, WindowSurfaceType},
+    desktop::{LayerSurface, WindowSurfaceType, layer_map_for_output},
     output::Output,
     reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
     utils::{Logical, Point, Scale},
@@ -25,7 +25,7 @@ use smithay::{
 };
 use tileception_core::Rect;
 
-use crate::{render::OutputElement, Tileception};
+use crate::{Tileception, render::OutputElement};
 
 impl WlrLayerShellHandler for Tileception {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {

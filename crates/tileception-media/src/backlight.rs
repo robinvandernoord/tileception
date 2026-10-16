@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::{changed, lock, Backlight, Change, Event, Notifier, Percent, Shared};
+use crate::{Backlight, Change, Event, Notifier, Percent, Shared, changed, lock};
 
 const ROOT: &str = "/sys/class/backlight";
 /// Changes made elsewhere (a firmware hotkey, `brightnessctl`) show up within this.

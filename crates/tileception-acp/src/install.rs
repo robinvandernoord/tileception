@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::registry::{run, Agent, Launch};
+use crate::registry::{Agent, Launch, run};
 
 /// A ready-to-run agent program.
 #[derive(Debug, Clone, PartialEq, Eq)]

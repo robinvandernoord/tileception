@@ -56,10 +56,10 @@ impl Fetcher {
         if path.exists() {
             return Some(path);
         }
-        if self.asked.insert(url.to_string()) {
-            if let Some(requests) = &self.requests {
-                let _ = requests.send(url.to_string());
-            }
+        if self.asked.insert(url.to_string())
+            && let Some(requests) = &self.requests
+        {
+            let _ = requests.send(url.to_string());
         }
         None
     }

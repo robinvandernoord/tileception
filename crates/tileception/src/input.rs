@@ -6,7 +6,7 @@ use smithay::{
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::{keysyms, FilterResult},
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -133,10 +133,9 @@ impl Tileception {
                 state.tap_fired.clear();
                 if let Some(command @ Command::Action(Action::Vt(_))) =
                     builtin(Mods::from_state(mods), sym, raw_sym, false)
+                    && pressed
                 {
-                    if pressed {
-                        return FilterResult::Intercept(vec![command]);
-                    }
+                    return FilterResult::Intercept(vec![command]);
                 }
                 // Volume, brightness and media keys work on the lock screen.
                 if pressed {
@@ -660,11 +659,12 @@ impl Tileception {
             }
             // Shift+click selects tabs and previews; on a live window it belongs
             // to the program, for example to extend a text selection.
-            if mods.shift && (tab.is_some() || under.is_some_and(|d| !d.live)) {
-                if let Some(window) = tab.or(under.map(|d| d.id)) {
-                    self.toggle_selection(window);
-                    return;
-                }
+            if mods.shift
+                && (tab.is_some() || under.is_some_and(|d| !d.live))
+                && let Some(window) = tab.or(under.map(|d| d.id))
+            {
+                self.toggle_selection(window);
+                return;
             }
             if !mods.shift {
                 self.selection.windows.clear();
@@ -726,10 +726,10 @@ impl Tileception {
             && !self.is_locked()
             && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
-            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)) {
-                if value != 0.0 {
-                    self.launcher_step(if value > 0.0 { 1 } else { -1 });
-                }
+            if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
+                && value != 0.0
+            {
+                self.launcher_step(if value > 0.0 { 1 } else { -1 });
             }
             return;
         }

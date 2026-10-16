@@ -6,11 +6,11 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use tileception_core::{DropTarget, Point, Rect, WindowId};
 
 use crate::{
+    Tileception,
     input::Action,
-    render::{push_image, push_shape, OutputElement},
+    render::{OutputElement, push_image, push_shape},
     shapes::Shape,
     theme::Colour,
-    Tileception,
 };
 
 #[derive(Default)]
@@ -22,10 +22,10 @@ pub struct Selection {
 
 impl Tileception {
     pub fn toggle_selection(&mut self, window: WindowId) {
-        if self.selection.windows.is_empty() {
-            if let Some(focus) = self.world.focus().filter(|id| *id != window) {
-                self.selection.windows.insert(focus);
-            }
+        if self.selection.windows.is_empty()
+            && let Some(focus) = self.world.focus().filter(|id| *id != window)
+        {
+            self.selection.windows.insert(focus);
         }
         if !self.selection.windows.remove(&window) {
             self.selection.windows.insert(window);

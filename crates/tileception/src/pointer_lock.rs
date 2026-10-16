@@ -6,7 +6,7 @@ use smithay::{
     input::pointer::{PointerHandle, RelativeMotionEvent},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point},
-    wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint, PointerConstraintsHandler},
+    wayland::pointer_constraints::{PointerConstraint, PointerConstraintsHandler, with_pointer_constraint},
 };
 
 use crate::Tileception;
@@ -88,10 +88,11 @@ impl Tileception {
         }
         let local = (self.pointer - origin).to_i32_round();
         with_pointer_constraint(&surface, &pointer, |constraint| {
-            if let Some(c) = constraint {
-                if !c.is_active() && c.region().is_none_or(|r| r.contains(local)) {
-                    c.activate();
-                }
+            if let Some(c) = constraint
+                && !c.is_active()
+                && c.region().is_none_or(|r| r.contains(local))
+            {
+                c.activate();
             }
         });
     }

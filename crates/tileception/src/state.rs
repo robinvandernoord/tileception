@@ -1,27 +1,27 @@
 use std::{collections::HashMap, ffi::OsString, sync::Arc, time::Instant};
 
 use smithay::{
-    desktop::{space::SpaceElement, PopupManager, Window},
-    input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
+    desktop::{PopupManager, Window, space::SpaceElement},
+    input::{Seat, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     output::Output,
     reexports::{
-        calloop::{generic::Generic, EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction},
+        calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
+            Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::wl_surface::WlSurface,
-            Display, DisplayHandle,
         },
     },
-    utils::{Logical, Point, Rectangle, Size, SERIAL_COUNTER},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size},
     wayland::{
-        compositor::{with_states, CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         dmabuf::{DmabufGlobal, DmabufState},
         drm_syncobj::DrmSyncobjState,
         output::OutputManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::wlr_layer::WlrLayerShellState,
-        shell::xdg::{decoration::XdgDecorationState, SurfaceCachedState, ToplevelSurface, XdgShellState},
+        shell::xdg::{SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState},
         shm::ShmState,
         socket::ListeningSocketSource,
         xwayland_shell::XWaylandShellState,
@@ -353,6 +353,13 @@ impl Tileception {
             .env("MOZ_ENABLE_WAYLAND", "1")
             .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
             .envs(self.ipc_socket.iter().map(|p| ("TILECEPTION_SOCKET", p)));
+        if self.session_services {
+            command.env("XDG_SESSION_TYPE", "wayland");
+            command.env(
+                "XDG_CURRENT_DESKTOP",
+                std::env::var_os("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "Tileception".into()),
+            );
+        }
         // X11 programs go to our Xwayland, never to a host X server.
         match self.xdisplay {
             Some(n) => command.env("DISPLAY", format!(":{n}")),
@@ -595,11 +602,7 @@ impl Tileception {
     /// The whole output, including what bars reserve.
     pub fn output_rect(&self) -> Rect {
         let size = self.output.as_ref().and_then(|o| o.current_mode()).map(|m| m.size).unwrap_or_default();
-        if size.w > 0 && size.h > 0 {
-            Rect::new(0.0, 0.0, size.w as f64, size.h as f64)
-        } else {
-            self.world.screen()
-        }
+        if size.w > 0 && size.h > 0 { Rect::new(0.0, 0.0, size.w as f64, size.h as f64) } else { self.world.screen() }
     }
 
     pub fn close_focused(&self) {
@@ -661,11 +664,7 @@ pub fn window_title(window: &Window) -> String {
     } else {
         window.x11_surface().map(|x| x.title()).unwrap_or_default()
     };
-    if title.trim().is_empty() {
-        app_id(window)
-    } else {
-        title
-    }
+    if title.trim().is_empty() { app_id(window) } else { title }
 }
 
 /// The app id (Wayland) or class (X11) of a window.

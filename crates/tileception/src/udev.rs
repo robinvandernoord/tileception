@@ -9,34 +9,34 @@ use std::time::{Duration, Instant};
 use smithay::{
     backend::{
         allocator::{
-            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
             Fourcc,
+            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
         drm::{
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
             compositor::FrameFlags,
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
         },
-        egl::{context::ContextPriority, EGLContext, EGLDisplay},
+        egl::{EGLContext, EGLDisplay, context::ContextPriority},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma, ImportMemWl},
+        renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
         session::{
-            libseat::{LibSeatSession, LibSeatSessionNotifier},
             Event as SessionEvent, Session,
+            libseat::{LibSeatSession, LibSeatSessionNotifier},
         },
-        udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
+        udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
-            timer::{TimeoutAction, Timer},
             Dispatcher, EventLoop, RegistrationToken,
+            timer::{TimeoutAction, Timer},
         },
         drm::{
-            control::{connector, crtc, ModeTypeFlags},
             Device as _,
+            control::{ModeTypeFlags, connector, crtc},
         },
         input::Libinput,
         rustix::fs::OFlags,
@@ -45,13 +45,13 @@ use smithay::{
     utils::DeviceFd,
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
-        drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
+        drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
     },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tileception_core::Rect;
 
-use crate::{cursor::Cursor, Tileception};
+use crate::{Tileception, cursor::Cursor};
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
@@ -382,10 +382,10 @@ impl Tileception {
     fn on_vblank(&mut self, _crtc: crtc::Handle) {
         let Some(udev) = self.udev.as_mut() else { return };
         udev.frame_pending = false;
-        if let Some(lit) = udev.surface.as_mut() {
-            if let Err(err) = lit.drm_output.frame_submitted() {
-                tracing::warn!("frame submit: {err}");
-            }
+        if let Some(lit) = udev.surface.as_mut()
+            && let Err(err) = lit.drm_output.frame_submitted()
+        {
+            tracing::warn!("frame submit: {err}");
         }
         self.render_udev();
     }
@@ -436,10 +436,10 @@ impl Tileception {
 
     /// Opens a device for a VT switch, from the keyboard shortcut.
     pub fn change_vt(&mut self, vt: i32) {
-        if let Some(udev) = self.udev.as_mut() {
-            if let Err(err) = udev.session.change_vt(vt) {
-                tracing::warn!("could not switch to VT {vt}: {err}");
-            }
+        if let Some(udev) = self.udev.as_mut()
+            && let Err(err) = udev.session.change_vt(vt)
+        {
+            tracing::warn!("could not switch to VT {vt}: {err}");
         }
     }
 }

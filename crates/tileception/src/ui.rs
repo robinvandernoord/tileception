@@ -18,10 +18,10 @@ use tileception_core::Rect;
 use zeroize::Zeroizing;
 
 use crate::{
-    render::{push_image, OutputElement},
+    Tileception,
+    render::{OutputElement, push_image},
     shapes::{Shape, Shapes},
     theme::Colour,
-    Tileception,
 };
 
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).

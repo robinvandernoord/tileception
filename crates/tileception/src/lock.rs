@@ -5,14 +5,14 @@
 //! stays locked (black) until a new locker unlocks it, as the protocol asks.
 
 use smithay::{
-    backend::renderer::{element::surface::render_elements_from_surface_tree, element::Kind, gles::GlesRenderer},
+    backend::renderer::{element::Kind, element::surface::render_elements_from_surface_tree, gles::GlesRenderer},
     delegate_session_lock,
     reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
     utils::{Logical, Point, Size},
     wayland::session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
 };
 
-use crate::{render::OutputElement, Tileception};
+use crate::{Tileception, render::OutputElement};
 
 #[derive(Debug, Default)]
 pub enum LockState {

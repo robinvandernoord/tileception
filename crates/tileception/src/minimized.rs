@@ -13,10 +13,10 @@ use smithay::{
 use tileception_core::{Point, Rect, WindowId};
 
 use crate::{
+    Tileception,
     render::OutputElement,
     shapes::Shape,
-    ui::{ease_out, glyph, Painter, Style},
-    Tileception,
+    ui::{Painter, Style, ease_out, glyph},
 };
 
 /// Seconds the strip takes to slide in or out.
@@ -54,11 +54,7 @@ impl Strip {
     /// How far out the strip is, from 0 (hidden) to 1.
     fn level(&self) -> f64 {
         let p = (self.changed.elapsed().as_secs_f64() / SLIDE).clamp(0.0, 1.0);
-        if self.open {
-            self.level_then + (1.0 - self.level_then) * p
-        } else {
-            self.level_then * (1.0 - p)
-        }
+        if self.open { self.level_then + (1.0 - self.level_then) * p } else { self.level_then * (1.0 - p) }
     }
 
     fn set_open(&mut self, open: bool) {
@@ -183,14 +179,14 @@ impl Tileception {
             return false;
         }
         let p = Point::new(pos.x, pos.y);
-        if let Some((window, at)) = self.strip.press {
-            if (p.x - at.x).hypot(p.y - at.y) > crate::input::DRAG_THRESHOLD {
-                // Dragged out: the window follows the pointer, to be dropped.
-                self.strip.press = None;
-                self.start_move_drag(window, pos);
-                self.update_strip();
-                return false;
-            }
+        if let Some((window, at)) = self.strip.press
+            && (p.x - at.x).hypot(p.y - at.y) > crate::input::DRAG_THRESHOLD
+        {
+            // Dragged out: the window follows the pointer, to be dropped.
+            self.strip.press = None;
+            self.start_move_drag(window, pos);
+            self.update_strip();
+            return false;
         }
         if self.strip_hit(p).is_none() && self.strip.press.is_none() {
             return false;

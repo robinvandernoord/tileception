@@ -17,13 +17,14 @@ use smithay::{
         renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer},
     },
     input::keyboard::{keysyms, xkb},
-    reexports::calloop::{channel, RegistrationToken},
+    reexports::calloop::{RegistrationToken, channel},
     utils::Transform,
 };
 use tileception_acp::{Agent, AgentCommand, Choice, Event, Login, LoginHow, Request, Session, SessionOption, Status};
 use tileception_core::{Point, Rect};
 
 use crate::{
+    Tileception,
     config::Mods,
     doctor_policy::{self, DiffLine, Mode, Scope, Sign},
     launcher::Paste,
@@ -33,8 +34,7 @@ use crate::{
     text::{RichImage, RichStyle},
     text_input::TextInput,
     theme::Colour,
-    ui::{ease_out, glyph, Align, Painter, Style},
-    Tileception,
+    ui::{Align, Painter, Style, ease_out, glyph},
 };
 
 const PANEL_W: f64 = 480.0;
@@ -764,10 +764,10 @@ impl Tileception {
             Event::Registry(result) => {
                 d.loading = false;
                 // A saved agent that left the registry: choose again.
-                if let (Ok(agents), Some(id), None) = (&result, &d.agent, &d.session) {
-                    if !agents.iter().any(|a| &a.id == id) {
-                        d.view = View::Picker;
-                    }
+                if let (Ok(agents), Some(id), None) = (&result, &d.agent, &d.session)
+                    && !agents.iter().any(|a| &a.id == id)
+                {
+                    d.view = View::Picker;
                 }
                 d.missing = match &result {
                     Ok(agents) => agents.iter().filter_map(|a| Some((a.id.clone(), a.missing()?))).collect(),
@@ -847,12 +847,12 @@ impl Tileception {
                 // The model chosen before, for a new session too.
                 let wanted = d.agent.as_ref().and_then(|agent| d.models.get(agent));
                 let model = d.options.iter().find(|o| o.is_model());
-                if let (true, Some(wanted), Some(model)) = (std::mem::take(&mut d.restore_model), wanted, model) {
-                    if *wanted != model.current && model.values.iter().any(|v| v.value == *wanted) {
-                        if let Some(session) = &d.session {
-                            session.send(Request::SetOption { id: model.id.clone(), value: wanted.clone() });
-                        }
-                    }
+                if let (true, Some(wanted), Some(model)) = (std::mem::take(&mut d.restore_model), wanted, model)
+                    && *wanted != model.current
+                    && model.values.iter().any(|v| v.value == *wanted)
+                    && let Some(session) = &d.session
+                {
+                    session.send(Request::SetOption { id: model.id.clone(), value: wanted.clone() });
                 }
             }
             Event::Commands(commands) => d.commands = commands,
@@ -929,16 +929,14 @@ impl Tileception {
             }
             tileception_acp::FileOp::Write { path, content } => {
                 // A configuration that would not load is sent back, not saved.
-                if path == crate::config::path() {
-                    if let Err(error) = crate::config::Config::parse(&content) {
-                        self.doctor_reply(
-                            id,
-                            Err(format!(
-                                "Tileception would not load this configuration: {error}. Nothing was written."
-                            )),
-                        );
-                        return;
-                    }
+                if path == crate::config::path()
+                    && let Err(error) = crate::config::Config::parse(&content)
+                {
+                    self.doctor_reply(
+                        id,
+                        Err(format!("Tileception would not load this configuration: {error}. Nothing was written.")),
+                    );
+                    return;
                 }
                 if doctor_policy::may_write(mode, &path, &scope, &self.doctor.approved) {
                     self.apply_write(id, path, content);
@@ -1314,13 +1312,12 @@ impl Tileception {
             }
             Hit::SetOption(id, value) => {
                 self.doctor.menu = None;
-                if let Some(option) = self.doctor.options.iter().find(|o| o.id == id) {
-                    if option.is_model() {
-                        if let Some(agent) = self.doctor.agent.clone() {
-                            self.doctor.models.insert(agent, value.clone());
-                            self.save_doctor();
-                        }
-                    }
+                if let Some(option) = self.doctor.options.iter().find(|o| o.id == id)
+                    && option.is_model()
+                    && let Some(agent) = self.doctor.agent.clone()
+                {
+                    self.doctor.models.insert(agent, value.clone());
+                    self.save_doctor();
                 }
                 if let Some(session) = &self.doctor.session {
                     session.send(Request::SetOption { id, value });
@@ -2044,11 +2041,7 @@ impl Tileception {
                 }
             }
         }
-        if y > at.y {
-            y - PIECE_GAP
-        } else {
-            y
-        }
+        if y > at.y { y - PIECE_GAP } else { y }
     }
 
     fn doctor_content_height(&self, area: Rect) -> f64 {

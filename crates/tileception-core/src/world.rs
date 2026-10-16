@@ -145,11 +145,7 @@ impl Camera {
     }
 
     fn progress(&self, now: f64) -> f64 {
-        if self.duration <= 0.0 {
-            1.0
-        } else {
-            ((now - self.start) / self.duration).clamp(0.0, 1.0)
-        }
+        if self.duration <= 0.0 { 1.0 } else { ((now - self.start) / self.duration).clamp(0.0, 1.0) }
     }
 }
 
@@ -621,10 +617,10 @@ impl World {
         let Some(target) = target else { return };
         let target = self.tree.windows_in(target).into_iter().find(|id| !windows.contains(id));
         let moved: Vec<_> = tiled.into_iter().map(|(id, _)| id).collect();
-        if let Some(target) = target {
-            if self.tree.move_group(&moved, target, side) {
-                self.after_move(moved[0], now);
-            }
+        if let Some(target) = target
+            && self.tree.move_group(&moved, target, side)
+        {
+            self.after_move(moved[0], now);
         }
     }
 
@@ -671,11 +667,11 @@ impl World {
         }
         self.relayout();
         // Floating windows show whatever is framed, so only tiles widen the frame.
-        if let Some(tile) = self.tree.tile_of(win) {
-            if !self.tree.is_ancestor_or_self(self.framed, tile) {
-                let common = self.tree.common_ancestor(self.framed, tile);
-                self.push_frame(common);
-            }
+        if let Some(tile) = self.tree.tile_of(win)
+            && !self.tree.is_ancestor_or_self(self.framed, tile)
+        {
+            let common = self.tree.common_ancestor(self.framed, tile);
+            self.push_frame(common);
         }
         self.set_focus(Some(win));
         self.retarget(now);
@@ -695,10 +691,11 @@ impl World {
     /// The leaf a new window docks beside: the focused one when it is in view,
     /// otherwise the framed space as a whole.
     fn dock_target(&self) -> NodeId {
-        if let Some(leaf) = self.focus.and_then(|f| self.tree.leaf_of(f)) {
-            if leaf != self.tree.desktop() && self.tree.is_ancestor_or_self(self.framed, leaf) {
-                return leaf;
-            }
+        if let Some(leaf) = self.focus.and_then(|f| self.tree.leaf_of(f))
+            && leaf != self.tree.desktop()
+            && self.tree.is_ancestor_or_self(self.framed, leaf)
+        {
+            return leaf;
         }
         self.framed
     }
@@ -710,11 +707,7 @@ impl World {
         let area = self.frame_area();
         let w = unit.w / framed.w * area.w;
         let h = unit.h / framed.h * area.h;
-        if w >= h {
-            Side::Right
-        } else {
-            Side::Bottom
-        }
+        if w >= h { Side::Right } else { Side::Bottom }
     }
 
     pub fn remove_window(&mut self, win: WindowId, now: f64) {
@@ -866,11 +859,12 @@ impl World {
     /// Keeps a moved window in view and focused.
     fn after_move(&mut self, win: WindowId, now: f64) {
         self.relayout();
-        if let Some(leaf) = self.tree.leaf_of(win) {
-            if !self.overview && !self.tree.is_ancestor_or_self(self.framed, leaf) {
-                let common = self.tree.common_ancestor(self.framed, leaf);
-                self.push_frame(common);
-            }
+        if let Some(leaf) = self.tree.leaf_of(win)
+            && !self.overview
+            && !self.tree.is_ancestor_or_self(self.framed, leaf)
+        {
+            let common = self.tree.common_ancestor(self.framed, leaf);
+            self.push_frame(common);
         }
         self.set_focus(Some(win));
         self.retarget(now);
@@ -1139,16 +1133,15 @@ impl World {
         let mut cur = from;
         let sibling = loop {
             let parent = self.tree.parent(cur)?;
-            if let Node::Split { axis, children, .. } = self.tree.node(parent) {
-                if *axis == dir.axis() {
-                    let shown: Vec<NodeId> =
-                        children.iter().copied().filter(|c| self.layout.rect(*c).is_some()).collect();
-                    let idx = shown.iter().position(|c| *c == cur)?;
-                    let next =
-                        if dir.forward() { shown.get(idx + 1) } else { idx.checked_sub(1).and_then(|i| shown.get(i)) };
-                    if let Some(n) = next {
-                        break *n;
-                    }
+            if let Node::Split { axis, children, .. } = self.tree.node(parent)
+                && *axis == dir.axis()
+            {
+                let shown: Vec<NodeId> = children.iter().copied().filter(|c| self.layout.rect(*c).is_some()).collect();
+                let idx = shown.iter().position(|c| *c == cur)?;
+                let next =
+                    if dir.forward() { shown.get(idx + 1) } else { idx.checked_sub(1).and_then(|i| shown.get(i)) };
+                if let Some(n) = next {
+                    break *n;
                 }
             }
             cur = parent;

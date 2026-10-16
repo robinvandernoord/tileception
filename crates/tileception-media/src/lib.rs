@@ -13,7 +13,7 @@ mod backlight;
 mod mpris;
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
 pub use backlight::pick_device;
@@ -216,11 +216,7 @@ pub fn changed(current: Percent, change: Change, max: Percent) -> Percent {
             let next =
                 if step > 0 { (current / size + 1) * size } else { current.div_ceil(size).saturating_sub(1) * size };
             // Never step up past a level that was already above the cap.
-            if step > 0 && current >= max {
-                current
-            } else {
-                next.min(max)
-            }
+            if step > 0 && current >= max { current } else { next.min(max) }
         }
     }
 }

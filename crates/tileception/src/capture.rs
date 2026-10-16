@@ -10,10 +10,10 @@ use std::{path::PathBuf, time::Duration};
 
 use smithay::{
     backend::{
-        allocator::{dmabuf::Dmabuf, Buffer as _, Fourcc},
+        allocator::{Buffer as _, Fourcc, dmabuf::Dmabuf},
         renderer::{
-            damage::OutputDamageTracker, gles::GlesRenderer, gles::GlesTexture, Bind, ExportMem, Offscreen,
-            TextureMapping,
+            Bind, ExportMem, Offscreen, TextureMapping, damage::OutputDamageTracker, gles::GlesRenderer,
+            gles::GlesTexture,
         },
     },
     reexports::{
@@ -22,8 +22,8 @@ use smithay::{
             zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
         },
         wayland_server::{
-            protocol::{wl_buffer::WlBuffer, wl_shm},
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+            protocol::{wl_buffer::WlBuffer, wl_shm},
         },
     },
     utils::{Buffer, Clock, Monotonic, Rectangle, Size, Transform},
@@ -33,7 +33,7 @@ use smithay::{
     },
 };
 
-use crate::{render::OutputElement, Tileception};
+use crate::{Tileception, render::OutputElement};
 
 /// Where a finished capture goes.
 pub enum CaptureTarget {

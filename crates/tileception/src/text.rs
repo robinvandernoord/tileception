@@ -230,10 +230,10 @@ impl Text {
         for run in buffer.layout_runs() {
             let mut current: Option<(usize, f32, f32)> = None;
             let mut close = |current: &mut Option<(usize, f32, f32)>| {
-                if let Some((index, x0, x1)) = current.take() {
-                    if let Some(span) = spans.get(index - 1) {
-                        marked.push(([x0, run.line_top, x1 - x0, run.line_height], span));
-                    }
+                if let Some((index, x0, x1)) = current.take()
+                    && let Some(span) = spans.get(index - 1)
+                {
+                    marked.push(([x0, run.line_top, x1 - x0, run.line_height], span));
                 }
             };
             for glyph in run.glyphs {
@@ -393,11 +393,7 @@ impl Text {
         // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
         let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, s: &str| {
             let width = width_of(buffer, fonts, s);
-            if wrapped {
-                buffer.layout_runs().count() > max_lines
-            } else {
-                width > key.max_width as f32
-            }
+            if wrapped { buffer.layout_runs().count() > max_lines } else { width > key.max_width as f32 }
         };
         let mut width = width_of(&mut buffer, fonts, &shown);
         if key.field.is_none() && too_long(&mut buffer, fonts, &shown) {

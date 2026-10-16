@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::reexports::calloop::{
+    RegistrationToken,
     ping::make_ping,
     timer::{TimeoutAction, Timer},
-    RegistrationToken,
 };
 use tileception_media::{Change, Event, MediaService, PlayerCommand, Request, Snapshot, Target, Toggle};
 
-use crate::{commands::Command, Tileception};
+use crate::{Tileception, commands::Command};
 
 /// The `[media]` section.
 #[derive(Debug, Clone, Deserialize)]
@@ -175,7 +175,7 @@ pub fn parse(verb: &str, args: &[&str]) -> Result<Control, String> {
         Some("previous" | "prev") => PlayerCommand::Previous,
         Some("stop") => PlayerCommand::Stop,
         Some(other) => {
-            return Err(format!("media takes play-pause, play, pause, next, previous or stop, not {other:?}"))
+            return Err(format!("media takes play-pause, play, pause, next, previous or stop, not {other:?}"));
         }
     };
     Ok(Control::Player(command))

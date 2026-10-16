@@ -297,11 +297,7 @@ impl Tree {
 
     /// The leaf (tile or Desktop) that holds `win`.
     pub fn leaf_of(&self, win: WindowId) -> Option<NodeId> {
-        if self.is_floating(win) {
-            Some(self.desktop)
-        } else {
-            self.tile_of(win)
-        }
+        if self.is_floating(win) { Some(self.desktop) } else { self.tile_of(win) }
     }
 
     /// All windows in the subtree, in layout order; floating windows included.
@@ -339,11 +335,11 @@ impl Tree {
 
     /// Puts a floating window above the others.
     pub fn raise_float(&mut self, win: WindowId) {
-        if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node {
-            if let Some(i) = floats.iter().position(|w| *w == win) {
-                let w = floats.remove(i);
-                floats.push(w);
-            }
+        if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node
+            && let Some(i) = floats.iter().position(|w| *w == win)
+        {
+            let w = floats.remove(i);
+            floats.push(w);
         }
     }
 
@@ -364,17 +360,17 @@ impl Tree {
     pub fn boundary(&self, id: NodeId, side: Side) -> Option<(NodeId, usize)> {
         let mut cur = id;
         while let Some(parent) = self.parent(cur) {
-            if let Node::Split { axis, children, .. } = self.node(parent) {
-                if *axis == side.axis() {
-                    let i = children.iter().position(|c| *c == cur).expect("child of its parent");
-                    let shown = |j: &usize| self.is_visible(children[*j]);
-                    if side.is_leading() {
-                        if let Some(j) = (0..i).rev().find(shown) {
-                            return Some((parent, j));
-                        }
-                    } else if (i + 1..children.len()).any(|j| shown(&j)) {
-                        return Some((parent, i));
+            if let Node::Split { axis, children, .. } = self.node(parent)
+                && *axis == side.axis()
+            {
+                let i = children.iter().position(|c| *c == cur).expect("child of its parent");
+                let shown = |j: &usize| self.is_visible(children[*j]);
+                if side.is_leading() {
+                    if let Some(j) = (0..i).rev().find(shown) {
+                        return Some((parent, j));
                     }
+                } else if (i + 1..children.len()).any(|j| shown(&j)) {
+                    return Some((parent, i));
                 }
             }
             cur = parent;
@@ -778,23 +774,22 @@ impl Tree {
         if let Some(parent) = self.parent(target) {
             let visible: Vec<bool> = self.children(parent).iter().map(|c| self.is_visible(*c)).collect();
             let share = self.share_removed_space;
-            if let Node::Split { axis: pa, children, weights } = &mut self.slot_mut(parent).node {
-                if *pa == axis {
-                    let idx = children.iter().position(|c| *c == target).expect("child of its parent");
-                    let weight = if share {
-                        let shown: Vec<f64> =
-                            weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).collect();
-                        shown.iter().sum::<f64>() / shown.len().max(1) as f64
-                    } else {
-                        weights[idx] /= 2.0;
-                        weights[idx]
-                    };
-                    let at = if side.is_leading() { idx } else { idx + 1 };
-                    children.insert(at, new);
-                    weights.insert(at, weight);
-                    self.slot_mut(new).parent = Some(parent);
-                    return;
-                }
+            if let Node::Split { axis: pa, children, weights } = &mut self.slot_mut(parent).node
+                && *pa == axis
+            {
+                let idx = children.iter().position(|c| *c == target).expect("child of its parent");
+                let weight = if share {
+                    let shown: Vec<f64> = weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).collect();
+                    shown.iter().sum::<f64>() / shown.len().max(1) as f64
+                } else {
+                    weights[idx] /= 2.0;
+                    weights[idx]
+                };
+                let at = if side.is_leading() { idx } else { idx + 1 };
+                children.insert(at, new);
+                weights.insert(at, weight);
+                self.slot_mut(new).parent = Some(parent);
+                return;
             }
         }
         self.wrap_beside(new, target, side);

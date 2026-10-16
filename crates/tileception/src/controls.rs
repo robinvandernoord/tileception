@@ -8,10 +8,10 @@ use tileception_core::{Point, Rect};
 use tileception_media::{Change, Player, PlayerCommand, Request, Status, Target, Toggle};
 
 use crate::{
+    Tileception,
     media::{Adjust, Level, SliderId},
     shapes::Shape,
-    ui::{glyph, Align, Painter, Style},
-    Tileception,
+    ui::{Align, Painter, Style, glyph},
 };
 
 /// Height of one slider row.
@@ -44,11 +44,7 @@ impl Slider {
     /// The value under the pointer, snapping to 100 when boosting is possible.
     fn value_at(&self, x: f64) -> u32 {
         let v = ((x - self.track.x) / self.track.w).clamp(0.0, 1.0) * self.max as f64;
-        if self.max > 100 && (v - 100.0).abs() < SNAP {
-            100
-        } else {
-            v.round() as u32
-        }
+        if self.max > 100 && (v - 100.0).abs() < SNAP { 100 } else { v.round() as u32 }
     }
 }
 
@@ -183,10 +179,10 @@ impl Tileception {
             }
         }
         // Slider values follow the pointer while dragged, ahead of the sound server.
-        if let Some((id, _, value)) = self.media.drag {
-            if let Some(slider) = sliders.iter_mut().find(|s| s.id == id) {
-                slider.value = value;
-            }
+        if let Some((id, _, value)) = self.media.drag
+            && let Some(slider) = sliders.iter_mut().find(|s| s.id == id)
+        {
+            slider.value = value;
         }
         let sound = Rect::new(x, y, w, cursor + 6.0 - y);
         cursor = sound.bottom();

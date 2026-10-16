@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use smithay::reexports::calloop::{generic::Generic, EventLoop, Interest, Mode, PostAction};
+use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
 use tileception_core::{Node, NodeId};
 
 use crate::Tileception;

@@ -15,19 +15,19 @@ use tileception_apps::{AppIndex, IconLookup, Usage};
 use tileception_core::{Point, Rect};
 
 use smithay::wayland::selection::{
-    data_device::{
-        current_data_device_selection_userdata, request_data_device_client_selection, set_data_device_selection,
-        SelectionRequestError,
-    },
     SelectionTarget,
+    data_device::{
+        SelectionRequestError, current_data_device_selection_userdata, request_data_device_client_selection,
+        set_data_device_selection,
+    },
 };
 
 use crate::{
+    Tileception,
     render::OutputElement,
     shapes::Shape,
     theme::Colour,
-    ui::{ease_out, glyph, Align, Icons, LocalTime, Painter, Style},
-    Tileception,
+    ui::{Align, Icons, LocalTime, Painter, Style, ease_out, glyph},
 };
 
 /// Clipboard contents the compositor owns itself: launcher text, or a
@@ -173,10 +173,10 @@ impl Tileception {
         }
         let mime_types = vec!["image/png".to_string()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
-        if let Some(xwm) = self.xwm.as_mut() {
-            if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
-                tracing::warn!("could not offer the image to X11: {error:?}");
-            }
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
+        {
+            tracing::warn!("could not offer the image to X11: {error:?}");
         }
         Ok(())
     }
@@ -328,10 +328,10 @@ impl Tileception {
                         mime_types.clone(),
                         Some(Clip::Text(text)),
                     );
-                    if let Some(xwm) = self.xwm.as_mut() {
-                        if let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types)) {
-                            tracing::warn!("could not offer launcher text to X11: {error:?}");
-                        }
+                    if let Some(xwm) = self.xwm.as_mut()
+                        && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
+                    {
+                        tracing::warn!("could not offer launcher text to X11: {error:?}");
                     }
                     if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
                         self.launcher.input.insert("");
@@ -502,10 +502,10 @@ impl Tileception {
             .collect();
         if let Ok(data) = toml::to_string(&stored) {
             let path = usage_path();
-            if let Some(parent) = path.parent() {
-                if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&path, data)) {
-                    tracing::warn!("could not save launcher usage: {error}");
-                }
+            if let Some(parent) = path.parent()
+                && let Err(error) = std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&path, data))
+            {
+                tracing::warn!("could not save launcher usage: {error}");
             }
         }
     }
@@ -593,11 +593,11 @@ impl Tileception {
             self.launcher.input.anchor.get_or_insert(self.launcher.input.cursor);
             return;
         }
-        if let Some(card) = &layout.media {
-            if card.rect.contains(point) {
-                self.media_card_press(card, point);
-                return;
-            }
+        if let Some(card) = &layout.media
+            && card.rect.contains(point)
+        {
+            self.media_card_press(card, point);
+            return;
         }
         if let Some(i) = self.launcher_at(point) {
             self.launcher.selected = i;
@@ -711,14 +711,15 @@ impl Tileception {
         }
         // The rest of the chosen name, greyed out after what was typed.
         let chosen = matches.get(self.launcher.selected);
-        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name)) {
-            if input.cursor == input.text.len() && input.anchor.is_none() {
-                let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
-                let room = layout.text.w - typed - 4.0;
-                if room > 24.0 {
-                    let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
-                    p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
-                }
+        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name))
+            && input.cursor == input.text.len()
+            && input.anchor.is_none()
+        {
+            let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
+            let room = layout.text.w - typed - 4.0;
+            if room > 24.0 {
+                let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
+                p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
             }
         }
 

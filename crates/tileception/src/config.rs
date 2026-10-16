@@ -8,16 +8,16 @@ use std::{
 
 use serde::Deserialize;
 use smithay::{
-    input::keyboard::{xkb, ModifiersState},
+    input::keyboard::{ModifiersState, xkb},
     reexports::calloop::{
-        timer::{TimeoutAction, Timer},
         LoopHandle,
+        timer::{TimeoutAction, Timer},
     },
 };
 
 use crate::{
-    commands::{self, Command},
     Tileception,
+    commands::{self, Command},
 };
 
 pub const DEFAULT: &str = include_str!("default-config.toml");

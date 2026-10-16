@@ -5,7 +5,7 @@
 
 use tileception_core::Dir;
 
-use crate::{input::Action, Tileception};
+use crate::{Tileception, input::Action};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {

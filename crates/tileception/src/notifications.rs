@@ -3,7 +3,7 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
     time::Instant,
 };
 
@@ -19,10 +19,10 @@ use tileception_core::{Point, Rect};
 use tileception_notify::{Event, Image, Notification, NotifyService, Request, Urgency};
 
 use crate::{
+    Tileception,
     render::OutputElement,
     shapes::Shape,
-    ui::{ago, ease_out, glyph, Align, Painter, Style},
-    Tileception,
+    ui::{Align, Painter, Style, ago, ease_out, glyph},
 };
 
 #[derive(Default)]
@@ -515,12 +515,11 @@ impl Tileception {
                 self.launcher.app_icon(path, size)
             }
         };
-        if let Some(Image::Path(path)) = &n.image {
-            if !is_file(path) {
-                if let Some(icon) = named(path) {
-                    return Some(icon);
-                }
-            }
+        if let Some(Image::Path(path)) = &n.image
+            && !is_file(path)
+            && let Some(icon) = named(path)
+        {
+            return Some(icon);
         }
         // A picture file given as the icon is shown as the preview instead.
         n.app_icon

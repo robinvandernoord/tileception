@@ -4,7 +4,7 @@
 
 use smithay::{
     backend::input::{ButtonState, KeyState},
-    input::keyboard::{xkb, Keycode},
+    input::keyboard::{Keycode, xkb},
     utils::{Logical, Point},
 };
 

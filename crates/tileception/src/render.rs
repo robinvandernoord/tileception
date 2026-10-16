@@ -11,13 +11,13 @@
 use smithay::{
     backend::renderer::{
         element::{
+            AsRenderElements, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
-            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             utils::{CropRenderElement, RescaleRenderElement},
-            AsRenderElements, Id, Kind,
         },
-        gles::{element::PixelShaderElement, GlesRenderer},
+        gles::{GlesRenderer, element::PixelShaderElement},
     },
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
@@ -78,25 +78,25 @@ impl Tileception {
         let screen = self.world.screen();
         let focus = self.world.focus();
 
-        if let Some(id) = self.fullscreen {
-            if let Some(window) = self.windows.get(&id) {
-                let geo = window.geometry();
-                let out = self.output_rect();
-                let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
-                let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
-                let leaf = self.world.tree().leaf_of(id).unwrap_or(self.world.tree().root());
-                return vec![Drawn {
-                    id,
-                    role: WindowRole::Tiled,
-                    leaf,
-                    slot: out,
-                    content,
-                    origin,
-                    scale: (1.0, 1.0),
-                    live: true,
-                    clipped: false,
-                }];
-            }
+        if let Some(id) = self.fullscreen
+            && let Some(window) = self.windows.get(&id)
+        {
+            let geo = window.geometry();
+            let out = self.output_rect();
+            let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
+            let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
+            let leaf = self.world.tree().leaf_of(id).unwrap_or(self.world.tree().root());
+            return vec![Drawn {
+                id,
+                role: WindowRole::Tiled,
+                leaf,
+                slot: out,
+                content,
+                origin,
+                scale: (1.0, 1.0),
+                live: true,
+                clipped: false,
+            }];
         }
 
         let dragged = self.move_drag.filter(|d| !d.free).map(|d| d.window);
@@ -386,12 +386,10 @@ impl Tileception {
                 let y = tab.y + (tab.h - img.height as f64) / 2.0;
                 push_image(&mut out, renderer, &img.buffer, (text_x, y));
             }
-            if active {
-                if let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
-                    let x = tab.right() - close_w + (close_w - img.width as f64) / 2.0 - 2.0;
-                    let y = tab.y + (tab.h - img.height as f64) / 2.0;
-                    push_image(&mut out, renderer, &img.buffer, (x, y));
-                }
+            if active && let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
+                let x = tab.right() - close_w + (close_w - img.width as f64) / 2.0 - 2.0;
+                let y = tab.y + (tab.h - img.height as f64) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (x, y));
             }
             drop(text);
             let mark_shape = if active {
@@ -426,10 +424,10 @@ impl Tileception {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             self.cursor_status = CursorImageStatus::default_named();
         }
-        if let CursorImageStatus::Surface(surface) = &self.cursor_status {
-            if !surface.alive() {
-                self.cursor_status = CursorImageStatus::default_named();
-            }
+        if let CursorImageStatus::Surface(surface) = &self.cursor_status
+            && !surface.alive()
+        {
+            self.cursor_status = CursorImageStatus::default_named();
         }
         let pos = self.pointer;
         match &self.cursor_status {

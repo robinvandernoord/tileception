@@ -158,12 +158,12 @@ pub fn load(refresh: bool) -> Result<Vec<Agent>, String> {
     let fresh = std::fs::metadata(&path)
         .and_then(|m| m.modified())
         .is_ok_and(|t| SystemTime::now().duration_since(t).is_ok_and(|age| age < FRESH));
-    if !fresh || refresh {
-        if let Err(error) = download(&path) {
-            tracing::warn!("ACP Registry: {error}");
-            if !path.exists() {
-                return Err(error);
-            }
+    if (!fresh || refresh)
+        && let Err(error) = download(&path)
+    {
+        tracing::warn!("ACP Registry: {error}");
+        if !path.exists() {
+            return Err(error);
         }
     }
     let json = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;

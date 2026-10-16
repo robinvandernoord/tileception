@@ -6,8 +6,8 @@ use std::borrow::Cow;
 use smithay::{
     backend::input::KeyState,
     input::{
-        keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
         Seat,
+        keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
     },
     reexports::wayland_server::{backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Serial},

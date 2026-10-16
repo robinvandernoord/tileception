@@ -8,11 +8,11 @@ use tileception_core::Rect;
 use tileception_media::Status;
 
 use crate::{
+    Tileception,
     controls::{level_bar, value_label, volume_glyph},
     media::OsdKind,
     render::OutputElement,
-    ui::{ease_out, glyph, Painter, Style},
-    Tileception,
+    ui::{Painter, Style, ease_out, glyph},
 };
 
 const FADE_IN: f64 = 0.12;

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use pulseaudio::protocol::{self, ChannelVolume, Command, CommandReply, Prop, Props, Volume};
 
-use crate::{changed, lock, Audio, Change, Choice, Device, Event, Notifier, Percent, Shared, Stream, Target};
+use crate::{Audio, Change, Choice, Device, Event, Notifier, Percent, Shared, Stream, Target, changed, lock};
 
 /// 100%, `PA_VOLUME_NORM`.
 const NORM: u64 = 0x10000;
