@@ -189,8 +189,10 @@ impl Tileception {
     }
 
     /// Shows the launcher as the welcome screen while nothing is open.
+    /// Minimized windows and windows that never showed do not count: what
+    /// matters is an empty layout.
     pub fn update_home(&mut self) {
-        if !self.windows.is_empty() {
+        if self.windows.keys().any(|id| self.world.contains_window(*id)) {
             self.launcher.home_dismissed = false;
             self.launcher.quiet_until = None;
             if self.launcher.home {
