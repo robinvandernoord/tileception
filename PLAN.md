@@ -584,6 +584,70 @@ matrix, credentials and deployment implementation remain pending.
   real registry and asked to be configured. Not checked: a conversation with
   a real AI (needs an account; Node.js for Claude or Codex).
 
+- **A bar along the top.** A thin Tide bar (about 28 px, reserving its edge like
+  a layer-shell bar) that shows where the camera is in the tree, not a copy of
+  a Windows or macOS taskbar. The minimized strip keeps the bottom edge. Like
+  the rest of `[shell]`: `bar = "builtin" | "none" | "<command>"` (e.g. waybar).
+  Proposed 2026-10-16, left to right:
+  - **Doctor button at the far left**, where its panel slides out, doubling as
+    a health light: calm normally, amber after a failed config reload or new
+    errors in the log, with "ask about this" opening the doctor with that
+    question.
+  - **Back and forward** (history).
+  - **A breadcrumb of the camera's path**: the framed node and its ancestors,
+    root first. Clicking a crumb frames that node; scrolling on the bar steps
+    in and out. The tree has no names (splits are only an axis, children and
+    weights), and nothing gets named by hand: a crumb shows its contents (app
+    icons of the windows inside, most used first, with "+N" for the rest),
+    marked with the slot number when a saved view frames that node. The root
+    reads "Everything" and a framed window shows its title. Splits made only by
+    splitting along the longer side add levels nobody thinks of as places, so a
+    crumb is shown only for levels the camera stops at, and long paths
+    collapse in the middle.
+  - **Saved views 1 to 9** as slots: filled when saved, a preview on hover,
+    click to go there. They play the role workspaces have elsewhere.
+  - **Chips that only appear when relevant**: now playing, a screen capture or
+    screen sharing indicator while screencopy is in use, do not disturb, and
+    the number of minimized windows (click peeks the bottom strip).
+  - **Clock**; clicking it zooms it into a calendar (month grid, maybe a second
+    time zone) with the camera's own animation instead of a popup. Events from
+    an .ics file or URL later.
+  - **Notifications at the far right**, where their panel slides out: count and
+    do not disturb.
+  - Depends on zoom: shrinks to a hairline or hides while one window is framed
+    on its own or fullscreen; in Overview it may show more.
+  Later: a minimap (a live outline of the whole tree with the camera's frame;
+  click to fly there, drag to pan), from the last crumb or in Overview; a
+  `position = "bottom"` option that moves the minimized strip to the top.
+
+- **A smarter launcher.** Tapping Super should answer small things itself, not
+  only find apps. Everything here is local and instant: no ACP, no network
+  (the "Ask Tileception" row stays for real questions, below these results).
+  Proposed 2026-10-16:
+  - **Calculator**: sums as you type (`12*7+3`, `15% of 80`, `2^10`,
+    brackets), shown as the top row; Enter copies the result. Also hex and
+    binary (`0xff`, `255 in hex`) and offline unit conversions (`5 km in mi`,
+    `30 c in f`, `2 GiB in MB`).
+  - **Open windows**: typing finds open and minimized windows by title or app;
+    Enter flies the camera to the window (or restores it), so the launcher is
+    also the quickest way to get around the tree.
+  - **Tileception's own commands**: Overview, lock, suspend, do not disturb,
+    screenshot, dark or light, reload config and the rest of `tileception
+    msg`, each showing its shortcut so the launcher teaches the bindings.
+  - **App actions** from desktop files (e.g. "New private window").
+  - **Dates and times**: `time in tokyo`, `days until 2026-12-25`, a unix
+    timestamp to a date and back.
+  - **Paths and links**: `~/` or `/` completes paths and opens them in the
+    default program; a URL opens in the browser.
+  - **Colours**: `#ff8800` or `rgb(...)` shows a swatch and the other notations;
+    Enter copies.
+  - **Characters**: `:` searches emoji and symbols by name.
+  - **Run a command**: `>` runs the rest in a shell (or in a terminal with a
+    modifier).
+  - Later, with a built-in clipboard history: search past clipboard entries.
+  Question detection must come after these, so a sum or a conversion with
+  three words (`5 km in mi`) is not sent to the doctor.
+
 ## 5. Risks and open questions
 
 - **Client resize latency**: some clients (Electron, Xwayland) commit slowly after a
