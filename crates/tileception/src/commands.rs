@@ -18,12 +18,18 @@ pub enum Command {
     Drop(f64, f64),
     /// Saves what is on screen to a PNG file.
     Screenshot(std::path::PathBuf),
+    /// Puts a PNG file on the clipboard.
+    CopyImage(std::path::PathBuf),
     ReloadConfig,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
     Unlock,
     /// A key pressed while the power menu is open (not available as text).
     PowerMenuKey(u32),
+    /// Process launcher input after Smithay releases its keyboard lock.
+    LauncherKey(u32, crate::config::Mods),
+    /// Replaces the window selection with these ids (empty clears it).
+    Select(Vec<tileception_core::WindowId>),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -51,6 +57,17 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "tree" => return Ok(Command::Tree),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
+        "select" => {
+            let ids = args
+                .iter()
+                .map(|id| {
+                    id.parse::<u64>()
+                        .map(tileception_core::WindowId)
+                        .map_err(|_| "select needs numeric window ids".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Command::Select(ids));
+        }
         "spawn" | "exec" => {
             if rest.is_empty() {
                 return Err("spawn needs a command".into());
@@ -62,6 +79,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 return Err("screenshot needs a file name".into());
             }
             return Ok(Command::Screenshot(rest.into()));
+        }
+        "copy-image" => {
+            if rest.is_empty() {
+                return Err("copy-image needs a PNG file".into());
+            }
+            return Ok(Command::CopyImage(rest.into()));
         }
         "drop" => {
             let coords: Vec<f64> = args.iter().filter_map(|a| a.parse().ok()).collect();
@@ -108,6 +131,10 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "fullscreen" => Action::Fullscreen,
         "lock" => Action::Lock,
         "power-menu" => Action::PowerMenu,
+        "launcher" => Action::Launcher,
+        "notifications" => Action::Notifications,
+        "do-not-disturb" => Action::DoNotDisturb,
+        "group" => Action::Group,
         "next-tab" => Action::NextTab,
         "prev-tab" => Action::PrevTab,
         "save" => Action::SaveView(slot()?),
@@ -124,14 +151,34 @@ pub fn parse(line: &str) -> Result<Command, String> {
 impl Tileception {
     /// Runs a command; the reply is for `tileception msg`.
     pub fn execute(&mut self, command: Command) -> Result<String, String> {
+        if self.is_locked()
+            && !matches!(
+                command,
+                Command::Unlock
+                    | Command::Tree
+                    | Command::Screenshot(_)
+                    | Command::ReloadConfig
+                    | Command::Action(Action::Vt(_))
+            )
+        {
+            return Err("session is locked".into());
+        }
         match command {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
             Command::Screenshot(path) => self.screenshot(path),
+            Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
+            Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
+            Command::Select(ids) => {
+                if ids.iter().any(|id| !self.world.contains_window(*id)) {
+                    return Err("select contains an unknown window id".into());
+                }
+                self.selection.windows = ids.into_iter().collect();
+            }
             Command::Drop(x, y) => {
                 let win = self.world.focus().ok_or("nothing is focused")?;
                 let now = self.now();
@@ -140,6 +187,7 @@ impl Tileception {
                     self.world.drop_target(tileception_core::Point::new(x, y), win, view).ok_or("no target there")?;
                 self.world.apply_drop(win, target, now);
                 self.apply_layout();
+                self.persist_layout();
                 return Ok(format!("{target:?}\n"));
             }
         }
@@ -154,6 +202,8 @@ mod tests {
     #[test]
     fn parses_commands() {
         assert_eq!(parse("go 3"), Ok(Command::Action(Action::RecallView(3))));
+        assert_eq!(parse("copy-image /tmp/a b.png"), Ok(Command::CopyImage("/tmp/a b.png".into())));
+        assert!(parse("copy-image").is_err());
         assert_eq!(parse("move left"), Ok(Command::Action(Action::Move(Dir::Left))));
         assert_eq!(parse("spawn firefox --new-window"), Ok(Command::Spawn("firefox --new-window".into())));
         assert_eq!(parse("drop 10 20.5"), Ok(Command::Drop(10.0, 20.5)));

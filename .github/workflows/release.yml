@@ -1,0 +1,129 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (matching the version in Cargo.toml) builds the .deb
+# packages for every supported release and architecture, attaches them to a
+# GitHub release and publishes them to the apt repository at APT_URL.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          if [ "v$cargo_version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        release:
+          - { image: "debian:trixie", suite: trixie }
+          - { image: "ubuntu:24.04", suite: noble }
+          - { image: "ubuntu:26.04", suite: resolute }
+        arch: [amd64, arm64]
+    name: build (${{ matrix.release.suite }}, ${{ matrix.arch }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build packages
+        env:
+          DEB_ARCHS: ${{ matrix.arch }}
+        run: scripts/build-deb-docker.sh "${{ matrix.release.image }}"
+      - name: Check the suite
+        run: |
+          ls target/deb/${{ matrix.release.suite }}/*_${{ matrix.arch }}.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.release.suite }}-${{ matrix.arch }}
+          path: target/deb/${{ matrix.release.suite }}/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: apt
+      url: ${{ vars.APT_URL || 'https://apt.tileception.space' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Arrange by suite
+        # deb-<suite>-<arch>/*.deb becomes dist/<suite>/*.deb, the layout the
+        # repository's publish command expects.
+        run: |
+          for dir in artifacts/deb-*; do
+            suite=${dir#artifacts/deb-}
+            suite=${suite%-*}
+            mkdir -p "dist/$suite"
+            mv "$dir"/*.deb "dist/$suite/"
+          done
+          find dist -type f | sort
+      - name: Upload to the apt repository
+        env:
+          APT_SSH_HOST: ${{ secrets.APT_SSH_HOST }}
+          APT_SSH_PORT: ${{ vars.APT_SSH_PORT || '2222' }}
+          APT_SSH_KEY: ${{ secrets.APT_SSH_KEY }}
+          APT_SSH_KNOWN_HOSTS: ${{ secrets.APT_SSH_KNOWN_HOSTS }}
+        run: |
+          : "${APT_SSH_HOST:?set the APT_SSH_HOST secret}" "${APT_SSH_KEY:?set the APT_SSH_KEY secret}" "${APT_SSH_KNOWN_HOSTS:?set the APT_SSH_KNOWN_HOSTS secret}"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$APT_SSH_KEY" > ~/.ssh/apt
+          printf '%s\n' "$APT_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/apt ~/.ssh/known_hosts
+          tar -C dist -cf - . | ssh -i ~/.ssh/apt -p "$APT_SSH_PORT" -o BatchMode=yes publish@"$APT_SSH_HOST" publish
+      - name: Smoke test
+        env:
+          APT_URL: ${{ vars.APT_URL || 'https://apt.tileception.space' }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          curl -fsS -o /dev/null "$APT_URL/tileception.gpg"
+          for suite in dist/*; do
+            suite=${suite#dist/}
+            curl -fsS -o /dev/null "$APT_URL/dists/$suite/InRelease"
+            for arch in amd64 arm64; do
+              curl -fsS "$APT_URL/dists/$suite/main/binary-$arch/Packages" > Packages
+              grep -qx "Version: $version-1~$suite" Packages \
+                || { echo "$suite/$arch does not list $version-1~$suite" >&2; exit 1; }
+              # pool/ redirects to the R2 bucket: the package must be there.
+              file=$(awk -v v="$version-1~$suite" '$1 == "Version:" { hit = ($2 == v) } hit && $1 == "Filename:" { print $2; exit }' Packages)
+              curl -fsSL -o /dev/null --head "$APT_URL/$file" \
+                || { echo "$APT_URL/$file does not download" >&2; exit 1; }
+            done
+          done
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag artifacts/*.deb

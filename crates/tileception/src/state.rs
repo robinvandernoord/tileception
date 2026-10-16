@@ -130,11 +130,19 @@ pub struct Tileception {
     pub fullscreen: Option<WindowId>,
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     pub lock: crate::lock::LockState,
+    pub builtin_locker: crate::builtin_lock::BuiltinLocker,
     pub pending_captures: Vec<crate::capture::PendingCapture>,
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
     pub power_menu: Option<crate::power::PowerMenu>,
+    pub launcher: crate::launcher::Launcher,
+    /// Line icons for the compositor's own interface.
+    pub glyphs: crate::ui::Glyphs,
+    pub notifications: crate::notifications::Notifications,
+    pub selection: crate::selection::Selection,
+    pub persistence: crate::persistence::Persistence,
+    pub idle: crate::idle::Idle,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
@@ -240,11 +248,18 @@ impl Tileception {
             fullscreen: None,
             session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(&dh, |_| true),
             lock: Default::default(),
+            builtin_locker: Default::default(),
             pending_captures: Vec::new(),
             theme,
             text: Default::default(),
             shapes: Default::default(),
             power_menu: None,
+            launcher: Default::default(),
+            glyphs: Default::default(),
+            notifications: Default::default(),
+            selection: Default::default(),
+            persistence: crate::persistence::Persistence::load(),
+            idle: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
             headless: None,
@@ -264,7 +279,12 @@ impl Tileception {
             .expect("socket source");
         handle
             .insert_source(Generic::new(display, Interest::READ, Mode::Level), |_, display, state| {
-                // Safety: the display is never dropped while the loop runs.
+                #[allow(
+                    unsafe_code,
+                    reason = "calloop requires an opt-in for mutable access to a registered I/O source"
+                )]
+                // SAFETY: dispatch_clients borrows the display without dropping or replacing
+                // its registered I/O source, which remains owned by the event loop.
                 unsafe {
                     display.get_mut().dispatch_clients(state).expect("dispatch clients");
                 }
@@ -340,6 +360,7 @@ impl Tileception {
         tracing::info!(window = id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
         self.world.add_window(id, placement, now);
+        self.restore_window_layout(id);
         if let Some(x11) = self.windows.get(&id).and_then(|w| w.x11_surface()) {
             let g = x11.geometry();
             if self.world.float_needs_size(id) && g.size.w > 0 && g.size.h > 0 {
@@ -359,6 +380,7 @@ impl Tileception {
     }
 
     pub fn forget_window(&mut self, id: WindowId) {
+        self.selection.windows.remove(&id);
         if self.windows.remove(&id).is_none() {
             return;
         }
@@ -434,7 +456,7 @@ impl Tileception {
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
             self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
-        } else if self.power_menu.is_some() {
+        } else if self.power_menu.is_some() || self.launcher.open {
             None
         } else {
             match &self.layer_focus {
@@ -500,7 +522,13 @@ impl Tileception {
     }
 
     pub fn close_focused(&self) {
-        let Some(window) = self.world.focus().and_then(|id| self.windows.get(&id)) else { return };
+        if let Some(id) = self.world.focus() {
+            self.close_window(id);
+        }
+    }
+
+    pub fn close_window(&self, id: WindowId) {
+        let Some(window) = self.windows.get(&id) else { return };
         if let Some(t) = window.toplevel() {
             t.send_close();
         } else if let Some(x11) = window.x11_surface() {
@@ -576,6 +604,11 @@ pub fn app_id(window: &Window) -> String {
 impl Tileception {
     /// Housekeeping after each frame.
     pub fn after_frame(&mut self) {
+        if matches!(self.lock, crate::lock::LockState::BuiltIn)
+            && std::mem::take(&mut self.builtin_locker.suspend_after_lock)
+        {
+            self.spawn("systemctl", &["suspend".into()]);
+        }
         for window in self.windows.values() {
             window.refresh();
         }

@@ -45,7 +45,11 @@ pub fn init(
     let fd = DrmDeviceFd::new(DeviceFd::from(OwnedFd::from(file)));
     let node = DrmNode::from_path(&path)?;
     let gbm = GbmDevice::new(fd)?;
+    // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
+    #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
     let egl = unsafe { EGLDisplay::new(gbm)? };
+    // SAFETY: The newly created context belongs exclusively to this event-loop thread.
+    #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
     let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl)?)? };
     state.shm_state.update_formats(renderer.shm_formats());
     let feedback = DmabufFeedbackBuilder::new(node.dev_id(), renderer.dmabuf_formats()).build()?;

@@ -1,0 +1,8 @@
+These fonts are distributed under the SIL Open Font License 1.1
+(https://openfontlicense.org), as published on Google Fonts:
+
+  big-shoulders-display-900.woff2  Big Shoulders Display, Copyright The Big Shoulders Project Authors
+  familjen-grotesk.woff2           Familjen Grotesk, Copyright The Familjen Grotesk Project Authors
+  ibm-plex-mono-500.woff2          IBM Plex Mono, Copyright IBM Corp.
+
+They are latin subsets, self-hosted so visitors' browsers make no requests to third parties.

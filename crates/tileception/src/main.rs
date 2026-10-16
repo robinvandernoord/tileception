@@ -7,6 +7,7 @@
 //! Without a flag, Tileception runs nested when started inside another desktop
 //! (`WAYLAND_DISPLAY` or `DISPLAY` is set) and as the session otherwise.
 
+mod builtin_lock;
 mod capture;
 mod commands;
 mod config;
@@ -14,17 +15,24 @@ mod cursor;
 mod focus;
 mod handlers;
 mod headless;
+mod idle;
 mod input;
 mod ipc;
+mod launcher;
 mod layers;
 mod lock;
+mod notifications;
+mod persistence;
 mod power;
 mod render;
+mod selection;
 mod shapes;
 mod state;
 mod text;
+mod text_input;
 mod theme;
 mod udev;
+mod ui;
 mod wallpaper;
 mod winit;
 mod xwayland;
@@ -58,6 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<Tileception> = EventLoop::try_new()?;
     let display: Display<Tileception> = Display::new()?;
     let mut state = Tileception::new(&mut event_loop, display, config, nested);
+    state.init_idle();
+    state.init_launcher();
 
     if headless {
         headless::init(&mut event_loop, &mut state)?;
@@ -80,7 +90,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !nested && !headless {
         export_session_environment(&state);
     }
+    let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
+    if (!nested && !headless) || notification_bus.is_some() {
+        state.start_notifications(notification_bus);
+    }
     for line in state.config.file.general.autostart.clone() {
+        if matches!(line.trim(), "swaync" | "sway-notification-center") {
+            continue;
+        }
         state.spawn("sh", &["-c".to_string(), line]);
     }
     let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();

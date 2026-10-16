@@ -71,6 +71,9 @@ impl Tileception {
             return;
         }
         let pending = std::mem::take(&mut self.pending_captures);
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            self.wallpaper_buffer();
+        }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let image = match self.render_offscreen(renderer, wallpaper) {
             Ok(texture) => Some(texture),
@@ -178,7 +181,9 @@ fn copy_into_shm(buffer: &WlBuffer, w: i32, h: i32, rgba: &[u8]) -> Result<(), S
         if needed > len {
             return Err("buffer too small".into());
         }
-        // Safety: the range was checked against the pool's length above.
+        // SAFETY: The range was checked against the pool's length above. Smithay
+        // provides exclusive access to the mapped buffer for this callback.
+        #[allow(unsafe_code, reason = "Smithay exposes the client's mapped SHM buffer as a raw pointer")]
         let dst =
             unsafe { std::slice::from_raw_parts_mut(ptr.add(info.offset as usize), needed - info.offset as usize) };
         for y in 0..h as usize {

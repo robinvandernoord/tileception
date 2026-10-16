@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+@font-face { font-family: "Big Shoulders Display"; font-weight: 900; src: url("../public/assets/fonts/big-shoulders-display-900.woff2") format("woff2"); }
+@font-face { font-family: "Familjen Grotesk"; font-weight: 400 700; src: url("../public/assets/fonts/familjen-grotesk.woff2") format("woff2"); }
+:root { --red: #d42a1e; --yellow: #f4c22f; --blue: #1d4fa2; --ink: #121212; --canvas: #f4f3ee; }
+* { box-sizing: border-box; margin: 0; }
+body { width: 1200px; height: 630px; background: var(--ink); }
+.g { width: 1200px; height: 630px; display: grid; gap: 12px; padding: 12px; background: var(--ink);
+  grid-template: "red head nest" 1fr "wht lede yel" 168px / 40px 700px 1fr; }
+.g > div { background: var(--canvas); }
+.red { grid-area: red; background: var(--red) !important; } .wht { grid-area: wht; }
+.head { grid-area: head; display: flex; align-items: flex-end; padding: 30px 36px; }
+h1 { font: 900 132px/.84 "Big Shoulders Display", sans-serif; text-transform: uppercase; }
+h1 span { display: flex; align-items: center; gap: 18px; }
+h1 span::after { content: ""; width: 40px; height: 40px; background: var(--c); }
+.lede { grid-area: lede; padding: 24px 36px; display: flex; flex-direction: column; justify-content: center; font: 400 27px/1.3 "Familjen Grotesk", sans-serif; }
+.lede b { font: 900 36px/1 "Big Shoulders Display", sans-serif; text-transform: uppercase; margin-bottom: 8px; }
+.yel { grid-area: yel; background: var(--yellow) !important; display: flex; align-items: flex-end; padding: 22px 26px; font: 700 26px/1 "Familjen Grotesk", sans-serif; }
+.nest { grid-area: nest; background: var(--ink) !important; display: grid; gap: 10px; grid-template: 1fr 1fr / 1fr 1.3fr; }
+.nest > i { background: var(--canvas); display: block; }
+.nest .b { background: var(--blue); grid-row: span 2; }
+.nest .s { display: grid; gap: 8px; grid-template: 1fr 1fr / 1fr 1fr; background: var(--ink); }
+.nest .s i { background: var(--canvas); display: block; } .nest .s .r { background: var(--red); } .nest .s .y { background: var(--yellow); grid-column: span 2; }
+</style></head><body>
+<div class="g">
+  <div class="red"></div>
+  <div class="head"><h1><span style="--c:var(--red)">Tile it.</span><span style="--c:var(--yellow)">Nest it.</span><span style="--c:var(--blue)">Zoom it.</span></h1></div>
+  <div class="nest"><i class="b"></i><i></i><div class="s"><i class="r"></i><i></i><i class="y"></i></div></div>
+  <div class="wht"></div>
+  <div class="lede"><b>Tileception</b>A nested tiling Wayland compositor for Linux</div>
+  <div class="yel">tileception.space</div>
+</div>
+</body></html>

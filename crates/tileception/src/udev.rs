@@ -96,8 +96,12 @@ pub fn init(
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd.clone())?;
 
+    // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
+    #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
     let egl = unsafe { EGLDisplay::new(gbm.clone())? };
     let context = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
+    // SAFETY: The newly created context belongs exclusively to this event-loop thread.
+    #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
     let renderer = unsafe { GlesRenderer::new(context)? };
     state.shm_state.update_formats(renderer.shm_formats());
 
@@ -157,6 +161,7 @@ pub fn init(
             if let Some(udev) = state.udev.as_mut() {
                 udev.manager.pause();
                 udev.frame_pending = false;
+                udev.render_pending = false;
             }
         }
         SessionEvent::ActivateSession => {
@@ -165,10 +170,26 @@ pub fn init(
                 tracing::error!("libinput could not resume");
             }
             if let Some(udev) = state.udev.as_mut() {
+                udev.frame_pending = false;
+                udev.render_pending = false;
                 if let Err(err) = udev.manager.activate(false) {
                     tracing::error!("drm could not resume: {err}");
                 }
+                if let Some(lit) = &udev.surface {
+                    lit.drm_output.with_compositor(|compositor| {
+                        // A pre-suspend page flip may never deliver its vblank. Drop
+                        // both Smithay's queued frames and the stale scanout state.
+                        if let Err(err) = compositor.clear() {
+                            tracing::error!("could not clear stale scanout: {err}");
+                        }
+                        compositor.reset_buffers();
+                        if let Err(err) = compositor.reset_state() {
+                            tracing::error!("could not reset resumed output: {err}");
+                        }
+                    });
+                }
             }
+            state.idle_activity();
             state.schedule_render();
         }
     })?;
@@ -189,6 +210,24 @@ pub fn init(
 }
 
 impl Tileception {
+    pub fn set_output_sleep(&mut self, asleep: bool) -> bool {
+        let Some(udev) = self.udev.as_mut() else { return self.headless.is_some() };
+        if !udev.session.is_active() {
+            return false;
+        }
+        let Some(lit) = &udev.surface else { return false };
+        if asleep {
+            if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
+                tracing::warn!("could not power down the display: {error}");
+                return false;
+            }
+        } else {
+            lit.drm_output.reset_buffers();
+        }
+        udev.frame_pending = false;
+        true
+    }
+
     fn scan_connectors(&mut self) {
         let Some(mut udev) = self.udev.take() else { return };
         let events = match udev.scanner.scan_connectors(udev.manager.device()) {
@@ -321,7 +360,7 @@ impl Tileception {
     fn render_udev(&mut self) {
         let Some(mut udev) = self.udev.take() else { return };
         udev.render_pending = false;
-        if !udev.session.is_active() || udev.frame_pending {
+        if !udev.session.is_active() || udev.frame_pending || self.idle.off {
             self.udev = Some(udev);
             return;
         }

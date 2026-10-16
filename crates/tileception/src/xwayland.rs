@@ -206,6 +206,11 @@ impl XwmHandler for Tileception {
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
         let result = match selection {
             SelectionTarget::Clipboard => {
+                let clip = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(clip) = clip {
+                    clip.send(fd);
+                    return;
+                }
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| format!("{e:?}"))
             }
             SelectionTarget::Primary => {
@@ -219,15 +224,15 @@ impl XwmHandler for Tileception {
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
         match selection {
-            SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, ()),
-            SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, ()),
+            SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, None),
+            SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, None),
         }
     }
 
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
         match selection {
             SelectionTarget::Clipboard => {
-                if current_data_device_selection_userdata(&self.seat).is_some() {
+                if current_data_device_selection_userdata(&self.seat).is_some_and(|data| data.is_none()) {
                     clear_data_device_selection(&self.display_handle, &self.seat)
                 }
             }

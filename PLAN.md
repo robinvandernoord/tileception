@@ -13,9 +13,10 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
 | Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
 | Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur. Mockups in `design/graphite.html` (variant F). |
-| Shell components | Built into the compositor in the Tide style: launcher, notifications, power menu, lock screen. External tools (fuzzel, swaync, wlogout, swaylock) are stopgaps until then. |
+| Shell components | Provide Tide defaults for the Super menu/launcher, notification bar and popups, power menu and lock screen. Following Linux's modular philosophy, each must remain optional and swappable for external tools such as fuzzel, swaync, wlogout and swaylock. |
 | Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
-| Licensing | Dropped. No trial, license or update code. |
+| Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
+| Distribution | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host. |
 
 ## 1. What Trellis is (findings from the DMG)
 
@@ -209,14 +210,12 @@ Done and running as Robin's session:
 
 ### Right now (Robin)
 
-- Run `./install-session.sh`, then reboot. Before rebooting, activate the new
-  personal config: `mv ~/.config/tileception/config.toml.next
-  ~/.config/tileception/config.toml` (the running build cannot read it).
-- fuzzel, swaylock, sway-notification-center and wlogout were removed: until
-  the built-in versions land there is no launcher, no screen lock and no
-  notification popups (screenshots still save and copy, without the popup).
-  `sudo apt install swaylock sway-notification-center` brings back locking
-  and notifications in the meantime.
+- The coming-days implementation is ready for session verification. Run
+  `make install`, then log out and back in to load it; the installer also
+  installs the PAM service. The running desktop has not been changed.
+- Existing default fuzzel and swaync bindings are translated when loading the
+  config. If using a custom `[binds]` table, add `"Super+G" = "group"` and
+  `"Super+Shift+F" = "float"` if those new shortcuts are absent.
 
 ### Today (done)
 
@@ -233,7 +232,13 @@ Done and running as Robin's session:
 
 ### Coming days
 
-The external tools are gone, so these three come first, in this order:
+Status: functional corrections after laptop feedback. Lock and notification
+design work is reserved for Claude, using `docs/design.html` as the reference.
+Suspend/resume has passed Robin's hardware test and is enabled by default, with
+`general.suspend_enabled = false` available to opt out. Automatic idle locking
+remains disabled. Do not trigger locking or suspend during automated
+verification. Automatic layout saving/restoration is off by
+default; the app-matching behavior was not agreed and is deferred.
 
 1. Built-in lock screen (Super+L) with the normal password and the wallpaper,
    replacing swaylock (uses the `tileception-auth` crate from Codex).
@@ -245,8 +250,166 @@ The external tools are gone, so these three come first, in this order:
 4. Selecting several windows: Shift+click and Super+Shift+drag (plain drag in
    Overview); then Super+C closes all, Super+Shift+F floats or docks all,
    Super+G makes them tabs of one tile, Super+Shift+arrows moves them.
-5. Layouts that survive a re-login.
+5. Layouts that survive a re-login: clarify the intended scope first. The
+   experimental app-matching implementation is opt-in, not enabled by default.
 6. Idle handling: screen off and lock after a while, not during video.
+
+Verification checklist:
+
+- [x] Existing 64 tests, formatting and Clippy checks pass.
+- [x] Isolated screenshots: lock screen with wallpaper, launcher with app
+  icons, notification history with thumbnail and action buttons.
+- [x] Reopened windows recover saved split proportions and saved views across
+  compositor restarts; floating geometry is serialized successfully.
+- [x] Scripted selection, tab grouping, group float/dock and group close.
+- [x] Short headless idle timer reaches locked and display-asleep states.
+- [x] Robin verified suspend/resume on hardware and confirmed password dots.
+- [ ] Manually verify launcher editing (including compose input), corrected
+  window selection/group actions, notification action clicks, physical display
+  wake without suspend, and video idle inhibition on the laptop. Confirm password
+  rejection and successful unlock if not already covered by the suspend test.
+
+Feedback corrections:
+
+- [x] Copy the Tide reference, including its styles and examples, into
+  `docs/design.html`; do not commit without an explicit commit request.
+- [x] Add an editable launcher field with caret, selection, word navigation,
+  deletion, and clipboard shortcuts. Handle focus changes outside Smithay's
+  locked keyboard filter.
+- [x] Replace the launcher's `wl-copy`/`wl-paste` helpers with direct clipboard
+  transfers, including the X11 bridge. Clipboard helpers could create temporary
+  toplevels that changed the layout underneath the launcher. Keep paste reads
+  asynchronous and bounded, and ignore results after the launcher is reopened.
+- [x] Remove the opaque Desktop placeholder so wallpaper fills empty space.
+- [x] Include the focused window when starting a Shift+click selection and
+  add a distinct selection marker. Add the missing group/float shortcuts to
+  Robin's custom config.
+- [x] Move selected tiled windows as one subtree, retaining internal splits,
+  tab groups and proportions, instead of docking them one at a time.
+- [x] Split within a zoomed tile when opening a new tiled window, instead of
+  joining its outer row and exposing unrelated windows. Make selection zoom
+  (Super+plus/Super+I) and split toggling (Super+J) use an exact layout subgroup.
+  Preserve adjacent sibling sizes; selections across branches may need
+  rearrangement. Keep pointer zoom, single-window commands and tab grouping.
+- [x] Keep the screenshot save/copy chooser open until answered; allow 30
+  seconds for saved-screenshot feedback. Leave visual styling to Claude.
+- [x] Show password dots without retaining or drawing the password itself.
+- [x] Inspect the previous boot: Linux and the compositor both resumed.
+  Clear stale pre-suspend DRM frames and request fresh scanout on activation.
+- [x] Robin verified the resume recovery on hardware. Enable Suspend by default
+  and retain `general.suspend_enabled = false` as an opt-out. No suspend test
+  was run by the agent.
+
+Log, 2026-10-15: integrated the three standalone libraries, added multi-window
+actions, layout persistence and idle handling. Checks used a private headless
+compositor and private D-Bus; nothing was installed or restarted in the active
+desktop. Trackpad and touchscreen improvements were requested for later only.
+
+Follow-up, 2026-10-15: corrected the empty/floating desktop background and
+launcher editing. The isolated formation check moved a vertical group with a
+horizontal lower pair intact; selecting and closing all four windows left an
+empty desktop. The native caret and full wallpaper were inspected visually.
+All 64 existing tests and formatting/Clippy checks pass. Password dots and the
+resume recovery were compiled but no lock or suspend was triggered. Robin's
+custom config now includes group/float shortcuts and disables automatic idle
+locking. Lock and notification visual design remains Claude's task.
+
+Follow-up, 2026-10-15: Robin reports that suspend/resume works and the lock screen
+shows password dots. Suspend now defaults to enabled, with a configuration
+opt-out. Remaining manual checks are listed above; visual redesign and input
+device enhancements remain separate planned work.
+
+Follow-up, 2026-10-15: corrected launcher clipboard handling after Robin reported
+phantom splits on Ctrl+C/Ctrl+V. Copy and paste now use compositor selection APIs
+without creating helper windows. Manual verification in the desktop remains
+pending after installing the updated build.
+
+Follow-up, 2026-10-15 (Claude): restyled the launcher, lock screen,
+notifications, power menu and selection marks after `docs/design.html`, through a
+shared painter (`ui.rs`) with cached line icons, keycaps, text weights and
+wrapping, and short fade/slide animations. Review of the coming-days work fixed:
+plain presses in Overview no longer start a box over windows (window dragging
+there works again, and a click no longer leaves a stray selection); Shift+click
+on a live window reaches the program, with Super+Shift+click for selecting;
+screenshot copying uses the new compositor-owned `copy-image` instead of
+`wl-copy` (whose helper window got tiled); the ask-first chooser is shown with
+Do not disturb on and is not pushed out by newer popups; a relock drops a stale
+password check; Caps Lock no longer hides "Incorrect password"; Super+I/Super+U
+are bound by default. Checked nested on Xvfb with software rendering: launcher,
+lock (with and without wallpaper, typing, checking, wrong password, Caps Lock),
+notifications and history, DND, chooser action click, clipboard round trip, and
+Super+Shift selection. Not checked on hardware.
+
+Follow-up, 2026-10-15: isolated headless checks with real terminal windows confirm
+that opening beside a zoomed tile frames only that pair, selected split toggling
+leaves other branches alone, and selection zoom frames an exact pair even across
+branches. Existing workspace tests and Clippy pass. Desktop shortcut verification
+remains manual after installing the new build.
+
+### Packaging, installation and release delivery
+
+Status: agreed architecture, not implemented. Keep package storage separate from
+the website's 100 MB hosting allowance. A CDN caches downloads; the origin storage
+must have sufficient capacity and an explicit retention policy.
+
+- [x] Choose native Debian packaging and APT-managed updates and removal.
+- [x] Separate `apt.tileception.space` from `tileception.space`: package storage
+  can grow independently of the small OVH website host.
+- [ ] Define the supported Debian/Ubuntu releases and CPU architectures. Build
+  against compatible distribution libraries, declare runtime dependencies, and
+  map derivative distributions to their supported base release. Do not assume
+  one `.deb` works on every Debian-based system.
+- [ ] Add a release CI workflow that builds versioned `.deb` packages, runs the
+  required existing checks, generates repository indexes and signed metadata,
+  and publishes to the custom APT origin with CDN delivery. Keep private signing
+  keys and deployment credentials in protected release secrets, off the public
+  hosts; document key backup, expiry monitoring and rotation.
+- [ ] Provision HTTPS, DNS and origin storage for `apt.tileception.space`.
+  Set storage, transfer and retention budgets; retain previous working packages
+  for recovery and document downgrade instructions.
+- [ ] Make repository publication safe for concurrent clients: upload immutable
+  versioned packages first, then indexes, then signed release metadata. Use
+  content-addressed indexes (`by-hash`), retain indexes needed by existing
+  clients, serialize publication, and configure CDN caching so mutable metadata
+  refreshes promptly. Never overwrite a published package version.
+- [ ] Package the compositor and helpers in system directories, the login-screen
+  entry, the PAM policy as system configuration, and the desktop-specific portal
+  configuration in its system location. Installation must not require Rust or
+  build dependencies, alter the user's default desktop, or restart a live session.
+- [ ] Define migration from the source installer: identify old per-user binaries,
+  session entries and portal overrides that can shadow packaged files. Preserve
+  personal configuration and avoid changing unrelated users' home directories
+  from package maintainer scripts.
+- [x] Build the website in a separate CI deployment and publish to the small OVH
+  host, including a plain-text shell script at `https://tileception.space/install`.
+  Keep website deployment independent of package publishing. Done in `website/`
+  and `.github/workflows/website.yml`. The page already shows the install command;
+  until the repository and packages exist, `/install` only prints the source-build
+  steps and exits without changing the system.
+- [ ] Support `curl -fsSL https://tileception.space/install | sh`. Make the script
+  compatible with `/bin/sh`, safe to rerun, and able to detect supported OS/base
+  releases and architectures before changing the system. Explain the changes,
+  use `sudo` for privileged operations, install the repository-specific public
+  key and Deb822 `.sources` configuration with `Signed-By`, then run `apt update`
+  and `apt install tileception`. Fail clearly on errors and unsupported systems.
+  Provide download-and-inspect instructions alongside the one-line command.
+- [ ] Give repository configuration and the public key package ownership, for
+  example through `tileception-archive-keyring`, with documented removal and
+  key rotation. Never use a globally trusted key or disable signature checking.
+- [ ] Document the full lifecycle: choose Tileception at the next login; normal
+  system updates take effect at the next Tileception login; switch to another
+  desktop before removal. Normal removal keeps personal settings; package purge
+  also removes system configuration, including PAM. Provide separate instructions
+  for removing the repository and explicitly deleting the current user's data.
+- [ ] Verify installation, upgrade, repeat installer execution, source-install
+  migration, removal, purge and recovery in disposable supported environments.
+  Check the deployed script, repository signatures and CDN-served metadata before
+  announcing a release. Do not exercise these flows against the active desktop.
+
+Log, 2026-10-15: agreed two independent CI delivery paths: build and publish Debian
+packages to a custom APT host with CDN-backed storage; build and publish the website
+and `/install` script to the small OVH host. Provider selection, supported release
+matrix, credentials and deployment implementation remain pending.
 
 ### Maybe someday (tm)
 
@@ -257,12 +420,33 @@ The external tools are gone, so these three come first, in this order:
   (data-control).
 - Bindings that repeat while held, pass through to the app, or work while
   locked; click-to-kill.
-- Pointer lock for games, input methods, touchpad gestures.
+- Pointer lock for games and input methods.
+- Better trackpad support: configurable multi-finger actions, swipes and
+  pinches for navigation, Overview and window management. Planning only for now.
+- Touchscreen support: touch currently does not work on Robin's laptop,
+  although the same hardware works in PikaOS. Investigate device discovery,
+  coordinate mapping and touch delivery, then add direct manipulation and
+  gestures. Planning only for now.
 - Live blur and glass styles (Smoke, Liquid glass from `design/graphite.html`).
 - A settings window instead of editing the config file.
 
 ### To be planned
 
+- [ ] **Swappable shell components.** Add documented configuration to disable or
+  replace each built-in tool independently, including the Super menu/launcher,
+  notification bar and popups, power menu and lock screen. External replacements
+  must be supported as permanent choices, with configurable shortcuts and
+  startup commands. Release shared protocol or service ownership when a built-in
+  component is disabled so it does not compete with its replacement. Preserve
+  the compositor's window-management features when using external tools.
+- [ ] **Built-in volume and media controls with visual feedback.** Currently these
+  are Robin's personal `wpctl`/`playerctl` shortcuts, without compositor feedback.
+  Add built-in actions and standard hardware-key bindings so they work with the
+  default configuration. Show actual volume and mute state after changes, and
+  playback feedback for play/pause, stop and track changes, including the active
+  player and track when available. Report missing audio devices or active
+  players clearly. Use the Tide visual language; keep personal shell shortcuts
+  unnecessary for normal volume/media-key operation. Planned, not implemented.
 - **Minimizing windows.** Hide a window without closing it, and bring it back
   either where it was or at a new spot (e.g. dropped onto a tile's edge or
   centre, like a drag). Decided:

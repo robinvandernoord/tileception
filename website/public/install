@@ -1,0 +1,83 @@
+#!/bin/sh
+# Tileception installer: https://tileception.space/install
+#
+#   curl -fsSL https://tileception.space/install | sh
+#
+# Adds the Tileception apt repository (https://apt.tileception.space) with its
+# signing key, then installs the tileception package. Runs on Debian 13
+# (trixie), Ubuntu 24.04 (noble) and 26.04 (resolute), and on systems built on
+# them such as Linux Mint, for amd64 and arm64. Uses sudo when not run as root.
+#
+# TILECEPTION_REPO overrides the repository URL (for testing a mirror).
+set -eu
+
+# Everything runs from main, called on the last line, so a download that
+# breaks off halfway runs nothing at all.
+main() {
+    repo="${TILECEPTION_REPO:-https://apt.tileception.space}"
+    suites="trixie noble resolute"
+    keyring=/etc/apt/keyrings/tileception.gpg
+    sources=/etc/apt/sources.list.d/tileception.sources
+
+    [ -r /etc/os-release ] || fail "this is not Debian or Ubuntu (no /etc/os-release)"
+    # shellcheck disable=SC1091 # the system's, not ours
+    . /etc/os-release
+    # Mint and other derivatives say which Ubuntu or Debian release they are built on.
+    suite="${UBUNTU_CODENAME:-${DEBIAN_CODENAME:-${VERSION_CODENAME:-}}}"
+    case " $suites " in
+        *" $suite "*) ;;
+        *) fail "${PRETTY_NAME:-this system} is not supported. Packages exist for Debian 13 and Ubuntu 24.04 and 26.04; on other releases, build from source: https://github.com/robinvandernoord/tileception#installing-as-a-session" ;;
+    esac
+    command -v apt-get >/dev/null 2>&1 || fail "apt-get is missing"
+    arch=$(dpkg --print-architecture)
+    case $arch in
+        amd64|arm64) ;;
+        *) fail "there are no packages for $arch (only amd64 and arm64)" ;;
+    esac
+
+    if [ "$(id -u)" -eq 0 ]; then
+        sudo=""
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo="sudo"
+    else
+        fail "run this as root, or install sudo"
+    fi
+
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    say "Fetching the signing key from $repo"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$repo/tileception.gpg" -o "$tmp/key"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$tmp/key" "$repo/tileception.gpg"
+    else
+        fail "curl or wget is needed to fetch the signing key"
+    fi
+    [ -s "$tmp/key" ] || fail "the signing key from $repo is empty"
+
+    cat > "$tmp/sources" <<EOF
+Types: deb
+URIs: $repo
+Suites: $suite
+Components: main
+Signed-By: $keyring
+EOF
+
+    say "Adding the repository ($suite, $arch)"
+    $sudo install -d -m 755 /etc/apt/keyrings
+    $sudo install -m 644 "$tmp/key" "$keyring"
+    $sudo install -m 644 "$tmp/sources" "$sources"
+
+    say "Installing tileception"
+    # stdin is this script when piped into sh, so apt must not ask anything.
+    $sudo apt-get update </dev/null
+    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tileception </dev/null
+
+    say "Done. Reboot (or log out), then pick Tileception on the login screen."
+    say "Updates arrive with your normal system updates."
+}
+
+say() { printf '==> %s\n' "$*"; }
+fail() { printf 'tileception install: %s\n' "$*" >&2; exit 1; }
+
+main "$@"

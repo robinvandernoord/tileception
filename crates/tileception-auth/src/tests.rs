@@ -6,12 +6,13 @@ fn secret() -> SecretString {
 }
 
 #[test]
+#[allow(unsafe_code, reason = "this test exercises the PAM callback's C response allocation and cleanup")]
 fn conversation_answers_all_styles_and_repeated_prompts() {
     let mut data = Conversation { user: CString::new("test-user").unwrap(), password: Some(secret()) };
     let messages = [1, 2, 3, 4, 1].map(|style| PamMessage { style, text: ptr::null() });
     let mut pointers = messages.each_ref().map(ptr::from_ref);
     let mut output = ptr::null_mut();
-    // All pointers refer to live test data and successful responses are freed below.
+    // SAFETY: All pointers refer to live test data and successful responses are freed below.
     unsafe {
         assert_eq!(converse(5, pointers.as_mut_ptr(), &mut output, ptr::from_mut(&mut data).cast()), SUCCESS);
         for (index, expected) in [(0, "synthetic-test-token"), (1, "test-user"), (4, "synthetic-test-token")] {
@@ -25,12 +26,13 @@ fn conversation_answers_all_styles_and_repeated_prompts() {
 }
 
 #[test]
+#[allow(unsafe_code, reason = "this test exercises the PAM callback's handling of invalid C messages")]
 fn conversation_rejects_invalid_messages_and_unavailable_password() {
     let mut data = Conversation { user: CString::new("test-user").unwrap(), password: Some(secret()) };
     let messages = [1, 99].map(|style| PamMessage { style, text: ptr::null() });
     let mut pointers = messages.each_ref().map(ptr::from_ref);
     let mut output = ptr::null_mut();
-    // Valid pointers allow exercising cleanup after one allocated password response.
+    // SAFETY: Valid pointers allow exercising cleanup after one allocated password response.
     unsafe {
         assert_eq!(converse(2, pointers.as_mut_ptr(), &mut output, ptr::from_mut(&mut data).cast()), CONV_ERR);
         assert!(output.is_null());
@@ -92,8 +94,9 @@ fn invalid_inputs_are_rejected_without_pam() {
 }
 
 #[test]
+#[allow(unsafe_code, reason = "the test checks whether Linux-PAM exports its optional private-config entry point")]
 fn private_pam_services_permit_deny_and_account_deny() {
-    // dlsym only queries the optional Linux-PAM symbol and does not invoke it.
+    // SAFETY: dlsym receives a valid static C string and its result is only checked for null.
     let available = unsafe { !libc::dlsym(libc::RTLD_DEFAULT, c"pam_start_confdir".as_ptr()).is_null() };
     if !available {
         eprintln!("Skipping private-confdir test: Linux-PAM lacks pam_start_confdir");

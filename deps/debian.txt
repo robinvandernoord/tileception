@@ -20,7 +20,8 @@ dbus-bin                # dbus-update-activation-environment at session start
 dbus-daemon             # the notification service's tests run a private bus
 xdg-desktop-portal-wlr  # screen sharing and screenshots for apps (tileception-portals.conf)
 xdg-desktop-portal-gtk  # file pickers and other portals (the portal config's default)
-xdg-utils               # xdg-open, used by the screenshot notification
+xdg-utils               # xdg-open and xdg-settings: default apps and screenshot actions
+libgtk-3-bin            # gtk-launch starts the configured default browser desktop entry
 xdg-user-dirs           # finds the Pictures folder for screenshots
 grim                    # screenshots (tileception-screenshot)
 slurp                   # selecting a region for Shift+Print

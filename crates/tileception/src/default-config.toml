@@ -25,13 +25,17 @@ share_removed_space = true
 # Height of the strip of tabs above a tile with several windows.
 tab_height = 28
 
-# Shell command lines run once when Tileception starts, for example a
-# notification daemon: autostart = ["swaync"]
+# Shell command lines run once when Tileception starts.
+# Notifications are built in; no notification daemon is needed.
 autostart = []
 
 # Command for the `lock` action. {wallpaper} becomes the wallpaper's path.
-# Unset: swaylock with the wallpaper and the theme's colours.
+# Unset: the built-in password lock screen with your wallpaper.
 # lock_command = "swaylock -f -i {wallpaper}"
+# Experimental app-matched layout persistence is disabled unless opted into.
+# restore_layout = false
+# Suspend is enabled by default. Set false to disable the power-menu action.
+# suspend_enabled = true
 
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
@@ -45,6 +49,8 @@ autostart = []
 # accent = "#2bd4a7"
 # accent_end = "#5c8ff2"
 # on_accent = "#0d1117"
+# Wrong passwords and critical notifications.
+# danger = "#f0646a"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -55,6 +61,12 @@ autostart = []
 # wallpaper = "~/Pictures/wallpaper.jpg"
 # How it fits the screen: fill, fit, stretch or center.
 # wallpaper_fit = "fill"
+
+[idle]
+# Seconds of inactivity; 0 disables the corresponding action.
+# Visible video players can inhibit both through the Wayland idle-inhibit protocol.
+lock_after = 0
+off_after = 600
 
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
@@ -99,11 +111,15 @@ repeat_rate = 30
 # Always available: Ctrl+Alt+F1..F12 switch VT, Ctrl+Alt+BackSpace quits.
 # In a nested window, Alt stands in for Super.
 [binds]
-"Super" = "spawn fuzzel"
+"Super" = "launcher"
 "Super+T" = "terminal"
+"Super+B" = "spawn gtk-launch \"$(xdg-settings get default-web-browser)\""
+"Super+E" = "spawn xdg-open \"$HOME\""
 "Super+C" = "close"
 "Super+L" = "lock"
 "Super+X" = "power-menu"
+"Super+N" = "notifications"
+"Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
 
@@ -112,6 +128,8 @@ repeat_rate = 30
 "Super+minus" = "step-out"
 "Super+KP_Add" = "step-in"
 "Super+KP_Subtract" = "step-out"
+"Super+I" = "step-in"
+"Super+U" = "step-out"
 "Super+WheelUp" = "step-in pointer"
 "Super+WheelDown" = "step-out"
 "Super+M" = "maximize"
@@ -141,9 +159,10 @@ repeat_rate = 30
 
 "Super+F" = "fullscreen"
 "Super+V" = "float"
+"Super+Shift+F" = "float"
 "Super+D" = "desktop"
 
-# Screenshots (grim, slurp, wl-copy). Print saves and copies the whole screen;
+# Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"

@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -216,11 +214,11 @@ impl NotifyService {
 
     /// Returns history in oldest-to-newest order, including active notifications.
     pub fn history(&self) -> Vec<Notification> {
-        self.state.lock().unwrap().history.iter().cloned().collect()
+        self.state.lock().expect("notification state mutex must not be poisoned").history.iter().cloned().collect()
     }
 
     pub fn do_not_disturb(&self) -> bool {
-        self.state.lock().unwrap().dnd
+        self.state.lock().expect("notification state mutex must not be poisoned").dnd
     }
 }
 
@@ -242,7 +240,7 @@ fn emit(
 }
 
 fn close(connection: &zbus::blocking::Connection, state: &Shared, id: u32, reason: CloseReason) {
-    if state.lock().unwrap().close(id, reason) {
+    if state.lock().expect("notification state mutex must not be poisoned").close(id, reason) {
         emit(connection, "NotificationClosed", &(id, reason as u32));
     }
 }
@@ -251,7 +249,7 @@ fn run(connection: zbus::blocking::Connection, state: Shared, incoming: mpsc::Re
     loop {
         let now = Instant::now();
         let (expired, wait) = {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock().expect("notification state mutex must not be poisoned");
             let deadlines: Vec<_> =
                 state.active.values().filter_map(|item| item.expires.map(|time| (item.id, time))).collect();
             let expired = deadlines.iter().filter(|(_, time)| *time <= now).map(|(id, _)| *id).collect::<Vec<_>>();
@@ -272,17 +270,26 @@ fn run(connection: zbus::blocking::Connection, state: Shared, incoming: mpsc::Re
         match incoming.recv_timeout(wait) {
             Ok(Some(Request::Dismiss(id))) => close(&connection, &state, id, CloseReason::Dismissed),
             Ok(Some(Request::DismissAll)) => {
-                let ids: Vec<_> = state.lock().unwrap().active.keys().copied().collect();
+                let ids: Vec<_> = state
+                    .lock()
+                    .expect("notification state mutex must not be poisoned")
+                    .active
+                    .keys()
+                    .copied()
+                    .collect();
                 for id in ids {
                     close(&connection, &state, id, CloseReason::Dismissed);
                 }
             }
             Ok(Some(Request::Invoke { id, action, token })) => {
-                let resident = state.lock().unwrap().active.get(&id).and_then(|item| {
-                    let valid = (action == "default" && item.default_action)
-                        || item.actions.iter().any(|(key, _)| *key == action);
-                    valid.then_some(item.resident)
-                });
+                let resident =
+                    state.lock().expect("notification state mutex must not be poisoned").active.get(&id).and_then(
+                        |item| {
+                            let valid = (action == "default" && item.default_action)
+                                || item.actions.iter().any(|(key, _)| *key == action);
+                            valid.then_some(item.resident)
+                        },
+                    );
                 if let Some(resident) = resident {
                     if let Some(token) = token {
                         emit(&connection, "ActivationToken", &(id, token));
@@ -293,9 +300,17 @@ fn run(connection: zbus::blocking::Connection, state: Shared, incoming: mpsc::Re
                     }
                 }
             }
-            Ok(Some(Request::SetDoNotDisturb(value))) => state.lock().unwrap().dnd = value,
-            Ok(Some(Request::ClearHistory)) => state.lock().unwrap().history.clear(),
-            Ok(Some(Request::RemoveFromHistory(id))) => state.lock().unwrap().history.retain(|item| item.id != id),
+            Ok(Some(Request::SetDoNotDisturb(value))) => {
+                state.lock().expect("notification state mutex must not be poisoned").dnd = value
+            }
+            Ok(Some(Request::ClearHistory)) => {
+                state.lock().expect("notification state mutex must not be poisoned").history.clear()
+            }
+            Ok(Some(Request::RemoveFromHistory(id))) => state
+                .lock()
+                .expect("notification state mutex must not be poisoned")
+                .history
+                .retain(|item| item.id != id),
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -306,7 +321,7 @@ struct Interface(Shared);
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Interface {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "the D-Bus Notify specification fixes this method's arguments")]
     fn notify(
         &self,
         app_name: String,
@@ -318,7 +333,7 @@ impl Interface {
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.0.lock().expect("notification state mutex must not be poisoned");
         let replaced = replaces_id != 0 && state.active.contains_key(&replaces_id);
         let id = if replaced {
             replaces_id
@@ -377,7 +392,8 @@ impl Interface {
         id: u32,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
-        let closed = self.0.lock().unwrap().close(id, CloseReason::ClosedByCall);
+        let closed =
+            self.0.lock().expect("notification state mutex must not be poisoned").close(id, CloseReason::ClosedByCall);
         if closed {
             connection
                 .emit_signal(None::<&str>, PATH, NAME, "NotificationClosed", &(id, CloseReason::ClosedByCall as u32))

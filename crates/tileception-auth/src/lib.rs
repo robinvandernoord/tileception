@@ -115,6 +115,7 @@ struct Conversation {
     password: Option<SecretString>,
 }
 
+#[allow(unsafe_code, reason = "Linux-PAM exposes transaction creation and authentication through C FFI")]
 fn run(user: &str, password: SecretString, service: &CStr, confdir: Option<&CStr>) -> Result<Outcome, Error> {
     let user = CString::new(user).map_err(|_| Error::InvalidUser)?;
     if user.as_bytes().is_empty() {
@@ -126,7 +127,7 @@ fn run(user: &str, password: SecretString, service: &CStr, confdir: Option<&CStr
     let mut data = Conversation { user, password: Some(password) };
     let conversation = PamConv { conv: converse, appdata_ptr: ptr::from_mut(&mut data).cast() };
     let mut handle = ptr::null_mut();
-    // All strings and callback data remain alive until pam_end completes.
+    // SAFETY: All strings and callback data remain alive until pam_end completes.
     let status = unsafe {
         match confdir {
             None => pam_start(service.as_ptr(), data.user.as_ptr(), &conversation, &mut handle),
@@ -137,7 +138,7 @@ fn run(user: &str, password: SecretString, service: &CStr, confdir: Option<&CStr
         return Err(Error::Pam { operation: "start", code: status });
     }
     let mut transaction = Transaction { handle, status: SUCCESS };
-    // A successful pam_start created this live, exclusively owned transaction.
+    // SAFETY: A successful pam_start created this live, exclusively owned transaction.
     let status = unsafe { pam_authenticate(transaction.handle, 0) };
     // All authentication prompts have completed; PAM owns any response copies.
     data.password.take();
@@ -145,7 +146,7 @@ fn run(user: &str, password: SecretString, service: &CStr, confdir: Option<&CStr
     if status != SUCCESS {
         return classify(status, false, transaction.handle);
     }
-    // The authenticated handle remains live; no credentials or session are changed.
+    // SAFETY: The authenticated handle remains live; no credentials or session are changed.
     let status = unsafe { pam_acct_mgmt(transaction.handle, 0) };
     transaction.status = status;
     classify(status, true, transaction.handle)
@@ -157,8 +158,9 @@ struct Transaction {
 }
 
 impl Drop for Transaction {
+    #[allow(unsafe_code, reason = "each owned PAM transaction must be released through pam_end")]
     fn drop(&mut self) {
-        // The handle was returned by successful pam_start and is ended exactly once.
+        // SAFETY: The handle was returned by successful pam_start and is ended exactly once.
         unsafe { pam_end(self.handle, self.status) };
     }
 }
@@ -173,8 +175,9 @@ fn classify(code: c_int, account: bool, handle: *mut c_void) -> Result<Outcome, 
     }
 }
 
+#[allow(unsafe_code, reason = "PAM error messages are returned as C string pointers")]
 fn pam_message(handle: *mut c_void, code: c_int) -> String {
-    // pam_strerror accepts a live or null PAM handle and returns library-owned text.
+    // SAFETY: pam_strerror accepts a live or null PAM handle and returns library-owned text.
     unsafe {
         let message = pam_strerror(handle, code);
         if message.is_null() {
@@ -206,6 +209,7 @@ struct PamConv {
     appdata_ptr: *mut c_void,
 }
 
+#[allow(unsafe_code, reason = "PAM invokes its conversation callback with raw C message and response buffers")]
 unsafe extern "C" fn converse(
     count: c_int,
     messages: *mut *const PamMessage,
@@ -215,7 +219,7 @@ unsafe extern "C" fn converse(
     if !(1..=32).contains(&count) || messages.is_null() || output.is_null() || data.is_null() {
         return CONV_ERR;
     }
-    // Linux-PAM supplies count readable message pointers and our live Conversation.
+    // SAFETY: Linux-PAM supplies count readable message pointers and our live Conversation.
     // Successful calloc/malloc buffers are C-owned on success, wiped/freed on failure.
     unsafe {
         let data = &*data.cast::<Conversation>();
@@ -254,8 +258,9 @@ unsafe extern "C" fn converse(
     SUCCESS
 }
 
+#[allow(unsafe_code, reason = "failed PAM conversations must wipe and free their C-allocated response buffers")]
 unsafe fn clear_responses(responses: *mut PamResponse, count: usize) {
-    // The callback allocated count zero-initialized responses, each text is null or malloc-owned.
+    // SAFETY: The callback allocated count zero-initialized responses, each text is null or malloc-owned.
     unsafe {
         for index in 0..count {
             let text = (*responses.add(index)).text;
@@ -269,6 +274,7 @@ unsafe fn clear_responses(responses: *mut PamResponse, count: usize) {
     }
 }
 
+#[allow(unsafe_code, reason = "optional pam_start_confdir is resolved dynamically through the Linux-PAM C ABI")]
 unsafe fn start_confdir(
     service: &CStr,
     user: &CStr,
@@ -276,7 +282,9 @@ unsafe fn start_confdir(
     dir: &CStr,
     handle: *mut *mut c_void,
 ) -> c_int {
-    // Resolve the optional Linux-PAM >= 1.4 symbol without raising the runtime minimum.
+    // SAFETY: A non-null pam_start_confdir symbol has the declared Linux-PAM ABI.
+    // The caller keeps the C strings and callback data alive for the transaction
+    // and supplies a writable handle pointer, just as for pam_start.
     unsafe {
         let symbol = libc::dlsym(libc::RTLD_DEFAULT, c"pam_start_confdir".as_ptr());
         if symbol.is_null() {
@@ -294,6 +302,7 @@ unsafe fn start_confdir(
 }
 
 #[link(name = "pam")]
+#[allow(unsafe_code, reason = "these declarations describe the Linux-PAM C ABI")]
 unsafe extern "C" {
     fn pam_start(
         service: *const c_char,
@@ -308,4 +317,5 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests;

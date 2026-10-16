@@ -1,14 +1,36 @@
 [workspace]
 resolver = "2"
 members = ["crates/tileception-core", "crates/tileception"]
+exclude = ["crates/tileception-apps", "crates/tileception-auth", "crates/tileception-notify"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_unsafe = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Packaged builds (`make deb`). Whole-program LTO and a single codegen unit
+# trade build time for a smaller, faster binary. Limited debug info is kept
+# only so scripts/build-deb.sh can split it into the -dbgsym package before
+# stripping the shipped binary. Panics stay unwinding: a panicking worker
+# thread must not take the whole session down with it.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = "limited"

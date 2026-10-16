@@ -9,8 +9,17 @@ description = "Tileception: a zoomable, nesting tiling Wayland compositor"
 name = "tileception"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tileception-core = { path = "../tileception-core" }
+tileception-auth = { path = "../tileception-auth" }
+tileception-apps = { path = "../tileception-apps" }
+tileception-notify = { path = "../tileception-notify" }
+html-escape = "0.2"
+libc = "0.2"
+zeroize = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xcursor = "0.3"

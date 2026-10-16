@@ -1,0 +1,55 @@
+name: Website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "website/**"
+      - ".github/workflows/website.yml"
+  pull_request:
+    paths:
+      - "website/**"
+      - ".github/workflows/website.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the site
+        run: website/tools/check.sh
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: website
+      url: https://tileception.space/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install lftp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+      - name: Upload to OVH
+        env:
+          OVH_FTP_HOST: ${{ secrets.OVH_FTP_HOST }}
+          OVH_FTP_USER: ${{ secrets.OVH_FTP_USER }}
+          OVH_FTP_PASSWORD: ${{ secrets.OVH_FTP_PASSWORD }}
+          OVH_FTP_PROTOCOL: ${{ vars.OVH_FTP_PROTOCOL }}
+          OVH_FTP_DIR: ${{ vars.OVH_FTP_DIR }}
+        run: website/tools/deploy.sh
+      - name: Smoke test
+        run: |
+          sleep 5
+          page=$(curl -fsS https://tileception.space/)
+          case $page in *"Tile it."*) ;; *) echo "home page does not look deployed"; exit 1 ;; esac
+          script=$(curl -fsS https://tileception.space/install)
+          case $script in '#!/bin/sh'*) ;; *) echo "/install is not the shell script"; exit 1 ;; esac

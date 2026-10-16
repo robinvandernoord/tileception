@@ -155,7 +155,72 @@ pub struct World {
     screen: Rect,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LayoutSnapshot {
+    pub root: crate::tree::LayoutNode,
+    pub floats: Vec<(WindowId, Rect)>,
+    pub framed: Vec<WindowId>,
+    pub saved: Vec<Vec<WindowId>>,
+}
+
 impl World {
+    pub fn snapshot(&self) -> LayoutSnapshot {
+        LayoutSnapshot {
+            root: self.tree.snapshot(),
+            floats: self.floats.iter().map(|(id, f)| (*id, f.rect)).collect(),
+            framed: self.tree.windows_in(self.framed),
+            saved: self.saved.iter().map(|slot| slot.as_ref().map(|s| s.windows.clone()).unwrap_or_default()).collect(),
+        }
+    }
+
+    pub fn restore_layout(&mut self, snapshot: &LayoutSnapshot, remap: &HashMap<WindowId, WindowId>, now: f64) -> bool {
+        let Some(tree) = Tree::restore(&snapshot.root, remap) else { return false };
+        if snapshot
+            .floats
+            .iter()
+            .any(|(_, r)| ![r.x, r.y, r.w, r.h].iter().all(|n| n.is_finite()) || r.w <= 0.0 || r.h <= 0.0)
+        {
+            return false;
+        }
+        self.tree = tree;
+        self.floats.clear();
+        for (old, rect) in &snapshot.floats {
+            if let Some(id) = remap.get(old).filter(|w| self.tree.is_floating(**w)) {
+                self.floats.insert(*id, Float { rect: *rect, sized: true });
+            }
+        }
+        for id in self.tree.floats() {
+            if !self.floats.contains_key(id) {
+                self.floats.insert(*id, Float { rect: self.default_float_rect(), sized: true });
+            }
+        }
+        let surviving = |ids: &[WindowId]| -> Vec<WindowId> {
+            ids.iter().filter_map(|id| remap.get(id).copied()).filter(|id| self.tree.leaf_of(*id).is_some()).collect()
+        };
+        let common = |windows: &[WindowId]| -> NodeId {
+            windows
+                .iter()
+                .filter_map(|id| self.tree.leaf_of(*id))
+                .reduce(|a, b| self.tree.common_ancestor(a, b))
+                .unwrap_or(self.tree.root())
+        };
+        self.framed = common(&surviving(&snapshot.framed));
+        self.saved = std::array::from_fn(|i| {
+            snapshot.saved.get(i).filter(|ids| !ids.is_empty()).and_then(|ids| {
+                let windows = surviving(ids);
+                (!windows.is_empty()).then(|| SavedView { node: common(&windows), windows })
+            })
+        });
+        self.focus = None;
+        self.mru.clear();
+        self.history = vec![self.framed];
+        self.history_index = 0;
+        self.overview = false;
+        self.relayout();
+        self.retarget(now);
+        true
+    }
+
     pub fn new(settings: Settings, screen: Rect) -> World {
         let mut tree = Tree::new();
         tree.share_removed_space = settings.share_removed_space;
@@ -474,6 +539,57 @@ impl World {
         self.move_window(win, target, side, now);
     }
 
+    /// Move a selection past an unselected neighbour, preserving its spatial order.
+    pub fn move_windows(&mut self, windows: &[WindowId], dir: Dir, now: f64) {
+        let side = match dir {
+            Dir::Left => Side::Left,
+            Dir::Right => Side::Right,
+            Dir::Up => Side::Top,
+            Dir::Down => Side::Bottom,
+        };
+        let mut tiled = Vec::new();
+        for id in windows {
+            if let Some(mut rect) = self.float_rect(*id) {
+                match dir {
+                    Dir::Left => rect.x -= 40.0,
+                    Dir::Right => rect.x += 40.0,
+                    Dir::Up => rect.y -= 40.0,
+                    Dir::Down => rect.y += 40.0,
+                }
+                self.set_float_rect(*id, rect);
+            } else if let Some(rect) = self.tree.tile_of(*id).and_then(|node| self.layout.rect(node)) {
+                tiled.push((*id, rect));
+            }
+        }
+        if tiled.is_empty() {
+            return;
+        }
+        let x = tiled.iter().map(|(_, r)| r.x).fold(f64::INFINITY, f64::min);
+        let y = tiled.iter().map(|(_, r)| r.y).fold(f64::INFINITY, f64::min);
+        let right = tiled.iter().map(|(_, r)| r.right()).fold(f64::NEG_INFINITY, f64::max);
+        let bottom = tiled.iter().map(|(_, r)| r.bottom()).fold(f64::NEG_INFINITY, f64::max);
+        let target = self.tree.leaves(self.tree.root()).into_iter()
+            .filter(|node| matches!(self.tree.node(*node), Node::Tile { views, .. } if !views.iter().any(|w| windows.contains(w))))
+            .filter_map(|node| self.layout.rect(node).map(|rect| (node, rect)))
+            .filter_map(|(node, r)| {
+                let (gap, overlaps) = match dir {
+                    Dir::Left => (x - r.right(), r.y < bottom && y < r.bottom()),
+                    Dir::Right => (r.x - right, r.y < bottom && y < r.bottom()),
+                    Dir::Up => (y - r.bottom(), r.x < right && x < r.right()),
+                    Dir::Down => (r.y - bottom, r.x < right && x < r.right()),
+                };
+                (gap >= -1e-9 && overlaps).then_some((node, gap))
+            }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(node, _)| node);
+        let Some(target) = target else { return };
+        let target = self.tree.windows_in(target).into_iter().find(|id| !windows.contains(id));
+        let moved: Vec<_> = tiled.into_iter().map(|(id, _)| id).collect();
+        if let Some(target) = target {
+            if self.tree.move_group(&moved, target, side) {
+                self.after_move(moved[0], now);
+            }
+        }
+    }
+
     /// Screen rectangle of a node for a given view, without gap insets.
     pub fn node_rect(&self, node: NodeId, view: Rect) -> Option<Rect> {
         self.layout.rect(node).map(|r| self.xform(view).apply(&r))
@@ -516,14 +632,20 @@ impl World {
             Placement::Dock => {
                 let target = self.dock_target();
                 let side = self.split_side(target);
-                self.tree.dock(win, target, side);
+                if !self.overview && target == self.framed && target != self.tree.desktop() {
+                    self.tree.dock_local(win, target, side);
+                } else {
+                    self.tree.dock(win, target, side);
+                }
             }
         }
         self.relayout();
-        let leaf = self.tree.leaf_of(win).expect("just added");
-        if !self.tree.is_ancestor_or_self(self.framed, leaf) {
-            let common = self.tree.common_ancestor(self.framed, leaf);
-            self.push_frame(common);
+        // Floating windows show whatever is framed, so only tiles widen the frame.
+        if let Some(tile) = self.tree.tile_of(win) {
+            if !self.tree.is_ancestor_or_self(self.framed, tile) {
+                let common = self.tree.common_ancestor(self.framed, tile);
+                self.push_frame(common);
+            }
         }
         self.set_focus(Some(win));
         self.retarget(now);
@@ -695,6 +817,14 @@ impl World {
         self.retarget(now);
     }
 
+    /// Change only the selected windows' split, creating their subgroup if needed.
+    pub fn toggle_split_windows(&mut self, windows: &[WindowId], now: f64) {
+        let Some(group) = self.tree.group_windows(windows) else { return };
+        self.tree.toggle_axis(group);
+        self.relayout();
+        self.retarget(now);
+    }
+
     /// Moves the edges of a window by pixel amounts: `dx` moves the edge on
     /// `side_x`, `dy` the edge on `side_y`. Tiled windows move the split
     /// boundaries on those sides; floating windows change their rectangle.
@@ -760,7 +890,7 @@ impl World {
         if was_hidden_tab {
             self.relayout();
         }
-        if !self.overview && !self.tree.is_ancestor_or_self(self.framed, leaf) {
+        if !self.overview && !self.tree.is_floating(win) && !self.tree.is_ancestor_or_self(self.framed, leaf) {
             self.push_frame(leaf);
             self.retarget(now);
         }
@@ -785,6 +915,13 @@ impl World {
         self.push_frame(self.tree.resolve(node));
         self.focus_inside_framed();
         self.retarget(now);
+    }
+
+    /// Frame exactly the tiled selection, instead of its unselected neighbours.
+    pub fn frame_windows(&mut self, windows: &[WindowId], now: f64) {
+        let Some(group) = self.tree.group_windows(windows) else { return };
+        self.relayout();
+        self.frame(group, now);
     }
 
     fn focus_inside_framed(&mut self) {
@@ -977,6 +1114,7 @@ impl World {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
 
@@ -1112,6 +1250,21 @@ mod tests {
         assert!(wd.tree().is_ancestor_or_self(wd.framed(), t3));
         let on_screen = wd.screen();
         assert!(on_screen.contains_rect(&rect_of(&wd, w(3))));
+    }
+
+    #[test]
+    fn floating_window_keeps_the_frame() {
+        let mut wd = world();
+        wd.add_window(w(1), Placement::Dock, 0.0);
+        wd.add_window(w(2), Placement::Dock, 0.0);
+        let t1 = wd.tree().tile_of(w(1)).unwrap();
+        wd.frame(t1, 0.0);
+        wd.add_window(w(3), Placement::Float, 0.0);
+        assert_eq!(wd.framed(), t1);
+        assert_eq!(wd.focus(), Some(w(3)));
+        wd.focus_window(w(1), 0.0);
+        wd.focus_window(w(3), 0.0);
+        assert_eq!(wd.framed(), t1);
     }
 
     #[test]

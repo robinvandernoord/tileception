@@ -140,6 +140,9 @@ impl Tileception {
 
     /// The whole frame: everything below plus the wallpaper at the bottom.
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            self.wallpaper_buffer();
+        }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let mut elements = self.render_elements(renderer, now);
         if let Some(buffer) = wallpaper {
@@ -162,6 +165,10 @@ impl Tileception {
         let focus = self.world.focus();
         let view = self.world.view(now);
         let mut elements: Vec<OutputElement> = Vec::new();
+        elements.extend(self.power_menu_elements(renderer));
+        elements.extend(self.launcher_elements(renderer));
+        elements.extend(self.notification_elements(renderer));
+        elements.extend(self.selection_elements(renderer));
 
         // Topmost: notifications, launchers and bars. A fullscreen window
         // covers everything but notifications.
@@ -177,7 +184,6 @@ impl Tileception {
             }
             return elements;
         }
-        elements.extend(self.power_menu_elements(renderer, shapes.as_ref()));
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay, Layer::Top]));
 
         // X11 menus and tooltips, at the place they chose.
@@ -258,14 +264,15 @@ impl Tileception {
         let half_gap = self.world.settings.gap / 2.0;
         let tree = self.world.tree();
         for leaf in tree.leaves(tree.root()) {
+            if matches!(tree.node(leaf), Node::Desktop { .. }) {
+                continue;
+            }
             let Some(r) = self.world.node_rect(leaf, view) else { continue };
             let r = r.inset(half_gap);
             if !r.intersects(&self.world.screen()) {
                 continue;
             }
-            let colour =
-                if matches!(tree.node(leaf), Node::Desktop { .. }) { theme.surface_raised } else { theme.surface };
-            push_shape(&mut elements, shapes.as_ref(), &r, Shape::filled(colour, theme.radius));
+            push_shape(&mut elements, shapes.as_ref(), &r, Shape::filled(theme.surface, theme.radius));
         }
 
         // Bottommost: desktop widgets and wallpaper.
@@ -326,7 +333,7 @@ impl Tileception {
             let title = self.windows.get(win).map(crate::state::window_title).unwrap_or_default();
             let text_colour = if active { t.text } else { t.muted };
             // App mark: a small rounded square, accent on the shown tab.
-            let mark = 8.0;
+            let mark = 16.0;
             let mark_rect = Rect::new(tab.x + 8.0, tab.y + (tab.h - mark) / 2.0, mark, mark);
             let close_w = if active { 16.0 } else { 0.0 };
             let text_x = mark_rect.right() + 6.0;
@@ -349,7 +356,13 @@ impl Tileception {
             } else {
                 Shape::filled(t.muted.alpha(0.5), 2.0)
             };
-            push_shape(&mut out, shapes, &mark_rect, mark_shape);
+            let icon =
+                self.windows.get(win).and_then(|window| self.launcher.app_icon(&crate::state::app_id(window), 16));
+            if let Some(icon) = icon {
+                push_image(&mut out, renderer, &icon, (mark_rect.x, mark_rect.y));
+            } else {
+                push_shape(&mut out, shapes, &mark_rect, mark_shape);
+            }
             if active {
                 // The shown tab: tinted, with an accent line along the bottom.
                 let underline = Rect::new(tab.x + 2.0, tab.bottom() - 2.0, tab.w - 4.0, 2.0);
@@ -367,6 +380,9 @@ impl Tileception {
     /// cursor surface when it set one, otherwise the theme's arrow.
     pub fn cursor_elements(&mut self, udev: &mut Udev) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
+        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            self.cursor_status = CursorImageStatus::default_named();
+        }
         if let CursorImageStatus::Surface(surface) = &self.cursor_status {
             if !surface.alive() {
                 self.cursor_status = CursorImageStatus::default_named();

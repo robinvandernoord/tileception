@@ -3,6 +3,7 @@
 #
 #   scripts/deps.sh check [group...]     report what is missing (exit 1 if any)
 #   scripts/deps.sh install [group...]   install what is missing, after asking
+#   scripts/deps.sh list [group...]      print the package names (for CI)
 #
 # Groups are build, runtime and optional; without any, all three.
 set -eu
@@ -27,10 +28,18 @@ packages() {
     ' "$list"
 }
 
+if [ "$mode" = list ]; then
+    packages
+    exit 0
+fi
+
+# With other architectures added (cross builds), a package can be installed
+# once per architecture; only this machine's own copy counts.
+native=$(dpkg --print-architecture)
 missing=""
 for p in $(packages); do
-    # Multiarch packages can return one status per installed architecture.
-    if ! dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -qx 'install ok installed'; then
+    if ! dpkg-query -W -f='${Status} ${Architecture}\n' "$p" 2>/dev/null \
+        | grep -qxE "install ok installed ($native|all)"; then
         missing="$missing $p"
     fi
 done
@@ -61,7 +70,7 @@ case "$mode" in
         esac
         ;;
     *)
-        echo "usage: scripts/deps.sh check|install [build|runtime|optional ...]" >&2
+        echo "usage: scripts/deps.sh check|install|list [build|runtime|optional ...]" >&2
         exit 2
         ;;
 esac

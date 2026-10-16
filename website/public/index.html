@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tileception: a nested tiling Wayland compositor for Linux</title>
+<meta name="description" content="Tileception is a free, open source Wayland compositor for Linux. Windows tile into a tree you can nest as deep as you like, and you zoom between its levels. Xwayland included.">
+<link rel="canonical" href="https://tileception.space/">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#121212">
+<meta name="color-scheme" content="light">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tileception">
+<meta property="og:url" content="https://tileception.space/">
+<meta property="og:title" content="Tileception: tile it, nest it, zoom it">
+<meta property="og:description" content="A nested tiling Wayland compositor for Linux. Windows sit side by side in a tree of tiles, and you zoom between its levels.">
+<meta property="og:image" content="https://tileception.space/og.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A De Stijl composition of red, yellow and blue tiles with the words Tile it. Nest it. Zoom it.">
+<meta property="og:locale" content="en_GB">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Tileception: tile it, nest it, zoom it">
+<meta name="twitter:description" content="A nested tiling Wayland compositor for Linux. Windows sit side by side in a tree of tiles, and you zoom between its levels.">
+<meta name="twitter:image" content="https://tileception.space/og.png">
+<meta name="twitter:image:alt" content="A De Stijl composition of red, yellow and blue tiles with the words Tile it. Nest it. Zoom it.">
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="preload" href="/assets/fonts/big-shoulders-display-900.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/familjen-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css">
+<script src="/assets/zoom.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://tileception.space/#website",
+      "url": "https://tileception.space/",
+      "name": "Tileception",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://tileception.space/#software",
+      "name": "Tileception",
+      "url": "https://tileception.space/",
+      "description": "A nested tiling Wayland compositor for Linux. Windows tile into a tree you can nest as deep as you like, and you zoom between its levels.",
+      "applicationCategory": "DesktopEnhancementApplication",
+      "applicationSubCategory": "Window manager",
+      "operatingSystem": "Linux",
+      "softwareRequirements": "Wayland, Xwayland for X11 programs",
+      "programmingLanguage": "Rust",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+      "codeRepository": "https://github.com/robinvandernoord/tileception",
+      "image": "https://tileception.space/og.png"
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#get">Skip to install</a>
+
+<header class="hud-top" aria-label="Site">
+  <a class="brand" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a>
+  <a class="hud-get" href="#get">Get it</a>
+</header>
+
+<main id="main">
+<div class="scroller" id="scroller">
+<div class="stage" id="stage">
+<div class="world" id="world">
+
+  <!-- Level 0 -->
+  <section class="lvl l0" id="home" aria-labelledby="h-home" data-name="Start" data-color="ink">
+    <nav class="blk a-nav" aria-label="Main">
+      <a class="logo" href="#home"><span class="mark" aria-hidden="true"></span>Tileception</a>
+      <span class="links"><a href="#tile">How it works</a><a href="#run">Features</a><a href="https://github.com/robinvandernoord/tileception">Source</a></span>
+    </nav>
+    <div class="blk r deco a-red"></div>
+    <div class="blk a-head end">
+      <h1 id="h-home" class="display"><span class="sq sq-r">Tile it.</span> <span class="sq sq-y">Nest it.</span> <span class="sq sq-b">Zoom it.</span></h1>
+    </div>
+    <div class="blk deco a-wht"></div>
+    <div class="blk a-lede mid">
+      <p>Tileception is a Wayland compositor for Linux. Windows sit side by side in a tree of tiles, and you zoom between its levels instead of digging through a stack.</p>
+      <p class="hint"><strong>Scroll to zoom in.</strong></p>
+    </div>
+    <div class="blk y a-yel end"><p class="small"><strong>Free and open source.</strong><br>Written in Rust on Smithay. Xwayland included.</p></div>
+    <div class="blk b deco a-blu"></div>
+
+    <div class="blk portal a-portal">
+
+  <!-- Level 1 -->
+  <section class="lvl l1" id="tile" aria-labelledby="h-tile" data-name="Tile it" data-color="r">
+    <div class="blk a-head end"><h2 id="h-tile" class="display"><span class="sq sq-r">Tile it.</span></h2></div>
+    <div class="blk a-copy mid">
+      <p>Open a window and it takes half of the focused tile, split along the longer side. No dragging, no empty space to fill by hand.</p>
+      <p><kbd>Super+J</kbd> flips a split between rows and columns. Drag a gap to resize.</p>
+    </div>
+    <div class="blk split a-keys">
+      <div class="blk r end"><p><kbd>Super+T</kbd><br>terminal</p></div>
+      <div class="blk end"><p><kbd>Super+B</kbd><br>browser</p></div>
+      <div class="blk end"><p><kbd>Super+E</kbd><br>files</p></div>
+    </div>
+
+    <div class="blk portal a-portal">
+
+  <!-- Level 2 -->
+  <section class="lvl l2" id="nest" aria-labelledby="h-nest" data-name="Nest it" data-color="y">
+    <div class="blk a-head end"><h2 id="h-nest" class="display"><span class="sq sq-y">Nest it.</span></h2></div>
+    <div class="blk a-copy mid">
+      <p>Splits go inside splits, as deep as you like. Drag a window onto a tile's edge to dock it there, onto its centre to make a tab group.</p>
+      <p><kbd>Super+G</kbd> groups selected windows into tabs.</p>
+    </div>
+    <div class="blk y a-float">
+      <div class="float-card">
+        <h3>Or float it.</h3>
+        <p>Want one window on top after all? <kbd>Super+V</kbd> lifts it above the layout. Press it again to dock.</p>
+      </div>
+    </div>
+    <ol class="blk a-steps steps">
+      <li><div class="dia" aria-hidden="true"><i class="r"></i></div><span class="step-n">1 · one window</span><span>It gets the whole screen.</span></li>
+      <li><div class="dia d2" aria-hidden="true"><i class="r"></i><i></i></div><span class="step-n">2 · <kbd>Super+T</kbd></span><span>The tile splits along its longer side.</span></li>
+      <li><div class="dia d3" aria-hidden="true"><i class="r"></i><i></i><b><i class="y"></i><i class="b"></i></b></div><span class="step-n">3 · again, inside</span><span>Splits nest. Zoom into any of them.</span></li>
+    </ol>
+
+    <div class="blk portal a-portal">
+
+  <!-- Level 3 -->
+  <section class="lvl l3" id="zoom" aria-labelledby="h-zoom" data-name="Zoom it" data-color="b">
+    <div class="blk a-head end"><h2 id="h-zoom" class="display"><span class="sq sq-b">Zoom it.</span></h2></div>
+    <div class="blk a-copy mid">
+      <p><kbd>Super+=</kbd> steps in toward the focused window and <kbd>Super+-</kbd> steps back out. Or hold <kbd>Super</kbd> and scroll to zoom in toward the pointer.</p>
+      <p class="aside">You've been doing this for three levels now.</p>
+    </div>
+    <div class="blk split a-keys">
+      <div class="blk b end"><p><kbd>Super+O</kbd><br>everything at once</p></div>
+      <div class="blk end"><p><kbd>Super+M</kbd><br>zoom onto the focused window</p></div>
+      <div class="blk end"><p><kbd>Super+1</kbd><br>saved views 1 to 9</p></div>
+    </div>
+
+    <div class="blk portal a-portal">
+
+  <!-- Level 4 -->
+  <section class="lvl l4" id="run" aria-labelledby="h-run" data-name="Run it" data-color="ink">
+    <div class="blk a-head end">
+      <h2 id="h-run" class="display"><span class="sq sq-k">Run it.</span></h2>
+      <p>It runs as your login session, or in a window on your current desktop while you try it. One monitor for now; more screens and HiDPI scaling are on the way.</p>
+    </div>
+    <div class="blk r a-f1 end"><h3>Xwayland</h3><p class="small">X11 programs tile like everything else, with the clipboard shared both ways.</p></div>
+    <div class="blk a-f2 end"><h3>Launcher</h3><p class="small">Tap <kbd>Super</kbd> on its own. Notifications and a power menu are built in too.</p></div>
+    <div class="blk y a-f3 end"><h3>Lock &amp; capture</h3><p class="small"><kbd>Super+L</kbd> locks with your wallpaper. <kbd>Print</kbd> saves a screenshot. grim and swaylock work as well.</p></div>
+    <div class="blk a-f4 end"><h3>One config file</h3><p class="small"><code>config.toml</code> is reloaded on save. Script it with <code>tileception msg</code>.</p></div>
+
+    <div class="blk portal a-portal">
+
+  <!-- Level 5 -->
+  <section class="lvl l5" id="get" aria-labelledby="h-get" data-name="Get it" data-color="r">
+    <div class="blk a-head get">
+      <h2 id="h-get" class="display"><span class="sq sq-r">Get it.</span></h2>
+      <p>On Debian 13, Ubuntu 24.04 or 26.04 (amd64 or arm64):</p>
+      <div class="cmd"><code id="install-cmd">curl -fsSL https://tileception.space/install | sh</code><button type="button" class="copy" data-copy="install-cmd">Copy</button></div>
+      <p class="small">It adds the apt repository at <code>apt.tileception.space</code> and installs the <code>tileception</code> package, so updates arrive with your system updates. Then reboot and pick Tileception on the login screen.</p>
+      <p class="small">Rather build it yourself? Clone <a href="https://github.com/robinvandernoord/tileception#installing-as-a-session">the repository</a> and run <code>./install-session.sh</code>, then pick Tileception on the login screen.</p>
+    </div>
+    <div class="blk portal loop a-loop" id="loop"><a class="loop-link" href="#home">Back to the top</a></div>
+    <div class="blk y a-note end"><p><a href="#home">Start over ↑</a></p></div>
+    <div class="blk split a-links">
+      <a class="blk r end" href="https://github.com/robinvandernoord/tileception">Source on GitHub</a>
+      <a class="blk end" href="https://github.com/robinvandernoord/tileception#default-shortcuts">All shortcuts</a>
+      <a class="blk y end" href="https://github.com/robinvandernoord/tileception#configuration">Config reference</a>
+      <div class="blk k deco"></div>
+    </div>
+  </section>
+
+    </div>
+  </section>
+
+    </div>
+  </section>
+
+    </div>
+  </section>
+
+    </div>
+  </section>
+
+    </div>
+  </section>
+
+</div>
+<nav class="hud-levels" id="hud-levels" aria-label="Levels"></nav>
+</div>
+</div>
+</main>
+
+<footer class="foot">
+  <p>Tileception is free software under the MIT licence.</p>
+  <p><a href="https://github.com/robinvandernoord/tileception">GitHub</a> · <a href="https://github.com/robinvandernoord/tileception/issues">Report a bug</a></p>
+</footer>
+</body>
+</html>
