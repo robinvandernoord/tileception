@@ -37,6 +37,7 @@ jobs:
       matrix:
         release:
           - { image: "debian:trixie", suite: trixie }
+          - { image: "debian:sid", suite: sid }
           - { image: "ubuntu:24.04", suite: noble }
           - { image: "ubuntu:26.04", suite: resolute }
         arch: [amd64, arm64]
@@ -46,6 +47,7 @@ jobs:
       - name: Build packages
         env:
           DEB_ARCHS: ${{ matrix.arch }}
+          DEB_SUITE: ${{ matrix.release.suite }}
         run: scripts/build-deb-docker.sh "${{ matrix.release.image }}"
       - name: Check the suite
         run: |

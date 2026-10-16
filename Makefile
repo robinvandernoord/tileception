@@ -50,7 +50,7 @@ nested:
 
 # Optimised, stripped packages in target/deb. deb-docker builds amd64 and
 # arm64 for each release; override with DEB_IMAGES="..." DEB_ARCHS="...".
-DEB_IMAGES ?= debian:trixie ubuntu:24.04 ubuntu:26.04
+DEB_IMAGES ?= debian:trixie debian:sid ubuntu:24.04 ubuntu:26.04
 
 deb:
 	scripts/build-deb.sh

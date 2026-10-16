@@ -95,6 +95,8 @@ sed "s|@BINDIR@|/usr/bin|g" resources/tileception.desktop.in \
 chmod 644 "$root/usr/share/wayland-sessions/tileception.desktop"
 install -D -m 644 resources/tileception-portals.conf \
     "$root/usr/share/xdg-desktop-portal/tileception-portals.conf"
+install -D -m 644 resources/tileception.portal \
+    "$root/usr/share/xdg-desktop-portal/portals/tileception.portal"
 install -D -m 644 crates/tileception-auth/pam/tileception "$root/etc/pam.d/tileception"
 install -D -m 644 packaging/copyright "$root/usr/share/doc/$package/copyright"
 install -D -m 644 README.md "$root/usr/share/doc/$package/README.md"

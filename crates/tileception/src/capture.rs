@@ -1,15 +1,16 @@
 //! Screen capture: wlr-screencopy for grim, slurp and screen sharing through
 //! xdg-desktop-portal-wlr, and `tileception msg screenshot <file.png>`.
 //!
-//! Captures are queued and taken on the next frame, by rendering the scene
-//! into an off-screen texture and reading it back into the client's shared
-//! memory buffer (or a PNG file).
+//! Captures are queued and taken on the next frame. Shared memory buffers and
+//! PNG files are filled by rendering the scene into an off-screen texture and
+//! reading it back; GPU buffers (dmabufs, which screen sharing uses) are
+//! rendered into directly.
 
 use std::{path::PathBuf, time::Duration};
 
 use smithay::{
     backend::{
-        allocator::Fourcc,
+        allocator::{dmabuf::Dmabuf, Buffer as _, Fourcc},
         renderer::{
             damage::OutputDamageTracker, gles::GlesRenderer, gles::GlesTexture, Bind, ExportMem, Offscreen,
             TextureMapping,
@@ -25,16 +26,36 @@ use smithay::{
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
         },
     },
-    utils::{Buffer, Clock, Monotonic, Rectangle, Transform},
-    wayland::shm::{with_buffer_contents, with_buffer_contents_mut},
+    utils::{Buffer, Clock, Monotonic, Rectangle, Size, Transform},
+    wayland::{
+        dmabuf::get_dmabuf,
+        shm::{with_buffer_contents, with_buffer_contents_mut},
+    },
 };
 
-use crate::Tileception;
+use crate::{render::OutputElement, Tileception};
 
 /// Where a finished capture goes.
 pub enum CaptureTarget {
     File(PathBuf),
-    Screencopy { frame: ZwlrScreencopyFrameV1, buffer: WlBuffer, damage: bool },
+    Screencopy {
+        frame: ZwlrScreencopyFrameV1,
+        buffer: WlBuffer,
+        damage: bool,
+    },
+    /// A screencopy into a GPU buffer of the whole output.
+    Dmabuf {
+        frame: ZwlrScreencopyFrameV1,
+        dmabuf: Dmabuf,
+        damage: bool,
+    },
+}
+
+/// What is on screen, ready to be rendered into each capture's buffer.
+struct Scene {
+    elements: Vec<OutputElement>,
+    size: (i32, i32),
+    clear: [f32; 4],
 }
 
 pub struct PendingCapture {
@@ -75,73 +96,85 @@ impl Tileception {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
-        let image = match self.render_offscreen(renderer, wallpaper) {
-            Ok(texture) => Some(texture),
-            Err(err) => {
-                tracing::warn!("capture failed: {err}");
-                None
-            }
-        };
-        for capture in pending {
-            let pixels = image.as_ref().map(|t| read_region(renderer, t, capture.region));
-            match (capture.target, pixels) {
-                (CaptureTarget::File(path), Some(Ok(rgba))) => {
-                    let (w, h) = (capture.region.size.w as u32, capture.region.size.h as u32);
-                    match write_png(&path, w, h, &rgba) {
-                        Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
-                        Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
-                    }
-                }
-                (CaptureTarget::Screencopy { frame, buffer, damage }, Some(Ok(rgba))) => {
-                    let size = capture.region.size;
-                    match copy_into_shm(&buffer, size.w, size.h, &rgba) {
-                        Ok(()) => {
-                            frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
-                            if damage {
-                                frame.damage(0, 0, size.w as u32, size.h as u32);
-                            }
-                            let now: Duration = Clock::<Monotonic>::new().now().into();
-                            let secs = now.as_secs();
-                            frame.ready((secs >> 32) as u32, secs as u32, now.subsec_nanos());
-                        }
-                        Err(err) => {
-                            tracing::warn!("screencopy: {err}");
-                            frame.failed();
-                        }
-                    }
-                }
-                (target, result) => {
-                    if let Some(Err(err)) = result {
-                        tracing::warn!("capture failed: {err}");
-                    }
-                    if let CaptureTarget::Screencopy { frame, .. } = target {
-                        frame.failed();
-                    }
-                }
-            }
-        }
-    }
-
-    /// Renders what is on screen, without the pointer, into a texture.
-    fn render_offscreen(
-        &self,
-        renderer: &mut GlesRenderer,
-        wallpaper: Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer>,
-    ) -> Result<GlesTexture, String> {
-        let r = self.output_rect();
-        let (w, h) = (r.w as i32, r.h as i32);
-        let mut texture: GlesTexture =
-            renderer.create_buffer(Fourcc::Abgr8888, (w, h).into()).map_err(|e| e.to_string())?;
         let mut elements = self.render_elements(renderer, self.now());
         if let Some(buffer) = wallpaper {
             crate::render::push_image(&mut elements, renderer, &buffer, (0.0, 0.0));
         }
-        let mut target = renderer.bind(&mut texture).map_err(|e| e.to_string())?;
-        let mut damage = OutputDamageTracker::new((w, h), 1.0, Transform::Normal);
-        damage.render_output(renderer, &mut target, 0, &elements, self.clear_colour()).map_err(|e| format!("{e:?}"))?;
-        drop(target);
-        Ok(texture)
+        let r = self.output_rect();
+        let scene = Scene { elements, size: (r.w as i32, r.h as i32), clear: self.clear_colour() };
+        // Rendered on first use, and shared by the captures read back from it.
+        let mut texture = None;
+        for capture in pending {
+            let region = capture.region;
+            match capture.target {
+                CaptureTarget::File(path) => match pixels(renderer, &mut texture, &scene, region) {
+                    Ok(rgba) => {
+                        let (w, h) = (region.size.w as u32, region.size.h as u32);
+                        match write_png(&path, w, h, &rgba) {
+                            Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
+                            Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
+                        }
+                    }
+                    Err(err) => tracing::warn!("capture failed: {err}"),
+                },
+                CaptureTarget::Screencopy { frame, buffer, damage } => {
+                    let copied = pixels(renderer, &mut texture, &scene, region)
+                        .and_then(|rgba| copy_into_shm(&buffer, region.size.w, region.size.h, &rgba));
+                    finish_frame(&frame, region.size, damage, copied);
+                }
+                CaptureTarget::Dmabuf { frame, mut dmabuf, damage } => {
+                    let rendered = render_scene(renderer, &mut dmabuf, &scene);
+                    finish_frame(&frame, region.size, damage, rendered);
+                }
+            }
+        }
     }
+}
+
+/// Renders the scene into a texture or GPU buffer, and waits for the GPU to
+/// finish so that it can be handed over.
+fn render_scene<T>(renderer: &mut GlesRenderer, buffer: &mut T, scene: &Scene) -> Result<(), String>
+where
+    GlesRenderer: Bind<T>,
+{
+    let mut target = renderer.bind(buffer).map_err(|e| e.to_string())?;
+    let mut damage = OutputDamageTracker::new(scene.size, 1.0, Transform::Normal);
+    let result =
+        damage.render_output(renderer, &mut target, 0, &scene.elements, scene.clear).map_err(|e| format!("{e:?}"))?;
+    result.sync.wait().map_err(|e| format!("{e:?}"))
+}
+
+/// Reads a region of the scene as RGBA rows, rendering it into `texture` the
+/// first time.
+fn pixels(
+    renderer: &mut GlesRenderer,
+    texture: &mut Option<Result<GlesTexture, String>>,
+    scene: &Scene,
+    region: Rectangle<i32, Buffer>,
+) -> Result<Vec<u8>, String> {
+    let rendered = texture.get_or_insert_with(|| {
+        let mut texture: GlesTexture =
+            renderer.create_buffer(Fourcc::Abgr8888, scene.size.into()).map_err(|e| e.to_string())?;
+        render_scene(renderer, &mut texture, scene)?;
+        Ok(texture)
+    });
+    read_region(renderer, rendered.as_ref().map_err(Clone::clone)?, region)
+}
+
+/// Tells a screencopy client that its buffer is filled, or that it failed.
+fn finish_frame(frame: &ZwlrScreencopyFrameV1, size: Size<i32, Buffer>, damage: bool, result: Result<(), String>) {
+    if let Err(err) = result {
+        tracing::warn!("screencopy: {err}");
+        frame.failed();
+        return;
+    }
+    frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
+    if damage {
+        frame.damage(0, 0, size.w as u32, size.h as u32);
+    }
+    let now: Duration = Clock::<Monotonic>::new().now().into();
+    let secs = now.as_secs();
+    frame.ready((secs >> 32) as u32, secs as u32, now.subsec_nanos());
 }
 
 /// Reads a region of a texture as RGBA rows, top to bottom.
@@ -249,6 +282,11 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
         let size = region.size;
         frame.buffer(wl_shm::Format::Xrgb8888, size.w as u32, size.h as u32, size.w as u32 * 4);
         if frame.version() >= 3 {
+            // Screen sharing through xdg-desktop-portal-wlr requires a GPU
+            // buffer on offer. Only whole outputs are rendered into one.
+            if region == full {
+                frame.linux_dmabuf(Fourcc::Xrgb8888 as u32, size.w as u32, size.h as u32);
+            }
             frame.buffer_done();
         }
     }
@@ -269,14 +307,23 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Tileception {
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
             _ => return,
         };
-        if with_buffer_contents(&buffer, |_, _, _| ()).is_err() {
-            // Only shared memory buffers are offered.
+        let target = if let Ok(dmabuf) = get_dmabuf(&buffer) {
+            if dmabuf.size() != data.region.size {
+                frame.failed();
+                return;
+            }
+            CaptureTarget::Dmabuf { frame: frame.clone(), dmabuf: dmabuf.clone(), damage }
+        } else if with_buffer_contents(&buffer, |_, _, _| ()).is_ok() {
+            CaptureTarget::Screencopy { frame: frame.clone(), buffer, damage }
+        } else {
             frame.failed();
             return;
+        };
+        state.pending_captures.push(PendingCapture { region: data.region, target });
+        // With damage, the copy waits for the screen to change; without, it
+        // is taken right away.
+        if !damage {
+            state.schedule_render();
         }
-        state.pending_captures.push(PendingCapture {
-            region: data.region,
-            target: CaptureTarget::Screencopy { frame: frame.clone(), buffer, damage },
-        });
     }
 }

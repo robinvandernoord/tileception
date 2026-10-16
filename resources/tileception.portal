@@ -1,0 +1,5 @@
+# Tileception's own xdg-desktop-portal backend, served by the compositor while
+# it runs: light or dark and the accent colour for applications.
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.tileception
+Interfaces=org.freedesktop.impl.portal.Settings;

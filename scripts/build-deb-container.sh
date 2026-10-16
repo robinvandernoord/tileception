@@ -6,13 +6,15 @@
 # libgudev-1.0-dev) cannot be installed for two architectures at once.
 #
 # Expects the source at /src and DEB_ARCH, DEB_VERSION_BASE, HOST_UID,
-# HOST_GID and RUST_TOOLCHAIN in the environment.
+# HOST_GID and RUST_TOOLCHAIN in the environment. DEB_SUITE overrides the
+# image's VERSION_CODENAME (needed for sid).
 set -eu
 cd /src
 export DEBIAN_FRONTEND=noninteractive
 # shellcheck disable=SC1091 # the container's, not ours
 . /etc/os-release
-codename="${VERSION_CODENAME:?the image has no VERSION_CODENAME}"
+codename="${DEB_SUITE:-${VERSION_CODENAME:-}}"
+[ -n "$codename" ] || { echo "build-deb-container: set DEB_SUITE; the image has no VERSION_CODENAME" >&2; exit 1; }
 native=$(dpkg --print-architecture)
 arch="$DEB_ARCH"
 

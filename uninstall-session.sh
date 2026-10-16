@@ -1,6 +1,6 @@
 #!/bin/sh
-# Undoes install-session.sh: removes the login screen entry (needs sudo) and
-# the binaries in ~/.local/bin.
+# Undoes install-session.sh: removes the login screen entry and portal backend
+# (needs sudo) and the binaries in ~/.local/bin.
 #
 # Your config (~/.config/tileception) and logs (~/.local/state/tileception) are kept;
 # pass --purge to remove those too.
@@ -15,10 +15,15 @@ fi
 
 bindir="$HOME/.local/bin"
 desktop=/usr/share/wayland-sessions/tileception.desktop
+portal=/usr/share/xdg-desktop-portal/portals/tileception.portal
 
 if [ -e "$desktop" ]; then
     sudo rm -f "$desktop"
     echo "Removed the Tileception session from the login screen"
+fi
+if [ -e "$portal" ]; then
+    sudo rm -f "$portal"
+    echo "Removed $portal"
 fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"

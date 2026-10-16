@@ -346,6 +346,7 @@ impl Tileception {
         }
         if self.theme != config.theme {
             self.theme = config.theme.clone();
+            self.update_appearance();
             self.text.borrow_mut().clear();
             self.wallpaper = None;
             self.wallpaper_failed = None;

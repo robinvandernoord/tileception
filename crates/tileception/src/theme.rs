@@ -71,6 +71,9 @@ pub struct ThemeFile {
     pub wallpaper: Option<String>,
     /// fill, fit, stretch or center.
     pub wallpaper_fit: String,
+    /// What applications are told to use: dark, light or default (their own
+    /// choice).
+    pub colour_scheme: String,
 }
 
 impl Default for ThemeFile {
@@ -93,6 +96,7 @@ impl Default for ThemeFile {
             font_size: 13.0,
             wallpaper: None,
             wallpaper_fit: "fill".into(),
+            colour_scheme: "dark".into(),
         }
     }
 }
@@ -117,6 +121,27 @@ pub struct Theme {
     pub font_size: f32,
     pub wallpaper: Option<std::path::PathBuf>,
     pub wallpaper_fit: crate::wallpaper::Scaling,
+    pub colour_scheme: ColourScheme,
+}
+
+/// Whether applications should use their light or dark styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourScheme {
+    Dark,
+    Light,
+    /// No preference: applications decide.
+    Default,
+}
+
+impl ColourScheme {
+    pub fn parse(s: &str) -> Result<ColourScheme, String> {
+        match s {
+            "dark" => Ok(ColourScheme::Dark),
+            "light" => Ok(ColourScheme::Light),
+            "default" => Ok(ColourScheme::Default),
+            other => Err(format!("colour_scheme {other:?} is not dark, light or default")),
+        }
+    }
 }
 
 impl Theme {
@@ -139,6 +164,7 @@ impl Theme {
             font_size: f.font_size.clamp(6.0, 72.0),
             wallpaper: f.wallpaper.as_deref().filter(|w| !w.is_empty()).map(crate::wallpaper::expand_home),
             wallpaper_fit: crate::wallpaper::Scaling::parse(&f.wallpaper_fit)?,
+            colour_scheme: ColourScheme::parse(&f.colour_scheme)?,
         })
     }
 }
@@ -169,6 +195,7 @@ mod tests {
         assert_eq!(half.straight_rgba8(), [255, 255, 255, 128]);
         assert!(Colour::parse("red").is_err());
         assert!(Colour::parse("#12345").is_err());
-        let _ = Theme::default();
+        assert_eq!(Theme::default().colour_scheme, ColourScheme::Dark);
+        assert!(ColourScheme::parse("dim").is_err());
     }
 }
