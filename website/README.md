@@ -8,7 +8,8 @@ website/
     index.html       the page; all content is in the markup
     assets/site.css  De Stijl look, stacked layout and zoom layout
     assets/zoom.js   the scroll-driven zoom
-    install          placeholder for `curl -fsSL https://tileception.space/install | sh`
+    install          the `curl -fsSL https://tileception.space/install | sh` script:
+                     adds apt.tileception.space and installs the package
     .htaccess        Apache settings for OVH (HTTPS redirect, types, caching)
   tools/
     check.sh         sanity checks, run in CI

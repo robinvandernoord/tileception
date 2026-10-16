@@ -66,6 +66,27 @@ Ctrl+Alt+F1..F12 switch consoles. The log is
 
 ## Debian and Ubuntu packages
 
+On Debian 13 (trixie), Ubuntu 24.04 (noble) or 26.04 (resolute), amd64 or arm64:
+
+```sh
+curl -fsSL https://tileception.space/install | sh
+```
+
+That adds the apt repository at `https://apt.tileception.space` (signed; the
+key goes to `/etc/apt/keyrings/tileception.gpg`) and installs `tileception`.
+Updates then come with the normal system updates.
+
+### Releasing
+
+Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml` runs
+`.github/workflows/release.yml`: it builds every release and architecture with
+`build-deb-docker.sh`, uploads the packages to the apt repository over SSH and
+attaches them to a GitHub release. The repository itself is a separate Docker
+stack (tileception-apt). Pull requests run `make lint` and `make test`
+(`.github/workflows/ci.yml`).
+
+### Building them yourself
+
 ```sh
 make deb
 sudo apt install ./target/deb/tileception_*.deb
