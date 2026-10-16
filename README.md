@@ -20,6 +20,8 @@ findings and the roadmap.
 - History (back and forward) and saved views 1 to 9.
 - Layer shell: bars reserve their edge, launchers get the keyboard.
 - Fullscreen for Wayland and X11 programs (and Super+F).
+- Light or dark for applications: the compositor serves the desktop portal's
+  appearance settings (dark by default, `colour_scheme` in `[theme]`).
 - Screen locking (ext-session-lock, for swaylock) and screen capture
   (wlr-screencopy, for grim, slurp and screen sharing through
   xdg-desktop-portal-wlr).

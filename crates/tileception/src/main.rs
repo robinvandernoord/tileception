@@ -7,6 +7,7 @@
 //! Without a flag, Tileception runs nested when started inside another desktop
 //! (`WAYLAND_DISPLAY` or `DISPLAY` is set) and as the session otherwise.
 
+mod appearance;
 mod builtin_lock;
 mod capture;
 mod commands;
@@ -88,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if !nested && !headless {
+        state.start_appearance();
         export_session_environment(&state);
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();

@@ -61,6 +61,9 @@ autostart = []
 # wallpaper = "~/Pictures/wallpaper.jpg"
 # How it fits the screen: fill, fit, stretch or center.
 # wallpaper_fit = "fill"
+# What applications are told through the desktop portal: dark, light, or
+# default (each application's own choice).
+# colour_scheme = "dark"
 
 [idle]
 # Seconds of inactivity; 0 disables the corresponding action.

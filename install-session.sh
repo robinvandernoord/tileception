@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds Tileception, installs it for the current user in ~/.local/bin, and adds
-# a "Tileception" entry to the login screen (this last step needs sudo, and is
-# skipped when the entry is already up to date).
+# a "Tileception" entry to the login screen and its desktop portal backend
+# (these need sudo, and are skipped when already up to date).
 #
 # Safe to run from inside a Tileception session: the running compositor keeps
 # going, and the new build starts at the next login.
@@ -41,6 +41,13 @@ mkdir -p "$portals"
 install -m 644 resources/tileception-portals.conf "$portals/tileception-portals.conf"
 echo "Installed $portals/tileception-portals.conf (screen sharing through xdg-desktop-portal-wlr)"
 
+# The portal only looks for backends in this system directory.
+portal=/usr/share/xdg-desktop-portal/portals/tileception.portal
+if ! cmp -s resources/tileception.portal "$portal"; then
+    sudo install -m 644 resources/tileception.portal "$portal"
+    echo "Installed $portal (light or dark for applications)"
+fi
+
 # Earlier builds were called Trellis: carry the config over and remove the
 # old files. A running Trellis session keeps going until you log out.
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -55,7 +62,9 @@ if [ -e /usr/share/wayland-sessions/trellis.desktop ]; then
 fi
 
 desktop=/usr/share/wayland-sessions/tileception.desktop
-sed "s|@BINDIR@|$bindir|g" resources/tileception.desktop.in > target/tileception.desktop
+# No TryExec: the display manager checks it as its own user, which usually
+# cannot enter the home directory, and would then hide the session.
+sed -e "s|@BINDIR@|$bindir|g" -e "/^TryExec=/d" resources/tileception.desktop.in > target/tileception.desktop
 if cmp -s target/tileception.desktop "$desktop"; then
     echo "The login screen entry is up to date"
 else
