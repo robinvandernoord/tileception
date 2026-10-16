@@ -549,6 +549,11 @@ matrix, credentials and deployment implementation remain pending.
     (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`):
     a picker that installs through npx, uvx or a checked binary download and
     remembers the pick. No hard-coded providers and no custom command.
+  - The conversation lives in its own panel along the left edge (the
+    counterpart of Super+N on the right), which does not block the desktop
+    so changes can be watched as they land. Super+/ opens it (the `doctor`
+    command); in the launcher, typing a question or "?" offers "Ask
+    Tileception", opening the panel with that question.
 
 ## 5. Risks and open questions
 

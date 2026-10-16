@@ -127,6 +127,16 @@ impl CompositorHandler for Tileception {
                     // A new floating window has drawn at the size it wants.
                     self.world.size_float(id, geo.size.w as f64, geo.size.h as f64);
                     self.apply_layout();
+                } else if let Some(rect) = self.world.float_rect(id) {
+                    // A floating window that grew past its rectangle (a dialog
+                    // filling in) gets the room, rather than being shrunk into
+                    // a preview that takes no clicks. Not while being resized.
+                    let (w, h) = (geo.size.w as f64, geo.size.h as f64);
+                    let resizing = self.resize_drag.is_some_and(|d| d.window == id);
+                    if !resizing && (w > rect.w + 0.5 || h > rect.h + 0.5) {
+                        self.world.grow_float(id, w, h);
+                        self.apply_layout();
+                    }
                 }
             }
         }

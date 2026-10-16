@@ -402,6 +402,19 @@ impl World {
         }
     }
 
+    /// Grows a floating window's rectangle to a size its program insists on
+    /// (a dialog that grew), keeping its centre and staying on screen.
+    pub fn grow_float(&mut self, win: WindowId, w: f64, h: f64) {
+        let screen = self.screen;
+        if let Some(f) = self.floats.get_mut(&win) {
+            let (w, h) = (w.max(f.rect.w).min(screen.w), h.max(f.rect.h).min(screen.h));
+            let (cx, cy) = (f.rect.x + f.rect.w / 2.0, f.rect.y + f.rect.h / 2.0);
+            let x = (cx - w / 2.0).clamp(screen.x, screen.right() - w);
+            let y = (cy - h / 2.0).clamp(screen.y, screen.bottom() - h);
+            f.rect = Rect::new(x, y, w, h);
+        }
+    }
+
     pub fn set_float_rect(&mut self, win: WindowId, rect: Rect) {
         if let Some(f) = self.floats.get_mut(&win) {
             f.rect = Rect::new(rect.x, rect.y, rect.w.max(MIN_FLOAT), rect.h.max(MIN_FLOAT));
@@ -1433,6 +1446,24 @@ mod tests {
         assert!(!wd.in_overview());
         assert_eq!(wd.framed(), wd.tree().tile_of(w(1)).unwrap());
         assert_eq!(wd.focus(), Some(w(1)));
+    }
+
+    #[test]
+    fn grown_floats_keep_their_centre_on_screen() {
+        let mut wd = world();
+        wd.add_window(w(1), Placement::Float, 0.0);
+        wd.size_float(w(1), 400.0, 300.0);
+        let before = wd.float_rect(w(1)).unwrap();
+        wd.grow_float(w(1), 600.0, 200.0);
+        let after = wd.float_rect(w(1)).unwrap();
+        // Wider as asked, never shorter, same centre.
+        assert_eq!((after.w, after.h), (600.0, 300.0));
+        assert!((after.x + after.w / 2.0 - (before.x + before.w / 2.0)).abs() < 1e-9);
+        // Larger than the screen: kept on it.
+        let screen = wd.screen();
+        wd.grow_float(w(1), 1e6, 1e6);
+        let huge = wd.float_rect(w(1)).unwrap();
+        assert_eq!((huge.x, huge.y, huge.w, huge.h), (screen.x, screen.y, screen.w, screen.h));
     }
 
     #[test]
