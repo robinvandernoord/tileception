@@ -264,10 +264,11 @@ Verification checklist:
 - [x] Scripted selection, tab grouping, group float/dock and group close.
 - [x] Short headless idle timer reaches locked and display-asleep states.
 - [x] Robin verified suspend/resume on hardware and confirmed password dots.
-- [ ] Manually verify launcher editing (including compose input), corrected
+- [x] Manually verify launcher editing (including compose input), corrected
   window selection/group actions, notification action clicks, physical display
   wake without suspend, and video idle inhibition on the laptop. Confirm password
   rejection and successful unlock if not already covered by the suspend test.
+  Robin tested these on 2026-10-16.
 
 Feedback corrections:
 
@@ -413,8 +414,12 @@ matrix, credentials and deployment implementation remain pending.
 
 ### Maybe someday (tm)
 
+Decided 2026-10-16: more monitors comes first once Robin can test it on a
+second screen.
+
 - More monitors: a layout per screen, moving windows between them.
-- HiDPI and fractional scaling.
+- HiDPI and fractional scaling. Nothing exists yet: outputs are always scale 1
+  and wp-fractional-scale-v1 is not offered. Comes after more monitors.
 - Window rules (always float an app, open an app in a given view). Done
   2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
   `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`
@@ -449,6 +454,12 @@ matrix, credentials and deployment implementation remain pending.
   gestures. Planning only for now.
 - Live blur and glass styles (Smoke, Liquid glass from `design/graphite.html`).
 - A settings window instead of editing the config file.
+- Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
+  commit the new size; crop or pad instead, as niri does. Not seen in practice
+  yet, so only if it shows up.
+- Input methods (text-input and input-method protocols, for fcitx5 or IBus).
+- Not wanted (2026-10-16): app-matched layout restoration across logins, and
+  the wlr foreign-toplevel management protocol for external taskbars.
 
 ### To be planned
 
@@ -588,7 +599,8 @@ matrix, credentials and deployment implementation remain pending.
   a layer-shell bar) that shows where the camera is in the tree, not a copy of
   a Windows or macOS taskbar. The minimized strip keeps the bottom edge. Like
   the rest of `[shell]`: `bar = "builtin" | "none" | "<command>"` (e.g. waybar).
-  Proposed 2026-10-16, left to right:
+  Proposed 2026-10-16, left to right. Approved 2026-10-16: on by default
+  (`bar = "none"` opts out), calendar zoom included in the first version.
   - **Doctor button at the far left**, where its panel slides out, doubling as
     a health light: calm normally, amber after a failed config reload or new
     errors in the log, with "ask about this" opening the doctor with that
@@ -623,6 +635,8 @@ matrix, credentials and deployment implementation remain pending.
 - **A smarter launcher.** Tapping Super should answer small things itself, not
   only find apps. Everything here is local and instant: no ACP, no network
   (the "Ask Tileception" row stays for real questions, below these results).
+  Approved 2026-10-16: `>` plus Enter runs the command and shows its output in
+  the launcher; Enter on a sum copies the result and shows it.
   Proposed 2026-10-16:
   - **One shared launcher component for Super and the welcome screen.** Both
     show the same app grid when the search is empty, switch to results while
