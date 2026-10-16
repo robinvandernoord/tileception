@@ -4,7 +4,7 @@
 //! One GPU and, for now, one output: the first connected monitor. Further
 //! monitors are lit by nothing until worlds per display land.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::{
     backend::{
@@ -22,14 +22,17 @@ use smithay::{
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{gles::GlesRenderer, ImportDma, ImportMemWl},
-        session::{libseat::LibSeatSession, Event as SessionEvent, Session},
+        session::{
+            libseat::{LibSeatSession, LibSeatSessionNotifier},
+            Event as SessionEvent, Session,
+        },
         udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
             timer::{TimeoutAction, Timer},
-            EventLoop, RegistrationToken,
+            Dispatcher, EventLoop, RegistrationToken,
         },
         drm::{
             control::{connector, crtc, ModeTypeFlags},
@@ -78,11 +81,41 @@ struct Lit {
     global: GlobalId,
 }
 
+/// How long to wait for the seat before giving up.
+const SEAT_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits until the session is active. A display manager may start us before
+/// its greeter has let go of the seat (LightDM does), and until then the GPU
+/// cannot be taken over.
+fn wait_until_active(
+    session: &LibSeatSession,
+    notifier: LibSeatSessionNotifier,
+) -> Result<LibSeatSessionNotifier, Box<dyn std::error::Error>> {
+    if session.is_active() {
+        return Ok(notifier);
+    }
+    tracing::info!("waiting for the session to become active");
+    // Only the notifier's events update `is_active`, so run it on a loop of
+    // its own and hand it back for the main loop afterwards.
+    let mut wait = EventLoop::<()>::try_new()?;
+    let dispatcher = Dispatcher::new(notifier, |_, _, _| ());
+    let token = wait.handle().register_dispatcher(dispatcher.clone())?;
+    let deadline = Instant::now() + SEAT_WAIT;
+    while !session.is_active() {
+        let left = deadline.checked_duration_since(Instant::now()).ok_or("the session did not become active")?;
+        wait.dispatch(Some(left), &mut ())?;
+    }
+    wait.handle().remove(token);
+    tracing::info!("session active");
+    Ok(dispatcher.into_source_inner())
+}
+
 pub fn init(
     event_loop: &mut EventLoop<'static, Tileception>,
     state: &mut Tileception,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (mut session, notifier) = LibSeatSession::new().map_err(|e| format!("no seat session: {e}"))?;
+    let notifier = wait_until_active(&session, notifier)?;
     let seat = session.seat();
 
     let gpu_path = primary_gpu(&seat)?.or_else(|| all_gpus(&seat).ok()?.into_iter().next()).ok_or("no GPU found")?;
