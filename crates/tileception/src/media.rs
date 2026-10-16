@@ -224,7 +224,17 @@ impl Tileception {
             return;
         }
         if let Some(service) = &self.media.service {
-            self.media.snapshot = service.snapshot();
+            let old = std::mem::replace(&mut self.media.snapshot, service.snapshot());
+            // Volume changed from elsewhere (a headset's buttons, a program):
+            // show the card as for a key, unless the panel's sliders show it.
+            if !self.notifications.open && old.audio.connected {
+                let new = &self.media.snapshot.audio;
+                if level_changed(&old.audio.output, &new.output) {
+                    self.show_osd(OsdKind::Volume);
+                } else if level_changed(&old.audio.input, &new.input) {
+                    self.show_osd(OsdKind::Mic);
+                }
+            }
         }
         self.schedule_render();
     }
@@ -379,6 +389,15 @@ impl Tileception {
         if self.media.repeat.is_some_and(|(held, _)| held == keycode) {
             self.stop_media_repeat();
         }
+    }
+}
+
+/// Whether the same device got a new level or mute. Another device becoming
+/// the default (plugging in headphones) is not a change of level.
+fn level_changed(old: &Option<tileception_media::Device>, new: &Option<tileception_media::Device>) -> bool {
+    match (old, new) {
+        (Some(old), Some(new)) => old.name == new.name && (old.percent != new.percent || old.muted != new.muted),
+        _ => false,
     }
 }
 

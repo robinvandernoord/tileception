@@ -66,11 +66,19 @@ struct StoredUsage {
     last_used: u64,
 }
 
+/// Where a paste goes: the launcher as opened then, or the doctor (which
+/// also takes pictures).
+#[derive(Debug, Clone, Copy)]
+pub enum Paste {
+    Launcher(u64),
+    Doctor,
+}
+
 pub struct Launcher {
     pub open: bool,
     /// Open as the welcome screen on an empty desktop.
     pub home: bool,
-    /// Esc put the welcome screen away until the desktop next becomes empty.
+    /// Super put the welcome screen away until the desktop next becomes empty.
     home_dismissed: bool,
     /// Just launched something from the welcome screen: give it time to open
     /// a window before the welcome screen comes back.
@@ -79,7 +87,7 @@ pub struct Launcher {
     edited: Instant,
     opened: Instant,
     selecting: bool,
-    clipboard: Option<smithay::reexports::calloop::channel::Sender<(u64, String)>>,
+    clipboard: Option<smithay::reexports::calloop::channel::Sender<(Paste, Clip)>>,
     epoch: u64,
     selected: usize,
     index: AppIndex,
@@ -175,18 +183,28 @@ impl Tileception {
 
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
-        let (sender, receiver) = channel::channel::<(u64, String)>();
+        let (sender, receiver) = channel::channel::<(Paste, Clip)>();
         self.launcher.clipboard = Some(sender);
         self.loop_handle
             .insert_source(receiver, |event, _, state| {
-                if let channel::Event::Msg((epoch, text)) = event {
-                    if state.launcher.open && state.launcher.epoch == epoch {
-                        state.launcher_insert_paste(&text);
-                        state.schedule_render();
-                    }
+                if let channel::Event::Msg((target, clip)) = event {
+                    state.insert_paste(target, clip);
                 }
             })
             .expect("clipboard event source");
+    }
+
+    /// A paste arriving, if what it was meant for is still there.
+    fn insert_paste(&mut self, target: Paste, clip: Clip) {
+        match (target, clip) {
+            (Paste::Launcher(epoch), Clip::Text(text)) if self.launcher.open && self.launcher.epoch == epoch => {
+                self.launcher_insert_paste(&text);
+            }
+            (Paste::Doctor, Clip::Text(text)) if self.doctor.open => self.doctor_insert_paste(&text),
+            (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
+            _ => return,
+        }
+        self.schedule_render();
     }
 
     pub fn toggle_launcher(&mut self) {
@@ -276,12 +294,13 @@ impl Tileception {
             }
         }
         match sym {
-            keysyms::KEY_Escape => {
-                if self.launcher.home {
-                    self.launcher.home_dismissed = true;
-                }
-                self.close_launcher();
+            // The welcome screen is the desktop, not something to close:
+            // Esc only clears the search there. Super still hides it.
+            keysyms::KEY_Escape if self.launcher.home => {
+                self.launcher.input.clear();
+                self.launcher.selected = 0;
             }
+            keysyms::KEY_Escape => self.close_launcher(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_app(),
             keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.launcher_step(-1),
             keysyms::KEY_Down | keysyms::KEY_Tab => self.launcher_step(1),
@@ -320,7 +339,9 @@ impl Tileception {
                     }
                 }
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => self.launcher_paste(),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
+                self.paste(Paste::Launcher(self.launcher.epoch));
+            }
             _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => {
                 self.launcher.input.clear();
                 self.launcher.selected = 0;
@@ -335,25 +356,31 @@ impl Tileception {
         }
     }
 
-    fn launcher_paste(&mut self) {
+    /// Pastes the clipboard's text into the launcher's or the doctor's
+    /// field, or a picture into the doctor's next message.
+    pub fn paste(&mut self, target: Paste) {
         use std::os::unix::net::UnixStream;
-        match current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
-            Some(Clip::Text(text)) => {
-                self.launcher_insert_paste(&text);
-                return;
-            }
-            Some(Clip::Png(_)) => return,
-            None => {}
+        if let Some(clip) = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
+            self.insert_paste(target, clip);
+            return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
-        let epoch = self.launcher.epoch;
         let Ok((reader, writer)) = UnixStream::pair() else { return };
         // Bound stalled or oversized transfers without blocking the compositor.
         if reader.set_read_timeout(Some(Duration::from_secs(3))).is_err() {
             return;
         }
         let mut requested = false;
-        for mime_type in ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"] {
+        let text = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
+        // Pictures first where they are welcome: a copied image often also
+        // offers its address as text.
+        let mime_types = match target {
+            Paste::Doctor => [&["image/png"][..], &text].concat(),
+            Paste::Launcher(_) => text.to_vec(),
+        };
+        let mut wanted = "";
+        for mime_type in mime_types {
+            wanted = mime_type;
             let Ok(fd) = writer.try_clone() else { return };
             match request_data_device_client_selection(&self.seat, mime_type.into(), fd.into()) {
                 Ok(()) => {
@@ -361,6 +388,8 @@ impl Tileception {
                     break;
                 }
                 Err(SelectionRequestError::InvalidMimetype) => continue,
+                // From X11, where offered types are not known: text only.
+                Err(SelectionRequestError::ServerSideSelection) if mime_type.starts_with("image/") => continue,
                 Err(SelectionRequestError::ServerSideSelection) => {
                     if let Some(xwm) = self.xwm.as_mut() {
                         requested = xwm
@@ -374,7 +403,7 @@ impl Tileception {
                     }
                     // This writer is transferred to Xwayland or dropped here.
                     if requested {
-                        self.launcher_read_paste(reader, sender, epoch);
+                        self.launcher_read_paste(reader, sender, target, false);
                     }
                     return;
                 }
@@ -383,21 +412,29 @@ impl Tileception {
         }
         drop(writer);
         if requested {
-            self.launcher_read_paste(reader, sender, epoch);
+            self.launcher_read_paste(reader, sender, target, wanted.starts_with("image/"));
         }
     }
 
     fn launcher_read_paste(
         &self,
         reader: std::os::unix::net::UnixStream,
-        sender: smithay::reexports::calloop::channel::Sender<(u64, String)>,
-        epoch: u64,
+        sender: smithay::reexports::calloop::channel::Sender<(Paste, Clip)>,
+        target: Paste,
+        picture: bool,
     ) {
         use std::io::Read;
         std::thread::spawn(move || {
+            if picture {
+                let mut png = Vec::new();
+                if reader.take(MAX_IMAGE + 1).read_to_end(&mut png).is_ok() && png.len() as u64 <= MAX_IMAGE {
+                    let _ = sender.send((target, Clip::Png(png.into())));
+                }
+                return;
+            }
             let mut text = String::new();
             if reader.take(4097).read_to_string(&mut text).is_ok() && text.len() <= 4096 {
-                let _ = sender.send((epoch, text));
+                let _ = sender.send((target, Clip::Text(text)));
             }
         });
     }
@@ -785,9 +822,9 @@ impl Tileception {
         let footer = layout.footer;
         p.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), t.border, 0.0);
         let hints: &[(&str, &str)] = if self.launcher.home && !typing {
-            &[("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch"), ("Esc", "Plain desktop")]
+            &[("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
         } else if self.launcher.home {
-            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Plain desktop")]
+            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Esc", "Clear")]
         } else {
             &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Close")]
         };

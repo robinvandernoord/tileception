@@ -135,11 +135,11 @@ impl Tileception {
         self.notifications.offset = self.notifications.offset.saturating_add_signed(delta).min(len.saturating_sub(1));
     }
 
-    /// The history panel, floating along the right edge.
+    /// The history panel, against the right edge.
     fn notification_panel(&self) -> Rect {
         let screen = self.world.screen();
-        let w = (screen.w - 24.0).clamp(1.0, PANEL_W);
-        Rect::new(screen.right() - w - 12.0, screen.y + 12.0, w, (screen.h - 24.0).max(1.0))
+        let w = screen.w.clamp(1.0, PANEL_W);
+        Rect::new(screen.right() - w, screen.y, w, screen.h.max(1.0))
     }
 
     /// The history panel's own controls.
@@ -292,7 +292,7 @@ impl Tileception {
         if self.notifications.open {
             let panel = self.notification_panel();
             let controls = self.panel_controls();
-            p.popup(panel);
+            p.edge_panel(panel, false);
             let title = Style::new(t.font_size * 1.3, t.text).bold();
             let (title_w, _) = p.text(
                 if self.builtin_notifications() { "Notifications" } else { "Controls" },
