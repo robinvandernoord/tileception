@@ -1,3 +1,8 @@
+[project]
+# temporary
+name = "tileception"
+version = "0.0.0"
+
 [tool.vommit]
 allow_breaking_bang = true
 allow_breaking_footer = true
@@ -33,8 +38,8 @@ enabled = false
 
 [tool.vommit.commands]
 clean = "cargo clean"
-build = "uv build"
-publish = "uv publish"
+build = ""
+publish = ""
 post_publish = ""
 
 [tool.vommit.version_bump_map]
