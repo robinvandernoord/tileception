@@ -6,6 +6,13 @@
 # pass --purge to remove those too.
 set -e
 
+# The .deb installs the same login screen entry and PAM file; mixing the two
+# would leave dpkg tracking files this script overwrites or removes.
+if [ "$(dpkg-query -W -f='${Status}' tileception 2>/dev/null)" = "install ok installed" ]; then
+    echo "The tileception package is installed; remove it with: sudo apt remove tileception" >&2
+    exit 1
+fi
+
 bindir="$HOME/.local/bin"
 desktop=/usr/share/wayland-sessions/tileception.desktop
 

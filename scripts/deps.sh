@@ -27,9 +27,13 @@ packages() {
     ' "$list"
 }
 
+# With other architectures added (cross builds), a package can be installed
+# once per architecture; only this machine's own copy counts.
+native=$(dpkg --print-architecture)
 missing=""
 for p in $(packages); do
-    if [ "$(dpkg-query -W -f='${Status}' "$p" 2>/dev/null)" != "install ok installed" ]; then
+    if ! dpkg-query -W -f='${Status} ${Architecture}\n' "$p" 2>/dev/null \
+        | grep -qxE "install ok installed ($native|all)"; then
         missing="$missing $p"
     fi
 done

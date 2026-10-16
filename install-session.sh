@@ -8,6 +8,13 @@
 set -e
 cd "$(dirname "$0")"
 
+# The .deb installs the same login screen entry and PAM file; mixing the two
+# would leave dpkg tracking files this script overwrites or removes.
+if [ "$(dpkg-query -W -f='${Status}' tileception 2>/dev/null)" = "install ok installed" ]; then
+    echo "The tileception package is installed; remove it first (sudo apt remove tileception)." >&2
+    exit 1
+fi
+
 # Stop early, with the exact command, if a system package is missing.
 if ! scripts/deps.sh check build runtime; then
     echo "Run 'make deps' first, then try again." >&2
