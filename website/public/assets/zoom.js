@@ -57,6 +57,12 @@
   const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
   let W = 1600, H = 1000, seg = 1, rects = [], current = -1, bandTop = 0, bandBottom = 0;
   let vw = 0, vh = 0, top0 = 0;
+  // Wheel and trackpad deltas are CSS pixels whatever the screen size, so with one screen
+  // height per level a small screen zoomed through levels several times faster than a 4K one.
+  // A fixed distance feels the same everywhere. On touch screens a level stays one screen
+  // tall, so a single swipe still carries you to the next level.
+  const SEG = 2000;
+  const touch = matchMedia('(pointer: coarse)');
 
   // Fit a level into a portal cell; returns its offset and scale inside the parent level.
   function place(child, cell) {
@@ -88,7 +94,7 @@
       rects.push({ x: r.x + p.x * sc, y: r.y + p.y * sc, w: r.w * p.s, h: r.h * p.s });
     }
     place(mini, loop);
-    seg = vh;
+    seg = touch.matches ? vh : Math.max(vh, SEG);
     scroller.style.height = (steps * seg + vh) + 'px';
     snaps.forEach((s, i) => { s.style.top = (i * seg) + 'px'; });
     top0 = scroller.getBoundingClientRect().top + scrollY;
@@ -167,6 +173,7 @@
     settleTimer = setTimeout(settle, 150);
   }), { passive: true });
   addEventListener('resize', request(layout));
+  touch.addEventListener('change', () => { const i = current; vw = 0; layout(); scrollToLevel(i, false); });
 
   layout();
   const start = levels.findIndex(l => '#' + l.id === location.hash);
