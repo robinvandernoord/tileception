@@ -491,11 +491,13 @@ impl Tileception {
 
     /// Cover art filling a square with rounded corners, cached.
     fn cover_art(&self, path: &std::path::Path, size: u32) -> Option<MemoryRenderBuffer> {
+        // Drawn at the output's scale.
+        let size = (f64::from(size) * self.scale).round() as u32;
         let key = (path.to_path_buf(), size);
         if let Some(art) = self.media.art.borrow().get(&key) {
             return art.clone();
         }
-        let art = load_cover(path, size, self.theme.radius);
+        let art = load_cover(path, size, self.theme.radius * self.scale as f32);
         let mut cache = self.media.art.borrow_mut();
         if cache.len() >= 32 {
             cache.clear();

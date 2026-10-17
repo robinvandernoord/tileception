@@ -90,9 +90,11 @@ impl Tileception {
         match event {
             InputEvent::Keyboard { event } => self.on_key::<I>(event),
             InputEvent::PointerMotionAbsolute { event } => {
-                let Some(output) = self.output.as_ref() else { return };
-                let size = output.current_mode().map(|m| m.size.to_logical(1)).unwrap_or_default();
-                let pos = event.position_transformed(size);
+                if self.output.is_none() {
+                    return;
+                }
+                let screen = self.output_rect();
+                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
@@ -214,6 +216,9 @@ impl Tileception {
                     return FilterResult::Intercept(commands.to_vec());
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
+            }
+            if sym == keysyms::KEY_Escape && held == Mods::default() && state.close_calendar() {
+                return FilterResult::Intercept(Vec::new());
             }
             if sym == keysyms::KEY_Escape
                 && held == Mods::default()
@@ -433,6 +438,9 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.bar_motion(pos, time) {
+            return;
+        }
         if self.strip_motion(pos, time) {
             return;
         }
@@ -573,6 +581,9 @@ impl Tileception {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
             }
+            return;
+        }
+        if self.move_drag.is_none() && self.bar_button(button, state == ButtonState::Pressed) {
             return;
         }
         if self.move_drag.is_none() && self.strip_button(button, state == ButtonState::Pressed) {
@@ -756,6 +767,16 @@ impl Tileception {
             if amount != 0.0 {
                 self.notification_scroll(if amount > 0.0 { 1 } else { -1 });
             }
+            return;
+        }
+        if !self.is_locked() && self.bar_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+            // In notches: a wheel step is one, smooth scrolling adds up to one.
+            let notches = event
+                .amount_v120(Axis::Vertical)
+                .map(|v| v / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).map(|a| a / 50.0))
+                .unwrap_or(0.0);
+            self.bar_scroll(notches);
             return;
         }
         self.tap_armed = None;

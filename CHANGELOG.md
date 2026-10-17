@@ -2,6 +2,16 @@
 
 <!-- next-version-placeholder -->
 
+## v0.3.0 (2026-10-17)
+
+### Features
+* **shell:** add smart launcher and built-in top bar
+* **tileception:** add HiDPI and fractional output scaling
+
+### Documentation
+* **plan:** record launcher and top bar implementation
+* **plan:** record HiDPI scaling implementation
+
 ## v0.2.0 (2026-10-16)
 
 ### Features

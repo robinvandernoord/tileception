@@ -33,20 +33,12 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub shell: crate::shell::ShellConfig,
     pub rules: Vec<crate::rules::WindowRule>,
-    /// Extra arguments for programs the launcher starts, by desktop file
-    /// name, on top of [`DEFAULT_LAUNCH_ARGS`].
+    /// Per screen, by connector name ("*" for any).
+    pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
+    /// Extra arguments for programs the launcher starts, by desktop file name.
     pub launch_args: BTreeMap<String, Vec<String>>,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
-
-/// Built-in `[launch_args]`: Spotify's native, Snap and Flatpak entries run
-/// on Wayland instead of through Xwayland (it is built on CEF and ignores
-/// ELECTRON_OZONE_PLATFORM_HINT).
-const DEFAULT_LAUNCH_ARGS: &[(&str, &[&str])] = &[
-    ("spotify", &["--ozone-platform=wayland"]),
-    ("spotify_spotify", &["--ozone-platform=wayland"]),
-    ("com.spotify.Client", &["--ozone-platform=wayland"]),
-];
 
 /// One command, or several run in order.
 #[derive(Debug, Clone, Deserialize)]
@@ -211,6 +203,7 @@ impl Config {
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
         file.shell.validate()?;
         crate::rules::validate(&file.rules)?;
+        crate::scale::validate(&file.outputs)?;
         Ok(Config { file, binds, drag_mod, theme })
     }
 
@@ -225,19 +218,16 @@ impl Config {
         self.binds.iter().find(|b| b.mods == mods && b.key == key).map(|b| b.commands.as_slice())
     }
 
-    /// Extra launch arguments for a desktop entry id (`spotify.desktop`): the
-    /// `[launch_args]` entry if there is one, else the built-in one.
+    /// Extra launch arguments for a desktop entry id (`spotify.desktop`), from
+    /// `[launch_args]`; the key may leave off `.desktop`.
     pub fn launch_args(&self, id: &str) -> Vec<String> {
         let name = id.strip_suffix(".desktop").unwrap_or(id);
-        let own = self.file.launch_args.iter().find(|(key, _)| key.strip_suffix(".desktop").unwrap_or(key) == name);
-        match own {
-            Some((_, args)) => args.clone(),
-            None => DEFAULT_LAUNCH_ARGS
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, args)| args.iter().map(|arg| (*arg).to_owned()).collect())
-                .unwrap_or_default(),
-        }
+        self.file
+            .launch_args
+            .iter()
+            .find(|(key, _)| key.strip_suffix(".desktop").unwrap_or(key) == name)
+            .map(|(_, args)| args.clone())
+            .unwrap_or_default()
     }
 
     pub fn world_settings(&self) -> tileception_core::Settings {
@@ -409,7 +399,8 @@ impl Tileception {
         }
         let old_shell = std::mem::replace(&mut self.config, config).file.shell;
         self.apply_shell(&old_shell);
-        self.apply_layout();
+        // Also lays everything out again.
+        self.apply_output_scale();
     }
 }
 
@@ -484,21 +475,17 @@ mod tests {
     }
 
     #[test]
-    fn launch_args_default_to_spotify_on_wayland() {
+    fn launch_args_come_from_the_config_only() {
         let c = Config::default_config();
-        let wayland = vec!["--ozone-platform=wayland".to_owned()];
-        for id in ["spotify.desktop", "spotify_spotify.desktop", "com.spotify.Client.desktop"] {
-            assert_eq!(c.launch_args(id), wayland, "{id}");
-        }
-        assert!(c.launch_args("firefox.desktop").is_empty());
+        assert!(c.launch_args("spotify.desktop").is_empty(), "nothing is built in");
         let c = Config::parse(
-            "[launch_args]\nspotify = []\n\"com.spotify.Client.desktop\" = [\"--ozone-platform=x11\"]\nfirefox = [\"-P\", \"work\"]",
+            "[launch_args]\nspotify = [\"--ozone-platform=wayland\"]\n\"com.spotify.Client.desktop\" = [\"--ozone-platform=x11\"]\nfirefox = [\"-P\", \"work\"]",
         )
         .unwrap();
-        assert!(c.launch_args("spotify.desktop").is_empty(), "an empty list switches the default off");
+        assert_eq!(c.launch_args("spotify.desktop"), ["--ozone-platform=wayland"]);
         assert_eq!(c.launch_args("com.spotify.Client.desktop"), ["--ozone-platform=x11"]);
-        assert_eq!(c.launch_args("spotify_spotify.desktop"), wayland, "other defaults stay");
-        assert_eq!(c.launch_args("firefox.desktop"), ["-P", "work"]);
+        assert!(c.launch_args("spotify_spotify.desktop").is_empty());
+        assert_eq!(c.launch_args("firefox"), ["-P", "work"]);
         assert!(Config::parse("[launch_args]\nspotify = \"--ozone-platform=x11\"").is_err());
     }
 }

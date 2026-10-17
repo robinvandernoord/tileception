@@ -481,7 +481,9 @@ impl Tileception {
         if self.is_locked() {
             return;
         }
-        if self.doctor.open && self.doctor.focused {
+        // Open is enough: after a click elsewhere took the keyboard, the same
+        // key should still put the panel away. Clicking the panel focuses it.
+        if self.doctor.open {
             self.close_doctor();
         } else {
             self.open_doctor();
@@ -630,7 +632,10 @@ impl Tileception {
             return;
         }
         self.ensure_session();
-        if self.doctor.session.is_none() {
+        // Right after login the agent list may still be loading: keep the
+        // question until the agent has started.
+        let starting = self.doctor.session.is_none() && self.doctor.loading;
+        if self.doctor.session.is_none() && !starting {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
             return;
         }
@@ -645,7 +650,7 @@ impl Tileception {
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
         // How pictures go depends on the agent, which may not have said yet.
-        if self.doctor.takes_images.is_none() && !attachments.is_empty() {
+        if starting || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
             self.doctor.waiting = Some((text, attachments));
         } else {
             self.prompt_doctor(text, attachments);
@@ -774,8 +779,14 @@ impl Tileception {
                     Err(_) => Default::default(),
                 };
                 d.registry = Some(result);
-                if d.view == View::Conversation && d.open {
+                if d.view == View::Conversation && (d.open || d.waiting.is_some()) {
                     self.ensure_session();
+                }
+                // A question asked while the list loaded, for an agent that did not start.
+                let d = &mut self.doctor;
+                if d.session.is_none() && d.waiting.take().is_some() {
+                    d.busy = false;
+                    d.messages.push(Message::Note("The agent is not available.".into()));
                 }
             }
             Event::Status(status) => {
@@ -1671,7 +1682,7 @@ impl Tileception {
         self.text
             .borrow_mut()
             .styled(text, &t.font, style.size, style.colour, width.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| (i.width as f64, i.height as f64))
+            .map(|i| (i.width, i.height))
             .unwrap_or((0.0, 0.0))
     }
 
@@ -1993,7 +2004,7 @@ impl Tileception {
                     let gutter = if marker.is_some() { 20.0 } else { 0.0 };
                     let rect = Rect::new(x + 2.0 + indent + gutter, y, w - 2.0 - indent - gutter, 0.0);
                     let Some(image) = self.rich_image(spans, style, rect.w) else { continue };
-                    let h = f64::from(image.image.height);
+                    let h = image.image.height;
                     let line = f64::from((style.size * 1.4).ceil());
                     let marker = marker
                         .filter(|m| !m.is_empty())
@@ -2005,7 +2016,7 @@ impl Tileception {
                     let style = RichStyle { size: body.size * 0.9, mono: true, ..body };
                     let spans = vec![Span::plain(code.clone())];
                     let Some(image) = self.rich_image(&spans, style, w - 24.0) else { continue };
-                    let h = f64::from(image.image.height) + 16.0;
+                    let h = image.image.height + 16.0;
                     blocks.push(Block::Code { rect: Rect::new(x, y, w, h), spans, style });
                     y += h + PIECE_GAP;
                 }
@@ -2016,7 +2027,7 @@ impl Tileception {
                             let name = if alt.trim().is_empty() { url.clone() } else { alt.clone() };
                             let spans = vec![Span::plain("Picture: "), Span { link: Some(open), ..Span::plain(name) }];
                             let Some(image) = self.rich_image(&spans, body, w - 2.0) else { continue };
-                            let h = f64::from(image.image.height);
+                            let h = image.image.height;
                             let rect = Rect::new(x + 2.0, y, w - 2.0, h);
                             blocks.push(Block::Rich { rect, spans, style: body, marker: None, quote: false });
                             y += h + PIECE_GAP;
@@ -2182,7 +2193,7 @@ impl Tileception {
             },
         );
         if let Some(image) = field {
-            p.image(&image.buffer, (frame.text.x, frame.text.y + (frame.text.h - image.height as f64) / 2.0));
+            p.image(&image.buffer, (frame.text.x, frame.text.y + (frame.text.h - image.height) / 2.0));
         }
         if self.doctor.busy {
             // While answering, the button stops it.

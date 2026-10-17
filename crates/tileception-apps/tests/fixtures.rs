@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
-use tileception_apps::{command_line, command_line_with, AppIndex, IconLookup, Usage};
+use tileception_apps::{action_command_line, command_line, command_line_with, AppIndex, IconLookup, Usage};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -68,6 +68,46 @@ fn discovery_locales_visibility_and_override() {
     assert_eq!(scan("nl_BE.UTF-8@formal", "Tileception").get("editor.desktop").unwrap().name, "Formal Editor");
     assert_eq!(scan("nl_BE.UTF-8", "Tileception").get("editor.desktop").unwrap().name, "Caf\u{e9} Bewerker");
     assert_eq!(scan("C.UTF-8", "Tileception").get("editor.desktop").unwrap().name, "Cafe Editor");
+}
+
+#[test]
+fn desktop_actions() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "apps/browser.desktop",
+        "[Desktop Entry]\nType=Application\nName=Browser\nExec=browser %u\nActions=new-window;private;broken;missing;\n\n\
+         [Desktop Action new-window]\nName=New Window\nName[nl]=Nieuw venster\nExec=browser --new-window %u\n\n\
+         [Desktop Action private]\nName=New Private Window\nIcon=browser-private\nExec=browser --private-window\n\n\
+         [Desktop Action broken]\nName=Broken\nExec=browser %Z\n\n\
+         [Desktop Action unlisted]\nName=Unlisted\nExec=browser --unlisted\n",
+    );
+    fixture.write(
+        "apps/hidden.desktop",
+        "[Desktop Entry]\nType=Application\nName=Hidden\nExec=hidden\nNoDisplay=true\nActions=new;\n\n\
+         [Desktop Action new]\nName=New Window\nExec=hidden --new\n",
+    );
+    let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
+    let app = index.get("browser.desktop").unwrap();
+    let names = app.actions.iter().map(|a| a.name.as_str()).collect::<Vec<_>>();
+    assert_eq!(names, ["New Window", "New Private Window"], "listed, named and runnable only");
+    assert_eq!(app.actions[0].exec, "browser --new-window");
+    assert_eq!(app.actions[1].icon.as_deref(), Some("browser-private"));
+    assert_eq!(action_command_line(app, &app.actions[1], "ghostty -e"), "browser --private-window");
+    let localized = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "nl_NL.UTF-8", &[]);
+    assert_eq!(localized.get("browser.desktop").unwrap().actions[0].name, "Nieuw venster");
+
+    let found = |query: &str| {
+        index
+            .search_actions(query, 10)
+            .iter()
+            .map(|(app, action)| format!("{}: {}", app.name, action.name))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(found("private"), ["Browser: New Private Window"]);
+    assert_eq!(found("new"), ["Browser: New Window", "Browser: New Private Window"], "hidden apps stay out");
+    assert_eq!(found("browser priv"), ["Browser: New Private Window"]);
+    assert!(found("browser").is_empty(), "the app's name alone is the app, not its actions");
+    assert!(found("").is_empty());
 }
 
 #[test]

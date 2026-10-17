@@ -110,7 +110,7 @@ impl Tileception {
                 // A tint and accent outline over the window, and a check mark in its top left corner.
                 let badge = Rect::new(d.slot.x + 8.0, d.slot.y + 8.0, 22.0, 22.0);
                 if let Some(check) = self.glyphs.image(crate::ui::glyph::CHECK, 14, t.on_accent) {
-                    push_image(&mut out, renderer, &check, (badge.x + 4.0, badge.y + 4.0));
+                    push_image(&mut out, renderer, &check, (badge.x + 4.0, badge.y + 4.0), self.scale);
                 }
                 push_shape(
                     &mut out,

@@ -114,6 +114,7 @@ impl Tileception {
             map.non_exclusive_zone()
         };
         let usable = Rect::new(zone.loc.x as f64, zone.loc.y as f64, zone.size.w as f64, zone.size.h as f64);
+        let usable = self.bar_reserve(usable);
         if usable.w > 0.0 && usable.h > 0.0 && usable != self.world.screen() {
             self.world.set_screen(usable);
             self.apply_layout();
@@ -128,9 +129,10 @@ impl Tileception {
         for kind in layers {
             for layer in map.layers_on(*kind).rev() {
                 let Some(geo) = map.layer_geometry(layer) else { continue };
+                let origin = crate::render::physical_point((geo.loc.x as f64, geo.loc.y as f64), self.scale);
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    layer.render_elements(renderer, (geo.loc.x, geo.loc.y).into(), Scale::from(1.0), 1.0);
-                out.extend(elements.into_iter().map(OutputElement::Live));
+                    layer.render_elements(renderer, origin, Scale::from(1.0), 1.0);
+                out.extend(crate::render::enlarged(elements, origin, self.scale));
             }
         }
         out

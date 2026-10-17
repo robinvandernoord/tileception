@@ -124,6 +124,17 @@ impl Tileception {
         }
     }
 
+    pub fn do_not_disturb(&self) -> bool {
+        self.notifications.service.as_ref().is_some_and(|service| service.do_not_disturb())
+    }
+
+    /// The history's length and whether Do not disturb is on, while the
+    /// built-in service runs.
+    pub fn notification_status(&self) -> Option<(usize, bool)> {
+        let service = self.notifications.service.as_ref()?;
+        Some((service.history_len(), service.do_not_disturb()))
+    }
+
     pub fn toggle_dnd(&mut self) {
         if let Some(service) = &self.notifications.service {
             service.send(Request::SetDoNotDisturb(!service.do_not_disturb()));
@@ -222,7 +233,7 @@ impl Tileception {
             self.text
                 .borrow_mut()
                 .styled(body_text.trim(), &t.font, t.font_size * 0.95, t.muted, text_w as f32, 400, BODY_LINES)
-                .map_or(0.0, |i| i.height as f64)
+                .map_or(0.0, |i| i.height)
         };
         let body = Rect::new(text_x, summary.bottom() + 2.0, text_w, body_h);
         cursor = body.bottom().max(icon.map_or(0.0, |i| i.bottom()));

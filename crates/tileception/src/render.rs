@@ -7,6 +7,10 @@
 //!
 //! Elements are listed topmost first. A window's frame (rounded corners,
 //! border, focus glow) is drawn just above the window itself.
+//!
+//! Positions are worked out in logical pixels and turned into physical ones
+//! here, as elements are made: client surfaces are enlarged by the output's
+//! scale, and the compositor's own images are already rasterised at it.
 
 use smithay::{
     backend::renderer::{
@@ -33,9 +37,8 @@ use crate::{
 
 smithay::backend::renderer::element::render_elements! {
     pub OutputElement<=GlesRenderer>;
-    Live = WaylandSurfaceRenderElement<GlesRenderer>,
+    Live = RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Scaled = CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
-    Clipped = CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Solid = SolidColorRenderElement,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
@@ -177,7 +180,7 @@ impl Tileception {
         let mut elements = self.render_elements(renderer, now);
         if let Some(buffer) = wallpaper {
             let o = self.output_rect();
-            push_image(&mut elements, renderer, &buffer, (o.x, o.y));
+            push_image(&mut elements, renderer, &buffer, (o.x, o.y), self.scale);
         }
         elements
     }
@@ -187,7 +190,7 @@ impl Tileception {
             // Only the locker (and the volume card); black where it has not drawn yet.
             let mut elements = self.osd_elements(renderer);
             elements.extend(self.lock_elements(renderer));
-            elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0]));
+            elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0], self.scale));
             return elements;
         }
         let shapes = self.shapes(renderer);
@@ -211,15 +214,16 @@ impl Tileception {
             elements.extend(self.launcher_elements(renderer));
         }
         elements.extend(self.selection_elements(renderer));
+        elements.extend(self.bar_elements(renderer));
 
         // Then bars. A fullscreen window covers everything but the above.
         if self.fullscreen.is_some() {
             for d in &drawn {
                 if let Some(window) = self.windows.get(&d.id) {
-                    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+                    let origin = physical_point((d.origin.x, d.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                         window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-                    elements.extend(surfaces.into_iter().map(OutputElement::Live));
+                    elements.extend(enlarged(surfaces, origin, self.scale));
                 }
             }
             return elements;
@@ -230,11 +234,9 @@ impl Tileception {
         for overlay in self.x11_overlays.iter().rev() {
             let Some(surface) = overlay.wl_surface() else { continue };
             let loc = overlay.geometry().loc;
-            elements.extend(
-                render_elements_from_surface_tree(renderer, &surface, (loc.x, loc.y), 1.0, 1.0, Kind::Unspecified)
-                    .into_iter()
-                    .map(OutputElement::Live),
-            );
+            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
+            let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
+            elements.extend(enlarged(surfaces, origin, self.scale));
         }
 
         // Then the window being dragged, then where it would land.
@@ -281,8 +283,8 @@ impl Tileception {
             }
             push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
             if d.live {
-                popups.extend(popup_elements(renderer, window, d));
-                elements.extend(live(renderer, window, d));
+                popups.extend(popup_elements(renderer, window, d, self.scale));
+                elements.extend(live(renderer, window, d, self.scale));
             } else {
                 elements.extend(self.picture(renderer, d.id, &d.content));
             }
@@ -325,6 +327,7 @@ impl Tileception {
     }
 
     /// The compiled shape shader, made on first use with this renderer.
+    /// Shapes come out at the output's scale.
     pub fn shapes(&self, renderer: &mut GlesRenderer) -> Option<Shapes> {
         if self.shapes.get().is_none() {
             match Shapes::compile(renderer) {
@@ -337,7 +340,7 @@ impl Tileception {
                 }
             }
         }
-        self.shapes.get().cloned()
+        self.shapes.get().cloned().map(|s| s.at_scale(self.scale))
     }
 
     /// A window's frame: rounded corners masked in the background colour (for
@@ -384,13 +387,13 @@ impl Tileception {
             let text_max = (tab.right() - close_w - 6.0 - text_x) as f32;
             let mut text = self.text.borrow_mut();
             if let Some(img) = text.line(&title, &t.font, font_size, text_colour, text_max, active) {
-                let y = tab.y + (tab.h - img.height as f64) / 2.0;
-                push_image(&mut out, renderer, &img.buffer, (text_x, y));
+                let y = tab.y + (tab.h - img.height) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (text_x, y), self.scale);
             }
             if active && let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
-                let x = tab.right() - close_w + (close_w - img.width as f64) / 2.0 - 2.0;
-                let y = tab.y + (tab.h - img.height as f64) / 2.0;
-                push_image(&mut out, renderer, &img.buffer, (x, y));
+                let x = tab.right() - close_w + (close_w - img.width) / 2.0 - 2.0;
+                let y = tab.y + (tab.h - img.height) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (x, y), self.scale);
             }
             drop(text);
             let mark_shape = if active {
@@ -401,7 +404,7 @@ impl Tileception {
             let icon =
                 self.windows.get(win).and_then(|window| self.launcher.app_icon(&crate::state::app_id(window), 16));
             if let Some(icon) = icon {
-                push_image(&mut out, renderer, &icon, (mark_rect.x, mark_rect.y));
+                push_image(&mut out, renderer, &icon, (mark_rect.x, mark_rect.y), self.scale);
             } else {
                 push_shape(&mut out, shapes, &mark_rect, mark_shape);
             }
@@ -431,6 +434,10 @@ impl Tileception {
             self.cursor_status = CursorImageStatus::default_named();
         }
         let pos = self.pointer;
+        let scale = self.scale;
+        if udev.cursor.scale != scale {
+            udev.cursor = crate::cursor::Cursor::load(scale);
+        }
         match &self.cursor_status {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
@@ -441,16 +448,15 @@ impl Tileception {
                         .and_then(|a| a.lock().ok().map(|a| a.hotspot))
                         .unwrap_or_default()
                 });
-                let at: Point<i32, Physical> =
-                    ((pos.x - hotspot.x as f64).round() as i32, (pos.y - hotspot.y as f64).round() as i32).into();
-                render_elements_from_surface_tree(&mut udev.renderer, surface, at, 1.0, 1.0, Kind::Cursor)
-                    .into_iter()
-                    .map(OutputElement::Live)
-                    .collect()
+                let at = physical_point((pos.x - hotspot.x as f64, pos.y - hotspot.y as f64), scale);
+                let surfaces =
+                    render_elements_from_surface_tree(&mut udev.renderer, surface, at, 1.0, 1.0, Kind::Cursor);
+                enlarged(surfaces, at, scale).collect()
             }
             CursorImageStatus::Named(_) => {
+                // The theme's image is loaded at the scale, its hotspot in its own pixels.
                 let hot = udev.cursor.hotspot;
-                let at = (pos.x - hot.x as f64, pos.y - hot.y as f64);
+                let at = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
                     &mut udev.renderer,
                     at,
@@ -484,13 +490,17 @@ impl Tileception {
         if geo.size.w <= 0 || geo.size.h <= 0 {
             return Vec::new();
         }
-        let scale = Scale { x: content.w / geo.size.w as f64, y: content.h / geo.size.h as f64 };
-        let origin: Point<i32, Physical> = (
-            (content.x - geo.loc.x as f64 * scale.x).round() as i32,
-            (content.y - geo.loc.y as f64 * scale.y).round() as i32,
-        )
-            .into();
-        let crop = physical(content);
+        // From the window's logical size to the content's physical one.
+        let s = self.scale;
+        let scale = Scale { x: content.w / geo.size.w as f64 * s, y: content.h / geo.size.h as f64 * s };
+        let origin = physical_point(
+            (
+                content.x - geo.loc.x as f64 * content.w / geo.size.w as f64,
+                content.y - geo.loc.y as f64 * content.h / geo.size.h as f64,
+            ),
+            s,
+        );
+        let crop = physical(content, s);
         let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, origin, Scale::from(1.0), alpha);
         surfaces
@@ -505,22 +515,28 @@ impl Tileception {
 
 /// A live window's popups, which may reach past the window's own rectangle.
 /// X11 windows draw their menus as separate overlays instead.
-fn popup_elements(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
+fn popup_elements(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    d: &Drawn,
+    scale: f64,
+) -> Vec<OutputElement> {
     let Some(toplevel) = window.toplevel() else { return Vec::new() };
-    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
     smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
         .flat_map(|(popup, offset)| {
-            let at = origin + (window.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(1.0);
-            render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified)
+            let loc = (window.geometry().loc + offset - popup.geometry().loc).to_f64();
+            let at = physical_point((d.origin.x + loc.x, d.origin.y + loc.y), scale);
+            let surfaces =
+                render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified);
+            enlarged(surfaces, at, scale)
         })
-        .map(OutputElement::Live)
         .collect()
 }
 
 /// A live window without its popups, cut off at `d.content` when it is
 /// larger than its slot.
-fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn) -> Vec<OutputElement> {
-    let origin: Point<i32, Physical> = (d.origin.x.round() as i32, d.origin.y.round() as i32).into();
+fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn, scale: f64) -> Vec<OutputElement> {
+    let origin = physical_point((d.origin.x, d.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
         Some(toplevel) => {
             render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
@@ -528,13 +544,27 @@ fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Draw
         None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
     };
     if !d.clipped {
-        return surfaces.into_iter().map(OutputElement::Live).collect();
+        return enlarged(surfaces, origin, scale).collect();
     }
-    let crop = physical(&d.content);
+    let crop = physical(&d.content, scale);
     surfaces
         .into_iter()
-        .filter_map(|s| CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Clipped))
+        .filter_map(|s| {
+            let s = RescaleRenderElement::from_element(s, origin, scale);
+            CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Scaled)
+        })
         .collect()
+}
+
+/// Client surfaces made at `origin` with their offsets in logical pixels,
+/// enlarged by the output's scale about that point. A client that drew for
+/// the scale has as many buffer pixels as this takes, so it stays sharp.
+pub fn enlarged(
+    surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    origin: Point<i32, Physical>,
+    scale: f64,
+) -> impl Iterator<Item = OutputElement> {
+    surfaces.into_iter().map(move |s| OutputElement::Live(RescaleRenderElement::from_element(s, origin, scale)))
 }
 
 pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &Rect, shape: Shape) {
@@ -543,13 +573,16 @@ pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &
     }
 }
 
+/// An image rasterised at the output's scale, its top left at `at` in
+/// logical pixels, drawn one buffer pixel to one screen pixel.
 pub fn push_image(
     out: &mut Vec<OutputElement>,
     renderer: &mut GlesRenderer,
     buffer: &smithay::backend::renderer::element::memory::MemoryRenderBuffer,
     at: (f64, f64),
+    scale: f64,
 ) {
-    let at = (at.0.round(), at.1.round());
+    let at = ((at.0 * scale).round(), (at.1 * scale).round());
     if let Ok(e) =
         MemoryRenderBufferRenderElement::from_buffer(renderer, at, buffer, None, None, None, Kind::Unspecified)
     {
@@ -557,14 +590,20 @@ pub fn push_image(
     }
 }
 
-fn physical(r: &Rect) -> Rectangle<i32, Physical> {
-    let x0 = r.x.round() as i32;
-    let y0 = r.y.round() as i32;
-    let x1 = r.right().round() as i32;
-    let y1 = r.bottom().round() as i32;
+/// A point in logical pixels, in whole physical ones.
+pub fn physical_point(p: (f64, f64), scale: f64) -> Point<i32, Physical> {
+    ((p.0 * scale).round() as i32, (p.1 * scale).round() as i32).into()
+}
+
+/// A rectangle in logical pixels, in whole physical ones.
+pub fn physical(r: &Rect, scale: f64) -> Rectangle<i32, Physical> {
+    let x0 = (r.x * scale).round() as i32;
+    let y0 = (r.y * scale).round() as i32;
+    let x1 = (r.right() * scale).round() as i32;
+    let y1 = (r.bottom() * scale).round() as i32;
     Rectangle::new((x0, y0).into(), ((x1 - x0).max(0), (y1 - y0).max(0)).into())
 }
 
-pub fn solid(r: &Rect, colour: [f32; 4]) -> OutputElement {
-    OutputElement::Solid(SolidColorRenderElement::new(Id::new(), physical(r), 0usize, colour, Kind::Unspecified))
+pub fn solid(r: &Rect, colour: [f32; 4], scale: f64) -> OutputElement {
+    OutputElement::Solid(SolidColorRenderElement::new(Id::new(), physical(r, scale), 0usize, colour, Kind::Unspecified))
 }

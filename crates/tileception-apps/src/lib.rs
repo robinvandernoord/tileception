@@ -30,6 +30,18 @@ pub struct App {
     pub categories: Vec<String>,
     pub wm_class: Option<String>,
     pub hidden: bool,
+    /// Extra entry points from `[Desktop Action ...]` groups, in `Actions=` order.
+    pub actions: Vec<AppAction>,
+}
+
+/// One desktop action, such as Firefox's "New Private Window".
+#[derive(Clone, Debug)]
+pub struct AppAction {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+    /// Shell-quoted like [`App::exec`].
+    pub exec: String,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +53,8 @@ pub struct Usage {
 struct Searchable {
     name: String,
     secondary: Vec<String>,
+    /// Action names, in the order of `App::actions`.
+    actions: Vec<String>,
 }
 
 pub struct AppIndex {
@@ -124,6 +138,7 @@ impl AppIndex {
                             .map(|value| normalize(value))
                             .chain(std::iter::once(normalize(&desktop::program(&app.exec))))
                             .collect(),
+                        actions: app.actions.iter().map(|action| normalize(&action.name)).collect(),
                     },
                 );
                 self.apps.insert(id, app);
@@ -173,6 +188,58 @@ impl AppIndex {
                 .then_with(|| left.id.cmp(&right.id))
         });
         matches.into_iter().take(limit).map(|(_, app)| app).collect()
+    }
+}
+
+impl AppIndex {
+    /// Desktop actions of visible apps whose name matches every word of the
+    /// query, alone or together with the app's name ("private window",
+    /// "firefox private"). Actions named from the start come first.
+    pub fn search_actions(&self, query: &str, limit: usize) -> Vec<(&App, &AppAction)> {
+        let query = normalize(query.trim());
+        let words = query.split_whitespace().collect::<Vec<_>>();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let starts_word =
+            |text: &str, word: &str| text.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(word));
+        let mut matches = self
+            .apps
+            .values()
+            .filter(|app| !app.hidden)
+            .flat_map(|app| {
+                let normalized = &self.normalized[&app.id];
+                let words = &words;
+                let query = &query;
+                app.actions.iter().zip(&normalized.actions).filter_map(move |(action, name)| {
+                    let rank = if name.starts_with(query.as_str()) {
+                        0
+                    } else if words.iter().all(|word| starts_word(name, word)) {
+                        1
+                    } else if words.iter().all(|word| starts_word(name, word) || starts_word(&normalized.name, word))
+                        && words.iter().any(|word| starts_word(name, word))
+                    {
+                        2
+                    } else {
+                        return None;
+                    };
+                    Some((rank, app, action))
+                })
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|(left_rank, left, _), (right_rank, right, _)| {
+            left_rank.cmp(right_rank).then_with(|| self.normalized[&left.id].name.cmp(&self.normalized[&right.id].name))
+        });
+        matches.into_iter().take(limit).map(|(_, app, action)| (app, action)).collect()
+    }
+}
+
+/// The command line for a desktop action, with the app's terminal setting.
+pub fn action_command_line(app: &App, action: &AppAction, terminal: &str) -> String {
+    if app.terminal && !terminal.trim().is_empty() {
+        format!("{} {}", terminal.trim(), action.exec)
+    } else {
+        action.exec.clone()
     }
 }
 

@@ -1,7 +1,7 @@
 //! Shared text and icon drawing for the compositor's interface.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     path::{Path, PathBuf},
 };
@@ -59,10 +59,35 @@ pub mod glyph {
     pub const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
     pub const CHAT: &str = r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.4A8 8 0 1 1 21 12z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/>"#;
     pub const ALERT: &str = r#"<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/>"#;
+    pub const CALCULATOR: &str = r#"<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 12h.01M12 12h.01M16 12h.01M8 16h.01M12 16h.01M16 16h.01"/>"#;
+    pub const CLOCK: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>"#;
+    pub const CALENDAR: &str = r#"<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>"#;
+    pub const TERMINAL: &str = r#"<path d="M5 8l4 4-4 4M12 17h7"/><rect x="2" y="3" width="20" height="18" rx="2"/>"#;
+    pub const FOLDER: &str = r#"<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>"#;
+    pub const FILE: &str = r#"<path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/>"#;
+    pub const GLOBE: &str =
+        r#"<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>"#;
+    pub const OVERVIEW: &str = r#"<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>"#;
+    pub const CAMERA: &str = r#"<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>"#;
+    pub const CONTRAST: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 3v18M12 7.5h5M12 12h6M12 16.5h5"/>"#;
+    pub const WINDOW: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>"#;
+    pub const ZOOM_IN: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>"#;
+    pub const ZOOM_OUT: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>"#;
+    pub const ARROW_LEFT: &str = r#"<path d="M19 12H5M11 6l-6 6 6 6"/>"#;
 }
 
-#[derive(Default)]
-pub struct Icons(RefCell<HashMap<(PathBuf, u32), Option<MemoryRenderBuffer>>>);
+/// App and file icons, rasterised at the output's scale and cached by path
+/// and size in physical pixels.
+pub struct Icons {
+    cache: RefCell<HashMap<(PathBuf, u32), Option<MemoryRenderBuffer>>>,
+    scale: Cell<f64>,
+}
+
+impl Default for Icons {
+    fn default() -> Self {
+        Icons { cache: Default::default(), scale: Cell::new(1.0) }
+    }
+}
 
 pub fn compose_state() -> Option<xkb::compose::State> {
     let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
@@ -97,13 +122,24 @@ pub fn compose_text(compose: &mut Option<xkb::compose::State>, sym: u32) -> Opti
 }
 
 impl Icons {
+    pub fn set_scale(&self, scale: f64) {
+        self.scale.set(scale);
+    }
+
+    /// Physical pixels for `size` logical ones.
+    pub fn pixels(&self, size: u32) -> u32 {
+        (f64::from(size) * self.scale.get()).round().max(1.0) as u32
+    }
+
+    /// The icon at `path`, `size` logical pixels square.
     pub fn image(&self, path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
+        let size = self.pixels(size);
         let key = (path.to_path_buf(), size);
-        if let Some(image) = self.0.borrow().get(&key) {
+        if let Some(image) = self.cache.borrow().get(&key) {
             return image.clone();
         }
         let image = load_icon(path, size);
-        let mut cache = self.0.borrow_mut();
+        let mut cache = self.cache.borrow_mut();
         if cache.len() >= 512 {
             cache.clear();
         }
@@ -112,21 +148,35 @@ impl Icons {
     }
 }
 
-/// Line icons rasterised once per size and colour.
-#[derive(Default)]
-pub struct Glyphs(RefCell<HashMap<GlyphKey, Option<MemoryRenderBuffer>>>);
+/// Line icons rasterised once per size and colour, at the output's scale.
+pub struct Glyphs {
+    cache: RefCell<HashMap<GlyphKey, Option<MemoryRenderBuffer>>>,
+    scale: Cell<f64>,
+}
 
-/// A glyph's path data, size and straight RGBA colour.
+impl Default for Glyphs {
+    fn default() -> Self {
+        Glyphs { cache: Default::default(), scale: Cell::new(1.0) }
+    }
+}
+
+/// A glyph's path data, size in physical pixels and straight RGBA colour.
 type GlyphKey = (&'static str, u32, [u8; 4]);
 
 impl Glyphs {
+    pub fn set_scale(&self, scale: f64) {
+        self.scale.set(scale);
+    }
+
+    /// The glyph `size` logical pixels square.
     pub fn image(&self, glyph: &'static str, size: u32, colour: Colour) -> Option<MemoryRenderBuffer> {
+        let size = (f64::from(size) * self.scale.get()).round().max(1.0) as u32;
         let key = (glyph, size, colour.straight_rgba8());
-        if let Some(image) = self.0.borrow().get(&key) {
+        if let Some(image) = self.cache.borrow().get(&key) {
             return image.clone();
         }
         let image = render_glyph(glyph, size, colour);
-        let mut cache = self.0.borrow_mut();
+        let mut cache = self.cache.borrow_mut();
         if cache.len() >= 256 {
             cache.clear();
         }
@@ -164,6 +214,7 @@ pub fn ease_out(t: f64) -> f64 {
 
 /// The wall clock in the local time zone.
 pub struct LocalTime {
+    pub year: i32,
     pub hour: i32,
     pub minute: i32,
     pub weekday: usize,
@@ -185,6 +236,7 @@ impl LocalTime {
         // SAFETY: a non-null result means localtime_r initialised `tm`.
         let tm = unsafe { tm.assume_init() };
         Some(LocalTime {
+            year: tm.tm_year + 1900,
             hour: tm.tm_hour,
             minute: tm.tm_min,
             weekday: tm.tm_wday.clamp(0, 6) as usize,
@@ -312,20 +364,30 @@ impl<'a> Painter<'a> {
         self.shape(rect, Shape::filled(colour, radius));
     }
 
-    /// An image at its own size, or scaled to `size`.
+    /// An image rasterised at the output's scale, at its own size; or a
+    /// picture of `size` pixels drawn `size` logical pixels large, so it is
+    /// enlarged with the scale.
     pub fn image_sized(&mut self, buffer: &MemoryRenderBuffer, at: (f64, f64), size: Option<(i32, i32)>) {
         if self.alpha <= 0.0 {
             return;
         }
-        let at = ((at.0 + self.offset.0).round(), (at.1 + self.offset.1).round());
+        let s = self.state.scale;
+        let at = (((at.0 + self.offset.0) * s).round(), ((at.1 + self.offset.1) * s).round());
         let alpha = (self.alpha < 1.0).then_some(self.alpha);
-        let size = size.map(|(w, h)| (w.max(1), h.max(1)).into());
+        let (src, size) = match size {
+            Some((w, h)) => {
+                let (w, h) = (w.max(1), h.max(1));
+                let shown = ((f64::from(w) * s).round() as i32, (f64::from(h) * s).round() as i32);
+                (Some(smithay::utils::Rectangle::from_size((f64::from(w), f64::from(h)).into())), Some(shown.into()))
+            }
+            None => (None, None),
+        };
         if let Ok(e) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
             self.renderer,
             at,
             buffer,
             alpha,
-            None,
+            src,
             size,
             smithay::backend::renderer::element::Kind::Unspecified,
         ) {
@@ -362,7 +424,7 @@ impl<'a> Painter<'a> {
             style.lines,
         );
         let Some(image) = image else { return (0.0, 0.0) };
-        let (w, h) = (image.width as f64, image.height as f64);
+        let (w, h) = (image.width, image.height);
         let x = match style.align {
             Align::Left => rect.x,
             Align::Centre => rect.x + (rect.w - w) / 2.0,
@@ -378,7 +440,7 @@ impl<'a> Painter<'a> {
             .text
             .borrow_mut()
             .styled(label, &t.font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| (i.width as f64, i.height as f64))
+            .map(|i| (i.width, i.height))
             .unwrap_or((0.0, 0.0))
     }
 
@@ -518,7 +580,7 @@ impl Tileception {
             rect.w.max(1.0) as f32,
             bold,
         ) {
-            push_image(out, renderer, &image.buffer, (rect.x, rect.y + (rect.h - image.height as f64) / 2.0));
+            push_image(out, renderer, &image.buffer, (rect.x, rect.y + (rect.h - image.height) / 2.0), self.scale);
         }
     }
 }
