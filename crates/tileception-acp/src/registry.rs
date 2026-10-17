@@ -49,7 +49,7 @@ impl Agent {
     /// What is missing to run this agent here, in words for the user.
     pub fn missing(&self) -> Option<String> {
         match &self.launch {
-            Launch::Npx { .. } if !on_path("npx") => Some("needs Node.js (npx)".into()),
+            Launch::Npx { .. } if npx().is_none() => Some("needs Node.js (npx) or Bun (bunx)".into()),
             Launch::Uvx { .. } if !on_path("uvx") => Some("needs uv (uvx)".into()),
             Launch::Binary { archive, .. } => {
                 let tools: &[&str] = if archive.ends_with(".zip") { &["curl", "unzip"] } else { &["curl", "tar"] };
@@ -177,6 +177,24 @@ fn download(path: &Path) -> Result<(), String> {
     let partial = path.with_extension("part");
     crate::curl(REGISTRY_URL, &partial, "4000000")?;
     std::fs::rename(&partial, path).map_err(|e| e.to_string())
+}
+
+/// The runner for npm packages and its arguments before the package: npx,
+/// or Bun's bunx when Node.js is not installed. Without Node.js, --bun runs
+/// packages whose scripts ask for node under Bun. Bun puts bunx in
+/// ~/.bun/bin, which a login session's PATH often leaves out.
+pub fn npx() -> Option<(PathBuf, &'static [&'static str])> {
+    if on_path("npx") {
+        return Some(("npx".into(), &["-y"]));
+    }
+    if on_path("bunx") {
+        return Some(("bunx".into(), &["--bun"]));
+    }
+    let bun = std::env::var_os("BUN_INSTALL")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".bun")))?;
+    let bunx = bun.join("bin").join("bunx");
+    bunx.is_file().then_some((bunx, &["--bun"]))
 }
 
 pub fn on_path(program: &str) -> bool {

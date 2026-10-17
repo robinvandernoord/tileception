@@ -10,6 +10,7 @@
 mod answers;
 mod appearance;
 mod bar;
+mod battery;
 mod builtin_lock;
 mod calc;
 mod capture;
@@ -20,6 +21,7 @@ mod cursor;
 mod doctor;
 mod doctor_policy;
 mod focus;
+mod gestures;
 mod handlers;
 mod headless;
 mod idle;
@@ -43,11 +45,13 @@ mod scale;
 mod selection;
 mod shapes;
 mod shell;
+mod sleep;
 mod state;
 mod text;
 mod text_input;
 mod theme;
 mod toplevels;
+mod touch;
 mod udev;
 mod ui;
 mod wallpaper;
@@ -111,7 +115,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.session_services = !nested && !headless;
     if !nested && !headless {
         state.start_appearance();
+        state.start_sleep_watch();
         export_session_environment(&state);
+    }
+    // TILECEPTION_POWER_SUPPLY points at a stand-in for /sys/class/power_supply,
+    // for tests; such a battery never notifies, hibernates or changes profiles.
+    match std::env::var_os("TILECEPTION_POWER_SUPPLY") {
+        Some(root) => state.start_battery(Some(root.into()), false),
+        None if !nested && !headless => state.start_battery(None, true),
+        None => {}
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     state.notification_bus = notification_bus.clone();

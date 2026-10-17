@@ -152,6 +152,11 @@ impl Tileception {
             .collect()
     }
 
+    /// Whether the strip has something at this point.
+    pub(crate) fn strip_takes(&self, p: Point) -> bool {
+        self.strip_hit(p).is_some()
+    }
+
     fn strip_hit(&self, p: Point) -> Option<Hit> {
         if !self.strip.open || self.overlay_under(p) {
             return None;
