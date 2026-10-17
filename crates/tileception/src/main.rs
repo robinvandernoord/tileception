@@ -7,8 +7,10 @@
 //! Without a flag, Tileception runs nested when started inside another desktop
 //! (`WAYLAND_DISPLAY` or `DISPLAY` is set) and as the session otherwise.
 
+mod answers;
 mod appearance;
 mod builtin_lock;
+mod calc;
 mod capture;
 mod commands;
 mod config;
@@ -49,6 +51,7 @@ mod ui;
 mod wallpaper;
 mod winit;
 mod xwayland;
+mod zones;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
