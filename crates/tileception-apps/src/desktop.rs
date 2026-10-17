@@ -1,4 +1,4 @@
-use crate::App;
+use crate::{App, AppAction};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -146,7 +146,27 @@ pub(crate) fn parse(text: &str, id: &str, desktop: &str, locale: &str, path: &[P
         categories: values.get("Categories").map(|value| list(value)).unwrap_or_default(),
         wm_class: string("StartupWMClass"),
         hidden: hidden || boolean("NoDisplay") || !includes || excludes,
+        actions: values.get("Actions").map(|value| actions(&groups, value, &locales)).unwrap_or_default(),
     })
+}
+
+/// The `[Desktop Action id]` groups named in `Actions=`; those without a
+/// name or a usable Exec line are left out.
+fn actions(groups: &HashMap<String, HashMap<String, String>>, ids: &str, locales: &[String]) -> Vec<AppAction> {
+    list(ids)
+        .into_iter()
+        .filter_map(|id| {
+            let values = groups.get(&format!("Desktop Action {id}"))?;
+            let name = locales
+                .iter()
+                .find_map(|locale| values.get(&format!("Name[{locale}]")))
+                .or_else(|| values.get("Name"))
+                .map(|value| unescape(value))
+                .filter(|name| !name.is_empty())?;
+            let exec = exec_line(&unescape(values.get("Exec")?))?;
+            Some(AppAction { id, name, icon: values.get("Icon").map(|value| unescape(value)), exec })
+        })
+        .collect()
 }
 
 fn executable_file(path: &Path) -> bool {

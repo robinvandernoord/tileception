@@ -167,6 +167,8 @@ pub struct Tileception {
     pub selection: crate::selection::Selection,
     /// The strip of minimized windows at the bottom edge.
     pub strip: crate::minimized::Strip,
+    /// The bar along the top edge.
+    pub bar: crate::bar::Bar,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -309,6 +311,7 @@ impl Tileception {
             appearance: None,
             selection: Default::default(),
             strip: Default::default(),
+            bar: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             wallpaper: None,
@@ -351,6 +354,37 @@ impl Tileception {
     }
 
     pub fn spawn(&self, cmd: &str, args: &[String]) {
+        self.spawn_child(cmd, args, false);
+    }
+
+    /// Like [`Self::spawn`], returning the process id. With `group` the
+    /// program leads a process group of its own, so it can be stopped with
+    /// everything it started.
+    pub fn spawn_child(&self, cmd: &str, args: &[String], group: bool) -> Option<u32> {
+        let mut command = self.command(cmd, args);
+        if group {
+            std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        }
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        match command.spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                watch_child(child, label(cmd, args));
+                Some(pid)
+            }
+            Err(err) => {
+                tracing::warn!("could not start {cmd}: {err}");
+                None
+            }
+        }
+    }
+
+    /// A program set up to run in this session: its Wayland and X11
+    /// displays, toolkit preferences and the IPC socket.
+    pub fn command(&self, cmd: &str, args: &[String]) -> std::process::Command {
         let mut command = std::process::Command::new(cmd);
         command
             .args(args)
@@ -373,13 +407,6 @@ impl Tileception {
             None => command.env_remove("DISPLAY"),
         };
         command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        match command.spawn() {
-            Ok(child) => watch_child(child, label(cmd, args)),
-            Err(err) => tracing::warn!("could not start {cmd}: {err}"),
-        }
     }
 
     pub fn window_id(&self, surface: &WlSurface) -> Option<WindowId> {
@@ -709,6 +736,7 @@ impl Tileception {
         }
         self.popups.cleanup();
         self.update_strip();
+        self.update_bar();
         self.update_home();
         self.update_toplevels();
         let _ = self.display_handle.flush_clients();

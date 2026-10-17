@@ -1,4 +1,7 @@
-//! App search, icon lookup and a small persistent usage history.
+//! The launcher (tap Super) and the welcome screen: app search with a small
+//! persistent usage history, plus open windows, Tileception's own commands,
+//! desktop actions, instant answers (sums, conversions, times, colours,
+//! characters), paths and links, and `>` to run a command and see its output.
 
 use std::{
     collections::HashMap,
@@ -12,7 +15,7 @@ use smithay::{
     input::keyboard::{keysyms, xkb},
 };
 use tileception_apps::{AppIndex, IconLookup, Usage};
-use tileception_core::{Point, Rect};
+use tileception_core::{Point, Rect, WindowId};
 
 use smithay::wayland::selection::{
     SelectionTarget,
@@ -24,6 +27,8 @@ use smithay::wayland::selection::{
 
 use crate::{
     Tileception,
+    answers::{self, Answer, Look, Place},
+    power::PowerAction,
     render::OutputElement,
     shapes::Shape,
     theme::Colour,
@@ -74,6 +79,118 @@ pub enum Paste {
     Doctor,
 }
 
+/// One row of results.
+#[derive(Debug, Clone, PartialEq)]
+enum Entry {
+    /// A desktop entry, by id.
+    App(String),
+    /// One of an app's desktop actions, by app id and index.
+    Action { app: String, action: usize },
+    /// An open or minimized window: Enter flies there.
+    Window(WindowId),
+    /// One of [`COMMANDS`].
+    Command(usize),
+    /// Something Enter copies.
+    Answer(Answer),
+    /// A file, folder or link Enter opens.
+    Place(Place),
+    /// `>`: the command line to run.
+    Run(String),
+    /// "Ask Tileception", with the question.
+    Ask(String),
+}
+
+/// What a command row does.
+#[derive(Debug, Clone, Copy)]
+enum Does {
+    /// A `tileception msg` command line.
+    Line(&'static str),
+    Suspend,
+    /// Opens the power menu on this button, so ending the session takes a
+    /// second Enter.
+    Power(PowerAction),
+}
+
+struct Builtin {
+    name: &'static str,
+    /// More words it is found by.
+    words: &'static str,
+    glyph: &'static str,
+    does: Does,
+}
+
+const fn builtin(name: &'static str, words: &'static str, glyph: &'static str, does: Does) -> Builtin {
+    Builtin { name, words, glyph, does }
+}
+
+/// Tileception's own commands, found by typing their name.
+const COMMANDS: &[Builtin] = &[
+    builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
+    builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
+    builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
+    builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),
+    builtin("Restart", "reboot", glyph::RESTART, Does::Power(PowerAction::Restart)),
+    builtin("Power off", "shut down shutdown turn off", glyph::POWER, Does::Power(PowerAction::PowerOff)),
+    builtin("Do not disturb", "dnd quiet silence notifications", glyph::BELL, Does::Line("do-not-disturb")),
+    builtin("Notifications", "history messages", glyph::BELL, Does::Line("notifications")),
+    builtin("Take a screenshot", "print screen capture", glyph::CAMERA, Does::Line("spawn tileception-screenshot")),
+    builtin(
+        "Screenshot of a region",
+        "print screen capture area select",
+        glyph::CAMERA,
+        Does::Line("spawn tileception-screenshot region --ask"),
+    ),
+    builtin(
+        "Dark style for apps",
+        "dark mode theme colour color scheme night",
+        glyph::CONTRAST,
+        Does::Line("colour-scheme dark"),
+    ),
+    builtin(
+        "Light style for apps",
+        "light mode theme colour color scheme day",
+        glyph::CONTRAST,
+        Does::Line("colour-scheme light"),
+    ),
+    builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
+    builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
+    builtin("Open a terminal", "shell console", glyph::TERMINAL, Does::Line("terminal")),
+    builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
+    builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
+    builtin("Restore minimized window", "unminimize bring back", glyph::WINDOW, Does::Line("restore")),
+    builtin("Float or dock window", "floating tile", glyph::WINDOW, Does::Line("float")),
+    builtin("Fullscreen", "full screen", glyph::WINDOW, Does::Line("fullscreen")),
+    builtin("Close window", "quit", glyph::CLOSE, Does::Line("close")),
+    builtin("Toggle split", "stack side by side rotate", glyph::OVERVIEW, Does::Line("toggle-split")),
+    builtin("Step in", "zoom in", glyph::ZOOM_IN, Does::Line("step-in")),
+    builtin("Step out", "zoom out", glyph::ZOOM_OUT, Does::Line("step-out")),
+    builtin("Back", "previous view history", glyph::ARROW_LEFT, Does::Line("back")),
+    builtin("Forward", "next view history", glyph::ARROW_RIGHT, Does::Line("forward")),
+    builtin("Show desktop", "desktop tile", glyph::OVERVIEW, Does::Line("desktop")),
+];
+
+/// A command started with `>` and what it printed.
+struct Run {
+    line: String,
+    started: Instant,
+    output: Option<RunOutput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunOutput {
+    text: String,
+    status: RunStatus,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+enum RunStatus {
+    Exited(i32),
+    Signal(i32),
+    TimedOut,
+    Failed(String),
+}
+
 pub struct Launcher {
     pub open: bool,
     /// Open as the welcome screen on an empty desktop.
@@ -88,8 +205,16 @@ pub struct Launcher {
     opened: Instant,
     selecting: bool,
     clipboard: Option<smithay::reexports::calloop::channel::Sender<(Paste, Clip)>>,
+    finished: Option<smithay::reexports::calloop::channel::Sender<(u64, String, RunOutput)>>,
     epoch: u64,
     selected: usize,
+    /// The rows for what is typed, worked out when it changes.
+    entries: Vec<Entry>,
+    /// What Enter last copied, and when, to say so on its row.
+    copied: Option<(String, Instant)>,
+    run: Option<Run>,
+    /// Lines the output is scrolled back from its end.
+    output_scroll: usize,
     index: AppIndex,
     lookup: IconLookup,
     pub icons: Icons,
@@ -111,8 +236,13 @@ impl Default for Launcher {
             opened: Instant::now(),
             selecting: false,
             clipboard: None,
+            finished: None,
             epoch: 0,
             selected: 0,
+            entries: Vec::new(),
+            copied: None,
+            run: None,
+            output_scroll: 0,
             index: AppIndex::scan_default(),
             lookup: IconLookup::new("hicolor", &IconLookup::default_dirs()),
             icons: Icons::default(),
@@ -128,25 +258,6 @@ impl Default for Launcher {
 }
 
 impl Launcher {
-    fn matches(&self) -> Vec<&tileception_apps::App> {
-        // "?" starts a question for the doctor, not an app search.
-        if self.input.text.trim_start().starts_with('?') {
-            return Vec::new();
-        }
-        self.index.search(&self.input.text, &self.usage, 8)
-    }
-
-    /// What typing would ask the doctor: anything after "?", or text that
-    /// reads like a question (ending in "?", or three words or more).
-    fn question(&self) -> Option<String> {
-        question_in(&self.input.text)
-    }
-
-    /// Rows in the list: the apps, then "Ask Tileception" when there is a question.
-    fn entries(&self) -> usize {
-        self.matches().len() + usize::from(self.question().is_some())
-    }
-
     pub fn app_icon(
         &self,
         app_id: &str,
@@ -154,8 +265,23 @@ impl Launcher {
     ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
         let desktop_id = if app_id.ends_with(".desktop") { app_id.to_owned() } else { format!("{app_id}.desktop") };
         let icon = self.index.get(&desktop_id).and_then(|app| app.icon.as_deref()).unwrap_or(app_id);
-        let path = self.lookup.find(icon, self.icons.pixels(size), 1)?;
+        self.icon(icon, size)
+    }
+
+    fn icon(&self, name: &str, size: u32) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
+        let path = self.lookup.find(name, self.icons.pixels(size), 1)?;
         self.icons.image(&path, size)
+    }
+
+    /// The command output to show: that of the command typed now.
+    fn shown_run(&self) -> Option<&Run> {
+        let line = answers::command(&self.input.text)?;
+        self.run.as_ref().filter(|run| run.line == line)
+    }
+
+    /// Whether Enter just copied this.
+    fn just_copied(&self, text: &str) -> bool {
+        self.copied.as_ref().is_some_and(|(copied, at)| copied == text && at.elapsed() < COPIED_FOR)
     }
 }
 
@@ -181,6 +307,17 @@ impl Tileception {
         Ok(())
     }
 
+    /// Puts text on the clipboard, owned by the compositor, for Wayland and X11.
+    fn copy_text(&mut self, text: String) {
+        let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
+        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
+        {
+            tracing::warn!("could not offer launcher text to X11: {error:?}");
+        }
+    }
+
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<(Paste, Clip)>();
@@ -192,6 +329,15 @@ impl Tileception {
                 }
             })
             .expect("clipboard event source");
+        let (sender, receiver) = channel::channel::<(u64, String, RunOutput)>();
+        self.launcher.finished = Some(sender);
+        self.loop_handle
+            .insert_source(receiver, |event, _, state| {
+                if let channel::Event::Msg((epoch, line, output)) = event {
+                    state.run_finished(epoch, line, output);
+                }
+            })
+            .expect("command output event source");
     }
 
     /// A paste arriving, if what it was meant for is still there.
@@ -262,10 +408,12 @@ impl Tileception {
         self.launcher.input.clear();
         self.launcher.edited = Instant::now();
         self.launcher.opened = Instant::now();
+        self.launcher.copied = None;
+        self.launcher.run = None;
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
-        self.launcher.selected = 0;
+        self.refresh_launcher();
         self.force_keyboard_focus_sync();
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
@@ -280,8 +428,104 @@ impl Tileception {
         self.force_keyboard_focus_sync();
     }
 
+    /// Works out the rows for what is typed now.
+    fn refresh_launcher(&mut self) {
+        self.launcher.entries = self.launcher_entries();
+        self.launcher.selected = 0;
+    }
+
+    fn launcher_entries(&self) -> Vec<Entry> {
+        let text = self.launcher.input.text.trim();
+        let launcher = &self.launcher;
+        if text.is_empty() {
+            return launcher
+                .index
+                .search("", &launcher.usage, MAX_ROWS)
+                .iter()
+                .map(|a| Entry::App(a.id.clone()))
+                .collect();
+        }
+        if let Some(line) = answers::command(text) {
+            return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let found = answers::answers(text, now);
+        if text.starts_with(':') {
+            return found.into_iter().map(Entry::Answer).collect();
+        }
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let places = answers::places(text, &home);
+        if !places.is_empty() || text.starts_with(['/', '~']) {
+            return places.into_iter().map(Entry::Place).collect();
+        }
+
+        // Apps, windows, actions and commands, best matches first, with apps
+        // ahead of the rest when they match as well.
+        let query = text.to_lowercase();
+        let mut ranked: Vec<(u8, u8, Entry)> = Vec::new();
+        for app in launcher.index.search(text, &launcher.usage, MAX_ROWS) {
+            let quality = quality(&query, &app.name.to_lowercase()).unwrap_or(4);
+            ranked.push((quality, 0, Entry::App(app.id.clone())));
+        }
+        let mut windows: Vec<(u8, WindowId)> = self
+            .windows
+            .iter()
+            .filter(|(id, _)| self.world.contains_window(**id) || self.world.is_minimized(**id))
+            .filter_map(|(id, window)| {
+                let title = crate::state::window_title(window).to_lowercase();
+                let app = crate::state::app_id(window).to_lowercase();
+                let best = quality(&query, &title).into_iter().chain(quality(&query, &app)).min()?;
+                Some((best, *id))
+            })
+            .collect();
+        windows.sort_by_key(|(quality, id)| (*quality, id.0));
+        ranked.extend(windows.into_iter().take(3).map(|(quality, id)| (quality, 1, Entry::Window(id))));
+        if query.chars().count() >= 2 {
+            let commands = COMMANDS
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !matches!(c.does, Does::Suspend) || self.config.file.general.suspend_enabled)
+                .filter_map(|(i, c)| {
+                    let by_name = quality(&query, &c.name.to_lowercase());
+                    let by_words = query.split_whitespace().all(|w| c.words.split(' ').any(|k| k.starts_with(w)));
+                    let quality = by_name.or(by_words.then_some(3))?;
+                    Some((quality, 2, Entry::Command(i)))
+                })
+                .take(3);
+            ranked.extend(commands);
+            for (app, action) in launcher.index.search_actions(text, 3) {
+                let index = app.actions.iter().position(|a| a.id == action.id).unwrap_or(0);
+                let quality = quality(&query, &action.name.to_lowercase()).unwrap_or(3);
+                ranked.push((quality, 3, Entry::Action { app: app.id.clone(), action: index }));
+            }
+        }
+        // A stable sort keeps each kind's own order among equals.
+        ranked.sort_by_key(|(quality, kind, _)| (*quality, *kind));
+
+        let mut entries: Vec<Entry> = found.into_iter().map(Entry::Answer).collect();
+        let room = MAX_ROWS.saturating_sub(entries.len()).max(2);
+        entries.extend(ranked.into_iter().take(room).map(|(_, _, entry)| entry));
+        // Sums and conversions are answers, not questions for the doctor.
+        let answered = entries.iter().any(|e| matches!(e, Entry::Answer(_)));
+        if !answered
+            && !crate::calc::looks_like_conversion(text)
+            && let Some(question) = question_in(text)
+        {
+            entries.push(Entry::Ask(question));
+        }
+        entries
+    }
+
     pub fn launcher_key(&mut self, sym: u32, mods: crate::config::Mods) {
         self.launcher.edited = Instant::now();
+        let before = self.launcher.input.text.clone();
+        self.launcher_key_inner(sym, mods);
+        if self.launcher.open && self.launcher.input.text != before {
+            self.refresh_launcher();
+        }
+    }
+
+    fn launcher_key_inner(&mut self, sym: u32, mods: crate::config::Mods) {
         let word = mods.ctrl || mods.alt;
         // On the welcome screen's grid, arrows move between the tiles.
         if self.launcher.home && self.launcher.input.text.is_empty() {
@@ -293,66 +537,70 @@ impl Tileception {
                 _ => {}
             }
         }
+        // Up and down scroll a command's output, a line or a page at a time.
+        if let Some(lines) =
+            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|o| o.text.lines().count())
+        {
+            let page = OUTPUT_LINES - 2;
+            let most = lines.saturating_sub(OUTPUT_LINES - 1);
+            let scroll = &mut self.launcher.output_scroll;
+            match sym {
+                keysyms::KEY_Up => return *scroll = (*scroll + 1).min(most),
+                keysyms::KEY_Down => return *scroll = scroll.saturating_sub(1),
+                keysyms::KEY_Page_Up => return *scroll = (*scroll + page).min(most),
+                keysyms::KEY_Page_Down => return *scroll = scroll.saturating_sub(page),
+                _ => {}
+            }
+        }
         match sym {
             // The welcome screen is the desktop, not something to close:
             // Esc only clears the search there. Super still hides it.
-            keysyms::KEY_Escape if self.launcher.home => {
-                self.launcher.input.clear();
-                self.launcher.selected = 0;
-            }
+            keysyms::KEY_Escape if self.launcher.home => self.launcher.input.clear(),
             keysyms::KEY_Escape => self.close_launcher(),
-            keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_app(),
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_selected(mods),
+            // Tab completes a path; otherwise it moves like the arrows.
+            keysyms::KEY_Tab if !mods.shift && self.selected_completion().is_some() => {
+                if let Some(completion) = self.selected_completion() {
+                    self.launcher.input.clear();
+                    self.launcher.input.insert(&completion);
+                }
+            }
             keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.launcher_step(-1),
             keysyms::KEY_Down | keysyms::KEY_Tab => self.launcher_step(1),
             keysyms::KEY_Left => self.launcher.input.move_horizontal(false, word, mods.shift),
             keysyms::KEY_Right => self.launcher.input.move_horizontal(true, word, mods.shift),
             keysyms::KEY_Home => self.launcher.input.move_to(0, mods.shift),
             keysyms::KEY_End => self.launcher.input.move_to(self.launcher.input.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => {
-                self.launcher.input.delete(false, word);
-                self.launcher.selected = 0;
-            }
-            keysyms::KEY_Delete => {
-                self.launcher.input.delete(true, word);
-                self.launcher.selected = 0;
-            }
+            keysyms::KEY_BackSpace => self.launcher.input.delete(false, word),
+            keysyms::KEY_Delete => self.launcher.input.delete(true, word),
             _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => self.launcher.input.select_all(),
             _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
                 let range = self.launcher.input.selection();
                 if !range.is_empty() {
                     let text = self.launcher.input.text[range].to_owned();
-                    let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
-                    set_data_device_selection(
-                        &self.display_handle,
-                        &self.seat,
-                        mime_types.clone(),
-                        Some(Clip::Text(text)),
-                    );
-                    if let Some(xwm) = self.xwm.as_mut()
-                        && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
-                    {
-                        tracing::warn!("could not offer launcher text to X11: {error:?}");
-                    }
+                    self.copy_text(text);
                     if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
                         self.launcher.input.insert("");
-                        self.launcher.selected = 0;
                     }
                 }
             }
             _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
                 self.paste(Paste::Launcher(self.launcher.epoch));
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => {
-                self.launcher.input.clear();
-                self.launcher.selected = 0;
-            }
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => self.launcher.input.clear(),
             _ if !mods.ctrl && !mods.logo && !mods.alt => {
                 if let Some(text) = crate::ui::compose_text(&mut self.launcher.compose, sym) {
                     self.launcher.input.insert(&text);
-                    self.launcher.selected = 0;
                 }
             }
             _ => {}
+        }
+    }
+
+    fn selected_completion(&self) -> Option<String> {
+        match self.launcher.entries.get(self.launcher.selected) {
+            Some(Entry::Place(place)) => place.completion.clone(),
+            _ => None,
         }
     }
 
@@ -443,11 +691,11 @@ impl Tileception {
         let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
         self.launcher.input.insert(&text);
         self.launcher.edited = Instant::now();
-        self.launcher.selected = 0;
+        self.refresh_launcher();
     }
 
     pub fn launcher_step(&mut self, delta: isize) {
-        let len = self.launcher.entries();
+        let len = self.launcher.entries.len();
         if len > 0 {
             self.launcher.selected = (self.launcher.selected as isize + delta).rem_euclid(len as isize) as usize;
         }
@@ -455,35 +703,76 @@ impl Tileception {
 
     /// Up or down a row of the welcome screen's grid, staying on the grid.
     fn home_row_step(&mut self, rows: isize) {
-        let len = self.launcher.matches().len() as isize;
+        let len = self.launcher.entries.len() as isize;
         let next = self.launcher.selected as isize + rows * HOME_COLUMNS as isize;
         if (0..len).contains(&next) {
             self.launcher.selected = next as usize;
         }
     }
 
-    fn launch_app(&mut self) {
-        if self.launcher.selected == self.launcher.matches().len() {
-            if let Some(question) = self.launcher.question() {
+    /// Enter on the chosen row. Ctrl+Enter runs a `>` command in a terminal.
+    fn launch_selected(&mut self, mods: crate::config::Mods) {
+        let Some(entry) = self.launcher.entries.get(self.launcher.selected).cloned() else { return };
+        match entry {
+            Entry::App(id) => {
+                let Some(command) = self
+                    .launcher
+                    .index
+                    .get(&id)
+                    .map(|app| tileception_apps::command_line(app, &format!("{} -e", self.terminal)))
+                else {
+                    return;
+                };
+                self.launch_command(command, &id);
+            }
+            Entry::Action { app, action } => {
+                let Some(command) = self.launcher.index.get(&app).and_then(|entry| {
+                    let action = entry.actions.get(action)?;
+                    Some(tileception_apps::action_command_line(entry, action, &format!("{} -e", self.terminal)))
+                }) else {
+                    return;
+                };
+                self.launch_command(command, &app);
+            }
+            Entry::Window(id) => {
+                self.close_launcher();
+                self.fly_to_window(id);
+            }
+            Entry::Command(i) => {
+                self.close_launcher();
+                self.run_builtin(COMMANDS[i].does);
+            }
+            Entry::Answer(answer) => {
+                self.copy_text(answer.copy.clone());
+                self.launcher.copied = Some((answer.copy, Instant::now()));
+            }
+            Entry::Place(place) => {
+                self.close_launcher();
+                self.spawn("xdg-open", &[place.target]);
+            }
+            Entry::Run(line) if mods.ctrl => {
+                self.close_launcher();
+                // The terminal stays open on a shell afterwards, to read the output.
+                let script = format!("{line}; exec \"${{SHELL:-sh}}\"");
+                let command = format!("{} -e sh -c {}", self.terminal, shell_quote(&script));
+                self.spawn("sh", &["-c".into(), command]);
+            }
+            Entry::Run(line) => self.start_run(line),
+            Entry::Ask(question) => {
                 self.close_launcher();
                 self.ask_doctor(&question);
             }
-            return;
         }
-        let Some((id, command)) = self
-            .launcher
-            .matches()
-            .get(self.launcher.selected)
-            .map(|app| (app.id.clone(), tileception_apps::command_line(app, &format!("{} -e", self.terminal))))
-        else {
-            return;
-        };
+    }
+
+    /// Starts an app's command line and counts it towards its usage.
+    fn launch_command(&mut self, command: String, id: &str) {
         if self.launcher.home {
             self.launcher.quiet_until = Some(Instant::now() + HOME_QUIET);
         }
         self.close_launcher();
         self.spawn("sh", &["-c".into(), command]);
-        let entry = self.launcher.usage.entry(id).or_insert(Usage { count: 0, last_used: UNIX_EPOCH });
+        let entry = self.launcher.usage.entry(id.to_string()).or_insert(Usage { count: 0, last_used: UNIX_EPOCH });
         entry.count = entry.count.saturating_add(1);
         entry.last_used = SystemTime::now();
         let stored: HashMap<_, _> = self
@@ -510,18 +799,103 @@ impl Tileception {
         }
     }
 
+    /// Brings a window into view: restored when minimized, else focused,
+    /// with the camera moving to it when it is outside the framed space.
+    fn fly_to_window(&mut self, id: WindowId) {
+        let now = self.now();
+        if let Some(full) = self.fullscreen
+            && full != id
+        {
+            self.set_fullscreen(full, false);
+        }
+        if self.world.in_overview() {
+            self.world.exit_overview(now);
+        }
+        if self.world.is_minimized(id) {
+            self.world.restore(id, now);
+        } else {
+            self.world.focus_window(id, now);
+        }
+        self.apply_layout();
+        self.persist_layout();
+    }
+
+    fn run_builtin(&mut self, does: Does) {
+        match does {
+            Does::Line(line) => match crate::commands::parse(line) {
+                Ok(command) => {
+                    if let Err(error) = self.execute(command) {
+                        tracing::warn!("launcher command {line:?}: {error}");
+                    }
+                }
+                Err(error) => tracing::warn!("launcher command {line:?}: {error}"),
+            },
+            Does::Suspend => self.run_power_action(PowerAction::Suspend),
+            Does::Power(action) => {
+                self.shell_power_menu();
+                if let Some(menu) = self.power_menu.as_mut() {
+                    menu.selected = PowerAction::ALL.iter().position(|a| *a == action).unwrap_or(0);
+                }
+            }
+        }
+    }
+
+    /// The shortcut bound to a command, such as "Super+O".
+    fn shortcut(&self, does: Does) -> Option<String> {
+        let line = match does {
+            Does::Line(line) => line,
+            Does::Power(_) => "power-menu",
+            Does::Suspend => return None,
+        };
+        let command = crate::commands::parse(line).ok()?;
+        let bind = self.config.binds.iter().find(|b| b.commands.first() == Some(&command))?;
+        Some(combo_label(bind.mods, bind.key))
+    }
+
+    /// Runs a `>` command in the background; its output comes back to the
+    /// launcher if it is still open for the same command.
+    fn start_run(&mut self, line: String) {
+        let Some(sender) = self.launcher.finished.clone() else { return };
+        let mut command = self.command("sh", &["-c".into(), line.clone()]);
+        if let Some(home) = std::env::var_os("HOME") {
+            command.current_dir(home);
+        }
+        let epoch = self.launcher.epoch;
+        self.launcher.run = Some(Run { line: line.clone(), started: Instant::now(), output: None });
+        self.launcher.output_scroll = 0;
+        std::thread::spawn(move || {
+            let output = capture(command, RUN_LIMIT, RUN_TIMEOUT);
+            let _ = sender.send((epoch, line, output));
+        });
+    }
+
+    fn run_finished(&mut self, epoch: u64, line: String, output: RunOutput) {
+        if !self.launcher.open || self.launcher.epoch != epoch {
+            return;
+        }
+        if let Some(run) = self.launcher.run.as_mut()
+            && run.line == line
+            && run.output.is_none()
+        {
+            run.output = Some(output);
+            self.schedule_render();
+        }
+    }
+
     /// Where everything in the launcher goes, for drawing and for the pointer.
-    fn launcher_layout(&self, results: usize) -> LauncherLayout {
+    fn launcher_layout(&self) -> LauncherLayout {
+        let results = self.launcher.entries.len();
         let screen = self.output_rect();
         let w = (screen.w - 32.0).clamp(1.0, PANEL_W);
         let grid = self.home_grid();
+        let output_h = self.launcher.shown_run().map(|_| OUTPUT_LINES as f64 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD);
         let list_h = if grid {
             results.div_ceil(HOME_COLUMNS).max(1) as f64 * TILE_H
         } else if results == 0 {
             2.0 * ROW_H
         } else {
             results as f64 * ROW_H
-        };
+        } + output_h.map_or(0.0, |h| h + 6.0);
         let h = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
         // A fixed top edge, so the field stays put while results come and go.
         // The welcome screen sits lower, under its clock.
@@ -533,7 +907,7 @@ impl Tileception {
         let panel = Rect::new(screen.x + (screen.w - w) / 2.0, top, w, h);
         let field = Rect::new(panel.x + PAD, panel.y + PAD, panel.w - 2.0 * PAD, FIELD_H);
         let caption = Rect::new(panel.x + PAD + 6.0, field.bottom(), panel.w - 2.0 * PAD - 12.0, CAPTION_H);
-        let rows = if grid {
+        let rows: Vec<Rect> = if grid {
             let tile_w = (panel.w - 2.0 * PAD) / HOME_COLUMNS as f64;
             (0..results)
                 .map(|i| {
@@ -549,12 +923,21 @@ impl Tileception {
                 })
                 .collect()
         };
+        let output = output_h.map(|h| {
+            let y = rows.last().map_or(caption.bottom(), |r| r.bottom() + 6.0);
+            Rect::new(panel.x + PAD, y, panel.w - 2.0 * PAD, h)
+        });
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
-        let media = (self.launcher.home && self.media.snapshot.media.active().is_some())
+        let media = self
+            .media
+            .snapshot
+            .media
+            .active()
+            .is_some()
             .then(|| crate::controls::media_card_layout(panel.x, panel.bottom() + 12.0, panel.w))
             .filter(|card| card.rect.bottom() <= screen.bottom() - 8.0);
-        LauncherLayout { panel, field, text, caption, rows, footer, media }
+        LauncherLayout { panel, field, text, caption, rows, output, footer, media }
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -565,13 +948,12 @@ impl Tileception {
     /// Whether the welcome screen takes the pointer here. Elsewhere the
     /// desktop (bars, the notification panel) gets it as usual.
     pub fn home_contains(&self, point: Point) -> bool {
-        let layout = self.launcher_layout(self.launcher.entries());
+        let layout = self.launcher_layout();
         layout.panel.contains(point) || layout.media.is_some_and(|m| m.rect.contains(point))
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
-        let layout = self.launcher_layout(self.launcher.entries());
-        layout.rows.iter().position(|row| row.contains(point))
+        self.launcher_layout().rows.iter().position(|row| row.contains(point))
     }
 
     pub fn launcher_motion(&mut self, point: Point) {
@@ -585,7 +967,7 @@ impl Tileception {
     }
 
     pub fn launcher_click(&mut self, point: Point) {
-        let layout = self.launcher_layout(self.launcher.entries());
+        let layout = self.launcher_layout();
         if layout.field.contains(point) {
             let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
             self.launcher_cursor_at(point, extend);
@@ -601,7 +983,7 @@ impl Tileception {
         }
         if let Some(i) = self.launcher_at(point) {
             self.launcher.selected = i;
-            self.launch_app();
+            self.launch_selected(crate::config::Mods::default());
         } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
         }
@@ -612,7 +994,7 @@ impl Tileception {
     }
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
-        let text = self.launcher_layout(self.launcher.entries()).text;
+        let text = self.launcher_layout().text;
         let input = &self.launcher.input;
         let position = self.text.borrow_mut().field_hit(
             &input.text,
@@ -631,9 +1013,8 @@ impl Tileception {
             return Vec::new();
         }
         let t = &self.theme;
-        let matches = self.launcher.matches();
-        let question = self.launcher.question();
-        let layout = self.launcher_layout(self.launcher.entries());
+        let entries = &self.launcher.entries;
+        let layout = self.launcher_layout();
         let input = &self.launcher.input;
         let mut p = Painter::new(self, renderer);
 
@@ -682,8 +1063,9 @@ impl Tileception {
             },
         );
         let typing = !input.text.is_empty();
+        let running = answers::command(&input.text).is_some();
         p.glyph(
-            glyph::SEARCH,
+            if running { glyph::TERMINAL } else { glyph::SEARCH },
             Rect::new(layout.field.x + 8.0, layout.field.y, 28.0, layout.field.h),
             18,
             if typing { t.accent } else { t.muted },
@@ -691,7 +1073,7 @@ impl Tileception {
         let size = t.font_size * SEARCH_SCALE;
         if !typing {
             let hint = Rect::new(layout.text.x + 4.0, layout.text.y, layout.text.w - 4.0, layout.text.h);
-            p.text("Search applications", hint, Style::new(size, t.muted));
+            p.text("Search, calculate, or > run a command", hint, Style::new(size, t.muted));
         }
         let field = self.text.borrow_mut().field(
             &input.text,
@@ -710,8 +1092,11 @@ impl Tileception {
             p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height) / 2.0));
         }
         // The rest of the chosen name, greyed out after what was typed.
-        let chosen = matches.get(self.launcher.selected);
-        if let Some(rest) = chosen.and_then(|app| completion(&input.text, &app.name))
+        let chosen = match entries.get(self.launcher.selected) {
+            Some(Entry::App(id)) => self.launcher.index.get(id).map(|app| app.name.as_str()),
+            _ => None,
+        };
+        if let Some(rest) = chosen.and_then(|name| completion(&input.text, name))
             && input.cursor == input.text.len()
             && input.anchor.is_none()
         {
@@ -724,7 +1109,12 @@ impl Tileception {
         }
 
         let grid = self.home_grid();
-        let caption = if typing {
+        let trimmed = input.text.trim_start();
+        let caption = if running {
+            "COMMAND"
+        } else if trimmed.starts_with(':') {
+            "CHARACTERS"
+        } else if typing {
             "RESULTS"
         } else if self.launcher.usage.is_empty() {
             "APPLICATIONS"
@@ -733,103 +1123,61 @@ impl Tileception {
         };
         p.text(caption, layout.caption, Style::new(t.font_size * 0.75, t.muted).bold());
 
-        if matches.is_empty() && question.is_none() {
+        if entries.is_empty() {
             let area = Rect::new(layout.panel.x, layout.caption.bottom(), layout.panel.w, 2.0 * ROW_H);
-            p.glyph(glyph::SEARCH, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
-            let message = format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim());
+            let (icon, message) = if running {
+                (glyph::TERMINAL, "Type a command to run".to_string())
+            } else if trimmed.starts_with(':') && trimmed.len() == 1 {
+                (glyph::SEARCH, "Type a name, such as :thumbs or :arrow".to_string())
+            } else {
+                (glyph::SEARCH, format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim()))
+            };
+            p.glyph(icon, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
             p.text(
                 &message,
                 Rect::new(area.x + 24.0, area.y + 52.0, area.w - 48.0, 28.0),
                 Style::new(t.font_size, t.muted).align(Align::Centre),
             );
         }
-        for (i, (app, row)) in matches.iter().zip(&layout.rows).enumerate() {
+        for (i, (entry, row)) in entries.iter().zip(&layout.rows).enumerate() {
             let selected = i == self.launcher.selected;
             if grid {
-                self.draw_tile(&mut p, app, *row, selected);
+                if let Entry::App(id) = entry
+                    && let Some(app) = self.launcher.index.get(id)
+                {
+                    self.draw_tile(&mut p, app, *row, selected);
+                }
                 continue;
             }
-            if selected {
-                p.shape(
-                    *row,
-                    Shape {
-                        radius: t.radius,
-                        fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
-                        ..Default::default()
-                    },
-                );
-                p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
-            }
-            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
-            if let Some(image) = self.launcher.app_icon(&app.id, 32) {
-                p.image(&image, (icon.x, icon.y));
-            } else {
-                p.shape(icon, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
-                let initial: String = app.name.chars().take(1).collect::<String>().to_uppercase();
-                p.text(&initial, icon, Style::new(t.font_size * 1.2, t.on_accent).bold().align(Align::Centre));
-            }
-            let enter_w = if selected { 64.0 } else { 0.0 };
-            let text_x = icon.right() + 14.0;
-            let text_w = row.right() - text_x - 12.0 - enter_w;
-            let name_style = Style::new(t.font_size * 1.05, if selected { t.text } else { t.text.alpha(0.88) });
-            let name_style = if selected { name_style.bold() } else { name_style };
-            match subtitle(app) {
-                Some(sub) => {
-                    p.text(&app.name, Rect::new(text_x, row.y + 7.0, text_w, 22.0), name_style);
-                    p.text(sub, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
-                }
-                None => {
-                    p.text(&app.name, Rect::new(text_x, row.y, text_w, row.h), name_style);
-                }
-            }
-            if selected {
-                let w = p.keycap_width("Enter");
-                p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
-            }
+            self.draw_entry(&mut p, entry, *row, selected);
         }
-
-        if let (Some(question), Some(row)) = (&question, layout.rows.get(matches.len())) {
-            let selected = self.launcher.selected == matches.len();
-            if selected {
-                p.shape(
-                    *row,
-                    Shape {
-                        radius: t.radius,
-                        fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
-                        ..Default::default()
-                    },
-                );
-                p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
-            }
-            let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
-            p.fill(icon, t.surface_raised, t.radius);
-            p.glyph(glyph::CHAT, icon, 18, t.accent);
-            let enter_w = if selected { 64.0 } else { 0.0 };
-            let text_x = icon.right() + 14.0;
-            let text_w = row.right() - text_x - 12.0 - enter_w;
-            p.text(
-                "Ask Tileception",
-                Rect::new(text_x, row.y + 7.0, text_w, 22.0),
-                Style::new(t.font_size * 1.05, t.text).bold(),
-            );
-            p.text(question, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
-            if selected {
-                let w = p.keycap_width("Enter");
-                p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
-            }
+        if let (Some(area), Some(run)) = (layout.output, self.launcher.shown_run()) {
+            self.draw_output(&mut p, area, run);
         }
 
         // Keys along the bottom, under a hairline.
         let footer = layout.footer;
         p.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), t.border, 0.0);
-        let hints: &[(&str, &str)] = if self.launcher.home && !typing {
-            &[("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
-        } else if self.launcher.home {
-            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Esc", "Clear")]
-        } else {
-            &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Launch"), ("Ctrl+U", "Clear"), ("Esc", "Close")]
+        let selected = entries.get(self.launcher.selected);
+        let enter = match selected {
+            Some(Entry::Answer(_)) => "Copy",
+            Some(Entry::Run(_)) => "Run",
+            Some(Entry::Place(_) | Entry::Window(_)) => "Open",
+            Some(Entry::Command(_)) => "Do it",
+            Some(Entry::Ask(_)) => "Ask",
+            _ => "Launch",
         };
-        p.key_hints(hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        let close = if self.launcher.home { ("Esc", "Clear") } else { ("Esc", "Close") };
+        let hints: Vec<(&str, &str)> = if self.launcher.home && !typing {
+            vec![("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
+        } else if matches!(selected, Some(Entry::Run(_))) {
+            vec![("Enter", "Run here"), ("Ctrl+Enter", "In a terminal"), close]
+        } else if matches!(selected, Some(Entry::Place(place)) if place.completion.is_some()) {
+            vec![("\u{2191}\u{2193}", "Choose"), ("Tab", "Complete"), ("Enter", "Open"), close]
+        } else {
+            vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
+        };
+        p.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
             p.popup(card.rect);
@@ -837,6 +1185,200 @@ impl Tileception {
             self.draw_media_card(&mut p, card, player, pointer);
         }
         p.finish()
+    }
+
+    /// One row of results: an icon, a title over a detail line, and on the
+    /// right the key that acts on it (Enter when chosen, else its shortcut).
+    fn draw_entry(&self, p: &mut Painter, entry: &Entry, row: Rect, selected: bool) {
+        let t = &self.theme;
+        if selected {
+            p.shape(
+                row,
+                Shape {
+                    radius: t.radius,
+                    fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
+                    ..Default::default()
+                },
+            );
+            p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
+        }
+        let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
+        let glyph_box = |p: &mut Painter, glyph: &'static str, colour: Colour| {
+            p.fill(icon, t.surface_raised, t.radius);
+            p.glyph(glyph, icon, 18, colour);
+        };
+        let mut title_style = Style::new(t.font_size * 1.05, if selected { t.text } else { t.text.alpha(0.88) });
+        if selected {
+            title_style = title_style.bold();
+        }
+        let mut right: Option<String> = None;
+        let mut copied = false;
+        let (title, detail): (String, Option<String>) = match entry {
+            Entry::App(id) => {
+                let Some(app) = self.launcher.index.get(id) else { return };
+                self.draw_app_icon(p, icon, &app.id, app.icon.as_deref(), &app.name);
+                (app.name.clone(), subtitle(app).map(str::to_string))
+            }
+            Entry::Action { app, action } => {
+                let Some(entry) = self.launcher.index.get(app) else { return };
+                let Some(action) = entry.actions.get(*action) else { return };
+                let icon_name = action.icon.as_deref().or(entry.icon.as_deref());
+                self.draw_app_icon(p, icon, &entry.id, icon_name, &entry.name);
+                (action.name.clone(), Some(entry.name.clone()))
+            }
+            Entry::Window(id) => {
+                let Some(window) = self.windows.get(id) else { return };
+                let app = crate::state::app_id(window);
+                self.draw_app_icon(p, icon, &app, None, &app);
+                let state = if self.world.is_minimized(*id) { "Minimized window" } else { "Open window" };
+                let name = self.launcher.index.get(&format!("{app}.desktop")).map_or(app.clone(), |a| a.name.clone());
+                (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Entry::Command(i) => {
+                let command = &COMMANDS[*i];
+                glyph_box(p, command.glyph, t.accent);
+                right = self.shortcut(command.does);
+                let detail = match command.does {
+                    Does::Line("do-not-disturb") => {
+                        let on = self.do_not_disturb();
+                        format!("Tileception \u{b7} now {}", if on { "on" } else { "off" })
+                    }
+                    Does::Power(_) => "Tileception \u{b7} opens the power menu to confirm".into(),
+                    _ => "Tileception".into(),
+                };
+                (command.name.to_string(), Some(detail))
+            }
+            Entry::Answer(answer) => {
+                match answer.look {
+                    Look::Sum => glyph_box(p, glyph::CALCULATOR, t.accent),
+                    Look::Clock => glyph_box(p, glyph::CLOCK, t.accent),
+                    Look::Calendar => glyph_box(p, glyph::CALENDAR, t.accent),
+                    Look::Colour([r, g, b]) => {
+                        let colour = Colour([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, 1.0]);
+                        p.shape(icon, Shape { border_width: 1.0, border: t.border, ..Shape::filled(colour, t.radius) });
+                    }
+                    Look::Character => {
+                        p.fill(icon, t.surface_raised, t.radius);
+                        p.text(&answer.title, icon, Style::new(t.font_size * 1.3, t.text).align(Align::Centre));
+                    }
+                }
+                copied = self.launcher.just_copied(&answer.copy);
+                title_style = Style::new(t.font_size * 1.15, t.text).bold();
+                let title = if answer.look == Look::Character { answer.detail.clone() } else { answer.title.clone() };
+                let detail = if answer.look == Look::Character { None } else { Some(answer.detail.clone()) };
+                (title, detail)
+            }
+            Entry::Place(place) => {
+                let glyph = if place.link {
+                    glyph::GLOBE
+                } else if place.folder {
+                    glyph::FOLDER
+                } else {
+                    glyph::FILE
+                };
+                glyph_box(p, glyph, t.accent);
+                (place.title.clone(), Some(place.detail.clone()))
+            }
+            Entry::Run(line) => {
+                glyph_box(p, glyph::TERMINAL, t.accent);
+                (format!("Run {line}"), Some("Shows the output here; Ctrl+Enter runs it in a terminal".into()))
+            }
+            Entry::Ask(question) => {
+                glyph_box(p, glyph::CHAT, t.accent);
+                title_style = Style::new(t.font_size * 1.05, t.text).bold();
+                ("Ask Tileception".into(), Some(question.clone()))
+            }
+        };
+
+        // What is on the right: "Copied", the Enter key, or a shortcut.
+        let mut right_w = 0.0;
+        if copied {
+            let label_style = Style::new(t.font_size * 0.9, t.accent).bold();
+            let w = p.measure("Copied", 200.0, label_style).0;
+            let x = row.right() - 12.0 - w;
+            p.text("Copied", Rect::new(x, row.y, w, row.h), label_style);
+            p.glyph(glyph::CHECK, Rect::new(x - 22.0, row.y, 18.0, row.h), 16, t.accent);
+            right_w = w + 28.0;
+        } else if selected {
+            let w = p.keycap_width("Enter");
+            p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
+            right_w = w + 4.0;
+        } else if let Some(keys) = &right {
+            let w = p.keycap_width(keys);
+            p.keycap(keys, row.right() - 12.0 - w, row.y + row.h / 2.0);
+            right_w = w + 4.0;
+        }
+        let text_x = icon.right() + 14.0;
+        let text_w = row.right() - text_x - 12.0 - right_w - 8.0;
+        match detail.filter(|d| !d.is_empty()) {
+            Some(detail) => {
+                p.text(&title, Rect::new(text_x, row.y + 7.0, text_w, 22.0), title_style);
+                p.text(&detail, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
+            }
+            None => {
+                p.text(&title, Rect::new(text_x, row.y, text_w, row.h), title_style);
+            }
+        }
+    }
+
+    /// An app's icon, or its initial on the accent when it has none.
+    fn draw_app_icon(&self, p: &mut Painter, at: Rect, app_id: &str, icon: Option<&str>, name: &str) {
+        let t = &self.theme;
+        let image = icon.and_then(|icon| self.launcher.icon(icon, 32)).or_else(|| self.launcher.app_icon(app_id, 32));
+        if let Some(image) = image {
+            p.image(&image, (at.x, at.y));
+        } else {
+            p.shape(at, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
+            let initial: String = name.chars().take(1).collect::<String>().to_uppercase();
+            p.text(&initial, at, Style::new(t.font_size * 1.2, t.on_accent).bold().align(Align::Centre));
+        }
+    }
+
+    /// What a `>` command printed: the last lines that fit, and how it ended.
+    fn draw_output(&self, p: &mut Painter, area: Rect, run: &Run) {
+        let t = &self.theme;
+        p.shape(area, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
+        let inner = Rect::new(area.x + 12.0, area.y + OUTPUT_PAD, area.w - 24.0, area.h - 2.0 * OUTPUT_PAD);
+        let line_style = Style::new(t.font_size * 0.88, t.text.alpha(0.9));
+        let status_style = Style::new(t.font_size * 0.8, t.muted);
+        let Some(output) = &run.output else {
+            let dots = ".".repeat(1 + (run.started.elapsed().as_millis() / 400 % 3) as usize);
+            p.text(&format!("Running{dots}"), Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
+            return;
+        };
+        let status = match &output.status {
+            RunStatus::Exited(0) => "Finished".to_string(),
+            RunStatus::Exited(code) => format!("Exit status {code}"),
+            RunStatus::Signal(signal) => format!("Stopped by signal {signal}"),
+            RunStatus::TimedOut => format!("Stopped after {} s", RUN_TIMEOUT.as_secs()),
+            RunStatus::Failed(error) => format!("Could not run: {error}"),
+        };
+        let status = if output.truncated { format!("{status} \u{b7} output cut at 64 KB") } else { status };
+        let lines: Vec<&str> = output.text.lines().collect();
+        let room = OUTPUT_LINES - 1;
+        let end = lines.len().saturating_sub(self.launcher.output_scroll);
+        let start = end.saturating_sub(room);
+        let shown = &lines[start..end];
+        if lines.is_empty() {
+            p.text("No output", Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
+        }
+        for (i, line) in shown.iter().enumerate() {
+            let at = Rect::new(inner.x, inner.y + i as f64 * OUTPUT_LINE_H, inner.w, OUTPUT_LINE_H);
+            p.text(line, at, line_style);
+        }
+        let status = if lines.len() > room {
+            format!(
+                "{status} \u{b7} lines {}\u{2013}{end} of {} \u{b7} \u{2191}\u{2193} scroll",
+                start + 1,
+                lines.len()
+            )
+        } else {
+            status
+        };
+        let ok = matches!(output.status, RunStatus::Exited(0));
+        let colour = if ok { t.muted } else { Colour([0.95, 0.55, 0.35, 1.0]) };
+        let status_rect = Rect::new(inner.x, inner.bottom() - OUTPUT_LINE_H, inner.w, OUTPUT_LINE_H);
+        p.text(&status, status_rect, Style { colour, ..status_style });
     }
 
     /// One app on the welcome screen's grid: its icon over its name.
@@ -870,6 +1412,187 @@ impl Tileception {
             Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) }).align(Align::Centre);
         p.text(&app.name, name, if selected { style.bold() } else { style });
     }
+}
+
+/// How well `query` matches `text` (both lower case): 0 exactly, 1 at the
+/// start, 2 at the start of a word, 3 anywhere.
+fn quality(query: &str, text: &str) -> Option<u8> {
+    if text == query {
+        Some(0)
+    } else if text.starts_with(query) {
+        Some(1)
+    } else if text.split(|c: char| !c.is_alphanumeric()).any(|word| word.starts_with(query)) {
+        Some(2)
+    } else if text.contains(query) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// "Super+O", "Ctrl+Alt+Delete", "Print".
+fn combo_label(mods: crate::config::Mods, key: u32) -> String {
+    let mut parts = Vec::new();
+    for (held, name) in [(mods.logo, "Super"), (mods.ctrl, "Ctrl"), (mods.alt, "Alt"), (mods.shift, "Shift")] {
+        if held {
+            parts.push(name.to_string());
+        }
+    }
+    if crate::config::modifier_of(key).is_none() && key != crate::config::TAP {
+        parts.push(key_label(key));
+    }
+    parts.join("+")
+}
+
+fn key_label(key: u32) -> String {
+    use crate::config::{WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT, WHEEL_UP};
+    match key {
+        WHEEL_UP => return "Wheel up".into(),
+        WHEEL_DOWN => return "Wheel down".into(),
+        WHEEL_LEFT => return "Wheel left".into(),
+        WHEEL_RIGHT => return "Wheel right".into(),
+        _ => {}
+    }
+    let name = xkb::keysym_get_name(xkb::Keysym::from(key));
+    match name.as_str() {
+        "equal" => "=".into(),
+        "minus" => "-".into(),
+        "plus" => "+".into(),
+        "slash" => "/".into(),
+        "backslash" => "\\".into(),
+        "bracketleft" => "[".into(),
+        "bracketright" => "]".into(),
+        "comma" => ",".into(),
+        "period" => ".".into(),
+        "space" => "Space".into(),
+        "Return" => "Enter".into(),
+        "Escape" => "Esc".into(),
+        "Prior" => "Page Up".into(),
+        "Next" => "Page Down".into(),
+        "KP_Add" => "Keypad +".into(),
+        "KP_Subtract" => "Keypad -".into(),
+        single if single.chars().count() == 1 => single.to_uppercase(),
+        other => other.to_string(),
+    }
+}
+
+/// Runs a command with its output piped back, at most `limit` bytes of it,
+/// and stops it (with everything it started) after `timeout`.
+fn capture(mut command: std::process::Command, limit: usize, timeout: Duration) -> RunOutput {
+    use std::{
+        io::Read,
+        os::unix::process::{CommandExt, ExitStatusExt},
+        process::Stdio,
+        sync::{Arc, Mutex},
+    };
+    // A process group of its own, so a timeout can stop what it started too.
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return RunOutput { text: String::new(), status: RunStatus::Failed(error.to_string()), truncated: false };
+        }
+    };
+    let buffer = Arc::new(Mutex::new((Vec::new(), false)));
+    let pipes: Vec<Box<dyn Read + Send>> = [
+        child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+        child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let readers: Vec<_> = pipes
+        .into_iter()
+        .map(|mut pipe| {
+            let buffer = buffer.clone();
+            // Past the limit the rest is read and dropped, so the command never
+            // blocks on a full pipe.
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = pipe.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    let Ok(mut buffer) = buffer.lock() else { break };
+                    let room = limit.saturating_sub(buffer.0.len());
+                    buffer.0.extend_from_slice(&chunk[..n.min(room)]);
+                    buffer.1 |= n > room;
+                }
+            })
+        })
+        .collect();
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => {
+                kill_group(child.id());
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => break None,
+        }
+    };
+    // A moment for the last output; something left running in the background
+    // may keep the pipes open, and is not waited for.
+    let settle = Instant::now() + Duration::from_millis(200);
+    for reader in &readers {
+        while !reader.is_finished() && Instant::now() < settle {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let (bytes, truncated) = buffer.lock().map(|b| (b.0.clone(), b.1)).unwrap_or_default();
+    let status = match status {
+        None => RunStatus::TimedOut,
+        Some(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => RunStatus::Exited(code),
+            (None, Some(signal)) => RunStatus::Signal(signal),
+            (None, None) => RunStatus::Exited(-1),
+        },
+    };
+    RunOutput { text: clean_output(&String::from_utf8_lossy(&bytes)), status, truncated }
+}
+
+#[allow(unsafe_code, reason = "stopping a process group needs libc's kill")]
+fn kill_group(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return };
+    // SAFETY: kill only sends a signal; a negative pid names the process group
+    // the command was started in, which holds nothing but it and its children.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+/// Output as plain lines: colour codes and carriage returns removed, tabs as spaces.
+fn clean_output(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                // CSI sequences such as ESC [ 1 ; 31 m end in a letter.
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            }
+            '\r' => {}
+            '\t' => out.push_str("    "),
+            c if c.is_control() && c != '\n' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A string as one shell word.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// See [`Launcher::question`].
@@ -914,6 +1637,8 @@ const FIELD_H: f64 = 52.0;
 const CAPTION_H: f64 = 32.0;
 const ROW_H: f64 = 54.0;
 const FOOTER_H: f64 = 44.0;
+/// Rows of results at most, besides "Ask Tileception".
+const MAX_ROWS: usize = 8;
 /// Tiles per row on the welcome screen.
 const HOME_COLUMNS: usize = 4;
 const TILE_H: f64 = 100.0;
@@ -921,16 +1646,27 @@ const TILE_H: f64 = 100.0;
 const HOME_QUIET: Duration = Duration::from_secs(10);
 /// The search text is a little larger than the rest of the interface.
 const SEARCH_SCALE: f32 = 1.2;
+/// How long a row says "Copied".
+const COPIED_FOR: Duration = Duration::from_millis(1600);
+/// A `>` command's output: how much is kept, and how long it may run.
+const RUN_LIMIT: usize = 64 * 1024;
+const RUN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Lines of output shown, the last one being the status.
+const OUTPUT_LINES: usize = 12;
+const OUTPUT_LINE_H: f64 = 19.0;
+const OUTPUT_PAD: f64 = 10.0;
 
 struct LauncherLayout {
     panel: Rect,
-    /// What is playing, under the welcome screen.
+    /// What is playing, under the launcher.
     media: Option<crate::controls::MediaCard>,
     field: Rect,
     /// Where the typed text goes inside the field.
     text: Rect,
     caption: Rect,
     rows: Vec<Rect>,
+    /// A `>` command's output, under its row.
+    output: Option<Rect>,
     footer: Rect,
 }
 
@@ -942,8 +1678,10 @@ fn usage_path() -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
-    use super::{completion, question_in};
+    use super::{RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn questions_go_to_the_doctor() {
@@ -963,5 +1701,48 @@ mod tests {
         assert_eq!(completion("ald", "Vivaldi"), None);
         assert_eq!(completion("vivaldi", "Vivaldi"), None);
         assert_eq!(completion("", "Vivaldi"), None);
+    }
+
+    #[test]
+    fn match_quality() {
+        assert_eq!(quality("lock", "lock screen"), Some(1));
+        assert_eq!(quality("screen", "lock screen"), Some(2));
+        assert_eq!(quality("cree", "lock screen"), Some(3));
+        assert_eq!(quality("overview", "overview"), Some(0));
+        assert_eq!(quality("xyz", "overview"), None);
+    }
+
+    #[test]
+    fn shortcut_labels() {
+        let logo = crate::config::Mods { logo: true, ..Default::default() };
+        let shift = crate::config::Mods { logo: true, shift: true, ..Default::default() };
+        assert_eq!(combo_label(logo, u32::from('o')), "Super+O");
+        assert_eq!(combo_label(logo, 0x3d), "Super+=");
+        assert_eq!(combo_label(shift, 0xff51), "Super+Shift+Left");
+        assert_eq!(combo_label(Default::default(), 0xff61), "Print");
+        assert_eq!(combo_label(logo, 0xffeb), "Super");
+    }
+
+    #[test]
+    fn captured_commands() {
+        let run = |line: &str, limit: usize, timeout: Duration| {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", line]);
+            capture(command, limit, timeout)
+        };
+        let out = run("echo out; echo err >&2; exit 3", 1024, Duration::from_secs(5));
+        assert!(matches!(out.status, RunStatus::Exited(3)), "{:?}", out.status);
+        assert!(out.text.contains("out\n") && out.text.contains("err\n"), "{:?}", out.text);
+        let big = run("head -c 100000 /dev/zero | tr '\\0' x", 1000, Duration::from_secs(5));
+        assert_eq!((big.text.len(), big.truncated), (1000, true));
+        let started = Instant::now();
+        let slow = run("sleep 30 & sleep 30", 1024, Duration::from_millis(300));
+        assert!(matches!(slow.status, RunStatus::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(5), "the whole group was stopped");
+    }
+
+    #[test]
+    fn output_is_plain_text() {
+        assert_eq!(clean_output("\u{1b}[1;31mred\u{1b}[0m\r\n\tx"), "red\n    x");
     }
 }

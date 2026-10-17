@@ -42,6 +42,9 @@ pub enum Command {
     DoctorMode(crate::doctor_policy::Mode),
     /// A key pressed while the doctor panel has the keyboard (not available as text).
     DoctorKey(u32, crate::config::Mods),
+    /// Tells applications to use their dark or light style, until the
+    /// config is next loaded.
+    ColourScheme(crate::theme::ColourScheme),
 }
 
 pub fn parse(line: &str) -> Result<Command, String> {
@@ -98,6 +101,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
             };
         }
         "pointer" | "click" | "key" | "type" => return crate::inject::parse(verb, rest).map(Command::Inject),
+        "colour-scheme" | "color-scheme" => {
+            return crate::theme::ColourScheme::parse(rest).map(Command::ColourScheme);
+        }
         "spawn" | "exec" => {
             if rest.is_empty() {
                 return Err("spawn needs a command".into());
@@ -218,6 +224,10 @@ impl Tileception {
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
+            Command::ColourScheme(scheme) => {
+                self.theme.colour_scheme = scheme;
+                self.update_appearance();
+            }
             Command::Select(ids) => {
                 if ids.iter().any(|id| !self.world.contains_window(*id)) {
                     return Err("select contains an unknown window id".into());
@@ -266,6 +276,8 @@ mod tests {
         assert!(parse("doctor user").is_err());
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
+        assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
+        assert!(parse("colour-scheme blue").is_err());
         assert!(parse("").is_err());
     }
 }

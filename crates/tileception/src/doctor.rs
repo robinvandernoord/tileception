@@ -481,7 +481,9 @@ impl Tileception {
         if self.is_locked() {
             return;
         }
-        if self.doctor.open && self.doctor.focused {
+        // Open is enough: after a click elsewhere took the keyboard, the same
+        // key should still put the panel away. Clicking the panel focuses it.
+        if self.doctor.open {
             self.close_doctor();
         } else {
             self.open_doctor();
@@ -630,7 +632,10 @@ impl Tileception {
             return;
         }
         self.ensure_session();
-        if self.doctor.session.is_none() {
+        // Right after login the agent list may still be loading: keep the
+        // question until the agent has started.
+        let starting = self.doctor.session.is_none() && self.doctor.loading;
+        if self.doctor.session.is_none() && !starting {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
             return;
         }
@@ -645,7 +650,7 @@ impl Tileception {
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
         // How pictures go depends on the agent, which may not have said yet.
-        if self.doctor.takes_images.is_none() && !attachments.is_empty() {
+        if starting || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
             self.doctor.waiting = Some((text, attachments));
         } else {
             self.prompt_doctor(text, attachments);
@@ -774,8 +779,14 @@ impl Tileception {
                     Err(_) => Default::default(),
                 };
                 d.registry = Some(result);
-                if d.view == View::Conversation && d.open {
+                if d.view == View::Conversation && (d.open || d.waiting.is_some()) {
                     self.ensure_session();
+                }
+                // A question asked while the list loaded, for an agent that did not start.
+                let d = &mut self.doctor;
+                if d.session.is_none() && d.waiting.take().is_some() {
+                    d.busy = false;
+                    d.messages.push(Message::Note("The agent is not available.".into()));
                 }
             }
             Event::Status(status) => {

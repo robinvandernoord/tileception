@@ -111,6 +111,11 @@ lock = "builtin"
 # Volume, media keys and brightness: "builtin" or "none". To use your own
 # commands instead, bind the keys to them in [binds].
 media = "builtin"
+# The bar along the top: where the camera is, saved views, the clock (click
+# it for a calendar) and notifications. "none" leaves the edge to the
+# windows; a command such as "waybar" runs in its place and is stopped again
+# when this changes.
+bar = "builtin"
 
 # Window rules decide how matching windows open. app_id is the Wayland app id
 # or X11 class; patterns ignore case, with * for anything and ? for one
@@ -191,6 +196,8 @@ repeat_rate = 30
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
 #   desktop               show or hide the Desktop tile
+#   colour-scheme <s>     tell apps to use dark, light or default styles,
+#                         until this file is next loaded
 #   reload                reload this file
 #   quit                  leave Tileception
 #
