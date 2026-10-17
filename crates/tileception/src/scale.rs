@@ -9,6 +9,7 @@
 
 use serde::Deserialize;
 use smithay::{
+    backend::renderer::utils::RendererSurfaceStateUserData,
     delegate_fractional_scale, delegate_viewporter,
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -177,8 +178,10 @@ impl Tileception {
             (),
             |_, _, _| TraversalAction::DoChildren(()),
             |surface, states, _| {
+                // The surface's states are locked here, so `has_buffer`
+                // (which locks them again) would deadlock.
                 if let Some(output) = &output
-                    && has_buffer(surface)
+                    && buffered(states)
                 {
                     output.enter(surface);
                 }
@@ -216,7 +219,12 @@ impl Tileception {
 /// Whether a surface has drawn something, so it may be told it is on the
 /// output.
 pub fn has_buffer(surface: &WlSurface) -> bool {
-    smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false)
+    with_states(surface, buffered)
+}
+
+/// `has_buffer`, given the surface's states.
+fn buffered(states: &SurfaceData) -> bool {
+    states.data_map.get::<RendererSurfaceStateUserData>().is_some_and(|s| s.lock().is_ok_and(|s| s.buffer().is_some()))
 }
 
 /// The preferred buffer scale (rounded up, for clients without fractional
