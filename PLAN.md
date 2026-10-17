@@ -395,7 +395,9 @@ second screen.
   panel, slurp, screen sharing.
   Found while testing, also on master: a second foot opened beside a first
   crashes, because it gets keyboard focus (wl_keyboard.enter) before its
-  first configure. Not fixed on this branch.
+  first configure. Fixed 2026-10-17: a window gets the keyboard only once
+  its first configure is sent. Checked nested on Xvfb: the second foot
+  segfaulted before the fix and stays open after it.
 - Window rules (always float an app, open an app in a given view). Done
   2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
   `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`
