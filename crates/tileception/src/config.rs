@@ -29,8 +29,10 @@ pub struct ConfigFile {
     pub general: General,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
+    pub touchpad: crate::gestures::TouchpadConfig,
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
+    pub battery: crate::battery::BatteryConfig,
     pub shell: crate::shell::ShellConfig,
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
@@ -116,6 +118,18 @@ pub struct Keyboard {
     pub repeat_rate: Option<i32>,
 }
 
+impl Keyboard {
+    /// The xkb model, layout, variant and options. Without a layout it is US
+    /// international: AltGr types accents and dead keys, ' and " stay plain.
+    pub fn names(&self) -> (String, String, String, Option<String>) {
+        let (layout, variant) = match &self.layout {
+            Some(layout) => (layout.clone(), self.variant.clone().unwrap_or_default()),
+            None => ("us".into(), self.variant.clone().unwrap_or_else(|| "altgr-intl".into())),
+        };
+        (self.model.clone().unwrap_or_default(), layout, variant, self.options.clone())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Mods {
     pub logo: bool,
@@ -150,6 +164,7 @@ pub struct Config {
     pub binds: Vec<Bind>,
     pub drag_mod: Mods,
     pub theme: crate::theme::Theme,
+    pub battery: crate::battery::BorderColours,
 }
 
 impl Config {
@@ -204,7 +219,9 @@ impl Config {
         file.shell.validate()?;
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
-        Ok(Config { file, binds, drag_mod, theme })
+        file.touchpad.validate()?;
+        let battery = file.battery.colours(&theme)?;
+        Ok(Config { file, binds, drag_mod, theme, battery })
     }
 
     pub fn default_config() -> Config {
@@ -273,6 +290,9 @@ pub fn parse_combo(combo: &str) -> Result<(Mods, u32), String> {
     }
     if let Some(wheel) = wheel_key(key) {
         return Ok((all, wheel));
+    }
+    if let Some(gesture) = crate::gestures::parse_key(key) {
+        return gesture.map(|g| (all, g));
     }
     let mut sym = xkb::keysym_from_name(key, xkb::KEYSYM_NO_FLAGS);
     if sym.raw() == 0 {
@@ -399,6 +419,7 @@ impl Tileception {
         }
         let old_shell = std::mem::replace(&mut self.config, config).file.shell;
         self.apply_shell(&old_shell);
+        self.configure_touchpads();
         // Also lays everything out again.
         self.apply_output_scale();
     }
@@ -409,6 +430,26 @@ impl Tileception {
 mod tests {
     use super::*;
     use crate::input::Action;
+
+    #[test]
+    fn keyboard_defaults_to_us_international() {
+        let names = |k: Keyboard| {
+            let (_, layout, variant, _) = k.names();
+            (layout, variant)
+        };
+        assert_eq!(names(Keyboard::default()), ("us".into(), "altgr-intl".into()));
+        let (model, layout, variant, options) = Keyboard::default().names();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", &model, &layout, &variant, options, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .expect("US international compiles");
+        // AltGr+' is a dead acute.
+        let quote = keymap.key_by_name("AC11").expect("apostrophe key");
+        let dead_acute = xkb::keysym_from_name("dead_acute", xkb::KEYSYM_NO_FLAGS);
+        assert_eq!(keymap.key_get_syms_by_level(quote, 0, 2), [dead_acute]);
+        let nl = Keyboard { layout: Some("nl".into()), ..Default::default() };
+        assert_eq!(names(nl), ("nl".into(), String::new()));
+    }
 
     #[test]
     fn default_config_parses() {

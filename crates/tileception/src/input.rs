@@ -2,8 +2,9 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
+        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
@@ -83,6 +84,10 @@ impl Tileception {
                 | InputEvent::PointerMotion { .. }
                 | InputEvent::PointerButton { .. }
                 | InputEvent::PointerAxis { .. }
+                | InputEvent::GestureSwipeBegin { .. }
+                | InputEvent::GesturePinchBegin { .. }
+                | InputEvent::GestureHoldBegin { .. }
+                | InputEvent::TouchDown { .. }
         ) && self.idle_activity()
         {
             return;
@@ -113,6 +118,41 @@ impl Tileception {
                 self.on_button(event.button_code(), event.state(), event.time_msec())
             }
             InputEvent::PointerAxis { event } => self.on_axis::<I>(&event),
+            InputEvent::GestureSwipeBegin { event } => {
+                self.gesture_begin(false, event.fingers(), None, event.time_msec())
+            }
+            InputEvent::GestureSwipeUpdate { event } => self.gesture_update(event.delta(), 1.0, 0.0, event.time_msec()),
+            InputEvent::GestureSwipeEnd { event } => self.gesture_end(event.cancelled(), event.time_msec()),
+            InputEvent::GesturePinchBegin { event } => {
+                self.gesture_begin(true, event.fingers(), None, event.time_msec())
+            }
+            InputEvent::GesturePinchUpdate { event } => {
+                self.gesture_update(event.delta(), event.scale(), event.rotation(), event.time_msec())
+            }
+            InputEvent::GesturePinchEnd { event } => self.gesture_end(event.cancelled(), event.time_msec()),
+            InputEvent::GestureHoldBegin { event } => {
+                self.gesture_hold(Some(event.fingers()), false, event.time_msec())
+            }
+            InputEvent::GestureHoldEnd { event } => self.gesture_hold(None, event.cancelled(), event.time_msec()),
+            InputEvent::TouchDown { event } => {
+                if self.output.is_none() {
+                    return;
+                }
+                let screen = self.output_rect();
+                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
+                self.touch_down(event.slot(), pos, event.time_msec());
+            }
+            InputEvent::TouchMotion { event } => {
+                if self.output.is_none() {
+                    return;
+                }
+                let screen = self.output_rect();
+                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
+                self.touch_motion(event.slot(), pos, event.time_msec());
+            }
+            InputEvent::TouchUp { event } => self.touch_up(event.slot(), event.time_msec()),
+            InputEvent::TouchCancel { event } => self.touch_cancel(event.time_msec()),
+            InputEvent::TouchFrame { .. } => self.touch_frame(),
             _ => {}
         }
     }
@@ -257,7 +297,7 @@ impl Tileception {
     /// Whether the launcher gets the pointer here: all of it when opened on
     /// purpose; as the welcome screen only over itself and not under the
     /// notification panel. Never under an overlay layer surface.
-    fn launcher_takes(&self, at: tileception_core::Point) -> bool {
+    pub(crate) fn launcher_takes(&self, at: tileception_core::Point) -> bool {
         if self.overlay_under(at) {
             return false;
         }
@@ -726,7 +766,7 @@ impl Tileception {
     }
 
     /// The window whose tab is under a point.
-    fn tab_at(&self, p: tileception_core::Point, now: f64) -> Option<WindowId> {
+    pub(crate) fn tab_at(&self, p: tileception_core::Point, now: f64) -> Option<WindowId> {
         let strip = self.world.tab_strips(self.world.view(now)).into_iter().find(|s| s.rect.contains(p))?;
         let i = ((p.x - strip.rect.x) / strip.rect.w * strip.views.len() as f64) as usize;
         strip.views.get(i.min(strip.views.len() - 1)).copied()
@@ -829,9 +869,16 @@ impl Tileception {
         if ![WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT].into_iter().any(bound) {
             return false;
         }
+        // Natural scrolling turns the touchpad around for content, not for
+        // bindings: Super with two fingers up still steps in.
+        let sign =
+            if self.config.file.touchpad.natural_scroll && event.source() == AxisSource::Finger { -1.0 } else { 1.0 };
         // One notch of a wheel is 120; smooth scrolling adds up to a step.
         let notch = |axis| {
-            event.amount_v120(axis).map(|v| v / 120.0).unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
+            sign * event
+                .amount_v120(axis)
+                .map(|v| v / 120.0)
+                .unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
         };
         self.wheel_accum.0 += notch(Axis::Horizontal);
         self.wheel_accum.1 += notch(Axis::Vertical);
@@ -915,7 +962,7 @@ impl Tileception {
     }
 
     /// The split boundary under a point, if any, for dragging gaps.
-    fn gap_at(&self, pos: Point<f64, Logical>) -> Option<GapDrag> {
+    pub(crate) fn gap_at(&self, pos: Point<f64, Logical>) -> Option<GapDrag> {
         let view = self.world.target_view();
         let tree = self.world.tree();
         let reach = self.world.settings.gap / 2.0 + 4.0;

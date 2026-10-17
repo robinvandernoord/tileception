@@ -32,6 +32,10 @@ pub enum Command {
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
     Media(crate::media::Control),
+    /// Prints the battery's charge and the border colour it gives.
+    Battery,
+    /// Slides out the strip of minimized windows for a moment.
+    ShowMinimized,
     /// Opens or closes the doctor panel, or asks it a question.
     Doctor(Option<String>),
     /// Pretend input, for scripted tests (headless or nested only).
@@ -70,8 +74,10 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "show-minimized" => return Ok(Command::ShowMinimized),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
+        "battery" => return Ok(Command::Battery),
         "select" => {
             let ids = args
                 .iter()
@@ -100,7 +106,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "click" | "key" | "type" => return crate::inject::parse(verb, rest).map(Command::Inject),
+        "pointer" | "click" | "key" | "type" | "gesture" | "touch" => {
+            return crate::inject::parse(verb, rest).map(Command::Inject);
+        }
         "colour-scheme" | "color-scheme" => {
             return crate::theme::ColourScheme::parse(rest).map(Command::ColourScheme);
         }
@@ -203,6 +211,7 @@ impl Tileception {
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
+                    | Command::Battery
             )
         {
             return Err("session is locked".into());
@@ -211,11 +220,13 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
+            Command::Battery => return Ok(self.battery_status()),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
             Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),
