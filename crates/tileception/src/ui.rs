@@ -179,6 +179,7 @@ pub fn ease_out(t: f64) -> f64 {
 
 /// The wall clock in the local time zone.
 pub struct LocalTime {
+    pub year: i32,
     pub hour: i32,
     pub minute: i32,
     pub weekday: usize,
@@ -200,6 +201,7 @@ impl LocalTime {
         // SAFETY: a non-null result means localtime_r initialised `tm`.
         let tm = unsafe { tm.assume_init() };
         Some(LocalTime {
+            year: tm.tm_year + 1900,
             hour: tm.tm_hour,
             minute: tm.tm_min,
             weekday: tm.tm_wday.clamp(0, 6) as usize,

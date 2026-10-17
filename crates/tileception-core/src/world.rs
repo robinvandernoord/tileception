@@ -1262,6 +1262,38 @@ impl World {
         slot.checked_sub(1).and_then(|i| self.saved.get(i)).is_some_and(|s| s.is_some())
     }
 
+    /// The node a saved view would frame now, without going there.
+    pub fn saved_view_node(&self, slot: usize) -> Option<NodeId> {
+        let view = slot.checked_sub(1).and_then(|i| self.saved.get(i))?.as_ref()?;
+        let node = self.visible_ancestor(self.tree.resolve(view.node));
+        let lca =
+            view.windows.iter().filter_map(|w| self.tree.leaf_of(*w)).reduce(|a, b| self.tree.common_ancestor(a, b));
+        Some(match lca {
+            Some(lca) if !self.tree.is_ancestor_or_self(node, lca) => lca,
+            _ => node,
+        })
+    }
+
+    /// Whether `back` (-1) or `forward` (1) would go anywhere.
+    pub fn can_travel(&self, delta: isize) -> bool {
+        let mut idx = self.history_index as isize;
+        loop {
+            idx += delta;
+            if idx < 0 || idx as usize >= self.history.len() {
+                return false;
+            }
+            let node = self.visible_ancestor(self.tree.resolve(self.history[idx as usize]));
+            if node != self.framed || self.overview {
+                return true;
+            }
+        }
+    }
+
+    /// Whether the camera has framed this node before, as far as history goes.
+    pub fn visited(&self, node: NodeId) -> bool {
+        self.history.iter().any(|n| self.tree.resolve(*n) == node)
+    }
+
     /// Cycles the selected tab of the focused tile.
     pub fn cycle_tab(&mut self, delta: isize) {
         let Some(tile) = self.focus.and_then(|f| self.tree.tile_of(f)) else { return };
@@ -1359,10 +1391,15 @@ mod tests {
         wd.frame(t1, 0.0);
         wd.save_view(1);
         wd.frame(t2, 0.0);
+        assert_eq!(wd.saved_view_node(1), Some(t1));
+        assert_eq!(wd.saved_view_node(2), None);
+        assert!(wd.visited(t1) && wd.visited(t2));
+        assert!(wd.can_travel(-1) && !wd.can_travel(1));
         wd.back(0.0);
         assert_eq!(wd.framed(), t1);
         wd.back(0.0);
         assert_eq!(wd.framed(), root);
+        assert!(!wd.can_travel(-1) && wd.can_travel(1));
         wd.forward(0.0);
         assert_eq!(wd.framed(), t1);
         wd.frame(t2, 0.0);

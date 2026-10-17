@@ -211,6 +211,7 @@ impl Tileception {
             elements.extend(self.launcher_elements(renderer));
         }
         elements.extend(self.selection_elements(renderer));
+        elements.extend(self.bar_elements(renderer));
 
         // Then bars. A fullscreen window covers everything but the above.
         if self.fullscreen.is_some() {

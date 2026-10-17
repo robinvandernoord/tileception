@@ -319,6 +319,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Tileception {
             frame.failed();
             return;
         };
+        // A stream of frames (portals, OBS) is sharing; one copy is a screenshot.
+        let sharing = damage || matches!(target, CaptureTarget::Dmabuf { .. });
+        state.bar.capture = Some((std::time::Instant::now(), sharing));
         state.pending_captures.push(PendingCapture { region: data.region, target });
         // With damage, the copy waits for the screen to change; without, it
         // is taken right away.

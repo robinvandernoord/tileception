@@ -215,6 +215,9 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
             }
+            if sym == keysyms::KEY_Escape && held == Mods::default() && state.close_calendar() {
+                return FilterResult::Intercept(Vec::new());
+            }
             if sym == keysyms::KEY_Escape
                 && held == Mods::default()
                 && (state.notifications.open || !state.selection.windows.is_empty())
@@ -433,6 +436,9 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.bar_motion(pos, time) {
+            return;
+        }
         if self.strip_motion(pos, time) {
             return;
         }
@@ -573,6 +579,9 @@ impl Tileception {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
             }
+            return;
+        }
+        if self.move_drag.is_none() && self.bar_button(button, state == ButtonState::Pressed) {
             return;
         }
         if self.move_drag.is_none() && self.strip_button(button, state == ButtonState::Pressed) {
@@ -756,6 +765,16 @@ impl Tileception {
             if amount != 0.0 {
                 self.notification_scroll(if amount > 0.0 { 1 } else { -1 });
             }
+            return;
+        }
+        if !self.is_locked() && self.bar_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+            // In notches: a wheel step is one, smooth scrolling adds up to one.
+            let notches = event
+                .amount_v120(Axis::Vertical)
+                .map(|v| v / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).map(|a| a / 50.0))
+                .unwrap_or(0.0);
+            self.bar_scroll(notches);
             return;
         }
         self.tap_armed = None;

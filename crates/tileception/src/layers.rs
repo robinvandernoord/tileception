@@ -114,6 +114,7 @@ impl Tileception {
             map.non_exclusive_zone()
         };
         let usable = Rect::new(zone.loc.x as f64, zone.loc.y as f64, zone.size.w as f64, zone.size.h as f64);
+        let usable = self.bar_reserve(usable);
         if usable.w > 0.0 && usable.h > 0.0 && usable != self.world.screen() {
             self.world.set_screen(usable);
             self.apply_layout();
