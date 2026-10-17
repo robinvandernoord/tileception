@@ -869,9 +869,16 @@ impl Tileception {
         if ![WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT].into_iter().any(bound) {
             return false;
         }
+        // Natural scrolling turns the touchpad around for content, not for
+        // bindings: Super with two fingers up still steps in.
+        let sign =
+            if self.config.file.touchpad.natural_scroll && event.source() == AxisSource::Finger { -1.0 } else { 1.0 };
         // One notch of a wheel is 120; smooth scrolling adds up to a step.
         let notch = |axis| {
-            event.amount_v120(axis).map(|v| v / 120.0).unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
+            sign * event
+                .amount_v120(axis)
+                .map(|v| v / 120.0)
+                .unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
         };
         self.wheel_accum.0 += notch(Axis::Horizontal);
         self.wheel_accum.1 += notch(Axis::Vertical);
