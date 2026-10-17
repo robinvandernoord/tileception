@@ -669,6 +669,48 @@ second screen.
   - Later, with a built-in clipboard history: search past clipboard entries.
   Question detection must come after these, so a sum or a conversion with
   three words (`5 km in mi`) is not sent to the doctor.
+  Implemented 2026-10-16 on `feature/launcher-and-bar-launcher`, everything
+  above except the clipboard history. Rows are now typed entries: answers
+  first, then apps, open and minimized windows, commands and desktop actions
+  ranked together by how well they match (at most eight), then "Ask
+  Tileception" only when nothing answered. Super and the welcome screen share
+  it, and Super shows the playback card too.
+  - `calc.rs`: a small expression parser (`+ - * / ^ mod`, `%`, `of`,
+    brackets, `sqrt`/`sin`/... in degrees, `pi`, `0x`/`0b`/`0o`) and conversions
+    for length, mass, temperature, data (MB is bytes, Mb bits, GiB binary),
+    time, speed and volume. Enter copies the bare number and the row says
+    "Copied".
+  - `zones.rs` reads the system's TZif files and POSIX TZ rules (no network,
+    no change to the process's own zone), with a short table of country and
+    city aliases; `answers.rs` does times elsewhere, days until or since a date
+    (ISO, `25-12-2026`, `25 december`), unix timestamps both ways, colours
+    (hex, `rgb()`, `hsl()`, one row per notation to copy), characters (`:`
+    and a name; a 36 KB table of emoji and symbols from Unicode names, with a
+    few chosen keywords such as "lol" and "+1"), paths (Tab completes, Enter
+    runs `xdg-open`) and `http(s)://` or `www.` links.
+  - `>`: Enter runs the line with `sh -c` in the home folder, in the session's
+    environment, without blocking the compositor: stdout and stderr together,
+    at most 64 KB, stopped with its whole process group after 10 s. The last
+    eleven lines show under the row with the exit status; Up/Down and Page
+    Up/Down scroll. Output arriving after the launcher was reopened is
+    dropped. Ctrl+Enter runs it in the terminal instead, which then stays open
+    on a shell.
+  - Commands run through the same parser as `tileception msg`, and show their
+    bound key (Print, Super+L, ...). Log out, restart and power off open the
+    power menu on that button rather than acting at once. "Dark/Light style
+    for apps" use a new `colour-scheme dark|light|default` command, which lasts
+    until the config is next loaded.
+  - Desktop actions come from `tileception-apps`, which now parses
+    `[Desktop Action ...]` groups and searches them by name, or by app name
+    plus action name.
+  Checked nested on Xvfb with software rendering: a sum and its copy (pasted
+  back with Ctrl+V), a conversion, `>` output with stderr and exit status 2,
+  Ctrl+Enter in a terminal, open and minimized windows (Enter restored one and
+  flew to another), command rows with their shortcuts, LibreOffice's "New
+  Document" action, emoji, a colour, `time in tokyo`, and path completion.
+  Not checked: the playback card on the Super launcher (no player in the
+  nested session), the commands that lock, suspend or end the session,
+  `xdg-open` of a path or link, and typing on real hardware.
 
 - **Configurable per-app launch arguments.**
   Status: agreed 2026-10-16, not implemented.
