@@ -80,6 +80,22 @@ autostart = []
 lock_after = 0
 off_after = 600
 
+[touchpad]
+# Tap to click: one finger is the left button, two the right, three the middle.
+tap = true
+# Scrolling moves the content with your fingers, as on a phone.
+natural_scroll = false
+# Ignore the touchpad for a moment after typing.
+disable_while_typing = true
+# Pointer speed, from -1 (slow) to 1 (fast).
+speed = 0
+# What pressing the pad down clicks: "areas" (the bottom right corner is the
+# right button) or "clickfinger" (two fingers right, three middle). Unset:
+# the touchpad's own default.
+# click_method = "clickfinger"
+# How far, in pixels, fingers travel before a swipe binding runs.
+swipe_distance = 60
+
 [media]
 # Percent per volume or brightness key press. Held keys repeat.
 volume_step = 5
@@ -272,6 +288,23 @@ repeat_rate = 30
 "Super+V" = "float"
 "Super+Shift+F" = "float"
 "Super+D" = "desktop"
+
+# Touchpad gestures, named by finger count and the way the fingers move.
+# Swipes take 3 to 5 fingers, pinches 2 to 5. Each gesture runs its binding
+# once; a gesture without a binding goes to the program under the pointer,
+# so two-finger pinches still zoom web pages unless Super is held.
+"Swipe3Left" = "focus right"
+"Swipe3Right" = "focus left"
+"Swipe3Up" = "focus down"
+"Swipe3Down" = "focus up"
+"Pinch3In" = "step-out"
+"Pinch3Out" = "step-in pointer"
+"Super+Pinch2In" = "step-out"
+"Super+Pinch2Out" = "step-in pointer"
+"Swipe4Up" = "overview"
+"Swipe4Down" = "maximize"
+"Swipe4Left" = "forward"
+"Swipe4Right" = "back"
 
 # Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.

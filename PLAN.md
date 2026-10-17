@@ -67,6 +67,9 @@ Released up to v0.4.0 and running as Robin's session:
   power menu, lock screen, volume/media/brightness controls with audio device
   switching, minimizing with the bottom strip. All swappable through `[shell]`.
 - The doctor: an ACP agent panel (Super+/) with ask, config and yolo modes.
+- Touchpad: swipe and pinch bindings in `[binds]` (`Swipe3Left`,
+  `Super+Pinch2In`), unbound gestures passed to programs (pointer-gestures),
+  `[touchpad]` for tap, natural scrolling, typing, speed and click method.
 - Window rules, per-app launch arguments, ext-foreign-toplevel-list,
   data-control, pointer constraints and relative pointer.
 - Config hot reload, IPC, headless backend with screenshots for testing.
@@ -87,8 +90,8 @@ Released up to v0.4.0 and running as Robin's session:
 
 ### Later
 
-- Better trackpad support: configurable multi-finger actions, swipes and
-  pinches for navigation, Overview and window management.
+- Touchpad gestures that follow the fingers: the camera tracking a pinch or
+  swipe live instead of one step per gesture, and window management gestures.
 - Touchscreen support: touch does not work on Robin's laptop, although the same
   hardware works in PikaOS. Investigate device discovery, coordinate mapping and
   touch delivery, then add direct manipulation and gestures.

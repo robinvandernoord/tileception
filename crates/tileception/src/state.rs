@@ -95,6 +95,7 @@ pub struct Tileception {
     pub toplevels: crate::toplevels::Toplevels,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
+    pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub xwayland_shell_state: XWaylandShellState,
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
@@ -132,6 +133,10 @@ pub struct Tileception {
     pub resize_drag: Option<ResizeDrag>,
     /// Scrolling not yet turned into wheel binding steps.
     pub wheel_accum: (f64, f64),
+    /// The touchpad gesture in progress.
+    pub gesture: Option<crate::gestures::Gesture>,
+    /// Touchpads, set up again from `[touchpad]` when the config reloads.
+    pub touchpads: Vec<smithay::reexports::input::Device>,
     /// A modifier pressed on its own, which fires its tap binding if it is
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
@@ -258,6 +263,7 @@ impl Tileception {
             toplevels: crate::toplevels::Toplevels::new(&dh),
             pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh),
+            pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
             xwayland_shell_state,
             xwm: None,
             xdisplay: None,
@@ -282,6 +288,8 @@ impl Tileception {
             move_drag: None,
             resize_drag: None,
             wheel_accum: (0.0, 0.0),
+            gesture: None,
+            touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
             pending_press: None,

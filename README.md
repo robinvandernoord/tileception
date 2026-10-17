@@ -29,9 +29,8 @@ findings and the roadmap.
 - A config file with key bindings, reloaded on save.
 - A command socket: `tileception msg <command>`.
 
-Not yet: more than one monitor (only the first is lit), trackpad gestures,
-touchscreen support, HiDPI scaling,
-taskbar window lists (foreign-toplevel), clipboard managers (data-control).
+Not yet: more than one monitor (only the first is lit) and touchscreen
+support.
 
 ## Companion programs
 
@@ -151,8 +150,9 @@ tileception msg screenshot /tmp/shot.png
 
 Scripts can also pretend to use the mouse and keyboard there (headless or
 nested only, never in a real session): `tileception msg pointer 640 400`,
-`click [x y] [left|right|middle]`, `key Super+slash` and `type some text`.
-Keys go through the same handling as real ones.
+`click [x y] [left|right|middle]`, `key Super+slash`, `type some text` and
+`gesture Swipe3Left`. Keys and gestures go through the same handling as real
+ones.
 
 ## Lint policy
 
@@ -323,6 +323,23 @@ Mouse:
   it. A plain click clears the selection.
 - Drag a tab out of its strip to undock it.
 - Drag the gap between windows to resize.
+
+Touchpad (bindings named by finger count and the way the fingers move, so
+`"Swipe3Left"` or `"Super+Pinch2In"` in `[binds]`; a gesture without a
+binding goes to the program under the pointer):
+
+| Gesture | Action |
+| --- | --- |
+| 3-finger swipe | neighbouring space, the way the content moves (swipe left: the space to the right) |
+| 3-finger pinch out / in | step in toward the pointer / step out |
+| Super+2-finger pinch out / in | the same; without Super, pages and images zoom |
+| 4-finger swipe up | Overview |
+| 4-finger swipe down | frame the focused window on its own |
+| 4-finger swipe right / left | back / forward |
+
+`[touchpad]` sets tap to click (on by default), natural scrolling, disable
+while typing, pointer speed, the click method and how far a swipe goes
+before it counts. Changes apply on save.
 
 ## Commands
 

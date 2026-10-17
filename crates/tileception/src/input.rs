@@ -2,8 +2,9 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
+        PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
@@ -83,6 +84,9 @@ impl Tileception {
                 | InputEvent::PointerMotion { .. }
                 | InputEvent::PointerButton { .. }
                 | InputEvent::PointerAxis { .. }
+                | InputEvent::GestureSwipeBegin { .. }
+                | InputEvent::GesturePinchBegin { .. }
+                | InputEvent::GestureHoldBegin { .. }
         ) && self.idle_activity()
         {
             return;
@@ -113,6 +117,22 @@ impl Tileception {
                 self.on_button(event.button_code(), event.state(), event.time_msec())
             }
             InputEvent::PointerAxis { event } => self.on_axis::<I>(&event),
+            InputEvent::GestureSwipeBegin { event } => {
+                self.gesture_begin(false, event.fingers(), None, event.time_msec())
+            }
+            InputEvent::GestureSwipeUpdate { event } => self.gesture_update(event.delta(), 1.0, 0.0, event.time_msec()),
+            InputEvent::GestureSwipeEnd { event } => self.gesture_end(event.cancelled(), event.time_msec()),
+            InputEvent::GesturePinchBegin { event } => {
+                self.gesture_begin(true, event.fingers(), None, event.time_msec())
+            }
+            InputEvent::GesturePinchUpdate { event } => {
+                self.gesture_update(event.delta(), event.scale(), event.rotation(), event.time_msec())
+            }
+            InputEvent::GesturePinchEnd { event } => self.gesture_end(event.cancelled(), event.time_msec()),
+            InputEvent::GestureHoldBegin { event } => {
+                self.gesture_hold(Some(event.fingers()), false, event.time_msec())
+            }
+            InputEvent::GestureHoldEnd { event } => self.gesture_hold(None, event.cancelled(), event.time_msec()),
             _ => {}
         }
     }

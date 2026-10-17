@@ -29,6 +29,7 @@ pub struct ConfigFile {
     pub general: General,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
+    pub touchpad: crate::gestures::TouchpadConfig,
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
     pub shell: crate::shell::ShellConfig,
@@ -204,6 +205,7 @@ impl Config {
         file.shell.validate()?;
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
+        file.touchpad.validate()?;
         Ok(Config { file, binds, drag_mod, theme })
     }
 
@@ -273,6 +275,9 @@ pub fn parse_combo(combo: &str) -> Result<(Mods, u32), String> {
     }
     if let Some(wheel) = wheel_key(key) {
         return Ok((all, wheel));
+    }
+    if let Some(gesture) = crate::gestures::parse_key(key) {
+        return gesture.map(|g| (all, g));
     }
     let mut sym = xkb::keysym_from_name(key, xkb::KEYSYM_NO_FLAGS);
     if sym.raw() == 0 {
@@ -399,6 +404,7 @@ impl Tileception {
         }
         let old_shell = std::mem::replace(&mut self.config, config).file.shell;
         self.apply_shell(&old_shell);
+        self.configure_touchpads();
         // Also lays everything out again.
         self.apply_output_scale();
     }

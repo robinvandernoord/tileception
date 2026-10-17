@@ -178,8 +178,13 @@ pub fn init(
     libinput.udev_assign_seat(&seat).map_err(|_| "libinput could not take the seat")?;
     let input = LibinputInputBackend::new(libinput.clone());
     event_loop.handle().insert_source(input, |event, _, state| {
-        if let InputEvent::DeviceAdded { device } = &event {
-            tracing::info!("input device: {}", device.name());
+        match &event {
+            InputEvent::DeviceAdded { device } => {
+                tracing::info!("input device: {}", device.name());
+                state.touchpad_added(device.clone());
+            }
+            InputEvent::DeviceRemoved { device } => state.touchpad_removed(device),
+            _ => {}
         }
         state.process_input_event(event);
     })?;

@@ -100,7 +100,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "click" | "key" | "type" => return crate::inject::parse(verb, rest).map(Command::Inject),
+        "pointer" | "click" | "key" | "type" | "gesture" => {
+            return crate::inject::parse(verb, rest).map(Command::Inject);
+        }
         "colour-scheme" | "color-scheme" => {
             return crate::theme::ColourScheme::parse(rest).map(Command::ColourScheme);
         }

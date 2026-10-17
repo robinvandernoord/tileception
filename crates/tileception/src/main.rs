@@ -20,6 +20,7 @@ mod cursor;
 mod doctor;
 mod doctor_policy;
 mod focus;
+mod gestures;
 mod handlers;
 mod headless;
 mod idle;

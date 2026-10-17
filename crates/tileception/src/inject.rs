@@ -1,4 +1,4 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/type`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/key/type/gesture`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
 
@@ -24,6 +24,8 @@ pub enum Inject {
     Key(String),
     /// Types text, with Shift where a character needs it.
     Type(String),
+    /// A whole touchpad gesture, such as `Swipe3Left` or `Super+Pinch2In`.
+    Gesture { mods: crate::config::Mods, fingers: u32, motion: crate::gestures::Motion },
 }
 
 pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
@@ -53,6 +55,12 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
         "key" if !rest.trim().is_empty() => Ok(Inject::Key(rest.trim().to_string())),
         "key" => Err("key needs a key, such as Return or Super+slash".into()),
         "type" => Ok(Inject::Type(rest.to_string())),
+        "gesture" => {
+            let (mods, key) = crate::config::parse_combo(rest.trim())?;
+            let (fingers, motion) =
+                crate::gestures::decode(key).ok_or("gesture needs a gesture, such as Swipe3Left or Super+Pinch2In")?;
+            Ok(Inject::Gesture { mods, fingers, motion })
+        }
         _ => Err(format!("unknown input command {verb:?}")),
     }
 }
@@ -148,6 +156,7 @@ impl Tileception {
                     self.tap(&held, code, time + 4 * i as u32);
                 }
             }
+            Inject::Gesture { mods, fingers, motion } => self.inject_gesture(mods, fingers, motion, time),
         }
         Ok(())
     }
@@ -185,6 +194,12 @@ mod tests {
         assert_eq!(parse("type", "make gaps smaller"), Ok(Inject::Type("make gaps smaller".into())));
         assert!(parse("pointer", "1").is_err());
         assert!(parse("key", " ").is_err());
+        let logo = crate::config::Mods { logo: true, ..Default::default() };
+        assert_eq!(
+            parse("gesture", "Super+Pinch2In"),
+            Ok(Inject::Gesture { mods: logo, fingers: 2, motion: crate::gestures::Motion::In })
+        );
+        assert!(parse("gesture", "Super+t").is_err());
     }
 
     #[test]
