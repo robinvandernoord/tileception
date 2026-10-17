@@ -32,6 +32,7 @@ pub struct ConfigFile {
     pub touchpad: crate::gestures::TouchpadConfig,
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
+    pub battery: crate::battery::BatteryConfig,
     pub shell: crate::shell::ShellConfig,
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
@@ -163,6 +164,7 @@ pub struct Config {
     pub binds: Vec<Bind>,
     pub drag_mod: Mods,
     pub theme: crate::theme::Theme,
+    pub battery: crate::battery::BorderColours,
 }
 
 impl Config {
@@ -218,7 +220,8 @@ impl Config {
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
         file.touchpad.validate()?;
-        Ok(Config { file, binds, drag_mod, theme })
+        let battery = file.battery.colours(&theme)?;
+        Ok(Config { file, binds, drag_mod, theme, battery })
     }
 
     pub fn default_config() -> Config {

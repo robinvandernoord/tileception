@@ -32,6 +32,8 @@ pub enum Command {
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
     Media(crate::media::Control),
+    /// Prints the battery's charge and the border colour it gives.
+    Battery,
     /// Opens or closes the doctor panel, or asks it a question.
     Doctor(Option<String>),
     /// Pretend input, for scripted tests (headless or nested only).
@@ -72,6 +74,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "tree" => return Ok(Command::Tree),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
+        "battery" => return Ok(Command::Battery),
         "select" => {
             let ids = args
                 .iter()
@@ -205,6 +208,7 @@ impl Tileception {
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
+                    | Command::Battery
             )
         {
             return Err("session is locked".into());
@@ -218,6 +222,7 @@ impl Tileception {
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
+            Command::Battery => return Ok(self.battery_status()),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
             Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),

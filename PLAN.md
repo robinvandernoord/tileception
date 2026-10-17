@@ -59,7 +59,11 @@ Released up to v0.4.0 and running as Robin's session:
   resizing, multi-window selection with group close, float, tab and move.
 - Session: DRM backend, Xwayland, layer-shell, session lock, screencopy and
   screen sharing, suspend (opt out with `general.suspend_enabled = false`),
-  idle handling with video inhibition.
+  idle handling with video inhibition, locking before every sleep (logind
+  delay inhibitor).
+- Battery: charge in the bar, a focus border that follows it, low-battery
+  alerts, hibernating when nearly empty and power profiles that follow the
+  charger. Only with a battery; `[battery]` switches each part off.
 - Tide theming, wallpaper, text rendering, HiDPI and fractional scaling.
 - Built-in shell: launcher (calculator, conversions, windows, commands, app
   actions, times, colours, characters, paths, `>` commands), welcome screen,

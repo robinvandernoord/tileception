@@ -270,6 +270,19 @@ disabled by default. Suspend is enabled by default following a successful manual
 hardware test of the resume recovery, which clears stale queued DRM frames.
 Nested development sessions do not automatically lock or power down the host.
 
+The screen also locks before every suspend or hibernation, however it was
+asked for (the power menu, closing the lid, `systemctl suspend`): a logind
+delay inhibitor holds sleep back until the lock screen is on the display. Set
+`lock_before_sleep = false` under `[idle]` to turn this off.
+
+On a laptop the bar shows the battery's charge (hover it for the time left),
+and the focus border follows it: green while charging, then yellow, orange and
+red at 35, 25 and 15 percent on battery. `[battery]` also sends alerts at 20,
+15 and 10 percent, hibernates at 5 percent, and switches power profiles:
+performance on the charger, balanced on battery, power saver at 20 percent.
+Each part can be switched off there; computers without a battery are left
+alone. `tileception msg battery` prints the charge and the border colour.
+
 Super+X, then Suspend, uses the normal lock-and-suspend path. To disable the
 action, set `suspend_enabled = false` under `[general]` in your config. The config
 reloads automatically.

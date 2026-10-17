@@ -394,6 +394,7 @@ impl Tileception {
         {
             tracing::warn!("frame submit: {err}");
         }
+        self.sleep_frame_shown();
         self.render_udev();
     }
 
@@ -429,6 +430,7 @@ impl Tileception {
         self.send_layer_frames(self.start.elapsed());
         udev.frame_pending = queued;
         self.udev = Some(udev);
+        self.sleep_frame_queued(queued);
         self.after_frame();
         if !queued {
             // Nothing changed on screen: look again in about a frame.

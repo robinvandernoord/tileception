@@ -47,6 +47,7 @@ impl SessionLockHandler for Tileception {
         // Nothing but black is drawn from the next frame on.
         confirmation.lock();
         self.force_keyboard_focus_sync();
+        self.sleep_check(false);
     }
 
     fn unlock(&mut self) {

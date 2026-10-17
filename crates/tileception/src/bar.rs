@@ -56,6 +56,7 @@ const STETHOSCOPE: &str =
 const LAYERS: &str = r#"<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>"#;
 const SCREEN: &str = r#"<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>"#;
 const MINIMIZED: &str = r#"<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 15h8"/>"#;
+const BOLT: &str = r#"<path d="M13 3L6 13h5l-1 8 7-10h-5z"/>"#;
 
 /// The last error in the log, for the health light. Filled from any thread
 /// by [`ErrorWatch`].
@@ -196,6 +197,7 @@ enum Hit {
     Dnd,
     Minimized,
     Clock,
+    Battery,
     Notifications,
     Bar,
 }
@@ -255,6 +257,8 @@ struct Layout {
     chips: Vec<Chip>,
     clock: Rect,
     clock_text: String,
+    /// The charge, on a laptop.
+    battery: Option<(Rect, String)>,
     notifications: Rect,
 }
 
@@ -453,6 +457,14 @@ impl Tileception {
         let clock_w = self.bar_measure(&clock_text, style.bold(), 240.0) + 16.0;
         let clock = Rect::new(right - clock_w, y, clock_w, h);
         right = clock.x - 6.0;
+        let battery = self.battery.reading.map(|reading| {
+            let label = format!("{}%", reading.percent);
+            let bolt = if reading.charge == crate::battery::Charge::Charging { 14.0 } else { 0.0 };
+            let w = 34.0 + bolt + self.bar_measure(&label, style, 60.0);
+            let rect = Rect::new(right - w, y, w, h);
+            right = rect.x - 4.0;
+            (rect, label)
+        });
         let mut chips = Vec::new();
         for (kind, label) in self.chip_list() {
             let w = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
@@ -478,7 +490,7 @@ impl Tileception {
         };
         let crumbs_end = if show_slots { slots_x - 12.0 } else { right - 8.0 };
         let crumbs = self.place_crumbs(left, crumbs_end, y, h);
-        Some(Layout { bar, doctor, back, forward, crumbs, slots, chips, clock, clock_text, notifications })
+        Some(Layout { bar, doctor, back, forward, crumbs, slots, chips, clock, clock_text, battery, notifications })
     }
 
     /// Lays the crumbs out from `left`, collapsing the middle of a long path.
@@ -555,6 +567,9 @@ impl Tileception {
         ];
         if let Some((_, hit)) = hits.iter().find(|(r, _)| r.contains(p)) {
             return Some(*hit);
+        }
+        if layout.battery.as_ref().is_some_and(|(r, _)| r.contains(p)) {
+            return Some(Hit::Battery);
         }
         if let Some(crumb) = layout.crumbs.iter().find(|c| c.rect.contains(p))
             && let Some(node) = crumb.node
@@ -664,7 +679,7 @@ impl Tileception {
             Hit::Minimized => self.peek_minimized(),
             Hit::Clock => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
-            Hit::Bar => {}
+            Hit::Battery | Hit::Bar => {}
         }
         true
     }
@@ -873,6 +888,11 @@ impl Tileception {
         hover_fill(p, layout.clock, calendar || hit == Some(Hit::Clock));
         p.text(&layout.clock_text, layout.clock, style.bold().colour(t.text).align(Align::Centre));
 
+        if let (Some((rect, label)), Some(reading)) = (&layout.battery, &self.battery.reading) {
+            hover_fill(p, *rect, hit == Some(Hit::Battery));
+            self.draw_battery(p, *rect, label, reading);
+        }
+
         hover_fill(p, layout.notifications, self.notifications.open || hit == Some(Hit::Notifications));
         let dnd = self.notification_status().is_some_and(|(_, dnd)| dnd);
         let bell = Rect::new(layout.notifications.x + 2.0, layout.notifications.y, 24.0, layout.notifications.h);
@@ -897,6 +917,29 @@ impl Tileception {
         if let Some(Hit::Slot(n)) = hit {
             self.draw_slot_preview(p, layout, n);
         }
+        if let (Some(Hit::Battery), Some((rect, _)), Some(reading)) = (hit, &layout.battery, &self.battery.reading) {
+            let x = (rect.x - 80.0).max(bar.x + 6.0);
+            self.bar_tooltip(p, x, bar.bottom() + 6.0, "Battery", &reading.describe());
+        }
+    }
+
+    /// A small battery filled to the charge, in the border's colour when the
+    /// charge gives it one, then the percentage.
+    fn draw_battery(&self, p: &mut Painter, rect: Rect, label: &str, reading: &crate::battery::Reading) {
+        let t = &self.theme;
+        let tint = self.battery_border().unwrap_or(t.text.alpha(0.86));
+        let mid = rect.y + rect.h / 2.0;
+        let body = Rect::new(rect.x + 6.0, mid - 5.5, 20.0, 11.0);
+        p.shape(body, Shape { border_width: 1.5, border: tint, radius: 3.0, ..Default::default() });
+        p.fill(Rect::new(body.right() + 1.0, mid - 2.5, 2.0, 5.0), tint, 1.0);
+        let level = f64::from(reading.percent.clamp(4, 100)) / 100.0;
+        p.fill(Rect::new(body.x + 2.5, body.y + 2.5, (body.w - 5.0) * level, body.h - 5.0), tint, 1.0);
+        let mut x = body.right() + 6.0;
+        if reading.charge == crate::battery::Charge::Charging {
+            p.glyph(BOLT, Rect::new(x - 2.0, rect.y, 14.0, rect.h), 12, tint);
+            x += 13.0;
+        }
+        p.text(label, Rect::new(x, rect.y, rect.right() - x, rect.h), self.bar_style().colour(t.text.alpha(0.9)));
     }
 
     fn draw_crumbs(&self, p: &mut Painter, layout: &Layout, hit: Option<Hit>) {

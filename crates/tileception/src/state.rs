@@ -177,6 +177,8 @@ pub struct Tileception {
     pub bar: crate::bar::Bar,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
+    pub battery: crate::battery::Battery,
+    pub sleep: crate::sleep::Sleep,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
@@ -314,6 +316,8 @@ impl Tileception {
             bar: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
+            battery: Default::default(),
+            sleep: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
             headless: None,
