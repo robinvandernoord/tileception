@@ -433,6 +433,9 @@ matrix, credentials and deployment implementation remain pending.
   asked in points, copied in pixels). Not checked: a real HiDPI panel and the
   DRM backend, the auto guess on real EDIDs, the lock screen, the doctor
   panel, slurp, screen sharing.
+  Found while testing, also on master: a second foot opened beside a first
+  crashes, because it gets keyboard focus (wl_keyboard.enter) before its
+  first configure. Not fixed on this branch.
 - Window rules (always float an app, open an app in a given view). Done
   2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
   `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`

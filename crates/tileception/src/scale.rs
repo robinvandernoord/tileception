@@ -177,7 +177,9 @@ impl Tileception {
             (),
             |_, _, _| TraversalAction::DoChildren(()),
             |surface, states, _| {
-                if let Some(output) = &output {
+                if let Some(output) = &output
+                    && has_buffer(surface)
+                {
                     output.enter(surface);
                 }
                 send_scale_state(surface, states, scale);
@@ -209,6 +211,12 @@ impl Tileception {
             self.send_scale(&surface);
         }
     }
+}
+
+/// Whether a surface has drawn something, so it may be told it is on the
+/// output.
+pub fn has_buffer(surface: &WlSurface) -> bool {
+    smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false)
 }
 
 /// The preferred buffer scale (rounded up, for clients without fractional

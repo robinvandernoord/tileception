@@ -109,8 +109,12 @@ impl CompositorHandler for Tileception {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
-        // There is one output, and everything is on it.
-        if let Some(output) = &self.output {
+        // There is one output, and everything shown is on it. Not before
+        // the surface has drawn: foot crashes on an enter before its
+        // first configure.
+        if let Some(output) = &self.output
+            && crate::scale::has_buffer(surface)
+        {
             output.enter(surface);
         }
         if self.commit_layer(surface) {
