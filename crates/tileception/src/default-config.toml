@@ -179,6 +179,8 @@ repeat_rate = 30
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
 #   desktop               show or hide the Desktop tile
+#   colour-scheme <s>     tell apps to use dark, light or default styles,
+#                         until this file is next loaded
 #   reload                reload this file
 #   quit                  leave Tileception
 #

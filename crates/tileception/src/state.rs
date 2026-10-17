@@ -344,6 +344,20 @@ impl Tileception {
     }
 
     pub fn spawn(&self, cmd: &str, args: &[String]) {
+        let mut command = self.command(cmd, args);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        match command.spawn() {
+            Ok(child) => watch_child(child, label(cmd, args)),
+            Err(err) => tracing::warn!("could not start {cmd}: {err}"),
+        }
+    }
+
+    /// A program set up to run in this session: its Wayland and X11
+    /// displays, toolkit preferences and the IPC socket.
+    pub fn command(&self, cmd: &str, args: &[String]) -> std::process::Command {
         let mut command = std::process::Command::new(cmd);
         command
             .args(args)
@@ -366,13 +380,6 @@ impl Tileception {
             None => command.env_remove("DISPLAY"),
         };
         command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        match command.spawn() {
-            Ok(child) => watch_child(child, label(cmd, args)),
-            Err(err) => tracing::warn!("could not start {cmd}: {err}"),
-        }
     }
 
     pub fn window_id(&self, surface: &WlSurface) -> Option<WindowId> {
