@@ -306,6 +306,15 @@ impl XdgShellHandler for Tileception {
         }
     }
 
+    /// Tiles already fill their space, so maximizing changes nothing. Not
+    /// before the first commit: smithay's default configures right away, and
+    /// a window configured early is never placed (KeePassXC asks this way).
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if surface.is_initial_configure_sent() {
+            surface.send_configure();
+        }
+    }
+
     /// A menu takes the keyboard and pointer until it is dismissed, so a click
     /// outside closes it.
     fn fullscreen_request(
