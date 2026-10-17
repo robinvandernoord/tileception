@@ -264,10 +264,11 @@ Verification checklist:
 - [x] Scripted selection, tab grouping, group float/dock and group close.
 - [x] Short headless idle timer reaches locked and display-asleep states.
 - [x] Robin verified suspend/resume on hardware and confirmed password dots.
-- [ ] Manually verify launcher editing (including compose input), corrected
+- [x] Manually verify launcher editing (including compose input), corrected
   window selection/group actions, notification action clicks, physical display
   wake without suspend, and video idle inhibition on the laptop. Confirm password
   rejection and successful unlock if not already covered by the suspend test.
+  Robin tested these on 2026-10-16.
 
 Feedback corrections:
 
@@ -413,6 +414,9 @@ matrix, credentials and deployment implementation remain pending.
 
 ### Maybe someday (tm)
 
+Decided 2026-10-16: more monitors comes first once Robin can test it on a
+second screen.
+
 - More monitors: a layout per screen, moving windows between them.
 - HiDPI and fractional scaling. Implemented 2026-10-16 on
   `feature/hidpi-scaling`: `[outputs."<connector>"] scale` ("auto" or a
@@ -470,6 +474,12 @@ matrix, credentials and deployment implementation remain pending.
   gestures. Planning only for now.
 - Live blur and glass styles (Smoke, Liquid glass from `design/graphite.html`).
 - A settings window instead of editing the config file.
+- Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
+  commit the new size; crop or pad instead, as niri does. Not seen in practice
+  yet, so only if it shows up.
+- Input methods (text-input and input-method protocols, for fcitx5 or IBus).
+- Not wanted (2026-10-16): app-matched layout restoration across logins, and
+  the wlr foreign-toplevel management protocol for external taskbars.
 
 ### To be planned
 
@@ -609,7 +619,8 @@ matrix, credentials and deployment implementation remain pending.
   a layer-shell bar) that shows where the camera is in the tree, not a copy of
   a Windows or macOS taskbar. The minimized strip keeps the bottom edge. Like
   the rest of `[shell]`: `bar = "builtin" | "none" | "<command>"` (e.g. waybar).
-  Proposed 2026-10-16, left to right:
+  Proposed 2026-10-16, left to right. Approved 2026-10-16: on by default
+  (`bar = "none"` opts out), calendar zoom included in the first version.
   - **Doctor button at the far left**, where its panel slides out, doubling as
     a health light: calm normally, amber after a failed config reload or new
     errors in the log, with "ask about this" opening the doctor with that
@@ -640,10 +651,34 @@ matrix, credentials and deployment implementation remain pending.
   Later: a minimap (a live outline of the whole tree with the camera's frame;
   click to fly there, drag to pan), from the last crumb or in Overview; a
   `position = "bottom"` option that moves the minimized strip to the top.
+  Implemented 2026-10-17 on `feature/top-bar` (`bar.rs`), except the Later
+  items. Crumbs show the root, the framed node, spaces framed before
+  (history) and spaces a saved view frames; apps are ordered by how many
+  windows they have there, as no per-app usage exists for windows. The health
+  light turns amber on any ERROR in the log (a tracing layer), and clicking it
+  then asks the doctor about that error. The now-playing chip toggles play and
+  pause; the minimized chip peeks the strip; the capture chip shows while
+  screencopy takes frames ("Sharing screen" for a stream, "Screen captured"
+  for a single copy). The calendar starts weeks on Monday with ISO week
+  numbers, and the arrows or scrolling turn the months. While one window is
+  framed the bar gives up its edge and leaves a 2 px line; touching the top
+  edge slides it over the window. A bar command runs in its own process group
+  and is stopped when `bar` changes. Checked nested on Xvfb with software
+  rendering (foot, xterm, xclock, xeyes): root, nested breadcrumb with slot
+  badges, saved view preview, crumb, back and slot clicks, Overview, the
+  hairline and its reveal, the calendar zoom (mid-animation with a slowed
+  animation, settled, Esc back), notification count with Do not disturb,
+  minimized and capture chips (grim), the amber light after a broken config
+  and asking the doctor, fullscreen hiding it, `bar = "none"` and
+  `bar = "xlogo"` started and stopped by live reload. Not checked: scrolling
+  on the bar (no scroll injection), the now-playing chip (no MPRIS player in
+  the test), the lock screen (not triggered), real hardware.
 
 - **A smarter launcher.** Tapping Super should answer small things itself, not
   only find apps. Everything here is local and instant: no ACP, no network
   (the "Ask Tileception" row stays for real questions, below these results).
+  Approved 2026-10-16: `>` plus Enter runs the command and shows its output in
+  the launcher; Enter on a sum copies the result and shows it.
   Proposed 2026-10-16:
   - **One shared launcher component for Super and the welcome screen.** Both
     show the same app grid when the search is empty, switch to results while
@@ -676,6 +711,48 @@ matrix, credentials and deployment implementation remain pending.
   - Later, with a built-in clipboard history: search past clipboard entries.
   Question detection must come after these, so a sum or a conversion with
   three words (`5 km in mi`) is not sent to the doctor.
+  Implemented 2026-10-16 on `feature/launcher-and-bar-launcher`, everything
+  above except the clipboard history. Rows are now typed entries: answers
+  first, then apps, open and minimized windows, commands and desktop actions
+  ranked together by how well they match (at most eight), then "Ask
+  Tileception" only when nothing answered. Super and the welcome screen share
+  it, and Super shows the playback card too.
+  - `calc.rs`: a small expression parser (`+ - * / ^ mod`, `%`, `of`,
+    brackets, `sqrt`/`sin`/... in degrees, `pi`, `0x`/`0b`/`0o`) and conversions
+    for length, mass, temperature, data (MB is bytes, Mb bits, GiB binary),
+    time, speed and volume. Enter copies the bare number and the row says
+    "Copied".
+  - `zones.rs` reads the system's TZif files and POSIX TZ rules (no network,
+    no change to the process's own zone), with a short table of country and
+    city aliases; `answers.rs` does times elsewhere, days until or since a date
+    (ISO, `25-12-2026`, `25 december`), unix timestamps both ways, colours
+    (hex, `rgb()`, `hsl()`, one row per notation to copy), characters (`:`
+    and a name; a 36 KB table of emoji and symbols from Unicode names, with a
+    few chosen keywords such as "lol" and "+1"), paths (Tab completes, Enter
+    runs `xdg-open`) and `http(s)://` or `www.` links.
+  - `>`: Enter runs the line with `sh -c` in the home folder, in the session's
+    environment, without blocking the compositor: stdout and stderr together,
+    at most 64 KB, stopped with its whole process group after 10 s. The last
+    eleven lines show under the row with the exit status; Up/Down and Page
+    Up/Down scroll. Output arriving after the launcher was reopened is
+    dropped. Ctrl+Enter runs it in the terminal instead, which then stays open
+    on a shell.
+  - Commands run through the same parser as `tileception msg`, and show their
+    bound key (Print, Super+L, ...). Log out, restart and power off open the
+    power menu on that button rather than acting at once. "Dark/Light style
+    for apps" use a new `colour-scheme dark|light|default` command, which lasts
+    until the config is next loaded.
+  - Desktop actions come from `tileception-apps`, which now parses
+    `[Desktop Action ...]` groups and searches them by name, or by app name
+    plus action name.
+  Checked nested on Xvfb with software rendering: a sum and its copy (pasted
+  back with Ctrl+V), a conversion, `>` output with stderr and exit status 2,
+  Ctrl+Enter in a terminal, open and minimized windows (Enter restored one and
+  flew to another), command rows with their shortcuts, LibreOffice's "New
+  Document" action, emoji, a colour, `time in tokyo`, and path completion.
+  Not checked: the playback card on the Super launcher (no player in the
+  nested session), the commands that lock, suspend or end the session,
+  `xdg-open` of a path or link, and typing on real hardware.
 
 - **Configurable per-app launch arguments.**
   Status: agreed 2026-10-16, not implemented.
