@@ -33,6 +33,8 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub shell: crate::shell::ShellConfig,
     pub rules: Vec<crate::rules::WindowRule>,
+    /// Per screen, by connector name ("*" for any).
+    pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 
@@ -199,6 +201,7 @@ impl Config {
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
         file.shell.validate()?;
         crate::rules::validate(&file.rules)?;
+        crate::scale::validate(&file.outputs)?;
         Ok(Config { file, binds, drag_mod, theme })
     }
 
@@ -382,7 +385,8 @@ impl Tileception {
         }
         let old_shell = std::mem::replace(&mut self.config, config).file.shell;
         self.apply_shell(&old_shell);
-        self.apply_layout();
+        // Also lays everything out again.
+        self.apply_output_scale();
     }
 }
 

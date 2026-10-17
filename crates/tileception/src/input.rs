@@ -90,9 +90,11 @@ impl Tileception {
         match event {
             InputEvent::Keyboard { event } => self.on_key::<I>(event),
             InputEvent::PointerMotionAbsolute { event } => {
-                let Some(output) = self.output.as_ref() else { return };
-                let size = output.current_mode().map(|m| m.size.to_logical(1)).unwrap_or_default();
-                let pos = event.position_transformed(size);
+                if self.output.is_none() {
+                    return;
+                }
+                let screen = self.output_rect();
+                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }

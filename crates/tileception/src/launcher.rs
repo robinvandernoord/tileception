@@ -154,7 +154,7 @@ impl Launcher {
     ) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
         let desktop_id = if app_id.ends_with(".desktop") { app_id.to_owned() } else { format!("{app_id}.desktop") };
         let icon = self.index.get(&desktop_id).and_then(|app| app.icon.as_deref()).unwrap_or(app_id);
-        let path = self.lookup.find(icon, size, 1)?;
+        let path = self.lookup.find(icon, self.icons.pixels(size), 1)?;
         self.icons.image(&path, size)
     }
 }
@@ -707,7 +707,7 @@ impl Tileception {
             },
         );
         if let Some(image) = field {
-            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height as f64) / 2.0));
+            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height) / 2.0));
         }
         // The rest of the chosen name, greyed out after what was typed.
         let chosen = matches.get(self.launcher.selected);

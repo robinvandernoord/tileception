@@ -57,8 +57,11 @@ impl CompositorHandler for Tileception {
     }
 
     /// Holds a client's commit back until its GPU work is done, so we never
-    /// draw a half-rendered buffer.
+    /// draw a half-rendered buffer. The surface learns the output's scale
+    /// before it first draws.
     fn new_surface(&mut self, surface: &WlSurface) {
+        let scale = self.scale;
+        with_states(surface, |states| crate::scale::send_scale_state(surface, states, scale));
         add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
             let mut acquire = None;
             let dmabuf = with_states(surface, |data| {
@@ -106,6 +109,10 @@ impl CompositorHandler for Tileception {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // There is one output, and everything is on it.
+        if let Some(output) = &self.output {
+            output.enter(surface);
+        }
         if self.commit_layer(surface) {
             self.popups.commit(surface);
             return;

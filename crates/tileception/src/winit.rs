@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::Tileception;
 use smithay::{
     backend::{
         renderer::damage::OutputDamageTracker,
@@ -11,9 +12,6 @@ use smithay::{
     reexports::calloop::EventLoop,
     utils::{Rectangle, Transform},
 };
-use tileception_core::Rect;
-
-use crate::Tileception;
 
 const REFRESH: i32 = 60_000;
 
@@ -36,18 +34,18 @@ pub fn init(
     let _global = output.create_global::<Tileception>(&state.display_handle);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    set_screen(state, mode.size.w, mode.size.h);
     state.output = Some(output.clone());
+    state.apply_output_scale();
 
-    let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    // Render elements are made in physical pixels, so the tracker works at
+    // scale 1 whatever the output's scale.
+    let mut damage_tracker = OutputDamageTracker::new(mode.size, 1.0, Transform::Flipped180);
 
     event_loop.handle().insert_source(winit, move |event, _, state| match event {
         WinitEvent::Resized { size, .. } => {
             output.change_current_state(Some(Mode { size, refresh: REFRESH }), None, None, None);
-            set_screen(state, size.w, size.h);
-            state.update_usable_area();
-            state.resize_lock_surface();
-            state.apply_layout();
+            damage_tracker = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
+            state.apply_output_scale();
         }
         WinitEvent::Input(event) => state.process_input_event(event),
         WinitEvent::Redraw => {
@@ -81,8 +79,4 @@ pub fn init(
     })?;
 
     Ok(())
-}
-
-fn set_screen(state: &mut Tileception, w: i32, h: i32) {
-    state.world.set_screen(Rect::new(0.0, 0.0, w as f64, h as f64));
 }
