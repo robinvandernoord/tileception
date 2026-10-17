@@ -80,19 +80,13 @@ struct Keys {
 
 impl Keys {
     fn new(k: &crate::config::Keyboard) -> Option<Keys> {
-        let pick =
-            |file: &Option<String>, env: &str| file.clone().unwrap_or_else(|| std::env::var(env).unwrap_or_default());
+        let (model, layout, variant, options) = k.names();
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context,
-            "",
-            &pick(&k.model, "XKB_DEFAULT_MODEL"),
-            &pick(&k.layout, "XKB_DEFAULT_LAYOUT"),
-            &pick(&k.variant, "XKB_DEFAULT_VARIANT"),
-            k.options.clone().or_else(|| std::env::var("XKB_DEFAULT_OPTIONS").ok()),
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .or_else(|| xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS))?;
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", &model, &layout, &variant, options, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .or_else(|| {
+                    xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                })?;
         Some(Keys { keymap })
     }
 

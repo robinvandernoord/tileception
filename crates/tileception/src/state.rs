@@ -216,19 +216,8 @@ impl Tileception {
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
         let k = &config.file.keyboard;
-        let pick = |file: &Option<String>, env: &str| file.clone().unwrap_or_else(|| env_or_default(env));
-        let (layout, variant, model) = (
-            pick(&k.layout, "XKB_DEFAULT_LAYOUT"),
-            pick(&k.variant, "XKB_DEFAULT_VARIANT"),
-            pick(&k.model, "XKB_DEFAULT_MODEL"),
-        );
-        let xkb = XkbConfig {
-            layout: &layout,
-            variant: &variant,
-            model: &model,
-            options: k.options.clone().or_else(|| std::env::var("XKB_DEFAULT_OPTIONS").ok()),
-            ..Default::default()
-        };
+        let (model, layout, variant, options) = k.names();
+        let xkb = XkbConfig { layout: &layout, variant: &variant, model: &model, options, ..Default::default() };
         let (delay, rate) = (k.repeat_delay.unwrap_or(400), k.repeat_rate.unwrap_or(30));
         if seat.add_keyboard(xkb, delay, rate).is_err() {
             tracing::warn!("keyboard layout {layout:?} {variant:?} did not compile, using us");
@@ -801,10 +790,6 @@ fn watch_child(mut child: std::process::Child, name: String) {
         Ok(status) if !status.success() => tracing::info!(target: "program", "[{name}] exited with {status}"),
         _ => {}
     });
-}
-
-fn env_or_default(key: &str) -> String {
-    std::env::var(key).unwrap_or_default()
 }
 
 /// The first installed terminal that runs natively on Wayland.

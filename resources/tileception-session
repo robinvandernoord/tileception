@@ -2,15 +2,6 @@
 # Starts Tileception as a login session. The display manager runs this through
 # the Tileception entry in /usr/share/wayland-sessions.
 
-# Keyboard layout as configured for the console and X.
-if [ -r /etc/default/keyboard ]; then
-    . /etc/default/keyboard
-    export XKB_DEFAULT_MODEL="${XKBMODEL}"
-    export XKB_DEFAULT_LAYOUT="${XKBLAYOUT}"
-    export XKB_DEFAULT_VARIANT="${XKBVARIANT}"
-    export XKB_DEFAULT_OPTIONS="${XKBOPTIONS}"
-fi
-
 # Cursor theme from the desktop settings, when there are any.
 if [ -z "${XCURSOR_THEME}" ] && command -v gsettings >/dev/null 2>&1; then
     for schema in org.cinnamon.desktop.interface org.gnome.desktop.interface; do

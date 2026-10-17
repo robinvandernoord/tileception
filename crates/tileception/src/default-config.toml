@@ -176,9 +176,10 @@ bar = "builtin"
 # firefox = ["-P", "work"]
 
 [keyboard]
-# Defaults come from XKB_DEFAULT_* in the environment.
-# layout = "us"
-# variant = "altgr-intl"
+# US international unless set: AltGr gives accents and dead keys (AltGr+'
+# then e is é), while ' and " type straight away. Any xkb layout works.
+# layout = "nl"
+# variant = ""
 # options = "compose:ralt"
 repeat_delay = 400
 repeat_rate = 30

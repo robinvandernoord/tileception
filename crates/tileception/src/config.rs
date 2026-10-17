@@ -117,6 +117,18 @@ pub struct Keyboard {
     pub repeat_rate: Option<i32>,
 }
 
+impl Keyboard {
+    /// The xkb model, layout, variant and options. Without a layout it is US
+    /// international: AltGr types accents and dead keys, ' and " stay plain.
+    pub fn names(&self) -> (String, String, String, Option<String>) {
+        let (layout, variant) = match &self.layout {
+            Some(layout) => (layout.clone(), self.variant.clone().unwrap_or_default()),
+            None => ("us".into(), self.variant.clone().unwrap_or_else(|| "altgr-intl".into())),
+        };
+        (self.model.clone().unwrap_or_default(), layout, variant, self.options.clone())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Mods {
     pub logo: bool,
@@ -415,6 +427,26 @@ impl Tileception {
 mod tests {
     use super::*;
     use crate::input::Action;
+
+    #[test]
+    fn keyboard_defaults_to_us_international() {
+        let names = |k: Keyboard| {
+            let (_, layout, variant, _) = k.names();
+            (layout, variant)
+        };
+        assert_eq!(names(Keyboard::default()), ("us".into(), "altgr-intl".into()));
+        let (model, layout, variant, options) = Keyboard::default().names();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", &model, &layout, &variant, options, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .expect("US international compiles");
+        // AltGr+' is a dead acute.
+        let quote = keymap.key_by_name("AC11").expect("apostrophe key");
+        let dead_acute = xkb::keysym_from_name("dead_acute", xkb::KEYSYM_NO_FLAGS);
+        assert_eq!(keymap.key_get_syms_by_level(quote, 0, 2), [dead_acute]);
+        let nl = Keyboard { layout: Some("nl".into()), ..Default::default() };
+        assert_eq!(names(nl), ("nl".into(), String::new()));
+    }
 
     #[test]
     fn default_config_parses() {
