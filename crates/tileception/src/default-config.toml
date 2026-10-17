@@ -336,6 +336,22 @@ repeat_rate = 30
 "Swipe4Left" = "forward"
 "Swipe4Right" = "back"
 
+# The touchscreen. A swipe in from an edge (TouchEdgeTop, Bottom, Left,
+# Right), and three to five fingers that land together (TouchSwipe3Left,
+# TouchPinch3In, ...), are Tileception's; other touches go to the program
+# under them. In Overview two fingers pinch out to go into a tile, in to
+# leave.
+"TouchEdgeTop" = "overview"
+"TouchEdgeBottom" = "show-minimized"
+"TouchEdgeRight" = "notifications"
+"TouchEdgeLeft" = "doctor"
+"TouchSwipe3Left" = "focus right"
+"TouchSwipe3Right" = "focus left"
+"TouchSwipe3Up" = "focus down"
+"TouchSwipe3Down" = "focus up"
+"TouchPinch3In" = "step-out"
+"TouchPinch3Out" = "step-in pointer"
+
 # Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.
 "XF86AudioRaiseVolume" = "volume up"

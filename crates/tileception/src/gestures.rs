@@ -90,32 +90,96 @@ pub enum Motion {
 }
 
 impl Motion {
-    fn is_pinch(self) -> bool {
+    pub(crate) fn is_pinch(self) -> bool {
         matches!(self, Motion::In | Motion::Out)
     }
 }
 
+/// The screen edge a touch swipe comes in from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// A gesture as `[binds]` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureKey {
+    /// On the touchpad: `Swipe3Left`, `Pinch2In`.
+    Pad(u32, Motion),
+    /// Three or more fingers on the touchscreen: `TouchSwipe3Left`.
+    Touch(u32, Motion),
+    /// One finger in from a screen edge: `TouchEdgeTop`.
+    Edge(Edge),
+}
+
 /// Pseudo keysyms for gestures, outside the range xkb uses: one per finger
-/// count and motion.
+/// count and motion, touchpad and touchscreen apart, and one per edge.
 const GESTURE_KEYS: u32 = 0x7f00_0100;
+const TOUCH_KEYS: u32 = GESTURE_KEYS + 64;
+const EDGE_KEYS: u32 = GESTURE_KEYS + 128;
 const MOTIONS: [Motion; 6] = [Motion::Left, Motion::Right, Motion::Up, Motion::Down, Motion::In, Motion::Out];
+const EDGES: [Edge; 4] = [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right];
 
 pub fn key(fingers: u32, motion: Motion) -> u32 {
-    let index = MOTIONS.iter().position(|m| *m == motion).unwrap_or(0) as u32;
-    GESTURE_KEYS + fingers * 8 + index
+    GestureKey::Pad(fingers, motion).key()
 }
 
-/// The finger count and motion of a gesture key.
-pub fn decode(key: u32) -> Option<(u32, Motion)> {
-    let offset = key.checked_sub(GESTURE_KEYS)?;
+impl GestureKey {
+    pub fn key(self) -> u32 {
+        let motion = |m| MOTIONS.iter().position(|x| *x == m).unwrap_or(0) as u32;
+        match self {
+            GestureKey::Pad(fingers, m) => GESTURE_KEYS + fingers * 8 + motion(m),
+            GestureKey::Touch(fingers, m) => TOUCH_KEYS + fingers * 8 + motion(m),
+            GestureKey::Edge(e) => EDGE_KEYS + EDGES.iter().position(|x| *x == e).unwrap_or(0) as u32,
+        }
+    }
+}
+
+/// The gesture a pseudo keysym stands for.
+#[cfg(test)]
+fn decode(key: u32) -> Option<GestureKey> {
+    if let Some(offset) = key.checked_sub(EDGE_KEYS) {
+        return EDGES.get(offset as usize).map(|e| GestureKey::Edge(*e));
+    }
+    let (touch, offset) = match key.checked_sub(TOUCH_KEYS) {
+        Some(offset) => (true, offset),
+        None => (false, key.checked_sub(GESTURE_KEYS)?),
+    };
     let motion = *MOTIONS.get((offset % 8) as usize)?;
     let fingers = offset / 8;
-    (2..=5).contains(&fingers).then_some((fingers, motion))
+    (2..=5).contains(&fingers).then_some(if touch {
+        GestureKey::Touch(fingers, motion)
+    } else {
+        GestureKey::Pad(fingers, motion)
+    })
 }
 
-/// Parses `Swipe3Left` or `Pinch2In`. None when the name is not a gesture.
+/// Parses `Swipe3Left`, `Pinch2In`, `TouchSwipe3Up` or `TouchEdgeTop`. None
+/// when the name is not a gesture.
 pub fn parse_key(name: &str) -> Option<Result<u32, String>> {
+    parse_gesture(name, false).map(|g| g.map(GestureKey::key))
+}
+
+/// As `parse_key`, also allowing two-finger touch pinches, which Tileception
+/// only takes in Overview: for scripted tests.
+pub fn parse_gesture(name: &str, test: bool) -> Option<Result<GestureKey, String>> {
     let lower = name.to_ascii_lowercase();
+    let (touch, lower) = match lower.strip_prefix("touch") {
+        Some(rest) => (true, rest.to_string()),
+        None => (false, lower),
+    };
+    if touch && let Some(edge) = lower.strip_prefix("edge") {
+        return Some(match edge {
+            "top" => Ok(GestureKey::Edge(Edge::Top)),
+            "bottom" => Ok(GestureKey::Edge(Edge::Bottom)),
+            "left" => Ok(GestureKey::Edge(Edge::Left)),
+            "right" => Ok(GestureKey::Edge(Edge::Right)),
+            _ => Err(format!("{name:?}: an edge is TouchEdgeTop, Bottom, Left or Right")),
+        });
+    }
     let (pinch, rest) = match lower.strip_prefix("swipe") {
         Some(rest) => (false, rest),
         None => (true, lower.strip_prefix("pinch")?),
@@ -134,13 +198,19 @@ pub fn parse_key(name: &str) -> Option<Result<u32, String>> {
             return Some(Err(format!("{name:?}: a {} ends in {ways}", if pinch { "pinch" } else { "swipe" })));
         }
     };
-    let least = if pinch { 2 } else { 3 };
+    // Two fingers on the touchscreen belong to programs.
+    let least = if pinch && (!touch || test) { 2 } else { 3 };
+    let example = match (touch, pinch) {
+        (false, false) => "Swipe3Left",
+        (false, true) => "Pinch2In",
+        (true, false) => "TouchSwipe3Left",
+        (true, true) => "TouchPinch3In",
+    };
     match count.parse::<u32>() {
-        Ok(n) if (least..=5).contains(&n) => Some(Ok(key(n, motion))),
-        _ => Some(Err(format!(
-            "{name:?}: give {least} to 5 fingers, as in {}",
-            if pinch { "Pinch2In" } else { "Swipe3Left" }
-        ))),
+        Ok(n) if (least..=5).contains(&n) => {
+            Some(Ok(if touch { GestureKey::Touch(n, motion) } else { GestureKey::Pad(n, motion) }))
+        }
+        _ => Some(Err(format!("{name:?}: give {least} to 5 fingers, as in {example}"))),
     }
 }
 
@@ -192,7 +262,7 @@ impl Tileception {
 
     /// The modifiers bindings are looked up with: nested, Alt stands in for
     /// Super, as for keys.
-    fn gesture_mods(&self) -> Mods {
+    pub(crate) fn gesture_mods(&self) -> Mods {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let mut held = Mods::from_state(&keyboard.modifier_state());
         if self.nested && held.alt && !held.logo {
@@ -305,8 +375,13 @@ impl Tileception {
     }
 
     fn run_gesture(&mut self, fingers: u32, motion: Motion, mods: Mods) {
-        tracing::debug!(fingers, ?motion, "gesture");
-        let commands = self.config.lookup(mods, key(fingers, motion)).map(<[Command]>::to_vec).unwrap_or_default();
+        self.run_gesture_key(GestureKey::Pad(fingers, motion), mods);
+    }
+
+    /// Runs what `[binds]` gives a gesture, if anything.
+    pub(crate) fn run_gesture_key(&mut self, gesture: GestureKey, mods: Mods) {
+        tracing::debug!(?gesture, "gesture");
+        let commands = self.config.lookup(mods, gesture.key()).map(<[Command]>::to_vec).unwrap_or_default();
         for command in commands {
             if let Err(err) = self.execute(command) {
                 tracing::warn!("{err}");
@@ -348,7 +423,16 @@ mod tests {
     fn gesture_names() {
         assert_eq!(parse_key("Swipe3Left"), Some(Ok(key(3, Motion::Left))));
         assert_eq!(parse_key("pinch2out"), Some(Ok(key(2, Motion::Out))));
-        assert_eq!(decode(key(4, Motion::Down)), Some((4, Motion::Down)));
+        assert_eq!(decode(key(4, Motion::Down)), Some(GestureKey::Pad(4, Motion::Down)));
+        let touch = GestureKey::Touch(3, Motion::In);
+        assert_eq!(parse_key("TouchPinch3In"), Some(Ok(touch.key())));
+        assert_eq!(decode(touch.key()), Some(touch));
+        let edge = GestureKey::Edge(Edge::Right);
+        assert_eq!(parse_key("TouchEdgeRight"), Some(Ok(edge.key())));
+        assert_eq!(decode(edge.key()), Some(edge));
+        assert!(matches!(parse_key("TouchPinch2In"), Some(Err(_))));
+        assert_eq!(parse_gesture("TouchPinch2In", true), Some(Ok(GestureKey::Touch(2, Motion::In))));
+        assert!(matches!(parse_key("TouchEdgeMiddle"), Some(Err(_))));
         assert!(matches!(parse_key("Swipe2Left"), Some(Err(_))));
         assert!(matches!(parse_key("Pinch3Left"), Some(Err(_))));
         assert!(matches!(parse_key("Swipe6Up"), Some(Err(_))));

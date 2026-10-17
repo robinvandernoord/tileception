@@ -34,6 +34,8 @@ pub enum Command {
     Media(crate::media::Control),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
+    /// Slides out the strip of minimized windows for a moment.
+    ShowMinimized,
     /// Opens or closes the doctor panel, or asks it a question.
     Doctor(Option<String>),
     /// Pretend input, for scripted tests (headless or nested only).
@@ -72,6 +74,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "show-minimized" => return Ok(Command::ShowMinimized),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
@@ -217,6 +220,7 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
