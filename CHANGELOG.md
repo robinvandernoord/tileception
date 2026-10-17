@@ -2,6 +2,15 @@
 
 <!-- next-version-placeholder -->
 
+## v0.4.0 (2026-10-17)
+
+### Features
+* **packaging:** manage the apt keyring as a package
+* **launcher:** support per-app launch arguments
+
+### Documentation
+* **plan:** update packaging and launcher progress
+
 ## v0.3.0 (2026-10-17)
 
 ### Features
