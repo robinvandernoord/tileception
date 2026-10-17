@@ -23,11 +23,19 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
         return Err(format!("{} {missing}", agent.name));
     }
     match &agent.launch {
-        Launch::Npx { package, args, env } => Ok(Program {
-            command: "npx".into(),
-            args: ["-y".to_string(), package.clone()].into_iter().chain(args.iter().cloned()).collect(),
-            env: env.clone(),
-        }),
+        Launch::Npx { package, args, env } => {
+            let (command, flags) = crate::registry::npx().ok_or_else(|| format!("{} needs Node.js", agent.name))?;
+            Ok(Program {
+                command,
+                args: flags
+                    .iter()
+                    .map(|f| f.to_string())
+                    .chain([package.clone()])
+                    .chain(args.iter().cloned())
+                    .collect(),
+                env: env.clone(),
+            })
+        }
         Launch::Uvx { package, args, env } => Ok(Program {
             command: "uvx".into(),
             args: std::iter::once(package.clone()).chain(args.iter().cloned()).collect(),
