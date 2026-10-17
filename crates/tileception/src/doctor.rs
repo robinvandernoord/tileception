@@ -67,6 +67,12 @@ const PICTURE_H: u32 = 280;
 const SEND_SIZE: u32 = 1568;
 /// Space between the parts of one answer.
 const PIECE_GAP: f64 = 8.0;
+/// The bar along the top of a code block: its language and buttons.
+const CODE_BAR: f64 = 28.0;
+/// A copy or run button in that bar.
+const CODE_BUTTON: f64 = 24.0;
+/// How long a copied code block shows a check.
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// A small picture, premultiplied, ready to draw.
 #[derive(Debug, Clone)]
@@ -247,6 +253,8 @@ pub struct Doctor {
     /// Pictures in answers, by address.
     pictures: std::collections::HashMap<String, Picture>,
     loads: Option<(channel::Sender<Loaded>, RegistrationToken)>,
+    /// The code last copied from an answer, and when.
+    copied: Option<(String, Instant)>,
 }
 
 impl Default for Doctor {
@@ -286,6 +294,7 @@ impl Default for Doctor {
             waiting: None,
             pictures: Default::default(),
             loads: None,
+            copied: None,
         }
     }
 }
@@ -321,6 +330,10 @@ enum Hit {
     Open(String),
     /// A waiting picture, by its place.
     Detach(usize),
+    /// A code block's text, onto the clipboard.
+    Copy(String),
+    /// A code block's command, run in a terminal.
+    Run(String),
 }
 
 /// A row of a menu over the conversation.
@@ -398,6 +411,11 @@ enum Block {
         rect: Rect,
         spans: Vec<Span>,
         style: RichStyle,
+        lang: String,
+        /// What the copy button copies.
+        copy: String,
+        /// What the run button runs; no button when not shell.
+        run: Option<String>,
     },
     Picture {
         rect: Rect,
@@ -468,6 +486,15 @@ struct Frame {
     hints: Rect,
     /// Pasted pictures waiting above the field, one square each.
     attached: Vec<Rect>,
+}
+
+/// A code block's copy button and, for shell, its run button, right to left
+/// in its top bar.
+fn code_buttons(rect: Rect, run: bool) -> (Rect, Option<Rect>) {
+    let y = rect.y + (CODE_BAR - CODE_BUTTON) / 2.0;
+    let copy = Rect::new(rect.right() - 6.0 - CODE_BUTTON, y, CODE_BUTTON, CODE_BUTTON);
+    let run = run.then_some(Rect { x: copy.x - 4.0 - CODE_BUTTON, ..copy });
+    (copy, run)
 }
 
 /// Questions offered on an empty conversation; a click asks them.
@@ -1025,9 +1052,27 @@ impl Tileception {
         }
     }
 
+    /// Runs `line` with `sh` in a new terminal window.
+    fn open_terminal(&self, line: &str) {
+        let terminal = format!("{} -e sh -c {}", self.terminal, shell_quote(line));
+        self.spawn("sh", &["-c".into(), terminal]);
+    }
+
+    /// Runs a command from an answer in a terminal, so `sudo` can ask for the
+    /// password there. It is shown first and runs once Enter is pressed.
+    fn run_code(&self, command: &str) {
+        let shell = if tileception_acp::registry::on_path("bash") { "bash" } else { "sh" };
+        let line = format!(
+            "printf '%s\\n\\n' {command}; printf 'Press Enter to run, or close this window to cancel. '; read -r _ || exit; \
+             echo; {shell} -c {command}; status=$?; echo; echo \"Finished (exit status $status). Press Enter to close.\"; read -r _",
+            command = shell_quote(command),
+        );
+        self.open_terminal(&line);
+    }
+
     /// Runs an agent's own login in the terminal.
     fn run_login_terminal(&mut self, program: &tileception_acp::install::Program) {
-        let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let quote = shell_quote;
         let mut line = String::from("env");
         for (key, value) in &program.env {
             line += &format!(" {}={}", quote(key), quote(value));
@@ -1037,8 +1082,7 @@ impl Tileception {
             line += &format!(" {}", quote(arg));
         }
         line += "; echo; echo 'Done: go back to the doctor panel.'; read -r _";
-        let terminal = format!("{} -e sh -c {}", self.terminal, quote(&line));
-        self.spawn("sh", &["-c".into(), terminal]);
+        self.open_terminal(&line);
         self.doctor
             .messages
             .push(Message::Note("Log in in the terminal, then choose \u{201c}I've logged in\u{201d}.".into()));
@@ -1230,6 +1274,14 @@ impl Tileception {
         let hit = self.doctor_blocks(frame.messages).into_iter().find_map(|b| match b {
             Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(p) => Some(hit),
             Block::Picture { rect, open, .. } if rect.contains(p) => Some(Hit::Open(open)),
+            Block::Code { rect, copy, run, .. } if rect.contains(p) => {
+                let (copy_at, run_at) = code_buttons(rect, run.is_some());
+                if copy_at.contains(p) {
+                    Some(Hit::Copy(copy))
+                } else {
+                    run.filter(|_| run_at.is_some_and(|r| r.contains(p))).map(Hit::Run)
+                }
+            }
             Block::Rich { rect, spans, style, .. } if rect.contains(p) => {
                 let image = self.rich_image(&spans, style, rect.w)?;
                 image.links.into_iter().find_map(|([x, y, w, h], url)| {
@@ -1341,6 +1393,17 @@ impl Tileception {
                     self.doctor.attachments.remove(i);
                 }
             }
+            Hit::Copy(text) => {
+                self.copy_text(text.clone());
+                self.doctor.copied = Some((text, Instant::now()));
+                // Back from the check to the copy button.
+                let timer = smithay::reexports::calloop::timer::Timer::from_duration(COPIED_FOR);
+                let _ = self.loop_handle.insert_source(timer, |_, _, state| {
+                    state.schedule_render();
+                    smithay::reexports::calloop::timer::TimeoutAction::Drop
+                });
+            }
+            Hit::Run(command) => self.run_code(&command),
             Hit::Example(i) => self.send_to_doctor(EXAMPLES[i].to_string()),
             Hit::Stop => {
                 // Not sent yet: nothing to cancel but the wait.
@@ -2012,12 +2075,15 @@ impl Tileception {
                     blocks.push(Block::Rich { rect: Rect { h, ..rect }, spans: spans.clone(), style, marker, quote });
                     y += h + PIECE_GAP;
                 }
-                Piece::Code(code) => {
+                Piece::Code { lang, text } => {
                     let style = RichStyle { size: body.size * 0.9, mono: true, ..body };
-                    let spans = vec![Span::plain(code.clone())];
+                    let spans = vec![Span::plain(text.clone())];
                     let Some(image) = self.rich_image(&spans, style, w - 24.0) else { continue };
-                    let h = image.image.height + 16.0;
-                    blocks.push(Block::Code { rect: Rect::new(x, y, w, h), spans, style });
+                    let h = CODE_BAR + image.image.height + 18.0;
+                    let run = markdown::shell_command(lang, text);
+                    let copy = run.clone().unwrap_or_else(|| text.clone());
+                    let rect = Rect::new(x, y, w, h);
+                    blocks.push(Block::Code { rect, spans, style, lang: lang.clone(), copy, run });
                     y += h + PIECE_GAP;
                 }
                 Piece::Image { url, alt, link } => {
@@ -2461,10 +2527,34 @@ impl Tileception {
                     p.image(&image.image.buffer, (rect.x, rect.y));
                 }
             }
-            Block::Code { rect, spans, style } => {
+            Block::Code { rect, spans, style, lang, copy, run } => {
                 p.shape(*rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
+                p.fill(Rect::new(rect.x + 1.0, rect.y + CODE_BAR, rect.w - 2.0, 1.0), t.border, 0.0);
+                let small = Style::new(t.font_size * 0.8, t.muted).lines(1);
+                p.text(lang, Rect::new(rect.x + 12.0, rect.y, rect.w - 80.0, CODE_BAR), small);
+                let (copy_at, run_at) = code_buttons(*rect, run.is_some());
+                let copied =
+                    self.doctor.copied.as_ref().is_some_and(|(text, at)| text == copy && at.elapsed() < COPIED_FOR);
+                let buttons = [
+                    Some((copy_at, if copied { glyph::CHECK } else { glyph::COPY }, copied)),
+                    run_at.map(|r| (r, glyph::PLAY, false)),
+                ];
+                for (at, g, done) in buttons.into_iter().flatten() {
+                    let hover = at.contains(pointer);
+                    if hover {
+                        p.fill(at, t.surface_raised, t.radius);
+                    }
+                    let colour = if done {
+                        t.accent
+                    } else if hover {
+                        t.text
+                    } else {
+                        t.muted
+                    };
+                    p.glyph(g, at, 14, colour);
+                }
                 if let Some(image) = self.rich_image(spans, *style, rect.w - 24.0) {
-                    p.image(&image.image.buffer, (rect.x + 12.0, rect.y + 8.0));
+                    p.image(&image.image.buffer, (rect.x + 12.0, rect.y + CODE_BAR + 9.0));
                 }
             }
             Block::Picture { rect, url, .. } => {
@@ -2520,6 +2610,11 @@ fn test_agent() -> Option<String> {
         return None;
     }
     std::env::var("TILECEPTION_DOCTOR_TEST_AGENT").ok().filter(|c| !c.trim().is_empty())
+}
+
+/// `s` as one word for `sh`.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn state_dir() -> PathBuf {
