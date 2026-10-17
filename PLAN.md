@@ -71,7 +71,9 @@ Released up to v0.4.0 and running as Robin's session:
   `Super+Pinch2In`), unbound gestures passed to programs (pointer-gestures),
   `[touchpad]` for tap, natural scrolling, typing, speed and click method.
 - Touchscreen: touches on windows go to programs (wl_touch); on
-  Tileception's own interface a finger acts as the left button.
+  Tileception's own interface a finger acts as the left button. Edge swipes
+  (`TouchEdgeTop` and the rest), three-finger swipes and pinches taken back
+  from programs, and a two-finger pinch in Overview.
 - Window rules, per-app launch arguments, ext-foreign-toplevel-list,
   data-control, pointer constraints and relative pointer.
 - Config hot reload, IPC, headless backend with screenshots for testing.
@@ -92,8 +94,6 @@ Released up to v0.4.0 and running as Robin's session:
 
 ### Later
 
-- Touchscreen gestures for the camera (pinch to step in and out, swipes
-  between spaces) and long-press to move windows.
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
   swipe live instead of one step per gesture, and window management gestures.
 - Live blur and glass styles.

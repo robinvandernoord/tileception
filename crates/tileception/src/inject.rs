@@ -25,7 +25,9 @@ pub enum Inject {
     /// Types text, with Shift where a character needs it.
     Type(String),
     /// A whole touchpad gesture, such as `Swipe3Left` or `Super+Pinch2In`.
-    Gesture { mods: crate::config::Mods, fingers: u32, motion: crate::gestures::Motion },
+    /// A touchpad gesture (`Super+Pinch2In`), or a touchscreen one
+    /// (`TouchSwipe3Left`, `TouchEdgeTop`) around the pointer.
+    Gesture { mods: crate::config::Mods, gesture: crate::gestures::GestureKey },
     /// One finger on the touchscreen: a tap, or a drag to a second point.
     Touch { from: (f64, f64), to: (f64, f64) },
 }
@@ -63,10 +65,15 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
             _ => Err("touch takes x y, or x y x2 y2 to drag".into()),
         },
         "gesture" => {
-            let (mods, key) = crate::config::parse_combo(rest.trim())?;
-            let (fingers, motion) =
-                crate::gestures::decode(key).ok_or("gesture needs a gesture, such as Swipe3Left or Super+Pinch2In")?;
-            Ok(Inject::Gesture { mods, fingers, motion })
+            let rest = rest.trim();
+            let (held, name) = rest.rsplit_once('+').unwrap_or(("", rest));
+            let mods = match held {
+                "" => crate::config::Mods::default(),
+                held => crate::config::parse_combo(&format!("{held}+space"))?.0,
+            };
+            let gesture = crate::gestures::parse_gesture(name, true)
+                .ok_or("gesture needs a gesture, such as Swipe3Left, Super+Pinch2In or TouchEdgeTop")??;
+            Ok(Inject::Gesture { mods, gesture })
         }
         _ => Err(format!("unknown input command {verb:?}")),
     }
@@ -163,7 +170,10 @@ impl Tileception {
                     self.tap(&held, code, time + 4 * i as u32);
                 }
             }
-            Inject::Gesture { mods, fingers, motion } => self.inject_gesture(mods, fingers, motion, time),
+            Inject::Gesture { mods, gesture: crate::gestures::GestureKey::Pad(fingers, motion) } => {
+                self.inject_gesture(mods, fingers, motion, time)
+            }
+            Inject::Gesture { gesture, .. } => self.inject_touch_gesture(gesture, time),
             Inject::Touch { from, to } => self.inject_touch(from, to, time),
         }
         Ok(())
@@ -205,9 +215,19 @@ mod tests {
         let logo = crate::config::Mods { logo: true, ..Default::default() };
         assert_eq!(
             parse("gesture", "Super+Pinch2In"),
-            Ok(Inject::Gesture { mods: logo, fingers: 2, motion: crate::gestures::Motion::In })
+            Ok(Inject::Gesture {
+                mods: logo,
+                gesture: crate::gestures::GestureKey::Pad(2, crate::gestures::Motion::In)
+            })
         );
         assert!(parse("gesture", "Super+t").is_err());
+        assert_eq!(
+            parse("gesture", "TouchPinch2Out"),
+            Ok(Inject::Gesture {
+                mods: Default::default(),
+                gesture: crate::gestures::GestureKey::Touch(2, crate::gestures::Motion::Out)
+            })
+        );
         assert_eq!(parse("touch", "1 2"), Ok(Inject::Touch { from: (1.0, 2.0), to: (1.0, 2.0) }));
         assert!(parse("touch", "1 2 3").is_err());
     }

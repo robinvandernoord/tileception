@@ -339,7 +339,21 @@ binding goes to the program under the pointer):
 Touchscreen: a touch on a program's window goes to that program as touch,
 so pages scroll and apps take several fingers; on Tileception's own parts
 (the launcher, bar, panels, Overview, gaps and tabs) a finger works as the
-left mouse button.
+left mouse button. A few gestures are Tileception's, bindable in `[binds]`
+as `TouchEdgeTop` and `TouchSwipe3Left`:
+
+| Touch | Action |
+| --- | --- |
+| swipe in from the top edge | Overview |
+| swipe in from the bottom edge | show the minimized windows |
+| swipe in from the right / left edge | notifications and sound / the doctor |
+| 3-finger swipe | neighbouring space, the way the content moves |
+| 3-finger pinch out / in | step in where the fingers are / step out |
+| 2-finger pinch in Overview | out: go into that tile; in: leave Overview |
+
+Three fingers count when they land together; the program under them gets
+its touch cancelled. A tap or a drag along an edge still reaches what is
+there.
 
 `[touchpad]` sets tap to click (on by default), natural scrolling, disable
 while typing, pointer speed, the click method and how far a swipe goes
