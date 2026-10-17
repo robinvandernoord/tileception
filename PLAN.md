@@ -631,6 +631,28 @@ second screen.
   Later: a minimap (a live outline of the whole tree with the camera's frame;
   click to fly there, drag to pan), from the last crumb or in Overview; a
   `position = "bottom"` option that moves the minimized strip to the top.
+  Implemented 2026-10-17 on `feature/top-bar` (`bar.rs`), except the Later
+  items. Crumbs show the root, the framed node, spaces framed before
+  (history) and spaces a saved view frames; apps are ordered by how many
+  windows they have there, as no per-app usage exists for windows. The health
+  light turns amber on any ERROR in the log (a tracing layer), and clicking it
+  then asks the doctor about that error. The now-playing chip toggles play and
+  pause; the minimized chip peeks the strip; the capture chip shows while
+  screencopy takes frames ("Sharing screen" for a stream, "Screen captured"
+  for a single copy). The calendar starts weeks on Monday with ISO week
+  numbers, and the arrows or scrolling turn the months. While one window is
+  framed the bar gives up its edge and leaves a 2 px line; touching the top
+  edge slides it over the window. A bar command runs in its own process group
+  and is stopped when `bar` changes. Checked nested on Xvfb with software
+  rendering (foot, xterm, xclock, xeyes): root, nested breadcrumb with slot
+  badges, saved view preview, crumb, back and slot clicks, Overview, the
+  hairline and its reveal, the calendar zoom (mid-animation with a slowed
+  animation, settled, Esc back), notification count with Do not disturb,
+  minimized and capture chips (grim), the amber light after a broken config
+  and asking the doctor, fullscreen hiding it, `bar = "none"` and
+  `bar = "xlogo"` started and stopped by live reload. Not checked: scrolling
+  on the bar (no scroll injection), the now-playing chip (no MPRIS player in
+  the test), the lock screen (not triggered), real hardware.
 
 - **A smarter launcher.** Tapping Super should answer small things itself, not
   only find apps. Everything here is local and instant: no ACP, no network
