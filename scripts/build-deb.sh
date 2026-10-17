@@ -147,6 +147,9 @@ group() {
     ' deps/debian.txt
 }
 recommends=$(group runtime | grep -vx -e xwayland -e dbus-daemon | paste -sd, - | sed 's/,/, /g')
+# The repository's key and source (build-keyring-deb.sh), so key changes reach
+# installs from the apt repository; a .deb installed by hand goes without.
+recommends="tileception-archive-keyring, $recommends"
 suggests=$(group optional | paste -sd, - | sed 's/,/, /g')
 
 installed_size() { du -sk --exclude=DEBIAN "$1" | cut -f1; }

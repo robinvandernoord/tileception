@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag vX.Y.Z (matching the version in Cargo.toml) builds the .deb
 # packages for every supported release and architecture, attaches them to a
-# GitHub release and publishes them to the apt repository at APT_URL.
+# GitHub release and publishes them, with the tileception-archive-keyring
+# package for each release, to the apt repository at APT_URL.
 
 on:
   push:
@@ -66,6 +67,9 @@ jobs:
       name: apt
       url: ${{ vars.APT_URL || 'https://apt.tileception.space' }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -79,6 +83,10 @@ jobs:
             mkdir -p "dist/$suite"
             mv "$dir"/*.deb "dist/$suite/"
           done
+      - name: Build the keyring package
+        # One architecture-independent package per suite, next to the others.
+        run: |
+          DEB_OUT=dist scripts/build-keyring-deb.sh $(ls dist)
           find dist -type f | sort
       - name: Upload to the apt repository
         env:
@@ -104,12 +112,16 @@ jobs:
             curl -fsS -o /dev/null "$APT_URL/dists/$suite/InRelease"
             for arch in amd64 arm64; do
               curl -fsS "$APT_URL/dists/$suite/main/binary-$arch/Packages" > Packages
-              grep -qx "Version: $version-1~$suite" Packages \
-                || { echo "$suite/$arch does not list $version-1~$suite" >&2; exit 1; }
-              # pool/ redirects to the R2 bucket: the package must be there.
-              file=$(awk -v v="$version-1~$suite" '$1 == "Version:" { hit = ($2 == v) } hit && $1 == "Filename:" { print $2; exit }' Packages)
-              curl -fsSL -o /dev/null --head "$APT_URL/$file" \
-                || { echo "$APT_URL/$file does not download" >&2; exit 1; }
+              for package in tileception tileception-archive-keyring; do
+                # pool/ redirects to the R2 bucket: the package must be there.
+                file=$(awk -v p="$package" -v v="$version-1~$suite" '
+                  $1 == "Package:" { name = $2 }
+                  $1 == "Version:" { hit = (name == p && $2 == v) }
+                  hit && $1 == "Filename:" { print $2; exit }' Packages)
+                [ -n "$file" ] || { echo "$suite/$arch does not list $package $version-1~$suite" >&2; exit 1; }
+                curl -fsSL -o /dev/null --head "$APT_URL/$file" \
+                  || { echo "$APT_URL/$file does not download" >&2; exit 1; }
+              done
             done
           done
 

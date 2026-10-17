@@ -4,7 +4,8 @@
 #   curl -fsSL https://tileception.space/install | sh
 #
 # Adds the Tileception apt repository (https://apt.tileception.space) with its
-# signing key, then installs the tileception package. Runs on Debian 13
+# signing key, then installs the tileception package and
+# tileception-archive-keyring, which owns that key and source from then on. Runs on Debian 13
 # (trixie), Debian unstable (sid), Ubuntu 24.04 (noble) and 26.04 (resolute),
 # and on systems built on them such as PikaOS and Linux Mint, for amd64 and
 # arm64. Uses sudo when not run as root.
@@ -17,7 +18,7 @@ set -eu
 main() {
     repo="${TILECEPTION_REPO:-https://apt.tileception.space}"
     suites="trixie sid noble resolute"
-    keyring=/etc/apt/keyrings/tileception.gpg
+    keyring=/usr/share/keyrings/tileception-archive-keyring.gpg
     sources=/etc/apt/sources.list.d/tileception.sources
 
     [ -r /etc/os-release ] || fail "this is not Debian or Ubuntu (no /etc/os-release)"
@@ -65,14 +66,17 @@ Signed-By: $keyring
 EOF
 
     say "Adding the repository ($suite, $arch)"
-    $sudo install -d -m 755 /etc/apt/keyrings
-    $sudo install -m 644 "$tmp/key" "$keyring"
+    # Once tileception-archive-keyring is installed the key is its file, and
+    # its own updates replace it.
+    if ! dpkg-query -W -f '${Status}' tileception-archive-keyring 2>/dev/null | grep -q 'ok installed'; then
+        $sudo install -D -m 644 "$tmp/key" "$keyring"
+    fi
     $sudo install -m 644 "$tmp/sources" "$sources"
 
     say "Installing tileception"
     # stdin is this script when piped into sh, so apt must not ask anything.
     $sudo apt-get update </dev/null
-    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tileception </dev/null
+    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tileception-archive-keyring tileception </dev/null
 
     say "Done. Reboot (or log out), then pick Tileception on the login screen."
     say "Updates arrive with your normal system updates."
