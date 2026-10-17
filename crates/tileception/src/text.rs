@@ -327,7 +327,9 @@ impl Text {
             font: font.to_string(),
             size_tenths: (size * 10.0).round() as u32,
             colour: colour.straight_rgba8(),
-            max_width: max_width.floor() as i32,
+            // Up, not down: a width measured from this text must fit it again,
+            // also once multiplied by a fractional scale.
+            max_width: max_width.ceil() as i32,
             weight,
             lines,
             field: None,

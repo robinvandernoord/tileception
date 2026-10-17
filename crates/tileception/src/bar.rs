@@ -41,8 +41,9 @@ const SLACK: f64 = 18.0;
 const SLIDE: f64 = 0.16;
 /// How long a capture keeps its chip after the last frame was taken.
 const CAPTURE_LINGER: Duration = Duration::from_millis(1500);
-/// The widest a crumb's title gets.
-const CRUMB_MAX: f64 = 220.0;
+/// The widest a crumb's title gets: a share of the bar, within these bounds.
+const CRUMB_MIN: f64 = 220.0;
+const CRUMB_MAX: f64 = 420.0;
 const SLOT_W: f64 = 20.0;
 const ICON: u32 = 16;
 const CALENDAR_W: f64 = 392.0;
@@ -343,7 +344,7 @@ impl Tileception {
         self.text
             .borrow_mut()
             .styled(text, &t.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| i.width as f64)
+            .map(|i| i.width)
             .unwrap_or(0.0)
     }
 
@@ -406,12 +407,19 @@ impl Tileception {
             .collect()
     }
 
-    fn crumb_width(&self, crumb: &Crumb) -> f64 {
-        let style = self.bar_style();
+    /// The widest a crumb's title gets on this screen.
+    fn crumb_max(&self) -> f64 {
+        (self.output_rect().w * 0.18).clamp(CRUMB_MIN, CRUMB_MAX)
+    }
+
+    /// A crumb's width; the `current` one is drawn bold, which is wider.
+    fn crumb_width(&self, crumb: &Crumb, current: bool) -> f64 {
+        let style = if current { self.bar_style().bold() } else { self.bar_style() };
+        let max = self.crumb_max();
         let slot = if crumb.slot.is_some() { 18.0 } else { 0.0 };
         let content = match &crumb.look {
-            CrumbLook::Root(label) => 18.0 + self.bar_measure(label, style, 200.0),
-            CrumbLook::Window { title, .. } => 22.0 + self.bar_measure(title, style, CRUMB_MAX).min(CRUMB_MAX),
+            CrumbLook::Root(label) => 18.0 + self.bar_measure(label, style, max),
+            CrumbLook::Window { title, .. } => 22.0 + self.bar_measure(title, style, max).min(max),
             CrumbLook::Apps { apps, more } => {
                 let icons = apps.len().max(1) as f64 * 18.0;
                 let more = if *more > 0 { 4.0 + self.bar_measure(&format!("+{more}"), style, 60.0) } else { 0.0 };
@@ -478,7 +486,9 @@ impl Tileception {
         let mut crumbs = self.crumb_path();
         let separator = 14.0;
         let total = |crumbs: &[Crumb]| -> f64 {
-            crumbs.iter().map(|c| self.crumb_width(c)).sum::<f64>() + separator * crumbs.len().saturating_sub(1) as f64
+            let last = crumbs.len().saturating_sub(1);
+            crumbs.iter().enumerate().map(|(i, c)| self.crumb_width(c, i == last)).sum::<f64>()
+                + separator * last as f64
         };
         let room = end - left;
         // Drop crumbs after the root until it fits, keeping the last one.
@@ -495,8 +505,9 @@ impl Tileception {
             }
         }
         let mut x = left;
-        for crumb in &mut crumbs {
-            let w = self.crumb_width(crumb).min((end - x).max(24.0));
+        let last = crumbs.len().saturating_sub(1);
+        for (i, crumb) in crumbs.iter_mut().enumerate() {
+            let w = self.crumb_width(crumb, i == last).min((end - x).max(24.0));
             crumb.rect = Rect::new(x, y, w, h);
             x += w + separator;
         }
@@ -974,7 +985,7 @@ impl Tileception {
         self.text
             .borrow_mut()
             .styled(text, &t.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| i.height as f64)
+            .map(|i| i.height)
             .unwrap_or(0.0)
     }
 
