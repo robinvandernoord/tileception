@@ -134,6 +134,7 @@ pub(crate) fn parse(text: &str, id: &str, desktop: &str, locale: &str, path: &[P
     if !hidden && (name.as_ref().is_none_or(String::is_empty) || exec.is_none()) {
         return None;
     }
+    let (args, extra_args_at) = exec.unwrap_or_default();
     Some(App {
         id: id.to_owned(),
         name: name.unwrap_or_else(|| id.to_owned()),
@@ -141,7 +142,9 @@ pub(crate) fn parse(text: &str, id: &str, desktop: &str, locale: &str, path: &[P
         comment: localized("Comment").map(|value| unescape(&value)),
         keywords: localized("Keywords").map(|value| list(&value)).unwrap_or_default(),
         icon: string("Icon"),
-        exec: exec.unwrap_or_default(),
+        exec: args.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" "),
+        args,
+        extra_args_at,
         terminal: boolean("Terminal"),
         categories: values.get("Categories").map(|value| list(value)).unwrap_or_default(),
         wm_class: string("StartupWMClass"),
@@ -163,7 +166,8 @@ fn actions(groups: &HashMap<String, HashMap<String, String>>, ids: &str, locales
                 .or_else(|| values.get("Name"))
                 .map(|value| unescape(value))
                 .filter(|name| !name.is_empty())?;
-            let exec = exec_line(&unescape(values.get("Exec")?))?;
+            let (args, _) = exec_line(&unescape(values.get("Exec")?))?;
+            let exec = args.iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" ");
             Some(AppAction { id, name, icon: values.get("Icon").map(|value| unescape(value)), exec })
         })
         .collect()
@@ -185,13 +189,18 @@ fn executable_file(path: &Path) -> bool {
     }
 }
 
-fn exec_line(value: &str) -> Option<String> {
+/// The arguments with field codes removed, and where extra arguments go: at the
+/// first file or URL code, ahead of a Flatpak `@@u`/`@@` forwarding marker, or
+/// at the end.
+fn exec_line(value: &str) -> Option<(Vec<String>, usize)> {
     let args = arguments(value)?;
-    let mut cleaned = Vec::new();
+    let mut cleaned: Vec<String> = Vec::new();
+    let mut extra_at = None;
     for arg in args {
         let mut output = String::new();
         let mut chars = arg.chars();
         let mut removed = false;
+        let mut files = false;
         while let Some(c) = chars.next() {
             if c != '%' {
                 output.push(c);
@@ -199,18 +208,25 @@ fn exec_line(value: &str) -> Option<String> {
             }
             match chars.next()? {
                 '%' => output.push('%'),
-                'f' | 'F' | 'u' | 'U' | 'i' | 'c' | 'k' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm' => removed = true,
+                'f' | 'F' | 'u' | 'U' => (removed, files) = (true, true),
+                'i' | 'c' | 'k' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm' => removed = true,
                 _ => return None,
             }
         }
+        if files && extra_at.is_none() {
+            let at = cleaned.len();
+            let marker = at > 0 && matches!(cleaned[at - 1].as_str(), "@@" | "@@u");
+            extra_at = Some(if marker { at - 1 } else { at });
+        }
         if !output.is_empty() || !removed {
-            cleaned.push(shell_quote(&output));
+            cleaned.push(output);
         }
     }
     if cleaned.is_empty() {
         None
     } else {
-        Some(cleaned.join(" "))
+        let at = extra_at.unwrap_or(cleaned.len());
+        Some((cleaned, at))
     }
 }
 
@@ -255,7 +271,7 @@ fn arguments(value: &str) -> Option<Vec<String>> {
     Some(result)
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c)) {
         value.to_owned()
     } else {

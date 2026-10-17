@@ -35,6 +35,8 @@ pub struct ConfigFile {
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
+    /// Extra arguments for programs the launcher starts, by desktop file name.
+    pub launch_args: BTreeMap<String, Vec<String>>,
     pub binds: Option<BTreeMap<String, BindValue>>,
 }
 
@@ -214,6 +216,18 @@ impl Config {
     pub fn lookup(&self, mods: Mods, key: u32) -> Option<&[Command]> {
         let key = lower(key);
         self.binds.iter().find(|b| b.mods == mods && b.key == key).map(|b| b.commands.as_slice())
+    }
+
+    /// Extra launch arguments for a desktop entry id (`spotify.desktop`), from
+    /// `[launch_args]`; the key may leave off `.desktop`.
+    pub fn launch_args(&self, id: &str) -> Vec<String> {
+        let name = id.strip_suffix(".desktop").unwrap_or(id);
+        self.file
+            .launch_args
+            .iter()
+            .find(|(key, _)| key.strip_suffix(".desktop").unwrap_or(key) == name)
+            .map(|(_, args)| args.clone())
+            .unwrap_or_default()
     }
 
     pub fn world_settings(&self) -> tileception_core::Settings {
@@ -458,5 +472,20 @@ mod tests {
         let c = Config::parse("[general]\ngap = 4").unwrap();
         assert_eq!(c.binds.len(), defaults);
         assert_eq!(c.world_settings().gap, 4.0);
+    }
+
+    #[test]
+    fn launch_args_come_from_the_config_only() {
+        let c = Config::default_config();
+        assert!(c.launch_args("spotify.desktop").is_empty(), "nothing is built in");
+        let c = Config::parse(
+            "[launch_args]\nspotify = [\"--ozone-platform=wayland\"]\n\"com.spotify.Client.desktop\" = [\"--ozone-platform=x11\"]\nfirefox = [\"-P\", \"work\"]",
+        )
+        .unwrap();
+        assert_eq!(c.launch_args("spotify.desktop"), ["--ozone-platform=wayland"]);
+        assert_eq!(c.launch_args("com.spotify.Client.desktop"), ["--ozone-platform=x11"]);
+        assert!(c.launch_args("spotify_spotify.desktop").is_empty());
+        assert_eq!(c.launch_args("firefox"), ["-P", "work"]);
+        assert!(Config::parse("[launch_args]\nspotify = \"--ozone-platform=x11\"").is_err());
     }
 }

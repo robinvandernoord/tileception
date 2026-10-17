@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
-use tileception_apps::{action_command_line, command_line, AppIndex, IconLookup, Usage};
+use tileception_apps::{action_command_line, command_line, command_line_with, AppIndex, IconLookup, Usage};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -120,6 +120,45 @@ fn field_codes_and_shell_safe_quoting() {
     let mut app = app.clone();
     app.terminal = false;
     assert_eq!(command_line(&app, "ghostty -e"), app.exec);
+}
+
+#[test]
+fn extra_arguments_go_where_files_would() {
+    let fixture = Fixture::new();
+    let entries = [
+        ("native", "spotify %U"),
+        ("snap", "env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/desktop/applications/spotify_spotify.desktop /snap/bin/spotify %U"),
+        ("flatpak", "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@"),
+        ("plain", "spotify --minimized"),
+        ("chosen", "spotify --ozone-platform=x11 %U"),
+        ("bare", "spotify --ozone-platform x11"),
+        ("inline", "viewer --file=%f --quiet"),
+    ];
+    for (id, exec) in entries {
+        fixture.write(
+            &format!("apps/{id}.desktop"),
+            &format!("[Desktop Entry]\nType=Application\nName={id}\nExec={exec}\n"),
+        );
+    }
+    let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
+    let extra = ["--ozone-platform=wayland".to_owned(), "two words".to_owned()];
+    let line = |id: &str| command_line_with(index.get(&format!("{id}.desktop")).unwrap(), "", &extra);
+    assert_eq!(line("native"), "spotify --ozone-platform=wayland 'two words'");
+    assert_eq!(
+        line("snap"),
+        "env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/desktop/applications/spotify_spotify.desktop /snap/bin/spotify --ozone-platform=wayland 'two words'"
+    );
+    assert_eq!(
+        line("flatpak"),
+        "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client --ozone-platform=wayland 'two words' @@u @@"
+    );
+    assert_eq!(line("plain"), "spotify --minimized --ozone-platform=wayland 'two words'");
+    assert_eq!(line("chosen"), "spotify --ozone-platform=x11 'two words'");
+    assert_eq!(line("bare"), "spotify --ozone-platform x11 'two words'");
+    assert_eq!(line("inline"), "viewer --ozone-platform=wayland 'two words' --file= --quiet");
+    let app = index.get("native.desktop").unwrap();
+    assert_eq!(command_line_with(app, "", &[]), command_line(app, ""));
+    assert_eq!(command_line_with(app, "", &["$(boom)".to_owned()]), "spotify '$(boom)'");
 }
 
 #[test]

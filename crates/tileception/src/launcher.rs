@@ -715,12 +715,10 @@ impl Tileception {
         let Some(entry) = self.launcher.entries.get(self.launcher.selected).cloned() else { return };
         match entry {
             Entry::App(id) => {
-                let Some(command) = self
-                    .launcher
-                    .index
-                    .get(&id)
-                    .map(|app| tileception_apps::command_line(app, &format!("{} -e", self.terminal)))
-                else {
+                let Some(command) = self.launcher.index.get(&id).map(|app| {
+                    let extra = self.config.launch_args(&app.id);
+                    tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra)
+                }) else {
                     return;
                 };
                 self.launch_command(command, &id);

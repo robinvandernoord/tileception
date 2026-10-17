@@ -144,6 +144,21 @@ bar = "builtin"
 # [outputs."*"]
 # scale = 1
 
+# Extra arguments for programs started from the launcher and the welcome
+# screen, by desktop file name (without .desktop; Snap and Flatpak entries
+# have their own, such as spotify_spotify and com.spotify.Client). Each is
+# passed as is, never through a shell, where the program would get files or
+# URLs. An option the desktop file already sets wins. Spotify is built on
+# CEF and ignores ELECTRON_OZONE_PLATFORM_HINT, so it runs through Xwayland
+# unless told otherwise; the lines below run its native, Snap and Flatpak
+# entries on Wayland.
+#
+# [launch_args]
+# spotify = ["--ozone-platform=wayland"]
+# spotify_spotify = ["--ozone-platform=wayland"]
+# "com.spotify.Client" = ["--ozone-platform=wayland"]
+# firefox = ["-P", "work"]
+
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
 # layout = "us"
