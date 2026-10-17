@@ -217,6 +217,11 @@ impl NotifyService {
         self.state.lock().expect("notification state mutex must not be poisoned").history.iter().cloned().collect()
     }
 
+    /// How many notifications the history holds, without copying them.
+    pub fn history_len(&self) -> usize {
+        self.state.lock().expect("notification state mutex must not be poisoned").history.len()
+    }
+
     pub fn do_not_disturb(&self) -> bool {
         self.state.lock().expect("notification state mutex must not be poisoned").dnd
     }

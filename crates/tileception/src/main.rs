@@ -8,6 +8,7 @@
 //! (`WAYLAND_DISPLAY` or `DISPLAY` is set) and as the session otherwise.
 
 mod appearance;
+mod bar;
 mod builtin_lock;
 mod capture;
 mod commands;
@@ -63,7 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,smithay=warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    {
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).with(bar::ErrorWatch).init();
+    }
 
     let headless = argv.iter().any(|a| a == "--headless");
     let nested = if argv.iter().any(|a| a == "--session") || headless {
@@ -125,6 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         state.spawn("sh", &["-c".to_string(), line]);
     }
+    state.apply_bar_command();
     let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);

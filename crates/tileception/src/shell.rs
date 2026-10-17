@@ -39,12 +39,21 @@ pub struct ShellConfig {
     pub power_menu: String,
     pub lock: String,
     pub media: String,
+    /// The bar along the top.
+    pub bar: String,
 }
 
 impl Default for ShellConfig {
     fn default() -> Self {
         let builtin = || "builtin".to_string();
-        Self { launcher: builtin(), notifications: builtin(), power_menu: builtin(), lock: builtin(), media: builtin() }
+        Self {
+            launcher: builtin(),
+            notifications: builtin(),
+            power_menu: builtin(),
+            lock: builtin(),
+            media: builtin(),
+            bar: builtin(),
+        }
     }
 }
 
@@ -137,6 +146,7 @@ impl Tileception {
         if !new.power_menu().is_builtin() {
             self.power_menu = None;
         }
+        self.apply_bar_command();
     }
 }
 
