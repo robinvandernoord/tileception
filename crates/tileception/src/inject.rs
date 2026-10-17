@@ -1,4 +1,4 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/type/gesture`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/key/type/gesture/touch`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
 
@@ -26,6 +26,8 @@ pub enum Inject {
     Type(String),
     /// A whole touchpad gesture, such as `Swipe3Left` or `Super+Pinch2In`.
     Gesture { mods: crate::config::Mods, fingers: u32, motion: crate::gestures::Motion },
+    /// One finger on the touchscreen: a tap, or a drag to a second point.
+    Touch { from: (f64, f64), to: (f64, f64) },
 }
 
 pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
@@ -55,6 +57,11 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
         "key" if !rest.trim().is_empty() => Ok(Inject::Key(rest.trim().to_string())),
         "key" => Err("key needs a key, such as Return or Super+slash".into()),
         "type" => Ok(Inject::Type(rest.to_string())),
+        "touch" => match args[..] {
+            [x, y] => Ok(Inject::Touch { from: (number(x)?, number(y)?), to: (number(x)?, number(y)?) }),
+            [x, y, x2, y2] => Ok(Inject::Touch { from: (number(x)?, number(y)?), to: (number(x2)?, number(y2)?) }),
+            _ => Err("touch takes x y, or x y x2 y2 to drag".into()),
+        },
         "gesture" => {
             let (mods, key) = crate::config::parse_combo(rest.trim())?;
             let (fingers, motion) =
@@ -157,6 +164,7 @@ impl Tileception {
                 }
             }
             Inject::Gesture { mods, fingers, motion } => self.inject_gesture(mods, fingers, motion, time),
+            Inject::Touch { from, to } => self.inject_touch(from, to, time),
         }
         Ok(())
     }
@@ -200,6 +208,8 @@ mod tests {
             Ok(Inject::Gesture { mods: logo, fingers: 2, motion: crate::gestures::Motion::In })
         );
         assert!(parse("gesture", "Super+t").is_err());
+        assert_eq!(parse("touch", "1 2"), Ok(Inject::Touch { from: (1.0, 2.0), to: (1.0, 2.0) }));
+        assert!(parse("touch", "1 2 3").is_err());
     }
 
     #[test]

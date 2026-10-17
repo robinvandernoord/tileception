@@ -49,6 +49,7 @@ mod text;
 mod text_input;
 mod theme;
 mod toplevels;
+mod touch;
 mod udev;
 mod ui;
 mod wallpaper;

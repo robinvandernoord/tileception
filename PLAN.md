@@ -70,6 +70,8 @@ Released up to v0.4.0 and running as Robin's session:
 - Touchpad: swipe and pinch bindings in `[binds]` (`Swipe3Left`,
   `Super+Pinch2In`), unbound gestures passed to programs (pointer-gestures),
   `[touchpad]` for tap, natural scrolling, typing, speed and click method.
+- Touchscreen: touches on windows go to programs (wl_touch); on
+  Tileception's own interface a finger acts as the left button.
 - Window rules, per-app launch arguments, ext-foreign-toplevel-list,
   data-control, pointer constraints and relative pointer.
 - Config hot reload, IPC, headless backend with screenshots for testing.
@@ -90,11 +92,10 @@ Released up to v0.4.0 and running as Robin's session:
 
 ### Later
 
+- Touchscreen gestures for the camera (pinch to step in and out, swipes
+  between spaces) and long-press to move windows.
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
   swipe live instead of one step per gesture, and window management gestures.
-- Touchscreen support: touch does not work on Robin's laptop, although the same
-  hardware works in PikaOS. Investigate device discovery, coordinate mapping and
-  touch delivery, then add direct manipulation and gestures.
 - Live blur and glass styles.
 - A settings window instead of editing the config file.
 - Top bar extras: a minimap (live outline of the tree with the camera's frame;

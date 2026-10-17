@@ -29,8 +29,7 @@ findings and the roadmap.
 - A config file with key bindings, reloaded on save.
 - A command socket: `tileception msg <command>`.
 
-Not yet: more than one monitor (only the first is lit) and touchscreen
-support.
+Not yet: more than one monitor (only the first is lit).
 
 ## Companion programs
 
@@ -151,7 +150,7 @@ tileception msg screenshot /tmp/shot.png
 Scripts can also pretend to use the mouse and keyboard there (headless or
 nested only, never in a real session): `tileception msg pointer 640 400`,
 `click [x y] [left|right|middle]`, `key Super+slash`, `type some text` and
-`gesture Swipe3Left`. Keys and gestures go through the same handling as real
+`gesture Swipe3Left` and `touch x y [x2 y2]`. Keys, gestures and touches go through the same handling as real
 ones.
 
 ## Lint policy
@@ -336,6 +335,11 @@ binding goes to the program under the pointer):
 | 4-finger swipe up | Overview |
 | 4-finger swipe down | frame the focused window on its own |
 | 4-finger swipe right / left | back / forward |
+
+Touchscreen: a touch on a program's window goes to that program as touch,
+so pages scroll and apps take several fingers; on Tileception's own parts
+(the launcher, bar, panels, Overview, gaps and tabs) a finger works as the
+left mouse button.
 
 `[touchpad]` sets tap to click (on by default), natural scrolling, disable
 while typing, pointer speed, the click method and how far a swipe goes

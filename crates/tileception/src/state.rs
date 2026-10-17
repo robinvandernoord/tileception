@@ -135,6 +135,7 @@ pub struct Tileception {
     pub wheel_accum: (f64, f64),
     /// The touchpad gesture in progress.
     pub gesture: Option<crate::gestures::Gesture>,
+    pub touch: crate::touch::Touch,
     /// Touchpads, set up again from `[touchpad]` when the config reloads.
     pub touchpads: Vec<smithay::reexports::input::Device>,
     /// A modifier pressed on its own, which fires its tap binding if it is
@@ -234,6 +235,7 @@ impl Tileception {
             seat.add_keyboard(Default::default(), delay, rate).expect("default keymap compiles");
         }
         seat.add_pointer();
+        seat.add_touch();
 
         let socket_name = Self::listen(display, event_loop);
 
@@ -289,6 +291,7 @@ impl Tileception {
             resize_drag: None,
             wheel_accum: (0.0, 0.0),
             gesture: None,
+            touch: Default::default(),
             touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
