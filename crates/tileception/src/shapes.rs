@@ -98,10 +98,12 @@ impl Shape {
     }
 }
 
-/// The compiled shader, made once per renderer.
+/// The compiled shader, made once per renderer, and the output scale that
+/// shapes are drawn at: rectangles and sizes are given in logical pixels.
 #[derive(Debug, Clone)]
 pub struct Shapes {
     program: GlesPixelProgram,
+    scale: f64,
 }
 
 impl Shapes {
@@ -120,10 +122,14 @@ impl Shapes {
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
         let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|e| e.to_string())?;
-        Ok(Shapes { program })
+        Ok(Shapes { program, scale: 1.0 })
     }
 
-    /// A render element drawing `shape` over `rect` (screen pixels). The
+    pub fn at_scale(self, scale: f64) -> Shapes {
+        Shapes { scale, ..self }
+    }
+
+    /// A render element drawing `shape` over `rect` (logical pixels). The
     /// element reaches beyond the rectangle by the glow radius.
     pub fn element(&self, rect: &Rect, shape: Shape) -> Option<PixelShaderElement> {
         self.element_faded(rect, shape, 1.0)
@@ -131,6 +137,16 @@ impl Shapes {
 
     /// The same, at a fraction of its opacity, for fading in and out.
     pub fn element_faded(&self, rect: &Rect, shape: Shape, alpha: f32) -> Option<PixelShaderElement> {
+        // The shader works in physical pixels.
+        let s = self.scale;
+        let rect = &Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+        let sf = s as f32;
+        let shape = Shape {
+            radius: shape.radius * sf,
+            border_width: shape.border_width * sf,
+            glow_radius: shape.glow_radius * sf,
+            ..shape
+        };
         let margin = shape.glow_radius.ceil();
         let x0 = (rect.x - margin as f64).floor() as i32;
         let y0 = (rect.y - margin as f64).floor() as i32;

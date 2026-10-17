@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::{Tileception, cursor::Cursor};
 use smithay::{
     backend::{
         allocator::{
@@ -49,9 +50,6 @@ use smithay::{
     },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
-use tileception_core::Rect;
-
-use crate::{Tileception, cursor::Cursor};
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
@@ -165,7 +163,7 @@ pub fn init(
     state.udev = Some(Box::new(Udev {
         session: session.clone(),
         renderer,
-        cursor: Cursor::load(),
+        cursor: Cursor::load(state.scale),
         node: primary,
         manager,
         scanner: DrmScanner::new(),
@@ -346,7 +344,13 @@ impl Tileception {
             crtc,
             mode,
             &[connector.handle()],
-            &output,
+            // Render elements are made in physical pixels, so the
+            // compositor works at scale 1 whatever the output's scale.
+            smithay::output::OutputModeSource::Static {
+                size: wl_mode.size,
+                scale: 1.0.into(),
+                transform: smithay::utils::Transform::Normal,
+            },
             Some(planes),
             &mut udev.renderer,
             &DrmOutputRenderElements::default(),
@@ -360,13 +364,11 @@ impl Tileception {
         };
         let size = wl_mode.size;
         tracing::info!("lit {name} at {}x{}@{:.2}", size.w, size.h, wl_mode.refresh as f64 / 1000.0);
-        self.world.set_screen(Rect::new(0.0, 0.0, size.w as f64, size.h as f64));
-        self.pointer = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
         self.output = Some(output.clone());
         udev.surface = Some(Lit { crtc, output, drm_output, global });
-        self.update_usable_area();
-        self.resize_lock_surface();
-        self.apply_layout();
+        self.apply_output_scale();
+        let screen = self.output_rect();
+        self.pointer = (screen.w / 2.0, screen.h / 2.0).into();
     }
 
     /// Asks for a frame soon, unless one is already on its way.

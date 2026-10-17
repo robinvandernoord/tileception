@@ -98,10 +98,8 @@ impl Tileception {
             return self.builtin_lock_elements(renderer);
         }
         let Some(surface) = self.lock_surface() else { return Vec::new() };
-        render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified)
-            .into_iter()
-            .map(OutputElement::Live)
-            .collect()
+        let surfaces = render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified);
+        crate::render::enlarged(surfaces, (0, 0).into(), self.scale).collect()
     }
 
     pub fn lock_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {

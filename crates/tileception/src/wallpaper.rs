@@ -109,12 +109,12 @@ fn compose(img: &DynamicImage, fit: Scaling, w: u32, h: u32, background: [f32; 4
 }
 
 impl crate::state::Tileception {
-    /// The wallpaper scaled for the current output, loaded on first use and
-    /// again when the theme or the output size changes.
+    /// The wallpaper scaled for the current output's pixels, loaded on first
+    /// use and again when the theme or the output size changes.
     pub fn wallpaper_buffer(&mut self) -> Option<MemoryRenderBuffer> {
         let path = self.theme.wallpaper.clone()?;
-        let out = self.output_rect();
-        let size = (out.w as u32, out.h as u32);
+        let (w, h) = self.output_pixels();
+        let size = (w.max(0) as u32, h.max(0) as u32);
         let current = self
             .wallpaper
             .as_ref()
