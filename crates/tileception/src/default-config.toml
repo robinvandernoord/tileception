@@ -132,6 +132,18 @@ bar = "builtin"
 # title = "Picture-in-Picture"
 # float = true
 
+# Screens, by connector name as the log names them ("lit eDP-1 at ..."), or
+# "*" for any screen. scale is how many pixels make up one point: "auto"
+# (the default) picks one from the screen's size and resolution, so dense
+# laptop panels and 4K monitors get 1.5 or 2; a number such as 1, 1.25, 1.5
+# or 2 fixes it. 1 is how Tileception looked before scaling existed.
+#
+# [outputs."eDP-1"]
+# scale = 1.5
+#
+# [outputs."*"]
+# scale = 1
+
 [keyboard]
 # Defaults come from XKB_DEFAULT_* in the environment.
 # layout = "us"

@@ -9,22 +9,26 @@ use smithay::{
 use xcursor::{CursorTheme, parser::parse_xcursor};
 
 pub struct Cursor {
+    /// In physical pixels.
     pub buffer: MemoryRenderBuffer,
+    /// In the buffer's pixels.
     pub hotspot: Point<i32, Logical>,
+    /// The output scale it was loaded for.
+    pub scale: f64,
 }
 
 impl Cursor {
-    /// Loads `left_ptr` from `XCURSOR_THEME` (or Adwaita), at `XCURSOR_SIZE`.
-    pub fn load() -> Cursor {
+    /// Loads `left_ptr` from `XCURSOR_THEME` (or Adwaita), at `XCURSOR_SIZE`
+    /// times the output's scale.
+    pub fn load(scale: f64) -> Cursor {
         let theme = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Adwaita".into());
         let size: u32 = std::env::var("XCURSOR_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(24);
-        match load_theme(&theme, size) {
-            Some(cursor) => cursor,
-            None => {
-                tracing::warn!("cursor theme {theme} unavailable, drawing a plain arrow");
-                fallback()
-            }
-        }
+        let size = (f64::from(size) * scale).round() as u32;
+        let cursor = load_theme(&theme, size).unwrap_or_else(|| {
+            tracing::warn!("cursor theme {theme} unavailable, drawing a plain arrow");
+            fallback()
+        });
+        Cursor { scale, ..cursor }
     }
 }
 
@@ -43,7 +47,7 @@ fn load_theme(name: &str, size: u32) -> Option<Cursor> {
         Transform::Normal,
         None,
     );
-    Some(Cursor { buffer, hotspot: (image.xhot as i32, image.yhot as i32).into() })
+    Some(Cursor { buffer, hotspot: (image.xhot as i32, image.yhot as i32).into(), scale: 1.0 })
 }
 
 /// A white arrow with a black outline, for systems without a cursor theme.
@@ -63,5 +67,5 @@ fn fallback() -> Cursor {
     }
     let buffer =
         MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (W as i32, H as i32), 1, Transform::Normal, None);
-    Cursor { buffer, hotspot: (0, 0).into() }
+    Cursor { buffer, hotspot: (0, 0).into(), scale: 1.0 }
 }

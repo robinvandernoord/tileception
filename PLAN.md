@@ -418,8 +418,28 @@ Decided 2026-10-16: more monitors comes first once Robin can test it on a
 second screen.
 
 - More monitors: a layout per screen, moving windows between them.
-- HiDPI and fractional scaling. Nothing exists yet: outputs are always scale 1
-  and wp-fractional-scale-v1 is not offered. Comes after more monitors.
+- HiDPI and fractional scaling. Implemented 2026-10-16 on
+  `feature/hidpi-scaling`: `[outputs."<connector>"] scale` ("auto" or a
+  number; `"*"` for any screen, `TILECEPTION_SCALE` to force one for testing).
+  Auto aims at about 135 dpi on panels under 20" and 110 on larger ones, in
+  quarter steps from 1 to 3, rounding down unless the next step is close (so
+  common 1080p laptops stay at 1), keeping at least 1024x640 points; screens
+  without a real size get 1. The layout, pointer and interface stay in logical
+  pixels; clients get wl_output scale, the preferred buffer scale and
+  wp-fractional-scale with wp-viewporter; render elements are made in physical
+  pixels, client surfaces enlarged by the scale and Tileception's own text,
+  icons, glyphs, cover art, wallpaper and cursor rasterised at it. Reloading
+  the config changes the scale live. Xwayland programs draw at 1 and are
+  enlarged (blurry). Checked nested on Xvfb with software rendering at 1, 1.25
+  (by reloading the config), 1.5 and 2: foot drawing sharp at each scale, the
+  launcher, welcome screen, notifications panel, power menu, pointer hover on
+  launcher rows, an Xwayland window, grim full and region captures (region
+  asked in points, copied in pixels). Not checked: a real HiDPI panel and the
+  DRM backend, the auto guess on real EDIDs, the lock screen, the doctor
+  panel, slurp, screen sharing.
+  Found while testing, also on master: a second foot opened beside a first
+  crashes, because it gets keyboard focus (wl_keyboard.enter) before its
+  first configure. Not fixed on this branch.
 - Window rules (always float an app, open an app in a given view). Done
   2026-10-16 on `feature/window-rules` except views: `[[rules]]` match
   `app_id` and/or `title` (case-insensitive, `*` and `?`) and set `float`

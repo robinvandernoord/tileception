@@ -39,6 +39,7 @@ mod pointer_lock;
 mod power;
 mod render;
 mod rules;
+mod scale;
 mod selection;
 mod shapes;
 mod shell;

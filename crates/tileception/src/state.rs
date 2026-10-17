@@ -112,6 +112,10 @@ pub struct Tileception {
     pub windows: HashMap<WindowId, Window>,
     next_window: u64,
     pub output: Option<Output>,
+    /// Physical pixels per logical pixel on the output (see `scale.rs`).
+    pub scale: f64,
+    pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
+    pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
     pub pointer: Point<f64, Logical>,
     pub config: Config,
     /// Running in a window of another desktop rather than as the session.
@@ -268,6 +272,9 @@ impl Tileception {
             windows: HashMap::new(),
             next_window: 1,
             output: None,
+            scale: 1.0,
+            fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&dh),
+            viewporter_state: smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh),
             pointer: (0.0, 0.0).into(),
             config,
             nested,
@@ -628,9 +635,15 @@ impl Tileception {
         self.apply_layout();
     }
 
-    /// The whole output, including what bars reserve.
+    /// The whole output in logical pixels, including what bars reserve.
     pub fn output_rect(&self) -> Rect {
-        let size = self.output.as_ref().and_then(|o| o.current_mode()).map(|m| m.size).unwrap_or_default();
+        let Some((output, mode)) = self.output.as_ref().and_then(|o| Some((o, o.current_mode()?))) else {
+            return self.world.screen();
+        };
+        // Worked out as layer surfaces are arranged.
+        let size = output.current_transform().transform_size(
+            mode.size.to_f64().to_logical(output.current_scale().fractional_scale()).to_i32_round::<i32>(),
+        );
         if size.w > 0 && size.h > 0 { Rect::new(0.0, 0.0, size.w as f64, size.h as f64) } else { self.world.screen() }
     }
 

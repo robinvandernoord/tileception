@@ -2,7 +2,8 @@
 //! GPU's render node. For tests and scripted screenshots, alongside a running
 //! session, without taking over any display.
 //!
-//! `TILECEPTION_HEADLESS_SIZE=1920x1080` sets the virtual output's size.
+//! `TILECEPTION_HEADLESS_SIZE=1920x1080` sets the virtual output's size in
+//! pixels; `TILECEPTION_SCALE=1.5` (or `[outputs."headless"]`) its scale.
 
 use std::{os::fd::OwnedFd, time::Duration};
 
@@ -77,6 +78,7 @@ pub fn init(
     state.world.set_screen(Rect::new(0.0, 0.0, w as f64, h as f64));
     state.output = Some(output.clone());
     state.headless = Some(Box::new(Headless { renderer, output }));
+    state.apply_output_scale();
 
     event_loop.handle().insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
         state.headless_tick();

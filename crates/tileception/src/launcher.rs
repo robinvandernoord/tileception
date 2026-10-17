@@ -269,7 +269,7 @@ impl Launcher {
     }
 
     fn icon(&self, name: &str, size: u32) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
-        let path = self.lookup.find(name, size, 1)?;
+        let path = self.lookup.find(name, self.icons.pixels(size), 1)?;
         self.icons.image(&path, size)
     }
 
@@ -1089,7 +1089,7 @@ impl Tileception {
             },
         );
         if let Some(image) = field {
-            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height as f64) / 2.0));
+            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height) / 2.0));
         }
         // The rest of the chosen name, greyed out after what was typed.
         let chosen = match entries.get(self.launcher.selected) {
