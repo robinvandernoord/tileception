@@ -255,6 +255,68 @@
     .demo { grid-template-columns: 1fr; } .tour { position: static; }
     .under, .two, .grid3 { grid-template-columns: 1fr; } .flow { grid-template-columns: 1fr; } .flow .arr { transform: rotate(90deg); justify-self: center; }
   }
+/* Combined polish pass, preserving the original layout and behavior. */
+.refinements { margin: 0 0 22px; padding: 16px; background: #15171a; border: 1px solid #23262b; border-radius: 10px; }
+.refinement-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 12px; }
+.refinement-list button, .compare-original { font: inherit; font-size: 12px; padding: 8px 12px; border: 1px solid #343842; border-radius: 6px; background: #1c1f24; color: #adb4c0; cursor: pointer; }
+.refinement-list button:hover, .compare-original:hover { background: #2a2e36; color: #fff; }
+.refinement-list button[aria-pressed="true"] { background: linear-gradient(90deg, #2bd4a71f, #5c8ff212); border-color: #2bd4a780; color: #e8eaee; }
+.refinement-list button b { color: #7c8798; font-weight: 400; margin-right: 5px; }
+.refinement-list button[aria-pressed="true"] b { color: #2bd4a7; }
+.refinement-detail { display: flex; align-items: center; gap: 20px; justify-content: space-between; }
+.refinement-detail p { max-width: 980px; color: #aab; font-size: 13px; }
+.compare-original { white-space: nowrap; flex: none; }
+.refinements button:focus-visible { outline: 2px solid #2bd4a7; outline-offset: 3px; }
+.refinement-label { text-transform: uppercase; font-size: 10px; letter-spacing: .12em; color: #8b919c; }
+.intro a { color: #bfcbd8; text-underline-offset: 3px; }
+.tide-mark { display: inline-grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: .17cqw; width: 1.35cqw; height: 1.35cqw; flex: none; }
+.tide-mark i { border-radius: .1cqw; background: #2bd4a7; }
+.tide-mark i:first-child { grid-row: span 2; }
+.tide-mark i:last-child { background: #5c8ff2; }
+/* 02: reduce competing rings; keep the password as the brightest focus. */
+.scr .tile.focus {
+  border-color: color-mix(in srgb, var(--u1) 65%, var(--border));
+  box-shadow: 0 0 1.2cqw color-mix(in srgb, var(--u1) 12%, transparent);
+}
+.scr .av.ring {
+  box-shadow: 0 0 0 .3cqw #24272e, 0 0 0 .4cqw color-mix(in srgb, var(--u1) 45%, transparent);
+}
+.scr .field.focus {
+  box-shadow: 0 0 0 1px var(--u1), 0 0 1.2cqw color-mix(in srgb, var(--u1) 18%, transparent);
+}
+.scr .title::before { box-shadow: none; }
+/* 03: small changes to the controls, not to tile positions or proportions. */
+.scr .tabs { padding: .4cqw; gap: .4cqw; }
+.scr .tab { padding: .55cqw .7cqw; }
+.scr .tab.on {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c, var(--u1)) 16%, transparent), color-mix(in srgb, var(--c, var(--u1)) 5%, transparent));
+  box-shadow: inset 0 -.16cqw 0 var(--c, var(--u1));
+}
+.scr .login .name { font-size: 2cqw; letter-spacing: -.025em; }
+.scr .login .sub { margin-top: .35cqw; margin-bottom: 2cqw; }
+.scr .login .hint { margin-top: 1.2cqw; }
+.scr .field { padding: .75cqw .8cqw .75cqw 1cqw; }
+.scr .field .end {
+  padding: .45cqw; border-radius: .35cqw; background: color-mix(in srgb, var(--u1) 13%, transparent); color: var(--text);
+}
+.scr .rows { gap: .35cqw; }
+.scr .r { padding: .75cqw .8cqw; }
+.scr .r.on small { color: var(--text); opacity: .75; }
+.scr .clockface b { font-variant-numeric: tabular-nums; font-weight: 300; letter-spacing: -.045em; }
+.scr .powerrow { padding-top: 1cqw; border-top: 1px solid #ffffff0b; }
+/* 04: make the tiles feel a little more solid over personal wallpapers. */
+.scr .tile:not(.bare) {
+  background: #24272ef5;
+}
+.scr .tile:not(.focus):not(.bare) {
+  border-color: #3a3f48; box-shadow: 0 .4cqw 1.2cqw #0002;
+}
+.scr .bar {
+  background: #1c1f24; border-bottom-color: #3a3f48;
+}
+.scr .field { background: #1e2127; }
+.scr .popup { box-shadow: 0 .8cqw 2.5cqw #0006; }
+
 </style>
 </head>
 <body>
@@ -546,13 +608,14 @@ function sessionFace() {
 }
 function bar() {
   const c = clock();
+  const brand = '<span class="tide-mark" aria-hidden="true"><i></i><i></i><i></i></span>';
   const sys = `<span data-act="kb" title="Keyboard layout">${I('kbd')}${KB[S.kb]}</span><span>${I('wifi')}</span><span>${I('bat')}82%</span>`;
   if (S.mode === 'desktop') {
     const names = ['Terminal', 'Vivaldi', 'Files'];
-    return `<span class="crumb">Space 1 › <b>${names[S.win]}</b></span><span class="mid">${c.t}</span>
+    return `${brand}<span class="crumb">Space 1 › <b>${names[S.win]}</b></span><span class="mid">${c.t}</span>
       <div class="sys">${sys}<span data-act="lock" title="Lock (Super+L)">${I('lock')}</span><span data-act="launcher" title="Launcher">${I('power')}</span></div>`;
   }
-  return `<span>workstation</span><span class="mid">${S.mode === 'lock' ? c.t : c.d + ' · ' + c.t}</span>
+  return `${brand}<span>workstation</span><span class="mid">${S.mode === 'lock' ? c.t : c.d + ' · ' + c.t}</span>
     <div class="sys">${sys}<span data-act="launcher" title="Launcher (Super)">${I('power')}</span></div>`;
 }
 
