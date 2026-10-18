@@ -88,8 +88,9 @@ Released up to v0.4.0 and running as Robin's session:
 
 ### Known bugs
 
-- A second foot opened beside a first crashes: it gets keyboard focus
-  (`wl_keyboard.enter`) before its first configure.
+None known. (Fixed 2026-10-17: a second foot opened beside a first crashed
+because it got keyboard focus before its first configure; a window now gets
+the keyboard only once its first configure is sent.)
 
 ### Next
 
