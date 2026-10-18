@@ -1,4 +1,4 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/type`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/key/type/gesture/touch`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
 
@@ -24,6 +24,12 @@ pub enum Inject {
     Key(String),
     /// Types text, with Shift where a character needs it.
     Type(String),
+    /// A whole touchpad gesture, such as `Swipe3Left` or `Super+Pinch2In`.
+    /// A touchpad gesture (`Super+Pinch2In`), or a touchscreen one
+    /// (`TouchSwipe3Left`, `TouchEdgeTop`) around the pointer.
+    Gesture { mods: crate::config::Mods, gesture: crate::gestures::GestureKey },
+    /// One finger on the touchscreen: a tap, or a drag to a second point.
+    Touch { from: (f64, f64), to: (f64, f64) },
 }
 
 pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
@@ -53,6 +59,22 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
         "key" if !rest.trim().is_empty() => Ok(Inject::Key(rest.trim().to_string())),
         "key" => Err("key needs a key, such as Return or Super+slash".into()),
         "type" => Ok(Inject::Type(rest.to_string())),
+        "touch" => match args[..] {
+            [x, y] => Ok(Inject::Touch { from: (number(x)?, number(y)?), to: (number(x)?, number(y)?) }),
+            [x, y, x2, y2] => Ok(Inject::Touch { from: (number(x)?, number(y)?), to: (number(x2)?, number(y2)?) }),
+            _ => Err("touch takes x y, or x y x2 y2 to drag".into()),
+        },
+        "gesture" => {
+            let rest = rest.trim();
+            let (held, name) = rest.rsplit_once('+').unwrap_or(("", rest));
+            let mods = match held {
+                "" => crate::config::Mods::default(),
+                held => crate::config::parse_combo(&format!("{held}+space"))?.0,
+            };
+            let gesture = crate::gestures::parse_gesture(name, true)
+                .ok_or("gesture needs a gesture, such as Swipe3Left, Super+Pinch2In or TouchEdgeTop")??;
+            Ok(Inject::Gesture { mods, gesture })
+        }
         _ => Err(format!("unknown input command {verb:?}")),
     }
 }
@@ -65,19 +87,13 @@ struct Keys {
 
 impl Keys {
     fn new(k: &crate::config::Keyboard) -> Option<Keys> {
-        let pick =
-            |file: &Option<String>, env: &str| file.clone().unwrap_or_else(|| std::env::var(env).unwrap_or_default());
+        let (model, layout, variant, options) = k.names();
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context,
-            "",
-            &pick(&k.model, "XKB_DEFAULT_MODEL"),
-            &pick(&k.layout, "XKB_DEFAULT_LAYOUT"),
-            &pick(&k.variant, "XKB_DEFAULT_VARIANT"),
-            k.options.clone().or_else(|| std::env::var("XKB_DEFAULT_OPTIONS").ok()),
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-        .or_else(|| xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS))?;
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", &model, &layout, &variant, options, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                .or_else(|| {
+                    xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
+                })?;
         Some(Keys { keymap })
     }
 
@@ -148,6 +164,11 @@ impl Tileception {
                     self.tap(&held, code, time + 4 * i as u32);
                 }
             }
+            Inject::Gesture { mods, gesture: crate::gestures::GestureKey::Pad(fingers, motion) } => {
+                self.inject_gesture(mods, fingers, motion, time)
+            }
+            Inject::Gesture { gesture, .. } => self.inject_touch_gesture(gesture, time),
+            Inject::Touch { from, to } => self.inject_touch(from, to, time),
         }
         Ok(())
     }
@@ -185,6 +206,24 @@ mod tests {
         assert_eq!(parse("type", "make gaps smaller"), Ok(Inject::Type("make gaps smaller".into())));
         assert!(parse("pointer", "1").is_err());
         assert!(parse("key", " ").is_err());
+        let logo = crate::config::Mods { logo: true, ..Default::default() };
+        assert_eq!(
+            parse("gesture", "Super+Pinch2In"),
+            Ok(Inject::Gesture {
+                mods: logo,
+                gesture: crate::gestures::GestureKey::Pad(2, crate::gestures::Motion::In)
+            })
+        );
+        assert!(parse("gesture", "Super+t").is_err());
+        assert_eq!(
+            parse("gesture", "TouchPinch2Out"),
+            Ok(Inject::Gesture {
+                mods: Default::default(),
+                gesture: crate::gestures::GestureKey::Touch(2, crate::gestures::Motion::Out)
+            })
+        );
+        assert_eq!(parse("touch", "1 2"), Ok(Inject::Touch { from: (1.0, 2.0), to: (1.0, 2.0) }));
+        assert!(parse("touch", "1 2 3").is_err());
     }
 
     #[test]

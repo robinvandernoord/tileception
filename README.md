@@ -29,9 +29,7 @@ findings and the roadmap.
 - A config file with key bindings, reloaded on save.
 - A command socket: `tileception msg <command>`.
 
-Not yet: more than one monitor (only the first is lit), trackpad gestures,
-touchscreen support, HiDPI scaling,
-taskbar window lists (foreign-toplevel), clipboard managers (data-control).
+Not yet: more than one monitor (only the first is lit).
 
 ## Companion programs
 
@@ -151,8 +149,9 @@ tileception msg screenshot /tmp/shot.png
 
 Scripts can also pretend to use the mouse and keyboard there (headless or
 nested only, never in a real session): `tileception msg pointer 640 400`,
-`click [x y] [left|right|middle]`, `key Super+slash` and `type some text`.
-Keys go through the same handling as real ones.
+`click [x y] [left|right|middle]`, `key Super+slash`, `type some text` and
+`gesture Swipe3Left` and `touch x y [x2 y2]`. Keys, gestures and touches go through the same handling as real
+ones.
 
 ## Lint policy
 
@@ -271,6 +270,19 @@ disabled by default. Suspend is enabled by default following a successful manual
 hardware test of the resume recovery, which clears stale queued DRM frames.
 Nested development sessions do not automatically lock or power down the host.
 
+The screen also locks before every suspend or hibernation, however it was
+asked for (the power menu, closing the lid, `systemctl suspend`): a logind
+delay inhibitor holds sleep back until the lock screen is on the display. Set
+`lock_before_sleep = false` under `[idle]` to turn this off.
+
+On a laptop the bar shows the battery's charge (hover it for the time left),
+and the focus border follows it: green while charging, then yellow, orange and
+red at 35, 25 and 15 percent on battery. `[battery]` also sends alerts at 20,
+15 and 10 percent, hibernates at 5 percent, and switches power profiles:
+performance on the charger, balanced on battery, power saver at 20 percent.
+Each part can be switched off there; computers without a battery are left
+alone. `tileception msg battery` prints the charge and the border colour.
+
 Super+X, then Suspend, uses the normal lock-and-suspend path. To disable the
 action, set `suspend_enabled = false` under `[general]` in your config. The config
 reloads automatically.
@@ -323,6 +335,42 @@ Mouse:
   it. A plain click clears the selection.
 - Drag a tab out of its strip to undock it.
 - Drag the gap between windows to resize.
+
+Touchpad (bindings named by finger count and the way the fingers move, so
+`"Swipe3Left"` or `"Super+Pinch2In"` in `[binds]`; a gesture without a
+binding goes to the program under the pointer):
+
+| Gesture | Action |
+| --- | --- |
+| 3-finger swipe | neighbouring space, the way the content moves (swipe left: the space to the right) |
+| 3-finger pinch out / in | step in toward the pointer / step out |
+| Super+2-finger pinch out / in | the same; without Super, pages and images zoom |
+| 4-finger swipe up | Overview |
+| 4-finger swipe down | frame the focused window on its own |
+| 4-finger swipe right / left | back / forward |
+
+Touchscreen: a touch on a program's window goes to that program as touch,
+so pages scroll and apps take several fingers; on Tileception's own parts
+(the launcher, bar, panels, Overview, gaps and tabs) a finger works as the
+left mouse button. A few gestures are Tileception's, bindable in `[binds]`
+as `TouchEdgeTop` and `TouchSwipe3Left`:
+
+| Touch | Action |
+| --- | --- |
+| swipe in from the top edge | Overview |
+| swipe in from the bottom edge | show the minimized windows |
+| swipe in from the right / left edge | notifications and sound / the doctor |
+| 3-finger swipe | neighbouring space, the way the content moves |
+| 3-finger pinch out / in | step in where the fingers are / step out |
+| 2-finger pinch in Overview | out: go into that tile; in: leave Overview |
+
+Three fingers count when they land together; the program under them gets
+its touch cancelled. A tap or a drag along an edge still reaches what is
+there.
+
+`[touchpad]` sets tap to click (on by default), natural scrolling, disable
+while typing, pointer speed, the click method and how far a swipe goes
+before it counts. Changes apply on save.
 
 ## Commands
 

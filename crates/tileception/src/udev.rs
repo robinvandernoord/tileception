@@ -178,8 +178,13 @@ pub fn init(
     libinput.udev_assign_seat(&seat).map_err(|_| "libinput could not take the seat")?;
     let input = LibinputInputBackend::new(libinput.clone());
     event_loop.handle().insert_source(input, |event, _, state| {
-        if let InputEvent::DeviceAdded { device } = &event {
-            tracing::info!("input device: {}", device.name());
+        match &event {
+            InputEvent::DeviceAdded { device } => {
+                tracing::info!("input device: {}", device.name());
+                state.touchpad_added(device.clone());
+            }
+            InputEvent::DeviceRemoved { device } => state.touchpad_removed(device),
+            _ => {}
         }
         state.process_input_event(event);
     })?;
@@ -389,6 +394,7 @@ impl Tileception {
         {
             tracing::warn!("frame submit: {err}");
         }
+        self.sleep_frame_shown();
         self.render_udev();
     }
 
@@ -424,6 +430,7 @@ impl Tileception {
         self.send_layer_frames(self.start.elapsed());
         udev.frame_pending = queued;
         self.udev = Some(udev);
+        self.sleep_frame_queued(queued);
         self.after_frame();
         if !queued {
             // Nothing changed on screen: look again in about a frame.

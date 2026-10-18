@@ -2,6 +2,20 @@
 
 <!-- next-version-placeholder -->
 
+## v0.5.0 (2026-10-17)
+
+### Features
+* **cli:** add help and version output
+* **doctor:** add copy and run controls to code blocks
+* **compositor:** add input gestures and power management
+
+### Fixes
+* **windows:** handle maximize requests after initial configure
+* **acp:** support Bun as an npx runner
+
+### Documentation
+* **project:** refresh architecture and roadmap
+
 ## v0.4.0 (2026-10-17)
 
 ### Features

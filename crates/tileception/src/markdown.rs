@@ -1,7 +1,7 @@
 //! Markdown from the doctor's agent, turned into pieces the panel can lay
 //! out one below the other: paragraphs of styled text, code, pictures.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 /// How a run of text looks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -42,9 +42,20 @@ pub enum Kind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
-    Text { kind: Kind, spans: Vec<Span> },
-    Code(String),
-    Image { url: String, alt: String, link: Option<String> },
+    Text {
+        kind: Kind,
+        spans: Vec<Span>,
+    },
+    /// A code block and its language ("bash", or empty when not given).
+    Code {
+        lang: String,
+        text: String,
+    },
+    Image {
+        url: String,
+        alt: String,
+        link: Option<String>,
+    },
     Rule,
 }
 
@@ -69,6 +80,18 @@ pub fn parse(source: &str) -> Vec<Piece> {
     b.pieces
 }
 
+/// The command a code block runs, when it is shell: its text without the
+/// `$ ` prompts (and, when there are prompts, without the output between).
+/// `None` for other languages; a block without one counts as shell.
+pub fn shell_command(lang: &str, text: &str) -> Option<String> {
+    let shell = ["", "sh", "bash", "zsh", "shell", "console", "terminal", "shellsession"];
+    if !shell.contains(&lang.to_ascii_lowercase().as_str()) || text.trim().is_empty() {
+        return None;
+    }
+    let prompted: Vec<&str> = text.lines().filter_map(|l| l.trim_start().strip_prefix("$ ")).collect();
+    Some(if prompted.is_empty() { text.to_string() } else { prompted.join("\n") })
+}
+
 #[derive(Default)]
 struct Builder {
     pieces: Vec<Piece>,
@@ -83,7 +106,8 @@ struct Builder {
     marker: Option<String>,
     quotes: u8,
     heading: Option<u8>,
-    code: Option<String>,
+    /// The code block being read: language and text so far.
+    code: Option<(String, String)>,
     /// The picture being read: address and its description so far.
     image: Option<(String, String)>,
     table_head: bool,
@@ -144,12 +168,12 @@ impl Builder {
             }
             return;
         }
-        if let Some(code) = &mut self.code {
+        if let Some((_, code)) = &mut self.code {
             match event {
                 Event::Text(text) => code.push_str(&text),
                 Event::End(TagEnd::CodeBlock) => {
-                    let code = self.code.take().unwrap_or_default();
-                    self.pieces.push(Piece::Code(code.trim_end_matches('\n').into()));
+                    let (lang, code) = self.code.take().unwrap_or_default();
+                    self.pieces.push(Piece::Code { lang, text: code.trim_end_matches('\n').into() });
                 }
                 _ => {}
             }
@@ -192,9 +216,13 @@ impl Builder {
                 self.flush();
                 self.quotes += 1;
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.flush();
-                self.code = Some(String::new());
+                let lang = match kind {
+                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or_default().to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                self.code = Some((lang, String::new()));
             }
             Tag::List(first) => {
                 self.flush();
@@ -308,6 +336,18 @@ mod tests {
     #[test]
     fn code_blocks_keep_their_lines() {
         let pieces = parse("```toml\na = 1\nb = 2\n```\n");
-        assert_eq!(pieces, [Piece::Code("a = 1\nb = 2".into())]);
+        assert_eq!(pieces, [Piece::Code { lang: "toml".into(), text: "a = 1\nb = 2".into() }]);
+    }
+
+    #[test]
+    fn shell_blocks_run_without_prompts() {
+        assert_eq!(shell_command("bash", "sudo pacman -Syu").as_deref(), Some("sudo pacman -Syu"));
+        assert_eq!(shell_command("", "ls").as_deref(), Some("ls"));
+        assert_eq!(
+            shell_command("console", "$ sudo systemctl restart foo\nok\n$ echo hi\nhi").as_deref(),
+            Some("sudo systemctl restart foo\necho hi")
+        );
+        assert_eq!(shell_command("toml", "a = 1"), None);
+        assert_eq!(shell_command("sh", "  \n"), None);
     }
 }

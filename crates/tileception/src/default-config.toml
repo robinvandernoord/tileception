@@ -79,6 +79,26 @@ autostart = []
 # Visible video players can inhibit both through the Wayland idle-inhibit protocol.
 lock_after = 0
 off_after = 600
+# Lock the screen before the computer suspends or hibernates, however that
+# was asked for (the power menu, closing the lid, systemctl suspend), so the
+# desktop never shows on waking.
+# lock_before_sleep = true
+
+[touchpad]
+# Tap to click: one finger is the left button, two the right, three the middle.
+tap = true
+# Scrolling moves the content with your fingers, as on a phone.
+natural_scroll = false
+# Ignore the touchpad for a moment after typing.
+disable_while_typing = true
+# Pointer speed, from -1 (slow) to 1 (fast).
+speed = 0
+# What pressing the pad down clicks: "areas" (the bottom right corner is the
+# right button) or "clickfinger" (two fingers right, three middle). Unset:
+# the touchpad's own default.
+# click_method = "clickfinger"
+# How far, in pixels, fingers travel before a swipe binding runs.
+swipe_distance = 60
 
 [media]
 # Percent per volume or brightness key press. Held keys repeat.
@@ -90,6 +110,31 @@ max_volume = 150
 # A small card at the bottom of the screen when a level or playback changes.
 osd = true
 osd_timeout_ms = 1500
+
+[battery]
+# Only on computers with a battery; desktops are left alone. The bar shows
+# the charge either way (hover it for the time left).
+#
+# The focus border shows the charge: this colour while charging, and at or
+# below each level while on battery. Colours are #rrggbb, or accent, warning
+# or danger from [theme]. Plugged in and not charging keeps the accent.
+# border = true
+# charging = "#8fd65a"
+# levels = [
+#     { at = 35, colour = "#ecd75a" },
+#     { at = 25, colour = "warning" },
+#     { at = 15, colour = "danger" },
+# ]
+# Notifications at 20, 15 and 10 percent; the last stays until dismissed.
+# alerts = true
+# Hibernate at this percentage (once per discharge); 0 never does.
+# hibernate_at = 5
+# Switch power profiles (power-profiles-daemon) as the charger comes and
+# goes: performance plugged in, balanced on battery, power saver at or below
+# power_saver_at. Only on a change, so a profile picked by hand stays until
+# the next one.
+# power_profiles = true
+# power_saver_at = 20
 
 [shell]
 # Each part of the desktop is Tileception's own ("builtin"), switched off
@@ -160,9 +205,10 @@ bar = "builtin"
 # firefox = ["-P", "work"]
 
 [keyboard]
-# Defaults come from XKB_DEFAULT_* in the environment.
-# layout = "us"
-# variant = "altgr-intl"
+# US international unless set: AltGr gives accents and dead keys (AltGr+'
+# then e is é), while ' and " type straight away. Any xkb layout works.
+# layout = "nl"
+# variant = ""
 # options = "compose:ralt"
 repeat_delay = 400
 repeat_rate = 30
@@ -272,6 +318,39 @@ repeat_rate = 30
 "Super+V" = "float"
 "Super+Shift+F" = "float"
 "Super+D" = "desktop"
+
+# Touchpad gestures, named by finger count and the way the fingers move.
+# Swipes take 3 to 5 fingers, pinches 2 to 5. Each gesture runs its binding
+# once; a gesture without a binding goes to the program under the pointer,
+# so two-finger pinches still zoom web pages unless Super is held.
+"Swipe3Left" = "focus right"
+"Swipe3Right" = "focus left"
+"Swipe3Up" = "focus down"
+"Swipe3Down" = "focus up"
+"Pinch3In" = "step-out"
+"Pinch3Out" = "step-in pointer"
+"Super+Pinch2In" = "step-out"
+"Super+Pinch2Out" = "step-in pointer"
+"Swipe4Up" = "overview"
+"Swipe4Down" = "maximize"
+"Swipe4Left" = "forward"
+"Swipe4Right" = "back"
+
+# The touchscreen. A swipe in from an edge (TouchEdgeTop, Bottom, Left,
+# Right), and three to five fingers that land together (TouchSwipe3Left,
+# TouchPinch3In, ...), are Tileception's; other touches go to the program
+# under them. In Overview two fingers pinch out to go into a tile, in to
+# leave.
+"TouchEdgeTop" = "overview"
+"TouchEdgeBottom" = "show-minimized"
+"TouchEdgeRight" = "notifications"
+"TouchEdgeLeft" = "doctor"
+"TouchSwipe3Left" = "focus right"
+"TouchSwipe3Right" = "focus left"
+"TouchSwipe3Up" = "focus down"
+"TouchSwipe3Down" = "focus up"
+"TouchPinch3In" = "step-out"
+"TouchPinch3Out" = "step-in pointer"
 
 # Screenshots (grim and slurp). Print saves and copies the whole screen;
 # Shift+Print lets you drag a region and asks whether to copy or save it.

@@ -24,11 +24,13 @@ use smithay::wayland::seat::WaylandFocus;
 pub struct IdleConfig {
     pub lock_after: u64,
     pub off_after: u64,
+    /// Lock before suspending or hibernating, however that was asked for.
+    pub lock_before_sleep: bool,
 }
 
 impl Default for IdleConfig {
     fn default() -> Self {
-        Self { lock_after: 0, off_after: 600 }
+        Self { lock_after: 0, off_after: 600, lock_before_sleep: true }
     }
 }
 

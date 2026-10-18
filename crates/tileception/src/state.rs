@@ -95,6 +95,7 @@ pub struct Tileception {
     pub toplevels: crate::toplevels::Toplevels,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
+    pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub xwayland_shell_state: XWaylandShellState,
     pub xwm: Option<X11Wm>,
     pub xdisplay: Option<u32>,
@@ -132,6 +133,11 @@ pub struct Tileception {
     pub resize_drag: Option<ResizeDrag>,
     /// Scrolling not yet turned into wheel binding steps.
     pub wheel_accum: (f64, f64),
+    /// The touchpad gesture in progress.
+    pub gesture: Option<crate::gestures::Gesture>,
+    pub touch: crate::touch::Touch,
+    /// Touchpads, set up again from `[touchpad]` when the config reloads.
+    pub touchpads: Vec<smithay::reexports::input::Device>,
     /// A modifier pressed on its own, which fires its tap binding if it is
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
@@ -171,6 +177,8 @@ pub struct Tileception {
     pub bar: crate::bar::Bar,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
+    pub battery: crate::battery::Battery,
+    pub sleep: crate::sleep::Sleep,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
@@ -210,25 +218,15 @@ impl Tileception {
 
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
         let k = &config.file.keyboard;
-        let pick = |file: &Option<String>, env: &str| file.clone().unwrap_or_else(|| env_or_default(env));
-        let (layout, variant, model) = (
-            pick(&k.layout, "XKB_DEFAULT_LAYOUT"),
-            pick(&k.variant, "XKB_DEFAULT_VARIANT"),
-            pick(&k.model, "XKB_DEFAULT_MODEL"),
-        );
-        let xkb = XkbConfig {
-            layout: &layout,
-            variant: &variant,
-            model: &model,
-            options: k.options.clone().or_else(|| std::env::var("XKB_DEFAULT_OPTIONS").ok()),
-            ..Default::default()
-        };
+        let (model, layout, variant, options) = k.names();
+        let xkb = XkbConfig { layout: &layout, variant: &variant, model: &model, options, ..Default::default() };
         let (delay, rate) = (k.repeat_delay.unwrap_or(400), k.repeat_rate.unwrap_or(30));
         if seat.add_keyboard(xkb, delay, rate).is_err() {
             tracing::warn!("keyboard layout {layout:?} {variant:?} did not compile, using us");
             seat.add_keyboard(Default::default(), delay, rate).expect("default keymap compiles");
         }
         seat.add_pointer();
+        seat.add_touch();
 
         let socket_name = Self::listen(display, event_loop);
 
@@ -258,6 +256,7 @@ impl Tileception {
             toplevels: crate::toplevels::Toplevels::new(&dh),
             pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh),
+            pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
             xwayland_shell_state,
             xwm: None,
             xdisplay: None,
@@ -282,6 +281,9 @@ impl Tileception {
             move_drag: None,
             resize_drag: None,
             wheel_accum: (0.0, 0.0),
+            gesture: None,
+            touch: Default::default(),
+            touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
             pending_press: None,
@@ -314,6 +316,8 @@ impl Tileception {
             bar: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
+            battery: Default::default(),
+            sleep: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
             headless: None,
@@ -793,10 +797,6 @@ fn watch_child(mut child: std::process::Child, name: String) {
         Ok(status) if !status.success() => tracing::info!(target: "program", "[{name}] exited with {status}"),
         _ => {}
     });
-}
-
-fn env_or_default(key: &str) -> String {
-    std::env::var(key).unwrap_or_default()
 }
 
 /// The first installed terminal that runs natively on Wayland.

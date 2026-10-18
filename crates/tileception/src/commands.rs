@@ -32,6 +32,10 @@ pub enum Command {
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
     Media(crate::media::Control),
+    /// Prints the battery's charge and the border colour it gives.
+    Battery,
+    /// Slides out the strip of minimized windows for a moment.
+    ShowMinimized,
     /// Opens or closes the doctor panel, or asks it a question.
     Doctor(Option<String>),
     /// Pretend input, for scripted tests (headless or nested only).
@@ -46,6 +50,95 @@ pub enum Command {
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
 }
+
+/// What `tileception msg --help` prints. Every verb here must parse (a test
+/// checks), so add new commands here too.
+pub const HELP: &str = "\
+Usage: tileception msg <command> [args...]
+
+Sends one command to the running Tileception and prints its reply. Key
+bindings in config.toml use the same commands. The socket is
+$TILECEPTION_SOCKET, else the one for $WAYLAND_DISPLAY, else the only one
+running. A reply starting with \"error\" exits with status 1.
+
+Inspecting:
+  tree                      print the layout tree, with window ids, selection,
+                            lock and display-sleep status
+  battery                   print the charge and the border colour it gives
+  volume                    print outputs, inputs, levels and the media player
+  media                     print the last-played player's status
+  screenshot <file.png>     save what is on screen
+
+Windows:
+  terminal                  open the terminal beside the focused window
+  spawn <command line>      run a shell command (also: exec)
+  close                     close the focused window
+  focus <dir>               frame the neighbouring space (dir: left, right,
+                            up, down; also plain left, right, up, down)
+  move <dir>                move the focused window past its neighbour
+  resize <dir> <px>         move the divider next to the focused window
+  toggle-split              stack the focused row, or lay the column side by side
+  cycle [next|prev]         focus the next or previous window
+  float                     float the focused window above the layout, or dock it
+  fullscreen                cover the screen with the focused window
+  minimize                  take the focused or selected windows out of the layout
+  restore [window-id]       put the last minimized window (or this one) back
+  show-minimized            slide out the strip of minimized windows for a moment
+  select [window-id...]     replace the selection (no ids clears it)
+  group                     group the selection
+  next-tab                  next tab in the focused tile
+  prev-tab                  previous tab in the focused tile
+  drop <x> <y>              drop the focused window at a screen point, like a drag
+
+Views:
+  overview                  show everything (Esc or a click leaves)
+  step-in [pointer]         zoom one level in, toward the focus or the pointer
+  step-out                  zoom one level out
+  maximize                  frame the focused window on its own (again: back)
+  back                      the previous space you framed
+  forward                   the next space you framed
+  save <1-9>                save the current view in a slot
+  go <1-9>                  go to a saved view
+  desktop                   show or hide the Desktop tile
+
+Shell:
+  launcher                  open the launcher
+  notifications             open the notification list
+  do-not-disturb            toggle do not disturb
+  lock                      lock the screen (see lock_command)
+  unlock                    end a lock whatever the locker does (from a console)
+  power-menu                lock, log out, suspend, restart or power off
+  copy-image <file.png>     put a PNG on the clipboard
+  colour-scheme <s>         dark, light or default, until the config is reloaded
+                            (also: color-scheme)
+  doctor                    open or close the doctor panel
+  doctor ask <question>     ask the doctor about your setup
+  doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
+  doctor mode <mode>        what it may do unasked: ask, config or yolo
+  reload                    reload config.toml
+  vt <n>                    switch to virtual terminal n
+  quit                      end the session
+
+Sound, light and media:
+  volume up|down [n]        change the output volume by n percent (or the step)
+  volume set <n>            set it; a bare percentage works too (volume 40)
+  volume mute [on|off|toggle]
+  volume output|input <n>   use device n from the plain `volume` list
+  mic up|down|set|mute ...  the same for the microphone
+  brightness up|down|set .. the screen's backlight
+  media <what>              play-pause, play, pause, next, previous or stop
+
+Pretend input (headless or nested only):
+  pointer <x> <y>           move the pointer
+  click [x y] [left|right|middle]
+  key <combo>               press a key, such as Return or Super+slash
+  type <text>               type text
+  gesture <name>            such as Swipe3Left, Super+Pinch2In or TouchEdgeTop
+  touch <x> <y> [x2 y2]     tap, or drag to the second point
+
+While the screen is locked only tree, screenshot, reload, unlock, vt,
+battery and the sound, light and media commands work.
+";
 
 pub fn parse(line: &str) -> Result<Command, String> {
     let line = line.trim();
@@ -70,8 +163,10 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "show-minimized" => return Ok(Command::ShowMinimized),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
+        "battery" => return Ok(Command::Battery),
         "select" => {
             let ids = args
                 .iter()
@@ -100,7 +195,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "click" | "key" | "type" => return crate::inject::parse(verb, rest).map(Command::Inject),
+        "pointer" | "click" | "key" | "type" | "gesture" | "touch" => {
+            return crate::inject::parse(verb, rest).map(Command::Inject);
+        }
         "colour-scheme" | "color-scheme" => {
             return crate::theme::ColourScheme::parse(rest).map(Command::ColourScheme);
         }
@@ -203,6 +300,7 @@ impl Tileception {
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
+                    | Command::Battery
             )
         {
             return Err("session is locked".into());
@@ -211,11 +309,13 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
+            Command::Battery => return Ok(self.battery_status()),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
             Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),
@@ -253,6 +353,21 @@ impl Tileception {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_lists_only_real_commands() {
+        let verbs: Vec<&str> = HELP
+            .lines()
+            .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        assert!(verbs.len() > 50, "help lists {} commands", verbs.len());
+        for verb in verbs {
+            if let Err(e) = parse(verb) {
+                assert!(!e.starts_with("unknown"), "help lists {verb:?}: {e}");
+            }
+        }
+    }
 
     #[test]
     fn parses_commands() {

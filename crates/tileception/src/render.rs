@@ -173,6 +173,9 @@ impl Tileception {
 
     /// The whole frame: everything below plus the wallpaper at the bottom.
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        if let Some(shapes) = self.shapes.get() {
+            shapes.next_frame();
+        }
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             self.wallpaper_buffer();
         }
@@ -345,14 +348,17 @@ impl Tileception {
 
     /// A window's frame: rounded corners masked in the background colour (for
     /// tiles), a hairline border, and the accent with a glow when focused.
+    /// On a laptop the accent follows the battery: green while charging,
+    /// yellow to red as it runs low.
     fn frame(&self, focused: bool, mask_corners: bool) -> Shape {
         let t = &self.theme;
+        let accent = self.battery_border().unwrap_or(t.accent);
         Shape {
             radius: t.radius,
             border_width: 1.0,
-            border: if focused { t.accent } else { t.border },
+            border: if focused { accent } else { t.border },
             glow_radius: if focused { t.glow } else { 0.0 },
-            glow: t.accent.alpha(0.27),
+            glow: accent.alpha(0.27),
             corner_mask: if mask_corners { t.background } else { Colour::TRANSPARENT },
             ..Default::default()
         }

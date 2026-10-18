@@ -308,13 +308,13 @@ impl Tileception {
     }
 
     /// Puts text on the clipboard, owned by the compositor, for Wayland and X11.
-    fn copy_text(&mut self, text: String) {
+    pub(crate) fn copy_text(&mut self, text: String) {
         let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
-            tracing::warn!("could not offer launcher text to X11: {error:?}");
+            tracing::warn!("could not offer the text to X11: {error:?}");
         }
     }
 

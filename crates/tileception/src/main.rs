@@ -10,6 +10,7 @@
 mod answers;
 mod appearance;
 mod bar;
+mod battery;
 mod builtin_lock;
 mod calc;
 mod capture;
@@ -20,6 +21,7 @@ mod cursor;
 mod doctor;
 mod doctor_policy;
 mod focus;
+mod gestures;
 mod handlers;
 mod headless;
 mod idle;
@@ -43,11 +45,13 @@ mod scale;
 mod selection;
 mod shapes;
 mod shell;
+mod sleep;
 mod state;
 mod text;
 mod text_input;
 mod theme;
 mod toplevels;
+mod touch;
 mod udev;
 mod ui;
 mod wallpaper;
@@ -59,11 +63,72 @@ use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 
 pub use state::Tileception;
 
+const USAGE: &str = "\
+Usage:
+  tileception [--nested | --session | --headless] [-- command args...]
+  tileception msg <command> [args...]
+  tileception msg --help
+
+Starts the Tileception compositor, or with `msg` controls a running one.
+A command after `--` is started once the compositor is up.
+
+Modes:
+  (none)        nested when WAYLAND_DISPLAY or DISPLAY is set, else the session
+  --nested      run in a window inside another desktop
+  --session     run on the hardware (from a TTY or login manager)
+  --headless    no screen, for scripted tests; screenshots still work
+
+Options:
+  -h, --help    print this help
+  -V, --version print the version
+
+Commands (`tileception msg --help` lists them all):
+  tree, screenshot <file.png>, spawn <command line>, focus <dir>, ...
+
+Files:
+  $XDG_CONFIG_HOME/tileception/config.toml   settings and key bindings; written
+                                             with defaults when missing, reloaded
+                                             on save
+  ~/.local/state/tileception/tileception.log the session's log (from
+                                             tileception-session)
+
+Environment:
+  TILECEPTION_SOCKET         command socket for `msg`; set for programs inside
+  TILECEPTION_TERMINAL       the terminal `terminal` opens
+  TILECEPTION_SCALE          output scale, overriding [outputs]
+  TILECEPTION_HEADLESS_SIZE  headless screen size, such as 1280x800
+  TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
+  RUST_LOG                   log filter (default: info,smithay=warn)
+";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("msg") {
-        ipc::client(&argv[1..])?;
+        // Help needs no running compositor.
+        match argv.get(1).map(String::as_str) {
+            None | Some("-h" | "--help" | "help") => print!("{}", commands::HELP),
+            _ => ipc::client(&argv[1..])?,
+        }
         return Ok(());
+    }
+    // Only flags before `--`: what follows is the command to start.
+    for arg in argv.iter().take_while(|a| *a != "--") {
+        match arg.as_str() {
+            "-h" | "--help" | "help" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("tileception {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--nested" | "--session" | "--headless" => {}
+            // A typo must not start a compositor.
+            other => {
+                eprintln!("tileception: unknown argument {other:?}\n\n{USAGE}");
+                std::process::exit(2);
+            }
+        }
     }
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -111,7 +176,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.session_services = !nested && !headless;
     if !nested && !headless {
         state.start_appearance();
+        state.start_sleep_watch();
         export_session_environment(&state);
+    }
+    // TILECEPTION_POWER_SUPPLY points at a stand-in for /sys/class/power_supply,
+    // for tests; such a battery never notifies, hibernates or changes profiles.
+    match std::env::var_os("TILECEPTION_POWER_SUPPLY") {
+        Some(root) => state.start_battery(Some(root.into()), false),
+        None if !nested && !headless => state.start_battery(None, true),
+        None => {}
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     state.notification_bus = notification_bus.clone();
@@ -139,7 +212,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.spawn(cmd, rest);
     }
 
-    event_loop.run(None, &mut state, |_| {})?;
+    // Events for clients (keys above all) go out as soon as they are made,
+    // not with the next frame.
+    event_loop.run(None, &mut state, |state| {
+        let _ = state.display_handle.flush_clients();
+    })?;
     let _ = std::fs::remove_file(&socket);
     Ok(())
 }
