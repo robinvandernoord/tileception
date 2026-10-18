@@ -211,6 +211,26 @@ lock = "swaylock -f -i {wallpaper}"
 A replaced notification service gives up its D-Bus name, so the other daemon
 can take it, also after a reload without logging out.
 
+### Screen scaling
+
+`scale` under `[outputs."<connector>"]` sets how many pixels make up one
+point. `"auto"` (the default) picks one from the screen's size and
+resolution, so a 4K monitor or a dense laptop panel may get a fractional
+scale such as 1.25 or 1.5.
+
+Fractional scales are slow for apps that only draw at whole-number scales,
+such as GTK3 apps (lxterminal, for example). They draw at the next whole
+scale up and Tileception shrinks the result, so at 1.25 they draw about 2.6
+times as many pixels as the screen shows. Typing and scrolling can feel
+sluggish because of it. Apps that support fractional scaling (GTK4 and Qt 6
+apps, foot, Ghostty, kitty) draw at exactly 1.25 and are not affected. If a
+GTK3 app feels slow, use a whole scale:
+
+```toml
+[outputs."*"]
+scale = 2
+```
+
 ## Look
 
 Tileception's look is **Tide**: flat graphite, small radii, a teal to blue
