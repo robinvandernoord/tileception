@@ -63,8 +63,12 @@ const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888];
 const RENDER_BUDGET: Duration = Duration::from_millis(6);
 /// About one frame at 60 Hz.
 const FRAME: Duration = Duration::from_millis(16);
-/// Empty frames in a row, about a quarter of a second, before polling slows down.
+/// Empty frames in a row, about a quarter of a second, before polling slows
+/// down after an animation: it may have a still frame now and then.
 const QUIET_FRAMES: u32 = 15;
+/// The same after a frame that was asked for (a commit, input): what it
+/// starts mostly asks again or shows at once, so it is looked after briefly.
+const ASKED_FRAMES: u32 = 3;
 /// How often a still screen is looked at for changes nothing asked to draw.
 const STILL_POLL: Duration = Duration::from_millis(100);
 
@@ -84,6 +88,8 @@ pub struct Udev {
     poll: Option<RegistrationToken>,
     /// Empty frames in a row, for backing the poll off on a still screen.
     quiet: u32,
+    /// Something asked for the frame being made, rather than the poll.
+    asked: bool,
 }
 
 struct Lit {
@@ -187,6 +193,7 @@ pub fn init(
         frame_pending: false,
         poll: None,
         quiet: 0,
+        asked: false,
     }));
 
     // Input.
@@ -395,9 +402,7 @@ impl Tileception {
     /// Asks for a frame soon, unless one is already on its way.
     pub fn schedule_render(&mut self) {
         if let Some(udev) = self.udev.as_mut() {
-            // Something happened: look closely again for a while, as an
-            // animation it started may not show in the very next frame.
-            udev.quiet = 0;
+            udev.asked = true;
         }
         self.request_render();
     }
@@ -473,7 +478,12 @@ impl Tileception {
         }
         self.send_layer_frames(self.start.elapsed());
         udev.frame_pending = queued;
-        udev.quiet = if queued { 0 } else { udev.quiet.saturating_add(1) };
+        let asked = std::mem::take(&mut udev.asked);
+        udev.quiet = match (queued, asked) {
+            (true, false) => 0,
+            (true, true) => QUIET_FRAMES - ASKED_FRAMES,
+            (false, _) => udev.quiet.saturating_add(1),
+        };
         if !queued {
             // Nothing changed on screen: look again in about a frame, and
             // less often once it has been still for a while. Input and
