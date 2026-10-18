@@ -58,6 +58,13 @@ type Surface = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
 
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888];
 
+/// About one frame at 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
+/// Empty frames in a row, about a quarter of a second, before polling slows down.
+const QUIET_FRAMES: u32 = 15;
+/// How often a still screen is looked at for changes nothing asked to draw.
+const STILL_POLL: Duration = Duration::from_millis(100);
+
 pub struct Udev {
     pub session: LibSeatSession,
     pub renderer: GlesRenderer,
@@ -70,6 +77,10 @@ pub struct Udev {
     _drm_token: RegistrationToken,
     render_pending: bool,
     frame_pending: bool,
+    /// The timer that looks again for changes while frames come out empty.
+    poll: Option<RegistrationToken>,
+    /// Empty frames in a row, for backing the poll off on a still screen.
+    quiet: u32,
 }
 
 struct Lit {
@@ -171,6 +182,8 @@ pub fn init(
         _drm_token: drm_token,
         render_pending: false,
         frame_pending: false,
+        poll: None,
+        quiet: 0,
     }));
 
     // Input.
@@ -378,6 +391,15 @@ impl Tileception {
 
     /// Asks for a frame soon, unless one is already on its way.
     pub fn schedule_render(&mut self) {
+        if let Some(udev) = self.udev.as_mut() {
+            // Something happened: look closely again for a while, as an
+            // animation it started may not show in the very next frame.
+            udev.quiet = 0;
+        }
+        self.request_render();
+    }
+
+    fn request_render(&mut self) {
         let Some(udev) = self.udev.as_mut() else { return };
         if udev.render_pending || udev.frame_pending {
             return;
@@ -401,6 +423,9 @@ impl Tileception {
     fn render_udev(&mut self) {
         let Some(mut udev) = self.udev.take() else { return };
         udev.render_pending = false;
+        if let Some(poll) = udev.poll.take() {
+            self.loop_handle.remove(poll);
+        }
         if !udev.session.is_active() || udev.frame_pending || self.idle.off {
             self.udev = Some(udev);
             return;
@@ -429,18 +454,26 @@ impl Tileception {
         }
         self.send_layer_frames(self.start.elapsed());
         udev.frame_pending = queued;
-        self.udev = Some(udev);
-        self.sleep_frame_queued(queued);
-        self.after_frame();
+        udev.quiet = if queued { 0 } else { udev.quiet.saturating_add(1) };
         if !queued {
-            // Nothing changed on screen: look again in about a frame.
-            self.loop_handle
-                .insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
-                    state.schedule_render();
+            // Nothing changed on screen: look again in about a frame, and
+            // less often once it has been still for a while. Input and
+            // client commits ask for a frame themselves.
+            let wait = if udev.quiet <= QUIET_FRAMES { FRAME } else { STILL_POLL };
+            udev.poll = self
+                .loop_handle
+                .insert_source(Timer::from_duration(wait), |_, _, state| {
+                    if let Some(udev) = state.udev.as_mut() {
+                        udev.poll = None;
+                    }
+                    state.request_render();
                     TimeoutAction::Drop
                 })
                 .ok();
         }
+        self.udev = Some(udev);
+        self.sleep_frame_queued(queued);
+        self.after_frame();
     }
 
     /// Opens a device for a VT switch, from the keyboard shortcut.

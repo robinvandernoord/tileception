@@ -77,6 +77,8 @@ pub enum Action {
 
 impl Tileception {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // The pointer, hover states and whatever the input changes.
+        self.schedule_render();
         if matches!(
             &event,
             InputEvent::Keyboard { .. }
