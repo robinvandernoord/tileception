@@ -2,6 +2,8 @@
 //! fill, a border, a soft outer glow, and a corner mask in the background
 //! colour that makes square client windows look rounded.
 
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
 use smithay::{
     backend::renderer::{
         element::Kind,
@@ -104,6 +106,21 @@ impl Shape {
 pub struct Shapes {
     program: GlesPixelProgram,
     scale: f64,
+    reused: Rc<RefCell<Reused>>,
+}
+
+/// Where a shape is and how it looks, as exact bits: the same key draws the
+/// same pixels.
+type Key = ([i32; 4], [u32; 28]);
+
+/// The elements of the last frame and of this one. Each new element gets a
+/// new id, which the damage tracker takes for something that changed, so a
+/// shape that stays the same must keep its element or every frame redraws
+/// everything under it.
+#[derive(Debug, Default)]
+struct Reused {
+    previous: HashMap<Key, Vec<PixelShaderElement>>,
+    current: HashMap<Key, Vec<PixelShaderElement>>,
 }
 
 impl Shapes {
@@ -122,7 +139,13 @@ impl Shapes {
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
         let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|e| e.to_string())?;
-        Ok(Shapes { program, scale: 1.0 })
+        Ok(Shapes { program, scale: 1.0, reused: Default::default() })
+    }
+
+    /// Starts a frame: shapes drawn in the last one can be drawn again as they were.
+    pub fn next_frame(&self) {
+        let mut reused = self.reused.borrow_mut();
+        reused.previous = std::mem::take(&mut reused.current);
     }
 
     pub fn at_scale(self, scale: f64) -> Shapes {
@@ -160,18 +183,41 @@ impl Shapes {
         let offset = ((rect.x - x0 as f64) as f32, (rect.y - y0 as f64) as f32);
         let radius = shape.radius.min(rect.w as f32 / 2.0).min(rect.h as f32 / 2.0);
         let c = |c: Colour| c.0;
-        let uniforms = vec![
-            Uniform::new("u_rect_size", (rect.w as f32, rect.h as f32)),
-            Uniform::new("u_offset", offset),
-            Uniform::new("u_radius", radius),
-            Uniform::new("u_fill_a", c(shape.fill.0)),
-            Uniform::new("u_fill_b", c(shape.fill.1)),
-            Uniform::new("u_border_w", shape.border_width),
-            Uniform::new("u_border", c(shape.border)),
-            Uniform::new("u_glow_r", shape.glow_radius),
-            Uniform::new("u_glow", c(shape.glow)),
-            Uniform::new("u_mask", c(shape.corner_mask)),
-        ];
-        Some(PixelShaderElement::new(self.program.clone(), area, None, alpha, uniforms, Kind::Unspecified))
+        let (size, fill_a, fill_b) = ((rect.w as f32, rect.h as f32), c(shape.fill.0), c(shape.fill.1));
+        let (border, glow, mask) = (c(shape.border), c(shape.glow), c(shape.corner_mask));
+        let mut bits = [0u32; 28];
+        let floats = [size.0, size.1, offset.0, offset.1, radius, shape.border_width, shape.glow_radius, alpha]
+            .into_iter()
+            .chain(fill_a)
+            .chain(fill_b)
+            .chain(border)
+            .chain(glow)
+            .chain(mask);
+        for (bit, f) in bits.iter_mut().zip(floats) {
+            *bit = f.to_bits();
+        }
+        let key = ([x0, y0, x1, y1], bits);
+        let make = || {
+            let uniforms = vec![
+                Uniform::new("u_rect_size", size),
+                Uniform::new("u_offset", offset),
+                Uniform::new("u_radius", radius),
+                Uniform::new("u_fill_a", fill_a),
+                Uniform::new("u_fill_b", fill_b),
+                Uniform::new("u_border_w", shape.border_width),
+                Uniform::new("u_border", border),
+                Uniform::new("u_glow_r", shape.glow_radius),
+                Uniform::new("u_glow", glow),
+                Uniform::new("u_mask", mask),
+            ];
+            PixelShaderElement::new(self.program.clone(), area, None, alpha, uniforms, Kind::Unspecified)
+        };
+        // The same shape twice in a frame takes the last frame's second one,
+        // so no two elements share an id.
+        let mut reused = self.reused.borrow_mut();
+        let element = reused.previous.get_mut(&key).filter(|v| !v.is_empty()).map(|v| v.remove(0));
+        let element = element.unwrap_or_else(make);
+        reused.current.entry(key).or_default().push(element.clone());
+        Some(element)
     }
 }
