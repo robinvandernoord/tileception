@@ -20,6 +20,7 @@ mod controls;
 mod cursor;
 mod doctor;
 mod doctor_policy;
+mod duck;
 mod focus;
 mod gestures;
 mod handlers;
@@ -212,7 +213,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.spawn(cmd, rest);
     }
 
-    event_loop.run(None, &mut state, |_| {})?;
+    // Events for clients (keys above all) go out as soon as they are made,
+    // not with the next frame.
+    event_loop.run(None, &mut state, |state| {
+        let _ = state.display_handle.flush_clients();
+    })?;
     let _ = std::fs::remove_file(&socket);
     Ok(())
 }

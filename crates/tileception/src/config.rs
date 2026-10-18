@@ -34,6 +34,7 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub shell: crate::shell::ShellConfig,
+    pub duck: crate::duck::DuckConfig,
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,

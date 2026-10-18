@@ -109,6 +109,8 @@ impl CompositorHandler for Tileception {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // Shown in the next frame, not whenever the screen is next polled.
+        self.schedule_render();
         // There is one output, and everything shown is on it. Not before
         // the surface has drawn: foot crashes on an enter before its
         // first configure.

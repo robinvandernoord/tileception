@@ -37,7 +37,7 @@ use crate::{
     ui::{Align, Painter, Style, ease_out, glyph},
 };
 
-const PANEL_W: f64 = 480.0;
+pub(crate) const PANEL_W: f64 = 480.0;
 const HEADER_H: f64 = 56.0;
 const INPUT_H: f64 = 46.0;
 /// The row under the field: permission mode and model.
@@ -244,6 +244,8 @@ pub struct Doctor {
     /// The remembered model per agent; put back on every new session.
     models: std::collections::BTreeMap<String, String>,
     restore_model: bool,
+    /// The agent's own mode from before Yolo gave it full access, to put back.
+    agent_mode: Option<String>,
     /// Pictures pasted for the next message.
     attachments: Vec<Attachment>,
     /// The agent takes pictures in a prompt; unknown until it has started.
@@ -289,6 +291,7 @@ impl Default for Doctor {
             menu_selected: 0,
             models: saved.models,
             restore_model: false,
+            agent_mode: None,
             attachments: Vec::new(),
             takes_images: None,
             waiting: None,
@@ -650,13 +653,48 @@ impl Tileception {
         if text.starts_with('/') && self.doctor_command(&text) {
             return;
         }
+        self.submit_to_doctor(text.clone(), text);
+    }
+
+    /// A question from the rubber duck, with its screenshot: shown in the
+    /// conversation as `question`, sent to the agent as `prompt`. Returns
+    /// where in the conversation the answer starts, or why it was not sent.
+    pub fn doctor_ask_from_duck(
+        &mut self,
+        question: String,
+        prompt: String,
+        png: Arc<[u8]>,
+        (rgba, w, h): (Vec<u8>, u32, u32),
+    ) -> Result<usize, &'static str> {
         if self.doctor.busy {
-            return;
+            return Err("I'm still thinking about the last one. It's in the doctor.");
+        }
+        if self.doctor.agent.is_none() && test_agent().is_none() {
+            return Err("Pick an agent in the doctor first, then ask me again.");
+        }
+        // The agent list loads when the panel first opens; the duck may come first.
+        if self.doctor.registry.is_none() && !self.doctor.loading {
+            self.load_registry(false);
+        }
+        self.doctor.attachments.push(Attachment { png, thumb: Thumb::new(&rgba, (w, h)) });
+        let mark = self.doctor.messages.len();
+        if !self.submit_to_doctor(question, prompt) {
+            self.doctor.attachments.pop();
+            return Err("The doctor's agent is not available yet. Have a look in the doctor.");
+        }
+        Ok(mark)
+    }
+
+    /// Sends a message, showing `shown` in the conversation and prompting
+    /// the agent with `prompt`. False when nothing was sent.
+    fn submit_to_doctor(&mut self, shown: String, prompt: String) -> bool {
+        if self.doctor.busy {
+            return false;
         }
         if self.doctor.agent.is_none() && test_agent().is_none() {
             self.doctor.view = View::Picker;
             self.doctor.messages.push(Message::Note("Choose an agent first.".into()));
-            return;
+            return false;
         }
         self.ensure_session();
         // Right after login the agent list may still be loading: keep the
@@ -664,24 +702,25 @@ impl Tileception {
         let starting = self.doctor.session.is_none() && self.doctor.loading;
         if self.doctor.session.is_none() && !starting {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
-            return;
+            return false;
         }
         let attachments = std::mem::take(&mut self.doctor.attachments);
         if !attachments.is_empty() {
             self.doctor.messages.push(Message::Attached(attachments.iter().map(|a| a.thumb.clone()).collect()));
         }
-        if !text.is_empty() {
-            self.doctor.messages.push(Message::User(text.clone()));
+        if !shown.is_empty() {
+            self.doctor.messages.push(Message::User(shown));
         }
         self.doctor.view = View::Conversation;
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
         // How pictures go depends on the agent, which may not have said yet.
         if starting || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
-            self.doctor.waiting = Some((text, attachments));
+            self.doctor.waiting = Some((prompt, attachments));
         } else {
-            self.prompt_doctor(text, attachments);
+            self.prompt_doctor(prompt, attachments);
         }
+        true
     }
 
     fn prompt_doctor(&mut self, text: String, attachments: Vec<Attachment>) {
@@ -892,6 +931,7 @@ impl Tileception {
                 {
                     session.send(Request::SetOption { id: model.id.clone(), value: wanted.clone() });
                 }
+                self.sync_agent_mode();
             }
             Event::Commands(commands) => d.commands = commands,
             Event::Images(takes) => {
@@ -1036,7 +1076,26 @@ impl Tileception {
     pub fn set_doctor_mode(&mut self, mode: Mode) {
         self.doctor.mode = mode;
         self.save_doctor();
+        self.sync_agent_mode();
         self.schedule_render();
+    }
+
+    /// Yolo also lifts the agent's own sandbox and approvals, where it has a
+    /// mode for that: Codex otherwise cannot reach `tileception msg`. Leaving
+    /// Yolo puts the agent's mode back as it was.
+    fn sync_agent_mode(&mut self) {
+        let d = &mut self.doctor;
+        let Some(option) = d.options.iter().find(|o| o.category.as_deref() == Some("mode")) else { return };
+        let Some(full) = option.values.iter().find(|v| FULL_ACCESS.contains(&v.value.as_str())) else { return };
+        if option.current != full.value {
+            d.agent_mode = Some(option.current.clone());
+        }
+        let wanted = if d.mode == Mode::Yolo { Some(&full.value) } else { d.agent_mode.as_ref() };
+        if let Some(wanted) = wanted.filter(|w| **w != option.current)
+            && let Some(session) = &d.session
+        {
+            session.send(Request::SetOption { id: option.id.clone(), value: wanted.clone() });
+        }
     }
 
     fn save_doctor(&self) {
@@ -2639,6 +2698,9 @@ fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>)
     Ok(serde_json::json!({ "content": doctor_policy::read_lines(&text, line, limit) }))
 }
 
+/// Agents' own modes without a sandbox or approvals (Codex, Claude), for Yolo.
+const FULL_ACCESS: [&str; 2] = ["agent-full-access", "bypassPermissions"];
+
 /// Sent with the first question, so the agent knows what it is helping with.
 fn doctor_context(mode: &str) -> String {
     let config = crate::config::path();
@@ -2650,7 +2712,9 @@ fn doctor_context(mode: &str) -> String {
          with Tileception's settings, shortcuts and default apps, in plain language.\n\
          - The configuration is {config} (TOML). Tileception reloads it as soon as it is saved. Its comments \
          document every option; `tileception msg reload` reports errors.\n\
-         - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`.\n\
+         - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`. \
+         `tileception msg help` lists every command; features that are switched on and off rather than \
+         configured, such as the rubber duck (`duck`), are only there.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - The log is {log}.\n\
          - Read and write files with the file tools the client offers, so the user sees diffs and gets backups. \

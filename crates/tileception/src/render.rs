@@ -173,6 +173,9 @@ impl Tileception {
 
     /// The whole frame: everything below plus the wallpaper at the bottom.
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        if let Some(shapes) = self.shapes.get() {
+            shapes.next_frame();
+        }
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             self.wallpaper_buffer();
         }
@@ -209,6 +212,8 @@ impl Tileception {
         }
         elements.extend(self.notification_elements(renderer));
         elements.extend(self.doctor_elements(renderer));
+        // Over the strip, which it can stand on.
+        elements.extend(self.duck_elements(renderer));
         elements.extend(self.strip_elements(renderer));
         if self.launcher.home {
             elements.extend(self.launcher_elements(renderer));

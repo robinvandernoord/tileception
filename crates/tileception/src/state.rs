@@ -168,6 +168,8 @@ pub struct Tileception {
     pub media: crate::media::Media,
     /// The panel for asking an agent about the setup.
     pub doctor: crate::doctor::Doctor,
+    /// The rubber duck on the bottom of the screen.
+    pub duck: crate::duck::Duck,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
@@ -307,6 +309,7 @@ impl Tileception {
             notifications: Default::default(),
             media: Default::default(),
             doctor: Default::default(),
+            duck: Default::default(),
             session_services: false,
             notification_bus: None,
             media_bus: None,
@@ -464,6 +467,8 @@ impl Tileception {
         self.apply_layout();
         if let Some(toplevel) = self.windows.get(&id).and_then(|w| w.toplevel()) {
             toplevel.send_configure();
+            // The layout held the keyboard back until this first configure.
+            self.force_keyboard_focus_sync();
         }
         if rule.minimized {
             self.minimize_window(id);
@@ -572,7 +577,7 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) {
+        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
             focus.and_then(|id| self.windows.get(&id)).and_then(focus_target)
@@ -690,9 +695,10 @@ fn wants_float(window: &Window) -> bool {
     false
 }
 
+/// Not before a window's first configure: foot crashes on an enter then.
 fn focus_target(window: &Window) -> Option<KeyboardFocus> {
     if let Some(t) = window.toplevel() {
-        Some(KeyboardFocus::Wayland(t.wl_surface().clone()))
+        t.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(t.wl_surface().clone()))
     } else {
         window.x11_surface().map(|x| KeyboardFocus::X11(x.clone()))
     }
@@ -743,6 +749,7 @@ impl Tileception {
         self.update_bar();
         self.update_home();
         self.update_toplevels();
+        self.update_duck();
         let _ = self.display_handle.flush_clients();
     }
 }

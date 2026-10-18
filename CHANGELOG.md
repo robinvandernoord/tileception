@@ -2,6 +2,19 @@
 
 <!-- next-version-placeholder -->
 
+## v0.6.0 (2026-10-18)
+
+### Feature
+* **duck:** add interactive screenshot assistant
+
+### Fixes
+* **focus:** defer keyboard focus until initial configure
+* **event-loop:** flush client events promptly
+* **shapes:** reuse stable elements across frames
+
+### Documentation
+* **scale:** explain fractional screen scaling
+
 ## v0.5.0 (2026-10-17)
 
 ### Features

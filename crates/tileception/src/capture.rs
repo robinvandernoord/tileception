@@ -49,6 +49,8 @@ pub enum CaptureTarget {
         dmabuf: Dmabuf,
         damage: bool,
     },
+    /// The whole output without the rubber duck, for its question.
+    Duck,
 }
 
 /// What is on screen, ready to be rendered into each capture's buffer.
@@ -85,13 +87,15 @@ impl Tileception {
         self.pending_captures.push(PendingCapture { region, target: CaptureTarget::File(path) });
     }
 
-    /// Takes the queued captures. Called by the backend once per frame, with
-    /// its renderer.
-    pub fn process_captures(&mut self, renderer: &mut GlesRenderer) {
-        if self.pending_captures.is_empty() {
-            return;
-        }
-        let pending = std::mem::take(&mut self.pending_captures);
+    /// Queues a screenshot of the whole output for the rubber duck.
+    pub fn duck_screenshot(&mut self) {
+        let region = self.output_region();
+        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::Duck });
+        self.schedule_render();
+    }
+
+    /// What is on screen now, ready to render into a capture.
+    fn scene(&mut self, renderer: &mut GlesRenderer) -> Scene {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
             self.wallpaper_buffer();
         }
@@ -100,7 +104,32 @@ impl Tileception {
         if let Some(buffer) = wallpaper {
             crate::render::push_image(&mut elements, renderer, &buffer, (0.0, 0.0), self.scale);
         }
-        let scene = Scene { elements, size: self.output_pixels(), clear: self.clear_colour() };
+        Scene { elements, size: self.output_pixels(), clear: self.clear_colour() }
+    }
+
+    /// Takes the queued captures. Called by the backend once per frame, with
+    /// its renderer.
+    pub fn process_captures(&mut self, renderer: &mut GlesRenderer) {
+        if self.pending_captures.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pending_captures);
+        // The duck's own screenshot leaves the duck out, so it has a scene of its own.
+        let duck = pending.extract_if(.., |c| matches!(c.target, CaptureTarget::Duck)).last();
+        if let Some(capture) = duck {
+            self.duck.hidden = true;
+            let scene = self.scene(renderer);
+            self.duck.hidden = false;
+            let region = capture.region;
+            match pixels(renderer, &mut None, &scene, region) {
+                Ok(rgba) => self.duck_screen_taken(rgba, (region.size.w as u32, region.size.h as u32)),
+                Err(err) => tracing::warn!("duck capture failed: {err}"),
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        let scene = self.scene(renderer);
         // Rendered on first use, and shared by the captures read back from it.
         let mut texture = None;
         for capture in pending {
@@ -125,6 +154,7 @@ impl Tileception {
                     let rendered = render_scene(renderer, &mut dmabuf, &scene);
                     finish_frame(&frame, region.size, damage, rendered);
                 }
+                CaptureTarget::Duck => {}
             }
         }
     }
