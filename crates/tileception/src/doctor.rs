@@ -244,6 +244,8 @@ pub struct Doctor {
     /// The remembered model per agent; put back on every new session.
     models: std::collections::BTreeMap<String, String>,
     restore_model: bool,
+    /// The agent's own mode from before Yolo gave it full access, to put back.
+    agent_mode: Option<String>,
     /// Pictures pasted for the next message.
     attachments: Vec<Attachment>,
     /// The agent takes pictures in a prompt; unknown until it has started.
@@ -289,6 +291,7 @@ impl Default for Doctor {
             menu_selected: 0,
             models: saved.models,
             restore_model: false,
+            agent_mode: None,
             attachments: Vec::new(),
             takes_images: None,
             waiting: None,
@@ -928,6 +931,7 @@ impl Tileception {
                 {
                     session.send(Request::SetOption { id: model.id.clone(), value: wanted.clone() });
                 }
+                self.sync_agent_mode();
             }
             Event::Commands(commands) => d.commands = commands,
             Event::Images(takes) => {
@@ -1072,7 +1076,26 @@ impl Tileception {
     pub fn set_doctor_mode(&mut self, mode: Mode) {
         self.doctor.mode = mode;
         self.save_doctor();
+        self.sync_agent_mode();
         self.schedule_render();
+    }
+
+    /// Yolo also lifts the agent's own sandbox and approvals, where it has a
+    /// mode for that: Codex otherwise cannot reach `tileception msg`. Leaving
+    /// Yolo puts the agent's mode back as it was.
+    fn sync_agent_mode(&mut self) {
+        let d = &mut self.doctor;
+        let Some(option) = d.options.iter().find(|o| o.category.as_deref() == Some("mode")) else { return };
+        let Some(full) = option.values.iter().find(|v| FULL_ACCESS.contains(&v.value.as_str())) else { return };
+        if option.current != full.value {
+            d.agent_mode = Some(option.current.clone());
+        }
+        let wanted = if d.mode == Mode::Yolo { Some(&full.value) } else { d.agent_mode.as_ref() };
+        if let Some(wanted) = wanted.filter(|w| **w != option.current)
+            && let Some(session) = &d.session
+        {
+            session.send(Request::SetOption { id: option.id.clone(), value: wanted.clone() });
+        }
     }
 
     fn save_doctor(&self) {
@@ -2674,6 +2697,9 @@ fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>)
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(serde_json::json!({ "content": doctor_policy::read_lines(&text, line, limit) }))
 }
+
+/// Agents' own modes without a sandbox or approvals (Codex, Claude), for Yolo.
+const FULL_ACCESS: [&str; 2] = ["agent-full-access", "bypassPermissions"];
 
 /// Sent with the first question, so the agent knows what it is helping with.
 fn doctor_context(mode: &str) -> String {
