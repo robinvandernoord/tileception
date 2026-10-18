@@ -212,6 +212,8 @@ impl Tileception {
         }
         elements.extend(self.notification_elements(renderer));
         elements.extend(self.doctor_elements(renderer));
+        // Over the strip, which it can stand on.
+        elements.extend(self.duck_elements(renderer));
         elements.extend(self.strip_elements(renderer));
         if self.launcher.home {
             elements.extend(self.launcher_elements(renderer));

@@ -75,6 +75,7 @@ pub mod glyph {
     pub const ZOOM_IN: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>"#;
     pub const ZOOM_OUT: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>"#;
     pub const ARROW_LEFT: &str = r#"<path d="M19 12H5M11 6l-6 6 6 6"/>"#;
+    pub const DUCK: &str = r#"<circle cx="10" cy="8" r="3.5"/><path d="M13.5 8.5l3 .5-3 1.2M7 11.5C4.5 11.5 3 13 3 14.8 3 18 6.5 20 11 20s8.5-2.5 9-7c-2 1-4.5 1-6.5-.6"/>"#;
 }
 
 /// App and file icons, rasterised at the output's scale and cached by path

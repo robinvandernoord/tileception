@@ -113,6 +113,13 @@ impl Tileception {
         self.strip.set_open(open);
     }
 
+    /// The strip where it is now as it slides, while it is out at all.
+    pub fn strip_now(&self) -> Option<Rect> {
+        let level = ease_out(self.strip.level());
+        let strip = self.strip_rect().filter(|_| level > 0.001)?;
+        Some(Rect { y: strip.y + (1.0 - level) * (strip.h + MARGIN + 12.0), ..strip })
+    }
+
     /// The strip at its full height, when there is anything in it.
     fn strip_rect(&self) -> Option<Rect> {
         let cards = self.strip_cards();

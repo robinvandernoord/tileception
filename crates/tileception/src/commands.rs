@@ -46,6 +46,10 @@ pub enum Command {
     DoctorMode(crate::doctor_policy::Mode),
     /// A key pressed while the doctor panel has the keyboard (not available as text).
     DoctorKey(u32, crate::config::Mods),
+    /// Lets the rubber duck out, or puts it away.
+    Duck,
+    /// A key pressed while the duck's question has the keyboard (not available as text).
+    DuckKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
@@ -115,6 +119,7 @@ Shell:
   doctor ask <question>     ask the doctor about your setup
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
+  duck                      let the rubber duck out, or put it away
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
@@ -224,6 +229,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let [x, y] = coords[..] else { return Err("drop needs x and y".into()) };
             return Ok(Command::Drop(x, y));
         }
+        "duck" if rest.is_empty() => return Ok(Command::Duck),
+        "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "quit" => Action::Quit,
         "terminal" => Action::Spawn,
         "close" => Action::Close,
@@ -322,6 +329,8 @@ impl Tileception {
             Command::DoctorUse(id) => self.use_doctor_agent(id),
             Command::Inject(input) => self.inject(input)?,
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
+            Command::Duck => self.toggle_duck(),
+            Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::ColourScheme(scheme) => {
@@ -391,6 +400,8 @@ mod tests {
         assert!(parse("doctor user").is_err());
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
+        assert_eq!(parse("duck"), Ok(Command::Duck));
+        assert!(parse("duck duck goose").is_err());
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());
         assert!(parse("").is_err());

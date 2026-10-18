@@ -58,6 +58,20 @@ type Surface = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
 
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888];
 
+/// How long before the next refresh a frame is drawn: time enough to build
+/// it and for the GPU to finish it.
+const RENDER_BUDGET: Duration = Duration::from_millis(6);
+/// About one frame at 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
+/// Empty frames in a row, about a quarter of a second, before polling slows
+/// down after an animation: it may have a still frame now and then.
+const QUIET_FRAMES: u32 = 15;
+/// The same after a frame that was asked for (a commit, input): what it
+/// starts mostly asks again or shows at once, so it is looked after briefly.
+const ASKED_FRAMES: u32 = 3;
+/// How often a still screen is looked at for changes nothing asked to draw.
+const STILL_POLL: Duration = Duration::from_millis(100);
+
 pub struct Udev {
     pub session: LibSeatSession,
     pub renderer: GlesRenderer,
@@ -70,6 +84,12 @@ pub struct Udev {
     _drm_token: RegistrationToken,
     render_pending: bool,
     frame_pending: bool,
+    /// The timer that looks again for changes while frames come out empty.
+    poll: Option<RegistrationToken>,
+    /// Empty frames in a row, for backing the poll off on a still screen.
+    quiet: u32,
+    /// Something asked for the frame being made, rather than the poll.
+    asked: bool,
 }
 
 struct Lit {
@@ -171,6 +191,9 @@ pub fn init(
         _drm_token: drm_token,
         render_pending: false,
         frame_pending: false,
+        poll: None,
+        quiet: 0,
+        asked: false,
     }));
 
     // Input.
@@ -378,6 +401,13 @@ impl Tileception {
 
     /// Asks for a frame soon, unless one is already on its way.
     pub fn schedule_render(&mut self) {
+        if let Some(udev) = self.udev.as_mut() {
+            udev.asked = true;
+        }
+        self.request_render();
+    }
+
+    fn request_render(&mut self) {
         let Some(udev) = self.udev.as_mut() else { return };
         if udev.render_pending || udev.frame_pending {
             return;
@@ -395,12 +425,31 @@ impl Tileception {
             tracing::warn!("frame submit: {err}");
         }
         self.sleep_frame_shown();
-        self.render_udev();
+        // The next frame is drawn just before it is due rather than right
+        // away, so what clients commit in the meantime still makes it.
+        // Asking for a frame before then waits for this one.
+        let Some(udev) = self.udev.as_mut() else { return };
+        let refresh = udev.surface.as_ref().and_then(|lit| lit.output.current_mode()).map_or(60_000, |m| m.refresh);
+        let period = Duration::from_secs_f64(1000.0 / f64::from(refresh.max(1_000)));
+        udev.render_pending = true;
+        let drawn = self.loop_handle.insert_source(
+            Timer::from_duration(period.saturating_sub(RENDER_BUDGET)),
+            |_, _, state| {
+                state.render_udev();
+                TimeoutAction::Drop
+            },
+        );
+        if drawn.is_err() {
+            self.render_udev();
+        }
     }
 
     fn render_udev(&mut self) {
         let Some(mut udev) = self.udev.take() else { return };
         udev.render_pending = false;
+        if let Some(poll) = udev.poll.take() {
+            self.loop_handle.remove(poll);
+        }
         if !udev.session.is_active() || udev.frame_pending || self.idle.off {
             self.udev = Some(udev);
             return;
@@ -429,18 +478,31 @@ impl Tileception {
         }
         self.send_layer_frames(self.start.elapsed());
         udev.frame_pending = queued;
-        self.udev = Some(udev);
-        self.sleep_frame_queued(queued);
-        self.after_frame();
+        let asked = std::mem::take(&mut udev.asked);
+        udev.quiet = match (queued, asked) {
+            (true, false) => 0,
+            (true, true) => QUIET_FRAMES - ASKED_FRAMES,
+            (false, _) => udev.quiet.saturating_add(1),
+        };
         if !queued {
-            // Nothing changed on screen: look again in about a frame.
-            self.loop_handle
-                .insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
-                    state.schedule_render();
+            // Nothing changed on screen: look again in about a frame, and
+            // less often once it has been still for a while. Input and
+            // client commits ask for a frame themselves.
+            let wait = if udev.quiet <= QUIET_FRAMES { FRAME } else { STILL_POLL };
+            udev.poll = self
+                .loop_handle
+                .insert_source(Timer::from_duration(wait), |_, _, state| {
+                    if let Some(udev) = state.udev.as_mut() {
+                        udev.poll = None;
+                    }
+                    state.request_render();
                     TimeoutAction::Drop
                 })
                 .ok();
         }
+        self.udev = Some(udev);
+        self.sleep_frame_queued(queued);
+        self.after_frame();
     }
 
     /// Opens a device for a VT switch, from the keyboard shortcut.
