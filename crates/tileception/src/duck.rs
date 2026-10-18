@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Deserialize;
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -35,12 +36,13 @@ use crate::{
     ui::{Align, Painter, Style, ease_out, glyph},
 };
 
-/// The duck's sprite, square, in logical pixels.
+/// The duck's sprite, square, in logical pixels, at size 1.
 const SIZE: f64 = 56.0;
-/// Where its feet touch the ground, up from the bottom of the sprite.
-const FEET: f64 = 2.5;
 const GRAVITY: f64 = 2400.0;
 const WALK_SPEED: f64 = 42.0;
+/// How often a walking, sleeping or pointing duck changes on screen. Pixel
+/// art moves in steps anyway, and each change costs a frame.
+const STEPS_PER_SEC: f64 = 8.0;
 /// The fastest it can be thrown, in pixels per second.
 const MAX_THROW: f64 = 2600.0;
 /// How far the pointer moves on a press before it picks the duck up.
@@ -61,6 +63,20 @@ const SEND_SIZE: u32 = 1568;
 const PREVIEW: (u32, u32) = (64, 40);
 /// The doctor's square thumbnail of a sent picture.
 const THUMB: u32 = 56;
+
+/// The `[duck]` section of the config.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DuckConfig {
+    /// How big the duck is: 1 is normal, 2 twice as big (0.5 to 4).
+    pub size: f64,
+}
+
+impl Default for DuckConfig {
+    fn default() -> Self {
+        Self { size: 1.0 }
+    }
+}
 
 /// How the duck stands, for its sprite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -168,6 +184,8 @@ pub struct Duck {
     since: Instant,
     landed: Option<Instant>,
     last_tick: Instant,
+    /// Walking time not yet taken as a step.
+    stride: f64,
     press: Option<Press>,
     /// The last two pointer samples while held, for the speed of a throw.
     trail: [(Point, Instant); 2],
@@ -207,6 +225,7 @@ impl Default for Duck {
             since: now,
             landed: None,
             last_tick: now,
+            stride: 0.0,
             press: None,
             trail: [(Point::new(0.0, 0.0), now); 2],
             chat: Chat::Closed,
@@ -300,6 +319,12 @@ impl Tileception {
         self.duck.out && self.duck.placed && !self.is_locked() && self.fullscreen.is_none()
     }
 
+    /// The configured size, as a factor on the duck's measurements.
+    fn duck_scale(&self) -> f64 {
+        let size = self.config.file.duck.size;
+        if size.is_finite() { size.clamp(0.5, 4.0) } else { 1.0 }
+    }
+
     /// The ground under `x`: the bottom of the usable screen, or the strip of
     /// minimized windows while it is out.
     fn duck_floor(&self, x: f64) -> f64 {
@@ -317,15 +342,17 @@ impl Tileception {
     /// wander (not under the doctor panel).
     fn duck_walls(&self) -> (f64, f64, f64) {
         let screen = self.output_rect();
-        let lo = screen.x + SIDE;
-        let hi = screen.right() - SIDE;
+        let side = SIDE * self.duck_scale();
+        let lo = screen.x + side;
+        let hi = screen.right() - side;
         let wander = if self.doctor.open { (lo + crate::doctor::PANEL_W + 16.0).min(hi) } else { lo };
         (lo, hi, wander)
     }
 
     fn duck_rect(&self) -> Rect {
         let (x, y) = self.duck.pos;
-        Rect::new(x - 22.0, y - 46.0, 44.0, 46.0)
+        let k = self.duck_scale();
+        Rect::new(x - 26.0 * k, y - 50.0 * k, 52.0 * k, 50.0 * k)
     }
 
     /// Moves the duck on by the time since the last frame. Called after each frame.
@@ -340,7 +367,7 @@ impl Tileception {
         if !self.duck.placed {
             // Dropped in from above, somewhere on the right.
             let x = screen.x + screen.w * self.duck.between(0.55, 0.85);
-            self.duck.pos = (x, screen.y - SIZE);
+            self.duck.pos = (x, screen.y - SIZE * self.duck_scale());
             self.duck.vel = (0.0, 0.0);
             self.duck.motion = Motion::Air;
             self.duck.placed = true;
@@ -383,6 +410,7 @@ impl Tileception {
     /// Walking, idling and sleeping, and falling off when the ground goes.
     fn duck_on_ground_tick(&mut self, dt: f64, now: Instant, (lo, hi, wander): (f64, f64, f64)) {
         let floor = self.duck_floor(self.duck.pos.0);
+        let k = self.duck_scale();
         let d = &mut self.duck;
         d.pos.0 = d.pos.0.clamp(lo, hi);
         if d.pos.1 < floor - 0.5 {
@@ -398,7 +426,7 @@ impl Tileception {
             // Stay put while talking, apart from going to show the spot.
             match d.spot {
                 Some((x, _)) => {
-                    let to = (x + if x > d.pos.0 { -36.0 } else { 36.0 }).clamp(lo, hi);
+                    let to = (x + (if x > d.pos.0 { -36.0 } else { 36.0 }) * k).clamp(lo, hi);
                     if (to - d.pos.0).abs() > 2.0 {
                         if !matches!(d.activity, Activity::Walk { .. }) {
                             d.since = now;
@@ -418,7 +446,13 @@ impl Tileception {
         }
         match d.activity {
             Activity::Walk { to } => {
-                let step = WALK_SPEED * dt * if talking { 4.0 } else { 1.0 };
+                // In whole steps, a few times a second, except when hurrying
+                // to show the spot.
+                d.stride += dt;
+                if !talking && d.stride < 1.0 / STEPS_PER_SEC {
+                    return;
+                }
+                let step = WALK_SPEED * k * std::mem::take(&mut d.stride) * if talking { 4.0 } else { 1.0 };
                 let dx = to - d.pos.0;
                 if dx.abs() <= step {
                     d.pos.0 = to;
@@ -827,7 +861,7 @@ impl Tileception {
         let head = x + if self.duck.left { -8.0 } else { 8.0 };
         let gap = if thinking { 30.0 } else { 12.0 };
         let mut below = false;
-        let mut top = y - SIZE - gap - h;
+        let mut top = y - SIZE * self.duck_scale() - gap - h;
         if top < screen.y + 8.0 {
             below = true;
             top = y + gap;
@@ -923,12 +957,14 @@ impl Tileception {
         let t = &self.theme;
         let pose = self.duck_pose();
         let (x, y) = self.duck.pos;
+        let scale = self.duck_scale();
+        let size = SIZE * scale;
         let bubble = self.duck_bubble();
         let mut p = Painter::new(self, renderer);
 
         // The place an answer is about: a soft ring that breathes.
         if let Some((sx, sy)) = self.duck.spot.filter(|_| self.duck.chat != Chat::Closed) {
-            let phase = (self.start.elapsed().as_secs_f64() * 2.5).sin() * 0.5 + 0.5;
+            let phase = (stepped(self.start.elapsed()) * 2.5).sin() * 0.5 + 0.5;
             let r = 18.0 + phase * 6.0;
             p.shape(
                 Rect::new(sx - r, sy - r, r * 2.0, r * 2.0),
@@ -944,21 +980,24 @@ impl Tileception {
         }
 
         if let Some(sprite) = self.duck_sprite(pose) {
-            p.image(&sprite, (x - SIZE / 2.0, y - SIZE + FEET));
+            p.image(&sprite, (x - size / 2.0, y - size));
         }
 
         if pose == Pose::Sleep {
             // Zs drifting up from its head.
-            let secs = self.duck.since.elapsed().as_secs_f64();
+            let secs = stepped(self.duck.since.elapsed());
             for i in 0..3 {
-                let k = (secs * 0.5 + f64::from(i) / 3.0).fract();
-                let size = t.font_size * (0.8 + k as f32 * 0.5);
-                let alpha = (1.0 - k) * ease_out(k * 4.0);
+                let k = (secs * 0.25 + f64::from(i) / 3.0).fract();
+                // A few sizes in one colour, faded as a whole: each new size
+                // or colour would be text rendered again.
+                let font = t.font_size * (0.8 + (k * 4.0).floor() as f32 / 8.0);
                 let side = if self.duck.left { -1.0 } else { 1.0 };
-                let zx = x + side * (12.0 + k * 14.0) - 6.0;
-                let zy = y - SIZE - k * 26.0;
-                p.text("z", Rect::new(zx, zy, 20.0, 20.0), Style::new(size, t.text.alpha(alpha as f32)).bold());
+                let zx = x + side * (12.0 + k * 14.0) * scale - 6.0;
+                let zy = y - size - k * 26.0;
+                p.alpha = ((1.0 - k) * ease_out(k * 4.0)) as f32;
+                p.text("z", Rect::new(zx, zy, 20.0, 20.0), Style::new(font, t.text).bold());
             }
+            p.alpha = 1.0;
         }
 
         if let Some(b) = bubble {
@@ -972,7 +1011,8 @@ impl Tileception {
         let (x, y) = self.duck.pos;
         if b.thinking {
             // Little thought circles up to the bubble.
-            let head = (x + if self.duck.left { -10.0 } else { 10.0 }, y - SIZE + 6.0);
+            let k = self.duck_scale();
+            let head = (x + (if self.duck.left { -10.0 } else { 10.0 }) * k, y - (SIZE - 6.0) * k);
             let to = (b.tail_x, if b.below { b.rect.y } else { b.rect.bottom() });
             for (k, r) in [(0.35, 3.5), (0.7, 5.5)] {
                 let cx = head.0 + (to.0 - head.0) * k;
@@ -1072,12 +1112,14 @@ impl Tileception {
 
     /// The duck's sprite for a pose, facing its way, at the output's scale.
     fn duck_sprite(&self, pose: Pose) -> Option<MemoryRenderBuffer> {
-        let px = (SIZE * self.scale).round().max(1.0) as u32;
+        let px = (SIZE * self.duck_scale() * self.scale).round().max(1.0) as u32;
         let key = (pose, self.duck.left, px);
         if let Some(sprite) = self.duck.sprites.borrow().get(&key) {
             return sprite.clone();
         }
-        let sprite = rasterise(&duck_svg(pose, self.duck.left), px, px);
+        let rgba = duck_pixels(pose, self.duck.left, px);
+        let size = (px as i32, px as i32);
+        let sprite = Some(MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, size, 1, Transform::Normal, None));
         let mut sprites = self.duck.sprites.borrow_mut();
         if sprites.len() > 64 {
             sprites.clear();
@@ -1108,6 +1150,11 @@ impl Tileception {
     }
 }
 
+/// Seconds of `elapsed`, in whole steps.
+fn stepped(elapsed: Duration) -> f64 {
+    (elapsed.as_secs_f64() * STEPS_PER_SEC).floor() / STEPS_PER_SEC
+}
+
 fn css([r, g, b, a]: [u8; 4]) -> String {
     format!("rgba({r},{g},{b},{:.3})", f32::from(a) / 255.0)
 }
@@ -1128,117 +1175,124 @@ fn rasterise(svg: &str, w: u32, h: u32) -> Option<MemoryRenderBuffer> {
     ))
 }
 
-/// How the duck's parts sit for a pose.
-struct Look {
-    /// Body up (negative) or down.
-    bob: f64,
-    /// Each foot's offset from where it stands.
-    feet: [(f64, f64); 2],
-    eye: Eye,
-    beak_open: bool,
-    /// The wing's turn in degrees; negative lifts it.
-    wing: f64,
-    /// The head's turn in degrees; negative looks up.
-    tilt: f64,
-    /// Squashed flat on landing.
-    squash: bool,
-}
+/// The duck as pixel art, 16 by 16 and facing right, standing on the last
+/// row. One letter per pixel; see `paint`.
+const BASE: [&str; GRID] = [
+    "................",
+    "................",
+    "......DDDDD.....",
+    ".....DYYYYYD....",
+    "....DYLLYYYYD...",
+    "....DYLYYYEYD...",
+    "....DYYYYYEYOOD.",
+    "....DYYYYYYOOOOD",
+    "....DYYBYYYDOOD.",
+    ".DD..DYYYYYDDD..",
+    "DYYDDYYYYYYYD...",
+    "DYYYYYYYYYYYYD..",
+    ".DYYYSSSSYYYYD..",
+    ".DYYYYSSSSYYYD..",
+    "..DSYYYYYYYYSD..",
+    "...DDDDDDDDDD...",
+];
+const GRID: usize = 16;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Eye {
-    Open,
-    Up,
-    Closed,
-}
-
-fn look(pose: Pose) -> Look {
-    let base =
-        Look { bob: 0.0, feet: [(0.0, 0.0); 2], eye: Eye::Open, beak_open: false, wing: 0.0, tilt: 0.0, squash: false };
+/// Each pose is its own drawing: pixel art can't be turned or nudged by
+/// fractions of a pixel without smearing, so poses swap rows instead.
+fn frame(pose: Pose) -> [[u8; GRID]; GRID] {
+    let mut f = BASE.map(|row| <[u8; GRID]>::try_from(row.as_bytes()).expect("rows are 16 wide"));
+    let set = |f: &mut [[u8; GRID]; GRID], rows: &[(usize, &str)]| {
+        for (i, row) in rows {
+            f[*i].copy_from_slice(row.as_bytes());
+        }
+    };
+    let eyes_shut = |f: &mut [[u8; GRID]; GRID]| set(f, &[(5, "....DYLYYYYYD..."), (6, "....DYYYYDDYOOD.")]);
+    let eyes_up = |f: &mut [[u8; GRID]; GRID]| {
+        set(f, &[(4, "....DYLLYYEYD..."), (5, "....DYLYYYEYD..."), (6, "....DYYYYYYYOOD.")])
+    };
+    let beak_open = |f: &mut [[u8; GRID]; GRID]| {
+        set(f, &[(5, "....DYLYYYEYOOD."), (6, "....DYYYYYEYD..."), (7, "....DYYYYYYD...."), (8, "....DYYBYYYDOOD.")])
+    };
+    let wing_up = |f: &mut [[u8; GRID]; GRID]| {
+        set(
+            f,
+            &[(10, "DYYDDSSSSYYYD..."), (11, "DYYYYYSSSSYYYD.."), (12, ".DYYYYYYYYYYYD.."), (13, ".DYYYYYYYYYYYD..")],
+        )
+    };
+    // Up off the ground by `n` rows.
+    let lift = |f: &mut [[u8; GRID]; GRID], n: usize| {
+        f.rotate_left(n);
+        f[GRID - n..].fill([b'.'; GRID]);
+    };
+    // Flattened by dropping the plain row across the body.
+    let squash = |f: &mut [[u8; GRID]; GRID]| {
+        f.copy_within(0..11, 1);
+        f[0] = [b'.'; GRID];
+    };
     match pose {
-        Pose::Stand => base,
-        Pose::Blink => Look { eye: Eye::Closed, ..base },
-        Pose::Step(frame) => {
-            let (feet, bob) = match frame {
-                0 => ([(-2.0, 0.0), (2.5, -1.8)], 0.0),
-                2 => ([(2.5, -1.8), (-2.0, 0.0)], 0.0),
-                _ => ([(0.0, 0.0), (0.0, 0.0)], -0.9),
-            };
-            Look { feet, bob, wing: if frame % 2 == 0 { -4.0 } else { 0.0 }, ..base }
-        }
-        Pose::Sleep => Look { eye: Eye::Closed, tilt: 12.0, bob: 1.0, ..base },
+        Pose::Stand => {}
+        Pose::Blink | Pose::Sleep => eyes_shut(&mut f),
+        // A hop: crouch, up, top, down.
+        Pose::Step(0) => squash(&mut f),
+        Pose::Step(2) => lift(&mut f, 2),
+        Pose::Step(_) => lift(&mut f, 1),
         Pose::Held(flap) => {
-            Look { feet: [(-1.0, 2.6), (1.0, 2.6)], wing: if flap { -38.0 } else { -8.0 }, beak_open: flap, ..base }
+            if flap {
+                wing_up(&mut f);
+                beak_open(&mut f);
+            }
         }
-        Pose::Fall => Look { feet: [(-1.0, 1.6), (1.0, 1.6)], wing: -42.0, ..base },
-        Pose::Squash => Look { squash: true, ..base },
-        Pose::Listen => Look { eye: Eye::Up, tilt: -8.0, ..base },
-        Pose::Think => Look { eye: Eye::Up, tilt: -14.0, wing: -6.0, ..base },
-        Pose::Talk(open) => Look { beak_open: open, tilt: -4.0, ..base },
-        Pose::Point => Look { wing: -62.0, tilt: -6.0, ..base },
+        Pose::Fall => {
+            wing_up(&mut f);
+            beak_open(&mut f);
+        }
+        Pose::Squash => squash(&mut f),
+        Pose::Listen => eyes_up(&mut f),
+        Pose::Think => {
+            eyes_up(&mut f);
+            wing_up(&mut f);
+        }
+        Pose::Talk(open) => {
+            if open {
+                beak_open(&mut f);
+            }
+        }
+        Pose::Point => wing_up(&mut f),
     }
+    f
 }
 
-/// The duck as SVG on a 48 by 48 grid, facing right (or left).
-fn duck_svg(pose: Pose, left: bool) -> String {
-    const YELLOW: &str = "#FFD93B";
-    const WING: &str = "#F6C21E";
-    const LINE: &str = "#C98A06";
-    const BEAK: &str = "#FF8A1F";
-    const BEAK_LINE: &str = "#C2661A";
-    const EYE: &str = "#2B2118";
-    let l = look(pose);
-    let mirror = if left { "translate(48 0) scale(-1 1)" } else { "" };
-    let squash = if l.squash { "translate(24 46) scale(1.12 0.82) translate(-24 -46)" } else { "" };
-    let mut s =
-        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><g transform="{mirror} {squash}">"#);
-    for (i, (dx, dy)) in l.feet.iter().enumerate() {
-        let cx = [18.0, 27.0][i] + dx;
-        let cy = 44.0 + dy;
-        s += &format!(
-            r#"<ellipse cx="{cx}" cy="{cy}" rx="4.2" ry="1.9" fill="{BEAK}" stroke="{BEAK_LINE}" stroke-width="0.8"/>"#
-        );
-    }
-    s += &format!(r#"<g transform="translate(0 {})">"#, l.bob);
-    // Tail, body, head, and a patch over the seam between body and head.
-    s += &format!(
-        r#"<path d="M10 29Q4.5 23.5 6.2 20.2Q10 25 14 25.6Z" fill="{YELLOW}" stroke="{LINE}" stroke-width="1" stroke-linejoin="round"/>"#
-    );
-    s += &format!(r#"<ellipse cx="22" cy="32.5" rx="14" ry="10.5" fill="{YELLOW}" stroke="{LINE}" stroke-width="1"/>"#);
-    s += &format!(r#"<g transform="rotate({} 29 24)">"#, l.tilt);
-    s += &format!(r#"<circle cx="30" cy="17" r="8.6" fill="{YELLOW}" stroke="{LINE}" stroke-width="1"/>"#);
-    s += &format!(r#"<ellipse cx="27.5" cy="24.6" rx="6" ry="3.4" fill="{YELLOW}"/>"#);
-    s += r##"<circle cx="31" cy="20.6" r="1.9" fill="#FF8FA3" opacity="0.55"/>"##;
-    match l.eye {
-        Eye::Open | Eye::Up => {
-            let cy = if l.eye == Eye::Up { 14.6 } else { 15.6 };
-            s += &format!(r#"<circle cx="33" cy="{cy}" r="1.75" fill="{EYE}"/>"#);
-            s += &format!(r##"<circle cx="33.6" cy="{}" r="0.6" fill="#ffffff"/>"##, cy - 0.6);
-        }
-        Eye::Closed => {
-            s += &format!(
-                r#"<path d="M31.3 15.6Q33 17.1 34.7 15.6" fill="none" stroke="{EYE}" stroke-width="1.1" stroke-linecap="round"/>"#
-            );
+/// A pixel's colour, as RGBA.
+fn paint(c: u8) -> Option<[u8; 4]> {
+    Some(match c {
+        b'D' => [0x3a, 0x2a, 0x0a, 0xff], // outline
+        b'Y' => [0xff, 0xd9, 0x3b, 0xff], // body
+        b'L' => [0xff, 0xf6, 0xb8, 0xff], // shine
+        b'S' => [0xe8, 0xb4, 0x16, 0xff], // wing
+        b'O' => [0xff, 0x8a, 0x1f, 0xff], // beak
+        b'E' => [0x1a, 0x1a, 0x1a, 0xff], // eye
+        b'B' => [0xff, 0x8f, 0xa3, 0xff], // blush
+        _ => return None,
+    })
+}
+
+/// The pose blown up to `px` square with hard edges, facing right (or left).
+/// RGBA; every pixel is fully opaque or fully clear, so it is also premultiplied.
+fn duck_pixels(pose: Pose, left: bool, px: u32) -> Vec<u8> {
+    let f = frame(pose);
+    let px = px as usize;
+    let mut rgba = vec![0; px * px * 4];
+    for y in 0..px {
+        let row = &f[y * GRID / px];
+        for x in 0..px {
+            let col = x * GRID / px;
+            let col = if left { GRID - 1 - col } else { col };
+            if let Some(colour) = paint(row[col]) {
+                rgba[(y * px + x) * 4..][..4].copy_from_slice(&colour);
+            }
         }
     }
-    if l.beak_open {
-        s += &format!(
-            r#"<path d="M37.6 16.2Q43.6 14.9 44.6 16.8Q42.2 18.1 37.8 18.2Z" fill="{BEAK}" stroke="{BEAK_LINE}" stroke-width="0.8" stroke-linejoin="round"/>"#
-        );
-        s += &format!(
-            r#"<path d="M37.8 19.1Q42.2 19.3 43.3 21.1Q41 22.7 37.8 21.3Z" fill="{BEAK}" stroke="{BEAK_LINE}" stroke-width="0.8" stroke-linejoin="round"/>"#
-        );
-    } else {
-        s += &format!(
-            r#"<path d="M37.6 16.5Q43.6 16.1 44.6 18.3Q43.1 20.3 37.8 20.1Z" fill="{BEAK}" stroke="{BEAK_LINE}" stroke-width="0.8" stroke-linejoin="round"/>"#
-        );
-    }
-    s += "</g>";
-    s += &format!(
-        r#"<ellipse cx="20" cy="31.5" rx="7.6" ry="5" transform="rotate({} 26 30)" fill="{WING}" stroke="{LINE}" stroke-width="0.8"/>"#,
-        l.wing
-    );
-    s += "</g></g></svg>";
-    s
+    rgba
 }
 
 /// An answer's Markdown as plain lines for the bubble, without the
@@ -1330,6 +1384,7 @@ mod tests {
             Pose::Step(0),
             Pose::Step(1),
             Pose::Step(2),
+            Pose::Step(3),
             Pose::Sleep,
             Pose::Held(true),
             Pose::Held(false),
@@ -1341,11 +1396,24 @@ mod tests {
             Pose::Point,
         ];
         for pose in poses {
-            for left in [false, true] {
-                let svg = duck_svg(pose, left);
-                let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default());
-                assert!(tree.is_ok(), "{pose:?}: {svg}");
+            let f = frame(pose);
+            for row in &f {
+                assert!(
+                    row.iter().all(|&c| c == b'.' || paint(c).is_some()),
+                    "{pose:?}: {}",
+                    String::from_utf8_lossy(row)
+                );
             }
+            assert!(
+                f.iter().flatten().any(|&c| c == b'E') || matches!(pose, Pose::Blink | Pose::Sleep),
+                "{pose:?} has eyes"
+            );
+            let right = duck_pixels(pose, false, 56);
+            let left = duck_pixels(pose, true, 56);
+            assert_eq!(right.len(), 56 * 56 * 4);
+            // Facing left is the mirror image.
+            let pixel = |rgba: &[u8], x: usize, y: usize| rgba[(y * 56 + x) * 4..][..4].to_vec();
+            assert_eq!(pixel(&right, 10, 40), pixel(&left, 45, 40), "{pose:?}");
         }
     }
 
