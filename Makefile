@@ -1,11 +1,12 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help deps check-deps build test lint install uninstall nested deb deb-docker
+.PHONY: help deps check-deps build clean test lint install uninstall nested deb deb-docker
 
 help:
 	@echo "make deps        install missing system packages (asks first)"
 	@echo "make check-deps  report missing system packages"
 	@echo "make build       build the compositor (release)"
+	@echo "make clean       remove workspace and crate build directories"
 	@echo "make test        run the tests of every crate"
 	@echo "make lint        clippy and formatting checks"
 	@echo "make install     check packages, build, install the session"
@@ -23,6 +24,9 @@ check-deps:
 build:
 	@scripts/deps.sh check build
 	cargo build --release -p tileception
+
+clean:
+	rm -rf target crates/*/target
 
 # Support libraries keep independent workspaces. Cargo does not run dependency
 # tests, so run their tests and checks explicitly too.
