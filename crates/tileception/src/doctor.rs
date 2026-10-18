@@ -37,7 +37,7 @@ use crate::{
     ui::{Align, Painter, Style, ease_out, glyph},
 };
 
-const PANEL_W: f64 = 480.0;
+pub(crate) const PANEL_W: f64 = 480.0;
 const HEADER_H: f64 = 56.0;
 const INPUT_H: f64 = 46.0;
 /// The row under the field: permission mode and model.
@@ -650,13 +650,48 @@ impl Tileception {
         if text.starts_with('/') && self.doctor_command(&text) {
             return;
         }
+        self.submit_to_doctor(text.clone(), text);
+    }
+
+    /// A question from the rubber duck, with its screenshot: shown in the
+    /// conversation as `question`, sent to the agent as `prompt`. Returns
+    /// where in the conversation the answer starts, or why it was not sent.
+    pub fn doctor_ask_from_duck(
+        &mut self,
+        question: String,
+        prompt: String,
+        png: Arc<[u8]>,
+        (rgba, w, h): (Vec<u8>, u32, u32),
+    ) -> Result<usize, &'static str> {
         if self.doctor.busy {
-            return;
+            return Err("I'm still thinking about the last one. It's in the doctor.");
+        }
+        if self.doctor.agent.is_none() && test_agent().is_none() {
+            return Err("Pick an agent in the doctor first, then ask me again.");
+        }
+        // The agent list loads when the panel first opens; the duck may come first.
+        if self.doctor.registry.is_none() && !self.doctor.loading {
+            self.load_registry(false);
+        }
+        self.doctor.attachments.push(Attachment { png, thumb: Thumb::new(&rgba, (w, h)) });
+        let mark = self.doctor.messages.len();
+        if !self.submit_to_doctor(question, prompt) {
+            self.doctor.attachments.pop();
+            return Err("The doctor's agent is not available yet. Have a look in the doctor.");
+        }
+        Ok(mark)
+    }
+
+    /// Sends a message, showing `shown` in the conversation and prompting
+    /// the agent with `prompt`. False when nothing was sent.
+    fn submit_to_doctor(&mut self, shown: String, prompt: String) -> bool {
+        if self.doctor.busy {
+            return false;
         }
         if self.doctor.agent.is_none() && test_agent().is_none() {
             self.doctor.view = View::Picker;
             self.doctor.messages.push(Message::Note("Choose an agent first.".into()));
-            return;
+            return false;
         }
         self.ensure_session();
         // Right after login the agent list may still be loading: keep the
@@ -664,24 +699,25 @@ impl Tileception {
         let starting = self.doctor.session.is_none() && self.doctor.loading;
         if self.doctor.session.is_none() && !starting {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
-            return;
+            return false;
         }
         let attachments = std::mem::take(&mut self.doctor.attachments);
         if !attachments.is_empty() {
             self.doctor.messages.push(Message::Attached(attachments.iter().map(|a| a.thumb.clone()).collect()));
         }
-        if !text.is_empty() {
-            self.doctor.messages.push(Message::User(text.clone()));
+        if !shown.is_empty() {
+            self.doctor.messages.push(Message::User(shown));
         }
         self.doctor.view = View::Conversation;
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
         // How pictures go depends on the agent, which may not have said yet.
         if starting || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
-            self.doctor.waiting = Some((text, attachments));
+            self.doctor.waiting = Some((prompt, attachments));
         } else {
-            self.prompt_doctor(text, attachments);
+            self.prompt_doctor(prompt, attachments);
         }
+        true
     }
 
     fn prompt_doctor(&mut self, text: String, attachments: Vec<Attachment>) {

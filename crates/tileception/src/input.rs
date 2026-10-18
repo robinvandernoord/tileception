@@ -221,6 +221,23 @@ impl Tileception {
             }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
+            if panels && state.duck.typing() {
+                // The duck's question, like the doctor's field: Super
+                // shortcuts and keys that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|c| !c.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::DuckKey(sym, Mods::from_state(mods))]);
+            }
             if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
                 // and Esc closes the notification panel first.
@@ -466,6 +483,12 @@ impl Tileception {
             self.controls_drag(pos.x);
             return;
         }
+        if self.duck_motion(at) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if self.doctor_contains(at) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -611,6 +634,10 @@ impl Tileception {
         if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
             return;
         }
+        // A held duck lets go wherever the button comes up.
+        if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, p) {
+            return;
+        }
         if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(p) {
             return;
         }
@@ -621,6 +648,9 @@ impl Tileception {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.notification_click(p);
             }
+            return;
+        }
+        if self.move_drag.is_none() && self.duck_button(button == BTN_LEFT, state == ButtonState::Pressed, p) {
             return;
         }
         if self.move_drag.is_none() && self.bar_button(button, state == ButtonState::Pressed) {

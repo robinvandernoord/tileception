@@ -168,6 +168,8 @@ pub struct Tileception {
     pub media: crate::media::Media,
     /// The panel for asking an agent about the setup.
     pub doctor: crate::doctor::Doctor,
+    /// The rubber duck on the bottom of the screen.
+    pub duck: crate::duck::Duck,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
     pub selection: crate::selection::Selection,
@@ -307,6 +309,7 @@ impl Tileception {
             notifications: Default::default(),
             media: Default::default(),
             doctor: Default::default(),
+            duck: Default::default(),
             session_services: false,
             notification_bus: None,
             media_bus: None,
@@ -572,7 +575,7 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) {
+        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
             focus.and_then(|id| self.windows.get(&id)).and_then(focus_target)
@@ -743,6 +746,7 @@ impl Tileception {
         self.update_bar();
         self.update_home();
         self.update_toplevels();
+        self.update_duck();
         let _ = self.display_handle.flush_clients();
     }
 }

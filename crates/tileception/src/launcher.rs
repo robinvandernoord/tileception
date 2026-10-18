@@ -154,6 +154,7 @@ const COMMANDS: &[Builtin] = &[
     ),
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
+    builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
     builtin("Open a terminal", "shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
