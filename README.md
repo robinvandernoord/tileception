@@ -48,12 +48,41 @@ feedback remains available for 30 seconds. Copying goes through the compositor
 
 ## Installing as a session
 
+Install cargo-plane and choose a builder first. For local builds:
+
+```sh
+make tools
+cargo plane setup local
+make deps
+```
+
+`make tools` installs cargo-plane via cargo-binstall, bootstrapping binstall
+from its binary install script if necessary. It requires Rust/Cargo, Make,
+curl and Bash and does not compile tools from source. It upgrades older
+cargo-plane versions to support unattended setup (0.2 or newer). On machines
+with 4 GB of RAM or less, set up a remote builder instead:
+
+```sh
+gh auth login --scopes codespace
+make codespace
+export CARGO_PLANE_REMOTE=codespace
+```
+
+This requires the GitHub CLI, SSH and rsync locally. `make codespace` reuses
+the configured Codespace or creates one with at least 16 GB RAM and a 30-minute
+idle timeout. It refreshes apt indexes and installs build dependencies and the
+D-Bus test service remotely. `make deps` installs local desktop dependencies.
+Override creation options with, for example,
+`make codespace CODESPACE_ARGS='--ram 32 --idle-timeout 60'`.
+See [AGENTS.md](AGENTS.md) for details.
+
 ```sh
 ./install-session.sh
 ```
 
-This builds a release binary, installs `tileception` and `tileception-session` into
-`~/.local/bin`, and (with sudo) adds a "Tileception" entry to the login screen.
+This builds a release binary through cargo-plane, installs `tileception` and
+`tileception-session` into `~/.local/bin`, and (with sudo) adds a "Tileception"
+entry to the login screen.
 Log out and pick Tileception in the session menu.
 
 To try it without the login screen first: switch to a free console
