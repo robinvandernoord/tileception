@@ -58,6 +58,9 @@ type Surface = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
 
 const COLOR_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888];
 
+/// How long before the next refresh a frame is drawn: time enough to build
+/// it and for the GPU to finish it.
+const RENDER_BUDGET: Duration = Duration::from_millis(6);
 /// About one frame at 60 Hz.
 const FRAME: Duration = Duration::from_millis(16);
 /// Empty frames in a row, about a quarter of a second, before polling slows down.
@@ -417,7 +420,23 @@ impl Tileception {
             tracing::warn!("frame submit: {err}");
         }
         self.sleep_frame_shown();
-        self.render_udev();
+        // The next frame is drawn just before it is due rather than right
+        // away, so what clients commit in the meantime still makes it.
+        // Asking for a frame before then waits for this one.
+        let Some(udev) = self.udev.as_mut() else { return };
+        let refresh = udev.surface.as_ref().and_then(|lit| lit.output.current_mode()).map_or(60_000, |m| m.refresh);
+        let period = Duration::from_secs_f64(1000.0 / f64::from(refresh.max(1_000)));
+        udev.render_pending = true;
+        let drawn = self.loop_handle.insert_source(
+            Timer::from_duration(period.saturating_sub(RENDER_BUDGET)),
+            |_, _, state| {
+                state.render_udev();
+                TimeoutAction::Drop
+            },
+        );
+        if drawn.is_err() {
+            self.render_udev();
+        }
     }
 
     fn render_udev(&mut self) {
