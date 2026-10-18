@@ -251,6 +251,21 @@ the session environment is exported, and do not run in nested or headless mode
 or on configuration reload. Keep commands already provided by XDG entries out
 of `[general] autostart` to avoid launching them twice.
 
+The built-in top bar hosts StatusNotifierItem tray icons, including Qt and
+AppIndicator applications such as Nextcloud. `[shell] tray_max_icons = 3`
+sets the maximum number of slots, including overflow. With four or more
+items, the default shows two icons and an `…` button for the remaining items.
+The limit must be at least 1 and changes apply on save. Click an icon to
+activate it, or right-click for its application menu. Escape or an outside
+click dismisses the popover; scroll to reach longer lists.
+
+Use `tileception msg tray` to list entries. `tileception msg tray debug`
+adds one numbered debug entry; `tileception msg tray debug 8` sets eight
+debug entries, and `tileception msg tray debug 0` clears them. Real entries
+are preserved. Debug entries have a menu for toggling attention or removing
+the entry. Nested and headless instances do not access the session tray
+unless `TILECEPTION_TRAY_BUS=session` or a private bus address is set.
+
 ### Screen scaling
 
 `scale` under `[outputs."<connector>"]` sets how many pixels make up one

@@ -34,6 +34,9 @@ pub enum Command {
     Media(crate::media::Control),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
+    /// Lists tray entries; debug entries can be added or replaced by count.
+    Tray,
+    TrayDebug(Option<usize>),
     /// Slides out the strip of minimized windows for a moment.
     ShowMinimized,
     /// Opens or closes the doctor panel, or asks it a question.
@@ -69,6 +72,8 @@ Inspecting:
   tree                      print the layout tree, with window ids, selection,
                             lock and display-sleep status
   battery                   print the charge and the border colour it gives
+  tray                      list visible tray entries and the configured limit
+  tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
   screenshot <file.png>     save what is on screen
@@ -172,6 +177,19 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
+        "tray" => {
+            return match args.as_slice() {
+                [] => Ok(Command::Tray),
+                ["debug"] => Ok(Command::TrayDebug(None)),
+                ["debug", count] => count
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n <= 1000)
+                    .map(|n| Command::TrayDebug(Some(n)))
+                    .ok_or_else(|| "tray debug needs a count from 0 to 1000".into()),
+                _ => Err("tray takes no arguments or debug [n]".into()),
+            };
+        }
         "select" => {
             let ids = args
                 .iter()
@@ -323,6 +341,8 @@ impl Tileception {
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
             Command::Battery => return Ok(self.battery_status()),
+            Command::Tray => return Ok(self.tray_status()),
+            Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
             Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),

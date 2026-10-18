@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub(crate) const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
+pub(crate) const BTN_RIGHT: u32 = 0x111;
 /// Pixels the pointer must travel before a press becomes a drag.
 pub(crate) const DRAG_THRESHOLD: f64 = 6.0;
 /// Largest share of the screen a dragged window's picture takes.
@@ -223,6 +223,9 @@ impl Tileception {
             }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
+            if panels && sym == keysyms::KEY_Escape && held == Mods::default() && state.close_tray() {
+                return FilterResult::Intercept(Vec::new());
+            }
             if panels && state.duck.typing() {
                 // The duck's question, like the doctor's field: Super
                 // shortcuts and keys that do not type still work.
@@ -460,6 +463,9 @@ impl Tileception {
             return;
         }
         let at = tileception_core::Point::new(pos.x, pos.y);
+        if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
+            return;
+        }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(at) {
             self.launcher_motion(at);
             return;
@@ -612,6 +618,12 @@ impl Tileception {
             return;
         }
         let at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.power_menu.is_none()
+            && (self.tray.open || state == ButtonState::Released)
+            && self.bar_button(button, state == ButtonState::Pressed)
+        {
+            return;
+        }
         if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
             self.launcher_release();
         }
@@ -806,6 +818,15 @@ impl Tileception {
 
     fn on_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
         if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+            return;
+        }
+        if !self.is_locked() && self.power_menu.is_none() && self.tray.open {
+            let notches = event
+                .amount_v120(Axis::Vertical)
+                .map(|v| v / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).map(|a| a / 50.0))
+                .unwrap_or(0.0);
+            self.bar_scroll(notches);
             return;
         }
         if self.launcher.open

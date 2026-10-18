@@ -53,6 +53,8 @@ mod text_input;
 mod theme;
 mod toplevels;
 mod touch;
+mod tray;
+mod tray_bus;
 mod udev;
 mod ui;
 mod wallpaper;
@@ -199,6 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ((!nested && !headless) || media_bus.is_some()) && state.shell().media() {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
+    state.apply_tray();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {

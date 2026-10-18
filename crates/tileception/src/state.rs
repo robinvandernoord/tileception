@@ -179,6 +179,7 @@ pub struct Tileception {
     pub strip: crate::minimized::Strip,
     /// The bar along the top edge.
     pub bar: crate::bar::Bar,
+    pub tray: crate::tray::Tray,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
@@ -320,6 +321,7 @@ impl Tileception {
             selection: Default::default(),
             strip: Default::default(),
             bar: Default::default(),
+            tray: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             battery: Default::default(),

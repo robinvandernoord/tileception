@@ -255,6 +255,7 @@ struct Layout {
     crumbs: Vec<Crumb>,
     slots: Vec<(usize, Rect)>,
     chips: Vec<Chip>,
+    tray: Vec<(crate::tray::Slot, Rect)>,
     clock: Rect,
     clock_text: String,
     /// The charge, on a laptop.
@@ -316,10 +317,14 @@ impl Tileception {
             && (p.y <= out.y + EDGE
                 || (self.bar.revealed && p.y <= out.y + BAR_H + SLACK)
                 || self.bar.pressed
+                || self.tray.open
                 || self.bar.calendar.open);
         self.bar.set_revealed(reveal);
         if mode != Mode::Full && mode != Mode::Hairline && self.bar.calendar.open {
             self.close_calendar();
+        }
+        if !matches!(mode, Mode::Full | Mode::Hairline) || self.is_locked() {
+            self.close_tray();
         }
     }
 
@@ -465,6 +470,7 @@ impl Tileception {
             right = rect.x - 4.0;
             (rect, label)
         });
+        let tray = self.tray_slots(&mut right, y, h);
         let mut chips = Vec::new();
         for (kind, label) in self.chip_list() {
             let w = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
@@ -490,7 +496,20 @@ impl Tileception {
         };
         let crumbs_end = if show_slots { slots_x - 12.0 } else { right - 8.0 };
         let crumbs = self.place_crumbs(left, crumbs_end, y, h);
-        Some(Layout { bar, doctor, back, forward, crumbs, slots, chips, clock, clock_text, battery, notifications })
+        Some(Layout {
+            bar,
+            doctor,
+            back,
+            forward,
+            crumbs,
+            slots,
+            chips,
+            tray,
+            clock,
+            clock_text,
+            battery,
+            notifications,
+        })
     }
 
     /// Lays the crumbs out from `left`, collapsing the middle of a long path.
@@ -595,7 +614,7 @@ impl Tileception {
         if self.overlay_under(p) {
             return false;
         }
-        self.bar.calendar.open || self.bar_rect().is_some_and(|r| r.contains(p))
+        self.tray.open || self.bar.calendar.open || self.bar_rect().is_some_and(|r| r.contains(p))
     }
 
     /// Pointer motion over the bar. Returns whether the bar took it.
@@ -621,6 +640,22 @@ impl Tileception {
         let p = Point::new(self.pointer.x, self.pointer.y);
         if !pressed {
             return std::mem::take(&mut self.bar.pressed);
+        }
+        if self.overlay_under(p) {
+            return false;
+        }
+        if let Some(layout) = self.bar_layout() {
+            if let Some((slot, _)) = layout.tray.iter().find(|(_, rect)| rect.contains(p)) {
+                self.bar.pressed = true;
+                self.tray_slot_button(*slot, button);
+                return true;
+            }
+            if self.tray.open {
+                self.bar.pressed = true;
+                let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
+                self.tray_popup_button(anchor, button);
+                return true;
+            }
         }
         if self.bar.calendar.open {
             self.bar.pressed = true;
@@ -692,6 +727,12 @@ impl Tileception {
         if !self.bar_takes(p) {
             return false;
         }
+        if let Some(layout) = self.bar_layout() {
+            let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
+            if self.tray_scroll(&layout.tray, anchor, amount) {
+                return true;
+            }
+        }
         self.bar.scroll += amount;
         while self.bar.scroll.abs() >= 1.0 {
             let down = self.bar.scroll > 0.0;
@@ -706,6 +747,7 @@ impl Tileception {
     }
 
     pub fn open_calendar(&mut self) {
+        self.close_tray();
         let c = &mut self.bar.calendar;
         if !c.open {
             let duration = self.world.settings.animation;
@@ -788,6 +830,20 @@ impl Tileception {
         p.finish()
     }
 
+    /// Tray popovers float above the shell panels, below overlay clients.
+    pub fn tray_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        if matches!(self.bar_mode(), Mode::Off | Mode::Covered) || self.is_locked() {
+            return Vec::new();
+        }
+        let Some(layout) = self.bar_layout() else {
+            return Vec::new();
+        };
+        let mut painter = Painter::new(self, renderer);
+        let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
+        self.draw_tray_popup(&mut painter, &layout.tray, anchor);
+        painter.finish()
+    }
+
     fn draw_bar(&self, p: &mut Painter, layout: &Layout, mode: Mode) {
         let t = &self.theme;
         let bar = layout.bar;
@@ -827,6 +883,7 @@ impl Tileception {
         }
 
         self.draw_crumbs(p, layout, hit);
+        self.draw_tray_slots(p, &layout.tray);
 
         let current = (!self.world.in_overview()).then(|| self.world.framed());
         for (n, rect) in &layout.slots {
@@ -1011,7 +1068,7 @@ impl Tileception {
         p.text(&initial, rect, Style::new(t.font_size * 0.66, t.on_accent).bold().align(Align::Centre));
     }
 
-    fn bar_tooltip(&self, p: &mut Painter, x: f64, y: f64, title: &str, body: &str) {
+    pub(crate) fn bar_tooltip(&self, p: &mut Painter, x: f64, y: f64, title: &str, body: &str) {
         let t = &self.theme;
         let w = 320.0_f64.min(self.output_rect().w - 16.0);
         let x = x.min(self.output_rect().right() - w - 8.0).max(8.0);

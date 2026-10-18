@@ -206,6 +206,7 @@ impl Tileception {
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
+        elements.extend(self.tray_elements(renderer));
         // The welcome screen is part of the desktop: notifications go over it.
         if !self.launcher.home {
             elements.extend(self.launcher_elements(renderer));
