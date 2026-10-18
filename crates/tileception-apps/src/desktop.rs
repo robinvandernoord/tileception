@@ -23,7 +23,7 @@ pub(crate) fn groups(text: &str) -> HashMap<String, HashMap<String, String>> {
     result
 }
 
-fn unescape(value: &str) -> String {
+pub(crate) fn unescape(value: &str) -> String {
     let mut output = String::new();
     let mut chars = value.chars();
     while let Some(c) = chars.next() {
@@ -99,6 +99,16 @@ fn locale_keys(locale: &str) -> Vec<String> {
 
 pub(crate) fn parse(text: &str, id: &str, desktop: &str, locale: &str, path: &[PathBuf]) -> Option<App> {
     let groups = groups(text);
+    parse_groups(&groups, id, desktop, locale, path)
+}
+
+pub(crate) fn parse_groups(
+    groups: &HashMap<String, HashMap<String, String>>,
+    id: &str,
+    desktop: &str,
+    locale: &str,
+    path: &[PathBuf],
+) -> Option<App> {
     let values = groups.get("Desktop Entry")?;
     let boolean = |key: &str| values.get(key).is_some_and(|value| value == "true");
     let hidden = boolean("Hidden");
@@ -149,7 +159,7 @@ pub(crate) fn parse(text: &str, id: &str, desktop: &str, locale: &str, path: &[P
         categories: values.get("Categories").map(|value| list(value)).unwrap_or_default(),
         wm_class: string("StartupWMClass"),
         hidden: hidden || boolean("NoDisplay") || !includes || excludes,
-        actions: values.get("Actions").map(|value| actions(&groups, value, &locales)).unwrap_or_default(),
+        actions: values.get("Actions").map(|value| actions(groups, value, &locales)).unwrap_or_default(),
     })
 }
 
@@ -193,10 +203,25 @@ fn executable_file(path: &Path) -> bool {
 /// first file or URL code, ahead of a Flatpak `@@u`/`@@` forwarding marker, or
 /// at the end.
 fn exec_line(value: &str) -> Option<(Vec<String>, usize)> {
+    exec_line_with_context(value, None)
+}
+
+/// Autostart entries have no files to open, but may refer to their own name,
+/// icon and desktop file. Launcher callers keep their existing field handling.
+pub(crate) fn exec_line_with_context(
+    value: &str,
+    context: Option<(&str, &Path, Option<&str>)>,
+) -> Option<(Vec<String>, usize)> {
     let args = arguments(value)?;
     let mut cleaned: Vec<String> = Vec::new();
     let mut extra_at = None;
     for arg in args {
+        if arg == "%i" {
+            if let Some((_, _, Some(icon))) = context {
+                cleaned.extend(["--icon".to_owned(), icon.to_owned()]);
+                continue;
+            }
+        }
         let mut output = String::new();
         let mut chars = arg.chars();
         let mut removed = false;
@@ -208,6 +233,8 @@ fn exec_line(value: &str) -> Option<(Vec<String>, usize)> {
             }
             match chars.next()? {
                 '%' => output.push('%'),
+                'c' if context.is_some() => output.push_str(context?.0),
+                'k' if context.is_some() => output.push_str(&context?.1.to_string_lossy()),
                 'f' | 'F' | 'u' | 'U' => (removed, files) = (true, true),
                 'i' | 'c' | 'k' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm' => removed = true,
                 _ => return None,

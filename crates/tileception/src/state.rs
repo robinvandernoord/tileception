@@ -124,6 +124,8 @@ pub struct Tileception {
     /// Running as the desktop session (not nested or headless), so desktop
     /// services such as notifications may be started.
     pub session_services: bool,
+    /// XDG entries waiting for Xwayland startup to finish.
+    pub pending_autostart: Vec<tileception_apps::AutostartEntry>,
     /// Private buses for the notification service and media players (tests),
     /// which also allow starting them nested or headless.
     pub notification_bus: Option<String>,
@@ -311,6 +313,7 @@ impl Tileception {
             doctor: Default::default(),
             duck: Default::default(),
             session_services: false,
+            pending_autostart: Vec::new(),
             notification_bus: None,
             media_bus: None,
             appearance: None,

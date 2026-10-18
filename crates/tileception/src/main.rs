@@ -164,7 +164,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         udev::init(&mut event_loop, &mut state)?;
     }
     config::watch(&event_loop.handle(), config_path);
-    state.start_xwayland();
     let socket = ipc::socket_path(&state.socket_name.to_string_lossy());
     ipc::listen(&mut event_loop, &socket)?;
     state.ipc_socket = Some(socket.clone());
@@ -208,6 +207,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.spawn("sh", &["-c".to_string(), line]);
     }
     state.apply_bar_command();
+    // XDG entries belong to the login session. Nested and headless instances
+    // must not start another set of desktop services or personal applications.
+    if state.session_services {
+        state.pending_autostart = tileception_apps::autostart_entries();
+    }
+    state.start_xwayland();
     let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);

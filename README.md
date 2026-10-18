@@ -240,6 +240,17 @@ lock = "swaylock -f -i {wallpaper}"
 A replaced notification service gives up its D-Bus name, so the other daemon
 can take it, also after a reload without logging out.
 
+Full desktop sessions also launch XDG autostart `.desktop` entries from
+`$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`) and
+`$XDG_CONFIG_DIRS/autostart` (default `/etc/xdg/autostart`). User entries override
+system entries with the same filename; `Hidden=true` disables an entry.
+`OnlyShowIn`, `NotShowIn` and `TryExec` are respected, while `NoDisplay=true`
+does not prevent startup. `Terminal`, `Path`, `X-GNOME-Autostart-enabled` and
+`X-GNOME-Autostart-Delay` are supported too. Entries run once at login, after
+the session environment is exported, and do not run in nested or headless mode
+or on configuration reload. Keep commands already provided by XDG entries out
+of `[general] autostart` to avoid launching them twice.
+
 ### Screen scaling
 
 `scale` under `[outputs."<connector>"]` sets how many pixels make up one

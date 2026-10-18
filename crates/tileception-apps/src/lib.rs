@@ -1,8 +1,10 @@
 //! Application discovery and search without a desktop-session dependency.
 
+mod autostart;
 mod desktop;
 mod icons;
 
+pub use autostart::{autostart_entries, scan_autostart, AutostartEntry};
 pub use icons::IconLookup;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
