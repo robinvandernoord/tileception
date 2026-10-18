@@ -1,10 +1,15 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help deps check-deps build test lint install uninstall nested deb deb-docker
+.PHONY: help tools codespace deps check-deps build test lint install uninstall nested deb deb-docker
+
+# The binary bootstrap installs here, including when CARGO_HOME is customised.
+export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
 
 help:
-	@echo "make deps        install missing system packages (asks first)"
-	@echo "make check-deps  report missing system packages"
+	@echo "make tools       install cargo-plane via binstall (no source builds)"
+	@echo "make codespace   set up a Codespace and install remote build dependencies"
+	@echo "make deps        install missing local system packages (asks first)"
+	@echo "make check-deps  report missing local system packages"
 	@echo "make build       build the compositor (release)"
 	@echo "make test        run the tests of every crate"
 	@echo "make lint        clippy and formatting checks"
@@ -14,39 +19,56 @@ help:
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
 
-deps:
+tools:
+	@if ! cargo plane setup codespace --help 2>/dev/null | grep -q -- '--yes'; then \
+		if ! command -v cargo-binstall >/dev/null 2>&1; then \
+			bash -o pipefail -c 'curl -L --proto "=https" --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash' || exit 1; \
+		fi; \
+		cargo binstall --no-confirm --disable-strategies compile 'cargo-plane@>=0.2'; \
+	fi
+
+# Setup reuses the configured Codespace, creating one only when needed.
+# Override the creation options, e.g. CODESPACE_ARGS="--ram 32".
+CODESPACE_ARGS ?= --ram 16 --idle-timeout 30
+
+codespace: tools
+	cargo plane --remote codespace setup codespace -y $(CODESPACE_ARGS)
+	cargo plane --remote codespace exec sh -c 'set -eu; sudo apt-get update; sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $$(scripts/deps.sh list build) dbus-daemon; scripts/deps.sh check build'
+	@echo "Codespace server is fully prepared and ready to build Tileception."
+
+deps: tools
 	@scripts/deps.sh install
 
 check-deps:
 	@scripts/deps.sh check
 
-build:
-	@scripts/deps.sh check build
-	cargo build --release -p tileception
+build: tools
+	cargo plane exec scripts/deps.sh check build
+	cargo plane build --release -p tileception
 
 # Support libraries keep independent workspaces. Cargo does not run dependency
 # tests, so run their tests and checks explicitly too.
 CRATES := $(wildcard crates/tileception-apps crates/tileception-notify crates/tileception-auth)
 
-test:
-	@scripts/deps.sh check build
-	cargo test --workspace
-	@for c in $(CRATES); do echo "== $$c"; (cd $$c && env -u DBUS_SESSION_BUS_ADDRESS cargo test) || exit 1; done
+test: tools
+	cargo plane exec scripts/deps.sh check build
+	cargo plane test --workspace
+	@for c in $(CRATES); do echo "== $$c"; (cd $$c && cargo plane exec env -u DBUS_SESSION_BUS_ADDRESS cargo test) || exit 1; done
 
-lint:
-	cargo fmt --all --check
-	cargo clippy --workspace --all-targets -- -D warnings
-	@for c in $(CRATES); do echo "== $$c"; (cd $$c && cargo fmt --check && cargo clippy --all-targets -- -D warnings) || exit 1; done
+lint: tools
+	cargo plane fmt --all --check
+	cargo plane clippy --workspace --all-targets -- -D warnings
+	@for c in $(CRATES); do echo "== $$c"; (cd $$c && cargo plane fmt --check && cargo plane clippy --all-targets -- -D warnings) || exit 1; done
 
-install:
+install: tools
 	@scripts/deps.sh check build runtime
 	./install-session.sh
 
 uninstall:
 	./uninstall-session.sh
 
-nested:
-	cargo run -p tileception -- --nested
+nested: tools
+	cargo plane run -p tileception -- --nested
 
 # Optimised, stripped packages in target/deb. deb-docker builds amd64 and
 # arm64 for each release; override with DEB_IMAGES="..." DEB_ARCHS="...".

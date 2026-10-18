@@ -65,7 +65,7 @@ case "$mode" in
         printf "Install them with sudo apt install? [Y/n] "
         read -r answer
         case "$answer" in
-            ""|y|Y|yes) sudo apt install$missing ;;
+            ""|y|Y|yes) sudo apt update && sudo apt install$missing ;;
             *) echo "Nothing installed."; exit 1 ;;
         esac
         ;;
