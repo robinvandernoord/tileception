@@ -2686,7 +2686,9 @@ fn doctor_context(mode: &str) -> String {
          with Tileception's settings, shortcuts and default apps, in plain language.\n\
          - The configuration is {config} (TOML). Tileception reloads it as soon as it is saved. Its comments \
          document every option; `tileception msg reload` reports errors.\n\
-         - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`.\n\
+         - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`. \
+         `tileception msg help` lists every command; features that are switched on and off rather than \
+         configured, such as the rubber duck (`duck`), are only there.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - The log is {log}.\n\
          - Read and write files with the file tools the client offers, so the user sees diffs and gets backups. \
