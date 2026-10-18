@@ -464,6 +464,8 @@ impl Tileception {
         self.apply_layout();
         if let Some(toplevel) = self.windows.get(&id).and_then(|w| w.toplevel()) {
             toplevel.send_configure();
+            // The layout held the keyboard back until this first configure.
+            self.force_keyboard_focus_sync();
         }
         if rule.minimized {
             self.minimize_window(id);
@@ -690,9 +692,10 @@ fn wants_float(window: &Window) -> bool {
     false
 }
 
+/// Not before a window's first configure: foot crashes on an enter then.
 fn focus_target(window: &Window) -> Option<KeyboardFocus> {
     if let Some(t) = window.toplevel() {
-        Some(KeyboardFocus::Wayland(t.wl_surface().clone()))
+        t.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(t.wl_surface().clone()))
     } else {
         window.x11_surface().map(|x| KeyboardFocus::X11(x.clone()))
     }
