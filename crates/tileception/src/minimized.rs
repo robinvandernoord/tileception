@@ -28,6 +28,8 @@ const EDGE: f64 = 2.0;
 /// Pixels around the strip the pointer may stray before it hides.
 const SLACK: f64 = 24.0;
 const CARD_W: f64 = 208.0;
+const MIN_CARD_W: f64 = 160.0;
+const FOOTER_H: f64 = 30.0;
 const PREVIEW_H: f64 = 112.0;
 const LABEL_H: f64 = 34.0;
 const PAD: f64 = 10.0;
@@ -42,11 +44,21 @@ pub struct Strip {
     peek_until: Option<Instant>,
     /// A card pressed and not yet let go: a click restores, a drag places.
     press: Option<(WindowId, Point)>,
+    first: usize,
+    scroll: f64,
 }
 
 impl Default for Strip {
     fn default() -> Self {
-        Strip { open: false, changed: Instant::now(), level_then: 0.0, peek_until: None, press: None }
+        Strip {
+            open: false,
+            changed: Instant::now(),
+            level_then: 0.0,
+            peek_until: None,
+            press: None,
+            first: 0,
+            scroll: 0.0,
+        }
     }
 }
 
@@ -71,6 +83,8 @@ impl Strip {
 enum Hit {
     Card(WindowId),
     Close(WindowId),
+    Previous,
+    Next,
     Strip,
 }
 
@@ -85,6 +99,7 @@ struct Card {
 impl Tileception {
     /// Shows the strip for a moment, after a window was minimized.
     pub fn peek_minimized(&mut self) {
+        self.strip.first = 0;
         self.strip.peek_until = Some(Instant::now() + PEEK);
         self.strip.set_open(true);
     }
@@ -129,8 +144,16 @@ impl Tileception {
             first.rect.x - PAD,
             first.rect.y - PAD,
             last.rect.right() - first.rect.x + 2.0 * PAD,
-            first.rect.h + 2.0 * PAD,
+            first.rect.h + 2.0 * PAD + if self.strip_overflows() { FOOTER_H } else { 0.0 },
         ))
+    }
+
+    fn strip_capacity(&self) -> usize {
+        (((self.output_rect().w - 2.0 * (MARGIN + PAD) + PAD) / (MIN_CARD_W + PAD)).floor() as usize).max(1)
+    }
+
+    fn strip_overflows(&self) -> bool {
+        self.world.minimized().count() > self.strip_capacity()
     }
 
     fn strip_cards(&self) -> Vec<Card> {
@@ -139,15 +162,19 @@ impl Tileception {
             return Vec::new();
         }
         let out = self.output_rect();
-        let n = windows.len() as f64;
-        let room = out.w - 2.0 * (MARGIN + PAD);
-        let w = CARD_W.min((room - (n - 1.0) * PAD) / n).max(48.0);
+        let capacity = self.strip_capacity();
+        let first = self.strip.first.min(windows.len().saturating_sub(capacity));
+        let n = windows.len().min(capacity) as f64;
+        let room = (out.w - 2.0 * (MARGIN + PAD)).max(1.0);
+        let w = CARD_W.min((room - (n - 1.0) * PAD) / n);
         let h = PREVIEW_H + LABEL_H;
         let total = n * w + (n - 1.0) * PAD;
         let x0 = out.x + (out.w - total) / 2.0;
-        let y = out.bottom() - MARGIN - PAD - h;
+        let y = out.bottom() - MARGIN - PAD - h - if self.strip_overflows() { FOOTER_H } else { 0.0 };
         windows
             .into_iter()
+            .skip(first)
+            .take(capacity)
             .enumerate()
             .map(|(i, window)| {
                 let rect = Rect::new(x0 + i as f64 * (w + PAD), y, w, h);
@@ -176,7 +203,37 @@ impl Tileception {
                 return Some(Hit::Card(card.window));
             }
         }
+        if let Some(strip) = self.strip_rect().filter(|_| self.strip_overflows()) {
+            let (previous, next) = strip_paging_buttons(strip);
+            if previous.contains(p) {
+                return Some(Hit::Previous);
+            }
+            if next.contains(p) {
+                return Some(Hit::Next);
+            }
+        }
         self.strip_rect().filter(|r| r.contains(p)).map(|_| Hit::Strip)
+    }
+
+    fn step_minimized(&mut self, delta: isize) {
+        let last = self.world.minimized().count().saturating_sub(self.strip_capacity());
+        self.strip.first = self.strip.first.min(last).saturating_add_signed(delta).min(last);
+        self.strip.peek_until = Some(Instant::now() + PEEK);
+        self.schedule_render();
+    }
+
+    /// Scroll the strip without shrinking previews or passing the wheel to a window.
+    pub fn strip_scroll(&mut self, amount: f64) -> bool {
+        if self.strip_hit(Point::new(self.pointer.x, self.pointer.y)).is_none() {
+            return false;
+        }
+        self.strip.scroll += amount;
+        while self.strip.scroll.abs() >= 1.0 {
+            let step = self.strip.scroll.signum();
+            self.strip.scroll -= step;
+            self.step_minimized(step as isize);
+        }
+        true
     }
 
     /// Pointer motion over the strip, which keeps it from the windows below.
@@ -227,6 +284,8 @@ impl Tileception {
         match hit {
             Hit::Card(window) if button == crate::input::BTN_LEFT => self.strip.press = Some((window, p)),
             Hit::Close(window) if button == crate::input::BTN_LEFT => self.close_window(window),
+            Hit::Previous if button == crate::input::BTN_LEFT => self.step_minimized(-1),
+            Hit::Next if button == crate::input::BTN_LEFT => self.step_minimized(1),
             _ => {}
         }
         true
@@ -282,6 +341,28 @@ impl Tileception {
                 p.glyph(glyph::CLOSE, card.close, 13, if on_close { t.text } else { t.muted });
             }
         }
+        if self.strip_overflows() {
+            let count = self.world.minimized().count();
+            let capacity = self.strip_capacity();
+            let first = self.strip.first.min(count.saturating_sub(capacity));
+            let (previous, next) = strip_paging_buttons(strip);
+            for (rect, icon, which, enabled) in [
+                (previous, glyph::CHEVRON_RIGHT, Hit::Previous, first > 0),
+                (next, glyph::CHEVRON_RIGHT, Hit::Next, first + capacity < count),
+            ] {
+                if hit == Some(which) && enabled {
+                    p.fill(rect, t.surface_raised, t.radius);
+                }
+                let icon = if which == Hit::Previous { glyph::ARROW_LEFT } else { icon };
+                p.glyph(icon, rect, 14, if enabled { t.text } else { t.muted.alpha(0.5) });
+            }
+            let label = format!("{} to {} of {count} · Scroll for more", first + 1, (first + capacity).min(count));
+            p.text(
+                &label,
+                Rect::new(previous.right() + 6.0, previous.y, next.x - previous.right() - 12.0, previous.h),
+                Style::new(t.font_size * 0.85, t.muted).align(crate::ui::Align::Centre),
+            );
+        }
         p.finish()
     }
 
@@ -295,6 +376,11 @@ impl Tileception {
         let s = (area.w / w).min(area.h / h).min(1.0);
         Some(Rect::new(area.x + (area.w - w * s) / 2.0, area.y + (area.h - h * s) / 2.0, w * s, h * s))
     }
+}
+
+fn strip_paging_buttons(strip: Rect) -> (Rect, Rect) {
+    let y = strip.bottom() - PAD - FOOTER_H;
+    (Rect::new(strip.x + PAD, y, 28.0, FOOTER_H), Rect::new(strip.right() - PAD - 28.0, y, 28.0, FOOTER_H))
 }
 
 fn expand(r: Rect, by: f64) -> Rect {

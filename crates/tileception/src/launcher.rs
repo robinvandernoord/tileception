@@ -155,7 +155,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
-    builtin("Open a terminal", "shell console", glyph::TERMINAL, Does::Line("terminal")),
+    builtin("Default terminal", "terminal shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
     builtin("Restore minimized window", "unminimize bring back", glyph::WINDOW, Does::Line("restore")),
@@ -209,6 +209,7 @@ pub struct Launcher {
     finished: Option<smithay::reexports::calloop::channel::Sender<(u64, String, RunOutput)>>,
     epoch: u64,
     selected: usize,
+    first: usize,
     /// The rows for what is typed, worked out when it changes.
     entries: Vec<Entry>,
     /// What Enter last copied, and when, to say so on its row.
@@ -240,6 +241,7 @@ impl Default for Launcher {
             finished: None,
             epoch: 0,
             selected: 0,
+            first: 0,
             entries: Vec::new(),
             copied: None,
             run: None,
@@ -433,6 +435,7 @@ impl Tileception {
     fn refresh_launcher(&mut self) {
         self.launcher.entries = self.launcher_entries();
         self.launcher.selected = 0;
+        self.launcher.first = 0;
     }
 
     fn launcher_entries(&self) -> Vec<Entry> {
@@ -463,8 +466,17 @@ impl Tileception {
         // Apps, windows, actions and commands, best matches first, with apps
         // ahead of the rest when they match as well.
         let query = text.to_lowercase();
+        let terminal_matches = query.chars().count() >= 2
+            && (quality(&query, "default terminal").is_some()
+                || ["terminal", "shell", "console"].iter().any(|word| word.starts_with(&query)));
         let mut ranked: Vec<(u8, u8, Entry)> = Vec::new();
         for app in launcher.index.search(text, &launcher.usage, MAX_ROWS) {
+            // A generic desktop alias for the configured terminal duplicates
+            // our action. Keep named terminal applications as separate choices.
+            if terminal_matches && app.name.eq_ignore_ascii_case("terminal") && app.exec.trim() == self.terminal.trim()
+            {
+                continue;
+            }
             let quality = quality(&query, &app.name.to_lowercase()).unwrap_or(4);
             ranked.push((quality, 0, Entry::App(app.id.clone())));
         }
@@ -542,8 +554,9 @@ impl Tileception {
         if let Some(lines) =
             self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|o| o.text.lines().count())
         {
-            let page = OUTPUT_LINES - 2;
-            let most = lines.saturating_sub(OUTPUT_LINES - 1);
+            let room = self.launcher_output_lines();
+            let page = room.saturating_sub(1).max(1);
+            let most = lines.saturating_sub(room);
             let scroll = &mut self.launcher.output_scroll;
             match sym {
                 keysyms::KEY_Up => return *scroll = (*scroll + 1).min(most),
@@ -698,16 +711,44 @@ impl Tileception {
     pub fn launcher_step(&mut self, delta: isize) {
         let len = self.launcher.entries.len();
         if len > 0 {
-            self.launcher.selected = (self.launcher.selected as isize + delta).rem_euclid(len as isize) as usize;
+            self.select_launcher((self.launcher.selected as isize + delta).rem_euclid(len as isize) as usize);
         }
+    }
+
+    fn select_launcher(&mut self, index: usize) {
+        self.launcher.first = self.launcher_layout().first;
+        self.launcher.selected = index;
+        self.launcher.first = self.launcher_layout().first;
+    }
+
+    pub fn launcher_scroll(&mut self, delta: isize) {
+        if let Some(lines) =
+            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|o| o.text.lines().count())
+        {
+            let most = lines.saturating_sub(self.launcher_output_lines());
+            self.launcher.output_scroll = self.launcher.output_scroll.saturating_add_signed(-delta).min(most);
+        } else {
+            self.launcher_step(delta);
+        }
+    }
+
+    fn launcher_output_lines(&self) -> usize {
+        self.launcher_layout()
+            .output
+            .map_or(1, |area| ((area.h - 2.0 * OUTPUT_PAD) / OUTPUT_LINE_H).floor().max(2.0) as usize - 1)
+    }
+
+    fn home_columns(&self) -> usize {
+        let width = (self.output_rect().w - 32.0).clamp(1.0, PANEL_W);
+        (((width - 2.0 * PAD) / 140.0).floor() as usize).clamp(1, HOME_COLUMNS)
     }
 
     /// Up or down a row of the welcome screen's grid, staying on the grid.
     fn home_row_step(&mut self, rows: isize) {
         let len = self.launcher.entries.len() as isize;
-        let next = self.launcher.selected as isize + rows * HOME_COLUMNS as isize;
+        let next = self.launcher.selected as isize + rows * self.home_columns() as isize;
         if (0..len).contains(&next) {
-            self.launcher.selected = next as usize;
+            self.select_launcher(next as usize);
         }
     }
 
@@ -887,14 +928,25 @@ impl Tileception {
         let screen = self.output_rect();
         let w = (screen.w - 32.0).clamp(1.0, PANEL_W);
         let grid = self.home_grid();
-        let output_h = self.launcher.shown_run().map(|_| OUTPUT_LINES as f64 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD);
-        let list_h = if grid {
-            results.div_ceil(HOME_COLUMNS).max(1) as f64 * TILE_H
-        } else if results == 0 {
-            2.0 * ROW_H
-        } else {
-            results as f64 * ROW_H
-        } + output_h.map_or(0.0, |h| h + 6.0);
+        let columns = if grid { self.home_columns() } else { 1 };
+        let row_h = if grid { TILE_H } else { ROW_H };
+        let available = (screen.h - 32.0 - PAD * 2.0 - FIELD_H - CAPTION_H - FOOTER_H).max(row_h);
+        let output_h = self
+            .launcher
+            .shown_run()
+            .map(|_| (OUTPUT_LINES as f64 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD).min((available - row_h - 6.0).max(0.0)))
+            .filter(|h| *h >= 2.0 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD);
+        let reserved = output_h.map_or(0.0, |h| h + 6.0);
+        let visible_rows = (((available - reserved) / row_h).floor() as usize).max(1);
+        let row_count = results.div_ceil(columns).max(1);
+        let selected_row = self.launcher.selected / columns;
+        let first_row = (self.launcher.first / columns)
+            .min(row_count.saturating_sub(visible_rows))
+            .min(selected_row)
+            .max(selected_row.saturating_sub(visible_rows - 1));
+        let first = first_row * columns;
+        let visible = results.saturating_sub(first).min(visible_rows * columns);
+        let list_h = row_count.min(visible_rows) as f64 * row_h + reserved;
         let h = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
         // A fixed top edge, so the field stays put while results come and go.
         // The welcome screen sits lower, under its clock.
@@ -907,23 +959,23 @@ impl Tileception {
         let field = Rect::new(panel.x + PAD, panel.y + PAD, panel.w - 2.0 * PAD, FIELD_H);
         let caption = Rect::new(panel.x + PAD + 6.0, field.bottom(), panel.w - 2.0 * PAD - 12.0, CAPTION_H);
         let rows: Vec<Rect> = if grid {
-            let tile_w = (panel.w - 2.0 * PAD) / HOME_COLUMNS as f64;
-            (0..results)
+            let tile_w = (panel.w - 2.0 * PAD) / columns as f64;
+            (0..visible)
                 .map(|i| {
-                    let (column, row) = ((i % HOME_COLUMNS) as f64, (i / HOME_COLUMNS) as f64);
+                    let (column, row) = ((i % columns) as f64, (i / columns) as f64);
                     let x = panel.x + PAD + column * tile_w;
                     Rect::new(x + 2.0, caption.bottom() + row * TILE_H, tile_w - 4.0, TILE_H - 4.0)
                 })
                 .collect()
         } else {
-            (0..results)
+            (0..visible)
                 .map(|i| {
                     Rect::new(panel.x + PAD, caption.bottom() + i as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0)
                 })
                 .collect()
         };
         let output = output_h.map(|h| {
-            let y = rows.last().map_or(caption.bottom(), |r| r.bottom() + 6.0);
+            let y = caption.bottom() + row_count.min(visible_rows) as f64 * row_h + 6.0;
             Rect::new(panel.x + PAD, y, panel.w - 2.0 * PAD, h)
         });
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
@@ -936,7 +988,7 @@ impl Tileception {
             .is_some()
             .then(|| crate::controls::media_card_layout(panel.x, panel.bottom() + 12.0, panel.w))
             .filter(|card| card.rect.bottom() <= screen.bottom() - 8.0);
-        LauncherLayout { panel, field, text, caption, rows, output, footer, media }
+        LauncherLayout { panel, field, text, caption, rows, first, output, footer, media }
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -952,7 +1004,8 @@ impl Tileception {
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
-        self.launcher_layout().rows.iter().position(|row| row.contains(point))
+        let layout = self.launcher_layout();
+        layout.rows.iter().position(|row| row.contains(point)).map(|i| layout.first + i)
     }
 
     pub fn launcher_motion(&mut self, point: Point) {
@@ -961,7 +1014,7 @@ impl Tileception {
             return;
         }
         if let Some(i) = self.launcher_at(point) {
-            self.launcher.selected = i;
+            self.select_launcher(i);
         }
     }
 
@@ -981,7 +1034,7 @@ impl Tileception {
             return;
         }
         if let Some(i) = self.launcher_at(point) {
-            self.launcher.selected = i;
+            self.select_launcher(i);
             self.launch_selected(crate::config::Mods::default());
         } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
@@ -1020,17 +1073,19 @@ impl Tileception {
         // Fades in while dropping into place.
         let shown = ease_out(self.launcher.opened.elapsed().as_secs_f64() / 0.16);
         p.alpha = shown as f32;
-        if self.launcher.home {
+        let clock_space = layout.panel.y - self.output_rect().y - 48.0;
+        if self.launcher.home && clock_space >= 100.0 {
             // The welcome screen leaves the wallpaper as it is, under a clock.
             let now = LocalTime::now();
             let clock = now.as_ref().map(LocalTime::clock).unwrap_or_default();
             let date = now.as_ref().map(LocalTime::date).unwrap_or_default();
-            let top = layout.panel.y - 156.0;
+            let scale = (clock_space / 156.0).min(1.0);
+            let top = layout.panel.y - 156.0 * scale;
             let shadow = Colour([0.0, 0.0, 0.0, 0.45]);
-            let clock_style = Style::new(t.font_size * 5.4, t.text).weight(300).align(Align::Centre);
+            let clock_style = Style::new(t.font_size * 5.4 * scale as f32, t.text).weight(300).align(Align::Centre);
             let date_style = Style::new(t.font_size * 1.25, t.text.alpha(0.85)).align(Align::Centre);
-            let clock_rect = Rect::new(layout.panel.x, top, layout.panel.w, 96.0);
-            let date_rect = Rect::new(layout.panel.x, top + 96.0, layout.panel.w, 30.0);
+            let clock_rect = Rect::new(layout.panel.x, top, layout.panel.w, 96.0 * scale);
+            let date_rect = Rect::new(layout.panel.x, top + 96.0 * scale, layout.panel.w, 30.0);
             // A soft shadow keeps the clock readable on any wallpaper.
             p.text(
                 &clock,
@@ -1044,7 +1099,7 @@ impl Tileception {
                 Style { colour: shadow, ..date_style },
             );
             p.text(&date, date_rect, date_style);
-        } else {
+        } else if !self.launcher.home {
             p.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
         }
         p.offset = (0.0, (shown - 1.0) * 12.0);
@@ -1120,10 +1175,25 @@ impl Tileception {
         } else {
             "FREQUENTLY USED"
         };
-        p.text(caption, layout.caption, Style::new(t.font_size * 0.75, t.muted).bold());
+        let caption = if layout.rows.len() < entries.len() {
+            format!(
+                "{caption} · {} to {} of {} · Scroll for more",
+                layout.first + 1,
+                layout.first + layout.rows.len(),
+                entries.len()
+            )
+        } else {
+            caption.to_string()
+        };
+        p.text(&caption, layout.caption, Style::new(t.font_size * 0.85, t.muted).bold());
 
         if entries.is_empty() {
-            let area = Rect::new(layout.panel.x, layout.caption.bottom(), layout.panel.w, 2.0 * ROW_H);
+            let area = Rect::new(
+                layout.panel.x,
+                layout.caption.bottom(),
+                layout.panel.w,
+                layout.footer.y - layout.caption.bottom(),
+            );
             let (icon, message) = if running {
                 (glyph::TERMINAL, "Type a command to run".to_string())
             } else if trimmed.starts_with(':') && trimmed.len() == 1 {
@@ -1131,15 +1201,15 @@ impl Tileception {
             } else {
                 (glyph::SEARCH, format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim()))
             };
-            p.glyph(icon, Rect::new(area.x, area.y + 8.0, area.w, 40.0), 28, t.muted.alpha(0.7));
+            p.glyph(icon, Rect::new(area.x + 12.0, area.y, 36.0, area.h), 24, t.muted.alpha(0.7));
             p.text(
                 &message,
-                Rect::new(area.x + 24.0, area.y + 52.0, area.w - 48.0, 28.0),
+                Rect::new(area.x + 52.0, area.y, area.w - 68.0, area.h),
                 Style::new(t.font_size, t.muted).align(Align::Centre),
             );
         }
-        for (i, (entry, row)) in entries.iter().zip(&layout.rows).enumerate() {
-            let selected = i == self.launcher.selected;
+        for (i, (entry, row)) in entries.iter().skip(layout.first).zip(&layout.rows).enumerate() {
+            let selected = layout.first + i == self.launcher.selected;
             if grid {
                 if let Entry::App(id) = entry
                     && let Some(app) = self.launcher.index.get(id)
@@ -1238,6 +1308,7 @@ impl Tileception {
                 glyph_box(p, command.glyph, t.accent);
                 right = self.shortcut(command.does);
                 let detail = match command.does {
+                    Does::Line("terminal") => format!("Opens {}", self.terminal),
                     Does::Line("do-not-disturb") => {
                         let on = self.do_not_disturb();
                         format!("Tileception \u{b7} now {}", if on { "on" } else { "off" })
@@ -1312,7 +1383,7 @@ impl Tileception {
         match detail.filter(|d| !d.is_empty()) {
             Some(detail) => {
                 p.text(&title, Rect::new(text_x, row.y + 7.0, text_w, 22.0), title_style);
-                p.text(&detail, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.85, t.muted));
+                p.text(&detail, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.92, t.muted));
             }
             None => {
                 p.text(&title, Rect::new(text_x, row.y, text_w, row.h), title_style);
@@ -1339,7 +1410,7 @@ impl Tileception {
         p.shape(area, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
         let inner = Rect::new(area.x + 12.0, area.y + OUTPUT_PAD, area.w - 24.0, area.h - 2.0 * OUTPUT_PAD);
         let line_style = Style::new(t.font_size * 0.88, t.text.alpha(0.9));
-        let status_style = Style::new(t.font_size * 0.8, t.muted);
+        let status_style = Style::new(t.font_size * 0.85, t.muted);
         let Some(output) = &run.output else {
             let dots = ".".repeat(1 + (run.started.elapsed().as_millis() / 400 % 3) as usize);
             p.text(&format!("Running{dots}"), Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
@@ -1354,7 +1425,7 @@ impl Tileception {
         };
         let status = if output.truncated { format!("{status} \u{b7} output cut at 64 KB") } else { status };
         let lines: Vec<&str> = output.text.lines().collect();
-        let room = OUTPUT_LINES - 1;
+        let room = ((inner.h / OUTPUT_LINE_H).floor() as usize).saturating_sub(1).max(1);
         let end = lines.len().saturating_sub(self.launcher.output_scroll);
         let start = end.saturating_sub(room);
         let shown = &lines[start..end];
@@ -1406,9 +1477,10 @@ impl Tileception {
             let initial: String = app.name.chars().take(1).collect::<String>().to_uppercase();
             p.text(&initial, icon, Style::new(t.font_size * 1.6, t.on_accent).bold().align(Align::Centre));
         }
-        let name = Rect::new(tile.x + 6.0, icon.bottom() + 6.0, tile.w - 12.0, 20.0);
-        let style =
-            Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) }).align(Align::Centre);
+        let name = Rect::new(tile.x + 6.0, icon.bottom() + 6.0, tile.w - 12.0, 40.0);
+        let style = Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) })
+            .align(Align::Centre)
+            .lines(2);
         p.text(&app.name, name, if selected { style.bold() } else { style });
     }
 }
@@ -1640,7 +1712,7 @@ const FOOTER_H: f64 = 44.0;
 const MAX_ROWS: usize = 8;
 /// Tiles per row on the welcome screen.
 const HOME_COLUMNS: usize = 4;
-const TILE_H: f64 = 100.0;
+const TILE_H: f64 = 114.0;
 /// How long the welcome screen waits for a launched app's window.
 const HOME_QUIET: Duration = Duration::from_secs(10);
 /// The search text is a little larger than the rest of the interface.
@@ -1664,6 +1736,8 @@ struct LauncherLayout {
     text: Rect,
     caption: Rect,
     rows: Vec<Rect>,
+    /// Index of the first visible result; keys and wheel keep selection in view.
+    first: usize,
     /// A `>` command's output, under its row.
     output: Option<Rect>,
     footer: Rect,

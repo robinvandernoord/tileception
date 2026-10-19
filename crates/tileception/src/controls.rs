@@ -352,14 +352,14 @@ impl Tileception {
                 p.fill(device, t.surface_raised, t.radius);
             }
             let text = Rect::new(device.x + 4.0, device.y, device.w - 30.0, device.h);
-            p.text(&label, text, Style::new(t.font_size * 0.85, if hover { t.text } else { t.muted }));
+            p.text(&label, text, Style::new(t.font_size * 0.92, if hover { t.text } else { t.muted }));
             if controls.choosable {
                 let chevron = if self.media.devices_open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
                 p.glyph(chevron, Rect::new(device.right() - 26.0, device.y, 24.0, device.h), 13, t.muted);
             }
         }
         for (rect, title) in &controls.headings {
-            p.text(title, *rect, Style::new(t.font_size * 0.72, t.muted).bold());
+            p.text(title, *rect, Style::new(t.font_size * 0.85, t.muted).bold());
         }
         for choice in &controls.choices {
             if choice.rect.contains(pointer) && !choice.current {
@@ -456,7 +456,7 @@ impl Tileception {
             Some(length) => format!("{} / {}  ·  {}", clock(position), clock(length), player.identity),
             None => player.identity.clone(),
         };
-        p.text(&detail, card.player, Style::new(t.font_size * 0.8, t.muted));
+        p.text(&detail, card.player, Style::new(t.font_size * 0.85, t.muted));
         if let Some(length) = player.length {
             let share = (position.as_secs_f64() / length.as_secs_f64().max(1.0)).clamp(0.0, 1.0);
             p.fill(card.progress, t.border, 1.5);
@@ -607,6 +607,11 @@ pub fn level_bar(p: &mut Painter, area: Rect, value: u32, max: u32, muted: bool,
     let bar = Rect::new(area.x, area.y + area.h / 2.0 - 2.0, area.w, 4.0);
     p.fill(bar, t.border, 2.0);
     let x_of = |v: f64| bar.x + bar.w * (v / max).clamp(0.0, 1.0);
+    if max > 100.0 {
+        // The unused boost range stays visible before volume reaches it.
+        let colour = if muted { t.muted.alpha(0.2) } else { t.warning.alpha(0.3) };
+        p.fill(Rect::new(x_of(100.0), bar.y, bar.right() - x_of(100.0), bar.h), colour, 2.0);
+    }
     let value = value as f64;
     let normal = value.min(100.0);
     let (a, b) = if muted { (t.muted.alpha(0.6), t.muted.alpha(0.6)) } else { (t.accent, t.accent_end) };
@@ -622,7 +627,7 @@ pub fn level_bar(p: &mut Painter, area: Rect, value: u32, max: u32, muted: bool,
     }
     if max > 100.0 {
         // Where boosting starts.
-        p.fill(Rect::new(x_of(100.0) - 1.0, bar.y - 4.0, 2.0, bar.h + 8.0), t.muted.alpha(0.8), 1.0);
+        p.fill(Rect::new(x_of(100.0) - 1.0, bar.y - 5.0, 2.0, bar.h + 10.0), t.text.alpha(0.8), 1.0);
     }
     if let Some(held) = knob {
         let r = if held { 8.0 } else { 6.0 };

@@ -37,7 +37,9 @@ impl Tileception {
         let w: f64 = if osd.kind == OsdKind::Media { 380.0 } else { 320.0 };
         let w = w.min(screen.w - 24.0);
         let h = if osd.kind == OsdKind::Media { 84.0 } else { 68.0 };
-        let card = Rect::new(screen.x + (screen.w - w) / 2.0, screen.bottom() - h - 72.0, w, h);
+        let bottom =
+            self.strip_now().map_or(screen.bottom() - 72.0, |strip| (strip.y - 12.0).min(screen.bottom() - 72.0));
+        let card = Rect::new(screen.x + (screen.w - w) / 2.0, bottom - h, w, h);
         let mut p = Painter::new(self, renderer);
         p.alpha = alpha;
         p.offset = (0.0, (1.0 - shown) * 12.0);
@@ -119,7 +121,7 @@ impl Tileception {
                     p.text(
                         &player.identity,
                         Rect::new(x, card.y + 54.0, w, 18.0),
-                        Style::new(t.font_size * 0.8, t.muted.alpha(0.8)),
+                        Style::new(t.font_size * 0.85, t.muted),
                     );
                     let status = Rect::new(card.right() - 16.0 - 32.0, card.y + (card.h - 32.0) / 2.0, 32.0, 32.0);
                     let g = match player.status {

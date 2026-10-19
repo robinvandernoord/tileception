@@ -829,6 +829,17 @@ impl Tileception {
             self.bar_scroll(notches);
             return;
         }
+        if !self.is_locked() && self.power_menu.is_none() {
+            let notches = event
+                .amount_v120(Axis::Vertical)
+                .or_else(|| event.amount_v120(Axis::Horizontal))
+                .map(|v| v / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).or_else(|| event.amount(Axis::Horizontal)).map(|a| a / 50.0))
+                .unwrap_or(0.0);
+            if self.strip_scroll(notches) {
+                return;
+            }
+        }
         if self.launcher.open
             && !self.is_locked()
             && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
@@ -836,7 +847,7 @@ impl Tileception {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
                 && value != 0.0
             {
-                self.launcher_step(if value > 0.0 { 1 } else { -1 });
+                self.launcher_scroll(if value > 0.0 { 1 } else { -1 });
             }
             return;
         }

@@ -188,6 +188,7 @@ enum Mode {
 /// What is under the pointer on the bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Hit {
+    Launcher,
     Doctor,
     Back,
     Forward,
@@ -249,6 +250,7 @@ struct Chip {
 
 struct Layout {
     bar: Rect,
+    launcher: Rect,
     doctor: Rect,
     back: Rect,
     forward: Rect,
@@ -447,6 +449,8 @@ impl Tileception {
         let mut x = bar.x + 6.0;
         let doctor = Rect::new(x, y, 36.0, h);
         x = doctor.right() + 4.0;
+        let launcher = Rect::new(x, y, 28.0, h);
+        x = launcher.right() + 4.0;
         let back = Rect::new(x, y, 22.0, h);
         let forward = Rect::new(back.right(), y, 22.0, h);
         let left = forward.right() + 8.0;
@@ -498,6 +502,7 @@ impl Tileception {
         let crumbs = self.place_crumbs(left, crumbs_end, y, h);
         Some(Layout {
             bar,
+            launcher,
             doctor,
             back,
             forward,
@@ -578,6 +583,7 @@ impl Tileception {
             return None;
         }
         let hits = [
+            (layout.launcher, Hit::Launcher),
             (layout.doctor, Hit::Doctor),
             (layout.back, Hit::Back),
             (layout.forward, Hit::Forward),
@@ -683,6 +689,7 @@ impl Tileception {
         let Some(layout) = self.bar_layout() else { return true };
         let Some(hit) = self.bar_hit(&layout, p) else { return true };
         match hit {
+            Hit::Launcher => self.shell_launcher(),
             Hit::Doctor => match unseen_error(self.bar.seen_error) {
                 Some((n, message)) => {
                     self.bar.seen_error = n;
@@ -865,6 +872,14 @@ impl Tileception {
             }
         };
 
+        // Tide's tile mark is also the mouse entry point to the launcher.
+        hover_fill(p, layout.launcher, hit == Some(Hit::Launcher));
+        let mark_x = layout.launcher.x + 6.0;
+        let mark_y = layout.launcher.y + (layout.launcher.h - 16.0) / 2.0;
+        p.fill(Rect::new(mark_x, mark_y, 7.0, 16.0), t.accent, 1.5);
+        p.fill(Rect::new(mark_x + 9.0, mark_y, 7.0, 7.0), t.accent, 1.5);
+        p.fill(Rect::new(mark_x + 9.0, mark_y + 9.0, 7.0, 7.0), t.accent_end, 1.5);
+
         // The doctor, with its health light.
         let error = unseen_error(self.bar.seen_error);
         hover_fill(p, layout.doctor, hit == Some(Hit::Doctor));
@@ -964,6 +979,9 @@ impl Tileception {
         }
 
         // Tooltips and previews hang below the bar.
+        if hit == Some(Hit::Launcher) {
+            self.bar_tooltip(p, layout.launcher.x, bar.bottom() + 6.0, "Launcher", "Search apps and commands (Super)");
+        }
         if hit == Some(Hit::Doctor) {
             let (title, body) = match &error {
                 Some((_, message)) => ("Something went wrong \u{b7} click to ask about it", message.as_str()),
@@ -1072,7 +1090,7 @@ impl Tileception {
         let t = &self.theme;
         let w = 320.0_f64.min(self.output_rect().w - 16.0);
         let x = x.min(self.output_rect().right() - w - 8.0).max(8.0);
-        let body_style = Style::new(t.font_size * 0.82, t.muted).lines(4);
+        let body_style = Style::new(t.font_size * 0.9, t.muted).lines(4);
         let (_, body_h) = (0.0, self.bar_measure_height(body, body_style, w - 24.0));
         let rect = Rect::new(x, y, w, 40.0 + body_h);
         p.popup(rect);

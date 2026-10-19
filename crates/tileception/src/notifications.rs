@@ -194,7 +194,8 @@ impl Tileception {
         // corner, so newer popups cannot push them off screen.
         items.sort_by_key(|n| (n.expires.is_some() || n.actions.is_empty(), std::cmp::Reverse(n.created)));
         items.truncate(3);
-        let mut bottom = screen.bottom() - 14.0;
+        let mut bottom =
+            self.strip_now().map_or(screen.bottom() - 14.0, |strip| (strip.y - 12.0).min(screen.bottom() - 14.0));
         let mut cards = Vec::new();
         for n in items {
             let mut card = self.card_layout(n, screen.right() - w - 14.0, 0.0, w, true);
@@ -365,7 +366,7 @@ impl Tileception {
                 p.text(
                     sub,
                     Rect::new(row.x + 44.0, row.y + 24.0, row.w - 110.0, 18.0),
-                    Style::new(t.font_size * 0.82, t.muted),
+                    Style::new(t.font_size * 0.9, t.muted),
                 );
                 let track = Rect::new(row.right() - 56.0, row.y + (row.h - 24.0) / 2.0, 42.0, 24.0);
                 let knob_x = if dnd { track.right() - 21.0 } else { track.x + 3.0 };
@@ -458,7 +459,7 @@ impl Tileception {
         p.text(
             &header,
             Rect::new(x, card.header.y, card.header.right() - x, card.header.h),
-            Style::new(t.font_size * 0.82, t.muted),
+            Style::new(t.font_size * 0.9, t.muted),
         );
         let hover_close = card.close.contains(pointer);
         if hover_close {
@@ -514,7 +515,7 @@ impl Tileception {
                 let track = Rect::new(rect.x + 16.0, rect.bottom() - 6.0, rect.w - 32.0, 2.0);
                 p.fill(track, t.border.alpha(0.6), 1.0);
                 let bar = Rect::new(track.x, track.y, track.w * (left / total).clamp(0.0, 1.0), track.h);
-                p.shape(bar, Shape { radius: 1.0, fill: (t.accent, t.accent_end), ..Default::default() });
+                p.shape(bar, Shape { radius: 1.0, fill: (a, b), ..Default::default() });
             }
         }
     }
