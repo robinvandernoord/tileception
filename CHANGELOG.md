@@ -2,6 +2,19 @@
 
 <!-- next-version-placeholder -->
 
+## v0.7.0 (2026-10-18)
+
+### Feature
+* **tray:** add StatusNotifier icons to the built-in bar
+
+### Fix
+* **autostart:** launch XDG desktop entries at session start
+
+### Documentation
+* **greeter:** add interactive design prototype
+* **install:** plan guided setup flow
+* **build:** document cargo-plane setup and builder workflows
+
 ## v0.6.0 (2026-10-18)
 
 ### Feature

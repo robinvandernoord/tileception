@@ -33,6 +33,10 @@ jobs:
             crates/tileception-apps
             crates/tileception-auth
             crates/tileception-notify
+      - name: Configure cargo-plane for local builds
+        run: |
+          make tools
+          cargo plane setup local
       - run: make lint
 
   test:
@@ -52,4 +56,8 @@ jobs:
             crates/tileception-apps
             crates/tileception-auth
             crates/tileception-notify
+      - name: Configure cargo-plane for local builds
+        run: |
+          make tools
+          cargo plane setup local
       - run: make test

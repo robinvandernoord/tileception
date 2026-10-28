@@ -165,6 +165,10 @@ media = "builtin"
 # windows; a command such as "waybar" runs in its place and is stopped again
 # when this changes.
 bar = "builtin"
+# Maximum tray slots, including the overflow button. With more than this
+# many applications, the last slot becomes (…) and opens the remaining items.
+# Must be at least 1; changes apply on save.
+tray_max_icons = 3
 
 # Window rules decide how matching windows open. app_id is the Wayland app id
 # or X11 class; patterns ignore case, with * for anything and ? for one

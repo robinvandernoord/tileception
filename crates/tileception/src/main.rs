@@ -53,6 +53,8 @@ mod text_input;
 mod theme;
 mod toplevels;
 mod touch;
+mod tray;
+mod tray_bus;
 mod udev;
 mod ui;
 mod wallpaper;
@@ -164,7 +166,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         udev::init(&mut event_loop, &mut state)?;
     }
     config::watch(&event_loop.handle(), config_path);
-    state.start_xwayland();
     let socket = ipc::socket_path(&state.socket_name.to_string_lossy());
     ipc::listen(&mut event_loop, &socket)?;
     state.ipc_socket = Some(socket.clone());
@@ -200,6 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ((!nested && !headless) || media_bus.is_some()) && state.shell().media() {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
+    state.apply_tray();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {
@@ -208,6 +210,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.spawn("sh", &["-c".to_string(), line]);
     }
     state.apply_bar_command();
+    // XDG entries belong to the login session. Nested and headless instances
+    // must not start another set of desktop services or personal applications.
+    if state.session_services {
+        state.pending_autostart = tileception_apps::autostart_entries();
+    }
+    state.start_xwayland();
     let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);

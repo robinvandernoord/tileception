@@ -44,6 +44,7 @@ impl Tileception {
             Ok(x) => x,
             Err(err) => {
                 tracing::warn!("Xwayland unavailable, X11 programs will not run: {err}");
+                self.start_pending_autostart();
                 return;
             }
         };
@@ -63,11 +64,25 @@ impl Tileception {
                     }
                     Err(err) => tracing::error!("could not start the X11 window manager: {err}"),
                 }
+                state.start_pending_autostart();
             }
-            XWaylandEvent::Error => tracing::warn!("Xwayland failed to start"),
+            XWaylandEvent::Error => {
+                tracing::warn!("Xwayland failed to start");
+                state.start_pending_autostart();
+            }
         });
         if let Err(err) = inserted {
             tracing::error!("could not watch Xwayland: {err}");
+            self.start_pending_autostart();
+        }
+    }
+
+    /// Drain once readiness or failure is known, so Wayland apps also start
+    /// when Xwayland is unavailable.
+    fn start_pending_autostart(&mut self) {
+        for entry in std::mem::take(&mut self.pending_autostart) {
+            tracing::info!(file = %entry.file.display(), "starting XDG autostart entry");
+            self.spawn("sh", &["-c".to_string(), entry.command_line(&format!("{} -e", self.terminal))]);
         }
     }
 

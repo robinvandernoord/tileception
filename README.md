@@ -48,12 +48,41 @@ feedback remains available for 30 seconds. Copying goes through the compositor
 
 ## Installing as a session
 
+Install cargo-plane and choose a builder first. For local builds:
+
+```sh
+make tools
+cargo plane setup local
+make deps
+```
+
+`make tools` installs cargo-plane via cargo-binstall, bootstrapping binstall
+from its binary install script if necessary. It requires Rust/Cargo, Make,
+curl and Bash and does not compile tools from source. It upgrades older
+cargo-plane versions to support unattended setup (0.2 or newer). On machines
+with 4 GB of RAM or less, set up a remote builder instead:
+
+```sh
+gh auth login --scopes codespace
+make codespace
+export CARGO_PLANE_REMOTE=codespace
+```
+
+This requires the GitHub CLI, SSH and rsync locally. `make codespace` reuses
+the configured Codespace or creates one with at least 16 GB RAM and a 30-minute
+idle timeout. It refreshes apt indexes and installs build dependencies and the
+D-Bus test service remotely. `make deps` installs local desktop dependencies.
+Override creation options with, for example,
+`make codespace CODESPACE_ARGS='--ram 32 --idle-timeout 60'`.
+See [AGENTS.md](AGENTS.md) for details.
+
 ```sh
 ./install-session.sh
 ```
 
-This builds a release binary, installs `tileception` and `tileception-session` into
-`~/.local/bin`, and (with sudo) adds a "Tileception" entry to the login screen.
+This builds a release binary through cargo-plane, installs `tileception` and
+`tileception-session` into `~/.local/bin`, and (with sudo) adds a "Tileception"
+entry to the login screen.
 Log out and pick Tileception in the session menu.
 
 To try it without the login screen first: switch to a free console
@@ -210,6 +239,32 @@ lock = "swaylock -f -i {wallpaper}"
 
 A replaced notification service gives up its D-Bus name, so the other daemon
 can take it, also after a reload without logging out.
+
+Full desktop sessions also launch XDG autostart `.desktop` entries from
+`$XDG_CONFIG_HOME/autostart` (default `~/.config/autostart`) and
+`$XDG_CONFIG_DIRS/autostart` (default `/etc/xdg/autostart`). User entries override
+system entries with the same filename; `Hidden=true` disables an entry.
+`OnlyShowIn`, `NotShowIn` and `TryExec` are respected, while `NoDisplay=true`
+does not prevent startup. `Terminal`, `Path`, `X-GNOME-Autostart-enabled` and
+`X-GNOME-Autostart-Delay` are supported too. Entries run once at login, after
+the session environment is exported, and do not run in nested or headless mode
+or on configuration reload. Keep commands already provided by XDG entries out
+of `[general] autostart` to avoid launching them twice.
+
+The built-in top bar hosts StatusNotifierItem tray icons, including Qt and
+AppIndicator applications such as Nextcloud. `[shell] tray_max_icons = 3`
+sets the maximum number of slots, including overflow. With four or more
+items, the default shows two icons and an `…` button for the remaining items.
+The limit must be at least 1 and changes apply on save. Click an icon to
+activate it, or right-click for its application menu. Escape or an outside
+click dismisses the popover; scroll to reach longer lists.
+
+Use `tileception msg tray` to list entries. `tileception msg tray debug`
+adds one numbered debug entry; `tileception msg tray debug 8` sets eight
+debug entries, and `tileception msg tray debug 0` clears them. Real entries
+are preserved. Debug entries have a menu for toggling attention or removing
+the entry. Nested and headless instances do not access the session tray
+unless `TILECEPTION_TRAY_BUS=session` or a private bus address is set.
 
 ### Screen scaling
 

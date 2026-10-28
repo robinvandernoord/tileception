@@ -22,7 +22,7 @@ if ! scripts/deps.sh check build runtime; then
 fi
 
 bindir="$HOME/.local/bin"
-cargo build --release -p tileception
+cargo plane build --release -p tileception
 mkdir -p "$bindir"
 install -m 755 target/release/tileception "$bindir/tileception"
 install -m 755 resources/tileception-session "$bindir/tileception-session"

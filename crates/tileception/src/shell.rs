@@ -41,6 +41,8 @@ pub struct ShellConfig {
     pub media: String,
     /// The bar along the top.
     pub bar: String,
+    /// Maximum bar slots, including the overflow button. At least one.
+    pub tray_max_icons: usize,
 }
 
 impl Default for ShellConfig {
@@ -53,6 +55,7 @@ impl Default for ShellConfig {
             lock: builtin(),
             media: builtin(),
             bar: builtin(),
+            tray_max_icons: 3,
         }
     }
 }
@@ -77,6 +80,9 @@ impl ShellConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.tray_max_icons == 0 {
+            return Err("[shell] tray_max_icons must be at least 1".into());
+        }
         match Part::parse(&self.media) {
             Part::Command(other) => Err(format!("[shell] media is builtin or none, not {other:?}")),
             _ => Ok(()),
@@ -147,6 +153,7 @@ impl Tileception {
             self.power_menu = None;
         }
         self.apply_bar_command();
+        self.apply_tray();
     }
 }
 

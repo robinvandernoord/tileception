@@ -97,6 +97,46 @@ the keyboard only once its first configure is sent.)
 - More monitors: a layout per screen, moving windows between them. Comes first
   once Robin can test it on a second screen.
 
+#### Guided installation
+
+Decided 2026-10-18. Implementation is pending.
+
+- [ ] Collect all setup answers early, after quick compatibility and existing-install
+  checks and before downloads, builds or system changes. Show a summary before
+  starting installation so the user can leave it running without more setup questions.
+- [ ] Start with "How would you like to set up Tileception?": Recommended,
+  Customize or Minimal. Recommended enables sensible desktop defaults; Customize
+  asks about individual features; Minimal disables optional desktop features while
+  keeping session essentials and an obvious way to launch a terminal or applications.
+- [ ] Let users choose the top bar, Super launcher, Doctor, notifications and other
+  applicable shell components. For components supporting replacements, offer
+  Built-in, Disabled or Custom command, then ask for the command, such as `waybar`.
+  Store choices in the existing config settings. Explain whether a replacement
+  starts a persistent service or opens a UI on demand, particularly for notifications.
+- [ ] Ask about the greeter explicitly for Recommended and Customize, even when a
+  login screen already exists, so users know the option is available. Detect and
+  default to keeping the current login setup. Minimal skips this question, but an
+  explicit greeter flag can override that. Greeter support still needs implementing;
+  changes affect login to other desktop sessions too.
+- [ ] Treat Doctor setup separately, explaining any provider/account requirements
+  and permissions. Recommended should not require configuring an agent.
+- [ ] Provide `--non-interactive` and equivalent flags for presets, greeter choice
+  and feature/custom-command overrides. Proposed examples:
+  `--non-interactive --preset recommended --greeter keep` and
+  `--non-interactive --preset minimal --bar waybar`.
+- [ ] On reinstall, read the intended desktop user's existing
+  `$XDG_CONFIG_HOME/tileception/config.toml` (normally
+  `~/.config/tileception/config.toml`), including when installation uses sudo.
+  Prefill interactive choices and preserve unattended reinstall preferences.
+  Handle a missing config too: currently it is created when Tileception first loads it.
+  Precedence: explicit flags or answers, then existing config, then preset defaults.
+  Preserve comments and unrelated settings when editing the file.
+- [ ] Read interactive answers from `/dev/tty` so `curl ... | sh` remains supported;
+  handle a missing terminal predictably and support fully unattended execution.
+- [ ] Keep choices reversible through normal configuration and provide a way to
+  reopen setup without reinstalling. Finish with instructions for entering the
+  session and changing preferences later.
+
 ### Later
 
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
