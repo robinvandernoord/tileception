@@ -2,22 +2,21 @@
 # Screenshots for Tileception, with grim and slurp, and a notification
 # that shows it worked.
 #
-#   tileception-screenshot          the whole screen: saved to Pictures/Screenshots
-#                                   and copied; the notification offers Open,
-#                                   Show in folder and Delete, and clicking it
-#                                   shows the file in the file manager
-#   tileception-screenshot region   drag a region first
-#   ... --ask                       ask first: Copy, Save, or Save and copy
-#                                   (closing the notification discards it)
+#   tileception-screenshot          the whole screen: ask whether to Copy, Save,
+#                                   or Save and copy; closing the prompt discards it
+#   tileception-screenshot region   drag a region first, then ask the same question
+#   ... --ask                       explicitly request the default prompt
+#   ... --no-ask                    save to Pictures/Screenshots and copy immediately
 set -u
 
 mode=screen
-ask=no
+ask=yes
 for arg in "$@"; do
     case "$arg" in
         region) mode=region ;;
         screen) mode=screen ;;
         --ask) ask=yes ;;
+        --no-ask) ask=no ;;
     esac
 done
 
