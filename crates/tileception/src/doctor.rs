@@ -604,6 +604,9 @@ impl Tileception {
         {
             tracing::warn!("{}: {error}", defaults.display());
         }
+        if let Err(error) = export_doctor_docs() {
+            tracing::warn!("could not export the doctor's documentation: {error}");
+        }
         let cwd = crate::config::path().parent().map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         if let Err(error) = std::fs::create_dir_all(&cwd) {
             tracing::warn!("{}: {error}", cwd.display());
@@ -2683,6 +2686,28 @@ fn state_dir() -> PathBuf {
         .join("tileception")
 }
 
+/// Refresh the version-matched guides without adding their contents to prompts.
+fn export_doctor_docs() -> std::io::Result<()> {
+    let root = state_dir();
+    let docs = root.join("docs");
+    std::fs::create_dir_all(&docs)?;
+    let readme = include_str!("../../../README.md")
+        .replace("(crates/tileception/src/default-config.toml)", "(default-config.toml)");
+    std::fs::write(root.join("README.md"), readme)?;
+    for (name, content) in [
+        ("usage.md", include_str!("../../../docs/usage.md")),
+        ("configuration.md", include_str!("../../../docs/configuration.md")),
+        ("installation.md", include_str!("../../../docs/installation.md")),
+        ("greeter.md", include_str!("../../../docs/greeter.md")),
+        ("doctor.md", include_str!("../../../docs/doctor.md")),
+        ("index.md", include_str!("../../../docs/index.md")),
+    ] {
+        let content = content.replace("(../crates/tileception/src/default-config.toml)", "(../default-config.toml)");
+        std::fs::write(docs.join(name), content)?;
+    }
+    Ok(())
+}
+
 fn doctor_scope() -> Scope {
     let config = crate::config::path().parent().map(PathBuf::from).unwrap_or_default();
     Scope { config, state: state_dir() }
@@ -2716,6 +2741,8 @@ fn doctor_context(mode: &str) -> String {
          `tileception msg help` lists every command; features that are switched on and off rather than \
          configured, such as the rubber duck (`duck`), are only there.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
+         - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
+         These guides match this binary and are available without a source checkout.\n\
          - The log is {log}.\n\
          - Read and write files with the file tools the client offers, so the user sees diffs and gets backups. \
          The user's permission mode is \"{mode}\".\n\
@@ -2723,6 +2750,7 @@ fn doctor_context(mode: &str) -> String {
         config = config.display(),
         log = state.join("tileception/tileception.log").display(),
         defaults = state.join("tileception/default-config.toml").display(),
+        docs = state.join("tileception/docs/index.md").display(),
         mode = mode,
     )
 }
