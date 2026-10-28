@@ -171,9 +171,19 @@ impl Tileception {
         }
         drop(map);
         // The lock screen and X11 menus draw their next frame only when told
-        // the last one was shown.
-        let extra =
-            self.lock_surface().cloned().into_iter().chain(self.x11_overlays.iter().filter_map(|o| o.wl_surface()));
+        // the last one was shown. So does a client's cursor: Xwayland holds
+        // back the next cursor image until the previous one's frame callback,
+        // so without it X11 cursors stay frozen until something else redraws.
+        let cursor = match &self.cursor_status {
+            smithay::input::pointer::CursorImageStatus::Surface(surface) => Some(surface.clone()),
+            _ => None,
+        };
+        let extra = self
+            .lock_surface()
+            .cloned()
+            .into_iter()
+            .chain(self.x11_overlays.iter().filter_map(|o| o.wl_surface()))
+            .chain(cursor);
         for surface in extra {
             smithay::desktop::utils::send_frames_surface_tree(
                 &surface,
