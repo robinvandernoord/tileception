@@ -1,4 +1,4 @@
-//! The bar along the top: where the camera is in the tree, and a few things
+//! The bar along the top or bottom: where the camera is in the tree, and a few things
 //! worth a glance. Left to right: the doctor with a health light, back and
 //! forward, a breadcrumb of the camera's path, the saved views, chips that
 //! only show when relevant, the clock (which zooms into a calendar) and the
@@ -6,7 +6,7 @@
 //!
 //! The bar reserves its edge like a layer-shell bar. While one window is
 //! framed on its own it shrinks to a hairline and gives the window the
-//! space; touching the top edge slides it back over the window. A
+//! space; touching its edge slides it back over the window. A
 //! fullscreen window covers it.
 
 use std::{
@@ -26,14 +26,14 @@ use crate::{
     input::Action,
     render::OutputElement,
     shapes::Shape,
-    shell::Part,
+    shell::{BarPosition, Part},
     theme::Colour,
     ui::{Align, LocalTime, Painter, Style, ease_out, glyph},
 };
 
 /// The bar's height while it reserves its edge.
 pub const BAR_H: f64 = 28.0;
-/// Pixels at the top of the screen that bring a hairline bar back.
+/// Pixels at the configured edge that bring a hairline bar back.
 const EDGE: f64 = 2.0;
 /// Pixels below the bar the pointer may stray before a revealed bar hides.
 const SLACK: f64 = 18.0;
@@ -103,7 +103,7 @@ pub struct Bar {
     revealed: bool,
     changed: Instant,
     level_then: f64,
-    /// What the bar takes off the top of the layout now.
+    /// What the bar takes off its edge of the layout now.
     reserved: f64,
     /// A press on the bar, so its release does not reach anything else.
     pressed: bool,
@@ -179,7 +179,7 @@ enum Mode {
     Off,
     /// A fullscreen window covers it.
     Covered,
-    /// One window is framed: a line along the top that slides open on touch.
+    /// One window is framed: a line along the bar's edge that slides open on touch.
     Hairline,
     Full,
 }
@@ -284,18 +284,30 @@ impl Tileception {
         !self.world.in_overview() && tree.is_leaf(framed) && !tree.shown_windows_in(framed).is_empty()
     }
 
-    /// What the bar takes off the top of the layout area.
+    pub(crate) fn bar_at_bottom(&self) -> bool {
+        self.bar_part().is_builtin() && self.shell().bar_position == BarPosition::Bottom
+    }
+
+    /// Place a bar popover towards the centre of the screen.
+    pub(crate) fn bar_popup_y(&self, anchor: Rect, height: f64) -> f64 {
+        let screen = self.output_rect();
+        let y = if self.bar_at_bottom() { anchor.y - height - 6.0 } else { anchor.bottom() + 6.0 };
+        y.clamp(screen.y + 8.0, (screen.bottom() - height - 8.0).max(screen.y + 8.0))
+    }
+
+    /// What the bar takes off its edge of the layout area.
     pub fn bar_reserve(&self, usable: Rect) -> Rect {
         let h = self.bar.reserved;
         if h <= 0.0 || usable.h <= h {
             return usable;
         }
-        Rect::new(usable.x, usable.y + h, usable.w, usable.h - h)
+        let y = if self.bar_at_bottom() { usable.y } else { usable.y + h };
+        Rect::new(usable.x, y, usable.w, usable.h - h)
     }
 
     /// Follows the camera and the pointer: reserves the edge or gives it to a
     /// framed window, and slides a hairline bar open while the pointer is at
-    /// the top. Called after each frame and on pointer motion.
+    /// its edge. Called after each frame and on pointer motion.
     pub fn update_bar(&mut self) {
         let mode = self.bar_mode();
         // A fullscreen window keeps the layout as it was underneath.
@@ -310,11 +322,12 @@ impl Tileception {
         }
         let p = Point::new(self.pointer.x, self.pointer.y);
         let out = self.output_rect();
+        let distance = if self.bar_at_bottom() { out.bottom() - p.y } else { p.y - out.y };
         let reveal = mode == Mode::Hairline
             && !self.is_locked()
             && self.move_drag.is_none()
-            && (p.y <= out.y + EDGE
-                || (self.bar.revealed && p.y <= out.y + BAR_H + SLACK)
+            && (distance <= EDGE
+                || (self.bar.revealed && distance <= BAR_H + SLACK)
                 || self.bar.pressed
                 || self.tray.open
                 || self.bar.calendar.open);
@@ -343,7 +356,8 @@ impl Tileception {
             return None;
         }
         let out = self.output_rect();
-        Some(Rect::new(out.x, out.y - (1.0 - level) * BAR_H, out.w, BAR_H))
+        let y = if self.bar_at_bottom() { out.bottom() - level * BAR_H } else { out.y - (1.0 - level) * BAR_H };
+        Some(Rect::new(out.x, y, out.w, BAR_H))
     }
 
     /// Text width without drawing it.
@@ -811,7 +825,8 @@ impl Tileception {
         let layout = self.bar_layout();
         if mode == Mode::Hairline {
             let out = self.output_rect();
-            p.fill(Rect::new(out.x, out.y, out.w, 2.0), t.accent.alpha(0.35), 0.0);
+            let y = if self.bar_at_bottom() { out.bottom() - 2.0 } else { out.y };
+            p.fill(Rect::new(out.x, y, out.w, 2.0), t.accent.alpha(0.35), 0.0);
         }
         if let Some(layout) = &layout {
             self.draw_bar(&mut p, layout, mode);
@@ -821,7 +836,8 @@ impl Tileception {
         if level > 0.001 {
             let clock = layout.as_ref().map(|l| l.clock).unwrap_or_else(|| {
                 let out = self.output_rect();
-                Rect::new(out.right() - 120.0, out.y, 110.0, BAR_H)
+                let y = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+                Rect::new(out.right() - 120.0, y, 110.0, BAR_H)
             });
             self.draw_calendar(&mut p, clock, level);
         }
@@ -849,14 +865,15 @@ impl Tileception {
         let hit = self.bar_hit(layout, pointer);
         let style = self.bar_style();
         if mode == Mode::Hairline {
-            // Slid over a window: a shadow below separates it.
+            // Slid over a window: a shadow towards the layout separates it.
             p.shape(
-                Rect::new(bar.x, bar.y + 4.0, bar.w, bar.h - 4.0),
+                Rect::new(bar.x, bar.y + if self.bar_at_bottom() { 0.0 } else { 4.0 }, bar.w, bar.h - 4.0),
                 Shape { glow_radius: 16.0, glow: Colour([0.0, 0.0, 0.0, 0.4]), ..Default::default() },
             );
         }
         p.fill(bar, t.surface, 0.0);
-        p.fill(Rect::new(bar.x, bar.bottom() - 1.0, bar.w, 1.0), t.border, 0.0);
+        let border_y = if self.bar_at_bottom() { bar.y } else { bar.bottom() - 1.0 };
+        p.fill(Rect::new(bar.x, border_y, bar.w, 1.0), t.border, 0.0);
         let hover_fill = |p: &mut Painter, rect: Rect, on: bool| {
             if on {
                 p.fill(rect, t.surface_raised, (t.radius - 1.0).max(2.0));
@@ -963,23 +980,23 @@ impl Tileception {
             p.text(&label, badge, Style::new(t.font_size * 0.72, t.on_accent).bold().align(Align::Centre));
         }
 
-        // Tooltips and previews hang below the bar.
+        // Tooltips and previews open towards the layout.
         if hit == Some(Hit::Launcher) {
-            self.bar_tooltip(p, layout.launcher.x, bar.bottom() + 6.0, "Launcher", "Search apps and commands (Super)");
+            self.bar_tooltip(p, layout.launcher.x, bar, "Launcher", "Search apps and commands (Super)");
         }
         if hit == Some(Hit::Doctor) {
             let (title, body) = match &error {
                 Some((_, message)) => ("Something went wrong \u{b7} click to ask about it", message.as_str()),
                 None => ("Doctor", "Ask about settings, shortcuts and apps (Super+/)"),
             };
-            self.bar_tooltip(p, layout.doctor.x, bar.bottom() + 6.0, title, body);
+            self.bar_tooltip(p, layout.doctor.x, bar, title, body);
         }
         if let Some(Hit::Slot(n)) = hit {
             self.draw_slot_preview(p, layout, n);
         }
         if let (Some(Hit::Battery), Some((rect, _)), Some(reading)) = (hit, &layout.battery, &self.battery.reading) {
             let x = (rect.x - 80.0).max(bar.x + 6.0);
-            self.bar_tooltip(p, x, bar.bottom() + 6.0, "Battery", &reading.describe());
+            self.bar_tooltip(p, x, bar, "Battery", &reading.describe());
         }
     }
 
@@ -1071,12 +1088,13 @@ impl Tileception {
         p.text(&initial, rect, Style::new(t.font_size * 0.66, t.on_accent).bold().align(Align::Centre));
     }
 
-    pub(crate) fn bar_tooltip(&self, p: &mut Painter, x: f64, y: f64, title: &str, body: &str) {
+    pub(crate) fn bar_tooltip(&self, p: &mut Painter, x: f64, anchor: Rect, title: &str, body: &str) {
         let t = &self.theme;
         let w = 320.0_f64.min(self.output_rect().w - 16.0);
         let x = x.min(self.output_rect().right() - w - 8.0).max(8.0);
         let body_style = Style::new(t.font_size * 0.9, t.muted).lines(4);
         let (_, body_h) = (0.0, self.bar_measure_height(body, body_style, w - 24.0));
+        let y = self.bar_popup_y(anchor, 40.0 + body_h);
         let rect = Rect::new(x, y, w, 40.0 + body_h);
         p.popup(rect);
         p.text(title, Rect::new(x + 12.0, y + 8.0, w - 24.0, 20.0), Style::new(t.font_size * 0.86, t.text).bold());
@@ -1092,7 +1110,7 @@ impl Tileception {
             .unwrap_or(0.0)
     }
 
-    /// What a saved view frames, drawn small under its slot.
+    /// What a saved view frames, drawn small beside its slot.
     fn draw_slot_preview(&self, p: &mut Painter, layout: &Layout, n: usize) {
         let Some(node) = self.world.saved_view_node(n) else { return };
         let Some(unit) = self.world.layout().rect(node) else { return };
@@ -1103,7 +1121,8 @@ impl Tileception {
         let (w, h) =
             if aspect >= 260.0 / 180.0 { (260.0, (260.0 / aspect).round()) } else { ((180.0 * aspect).round(), 180.0) };
         let x = (slot.x + slot.w / 2.0 - w / 2.0).clamp(8.0, self.output_rect().right() - w - 8.0);
-        let card = Rect::new(x, layout.bar.bottom() + 6.0, w + 16.0, h + 16.0 + 24.0);
+        let height = h + 16.0 + 24.0;
+        let card = Rect::new(x, self.bar_popup_y(layout.bar, height), w + 16.0, height);
         p.popup(card);
         let area = Rect::new(card.x + 8.0, card.y + 8.0, w, h);
         p.fill(area, self.theme.background, 4.0);

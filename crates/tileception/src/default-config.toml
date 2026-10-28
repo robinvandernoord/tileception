@@ -165,11 +165,14 @@ lock = "builtin"
 # Volume, media keys and brightness: "builtin" or "none". To use your own
 # commands instead, bind the keys to them in [binds].
 media = "builtin"
-# The bar along the top: where the camera is, saved views, the clock (click
+# The bar: where the camera is, saved views, the clock (click
 # it for a calendar) and notifications. "none" leaves the edge to the
 # windows; a command such as "waybar" runs in its place and is stopped again
 # when this changes.
 bar = "builtin"
+# The built-in bar's edge: top or bottom. The minimized-window strip stays at
+# the bottom, above a bottom bar. External bars choose their own position.
+bar_position = "top"
 # Maximum tray slots, including the overflow button. With more than this
 # many applications, the last slot becomes (…) and opens the remaining items.
 # Must be at least 1; changes apply on save.
@@ -365,8 +368,8 @@ repeat_rate = 30
 "TouchPinch3In" = "step-out"
 "TouchPinch3Out" = "step-in pointer"
 
-# Screenshots (grim and slurp). Print saves and copies the whole screen;
-# Shift+Print lets you drag a region and asks whether to copy or save it.
+# Screenshots (grim and slurp). Print captures the whole screen; Shift+Print
+# lets you drag a region. Both ask whether to copy, save, or do both.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"
 "XF86AudioMute" = "volume mute"

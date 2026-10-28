@@ -14,6 +14,7 @@ use tileception_core::{Point, Rect, WindowId};
 
 use crate::{
     Tileception,
+    bar::BAR_H,
     render::OutputElement,
     shapes::Shape,
     ui::{Painter, Style, ease_out, glyph},
@@ -115,8 +116,14 @@ impl Tileception {
             && self.fullscreen.is_none()
             && self.move_drag.is_none();
         let p = Point::new(self.pointer.x, self.pointer.y);
-        let at_edge = p.y >= self.output_rect().bottom() - EDGE;
-        let kept = self.strip.open && self.strip_rect().is_some_and(|r| expand(r, SLACK).contains(p));
+        let out = self.output_rect();
+        let at_edge = p.y >= out.bottom() - EDGE;
+        let kept = self.strip.open
+            && self.strip_rect().is_some_and(|r| {
+                let area = expand(r, SLACK);
+                // Keep the strip open while crossing a bottom bar to reach it.
+                Rect { h: out.bottom() - area.y, ..area }.contains(p)
+            });
         let peeking = self.strip.peek_until.is_some_and(|t| Instant::now() < t);
         if !peeking {
             self.strip.peek_until = None;
@@ -132,7 +139,8 @@ impl Tileception {
     pub fn strip_now(&self) -> Option<Rect> {
         let level = ease_out(self.strip.level());
         let strip = self.strip_rect().filter(|_| level > 0.001)?;
-        Some(Rect { y: strip.y + (1.0 - level) * (strip.h + MARGIN + 12.0), ..strip })
+        let bar_height = if self.bar_at_bottom() { BAR_H } else { 0.0 };
+        Some(Rect { y: strip.y + (1.0 - level) * (strip.h + MARGIN + 12.0 + bar_height), ..strip })
     }
 
     /// The strip at its full height, when there is anything in it.
@@ -170,7 +178,8 @@ impl Tileception {
         let h = PREVIEW_H + LABEL_H;
         let total = n * w + (n - 1.0) * PAD;
         let x0 = out.x + (out.w - total) / 2.0;
-        let y = out.bottom() - MARGIN - PAD - h - if self.strip_overflows() { FOOTER_H } else { 0.0 };
+        let bar_height = if self.bar_at_bottom() { BAR_H } else { 0.0 };
+        let y = out.bottom() - bar_height - MARGIN - PAD - h - if self.strip_overflows() { FOOTER_H } else { 0.0 };
         windows
             .into_iter()
             .skip(first)

@@ -30,6 +30,15 @@ impl Part {
     }
 }
 
+/// The edge used by the built-in bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BarPosition {
+    #[default]
+    Top,
+    Bottom,
+}
+
 /// The `[shell]` section as written.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,8 +48,9 @@ pub struct ShellConfig {
     pub power_menu: String,
     pub lock: String,
     pub media: String,
-    /// The bar along the top.
+    /// The built-in bar or its replacement.
     pub bar: String,
+    pub bar_position: BarPosition,
     /// Maximum bar slots, including the overflow button. At least one.
     pub tray_max_icons: usize,
 }
@@ -55,6 +65,7 @@ impl Default for ShellConfig {
             lock: builtin(),
             media: builtin(),
             bar: builtin(),
+            bar_position: BarPosition::Top,
             tray_max_icons: 3,
         }
     }

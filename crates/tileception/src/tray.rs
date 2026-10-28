@@ -253,11 +253,13 @@ impl Tileception {
             .unwrap_or_else(|| self.tray_items().len().saturating_sub(self.tray_inline_count()));
         let screen = self.output_rect();
         let width = WIDTH.min((screen.w - 16.0).max(1.0));
-        let available = (screen.bottom() - anchor.bottom() - 20.0).clamp(ROW + 40.0, 424.0);
+        let available =
+            if self.bar_at_bottom() { anchor.y - screen.y - 20.0 } else { screen.bottom() - anchor.bottom() - 20.0 };
+        let available = available.clamp(ROW + 40.0, 424.0);
         let height = (40.0 + count.max(1) as f64 * ROW).min(available);
         Rect::new(
             (anchor.right() - width).clamp(screen.x + 8.0, (screen.right() - width - 8.0).max(screen.x + 8.0)),
-            anchor.bottom() + 6.0,
+            self.bar_popup_y(anchor, height),
             width,
             height,
         )
@@ -418,7 +420,7 @@ impl Tileception {
             if let Some((Slot::Item(index), rect)) = slots.iter().find(|(_, rect)| rect.contains(pointer))
                 && let Some(item) = self.tray_items().get(*index)
             {
-                self.bar_tooltip(painter, rect.x - 100.0, rect.bottom() + 6.0, &item.title, &item.description);
+                self.bar_tooltip(painter, rect.x - 100.0, *rect, &item.title, &item.description);
             }
             return;
         }
