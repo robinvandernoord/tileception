@@ -17,6 +17,7 @@ libpam0g-dev      # checking the password on the lock screen (tileception-auth)
 [runtime]
 xwayland                # X11 programs
 dbus-bin                # dbus-update-activation-environment at session start
+openssh-client          # session SSH agent, shared by graphical applications
 dbus-daemon             # the notification service's tests run a private bus
 xdg-desktop-portal-wlr  # screen sharing and screenshots for apps (tileception-portals.conf)
 xdg-desktop-portal-gtk  # file pickers and other portals (the portal config's default)

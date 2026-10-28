@@ -2,6 +2,12 @@
 # Starts Tileception as a login session. The display manager runs this through
 # the Tileception entry in /usr/share/wayland-sessions.
 
+# Give every application the same agent, and stop it when the session exits.
+# Keep an agent supplied by the login environment, if there is one.
+if [ -z "$SSH_AUTH_SOCK" ] && command -v ssh-agent >/dev/null 2>&1; then
+    exec ssh-agent "$0" "$@"
+fi
+
 # Cursor theme from the desktop settings, when there are any.
 if [ -z "${XCURSOR_THEME}" ] && command -v gsettings >/dev/null 2>&1; then
     for schema in org.cinnamon.desktop.interface org.gnome.desktop.interface; do

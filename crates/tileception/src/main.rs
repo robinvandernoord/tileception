@@ -225,7 +225,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Lets D-Bus and systemd started programs (portals, notification daemons,
 /// gnome-terminal-server) find this session.
 fn export_session_environment(state: &Tileception) {
-    let vars = ["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
+    let mut vars = vec!["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
+    if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+        vars.push("SSH_AUTH_SOCK");
+    }
     let status = std::process::Command::new("dbus-update-activation-environment")
         .env("WAYLAND_DISPLAY", &state.socket_name)
         .env("XDG_SESSION_TYPE", "wayland")
