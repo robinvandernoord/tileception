@@ -44,6 +44,20 @@ smithay::backend::renderer::element::render_elements! {
     Shape = PixelShaderElement,
 }
 
+/// How long a session takes to fade in from black, in seconds: it follows the
+/// greeter's fade out, so logging in is no hard cut.
+const FADE_IN: f64 = 0.35;
+
+/// The session's first frames fading in from black.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum FadeIn {
+    #[default]
+    Off,
+    /// Until the first frame is drawn.
+    Waiting,
+    Since(std::time::Instant),
+}
+
 /// How one window is drawn this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct Drawn {
@@ -176,7 +190,7 @@ impl Tileception {
         if let Some(shapes) = self.shapes.get() {
             shapes.next_frame();
         }
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
@@ -184,6 +198,17 @@ impl Tileception {
         if let Some(buffer) = wallpaper {
             let o = self.output_rect();
             push_image(&mut elements, renderer, &buffer, (o.x, o.y), self.scale);
+        }
+        if self.fade_in == FadeIn::Waiting {
+            self.fade_in = FadeIn::Since(std::time::Instant::now());
+        }
+        if let FadeIn::Since(at) = self.fade_in {
+            let shown = crate::ui::ease_out(at.elapsed().as_secs_f64() / FADE_IN);
+            if shown >= 1.0 {
+                self.fade_in = FadeIn::Off;
+            } else {
+                elements.insert(0, solid(&self.output_rect(), [0.0, 0.0, 0.0, (1.0 - shown) as f32], self.scale));
+            }
         }
         elements
     }
@@ -434,7 +459,7 @@ impl Tileception {
     /// cursor surface when it set one, otherwise the theme's arrow.
     pub fn cursor_elements(&mut self, udev: &mut Udev) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
         }
         if let CursorImageStatus::Surface(surface) = &self.cursor_status

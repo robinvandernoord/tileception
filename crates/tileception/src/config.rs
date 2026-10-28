@@ -35,6 +35,8 @@ pub struct ConfigFile {
     pub battery: crate::battery::BatteryConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
+    /// What this session shows on the login screen.
+    pub greeter: crate::greeter::ShareConfig,
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
@@ -403,6 +405,7 @@ impl Tileception {
     }
 
     pub fn apply_config(&mut self, config: Config) {
+        let republish = self.theme != config.theme || self.config.file.greeter != config.file.greeter;
         self.world.settings = config.world_settings();
         if let Some(keyboard) = self.seat.get_keyboard() {
             let k = &config.file.keyboard;
@@ -420,6 +423,9 @@ impl Tileception {
         }
         let old_shell = std::mem::replace(&mut self.config, config).file.shell;
         self.apply_shell(&old_shell);
+        if republish {
+            self.publish_greeter_card();
+        }
         self.configure_touchpads();
         // Also lays everything out again.
         self.apply_output_scale();

@@ -80,7 +80,7 @@ impl Tileception {
     /// Where a touch starting here goes: a program's surface, or None when
     /// Tileception's own interface takes it.
     fn touch_target(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             return None;
         }
         if self.is_locked() {

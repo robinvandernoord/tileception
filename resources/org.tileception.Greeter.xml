@@ -1,0 +1,27 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  An AccountsService extension: how someone looks on the Tileception login
+  screen. Their Tileception session sets these; the greeter reads them.
+  Installed in /usr/share/dbus-1/interfaces and linked from
+  /usr/share/accountsservice/interfaces.
+-->
+<node>
+  <interface name="org.tileception.Greeter">
+    <annotation name="org.freedesktop.Accounts.VendorExtension" value="true"/>
+    <!-- People set their own without a password, like their language. -->
+    <annotation name="org.freedesktop.Accounts.Authentication.ChangeOwn"
+                value="org.freedesktop.accounts.change-own-user-data"/>
+    <!-- "#rrggbb", or empty when not shared. -->
+    <property name="Accent" type="s" access="readwrite">
+      <annotation name="org.freedesktop.Accounts.DefaultValue" value="''"/>
+    </property>
+    <property name="AccentEnd" type="s" access="readwrite">
+      <annotation name="org.freedesktop.Accounts.DefaultValue" value="''"/>
+    </property>
+    <!-- "dark", "light", "default", or empty. -->
+    <property name="ColourScheme" type="s" access="readwrite">
+      <annotation name="org.freedesktop.Accounts.DefaultValue" value="''"/>
+    </property>
+  </interface>
+</node>

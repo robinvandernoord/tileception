@@ -35,7 +35,16 @@ pub struct Notifications {
     pub open: bool,
     offset: usize,
     thumbnails: RefCell<HashMap<u32, Option<Preview>>>,
+    /// Shown by [`Tileception::notify_locally`] so far, for their ids.
+    local: u32,
 }
+
+/// The category of [`Tileception::notify_locally`]'s notifications: the only
+/// ones shown on a lock screen, which keeps everyone else's to itself.
+const LOCAL_CATEGORY: &str = "x-tileception.local";
+
+/// How long a notification of Tileception's own stays up.
+const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Tileception {
     pub fn start_notifications(&mut self, address: Option<String>) {
@@ -124,6 +133,47 @@ impl Tileception {
         }
     }
 
+    /// Shows a notification of Tileception's own without the service, such as
+    /// the greeter's feedback. It goes away by itself and stays out of the history.
+    pub fn notify_locally(&mut self, summary: &str, body: &str, urgency: Urgency) {
+        // Counting down from the top keeps clear of the service's ids.
+        self.notifications.local = self.notifications.local.wrapping_add(1);
+        let id = u32::MAX - self.notifications.local;
+        let notification = Notification {
+            id,
+            app_name: "Tileception".into(),
+            app_icon: None,
+            summary: summary.into(),
+            body: html_escape::encode_text(body).into_owned(),
+            actions: Vec::new(),
+            default_action: false,
+            urgency,
+            image: None,
+            desktop_entry: None,
+            category: Some(LOCAL_CATEGORY.into()),
+            resident: false,
+            transient: true,
+            suppress_sound: true,
+            x: None,
+            y: None,
+            sound_file: None,
+            created: std::time::SystemTime::now(),
+            expires: Some(Instant::now() + LOCAL_TIMEOUT),
+            show_popup: true,
+        };
+        self.notifications.active.insert(id, Arc::new(notification));
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(LOCAL_TIMEOUT);
+        let removed = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.notifications.active.remove(&id);
+            state.schedule_render();
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        });
+        if let Err(error) = removed {
+            tracing::warn!("could not time a notification: {error}");
+        }
+        self.schedule_render();
+    }
+
     pub fn do_not_disturb(&self) -> bool {
         self.notifications.service.as_ref().is_some_and(|service| service.do_not_disturb())
     }
@@ -189,7 +239,14 @@ impl Tileception {
             return cards;
         }
         let w = (screen.w - 24.0).clamp(1.0, POPUP_W);
-        let mut items: Vec<_> = self.notifications.active.values().filter(|n| n.show_popup).cloned().collect();
+        let locked = self.is_locked();
+        let mut items: Vec<_> = self
+            .notifications
+            .active
+            .values()
+            .filter(|n| n.show_popup && (!locked || n.category.as_deref() == Some(LOCAL_CATEGORY)))
+            .cloned()
+            .collect();
         // Questions waiting for an answer (no timeout, with buttons) stay in the
         // corner, so newer popups cannot push them off screen.
         items.sort_by_key(|n| (n.expires.is_some() || n.actions.is_empty(), std::cmp::Reverse(n.created)));

@@ -19,6 +19,8 @@ pub enum LockState {
     #[default]
     Unlocked,
     BuiltIn,
+    /// `--greeter`: the login screen, which nothing unlocks.
+    Greeter,
     Locked {
         surface: Option<LockSurface>,
     },
@@ -51,7 +53,7 @@ impl SessionLockHandler for Tileception {
     }
 
     fn unlock(&mut self) {
-        if matches!(self.lock, LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             return;
         }
         tracing::info!("session unlocked");
@@ -75,16 +77,21 @@ delegate_session_lock!(Tileception);
 impl Tileception {
     /// Unlocks without the locker's consent; see `Command::Unlock`.
     pub fn force_unlock(&mut self) {
-        if self.is_locked() {
+        if self.is_locked() && !matches!(self.lock, LockState::Greeter) {
             tracing::warn!("session unlocked by command");
             self.lock = LockState::Unlocked;
-            self.builtin_locker.clear();
+            self.greeter = None;
             self.force_keyboard_focus_sync();
         }
     }
 
     pub fn is_locked(&self) -> bool {
         !matches!(self.lock, LockState::Unlocked)
+    }
+
+    /// Tileception draws the lock screen itself: the built-in locker or the greeter.
+    pub fn draws_lock_screen(&self) -> bool {
+        matches!(self.lock, LockState::BuiltIn | LockState::Greeter)
     }
 
     pub fn lock_surface(&self) -> Option<&WlSurface> {
@@ -95,8 +102,9 @@ impl Tileception {
     }
 
     pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        if matches!(self.lock, LockState::BuiltIn) {
-            return self.builtin_lock_elements(renderer);
+        match self.lock {
+            LockState::BuiltIn | LockState::Greeter => return self.greeter_elements(renderer),
+            _ => {}
         }
         let Some(surface) = self.lock_surface() else { return Vec::new() };
         let surfaces = render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified);

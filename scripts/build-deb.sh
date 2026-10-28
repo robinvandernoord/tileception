@@ -102,6 +102,11 @@ install -D -m 644 resources/tileception-portals.conf \
 install -D -m 644 resources/tileception.portal \
     "$root/usr/share/xdg-desktop-portal/portals/tileception.portal"
 install -D -m 644 crates/tileception-auth/pam/tileception "$root/etc/pam.d/tileception"
+install -D -m 644 resources/greeter.toml "$root/etc/tileception/greeter.toml"
+install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
+mkdir -p "$root/usr/share/accountsservice/interfaces"
+ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
+    "$root/usr/share/accountsservice/interfaces/org.tileception.Greeter.xml"
 install -D -m 644 packaging/copyright "$root/usr/share/doc/$package/copyright"
 install -D -m 644 README.md "$root/usr/share/doc/$package/README.md"
 gzip -9n "$root/usr/share/doc/$package/README.md"
@@ -151,6 +156,8 @@ recommends=$(group runtime | grep -vx -e xwayland -e dbus-daemon | paste -sd, - 
 # installs from the apt repository; a .deb installed by hand goes without.
 recommends="tileception-archive-keyring, $recommends"
 suggests=$(group optional | paste -sd, - | sed 's/,/, /g')
+# For the login screen, `tileception --greeter`.
+suggests="greetd, $suggests"
 
 installed_size() { du -sk --exclude=DEBIAN "$1" | cut -f1; }
 
@@ -172,7 +179,34 @@ Description: zoomable, nesting tiling Wayland compositor
  session on DRM/KMS, arranges X11 programs through Xwayland, and has a
  built-in launcher, notification centre, lock screen and power menu.
 EOF
-echo /etc/pam.d/tileception > "$root/DEBIAN/conffiles"
+printf '%s\n' /etc/pam.d/tileception /etc/tileception/greeter.toml > "$root/DEBIAN/conffiles"
+
+# The greeter remembers the last login in a directory greetd's user owns, made
+# when greetd is there (install-greeter.sh's step, for a later greetd).
+# Sessions drop their wallpaper for it in a folder nobody may list, and share
+# their accent through the AccountsService extension, loaded when it starts.
+cat > "$root/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    if getent passwd _greetd >/dev/null; then
+        install -d -o _greetd -g _greetd -m 0700 /var/lib/tileception-greeter
+    fi
+    install -d -m 1733 /var/cache/tileception-greeter
+    systemctl try-restart accounts-daemon.service >/dev/null 2>&1 || true
+fi
+EOF
+cat > "$root/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    systemctl try-restart accounts-daemon.service >/dev/null 2>&1 || true
+fi
+if [ "$1" = purge ]; then
+    rm -rf /var/lib/tileception-greeter /var/cache/tileception-greeter
+fi
+EOF
+chmod 755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm"
 
 cat > "$dbg/DEBIAN/control" <<EOF
 Package: $package-dbgsym

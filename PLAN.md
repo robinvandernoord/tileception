@@ -116,8 +116,9 @@ Decided 2026-10-18. Implementation is pending.
 - [ ] Ask about the greeter explicitly for Recommended and Customize, even when a
   login screen already exists, so users know the option is available. Detect and
   default to keeping the current login setup. Minimal skips this question, but an
-  explicit greeter flag can override that. Greeter support still needs implementing;
-  changes affect login to other desktop sessions too.
+  explicit greeter flag can override that. `tileception --greeter` exists (see the
+  README); the installer still has to set up greetd, its state directory and
+  `/etc/tileception/greeter.toml`. Changes affect login to other desktop sessions too.
 - [ ] Treat Doctor setup separately, explaining any provider/account requirements
   and permissions. Recommended should not require configuring an agent.
 - [ ] Provide `--non-interactive` and equivalent flags for presets, greeter choice

@@ -96,7 +96,7 @@ impl Tileception {
 
     /// What is on screen now, ready to render into a capture.
     fn scene(&mut self, renderer: &mut GlesRenderer) -> Scene {
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };

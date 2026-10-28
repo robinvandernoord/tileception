@@ -316,7 +316,11 @@ pub fn parse(line: &str) -> Result<Command, String> {
 impl Tileception {
     /// Runs a command; the reply is for `tileception msg`.
     pub fn execute(&mut self, command: Command) -> Result<String, String> {
+        // Scripts may type on Tileception's own lock screen and greeter:
+        // pretend input only works nested or headless, never on a real session.
+        let typing = self.draws_lock_screen() && matches!(command, Command::Inject(_));
         if self.is_locked()
+            && !typing
             && !matches!(
                 command,
                 Command::Unlock

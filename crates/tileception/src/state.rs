@@ -124,6 +124,7 @@ pub struct Tileception {
     /// Running as the desktop session (not nested or headless), so desktop
     /// services such as notifications may be started.
     pub session_services: bool,
+    pub fade_in: crate::render::FadeIn,
     /// XDG entries waiting for Xwayland startup to finish.
     pub pending_autostart: Vec<tileception_apps::AutostartEntry>,
     /// Private buses for the notification service and media players (tests),
@@ -157,6 +158,8 @@ pub struct Tileception {
     pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     pub lock: crate::lock::LockState,
     pub builtin_locker: crate::builtin_lock::BuiltinLocker,
+    /// Set in `--greeter` mode.
+    pub greeter: Option<Box<crate::greeter::Greeter>>,
     pub pending_captures: Vec<crate::capture::PendingCapture>,
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
@@ -302,6 +305,7 @@ impl Tileception {
             session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(&dh, |_| true),
             lock: Default::default(),
             builtin_locker: Default::default(),
+            greeter: None,
             pending_captures: Vec::new(),
             theme,
             text: Default::default(),
@@ -314,6 +318,7 @@ impl Tileception {
             doctor: Default::default(),
             duck: Default::default(),
             session_services: false,
+            fade_in: Default::default(),
             pending_autostart: Vec::new(),
             notification_bus: None,
             media_bus: None,

@@ -1,0 +1,53 @@
+# /etc/tileception/greeter.toml: the Tileception login screen.
+# Every key is optional; these are the defaults. A mistake in this file is
+# logged and the defaults are used, so the login screen always comes up.
+
+# The session preselected for someone who has not logged in here before, by
+# the session entry's file name without .desktop (in /usr/share/wayland-sessions
+# or /usr/share/xsessions).
+default_session = "tileception"
+# Sessions left out of the list, by file name or by name.
+hidden_sessions = ["tileception-nested"]
+# Accounts left out of the tabs. System accounts (outside UID_MIN..UID_MAX in
+# /etc/login.defs, or with a nologin shell) are never listed. The + tab still
+# takes any username.
+hidden_users = []
+# tabs: one tab per person on the login tile. (tiles is not drawn yet.)
+users_as = "tabs"
+# strftime, such as "%H:%M" or "%I:%M %p".
+clock_format = "%H:%M"
+# What starts an X server around an X session. X sessions are left out when
+# its program is not installed.
+xsession_wrapper = "startx /usr/bin/env"
+# Who logged in last and with which session. The directory must be writable
+# by the greeter's user (_greetd on Debian and Ubuntu).
+# state_file = "/var/lib/tileception-greeter/state.toml"
+
+[panels]
+# Columns of panels, each top to bottom, sized by ratio. On a portrait screen
+# the columns become rows. Panels: login (required), clock, session.
+columns = [["login"], ["clock", "session"]]
+ratios = [1.75, 1]
+
+[per_user]
+# Give each person their own accent: the one their Tileception session shares,
+# else one made from their login name.
+accent = true
+# Their shared wallpaper between the tiles (else wallpaper_fallback); off uses
+# the [theme] wallpaper for everyone.
+wallpaper = true
+# generated (from the accent), system (the [theme] wallpaper) or flat.
+wallpaper_fallback = "generated"
+
+[theme]
+# The same keys as the session's [theme], such as:
+# accent = "#2bd4a7"
+# accent_end = "#5c8ff2"
+# wallpaper = "/usr/share/backgrounds/tide.jpg"
+
+[keyboard]
+# The same keys as the session's [keyboard]. Without a layout, the system's
+# keymap from /etc/default/keyboard is used.
+# layout = "nl"
+# variant = ""
+# options = "compose:ralt"

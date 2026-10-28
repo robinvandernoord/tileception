@@ -193,10 +193,9 @@ impl Tileception {
                         return FilterResult::Intercept(commands.to_vec());
                     }
                 }
-                if matches!(state.lock, crate::lock::LockState::BuiltIn) {
-                    if pressed {
-                        state.builtin_lock_key(sym, mods.ctrl, mods.caps_lock);
-                    }
+                // The built-in lock screen and the greeter are the same tiles.
+                if state.draws_lock_screen() {
+                    state.greeter_key(sym, Mods::from_state(mods), mods.caps_lock, pressed);
                     return FilterResult::Intercept(Vec::new());
                 }
                 return FilterResult::Forward;
@@ -459,7 +458,8 @@ impl Tileception {
 
     pub(crate) fn on_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer = pos;
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
+            self.greeter_motion(pos.x, pos.y);
             return;
         }
         let at = tileception_core::Point::new(pos.x, pos.y);
@@ -607,7 +607,10 @@ impl Tileception {
         if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
             return;
         }
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
+            if button == BTN_LEFT && state == ButtonState::Pressed {
+                self.greeter_click(self.pointer.x, self.pointer.y);
+            }
             return;
         }
         let serial = SERIAL_COUNTER.next_serial();
@@ -817,7 +820,7 @@ impl Tileception {
     }
 
     fn on_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
-        if matches!(self.lock, crate::lock::LockState::BuiltIn) {
+        if self.draws_lock_screen() {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {

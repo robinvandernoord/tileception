@@ -100,6 +100,11 @@ speed = 0
 # How far, in pixels, fingers travel before a swipe binding runs.
 swipe_distance = 60
 
+[greeter]
+# Show your accent colours and wallpaper on the Tileception login screen
+# (tileception --greeter). Off takes them back the next time this config loads.
+share = true
+
 [duck]
 # How big the rubber duck is: 1 is normal, 2 twice as big (0.5 to 4).
 size = 1

@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   `tileception [--nested | --session] [-- command args...]`
+//!   `tileception --greeter` is the login screen, started by greetd.
 //!   `tileception msg <command>` controls a running instance.
 //!
 //! Without a flag, Tileception runs nested when started inside another desktop
@@ -23,6 +24,7 @@ mod doctor_policy;
 mod duck;
 mod focus;
 mod gestures;
+mod greeter;
 mod handlers;
 mod headless;
 mod idle;
@@ -37,6 +39,7 @@ mod media;
 mod minimized;
 mod notifications;
 mod osd;
+mod password;
 mod persistence;
 mod pointer_lock;
 mod power;
@@ -69,6 +72,7 @@ pub use state::Tileception;
 const USAGE: &str = "\
 Usage:
   tileception [--nested | --session | --headless] [-- command args...]
+  tileception --greeter [--nested | --headless]
   tileception msg <command> [args...]
   tileception msg --help
 
@@ -80,6 +84,8 @@ Modes:
   --nested      run in a window inside another desktop
   --session     run on the hardware (from a TTY or login manager)
   --headless    no screen, for scripted tests; screenshots still work
+  --greeter     the login screen, for greetd: on the hardware unless
+                nested or headless, where every password is `tide`
 
 Options:
   -h, --help    print this help
@@ -94,6 +100,9 @@ Files:
                                              on save
   ~/.local/state/tileception/tileception.log the session's log (from
                                              tileception-session)
+  /etc/tileception/greeter.toml              the greeter's settings
+  /var/lib/tileception-greeter/state.toml    who logged in last, and with
+                                             which session (greeter)
 
 Environment:
   TILECEPTION_SOCKET         command socket for `msg`; set for programs inside
@@ -102,6 +111,11 @@ Environment:
   TILECEPTION_HEADLESS_SIZE  headless screen size, such as 1280x800
   TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
   RUST_LOG                   log filter (default: info,smithay=warn)
+  GREETD_SOCK                greetd's socket, set by greetd (greeter)
+  TILECEPTION_GREETER_CONFIG the greeter's settings file, for tests
+  TILECEPTION_GREETER_STATE  the greeter's memory file, for tests
+  TILECEPTION_GREETER_PASSWD a passwd file to list people from, for tests
+  TILECEPTION_GREETER_SESSIONS Wayland session directories, for tests
 ";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -125,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("tileception {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            "--nested" | "--session" | "--headless" => {}
+            "--nested" | "--session" | "--headless" | "--greeter" => {}
             // A typo must not start a compositor.
             other => {
                 eprintln!("tileception: unknown argument {other:?}\n\n{USAGE}");
@@ -142,13 +156,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let headless = argv.iter().any(|a| a == "--headless");
+    let greeter = argv.iter().take_while(|a| *a != "--").any(|a| a == "--greeter");
     let nested = if argv.iter().any(|a| a == "--session") || headless {
         false
+    } else if greeter {
+        // greetd may leave WAYLAND_DISPLAY or DISPLAY set; only the flag nests.
+        argv.iter().any(|a| a == "--nested")
     } else {
         argv.iter().any(|a| a == "--nested")
             || std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var_os("DISPLAY").is_some()
     };
+    if greeter {
+        return run_greeter(nested, headless);
+    }
     let config_path = config::path();
     let config = config::load(&config_path);
 
@@ -177,6 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     state.session_services = !nested && !headless;
     if !nested && !headless {
+        state.fade_in = render::FadeIn::Waiting;
+        state.publish_greeter_card();
         state.start_appearance();
         state.start_sleep_watch();
         export_session_environment(&state);
@@ -227,6 +250,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
+    Ok(())
+}
+
+/// The login screen: the compositor with no clients, the user's config or
+/// desktop services, drawing the greeter on its own.
+fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let file = greeter::GreeterFile::load();
+    // Never the greeter user's config.toml: config::load would write one.
+    let mut config = config::Config::default_config();
+    config.file.theme = file.theme.clone();
+    config.file.keyboard = file.keymap();
+    let mut event_loop: EventLoop<Tileception> = EventLoop::try_new()?;
+    let display: Display<Tileception> = Display::new()?;
+    let mut state = Tileception::new(&mut event_loop, display, config, nested);
+    state.init_idle();
+    if headless {
+        headless::init(&mut event_loop, &mut state)?;
+    } else if nested {
+        winit::init(&mut event_loop, &mut state)?;
+    } else {
+        udev::init(&mut event_loop, &mut state)?;
+    }
+    // Scripted tests drive a nested or headless greeter through `msg`. On the
+    // hardware nothing may: the socket would let the greeter user run commands.
+    let socket = (nested || headless).then(|| ipc::socket_path(&state.socket_name.to_string_lossy()));
+    if let Some(socket) = &socket {
+        ipc::listen(&mut event_loop, socket)?;
+        state.ipc_socket = Some(socket.clone());
+        tracing::info!("greeter listening on TILECEPTION_SOCKET={}", socket.display());
+    }
+    if !nested && !headless {
+        state.start_battery(None, false);
+    }
+    state.start_greeter(file)?;
+    event_loop.run(None, &mut state, |state| {
+        let _ = state.display_handle.flush_clients();
+    })?;
+    if let Some(socket) = socket {
+        let _ = std::fs::remove_file(socket);
+    }
     Ok(())
 }
 

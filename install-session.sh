@@ -83,3 +83,22 @@ if [ -d /usr/share/slick-greeter/badges ]; then
         echo "Added the Tileception badge to the login screen"
     fi
 fi
+
+# Once make install-greeter set up the login screen, keep its copy current:
+# greetd runs /usr/local/bin/tileception, which cannot be the one in ~/.local.
+greeter=/usr/local/bin/tileception
+if [ -e "$greeter" ]; then
+    if cmp -s target/release/tileception "$greeter"; then
+        echo "The login screen's tileception is up to date"
+    else
+        sudo install -m 755 target/release/tileception "$greeter"
+        echo "Updated the login screen's $greeter"
+    fi
+    extension=/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml
+    if ! cmp -s resources/org.tileception.Greeter.xml "$extension"; then
+        sudo install -D -m 644 resources/org.tileception.Greeter.xml "$extension"
+        # AccountsService reads its extensions when it starts.
+        sudo systemctl try-restart accounts-daemon.service
+        echo "Updated the org.tileception.Greeter AccountsService extension"
+    fi
+fi
