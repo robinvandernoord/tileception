@@ -2700,6 +2700,8 @@ fn export_doctor_docs() -> std::io::Result<()> {
         ("installation.md", include_str!("../../../docs/installation.md")),
         ("greeter.md", include_str!("../../../docs/greeter.md")),
         ("doctor.md", include_str!("../../../docs/doctor.md")),
+        ("troubleshooting.md", include_str!("../../../docs/troubleshooting.md")),
+        ("development.md", include_str!("../../../docs/development.md")),
         ("index.md", include_str!("../../../docs/index.md")),
     ] {
         let content = content.replace("(../crates/tileception/src/default-config.toml)", "(../default-config.toml)");

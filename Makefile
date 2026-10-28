@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test lint install uninstall install-greeter uninstall-greeter try-greeter nested deb deb-docker
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall install-greeter uninstall-greeter try-greeter nested deb deb-docker
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -8,11 +8,12 @@ export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
 help:
 	@echo "make tools       install cargo-plane via binstall (no source builds)"
 	@echo "make codespace   set up a Codespace and install remote build dependencies"
-	@echo "make deps        install missing local system packages (asks first)"
+	@echo "make deps        install local dependencies and Rust components"
 	@echo "make check-deps  report missing local system packages"
 	@echo "make build       build the compositor (release)"
 	@echo "make clean       remove workspace and crate build directories"
 	@echo "make test        run the tests of every crate"
+	@echo "make fmt         format the workspace and independent crates"
 	@echo "make lint        clippy and formatting checks"
 	@echo "make install     check packages, build, install the session"
 	@echo "make uninstall   remove the session (config and logs are kept)"
@@ -41,6 +42,12 @@ codespace: tools
 	@echo "Codespace server is fully prepared and ready to build Tileception."
 
 deps: tools
+	@if command -v rustup >/dev/null 2>&1; then \
+		rustup component add rustfmt clippy; \
+	elif ! command -v rustfmt >/dev/null 2>&1 || ! command -v cargo-clippy >/dev/null 2>&1; then \
+		echo "rustfmt and Clippy are required; install them with your Rust distribution or use rustup." >&2; \
+		exit 1; \
+	fi
 	@scripts/deps.sh install
 
 check-deps:
@@ -61,6 +68,10 @@ test: tools
 	cargo plane exec scripts/deps.sh check build
 	cargo plane test --workspace
 	@for c in $(CRATES); do echo "== $$c"; (cd $$c && cargo plane exec env -u DBUS_SESSION_BUS_ADDRESS cargo test) || exit 1; done
+
+fmt: tools
+	cargo plane fmt --all
+	@for c in $(CRATES); do echo "== $$c"; (cd $$c && cargo plane fmt) || exit 1; done
 
 lint: tools
 	cargo plane fmt --all --check

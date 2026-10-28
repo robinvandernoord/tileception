@@ -67,7 +67,7 @@ Released up to v0.4.0 and running as Robin's session:
 - Tide theming, wallpaper, text rendering, HiDPI and fractional scaling.
 - Built-in shell: launcher (calculator, conversions, windows, commands, app
   actions, times, colours, characters, paths, `>` commands), welcome screen,
-  top bar with breadcrumb and calendar, notifications with do not disturb,
+  top or bottom bar with breadcrumb and calendar, notifications with do not disturb,
   power menu, lock screen, volume/media/brightness controls with audio device
   switching, minimizing with the bottom strip. All swappable through `[shell]`.
 - The doctor: an ACP agent panel (Super+/) with ask, config and yolo modes.
@@ -97,6 +97,34 @@ the keyboard only once its first configure is sent.)
 - More monitors: a layout per screen, moving windows between them. Comes first
   once Robin can test it on a second screen.
 
+#### Login screen
+
+On the `feature/greeter` branch, not merged or released. See
+[docs/greeter.md](docs/greeter.md) and the design in
+[docs/design-greeter.html](docs/design-greeter.html).
+
+- [x] `tileception --greeter` for greetd: people as tabs, the sessions (Wayland,
+  and X through `xsession_wrapper`), an action launcher (power, sessions, people),
+  wrong passwords and PAM messages as notifications, the last user and each
+  person's last session remembered, `/etc/tileception/greeter.toml`, the system
+  keymap.
+- [x] The built-in lock screen is the same tiles, checking the password with PAM,
+  with counts instead of notification text and media without titles.
+- [x] Login fade: the greeter fades out, the session's first frames fade in.
+- [x] Per-person looks: sessions put their accent in AccountsService (the
+  `org.tileception.Greeter` extension) and a copy of their wallpaper in
+  `/var/cache/tileception-greeter` (the greeter checks each file's owner);
+  `[greeter] share = false` takes them back.
+- [x] `make try-greeter` (a spare console), `make install-greeter` and
+  `make uninstall-greeter` (switching the display manager and back). The `.deb`
+  ships the config and the extension but does not switch.
+- [ ] Try it on hardware with `make try-greeter`, then as the login screen.
+- [ ] One setup for `.deb` and `/install` users, shared with the make targets
+  (see the greeter step under Guided installation). Where it lives is undecided.
+- [ ] Not built yet: `users_as = "tiles"`, message-of-the-day and accessibility
+  panels, Ctrl+Space layout switching, more than one screen, reduced motion, an
+  accent taken from a shared wallpaper, and the full tile-to-window morph at login.
+
 #### Guided installation
 
 Decided 2026-10-18. Implementation is pending.
@@ -116,9 +144,10 @@ Decided 2026-10-18. Implementation is pending.
 - [ ] Ask about the greeter explicitly for Recommended and Customize, even when a
   login screen already exists, so users know the option is available. Detect and
   default to keeping the current login setup. Minimal skips this question, but an
-  explicit greeter flag can override that. `tileception --greeter` exists (see the
-  README); the installer still has to set up greetd, its state directory and
-  `/etc/tileception/greeter.toml`. Changes affect login to other desktop sessions too.
+  explicit greeter flag can override that. Choosing the greeter does what
+  `make install-greeter` does from a checkout (greetd, its config, the display
+  manager switch); see Login screen above. Changes affect login to other desktop
+  sessions too.
 - [ ] Treat Doctor setup separately, explaining any provider/account requirements
   and permissions. Recommended should not require configuring an agent.
 - [ ] Provide `--non-interactive` and equivalent flags for presets, greeter choice
@@ -140,13 +169,15 @@ Decided 2026-10-18. Implementation is pending.
 
 ### Later
 
+- [ ] Compare contents or hashes before exporting Doctor's bundled documentation
+  and default config. Write only missing or changed files to avoid unnecessary
+  writes and preserve timestamps for unchanged files.
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
   swipe live instead of one step per gesture, and window management gestures.
 - Live blur and glass styles.
 - A settings window instead of editing the config file.
 - Top bar extras: a minimap (live outline of the tree with the camera's frame;
-  click to fly, drag to pan), `position = "bottom"` moving the minimized strip
-  to the top, calendar events from an .ics file or URL.
+  click to fly, drag to pan), calendar events from an .ics file or URL.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; crop or pad instead, as niri does. Only if it shows up
   in practice.
@@ -190,10 +221,6 @@ and the launcher categories.
 - Notification cards: app icon left, app name bold with the time
   right-aligned on the same line, at most two lines of body, stacked just
   above the bar. [notifications](design/lunaria/notifications.png)
-- Lock screen: large clock with the date above it at top left, status at top
-  right, a small pill password field with the user at bottom centre, round
-  settings and power buttons in the bottom corners.
-  [lock-screen](design/lunaria/lock-screen.png)
 - Generated wallpaper: a soft, defocused gradient drawn by the compositor as
   the default, shifting with the time of day or `colour_scheme`, in Tide's
   colours. [floating-bar](design/lunaria/floating-bar.png) shows theirs.

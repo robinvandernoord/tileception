@@ -20,6 +20,8 @@ if they lack unattended setup support. Source compilation is
 disabled to keep installation usable on small machines. If no binary is
 available, report the failure and wait for the release to become available.
 `make deps` also runs this tool installation before checking system packages.
+It installs rustfmt and Clippy through rustup too; for a Rust installation
+without rustup, both tools must already be available.
 
 On a machine with more than 4 GB of RAM, the simplest setup is local execution:
 
@@ -86,7 +88,7 @@ Prefer the Make targets, which use the selected cargo-plane builder:
 Replace `cargo build`, `check`, `test`, `clippy`, `run` and `fmt` with
 `cargo plane build`, `check`, `test`, `clippy`, `run` and `fmt` respectively,
 preserving arguments and the `--` separator. Formatting still runs locally;
-install the local rustfmt component with `rustup component add rustfmt`.
+`make deps` prepares the local rustfmt and Clippy components.
 
 `tileception-apps`, `tileception-auth` and `tileception-notify` have independent
 workspaces. Root `--workspace` commands do not check or test them. Run commands
