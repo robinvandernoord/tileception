@@ -55,7 +55,6 @@ const STETHOSCOPE: &str =
     r#"<path d="M6 3v6a5 5 0 0 0 10 0V3"/><path d="M11 14v2a4 4 0 0 0 8 0v-3"/><circle cx="19" cy="11" r="2"/>"#;
 const LAYERS: &str = r#"<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>"#;
 const SCREEN: &str = r#"<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>"#;
-const MINIMIZED: &str = r#"<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 15h8"/>"#;
 const BOLT: &str = r#"<path d="M13 3L6 13h5l-1 8 7-10h-5z"/>"#;
 
 /// The last error in the log, for the health light. Filled from any thread
@@ -195,7 +194,6 @@ enum Hit {
     Slot(usize),
     Media,
     Dnd,
-    Minimized,
     Clock,
     Battery,
     Notifications,
@@ -237,7 +235,6 @@ enum ChipKind {
     Media,
     Capture,
     Dnd,
-    Minimized,
 }
 
 #[derive(Debug, Clone)]
@@ -539,10 +536,6 @@ impl Tileception {
         if self.notification_status().is_some_and(|(_, dnd)| dnd) {
             chips.push((ChipKind::Dnd, "Do not disturb".to_string()));
         }
-        let minimized = self.world.minimized().count();
-        if minimized > 0 {
-            chips.push((ChipKind::Minimized, format!("{minimized} minimized")));
-        }
         if let Some(player) = self.media.snapshot.media.active() {
             let label = match (player.title.trim(), player.artist.trim()) {
                 ("", _) => player.identity.clone(),
@@ -583,7 +576,6 @@ impl Tileception {
             return match chip.kind {
                 ChipKind::Media => Some(Hit::Media),
                 ChipKind::Dnd => Some(Hit::Dnd),
-                ChipKind::Minimized => Some(Hit::Minimized),
                 ChipKind::Capture => Some(Hit::Bar),
             };
         }
@@ -676,7 +668,6 @@ impl Tileception {
                 }
             }
             Hit::Dnd => self.toggle_dnd(),
-            Hit::Minimized => self.peek_minimized(),
             Hit::Clock => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
             Hit::Battery | Hit::Bar => {}
@@ -853,12 +844,7 @@ impl Tileception {
         }
 
         for chip in &layout.chips {
-            let lit = matches!(
-                (chip.kind, hit),
-                (ChipKind::Media, Some(Hit::Media))
-                    | (ChipKind::Dnd, Some(Hit::Dnd))
-                    | (ChipKind::Minimized, Some(Hit::Minimized))
-            );
+            let lit = matches!((chip.kind, hit), (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)));
             let (icon, tint) = match chip.kind {
                 ChipKind::Media => (
                     match self.media.snapshot.media.active().map(|p| p.status) {
@@ -869,7 +855,6 @@ impl Tileception {
                 ),
                 ChipKind::Capture => (SCREEN, t.danger),
                 ChipKind::Dnd => (glyph::MOON, t.warning),
-                ChipKind::Minimized => (MINIMIZED, t.muted),
             };
             p.shape(
                 chip.rect,
