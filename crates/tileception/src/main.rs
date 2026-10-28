@@ -256,6 +256,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// The login screen: the compositor with no clients, the user's config or
 /// desktop services, drawing the greeter on its own.
 fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // logind gives a greeter its runtime directory, and the seat, with its
+    // session; greetd started from inside another session gets neither.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+    if !runtime.is_some_and(|dir| dir.is_dir()) {
+        let error = "XDG_RUNTIME_DIR is not set: the greeter has no logind session. Start greetd from \
+                     systemd (as a service), not from a terminal inside another session.";
+        tracing::error!("{error}");
+        return Err(error.into());
+    }
     let file = greeter::GreeterFile::load();
     // Never the greeter user's config.toml: config::load would write one.
     let mut config = config::Config::default_config();

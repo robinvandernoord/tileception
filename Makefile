@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test lint install uninstall install-greeter uninstall-greeter nested deb deb-docker
+.PHONY: help tools codespace deps check-deps build clean test lint install uninstall install-greeter uninstall-greeter try-greeter nested deb deb-docker
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -16,8 +16,9 @@ help:
 	@echo "make lint        clippy and formatting checks"
 	@echo "make install     check packages, build, install the session"
 	@echo "make uninstall   remove the session (config and logs are kept)"
-	@echo "make install-greeter    set up the login screen for greetd (not enabled)"
-	@echo "make uninstall-greeter  remove it again (greetd and its config are kept)"
+	@echo "make install-greeter    make the Tileception greeter the login screen (from the next boot)"
+	@echo "make uninstall-greeter  switch back to the previous login screen and remove it"
+	@echo "make try-greeter        run the greeter on a spare console, login screen untouched"
 	@echo "make nested      run a development build in a window"
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
@@ -79,6 +80,10 @@ install-greeter: tools
 
 uninstall-greeter:
 	scripts/uninstall-greeter.sh
+
+try-greeter: tools
+	@scripts/deps.sh check build
+	scripts/try-greeter.sh
 
 nested: tools
 	cargo plane run -p tileception -- --nested
