@@ -150,6 +150,56 @@ Decided 2026-10-18. Implementation is pending.
   commit the new size; crop or pad instead, as niri does. Only if it shows up
   in practice.
 
+### Design ideas from LunariaOS
+
+Visual ideas from [LunariaOS](https://lunariaos.com) (a Debian-based desktop,
+floating windows, not released, no public source). Its videos show mockups,
+so this is about the look, not code: Tide's shape and colours stay, and the
+dock, the window buttons and the frosted glass are left out. Screenshots are
+frames from the site's videos
+([intro](https://lunariaos.com/videos/introduction/startanimation.mp4),
+[design](https://lunariaos.com/videos/overview/newuniquedsg.mp4),
+[fluidity](https://lunariaos.com/videos/overview/unmatchedfluidity.mp4)),
+kept locally in `design/lunaria/` (gitignored, not ours to commit).
+
+Most worthwhile first: the floating bar, the status capsule, concentric radii
+and the launcher categories.
+
+- Floating bar: inset by `gap` on every side and rounded with `radius`, so it
+  reads as one more tile instead of a strip on the edge. The hairline and
+  slide-over behaviour while a window is framed stays.
+  [floating-bar](design/lunaria/floating-bar.png)
+- Status capsule: the relevant chips (network, volume, battery) share one
+  inner pill that grows and shrinks, with the clock beside it, apart from the
+  breadcrumb and saved views.
+  [status-capsule](design/lunaria/status-capsule.png)
+- Concentric radii: a shape inside another is rounded by the outer radius less
+  the padding between them. Going further, tile radius could follow depth or
+  zoom level so the nesting shows in the shapes.
+  [nested-capsules](design/lunaria/nested-capsules.png),
+  [window-controls](design/lunaria/window-controls.png)
+- Selection pills: the selected item is a filled accent pill, the hovered one
+  an outlined pill. For launcher rows, breadcrumb crumbs and saved views.
+  [selection-pills](design/lunaria/selection-pills.png)
+- Launcher categories: filter chips above the results, taken from the
+  `Categories=` key of the `.desktop` files (nothing to name by hand), and a
+  footer with the user, files and the power menu.
+  [launcher-categories](design/lunaria/launcher-categories.png),
+  [launcher-open](design/lunaria/launcher-open.png)
+- Notification cards: app icon left, app name bold with the time
+  right-aligned on the same line, at most two lines of body, stacked just
+  above the bar. [notifications](design/lunaria/notifications.png)
+- Lock screen: large clock with the date above it at top left, status at top
+  right, a small pill password field with the user at bottom centre, round
+  settings and power buttons in the bottom corners.
+  [lock-screen](design/lunaria/lock-screen.png)
+- Generated wallpaper: a soft, defocused gradient drawn by the compositor as
+  the default, shifting with the time of day or `colour_scheme`, in Tide's
+  colours. [floating-bar](design/lunaria/floating-bar.png) shows theirs.
+- Popups open from their origin: the launcher, calendar and notifications
+  scale and fade out of the bar element that opened them.
+  [launcher-open](design/lunaria/launcher-open.png)
+
 ### Not wanted
 
 - App-matched layout restoration across logins.

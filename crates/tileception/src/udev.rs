@@ -15,7 +15,7 @@ use smithay::{
         },
         drm::{
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
-            compositor::FrameFlags,
+            compositor::{FrameFlags, PrimaryPlaneElement},
             exporter::gbm::GbmFramebufferExporter,
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
         },
@@ -462,10 +462,21 @@ impl Tileception {
             elements.extend(self.frame_elements(&mut udev.renderer, now));
             let clear = self.clear_colour();
             match lit.drm_output.render_frame(&mut udev.renderer, &elements, clear, FrameFlags::DEFAULT) {
-                Ok(result) if !result.is_empty => match lit.drm_output.queue_frame(()) {
-                    Ok(()) => queued = true,
-                    Err(err) => tracing::warn!("queue frame: {err}"),
-                },
+                Ok(result) if !result.is_empty => {
+                    // If KMS cannot wait on the render fence, finish GPU work
+                    // before scanout rather than displaying an unfinished frame.
+                    if result.needs_sync()
+                        && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
+                        && let Err(err) = element.sync.wait()
+                    {
+                        tracing::warn!("render sync: {err:?}");
+                    } else {
+                        match lit.drm_output.queue_frame(()) {
+                            Ok(()) => queued = true,
+                            Err(err) => tracing::warn!("queue frame: {err}"),
+                        }
+                    }
+                }
                 Ok(_) => {}
                 Err(err) => tracing::warn!("render: {err:?}"),
             }
