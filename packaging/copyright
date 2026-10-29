@@ -6,6 +6,13 @@ Files: *
 Copyright: 2026 Robin van der Noord
 License: MIT
 
+Files: crates/tileception/src/handoff/words.txt
+Copyright: 2016 Electronic Frontier Foundation
+License: CC-BY-3.0-US
+ The EFF large wordlist for passphrases, from https://www.eff.org/dice,
+ licensed under the Creative Commons Attribution 3.0 United States license:
+ https://creativecommons.org/licenses/by/3.0/us/
+
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
