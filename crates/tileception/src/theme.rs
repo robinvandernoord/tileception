@@ -13,36 +13,37 @@ impl Colour {
 
     /// Parses `#rrggbb` or `#rrggbbaa`.
     pub fn parse(hex: &str) -> Result<Colour, String> {
-        let h = hex.trim().trim_start_matches('#');
-        let byte = |i: usize| u8::from_str_radix(h.get(i..i + 2).unwrap_or("zz"), 16);
-        let (r, g, b, a) = match h.len() {
+        let digits = hex.trim().trim_start_matches('#');
+        let byte = |index: usize| u8::from_str_radix(digits.get(index..index + 2).unwrap_or("zz"), 16);
+        let (red, green, blue, alpha) = match digits.len() {
             6 => (byte(0), byte(2), byte(4), Ok(255)),
             8 => (byte(0), byte(2), byte(4), byte(6)),
             _ => return Err(format!("colour {hex:?} is not #rrggbb or #rrggbbaa")),
         };
-        let (Ok(r), Ok(g), Ok(b), Ok(a)) = (r, g, b, a) else {
+        let (Ok(red), Ok(green), Ok(blue), Ok(alpha)) = (red, green, blue, alpha) else {
             return Err(format!("colour {hex:?} is not hexadecimal"));
         };
-        let a = a as f32 / 255.0;
-        Ok(Colour([r as f32 / 255.0 * a, g as f32 / 255.0 * a, b as f32 / 255.0 * a, a]))
+        let alpha = alpha as f32 / 255.0;
+        Ok(Colour([red as f32 / 255.0 * alpha, green as f32 / 255.0 * alpha, blue as f32 / 255.0 * alpha, alpha]))
     }
 
     /// The same colour at a fraction of its opacity.
     pub fn alpha(self, factor: f32) -> Colour {
-        Colour(self.0.map(|c| c * factor))
+        Colour(self.0.map(|channel| channel * factor))
     }
 
     /// Partway from this colour to `other`; 0 is this one, 1 the other.
-    pub fn mix(self, other: Colour, t: f32) -> Colour {
-        let t = t.clamp(0.0, 1.0);
-        Colour(std::array::from_fn(|i| self.0[i] + (other.0[i] - self.0[i]) * t))
+    pub fn mix(self, other: Colour, fraction: f32) -> Colour {
+        let fraction = fraction.clamp(0.0, 1.0);
+        Colour(std::array::from_fn(|index| self.0[index] + (other.0[index] - self.0[index]) * fraction))
     }
 
     /// Straight (not premultiplied) RGBA bytes, for rasterising text.
     pub fn straight_rgba8(self) -> [u8; 4] {
-        let [r, g, b, a] = self.0;
-        let un = |c: f32| if a > 0.0 { (c / a * 255.0).round().clamp(0.0, 255.0) as u8 } else { 0 };
-        [un(r), un(g), un(b), (a * 255.0).round() as u8]
+        let [red, green, blue, alpha] = self.0;
+        let unpremultiply =
+            |channel: f32| if alpha > 0.0 { (channel / alpha * 255.0).round().clamp(0.0, 255.0) as u8 } else { 0 };
+        [unpremultiply(red), unpremultiply(green), unpremultiply(blue), (alpha * 255.0).round() as u8]
     }
 }
 
@@ -138,8 +139,8 @@ pub enum ColourScheme {
 }
 
 impl ColourScheme {
-    pub fn parse(s: &str) -> Result<ColourScheme, String> {
-        match s {
+    pub fn parse(value: &str) -> Result<ColourScheme, String> {
+        match value {
             "dark" => Ok(ColourScheme::Dark),
             "light" => Ok(ColourScheme::Light),
             "default" => Ok(ColourScheme::Default),
@@ -149,27 +150,27 @@ impl ColourScheme {
 }
 
 impl Theme {
-    pub fn from_file(f: &ThemeFile) -> Result<Theme, String> {
+    pub fn from_file(file: &ThemeFile) -> Result<Theme, String> {
         Ok(Theme {
-            background: Colour::parse(&f.background)?,
-            surface: Colour::parse(&f.surface)?,
-            surface_raised: Colour::parse(&f.surface_raised)?,
-            border: Colour::parse(&f.border)?,
-            text: Colour::parse(&f.text)?,
-            muted: Colour::parse(&f.muted)?,
-            accent: Colour::parse(&f.accent)?,
-            accent_end: Colour::parse(&f.accent_end)?,
-            on_accent: Colour::parse(&f.on_accent)?,
-            danger: Colour::parse(&f.danger)?,
-            warning: Colour::parse(&f.warning)?,
-            radius: f.radius.max(0.0),
-            popup_radius: f.popup_radius.max(0.0),
-            glow: f.glow.max(0.0),
-            font: f.font.clone(),
-            font_size: f.font_size.clamp(6.0, 72.0),
-            wallpaper: f.wallpaper.as_deref().filter(|w| !w.is_empty()).map(crate::wallpaper::expand_home),
-            wallpaper_fit: crate::wallpaper::Scaling::parse(&f.wallpaper_fit)?,
-            colour_scheme: ColourScheme::parse(&f.colour_scheme)?,
+            background: Colour::parse(&file.background)?,
+            surface: Colour::parse(&file.surface)?,
+            surface_raised: Colour::parse(&file.surface_raised)?,
+            border: Colour::parse(&file.border)?,
+            text: Colour::parse(&file.text)?,
+            muted: Colour::parse(&file.muted)?,
+            accent: Colour::parse(&file.accent)?,
+            accent_end: Colour::parse(&file.accent_end)?,
+            on_accent: Colour::parse(&file.on_accent)?,
+            danger: Colour::parse(&file.danger)?,
+            warning: Colour::parse(&file.warning)?,
+            radius: file.radius.max(0.0),
+            popup_radius: file.popup_radius.max(0.0),
+            glow: file.glow.max(0.0),
+            font: file.font.clone(),
+            font_size: file.font_size.clamp(6.0, 72.0),
+            wallpaper: file.wallpaper.as_deref().filter(|path| !path.is_empty()).map(crate::wallpaper::expand_home),
+            wallpaper_fit: crate::wallpaper::Scaling::parse(&file.wallpaper_fit)?,
+            colour_scheme: ColourScheme::parse(&file.colour_scheme)?,
         })
     }
 }

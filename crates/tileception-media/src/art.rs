@@ -80,7 +80,7 @@ pub fn cache_dir() -> PathBuf {
 }
 
 fn fetch(dir: &Path, url: &str) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let path = file_for(dir, url);
     let partial = path.with_extension("part");
     // Only http(s), also after redirects; bounded in size and time.
@@ -99,12 +99,12 @@ fn fetch(dir: &Path, url: &str) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("curl: {e}"))?;
+        .map_err(|error| format!("curl: {error}"))?;
     if !status.success() {
         let _ = std::fs::remove_file(&partial);
         return Err(format!("curl exited with {status}"));
     }
-    std::fs::rename(&partial, &path).map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &path).map_err(|error| error.to_string())?;
     prune(dir);
     Ok(())
 }
@@ -112,8 +112,10 @@ fn fetch(dir: &Path, url: &str) -> Result<(), String> {
 /// Keeps the newest few files.
 fn prune(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<_> =
-        entries.filter_map(Result::ok).filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path()))).collect();
+    let mut files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
     if files.len() <= KEEP {
         return;
     }
@@ -144,13 +146,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tileception-art-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create cache");
-        for i in 0..KEEP + 3 {
-            std::fs::write(dir.join(format!("{i:03}")), b"x").expect("write file");
-            let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
+        for index in 0..KEEP + 3 {
+            std::fs::write(dir.join(format!("{index:03}")), b"x").expect("write file");
+            let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + index as u64);
             std::fs::File::options()
                 .write(true)
-                .open(dir.join(format!("{i:03}")))
-                .and_then(|f| f.set_modified(when))
+                .open(dir.join(format!("{index:03}")))
+                .and_then(|file| file.set_modified(when))
                 .expect("set time");
         }
         prune(&dir);

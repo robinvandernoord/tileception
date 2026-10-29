@@ -179,14 +179,17 @@ impl Greeter {
         sessions::sort_default_first(&mut sessions, &file.default_session);
         let memory_path = file.state_path();
         let memory = Memory::load(&memory_path);
-        let user =
-            memory.last_user.as_deref().and_then(|login| accounts.iter().position(|a| a.login == login)).unwrap_or(0);
+        let user = memory
+            .last_user
+            .as_deref()
+            .and_then(|login| accounts.iter().position(|account| account.login == login))
+            .unwrap_or(0);
         tracing::info!("greeter: {} people, {} sessions", accounts.len(), sessions.len());
         if file.users_as == settings::UsersAs::Tiles {
             tracing::info!("greeter: users_as = \"tiles\" is not drawn yet; showing tabs");
         }
         let mut greeter = Greeter::with(file, accounts, sessions, memory, memory_path, user);
-        if greeter.file.panels.columns.iter().flatten().any(|p| *p == Panel::Motd) {
+        if greeter.file.panels.columns.iter().flatten().any(|panel| *panel == Panel::Motd) {
             greeter.motd = greeter.file.motd.message();
         }
         greeter
@@ -202,10 +205,11 @@ impl Greeter {
     ) -> Greeter {
         let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
             .or_else(|_| std::fs::read_to_string("/etc/hostname"))
-            .map(|h| h.trim().to_string())
+            .map(|content| content.trim().to_string())
             .unwrap_or_default();
-        let kernel =
-            std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|k| k.trim().to_string()).unwrap_or_default();
+        let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|content| content.trim().to_string())
+            .unwrap_or_default();
         let mut greeter = Greeter {
             mode: Mode::Login,
             file,
@@ -254,7 +258,7 @@ impl Greeter {
     /// The lock screen of a session: only `login` is shown, the theme stays
     /// the session's, and nothing is remembered.
     pub fn lock(login: &str, notifications: usize) -> Greeter {
-        let account = accounts::list(&[]).into_iter().find(|a| a.login == login).unwrap_or_else(|| Account {
+        let account = accounts::list(&[]).into_iter().find(|listed| listed.login == login).unwrap_or_else(|| Account {
             login: login.to_string(),
             name: login.to_string(),
             uid: 0,
@@ -294,12 +298,12 @@ impl Greeter {
     fn login(&self) -> Option<String> {
         match self.selected() {
             Some(account) => Some(account.login.clone()),
-            None => Some(self.name.as_str().trim().to_string()).filter(|n| !n.is_empty()),
+            None => Some(self.name.as_str().trim().to_string()).filter(|typed| !typed.is_empty()),
         }
     }
 
     fn default_session(&self) -> usize {
-        self.sessions.iter().position(|s| s.id == self.file.default_session).unwrap_or(0)
+        self.sessions.iter().position(|session| session.session_id == self.file.default_session).unwrap_or(0)
     }
 
     /// The session someone starts: chosen this boot, else their last one,
@@ -309,8 +313,8 @@ impl Greeter {
             .get(login)
             .copied()
             .or_else(|| {
-                let id = self.memory.sessions.get(login)?;
-                self.sessions.iter().position(|s| &s.id == id)
+                let session_id = self.memory.sessions.get(login)?;
+                self.sessions.iter().position(|session| &session.session_id == session_id)
             })
             .unwrap_or_else(|| self.default_session())
     }
@@ -325,8 +329,8 @@ impl Greeter {
 
     /// The session remembered as someone's last, to mark it.
     fn last_session(&self, login: &str) -> Option<usize> {
-        let id = self.memory.sessions.get(login)?;
-        self.sessions.iter().position(|s| &s.id == id)
+        let session_id = self.memory.sessions.get(login)?;
+        self.sessions.iter().position(|session| &session.session_id == session_id)
     }
 
     /// When `login` last logged in here, in seconds since 1970.
@@ -338,7 +342,7 @@ impl Greeter {
         if index >= self.sessions.len() {
             return;
         }
-        let login = self.selected().map(|a| a.login.clone()).unwrap_or_default();
+        let login = self.selected().map(|account| account.login.clone()).unwrap_or_default();
         self.chosen.insert(login, index);
         self.session_cursor = index;
     }
@@ -376,33 +380,33 @@ impl Greeter {
             list.push((Action::Firmware, "Restart into firmware setup".to_string()));
         }
         let current = self.session_of_selected();
-        for (i, session) in self.sessions.iter().enumerate() {
-            if i != current {
-                list.push((Action::Session(i), format!("Session: {}", session.name)));
+        for (index, session) in self.sessions.iter().enumerate() {
+            if index != current {
+                list.push((Action::Session(index), format!("Session: {}", session.name)));
             }
         }
-        for (i, account) in self.accounts.iter().enumerate() {
-            if i != self.user {
-                list.push((Action::Person(i), format!("Log in as {}", account.name)));
+        for (index, account) in self.accounts.iter().enumerate() {
+            if index != self.user {
+                list.push((Action::Person(index), format!("Log in as {}", account.name)));
             }
         }
         if !self.other() && !self.locked() {
             list.push((Action::Person(self.accounts.len()), "Log in as someone not listed".to_string()));
         }
-        let query = self.palette.as_ref().map(|p| p.query.to_lowercase()).unwrap_or_default();
+        let query = self.palette.as_ref().map(|palette| palette.query.to_lowercase()).unwrap_or_default();
         let active = self.active_layout();
-        for (i, (layout, variant)) in self.layouts.iter().enumerate() {
-            if self.keymap.is_some() || i != self.layout {
-                list.push((Action::Layout(i), format!("Keyboard layout: {}", self.describe(layout, variant))));
+        for (index, (layout, variant)) in self.layouts.iter().enumerate() {
+            if self.keymap.is_some() || index != self.layout {
+                list.push((Action::Layout(index), format!("Keyboard layout: {}", self.describe(layout, variant))));
             }
         }
         // All of xkb's layouts only once there is something to search for.
         if !query.trim().is_empty() {
-            for (i, known) in self.known().iter().enumerate() {
+            for (index, known) in self.known().iter().enumerate() {
                 let pair = (&known.layout, &known.variant);
-                if active != Some(pair) && !self.layouts.iter().any(|(l, v)| (l, v) == pair) {
+                if active != Some(pair) && !self.layouts.iter().any(|(layout, variant)| (layout, variant) == pair) {
                     let short = keymap::short(&known.layout, &known.variant);
-                    list.push((Action::Keymap(i), format!("Keyboard layout: {} ({short})", known.description)));
+                    list.push((Action::Keymap(index), format!("Keyboard layout: {} ({short})", known.description)));
                 }
             }
         }
@@ -422,14 +426,14 @@ impl Greeter {
     pub fn active_layout(&self) -> Option<(&String, &String)> {
         match &self.keymap {
             Some((layout, variant)) => Some((layout, variant)),
-            None => self.layouts.get(self.layout).map(|(l, v)| (l, v)),
+            None => self.layouts.get(self.layout).map(|(layout, variant)| (layout, variant)),
         }
     }
 
     /// "Dutch (nl)", or just "nl" for a layout xkb does not describe.
     fn describe(&self, layout: &str, variant: &str) -> String {
         let short = keymap::short(layout, variant);
-        match self.known().iter().find(|k| k.layout == layout && k.variant == variant) {
+        match self.known().iter().find(|candidate| candidate.layout == layout && candidate.variant == variant) {
             Some(known) => format!("{} ({short})", known.description),
             None => short,
         }
@@ -442,15 +446,15 @@ impl Greeter {
 }
 
 /// "1st", "2nd", "3rd", "4th", "11th"...
-fn ordinal(n: u32) -> String {
-    let suffix = match (n % 10, n % 100) {
+fn ordinal(number: u32) -> String {
+    let suffix = match (number % 10, number % 100) {
         (_, 11..=13) => "th",
         (1, _) => "st",
         (2, _) => "nd",
         (3, _) => "rd",
         _ => "th",
     };
-    format!("{n}{suffix}")
+    format!("{number}{suffix}")
 }
 
 impl Tileception {
@@ -458,7 +462,7 @@ impl Tileception {
     fn greeter_actions(&self) -> Vec<(Action, String)> {
         let Some(greeter) = self.greeter.as_deref() else { return Vec::new() };
         // Media keys control a player only in a session.
-        let media = self.media.snapshot.media.active().map(|p| p.status).filter(|_| greeter.locked());
+        let media = self.media.snapshot.media.active().map(|player| player.status).filter(|_| greeter.locked());
         greeter.actions(media)
     }
 
@@ -466,24 +470,28 @@ impl Tileception {
     /// headless only), a stand-in accepts the password `tide` for everyone.
     pub fn start_greeter(&mut self, file: GreeterFile) -> Result<(), String> {
         let mut greeter = Greeter::new(file);
-        let (ping, source) = make_ping().map_err(|e| e.to_string())?;
+        let (ping, source) = make_ping().map_err(|err| err.to_string())?;
         let wake = move || ping.ping();
         let connected = match std::env::var_os("GREETD_SOCK") {
             Some(path) => greetd::Greetd::connect(std::path::Path::new(&path), wake)
-                .map_err(|e| format!("could not reach greetd at {}: {e}", PathBuf::from(&path).display()))?,
+                .map_err(|err| format!("could not reach greetd at {}: {err}", PathBuf::from(&path).display()))?,
             None if self.nested || self.udev.is_none() => {
                 tracing::warn!("greeter: GREETD_SOCK is not set; every password is {DEMO_PASSWORD:?}");
                 greeter.demo = true;
-                greetd::demo(DEMO_PASSWORD.into(), wake).map_err(|e| e.to_string())?
+                greetd::demo(DEMO_PASSWORD.into(), wake).map_err(|err| err.to_string())?
             }
             None => return Err("GREETD_SOCK is not set: the greeter must be started by greetd".into()),
         };
-        self.loop_handle.insert_source(source, |_, _, state| state.greetd_ready()).map_err(|e| e.to_string())?;
+        self.loop_handle.insert_source(source, |_, _, state| state.greetd_ready()).map_err(|err| err.to_string())?;
         (greeter.greetd, greeter.responses) = (Some(connected.0), Some(connected.1));
         let theme = self.theme.clone();
         greeter.previous_accent = greeter.accent_of(&theme, greeter.user);
-        let people: Vec<(usize, String, u32)> =
-            greeter.accounts.iter().enumerate().map(|(i, a)| (i, a.login.clone(), a.uid)).collect();
+        let people: Vec<(usize, String, u32)> = greeter
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| (index, account.login.clone(), account.uid))
+            .collect();
         let wallpapers = greeter.file.per_user.wallpaper;
         self.greeter = Some(Box::new(greeter));
         self.lock = LockState::Greeter;
@@ -541,11 +549,11 @@ impl Tileception {
         let Some(greeter) = self.greeter.as_deref_mut() else { return };
         let Some(account) = greeter.accounts.get_mut(index) else { return };
         account.accent = found.accent;
-        if let Some((rgba, w, h)) = pixels {
+        if let Some((rgba, width, height)) = pixels {
             let buffer = MemoryRenderBuffer::from_slice(
                 &rgba,
                 smithay::backend::allocator::Fourcc::Abgr8888,
-                (w as i32, h as i32),
+                (width as i32, height as i32),
                 1,
                 smithay::utils::Transform::Normal,
                 None,
@@ -569,7 +577,7 @@ impl Tileception {
         }
         let screen = self.output_rect();
         let size = ((screen.w * self.scale).round() as u32, (screen.h * self.scale).round() as u32);
-        let publish = card::Publish::of(&self.theme, self.config.file.greeter.share, size);
+        let publish = card::Publish::from_theme(&self.theme, self.config.file.greeter.share, size);
         let spawned = std::thread::Builder::new()
             .name("tileception-greeter-card".into())
             .spawn(move || publish.run(&card::folder()));
@@ -580,7 +588,7 @@ impl Tileception {
 
     /// Shows the selected person's accent everywhere, notifications included.
     fn apply_greeter_accent(&mut self) {
-        let Some(greeter) = self.greeter.as_deref().filter(|g| !g.locked()) else { return };
+        let Some(greeter) = self.greeter.as_deref().filter(|greeter| !greeter.locked()) else { return };
         let base = crate::theme::Theme::from_file(&greeter.file.theme).unwrap_or_else(|_| self.theme.clone());
         let (accent, accent_end) = greeter.accent_of(&base, greeter.user);
         self.theme.accent = accent;
@@ -616,8 +624,8 @@ impl Tileception {
 
     fn step_person(&mut self, delta: isize) {
         let Some(greeter) = self.greeter.as_deref() else { return };
-        let n = greeter.people() as isize;
-        self.select_person((greeter.user as isize + delta).rem_euclid(n) as usize);
+        let count = greeter.people() as isize;
+        self.select_person((greeter.user as isize + delta).rem_euclid(count) as usize);
     }
 
     /// A key on the greeter, pressed or let go.
@@ -761,7 +769,7 @@ impl Tileception {
     /// Switches to the keymap's next layout. Keys reach the greeter while
     /// the keyboard is busy with them, so the switch waits until it is not.
     fn next_keyboard_layout(&mut self) {
-        if self.greeter.as_deref().is_none_or(|g| g.layouts.len() < 2) {
+        if self.greeter.as_deref().is_none_or(|greeter| greeter.layouts.len() < 2) {
             return;
         }
         self.loop_handle.insert_idle(|state| {
@@ -787,7 +795,7 @@ impl Tileception {
     /// keyboard is not busy with a key.
     fn set_greeter_keymap(&mut self, picked: Option<(String, String)>, group: Option<usize>) {
         self.loop_handle.insert_idle(move |state| {
-            let current = state.greeter.as_deref().and_then(|g| g.keymap.clone());
+            let current = state.greeter.as_deref().and_then(|greeter| greeter.keymap.clone());
             if picked != current && !state.load_keymap(picked.as_ref()) {
                 return;
             }
@@ -808,12 +816,15 @@ impl Tileception {
     /// configured model and options. Not while the keyboard handles a key.
     fn load_keymap(&mut self, picked: Option<&(String, String)>) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else { return false };
-        let k = &self.config.file.keyboard;
+        let configured = &self.config.file.keyboard;
         let (model, layout, variant, options) = match picked {
-            Some((layout, variant)) => {
-                (k.model.clone().unwrap_or_default(), layout.clone(), variant.clone(), k.options.clone())
-            }
-            None => k.names(),
+            Some((layout, variant)) => (
+                configured.model.clone().unwrap_or_default(),
+                layout.clone(),
+                variant.clone(),
+                configured.options.clone(),
+            ),
+            None => configured.names(),
         };
         let xkb = smithay::input::keyboard::XkbConfig {
             layout: &layout,
@@ -832,7 +843,7 @@ impl Tileception {
     /// The selected person's own layout, if they picked one here before.
     fn greeter_person_keymap(&mut self) {
         let Some(greeter) = self.greeter.as_deref() else { return };
-        let wanted = greeter.selected().and_then(|a| greeter.remembered_keymap(&a.login));
+        let wanted = greeter.selected().and_then(|account| greeter.remembered_keymap(&account.login));
         if wanted != greeter.keymap {
             self.set_greeter_keymap(wanted, None);
         }
@@ -840,7 +851,7 @@ impl Tileception {
 
     /// Unlocking: back to the session's keymap if one was picked while locked.
     pub fn end_greeter_keymap(&mut self) {
-        if self.greeter.as_deref().is_some_and(|g| g.keymap.is_some()) {
+        if self.greeter.as_deref().is_some_and(|greeter| greeter.keymap.is_some()) {
             self.loop_handle.insert_idle(|state| {
                 state.load_keymap(None);
             });
@@ -875,17 +886,17 @@ impl Tileception {
                 palette.selected = 0;
             }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
-                let chosen = actions.get(palette.selected).map(|(a, _)| *a);
+                let chosen = actions.get(palette.selected).map(|(action, _)| *action);
                 greeter.palette = None;
                 if let Some(action) = chosen {
                     self.run_greeter_action(action);
                 }
             }
             _ if !logo => {
-                if let Some(c) = char::from_u32(smithay::input::keyboard::xkb::keysym_to_utf32(sym.into()))
-                    && !c.is_control()
+                if let Some(character) = char::from_u32(smithay::input::keyboard::xkb::keysym_to_utf32(sym.into()))
+                    && !character.is_control()
                 {
-                    palette.query.push(c);
+                    palette.query.push(character);
                     palette.selected = 0;
                 }
             }
@@ -904,20 +915,20 @@ impl Tileception {
             Action::Restart => &["reboot"],
             Action::PowerOff => &["poweroff"],
             Action::Firmware => &["reboot", "--firmware-setup"],
-            Action::Session(i) => {
-                greeter.choose_session(i);
+            Action::Session(session) => {
+                greeter.choose_session(session);
                 return;
             }
-            Action::Person(i) => {
-                self.select_person(i);
+            Action::Person(person) => {
+                self.select_person(person);
                 return;
             }
-            Action::Layout(i) => {
-                self.set_greeter_keymap(None, Some(i));
+            Action::Layout(layout) => {
+                self.set_greeter_keymap(None, Some(layout));
                 return;
             }
-            Action::Keymap(i) => {
-                let picked = greeter.known().get(i).map(|k| (k.layout.clone(), k.variant.clone()));
+            Action::Keymap(keymap) => {
+                let picked = greeter.known().get(keymap).map(|known| (known.layout.clone(), known.variant.clone()));
                 if picked.is_some() {
                     self.set_greeter_keymap(picked, None);
                 }
@@ -928,7 +939,7 @@ impl Tileception {
             self.notify_locally("Demo", &format!("Would run systemctl {}", args.join(" ")), Urgency::Normal);
             return;
         }
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         self.spawn("systemctl", &args);
     }
 
@@ -1012,8 +1023,11 @@ impl Tileception {
             Response::Success => match greeter.auth {
                 Auth::Creating | Auth::Answering => greeter.logged_in(),
                 Auth::Starting if greeter.demo => {
-                    let line =
-                        greeter.attempt.as_ref().and_then(|(_, s)| greeter.sessions.get(*s)).map(|s| s.exec.clone());
+                    let line = greeter
+                        .attempt
+                        .as_ref()
+                        .and_then(|(_, session_index)| greeter.sessions.get(*session_index))
+                        .map(|session| session.exec.clone());
                     let login = greeter.attempt.take().map(|(login, _)| login).unwrap_or_default();
                     greeter.auth = Auth::Idle;
                     greeter.field.clear();
@@ -1071,16 +1085,16 @@ impl Tileception {
     }
 
     /// A press of the main button.
-    pub fn greeter_click(&mut self, x: f64, y: f64) {
-        let at = Point::new(x, y);
+    pub fn greeter_click(&mut self, x_pos: f64, y_pos: f64) {
+        let point = Point::new(x_pos, y_pos);
         let targets = self.greeter_targets();
         let actions = self.greeter_actions();
         let Some(greeter) = self.greeter.as_deref_mut() else { return };
-        let hit = targets.iter().find(|(r, _)| r.contains(at)).map(|(_, t)| *t);
+        let hit = targets.iter().find(|(rect, _)| rect.contains(point)).map(|(_, target)| *target);
         if greeter.palette.is_some() {
             match hit {
-                Some(draw::Target::Action(i)) => {
-                    let chosen = actions.get(i).map(|(a, _)| *a);
+                Some(draw::Target::Action(index)) => {
+                    let chosen = actions.get(index).map(|(action, _)| *action);
                     greeter.palette = None;
                     if let Some(action) = chosen {
                         self.run_greeter_action(action);
@@ -1092,10 +1106,10 @@ impl Tileception {
             return;
         }
         match hit {
-            Some(draw::Target::Person(i)) => self.select_person(i),
-            Some(draw::Target::Session(i)) => {
+            Some(draw::Target::Person(person)) => self.select_person(person),
+            Some(draw::Target::Session(session)) => {
                 if !greeter.busy() {
-                    greeter.choose_session(i);
+                    greeter.choose_session(session);
                     greeter.focus = Panel::Session;
                 }
             }
@@ -1117,15 +1131,15 @@ impl Tileception {
     }
 
     /// Hovering the launcher highlights the row under the pointer.
-    pub fn greeter_motion(&mut self, x: f64, y: f64) {
-        let at = Point::new(x, y);
+    pub fn greeter_motion(&mut self, x_pos: f64, y_pos: f64) {
+        let point = Point::new(x_pos, y_pos);
         let targets = self.greeter_targets();
-        let Some(palette) = self.greeter.as_deref_mut().and_then(|g| g.palette.as_mut()) else { return };
-        if let Some(i) = targets.iter().find_map(|(r, t)| match t {
-            draw::Target::Action(i) if r.contains(at) => Some(*i),
+        let Some(palette) = self.greeter.as_deref_mut().and_then(|greeter| greeter.palette.as_mut()) else { return };
+        if let Some(index) = targets.iter().find_map(|(rect, target)| match target {
+            draw::Target::Action(index) if rect.contains(point) => Some(*index),
             _ => None,
         }) {
-            palette.selected = i;
+            palette.selected = index;
         }
     }
 }
@@ -1195,8 +1209,9 @@ impl Greeter {
         if !self.other() {
             self.memory.last_user = Some(login.clone());
         }
-        self.memory.sessions.insert(login.clone(), session.id.clone());
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.memory.sessions.insert(login.clone(), session.session_id.clone());
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
         self.memory.logins.insert(login.clone(), i64::try_from(now).unwrap_or(0));
         match &self.keymap {
             Some((layout, variant)) => self.memory.layouts.insert(login, keymap::remembered(layout, variant)),

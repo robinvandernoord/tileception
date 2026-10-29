@@ -63,7 +63,7 @@ impl SessionLockHandler for Tileception {
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
         let rect = self.output_rect();
-        surface.with_pending_state(|s| s.size = Some((rect.w as u32, rect.h as u32).into()));
+        surface.with_pending_state(|state| state.size = Some((rect.w as u32, rect.h as u32).into()));
         surface.send_configure();
         if let LockState::Locked { surface: slot } = &mut self.lock {
             *slot = Some(surface);
@@ -97,7 +97,7 @@ impl Tileception {
 
     pub fn lock_surface(&self) -> Option<&WlSurface> {
         match &self.lock {
-            LockState::Locked { surface: Some(s) } => Some(s.wl_surface()),
+            LockState::Locked { surface: Some(surface) } => Some(surface.wl_surface()),
             _ => None,
         }
     }
@@ -115,16 +115,16 @@ impl Tileception {
     pub fn lock_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         let surface = self.lock_surface()?;
         smithay::desktop::utils::under_from_surface_tree(surface, pos, (0, 0), smithay::desktop::WindowSurfaceType::ALL)
-            .map(|(s, loc)| (s, loc.to_f64()))
+            .map(|(surface, location)| (surface, location.to_f64()))
     }
 
     /// Keeps the lock surface the size of the output.
     pub fn resize_lock_surface(&self) {
-        if let LockState::Locked { surface: Some(s) } = &self.lock {
+        if let LockState::Locked { surface: Some(surface) } = &self.lock {
             let rect = self.output_rect();
             let size: Size<u32, Logical> = (rect.w as u32, rect.h as u32).into();
-            s.with_pending_state(|st| st.size = Some(size));
-            s.send_configure();
+            surface.with_pending_state(|state| state.size = Some(size));
+            surface.send_configure();
         }
     }
 }

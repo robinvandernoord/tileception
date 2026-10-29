@@ -138,7 +138,7 @@ impl Shapes {
             ("u_mask", UniformType::_4f),
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
-        let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|e| e.to_string())?;
+        let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|err| err.to_string())?;
         Ok(Shapes { program, scale: 1.0, reused: Default::default() })
     }
 
@@ -161,30 +161,30 @@ impl Shapes {
     /// The same, at a fraction of its opacity, for fading in and out.
     pub fn element_faded(&self, rect: &Rect, shape: Shape, alpha: f32) -> Option<PixelShaderElement> {
         // The shader works in physical pixels.
-        let s = self.scale;
-        let rect = &Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
-        let sf = s as f32;
+        let scale = self.scale;
+        let rect = &Rect::new(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale);
+        let scale_f32 = scale as f32;
         let shape = Shape {
-            radius: shape.radius * sf,
-            border_width: shape.border_width * sf,
-            glow_radius: shape.glow_radius * sf,
+            radius: shape.radius * scale_f32,
+            border_width: shape.border_width * scale_f32,
+            glow_radius: shape.glow_radius * scale_f32,
             ..shape
         };
         let margin = shape.glow_radius.ceil();
-        let x0 = (rect.x - margin as f64).floor() as i32;
-        let y0 = (rect.y - margin as f64).floor() as i32;
-        let x1 = (rect.right() + margin as f64).ceil() as i32;
-        let y1 = (rect.bottom() + margin as f64).ceil() as i32;
-        if x1 <= x0 || y1 <= y0 {
+        let left = (rect.x - margin as f64).floor() as i32;
+        let top = (rect.y - margin as f64).floor() as i32;
+        let right = (rect.right() + margin as f64).ceil() as i32;
+        let bottom = (rect.bottom() + margin as f64).ceil() as i32;
+        if right <= left || bottom <= top {
             return None;
         }
-        let area: Rectangle<i32, Logical> = Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into());
+        let area: Rectangle<i32, Logical> = Rectangle::new((left, top).into(), (right - left, bottom - top).into());
         // The shape's offset inside the element area, keeping sub-pixel position.
-        let offset = ((rect.x - x0 as f64) as f32, (rect.y - y0 as f64) as f32);
+        let offset = ((rect.x - left as f64) as f32, (rect.y - top as f64) as f32);
         let radius = shape.radius.min(rect.w as f32 / 2.0).min(rect.h as f32 / 2.0);
-        let c = |c: Colour| c.0;
-        let (size, fill_a, fill_b) = ((rect.w as f32, rect.h as f32), c(shape.fill.0), c(shape.fill.1));
-        let (border, glow, mask) = (c(shape.border), c(shape.glow), c(shape.corner_mask));
+        let rgba = |colour: Colour| colour.0;
+        let (size, fill_a, fill_b) = ((rect.w as f32, rect.h as f32), rgba(shape.fill.0), rgba(shape.fill.1));
+        let (border, glow, mask) = (rgba(shape.border), rgba(shape.glow), rgba(shape.corner_mask));
         let mut bits = [0u32; 28];
         let floats = [size.0, size.1, offset.0, offset.1, radius, shape.border_width, shape.glow_radius, alpha]
             .into_iter()
@@ -193,10 +193,10 @@ impl Shapes {
             .chain(border)
             .chain(glow)
             .chain(mask);
-        for (bit, f) in bits.iter_mut().zip(floats) {
-            *bit = f.to_bits();
+        for (bit, float) in bits.iter_mut().zip(floats) {
+            *bit = float.to_bits();
         }
-        let key = ([x0, y0, x1, y1], bits);
+        let key = ([left, top, right, bottom], bits);
         let make = || {
             let uniforms = vec![
                 Uniform::new("u_rect_size", size),
@@ -215,7 +215,8 @@ impl Shapes {
         // The same shape twice in a frame takes the last frame's second one,
         // so no two elements share an id.
         let mut reused = self.reused.borrow_mut();
-        let element = reused.previous.get_mut(&key).filter(|v| !v.is_empty()).map(|v| v.remove(0));
+        let element =
+            reused.previous.get_mut(&key).filter(|elements| !elements.is_empty()).map(|elements| elements.remove(0));
         let element = element.unwrap_or_else(make);
         reused.current.entry(key).or_default().push(element.clone());
         Some(element)

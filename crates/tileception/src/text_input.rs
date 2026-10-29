@@ -41,23 +41,32 @@ impl TextInput {
     fn previous(&self, word: bool) -> usize {
         if word {
             let before = &self.text[..self.cursor];
-            let end = before.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
+            let end = before.trim_end_matches(|character: char| !character.is_alphanumeric()).len();
             before[..end]
-                .rfind(|c: char| !c.is_alphanumeric())
-                .map(|i| {
-                    i + before[i..].chars().next().expect("character index points to an existing character").len_utf8()
+                .rfind(|character: char| !character.is_alphanumeric())
+                .map(|index| {
+                    index
+                        + before[index..]
+                            .chars()
+                            .next()
+                            .expect("character index points to an existing character")
+                            .len_utf8()
                 })
                 .unwrap_or(0)
         } else {
-            self.text[..self.cursor].char_indices().next_back().map(|(i, _)| i).unwrap_or(0)
+            self.text[..self.cursor].char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
         }
     }
 
     fn next(&self, word: bool) -> usize {
         let after = &self.text[self.cursor..];
         if word {
-            let start = after.len() - after.trim_start_matches(|c: char| !c.is_alphanumeric()).len();
-            self.cursor + after[start..].find(|c: char| !c.is_alphanumeric()).map(|i| start + i).unwrap_or(after.len())
+            let start = after.len() - after.trim_start_matches(|character: char| !character.is_alphanumeric()).len();
+            self.cursor
+                + after[start..]
+                    .find(|character: char| !character.is_alphanumeric())
+                    .map(|index| start + index)
+                    .unwrap_or(after.len())
         } else {
             self.cursor + after.chars().next().map(char::len_utf8).unwrap_or(0)
         }

@@ -66,8 +66,12 @@ impl Default for Strip {
 impl Strip {
     /// How far out the strip is, from 0 (hidden) to 1.
     fn level(&self) -> f64 {
-        let p = (self.changed.elapsed().as_secs_f64() / SLIDE).clamp(0.0, 1.0);
-        if self.open { self.level_then + (1.0 - self.level_then) * p } else { self.level_then * (1.0 - p) }
+        let progress = (self.changed.elapsed().as_secs_f64() / SLIDE).clamp(0.0, 1.0);
+        if self.open {
+            self.level_then + (1.0 - self.level_then) * progress
+        } else {
+            self.level_then * (1.0 - progress)
+        }
     }
 
     fn set_open(&mut self, open: bool) {
@@ -115,16 +119,16 @@ impl Tileception {
             && self.power_menu.is_none()
             && self.fullscreen.is_none()
             && self.move_drag.is_none();
-        let p = Point::new(self.pointer.x, self.pointer.y);
+        let point = Point::new(self.pointer.x, self.pointer.y);
         let out = self.output_rect();
-        let at_edge = p.y >= out.bottom() - EDGE;
+        let at_edge = point.y >= out.bottom() - EDGE;
         let kept = self.strip.open
-            && self.strip_rect().is_some_and(|r| {
-                let area = expand(r, SLACK);
+            && self.strip_rect().is_some_and(|rect| {
+                let area = expand(rect, SLACK);
                 // Keep the strip open while crossing a bottom bar to reach it.
-                Rect { h: out.bottom() - area.y, ..area }.contains(p)
+                Rect { h: out.bottom() - area.y, ..area }.contains(point)
             });
-        let peeking = self.strip.peek_until.is_some_and(|t| Instant::now() < t);
+        let peeking = self.strip.peek_until.is_some_and(|until| Instant::now() < until);
         if !peeking {
             self.strip.peek_until = None;
         }
@@ -172,21 +176,22 @@ impl Tileception {
         let out = self.output_rect();
         let capacity = self.strip_capacity();
         let first = self.strip.first.min(windows.len().saturating_sub(capacity));
-        let n = windows.len().min(capacity) as f64;
+        let count = windows.len().min(capacity) as f64;
         let room = (out.w - 2.0 * (MARGIN + PAD)).max(1.0);
-        let w = CARD_W.min((room - (n - 1.0) * PAD) / n);
-        let h = PREVIEW_H + LABEL_H;
-        let total = n * w + (n - 1.0) * PAD;
-        let x0 = out.x + (out.w - total) / 2.0;
+        let width = CARD_W.min((room - (count - 1.0) * PAD) / count);
+        let height = PREVIEW_H + LABEL_H;
+        let total = count * width + (count - 1.0) * PAD;
+        let start_x = out.x + (out.w - total) / 2.0;
         let bar_height = if self.bar_at_bottom() { BAR_H } else { 0.0 };
-        let y = out.bottom() - bar_height - MARGIN - PAD - h - if self.strip_overflows() { FOOTER_H } else { 0.0 };
+        let top =
+            out.bottom() - bar_height - MARGIN - PAD - height - if self.strip_overflows() { FOOTER_H } else { 0.0 };
         windows
             .into_iter()
             .skip(first)
             .take(capacity)
             .enumerate()
-            .map(|(i, window)| {
-                let rect = Rect::new(x0 + i as f64 * (w + PAD), y, w, h);
+            .map(|(index, window)| {
+                let rect = Rect::new(start_x + index as f64 * (width + PAD), top, width, height);
                 let preview = Rect::new(rect.x + 6.0, rect.y + 6.0, rect.w - 12.0, PREVIEW_H - 6.0);
                 let label = Rect::new(rect.x + 8.0, rect.y + PREVIEW_H, rect.w - 16.0, LABEL_H);
                 let close = Rect::new(rect.right() - 30.0, rect.y + 10.0, 22.0, 22.0);
@@ -196,32 +201,32 @@ impl Tileception {
     }
 
     /// Whether the strip has something at this point.
-    pub(crate) fn strip_takes(&self, p: Point) -> bool {
-        self.strip_hit(p).is_some()
+    pub(crate) fn strip_takes(&self, point: Point) -> bool {
+        self.strip_hit(point).is_some()
     }
 
-    fn strip_hit(&self, p: Point) -> Option<Hit> {
-        if !self.strip.open || self.overlay_under(p) {
+    fn strip_hit(&self, point: Point) -> Option<Hit> {
+        if !self.strip.open || self.overlay_under(point) {
             return None;
         }
         for card in self.strip_cards() {
-            if card.close.contains(p) {
+            if card.close.contains(point) {
                 return Some(Hit::Close(card.window));
             }
-            if card.rect.contains(p) {
+            if card.rect.contains(point) {
                 return Some(Hit::Card(card.window));
             }
         }
         if let Some(strip) = self.strip_rect().filter(|_| self.strip_overflows()) {
             let (previous, next) = strip_paging_buttons(strip);
-            if previous.contains(p) {
+            if previous.contains(point) {
                 return Some(Hit::Previous);
             }
-            if next.contains(p) {
+            if next.contains(point) {
                 return Some(Hit::Next);
             }
         }
-        self.strip_rect().filter(|r| r.contains(p)).map(|_| Hit::Strip)
+        self.strip_rect().filter(|rect| rect.contains(point)).map(|_| Hit::Strip)
     }
 
     fn step_minimized(&mut self, delta: isize) {
@@ -256,9 +261,9 @@ impl Tileception {
         if busy {
             return false;
         }
-        let p = Point::new(pos.x, pos.y);
-        if let Some((window, at)) = self.strip.press
-            && (p.x - at.x).hypot(p.y - at.y) > crate::input::DRAG_THRESHOLD
+        let point = Point::new(pos.x, pos.y);
+        if let Some((window, pressed_at)) = self.strip.press
+            && (point.x - pressed_at.x).hypot(point.y - pressed_at.y) > crate::input::DRAG_THRESHOLD
         {
             // Dragged out: the window follows the pointer, to be dropped.
             self.strip.press = None;
@@ -266,7 +271,7 @@ impl Tileception {
             self.update_strip();
             return false;
         }
-        if self.strip_hit(p).is_none() && self.strip.press.is_none() {
+        if self.strip_hit(point).is_none() && self.strip.press.is_none() {
             return false;
         }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -277,7 +282,7 @@ impl Tileception {
 
     /// A button over the strip. Returns whether the strip took it.
     pub fn strip_button(&mut self, button: u32, pressed: bool) -> bool {
-        let p = Point::new(self.pointer.x, self.pointer.y);
+        let point = Point::new(self.pointer.x, self.pointer.y);
         if !pressed {
             let Some((window, _)) = self.strip.press.take() else { return false };
             // A click: back where it was.
@@ -289,9 +294,9 @@ impl Tileception {
             self.update_strip();
             return true;
         }
-        let Some(hit) = self.strip_hit(p) else { return false };
+        let Some(hit) = self.strip_hit(point) else { return false };
         match hit {
-            Hit::Card(window) if button == crate::input::BTN_LEFT => self.strip.press = Some((window, p)),
+            Hit::Card(window) if button == crate::input::BTN_LEFT => self.strip.press = Some((window, point)),
             Hit::Close(window) if button == crate::input::BTN_LEFT => self.close_window(window),
             Hit::Previous if button == crate::input::BTN_LEFT => self.step_minimized(-1),
             Hit::Next if button == crate::input::BTN_LEFT => self.step_minimized(1),
@@ -303,51 +308,55 @@ impl Tileception {
     pub fn strip_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         let level = ease_out(self.strip.level());
         let Some(strip) = self.strip_rect().filter(|_| level > 0.001) else { return Vec::new() };
-        let t = &self.theme;
+        let theme = &self.theme;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
         let hit = self.strip_hit(pointer);
-        let pressed = self.strip.press.map(|(w, _)| w);
-        let mut p = Painter::new(self, renderer);
-        p.offset = (0.0, (1.0 - level) * (strip.h + MARGIN + 12.0));
-        p.alpha = level as f32;
-        p.popup(strip);
+        let pressed = self.strip.press.map(|(window, _)| window);
+        let mut painter = Painter::new(self, renderer);
+        painter.offset = (0.0, (1.0 - level) * (strip.h + MARGIN + 12.0));
+        painter.alpha = level as f32;
+        painter.popup(strip);
         for card in self.strip_cards() {
-            let hover = matches!(hit, Some(Hit::Card(w) | Hit::Close(w)) if w == card.window);
+            let hover = matches!(hit, Some(Hit::Card(window) | Hit::Close(window)) if window == card.window);
             let lit = hover || pressed == Some(card.window);
-            let fill = if lit { t.surface_raised } else { t.surface };
-            p.shape(
+            let fill = if lit { theme.surface_raised } else { theme.surface };
+            painter.shape(
                 card.rect,
                 Shape {
                     border_width: 1.0,
-                    border: if lit { t.accent.alpha(0.7) } else { t.border },
-                    glow_radius: if lit { t.glow * 0.6 } else { 0.0 },
-                    glow: t.accent.alpha(0.2),
-                    ..Shape::filled(fill, t.radius)
+                    border: if lit { theme.accent.alpha(0.7) } else { theme.border },
+                    glow_radius: if lit { theme.glow * 0.6 } else { 0.0 },
+                    glow: theme.accent.alpha(0.2),
+                    ..Shape::filled(fill, theme.radius)
                 },
             );
             // The window as it was, fitted into the preview.
-            p.fill(card.preview, t.background, (t.radius - 2.0).max(0.0));
+            painter.fill(card.preview, theme.background, (theme.radius - 2.0).max(0.0));
             if let Some(fitted) = self.fit_preview(card.window, card.preview.inset(4.0)) {
-                p.window(card.window, fitted);
+                painter.window(card.window, fitted);
             }
             let window = self.windows.get(&card.window);
-            let mut x = card.label.x;
-            let icon = window.and_then(|w| self.launcher.app_icon(&crate::state::app_id(w), 18));
+            let mut cursor_x = card.label.x;
+            let icon = window.and_then(|toplevel| self.launcher.app_icon(&crate::state::app_id(toplevel), 18));
             if let Some(icon) = icon {
-                p.image(&icon, (x, card.label.y + (card.label.h - 18.0) / 2.0));
-                x += 26.0;
+                painter.image(&icon, (cursor_x, card.label.y + (card.label.h - 18.0) / 2.0));
+                cursor_x += 26.0;
             }
             let title = window.map(crate::state::window_title).unwrap_or_default();
-            let colour = if lit { t.text } else { t.text.alpha(0.82) };
-            p.text(
+            let colour = if lit { theme.text } else { theme.text.alpha(0.82) };
+            painter.text(
                 &title,
-                Rect::new(x, card.label.y, card.label.right() - x, card.label.h),
-                Style::new(t.font_size * 0.92, colour),
+                Rect::new(cursor_x, card.label.y, card.label.right() - cursor_x, card.label.h),
+                Style::new(theme.font_size * 0.92, colour),
             );
             if hover {
                 let on_close = hit == Some(Hit::Close(card.window));
-                p.fill(card.close, if on_close { t.surface_raised } else { t.popup() }, card.close.w as f32 / 2.0);
-                p.glyph(glyph::CLOSE, card.close, 13, if on_close { t.text } else { t.muted });
+                painter.fill(
+                    card.close,
+                    if on_close { theme.surface_raised } else { theme.popup() },
+                    card.close.w as f32 / 2.0,
+                );
+                painter.glyph(glyph::CLOSE, card.close, 13, if on_close { theme.text } else { theme.muted });
             }
         }
         if self.strip_overflows() {
@@ -360,38 +369,43 @@ impl Tileception {
                 (next, glyph::CHEVRON_RIGHT, Hit::Next, first + capacity < count),
             ] {
                 if hit == Some(which) && enabled {
-                    p.fill(rect, t.surface_raised, t.radius);
+                    painter.fill(rect, theme.surface_raised, theme.radius);
                 }
                 let icon = if which == Hit::Previous { glyph::ARROW_LEFT } else { icon };
-                p.glyph(icon, rect, 14, if enabled { t.text } else { t.muted.alpha(0.5) });
+                painter.glyph(icon, rect, 14, if enabled { theme.text } else { theme.muted.alpha(0.5) });
             }
             let label = format!("{} to {} of {count} · Scroll for more", first + 1, (first + capacity).min(count));
-            p.text(
+            painter.text(
                 &label,
                 Rect::new(previous.right() + 6.0, previous.y, next.x - previous.right() - 12.0, previous.h),
-                Style::new(t.font_size * 0.85, t.muted).align(crate::ui::Align::Centre),
+                Style::new(theme.font_size * 0.85, theme.muted).align(crate::ui::Align::Centre),
             );
         }
-        p.finish()
+        painter.finish()
     }
 
     /// Where a window's picture goes inside `area`, keeping its proportions.
-    fn fit_preview(&self, id: WindowId, area: Rect) -> Option<Rect> {
-        let geo = self.windows.get(&id)?.geometry();
+    fn fit_preview(&self, window_id: WindowId, area: Rect) -> Option<Rect> {
+        let geo = self.windows.get(&window_id)?.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
             return None;
         }
-        let (w, h) = (geo.size.w as f64, geo.size.h as f64);
-        let s = (area.w / w).min(area.h / h).min(1.0);
-        Some(Rect::new(area.x + (area.w - w * s) / 2.0, area.y + (area.h - h * s) / 2.0, w * s, h * s))
+        let (width, height) = (geo.size.w as f64, geo.size.h as f64);
+        let scale = (area.w / width).min(area.h / height).min(1.0);
+        Some(Rect::new(
+            area.x + (area.w - width * scale) / 2.0,
+            area.y + (area.h - height * scale) / 2.0,
+            width * scale,
+            height * scale,
+        ))
     }
 }
 
 fn strip_paging_buttons(strip: Rect) -> (Rect, Rect) {
-    let y = strip.bottom() - PAD - FOOTER_H;
-    (Rect::new(strip.x + PAD, y, 28.0, FOOTER_H), Rect::new(strip.right() - PAD - 28.0, y, 28.0, FOOTER_H))
+    let top = strip.bottom() - PAD - FOOTER_H;
+    (Rect::new(strip.x + PAD, top, 28.0, FOOTER_H), Rect::new(strip.right() - PAD - 28.0, top, 28.0, FOOTER_H))
 }
 
-fn expand(r: Rect, by: f64) -> Rect {
-    Rect::new(r.x - by, r.y - by, r.w + 2.0 * by, r.h + 2.0 * by)
+fn expand(rect: Rect, amount: f64) -> Rect {
+    Rect::new(rect.x - amount, rect.y - amount, rect.w + 2.0 * amount, rect.h + 2.0 * amount)
 }

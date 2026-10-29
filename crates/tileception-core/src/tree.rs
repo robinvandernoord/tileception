@@ -87,11 +87,11 @@ impl Default for Tree {
 
 impl Tree {
     pub fn snapshot(&self) -> LayoutNode {
-        fn visit(tree: &Tree, id: NodeId) -> LayoutNode {
-            match tree.node(id) {
+        fn visit(tree: &Tree, node_id: NodeId) -> LayoutNode {
+            match tree.node(node_id) {
                 Node::Split { axis, children, weights } => LayoutNode::Split {
                     axis: *axis,
-                    children: children.iter().map(|id| visit(tree, *id)).collect(),
+                    children: children.iter().map(|child_id| visit(tree, *child_id)).collect(),
                     weights: weights.clone(),
                 },
                 Node::Tile { views, selected } => LayoutNode::Tile { views: views.clone(), selected: *selected },
@@ -115,11 +115,11 @@ impl Tree {
             }
             let mut map_views = |views: &[WindowId]| -> Result<Vec<WindowId>, ()> {
                 let mut mapped = Vec::new();
-                for id in views {
-                    if !seen.insert(*id) {
+                for window_id in views {
+                    if !seen.insert(*window_id) {
                         return Err(());
                     }
-                    if let Some(live) = remap.get(id) {
+                    if let Some(live) = remap.get(window_id) {
                         mapped.push(*live);
                     }
                 }
@@ -134,8 +134,10 @@ impl Tree {
                     if mapped.is_empty() {
                         return Ok(None);
                     }
-                    let selected =
-                        remap.get(&views[*selected]).and_then(|id| mapped.iter().position(|w| w == id)).unwrap_or(0);
+                    let selected = remap
+                        .get(&views[*selected])
+                        .and_then(|window_id| mapped.iter().position(|mapped_window| mapped_window == window_id))
+                        .unwrap_or(0);
                     Ok(Some(tree.alloc(Node::Tile { views: mapped, selected }, None)))
                 }
                 LayoutNode::Desktop { floats, shown } => {
@@ -149,15 +151,15 @@ impl Tree {
                 LayoutNode::Split { axis, children, weights } => {
                     if children.len() < 2
                         || children.len() != weights.len()
-                        || weights.iter().any(|w| !w.is_finite() || *w <= 0.0)
+                        || weights.iter().any(|weight| !weight.is_finite() || *weight <= 0.0)
                     {
                         return Err(());
                     }
                     let mut kept = Vec::new();
                     let mut sizes = Vec::new();
                     for (child, weight) in children.iter().zip(weights) {
-                        if let Some(id) = visit(tree, child, remap, depth + 1, seen, desktop)? {
-                            kept.push(id);
+                        if let Some(child_id) = visit(tree, child, remap, depth + 1, seen, desktop)? {
+                            kept.push(child_id);
                             sizes.push(*weight);
                         }
                     }
@@ -206,35 +208,35 @@ impl Tree {
         self.desktop
     }
 
-    pub fn contains(&self, id: NodeId) -> bool {
-        self.slots.get(id.0 as usize).is_some_and(|s| s.is_some())
+    pub fn contains(&self, node_id: NodeId) -> bool {
+        self.slots.get(node_id.0 as usize).is_some_and(|slot| slot.is_some())
     }
 
-    pub fn node(&self, id: NodeId) -> &Node {
-        &self.slot(id).node
+    pub fn node(&self, node_id: NodeId) -> &Node {
+        &self.slot(node_id).node
     }
 
-    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
-        self.slot(id).parent
+    pub fn parent(&self, node_id: NodeId) -> Option<NodeId> {
+        self.slot(node_id).parent
     }
 
-    pub fn children(&self, id: NodeId) -> &[NodeId] {
-        match self.node(id) {
+    pub fn children(&self, node_id: NodeId) -> &[NodeId] {
+        match self.node(node_id) {
             Node::Split { children, .. } => children,
             _ => &[],
         }
     }
 
-    pub fn is_leaf(&self, id: NodeId) -> bool {
-        !matches!(self.node(id), Node::Split { .. })
+    pub fn is_leaf(&self, node_id: NodeId) -> bool {
+        !matches!(self.node(node_id), Node::Split { .. })
     }
 
     /// Maps an id that may have been removed to the live node that replaced it.
-    pub fn resolve(&self, mut id: NodeId) -> NodeId {
+    pub fn resolve(&self, mut node_id: NodeId) -> NodeId {
         let mut guard = 0;
-        while !self.contains(id) {
-            match self.redirect.get(&id) {
-                Some(next) => id = *next,
+        while !self.contains(node_id) {
+            match self.redirect.get(&node_id) {
+                Some(next) => node_id = *next,
                 None => return self.root,
             }
             guard += 1;
@@ -242,53 +244,53 @@ impl Tree {
                 return self.root;
             }
         }
-        id
+        node_id
     }
 
-    /// Ancestors from `id` (inclusive) up to the root.
-    pub fn ancestors(&self, id: NodeId) -> Vec<NodeId> {
-        let mut out = vec![id];
-        let mut cur = id;
-        while let Some(p) = self.parent(cur) {
-            out.push(p);
-            cur = p;
+    /// Ancestors from `node_id` (inclusive) up to the root.
+    pub fn ancestors(&self, node_id: NodeId) -> Vec<NodeId> {
+        let mut out = vec![node_id];
+        let mut cur = node_id;
+        while let Some(parent) = self.parent(cur) {
+            out.push(parent);
+            cur = parent;
         }
         out
     }
 
-    pub fn depth(&self, id: NodeId) -> usize {
-        self.ancestors(id).len() - 1
+    pub fn depth(&self, node_id: NodeId) -> usize {
+        self.ancestors(node_id).len() - 1
     }
 
-    pub fn is_ancestor_or_self(&self, ancestor: NodeId, id: NodeId) -> bool {
-        self.ancestors(id).contains(&ancestor)
+    pub fn is_ancestor_or_self(&self, ancestor: NodeId, node_id: NodeId) -> bool {
+        self.ancestors(node_id).contains(&ancestor)
     }
 
-    pub fn common_ancestor(&self, a: NodeId, b: NodeId) -> NodeId {
-        let up_a = self.ancestors(a);
-        self.ancestors(b).into_iter().find(|n| up_a.contains(n)).unwrap_or(self.root)
+    pub fn common_ancestor(&self, first: NodeId, second: NodeId) -> NodeId {
+        let ancestors = self.ancestors(first);
+        self.ancestors(second).into_iter().find(|node_id| ancestors.contains(node_id)).unwrap_or(self.root)
     }
 
     /// Every node in the subtree, parents before children, in child order.
-    pub fn subtree(&self, id: NodeId) -> Vec<NodeId> {
+    pub fn subtree(&self, node_id: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
-            out.push(n);
-            for c in self.children(n).iter().rev() {
-                stack.push(*c);
+        let mut stack = vec![node_id];
+        while let Some(current) = stack.pop() {
+            out.push(current);
+            for child in self.children(current).iter().rev() {
+                stack.push(*child);
             }
         }
         out
     }
 
-    pub fn leaves(&self, id: NodeId) -> Vec<NodeId> {
-        self.subtree(id).into_iter().filter(|n| self.is_leaf(*n)).collect()
+    pub fn leaves(&self, node_id: NodeId) -> Vec<NodeId> {
+        self.subtree(node_id).into_iter().filter(|node_id| self.is_leaf(*node_id)).collect()
     }
 
     /// The tile holding `win` as one of its views.
     pub fn tile_of(&self, win: WindowId) -> Option<NodeId> {
-        self.live_ids().find(|id| matches!(self.node(*id), Node::Tile { views, .. } if views.contains(&win)))
+        self.live_ids().find(|node_id| matches!(self.node(*node_id), Node::Tile { views, .. } if views.contains(&win)))
     }
 
     pub fn is_floating(&self, win: WindowId) -> bool {
@@ -301,10 +303,10 @@ impl Tree {
     }
 
     /// All windows in the subtree, in layout order; floating windows included.
-    pub fn windows_in(&self, id: NodeId) -> Vec<WindowId> {
+    pub fn windows_in(&self, node_id: NodeId) -> Vec<WindowId> {
         let mut out = Vec::new();
-        for n in self.subtree(id) {
-            match self.node(n) {
+        for child_id in self.subtree(node_id) {
+            match self.node(child_id) {
                 Node::Tile { views, .. } => out.extend(views.iter().copied()),
                 Node::Desktop { floats, .. } => out.extend(floats.iter().copied()),
                 Node::Split { .. } => {}
@@ -315,10 +317,10 @@ impl Tree {
 
     /// Windows that are actually shown in the layout: the selected view of
     /// each tile. Floating windows are not part of any space.
-    pub fn shown_windows_in(&self, id: NodeId) -> Vec<WindowId> {
+    pub fn shown_windows_in(&self, node_id: NodeId) -> Vec<WindowId> {
         let mut out = Vec::new();
-        for n in self.subtree(id) {
-            if let Node::Tile { views, selected } = self.node(n) {
+        for child_id in self.subtree(node_id) {
+            if let Node::Tile { views, selected } = self.node(child_id) {
                 out.push(views[*selected]);
             }
         }
@@ -336,10 +338,10 @@ impl Tree {
     /// Puts a floating window above the others.
     pub fn raise_float(&mut self, win: WindowId) {
         if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node
-            && let Some(i) = floats.iter().position(|w| *w == win)
+            && let Some(index) = floats.iter().position(|window| *window == win)
         {
-            let w = floats.remove(i);
-            floats.push(w);
+            let window = floats.remove(index);
+            floats.push(window);
         }
     }
 
@@ -357,20 +359,20 @@ impl Tree {
 
     /// The split boundary on one side of a node: the split and the index of
     /// the child before the boundary, for `resize_gap`.
-    pub fn boundary(&self, id: NodeId, side: Side) -> Option<(NodeId, usize)> {
-        let mut cur = id;
+    pub fn boundary(&self, node_id: NodeId, side: Side) -> Option<(NodeId, usize)> {
+        let mut cur = node_id;
         while let Some(parent) = self.parent(cur) {
             if let Node::Split { axis, children, .. } = self.node(parent)
                 && *axis == side.axis()
             {
-                let i = children.iter().position(|c| *c == cur).expect("child of its parent");
-                let shown = |j: &usize| self.is_visible(children[*j]);
+                let index = children.iter().position(|child| *child == cur).expect("child of its parent");
+                let shown = |candidate: &usize| self.is_visible(children[*candidate]);
                 if side.is_leading() {
-                    if let Some(j) = (0..i).rev().find(shown) {
-                        return Some((parent, j));
+                    if let Some(previous) = (0..index).rev().find(shown) {
+                        return Some((parent, previous));
                     }
-                } else if (i + 1..children.len()).any(|j| shown(&j)) {
-                    return Some((parent, i));
+                } else if (index + 1..children.len()).any(|candidate| shown(&candidate)) {
+                    return Some((parent, index));
                 }
             }
             cur = parent;
@@ -389,12 +391,12 @@ impl Tree {
     }
 
     /// Whether a node takes up any room in the layout.
-    pub fn is_visible(&self, id: NodeId) -> bool {
-        if id == self.desktop {
+    pub fn is_visible(&self, node_id: NodeId) -> bool {
+        if node_id == self.desktop {
             return self.desktop_visible();
         }
-        match self.node(id) {
-            Node::Split { children, .. } => children.iter().any(|c| self.is_visible(*c)),
+        match self.node(node_id) {
+            Node::Split { children, .. } => children.iter().any(|child| self.is_visible(*child)),
             _ => true,
         }
     }
@@ -442,15 +444,15 @@ impl Tree {
         }
     }
 
-    fn project(&self, id: NodeId, windows: &[WindowId]) -> Option<LayoutNode> {
-        match self.node(id) {
+    fn project(&self, node_id: NodeId, windows: &[WindowId]) -> Option<LayoutNode> {
+        match self.node(node_id) {
             Node::Desktop { .. } => None,
             Node::Tile { views, selected } => {
-                let kept: Vec<_> = views.iter().filter(|w| windows.contains(w)).copied().collect();
+                let kept: Vec<_> = views.iter().filter(|window| windows.contains(window)).copied().collect();
                 if kept.is_empty() {
                     return None;
                 }
-                let selected = kept.iter().position(|w| *w == views[*selected]).unwrap_or(0);
+                let selected = kept.iter().position(|window| *window == views[*selected]).unwrap_or(0);
                 Some(LayoutNode::Tile { views: kept, selected })
             }
             Node::Split { axis, children, weights } => {
@@ -502,12 +504,12 @@ impl Tree {
 
     /// Make an exact tiled selection a subtree, preserving its internal layout.
     pub fn group_windows(&mut self, windows: &[WindowId]) -> Option<NodeId> {
-        let tiles: Vec<_> = windows.iter().filter_map(|w| self.tile_of(*w)).collect();
+        let tiles: Vec<_> = windows.iter().filter_map(|window| self.tile_of(*window)).collect();
         if tiles.len() != windows.len() || tiles.is_empty() {
             return None;
         }
-        let common = tiles.iter().copied().reduce(|a, b| self.common_ancestor(a, b))?;
-        if self.windows_in(common).iter().all(|w| windows.contains(w)) {
+        let common = tiles.iter().copied().reduce(|first, second| self.common_ancestor(first, second))?;
+        if self.windows_in(common).iter().all(|window| windows.contains(window)) {
             return Some(common);
         }
         // Whole sibling branches retain their sizes and outside proportions.
@@ -516,7 +518,7 @@ impl Tree {
                 .iter()
                 .map(|child| {
                     let contents = self.windows_in(*child);
-                    (!contents.is_empty() && contents.iter().all(|w| windows.contains(w)))
+                    (!contents.is_empty() && contents.iter().all(|window| windows.contains(window)))
                         && !self.subtree(*child).contains(&self.desktop)
                 })
                 .collect();
@@ -526,9 +528,9 @@ impl Tree {
                 .filter(|(_, keep)| **keep)
                 .flat_map(|(child, _)| self.windows_in(*child))
                 .collect();
-            if windows.iter().all(|w| covered.contains(w)) {
+            if windows.iter().all(|window| covered.contains(window)) {
                 let grouped: Vec<_> =
-                    children.iter().zip(&selected).filter(|(_, keep)| **keep).map(|(id, _)| *id).collect();
+                    children.iter().zip(&selected).filter(|(_, keep)| **keep).map(|(child_id, _)| *child_id).collect();
                 let sizes: Vec<_> =
                     weights.iter().zip(&selected).filter(|(_, keep)| **keep).map(|(weight, _)| *weight).collect();
                 let size: f64 = sizes.iter().sum();
@@ -558,8 +560,8 @@ impl Tree {
         // Selections across branches need extraction. Keep the first tile's
         // position, and leave unselected windows in their existing branches.
         let layout = self.project(common, windows)?;
-        let anchor = self.windows_in(common).into_iter().find(|w| windows.contains(w))?;
-        for window in windows.iter().copied().filter(|w| *w != anchor) {
+        let anchor = self.windows_in(common).into_iter().find(|window| windows.contains(window))?;
+        for window in windows.iter().copied().filter(|window| *window != anchor) {
             self.detach(window);
         }
         let tile = self.tile_of(anchor)?;
@@ -581,12 +583,12 @@ impl Tree {
     /// would nest a split in one like it. None when the windows are not
     /// together like that.
     pub fn node_holding(&mut self, windows: &[WindowId], across: Axis) -> Option<NodeId> {
-        let tiles: Vec<_> = windows.iter().filter_map(|w| self.tile_of(*w)).collect();
+        let tiles: Vec<_> = windows.iter().filter_map(|window| self.tile_of(*window)).collect();
         if tiles.len() != windows.len() || tiles.is_empty() {
             return None;
         }
-        let common = tiles.iter().copied().reduce(|a, b| self.common_ancestor(a, b))?;
-        if self.windows_in(common).iter().all(|w| windows.contains(w)) {
+        let common = tiles.iter().copied().reduce(|first, second| self.common_ancestor(first, second))?;
+        if self.windows_in(common).iter().all(|window| windows.contains(window)) {
             return Some(common);
         }
         let Node::Split { axis, children, weights } = self.node(common).clone() else { return None };
@@ -595,12 +597,12 @@ impl Tree {
         }
         let whole = |child: &NodeId| {
             let contents = self.windows_in(*child);
-            !contents.is_empty() && contents.iter().all(|w| windows.contains(w))
+            !contents.is_empty() && contents.iter().all(|window| windows.contains(window))
         };
         let first = children.iter().position(whole)?;
-        let run = children[first..].iter().take_while(|c| whole(c)).count();
-        let covered: Vec<_> = children[first..first + run].iter().flat_map(|c| self.windows_in(*c)).collect();
-        if run < 2 || !windows.iter().all(|w| covered.contains(w)) {
+        let run = children[first..].iter().take_while(|child| whole(child)).count();
+        let covered: Vec<_> = children[first..first + run].iter().flat_map(|child| self.windows_in(*child)).collect();
+        if run < 2 || !windows.iter().all(|window| covered.contains(window)) {
             return None;
         }
         let grouped = children[first..first + run].to_vec();
@@ -618,25 +620,31 @@ impl Tree {
     }
 
     /// A node's share of its split, among the children that take up room.
-    pub fn share_of(&self, id: NodeId) -> Option<f64> {
-        let parent = self.parent(id)?;
+    pub fn share_of(&self, node_id: NodeId) -> Option<f64> {
+        let parent = self.parent(node_id)?;
         let Node::Split { children, weights, .. } = self.node(parent) else { return None };
-        let total: f64 = children.iter().zip(weights).filter(|(c, _)| self.is_visible(**c)).map(|(_, w)| *w).sum();
-        let i = children.iter().position(|c| *c == id)?;
-        (total > 0.0).then(|| weights[i] / total)
+        let total: f64 =
+            children.iter().zip(weights).filter(|(child, _)| self.is_visible(**child)).map(|(_, weight)| *weight).sum();
+        let index = children.iter().position(|child| *child == node_id)?;
+        (total > 0.0).then(|| weights[index] / total)
     }
 
     /// Gives a node this share of its split; the others keep their proportions.
-    pub fn set_share(&mut self, id: NodeId, share: f64) {
-        let Some(parent) = self.parent(id) else { return };
-        let visible: Vec<bool> = self.children(parent).iter().map(|c| self.is_visible(*c)).collect();
+    pub fn set_share(&mut self, node_id: NodeId, share: f64) {
+        let Some(parent) = self.parent(node_id) else { return };
+        let visible: Vec<bool> = self.children(parent).iter().map(|child| self.is_visible(*child)).collect();
         let Node::Split { children, weights, .. } = &mut self.slot_mut(parent).node else { return };
-        let Some(i) = children.iter().position(|c| *c == id) else { return };
-        let others: f64 =
-            weights.iter().zip(&visible).enumerate().filter(|(j, (_, v))| *j != i && **v).map(|(_, (w, _))| *w).sum();
+        let Some(index) = children.iter().position(|child| *child == node_id) else { return };
+        let others: f64 = weights
+            .iter()
+            .zip(&visible)
+            .enumerate()
+            .filter(|(candidate, (_, visible))| *candidate != index && **visible)
+            .map(|(_, (weight, _))| *weight)
+            .sum();
         let share = share.clamp(MIN_WEIGHT_FRACTION, 1.0 - MIN_WEIGHT_FRACTION);
         if others > 0.0 {
-            weights[i] = share / (1.0 - share) * others;
+            weights[index] = share / (1.0 - share) * others;
         }
     }
 
@@ -651,7 +659,7 @@ impl Tree {
     pub fn select_tab(&mut self, win: WindowId) -> bool {
         let Some(tile) = self.tile_of(win) else { return false };
         if let Node::Tile { views, selected } = &mut self.slot_mut(tile).node {
-            *selected = views.iter().position(|v| *v == win).unwrap_or(*selected);
+            *selected = views.iter().position(|window| *window == win).unwrap_or(*selected);
         }
         true
     }
@@ -661,14 +669,14 @@ impl Tree {
     pub fn detach(&mut self, win: WindowId) -> bool {
         if self.is_floating(win) {
             if let Node::Desktop { floats, .. } = &mut self.slot_mut(self.desktop).node {
-                floats.retain(|w| *w != win);
+                floats.retain(|window| *window != win);
             }
             return true;
         }
         let Some(tile) = self.tile_of(win) else { return false };
         let now_empty = match &mut self.slot_mut(tile).node {
             Node::Tile { views, selected } => {
-                let idx = views.iter().position(|v| *v == win).expect("tile_of found it");
+                let idx = views.iter().position(|window| *window == win).expect("tile_of found it");
                 views.remove(idx);
                 if *selected > idx || *selected >= views.len() {
                     *selected = selected.saturating_sub(1);
@@ -690,29 +698,30 @@ impl Tree {
     /// Hidden children (a hidden Desktop) are skipped: the boundary is between
     /// the nearest shown child at or before `index` and the one after it.
     pub fn resize_gap(&mut self, split: NodeId, index: usize, delta: f64) -> bool {
-        let visible: Vec<bool> = self.children(split).iter().map(|c| self.is_visible(*c)).collect();
-        let Some(before) = (0..=index.min(visible.len().saturating_sub(1))).rev().find(|j| visible[*j]) else {
+        let visible: Vec<bool> = self.children(split).iter().map(|child| self.is_visible(*child)).collect();
+        let Some(before) = (0..=index.min(visible.len().saturating_sub(1))).rev().find(|candidate| visible[*candidate])
+        else {
             return false;
         };
-        let Some(after) = (index + 1..visible.len()).find(|j| visible[*j]) else { return false };
+        let Some(after) = (index + 1..visible.len()).find(|candidate| visible[*candidate]) else { return false };
         let Node::Split { weights, .. } = &mut self.slot_mut(split).node else { return false };
-        let total: f64 = weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).sum();
+        let total: f64 = weights.iter().zip(&visible).filter(|(_, visible)| **visible).map(|(weight, _)| *weight).sum();
         let min = MIN_WEIGHT_FRACTION * total;
-        let d = delta * total;
-        let a = weights[before];
-        let b = weights[after];
-        let d = d.clamp(min - a, b - min);
-        if d.abs() < 1e-12 {
+        let adjustment = delta * total;
+        let before_weight = weights[before];
+        let after_weight = weights[after];
+        let adjustment = adjustment.clamp(min - before_weight, after_weight - min);
+        if adjustment.abs() < 1e-12 {
             return false;
         }
-        weights[before] = a + d;
-        weights[after] = b - d;
+        weights[before] = before_weight + adjustment;
+        weights[after] = after_weight - adjustment;
         true
     }
 
     /// Ids of every live node, in allocation order.
     pub fn live_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.slots.iter().enumerate().filter(|(_, s)| s.is_some()).map(|(i, _)| NodeId(i as u32))
+        self.slots.iter().enumerate().filter(|(_, slot)| slot.is_some()).map(|(index, _)| NodeId(index as u32))
     }
 
     /// Panics with a description when an invariant is broken. Meant for tests.
@@ -724,70 +733,75 @@ impl Tree {
         assert!(reachable.contains(&self.desktop), "desktop must stay in the tree");
         assert_eq!(reachable.len(), self.live_ids().count(), "orphaned nodes");
         let mut seen = std::collections::HashSet::new();
-        for id in reachable {
-            match self.node(id) {
+        for node_id in reachable {
+            match self.node(node_id) {
                 Node::Split { children, weights, .. } => {
-                    assert!(children.len() >= 2, "split {id:?} has {} children", children.len());
+                    assert!(children.len() >= 2, "split {node_id:?} has {} children", children.len());
                     assert_eq!(children.len(), weights.len());
-                    assert!(weights.iter().all(|w| *w > 0.0 && w.is_finite()));
-                    for c in children {
-                        assert_eq!(self.parent(*c), Some(id), "bad parent link");
+                    assert!(weights.iter().all(|weight| *weight > 0.0 && weight.is_finite()));
+                    for child in children {
+                        assert_eq!(self.parent(*child), Some(node_id), "bad parent link");
                     }
                 }
                 Node::Tile { views, selected } => {
-                    assert!(!views.is_empty(), "empty tile {id:?}");
+                    assert!(!views.is_empty(), "empty tile {node_id:?}");
                     assert!(*selected < views.len());
-                    for v in views {
-                        assert!(seen.insert(*v), "window {v:?} appears twice");
+                    for window in views {
+                        assert!(seen.insert(*window), "window {window:?} appears twice");
                     }
                 }
                 Node::Desktop { floats, .. } => {
-                    for v in floats {
-                        assert!(seen.insert(*v), "window {v:?} appears twice");
+                    for window in floats {
+                        assert!(seen.insert(*window), "window {window:?} appears twice");
                     }
                 }
             }
         }
     }
 
-    fn slot(&self, id: NodeId) -> &Slot {
-        self.slots[id.0 as usize].as_ref().unwrap_or_else(|| panic!("node {id:?} was removed"))
+    fn slot(&self, node_id: NodeId) -> &Slot {
+        self.slots[node_id.0 as usize].as_ref().unwrap_or_else(|| panic!("node {node_id:?} was removed"))
     }
 
-    fn slot_mut(&mut self, id: NodeId) -> &mut Slot {
-        self.slots[id.0 as usize].as_mut().unwrap_or_else(|| panic!("node {id:?} was removed"))
+    fn slot_mut(&mut self, node_id: NodeId) -> &mut Slot {
+        self.slots[node_id.0 as usize].as_mut().unwrap_or_else(|| panic!("node {node_id:?} was removed"))
     }
 
     fn alloc(&mut self, node: Node, parent: Option<NodeId>) -> NodeId {
-        let id = NodeId(self.slots.len() as u32);
+        let node_id = NodeId(self.slots.len() as u32);
         self.slots.push(Some(Slot { node, parent }));
-        id
+        node_id
     }
 
-    fn free(&mut self, id: NodeId, replaced_by: NodeId) {
-        self.slots[id.0 as usize] = None;
-        self.redirect.insert(id, replaced_by);
+    fn free(&mut self, node_id: NodeId, replaced_by: NodeId) {
+        self.slots[node_id.0 as usize] = None;
+        self.redirect.insert(node_id, replaced_by);
     }
 
     fn insert_beside(&mut self, new: NodeId, target: NodeId, side: Side) {
         let axis = side.axis();
         if let Some(parent) = self.parent(target) {
-            let visible: Vec<bool> = self.children(parent).iter().map(|c| self.is_visible(*c)).collect();
+            let visible: Vec<bool> = self.children(parent).iter().map(|child| self.is_visible(*child)).collect();
             let share = self.share_removed_space;
-            if let Node::Split { axis: pa, children, weights } = &mut self.slot_mut(parent).node
-                && *pa == axis
+            if let Node::Split { axis: parent_axis, children, weights } = &mut self.slot_mut(parent).node
+                && *parent_axis == axis
             {
-                let idx = children.iter().position(|c| *c == target).expect("child of its parent");
+                let idx = children.iter().position(|child| *child == target).expect("child of its parent");
                 let weight = if share {
-                    let shown: Vec<f64> = weights.iter().zip(&visible).filter(|(_, v)| **v).map(|(w, _)| *w).collect();
+                    let shown: Vec<f64> = weights
+                        .iter()
+                        .zip(&visible)
+                        .filter(|(_, visible)| **visible)
+                        .map(|(weight, _)| *weight)
+                        .collect();
                     shown.iter().sum::<f64>() / shown.len().max(1) as f64
                 } else {
                     weights[idx] /= 2.0;
                     weights[idx]
                 };
-                let at = if side.is_leading() { idx } else { idx + 1 };
-                children.insert(at, new);
-                weights.insert(at, weight);
+                let insertion_index = if side.is_leading() { idx } else { idx + 1 };
+                children.insert(insertion_index, new);
+                weights.insert(insertion_index, weight);
                 self.slot_mut(new).parent = Some(parent);
                 return;
             }
@@ -809,9 +823,9 @@ impl Tree {
     /// Points `parent` (or the root, when `parent` is none) at `new` instead of `old`.
     fn replace_child(&mut self, parent: Option<NodeId>, old: NodeId, new: NodeId) {
         match parent {
-            Some(p) => {
-                if let Node::Split { children, .. } = &mut self.slot_mut(p).node {
-                    let idx = children.iter().position(|c| *c == old).expect("child of its parent");
+            Some(parent_id) => {
+                if let Node::Split { children, .. } = &mut self.slot_mut(parent_id).node {
+                    let idx = children.iter().position(|child| *child == old).expect("child of its parent");
                     children[idx] = new;
                 }
             }
@@ -820,13 +834,13 @@ impl Tree {
         self.slot_mut(new).parent = parent;
     }
 
-    fn remove_node(&mut self, id: NodeId) {
-        assert_ne!(id, self.desktop, "the Desktop is never removed");
-        let parent = self.parent(id).expect("only the Desktop can be a parentless leaf");
+    fn remove_node(&mut self, node_id: NodeId) {
+        assert_ne!(node_id, self.desktop, "the Desktop is never removed");
+        let parent = self.parent(node_id).expect("only the Desktop can be a parentless leaf");
         let share = self.share_removed_space;
         let heir = {
             let Node::Split { children, weights, .. } = &mut self.slot_mut(parent).node else { unreachable!() };
-            let idx = children.iter().position(|c| *c == id).expect("child of its parent");
+            let idx = children.iter().position(|child| *child == node_id).expect("child of its parent");
             children.remove(idx);
             let freed = weights.remove(idx);
             let heir_idx = idx.min(children.len() - 1);
@@ -835,7 +849,7 @@ impl Tree {
             }
             children[heir_idx]
         };
-        self.free(id, heir);
+        self.free(node_id, heir);
         if self.children(parent).len() == 1 {
             self.collapse(parent);
         }
@@ -849,24 +863,28 @@ impl Tree {
         self.replace_child(grand, split, child);
         self.free(split, child);
 
-        let Some(g) = grand else { return };
-        let (Node::Split { axis: ga, .. }, Node::Split { axis: ca, .. }) = (self.node(g), self.node(child)) else {
+        let Some(grandparent) = grand else { return };
+        let (Node::Split { axis: parent_axis, .. }, Node::Split { axis: child_axis, .. }) =
+            (self.node(grandparent), self.node(child))
+        else {
             return;
         };
-        if ga != ca {
+        if parent_axis != child_axis {
             return;
         }
-        let Node::Split { children: cc, weights: cw, .. } = self.node(child).clone() else { unreachable!() };
-        let Node::Split { children, weights, .. } = &mut self.slot_mut(g).node else { unreachable!() };
-        let idx = children.iter().position(|c| *c == child).expect("child of its parent");
+        let Node::Split { children: child_children, weights: child_weights, .. } = self.node(child).clone() else {
+            unreachable!()
+        };
+        let Node::Split { children, weights, .. } = &mut self.slot_mut(grandparent).node else { unreachable!() };
+        let idx = children.iter().position(|candidate| *candidate == child).expect("child of its parent");
         let share = weights[idx];
-        let sum: f64 = cw.iter().sum();
-        children.splice(idx..=idx, cc.iter().copied());
-        weights.splice(idx..=idx, cw.iter().map(|w| w / sum * share));
-        for c in cc {
-            self.slot_mut(c).parent = Some(g);
+        let sum: f64 = child_weights.iter().sum();
+        children.splice(idx..=idx, child_children.iter().copied());
+        weights.splice(idx..=idx, child_weights.iter().map(|weight| weight / sum * share));
+        for child_id in child_children {
+            self.slot_mut(child_id).parent = Some(grandparent);
         }
-        self.free(child, g);
+        self.free(child, grandparent);
     }
 }
 
@@ -875,178 +893,182 @@ impl Tree {
 mod tests {
     use super::*;
 
-    fn w(n: u64) -> WindowId {
-        WindowId(n)
+    fn window_id(number: u64) -> WindowId {
+        WindowId(number)
     }
 
     #[test]
     fn starts_with_a_lone_visible_desktop() {
-        let t = Tree::new();
-        t.check_invariants();
-        assert_eq!(t.root(), t.desktop());
-        assert!(t.desktop_visible());
+        let tree = Tree::new();
+        tree.check_invariants();
+        assert_eq!(tree.root(), tree.desktop());
+        assert!(tree.desktop_visible());
     }
 
     #[test]
     fn docking_beside_the_desktop_hides_it() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        t.check_invariants();
-        assert!(!t.desktop_visible());
-        assert_eq!(t.tile_of(w(1)), Some(a));
-        assert!(matches!(t.node(t.root()), Node::Split { axis: Axis::Horizontal, .. }));
+        let mut tree = Tree::new();
+        let tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        tree.check_invariants();
+        assert!(!tree.desktop_visible());
+        assert_eq!(tree.tile_of(window_id(1)), Some(tile));
+        assert!(matches!(tree.node(tree.root()), Node::Split { axis: Axis::Horizontal, .. }));
     }
 
     #[test]
     fn same_axis_dock_joins_the_split() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Right);
-        t.check_invariants();
-        let root = t.root();
-        let Node::Split { children, weights, .. } = t.node(root) else { panic!() };
-        assert_eq!(children, &vec![t.desktop(), a, b]);
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Right);
+        tree.check_invariants();
+        let root = tree.root();
+        let Node::Split { children, weights, .. } = tree.node(root) else { panic!() };
+        assert_eq!(children, &vec![tree.desktop(), first_tile, second_tile]);
         assert_eq!(weights[1], weights[2]);
     }
 
     #[test]
     fn cross_axis_dock_nests_a_split() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Bottom);
-        t.check_invariants();
-        let p = t.parent(b).unwrap();
-        assert!(matches!(t.node(p), Node::Split { axis: Axis::Vertical, .. }));
-        assert_eq!(t.children(p), &[a, b]);
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Bottom);
+        tree.check_invariants();
+        let parent = tree.parent(second_tile).unwrap();
+        assert!(matches!(tree.node(parent), Node::Split { axis: Axis::Vertical, .. }));
+        assert_eq!(tree.children(parent), &[first_tile, second_tile]);
     }
 
-    fn shares(t: &Tree, split: NodeId) -> Vec<f64> {
-        let Node::Split { children, weights, .. } = t.node(split) else { panic!() };
-        let shown: Vec<(NodeId, f64)> =
-            children.iter().zip(weights).filter(|(c, _)| t.is_visible(**c)).map(|(c, w)| (*c, *w)).collect();
-        let sum: f64 = shown.iter().map(|(_, w)| w).sum();
-        shown.iter().map(|(_, w)| w / sum).collect()
+    fn shares(tree: &Tree, split: NodeId) -> Vec<f64> {
+        let Node::Split { children, weights, .. } = tree.node(split) else { panic!() };
+        let shown: Vec<(NodeId, f64)> = children
+            .iter()
+            .zip(weights)
+            .filter(|(child, _)| tree.is_visible(**child))
+            .map(|(child, weight)| (*child, *weight))
+            .collect();
+        let sum: f64 = shown.iter().map(|(_, weight)| weight).sum();
+        shown.iter().map(|(_, weight)| weight / sum).collect()
     }
 
     #[test]
     fn closing_undoes_adding_when_sharing_space() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Right);
-        t.resize_gap(t.root(), 1, 0.2);
-        let before = shares(&t, t.root());
-        t.dock(w(3), b, Side::Right);
-        let with_c = shares(&t, t.root());
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Right);
+        tree.resize_gap(tree.root(), 1, 0.2);
+        let before = shares(&tree, tree.root());
+        tree.dock(window_id(3), second_tile, Side::Right);
+        let with_c = shares(&tree, tree.root());
         assert!((with_c[2] - 1.0 / 3.0).abs() < 1e-9, "newcomer gets an equal share: {with_c:?}");
-        t.detach(w(3));
-        t.check_invariants();
-        let after = shares(&t, t.root());
-        for (x, y) in before.iter().zip(&after) {
-            assert!((x - y).abs() < 1e-9, "{before:?} vs {after:?}");
+        tree.detach(window_id(3));
+        tree.check_invariants();
+        let after = shares(&tree, tree.root());
+        for (before_weight, after_weight) in before.iter().zip(&after) {
+            assert!((before_weight - after_weight).abs() < 1e-9, "{before:?} vs {after:?}");
         }
     }
 
     #[test]
     fn neighbour_takes_the_space_when_not_sharing() {
-        let mut t = Tree::new();
-        t.share_removed_space = false;
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Right);
-        let c = t.dock(w(3), b, Side::Right);
-        assert_eq!(shares(&t, t.root()), vec![0.5, 0.25, 0.25]);
-        t.detach(w(2));
-        t.check_invariants();
-        assert_eq!(shares(&t, t.root()), vec![0.5, 0.5]);
-        assert_eq!(t.resolve(b), c);
+        let mut tree = Tree::new();
+        tree.share_removed_space = false;
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Right);
+        let third_tile = tree.dock(window_id(3), second_tile, Side::Right);
+        assert_eq!(shares(&tree, tree.root()), vec![0.5, 0.25, 0.25]);
+        tree.detach(window_id(2));
+        tree.check_invariants();
+        assert_eq!(shares(&tree, tree.root()), vec![0.5, 0.5]);
+        assert_eq!(tree.resolve(second_tile), third_tile);
     }
 
     #[test]
     fn removing_collapses_and_redirects() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Bottom);
-        let split = t.parent(b).unwrap();
-        t.detach(w(2));
-        t.check_invariants();
-        assert!(!t.contains(split));
-        assert_eq!(t.resolve(split), a);
-        assert_eq!(t.resolve(b), a);
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Bottom);
+        let split = tree.parent(second_tile).unwrap();
+        tree.detach(window_id(2));
+        tree.check_invariants();
+        assert!(!tree.contains(split));
+        assert_eq!(tree.resolve(split), first_tile);
+        assert_eq!(tree.resolve(second_tile), first_tile);
     }
 
     #[test]
     fn collapse_merges_same_axis_splits() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Bottom);
-        let _c = t.dock(w(3), b, Side::Right);
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Bottom);
+        let _third_tile = tree.dock(window_id(3), second_tile, Side::Right);
         // b and c share a horizontal split inside the vertical one; removing a
         // collapses the vertical split, and the horizontal one joins the root.
-        t.detach(w(1));
-        t.check_invariants();
-        assert_eq!(t.children(t.root()).len(), 3);
+        tree.detach(window_id(1));
+        tree.check_invariants();
+        assert_eq!(tree.children(tree.root()).len(), 3);
     }
 
     #[test]
     fn tabs_and_selection() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        t.tab(w(2), a);
-        t.tab(w(3), a);
-        assert_eq!(t.shown_windows_in(a), vec![w(3)]);
-        t.select_tab(w(1));
-        assert_eq!(t.shown_windows_in(a), vec![w(1)]);
-        t.detach(w(1));
-        t.check_invariants();
-        assert_eq!(t.windows_in(a), vec![w(2), w(3)]);
-        t.detach(w(2));
-        t.detach(w(3));
-        t.check_invariants();
-        assert!(!t.contains(a));
-        assert_eq!(t.root(), t.desktop());
+        let mut tree = Tree::new();
+        let tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        tree.tab(window_id(2), tile);
+        tree.tab(window_id(3), tile);
+        assert_eq!(tree.shown_windows_in(tile), vec![window_id(3)]);
+        tree.select_tab(window_id(1));
+        assert_eq!(tree.shown_windows_in(tile), vec![window_id(1)]);
+        tree.detach(window_id(1));
+        tree.check_invariants();
+        assert_eq!(tree.windows_in(tile), vec![window_id(2), window_id(3)]);
+        tree.detach(window_id(2));
+        tree.detach(window_id(3));
+        tree.check_invariants();
+        assert!(!tree.contains(tile));
+        assert_eq!(tree.root(), tree.desktop());
     }
 
     #[test]
     fn floating_leaves_the_layout_alone() {
-        let mut t = Tree::new();
-        t.dock(w(1), t.desktop(), Side::Right);
-        t.float(w(2));
-        t.float(w(3));
-        assert!(!t.desktop_visible());
-        assert_eq!(t.leaf_of(w(2)), Some(t.desktop()));
-        t.raise_float(w(2));
-        assert_eq!(t.floats(), &[w(3), w(2)]);
-        t.detach(w(2));
-        assert_eq!(t.floats(), &[w(3)]);
+        let mut tree = Tree::new();
+        tree.dock(window_id(1), tree.desktop(), Side::Right);
+        tree.float(window_id(2));
+        tree.float(window_id(3));
+        assert!(!tree.desktop_visible());
+        assert_eq!(tree.leaf_of(window_id(2)), Some(tree.desktop()));
+        tree.raise_float(window_id(2));
+        assert_eq!(tree.floats(), &[window_id(3), window_id(2)]);
+        tree.detach(window_id(2));
+        assert_eq!(tree.floats(), &[window_id(3)]);
     }
 
     #[test]
     fn boundaries_and_axis_toggle() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        let b = t.dock(w(2), a, Side::Right);
-        let c = t.dock(w(3), b, Side::Bottom);
-        let root = t.root();
+        let mut tree = Tree::new();
+        let first_tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        let second_tile = tree.dock(window_id(2), first_tile, Side::Right);
+        let third_tile = tree.dock(window_id(3), second_tile, Side::Bottom);
+        let root = tree.root();
         // a's left neighbour is the hidden Desktop: no boundary there.
-        assert_eq!(t.boundary(a, Side::Left), None);
-        assert_eq!(t.boundary(a, Side::Right), Some((root, 1)));
-        assert_eq!(t.boundary(c, Side::Left), Some((root, 1)));
-        let col = t.parent(c).unwrap();
-        assert_eq!(t.boundary(c, Side::Top), Some((col, 0)));
-        assert_eq!(t.boundary(c, Side::Bottom), None);
-        assert!(t.toggle_axis(col));
-        assert!(matches!(t.node(col), Node::Split { axis: Axis::Horizontal, .. }));
+        assert_eq!(tree.boundary(first_tile, Side::Left), None);
+        assert_eq!(tree.boundary(first_tile, Side::Right), Some((root, 1)));
+        assert_eq!(tree.boundary(third_tile, Side::Left), Some((root, 1)));
+        let col = tree.parent(third_tile).unwrap();
+        assert_eq!(tree.boundary(third_tile, Side::Top), Some((col, 0)));
+        assert_eq!(tree.boundary(third_tile, Side::Bottom), None);
+        assert!(tree.toggle_axis(col));
+        assert!(matches!(tree.node(col), Node::Split { axis: Axis::Horizontal, .. }));
     }
 
     #[test]
     fn resize_gap_clamps() {
-        let mut t = Tree::new();
-        let a = t.dock(w(1), t.desktop(), Side::Right);
-        t.dock(w(2), a, Side::Right);
-        let root = t.root();
+        let mut tree = Tree::new();
+        let tile = tree.dock(window_id(1), tree.desktop(), Side::Right);
+        tree.dock(window_id(2), tile, Side::Right);
+        let root = tree.root();
         // Only the hidden Desktop is before index 0: nothing to resize there.
-        assert!(!t.resize_gap(root, 0, 0.1));
-        assert!(t.resize_gap(root, 1, 0.9));
-        let Node::Split { weights, .. } = t.node(root) else { panic!() };
+        assert!(!tree.resize_gap(root, 0, 0.1));
+        assert!(tree.resize_gap(root, 1, 0.9));
+        let Node::Split { weights, .. } = tree.node(root) else { panic!() };
         let total = weights[1] + weights[2];
         assert!((weights[2] / total - MIN_WEIGHT_FRACTION).abs() < 1e-9);
     }
@@ -1054,9 +1076,9 @@ mod tests {
     /// A small deterministic generator, so the random-edit test needs no crates.
     struct Lcg(u64);
     impl Lcg {
-        fn next(&mut self, n: usize) -> usize {
+        fn next(&mut self, limit: usize) -> usize {
             self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((self.0 >> 33) % n as u64) as usize
+            ((self.0 >> 33) % limit as u64) as usize
         }
     }
 
@@ -1064,39 +1086,40 @@ mod tests {
     fn random_edits_keep_invariants() {
         for seed in 0..200 {
             let mut rng = Lcg(seed);
-            let mut t = Tree::new();
-            t.share_removed_space = seed % 2 == 0;
+            let mut tree = Tree::new();
+            tree.share_removed_space = seed % 2 == 0;
             let mut live: Vec<WindowId> = Vec::new();
             let mut next = 1;
             for _ in 0..60 {
                 match rng.next(5) {
                     0 | 1 => {
-                        let leaves = t.leaves(t.root());
+                        let leaves = tree.leaves(tree.root());
                         let target = leaves[rng.next(leaves.len())];
                         let side = [Side::Left, Side::Right, Side::Top, Side::Bottom][rng.next(4)];
-                        t.dock(w(next), target, side);
-                        live.push(w(next));
+                        tree.dock(window_id(next), target, side);
+                        live.push(window_id(next));
                         next += 1;
                     }
                     2 => {
-                        let tiles: Vec<NodeId> = t.leaves(t.root()).into_iter().filter(|n| *n != t.desktop()).collect();
+                        let tiles: Vec<NodeId> =
+                            tree.leaves(tree.root()).into_iter().filter(|node_id| *node_id != tree.desktop()).collect();
                         if tiles.is_empty() {
-                            t.float(w(next));
+                            tree.float(window_id(next));
                         } else {
-                            t.tab(w(next), tiles[rng.next(tiles.len())]);
+                            tree.tab(window_id(next), tiles[rng.next(tiles.len())]);
                         }
-                        live.push(w(next));
+                        live.push(window_id(next));
                         next += 1;
                     }
                     _ => {
                         if !live.is_empty() {
-                            let i = rng.next(live.len());
-                            assert!(t.detach(live.remove(i)));
+                            let index = rng.next(live.len());
+                            assert!(tree.detach(live.remove(index)));
                         }
                     }
                 }
-                t.check_invariants();
-                let mut all = t.windows_in(t.root());
+                tree.check_invariants();
+                let mut all = tree.windows_in(tree.root());
                 all.sort();
                 let mut expect = live.clone();
                 expect.sort();

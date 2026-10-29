@@ -42,7 +42,7 @@ impl Worker {
         let thread = thread::Builder::new()
             .name("tileception-audio".into())
             .spawn(move || run(&shared, &notifier, &sender, &incoming))
-            .map_err(|e| tracing::error!("could not start the audio worker: {e}"))
+            .map_err(|error| tracing::error!("could not start the audio worker: {error}"))
             .ok();
         Self { messages, thread }
     }
@@ -117,7 +117,7 @@ struct Connection {
 impl Connection {
     fn open(name: &CStr) -> Result<Self, String> {
         let path = pulseaudio::socket_path_from_env().ok_or("no PulseAudio socket")?;
-        let stream = UnixStream::connect(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let stream = UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let cookie = pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()).unwrap_or_default();
         let mut connection = Self { socket: BufReader::new(stream), version: protocol::MAX_VERSION, seq: 0 };
         let auth =
@@ -134,19 +134,19 @@ impl Connection {
     fn write(&mut self, command: &Command) -> Result<(), String> {
         self.seq = self.seq.wrapping_add(1);
         protocol::write_command_message(self.socket.get_mut(), self.seq, command, self.version)
-            .map_err(|e| e.to_string())
+            .map_err(|error| error.to_string())
     }
 
     fn request<T: CommandReply>(&mut self, command: Command) -> Result<T, String> {
         self.write(&command)?;
         let (_, reply) =
-            protocol::read_reply_message::<T>(&mut self.socket, self.version).map_err(|e| e.to_string())?;
+            protocol::read_reply_message::<T>(&mut self.socket, self.version).map_err(|error| error.to_string())?;
         Ok(reply)
     }
 
     fn ack(&mut self, command: Command) -> Result<(), String> {
         self.write(&command)?;
-        protocol::read_ack_message(&mut self.socket).map(|_| ()).map_err(|e| e.to_string())
+        protocol::read_ack_message(&mut self.socket).map(|_| ()).map_err(|error| error.to_string())
     }
 }
 
@@ -177,14 +177,17 @@ impl Session {
         // A stuck sound server must not stall this worker (and whoever stops it).
         let timeout = Some(std::time::Duration::from_secs(5));
         let socket = requests.socket.get_ref();
-        socket.set_read_timeout(timeout).and_then(|_| socket.set_write_timeout(timeout)).map_err(|e| e.to_string())?;
+        socket
+            .set_read_timeout(timeout)
+            .and_then(|_| socket.set_write_timeout(timeout))
+            .map_err(|error| error.to_string())?;
         let mut listener = Connection::open(c"Tileception events")?;
         let mask = protocol::SubscriptionMask::SINK
             | protocol::SubscriptionMask::SOURCE
             | protocol::SubscriptionMask::SINK_INPUT
             | protocol::SubscriptionMask::SERVER;
         listener.ack(Command::Subscribe(mask))?;
-        let events = listener.socket.get_ref().try_clone().map_err(|e| e.to_string())?;
+        let events = listener.socket.get_ref().try_clone().map_err(|error| error.to_string())?;
         let version = listener.version;
         thread::Builder::new()
             .name("tileception-audio-events".into())
@@ -205,7 +208,7 @@ impl Session {
                     }
                 }
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
         Ok(Self { requests, events, known: Known::default() })
     }
 
@@ -259,25 +262,25 @@ impl Session {
 
         let mut known = Known::default();
         let mut audio = Audio { connected: true, ..Audio::default() };
-        if let Some(sink) = sinks.iter().find(|s| Some(&s.name) == server.default_sink_name.as_ref()) {
+        if let Some(sink) = sinks.iter().find(|sink| Some(&sink.name) == server.default_sink_name.as_ref()) {
             known.output = Some(Level { index: sink.index, volume: sink.cvolume, muted: sink.muted });
             audio.output = Some(device(&sink.name, sink.description.as_deref(), &sink.cvolume, sink.muted));
         }
         let source = sources
             .iter()
-            .find(|s| Some(&s.name) == server.default_source_name.as_ref())
-            .filter(|s| s.monitor_of_sink_index.is_none());
+            .find(|source| Some(&source.name) == server.default_source_name.as_ref())
+            .filter(|source| source.monitor_of_sink_index.is_none());
         if let Some(source) = source {
             known.input = Some(Level { index: source.index, volume: source.cvolume, muted: source.muted });
             audio.input = Some(device(&source.name, source.description.as_deref(), &source.cvolume, source.muted));
         }
-        audio.outputs = sinks.iter().map(|s| choice(&s.name, s.description.as_deref())).collect();
+        audio.outputs = sinks.iter().map(|sink| choice(&sink.name, sink.description.as_deref())).collect();
         audio.inputs = sources
             .iter()
-            .filter(|s| s.monitor_of_sink_index.is_none())
-            .map(|s| choice(&s.name, s.description.as_deref()))
+            .filter(|source| source.monitor_of_sink_index.is_none())
+            .map(|source| choice(&source.name, source.description.as_deref()))
             .collect();
-        for input in inputs.iter().filter(|i| i.has_volume && i.volume_writable) {
+        for input in inputs.iter().filter(|input| input.has_volume && input.volume_writable) {
             known.streams.insert(input.index, Level { index: input.index, volume: input.cvolume, muted: input.muted });
             let app = prop(&input.props, Prop::ApplicationName)
                 .or_else(|| prop(&input.props, Prop::ApplicationProcessBinary))
@@ -313,7 +316,7 @@ impl Session {
             return self.mute(target, level.index, toggle.apply(level.muted));
         }
         // Turning the volume up also unmutes, as it does on most desktops.
-        if level.muted && matches!(change, Change::Step(s) if s > 0) {
+        if level.muted && matches!(change, Change::Step(step) if step > 0) {
             self.mute(target, level.index, false)?;
         }
         let current = percent(&level.volume);
@@ -333,7 +336,7 @@ impl Session {
     /// Switches the default device and brings the streams along, as most
     /// desktops do, so the change is heard at once.
     fn choose(&mut self, output: bool, name: &str) -> Result<(), String> {
-        let name = CString::new(name).map_err(|e| e.to_string())?;
+        let name = CString::new(name).map_err(|error| error.to_string())?;
         if output {
             self.requests.ack(Command::SetDefaultSink(name.clone()))?;
             let streams: protocol::SinkInputInfoList = self.requests.request(Command::GetSinkInputInfoList)?;
@@ -388,29 +391,30 @@ fn device(name: &CStr, description: Option<&CStr>, volume: &ChannelVolume, muted
     }
 }
 
-fn text(s: &CStr) -> String {
-    s.to_string_lossy().into_owned()
+fn text(value: &CStr) -> String {
+    value.to_string_lossy().into_owned()
 }
 
 fn prop(props: &Props, key: Prop) -> Option<String> {
     let bytes = props.get(key)?;
-    let s = CStr::from_bytes_until_nul(bytes).map(text).unwrap_or_else(|_| String::from_utf8_lossy(bytes).into_owned());
-    Some(s).filter(|s| !s.is_empty())
+    let value =
+        CStr::from_bytes_until_nul(bytes).map(text).unwrap_or_else(|_| String::from_utf8_lossy(bytes).into_owned());
+    Some(value).filter(|value| !value.is_empty())
 }
 
 /// The loudest channel, as pavucontrol and `wpctl` show it.
 fn percent(volume: &ChannelVolume) -> Percent {
-    let loudest = volume.channels().iter().map(|v| u64::from(v.as_u32())).max().unwrap_or(0);
+    let loudest = volume.channels().iter().map(|channel| u64::from(channel.as_u32())).max().unwrap_or(0);
     ((loudest * 100 + NORM / 2) / NORM) as Percent
 }
 
 /// The same balance between channels, with the loudest at `target` percent.
 fn scaled(volume: &ChannelVolume, target: Percent) -> ChannelVolume {
     let want = u64::from(target) * NORM / 100;
-    let loudest = volume.channels().iter().map(|v| u64::from(v.as_u32())).max().unwrap_or(0);
+    let loudest = volume.channels().iter().map(|channel| u64::from(channel.as_u32())).max().unwrap_or(0);
     let mut out = ChannelVolume::empty();
-    for v in volume.channels() {
-        let raw = (u64::from(v.as_u32()) * want).checked_div(loudest).unwrap_or(want);
+    for channel in volume.channels() {
+        let raw = (u64::from(channel.as_u32()) * want).checked_div(loudest).unwrap_or(want);
         out.push(Volume::from_u32_clamped(u32::try_from(raw).unwrap_or(u32::MAX)));
     }
     out
@@ -421,10 +425,10 @@ mod tests {
     use super::*;
 
     fn stereo(left: u32, right: u32) -> ChannelVolume {
-        let mut v = ChannelVolume::empty();
-        v.push(Volume::from_u32_clamped(left));
-        v.push(Volume::from_u32_clamped(right));
-        v
+        let mut volume = ChannelVolume::empty();
+        volume.push(Volume::from_u32_clamped(left));
+        volume.push(Volume::from_u32_clamped(right));
+        volume
     }
 
     #[test]
@@ -437,11 +441,11 @@ mod tests {
 
     #[test]
     fn scaling_keeps_the_balance() {
-        let v = scaled(&stereo(0x10000, 0x8000), 50);
-        assert_eq!(v.channels()[0].as_u32(), 0x8000);
-        assert_eq!(v.channels()[1].as_u32(), 0x4000);
-        let v = scaled(&stereo(0, 0), 120);
-        assert_eq!(percent(&v), 120);
-        assert_eq!(v.channels()[0], v.channels()[1]);
+        let volume = scaled(&stereo(0x10000, 0x8000), 50);
+        assert_eq!(volume.channels()[0].as_u32(), 0x8000);
+        assert_eq!(volume.channels()[1].as_u32(), 0x4000);
+        let volume = scaled(&stereo(0, 0), 120);
+        assert_eq!(percent(&volume), 120);
+        assert_eq!(volume.channels()[0], volume.channels()[1]);
     }
 }

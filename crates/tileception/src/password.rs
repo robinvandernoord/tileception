@@ -47,7 +47,7 @@ impl SecretField {
             return;
         }
         if self.len > 0 {
-            let last = self.as_str().char_indices().last().map(|(i, _)| i).unwrap_or(0);
+            let last = self.as_str().char_indices().last().map(|(index, _)| index).unwrap_or(0);
             self.bytes[last..self.len].zeroize();
             self.len = last;
         }

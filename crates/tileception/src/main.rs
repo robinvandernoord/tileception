@@ -61,6 +61,7 @@ mod touch;
 mod tray;
 mod tray_bus;
 mod udev;
+#[allow(clippy::min_ident_chars, reason = "ui is the established name for the interface drawing module")]
 mod ui;
 mod wallpaper;
 mod winit;
@@ -141,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // Only flags before `--`: what follows is the command to start.
-    for arg in argv.iter().take_while(|a| *a != "--") {
+    for arg in argv.iter().take_while(|argument| *argument != "--") {
         match arg.as_str() {
             "-h" | "--help" | "help" => {
                 print!("{USAGE}");
@@ -167,15 +168,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).with(bar::ErrorWatch).init();
     }
 
-    let headless = argv.iter().any(|a| a == "--headless");
-    let greeter = argv.iter().take_while(|a| *a != "--").any(|a| a == "--greeter");
-    let nested = if argv.iter().any(|a| a == "--session") || headless {
+    let headless = argv.iter().any(|argument| argument == "--headless");
+    let greeter = argv.iter().take_while(|argument| *argument != "--").any(|argument| argument == "--greeter");
+    let nested = if argv.iter().any(|argument| argument == "--session") || headless {
         false
     } else if greeter {
         // greetd may leave WAYLAND_DISPLAY or DISPLAY set; only the flag nests.
-        argv.iter().any(|a| a == "--nested")
+        argv.iter().any(|argument| argument == "--nested")
     } else {
-        argv.iter().any(|a| a == "--nested")
+        argv.iter().any(|argument| argument == "--nested")
             || std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var_os("DISPLAY").is_some()
     };
@@ -251,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.pending_autostart = tileception_apps::autostart_entries();
     }
     state.start_xwayland();
-    let args: Vec<String> = std::env::args().skip_while(|a| a != "--").skip(1).collect();
+    let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);
     }
@@ -281,6 +282,7 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
     // Never the greeter user's config.toml: config::load would write one.
     let mut config = config::Config::default_config();
     config.file.theme = file.theme.clone();
+    config.theme = theme::Theme::from_file(&config.file.theme).map_err(|error| format!("[theme] {error}"))?;
     config.file.keyboard = file.keymap();
     let mut event_loop: EventLoop<Tileception> = EventLoop::try_new()?;
     let display: Display<Tileception> = Display::new()?;
@@ -329,7 +331,7 @@ fn export_session_environment(state: &Tileception) {
         .arg("--systemd")
         .args(vars)
         .status();
-    if !matches!(status, Ok(s) if s.success()) {
+    if !matches!(status, Ok(exit_status) if exit_status.success()) {
         tracing::warn!("could not export the session environment to D-Bus");
     }
 }

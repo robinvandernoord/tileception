@@ -42,14 +42,14 @@ fn secret<S: Serializer>(value: &Option<Zeroizing<String>>, serializer: S) -> Re
 
 impl std::fmt::Debug for Request {
     /// Never shows an answer: it may be a password.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Request::CreateSession { username } => write!(f, "CreateSession({username:?})"),
+            Request::CreateSession { username } => write!(formatter, "CreateSession({username:?})"),
             Request::PostAuthMessageResponse { response } => {
-                write!(f, "PostAuthMessageResponse({})", if response.is_some() { "answer" } else { "none" })
+                write!(formatter, "PostAuthMessageResponse({})", if response.is_some() { "answer" } else { "none" })
             }
-            Request::StartSession { cmd, env } => write!(f, "StartSession({cmd:?}, {env:?})"),
-            Request::CancelSession => write!(f, "CancelSession"),
+            Request::StartSession { cmd, env } => write!(formatter, "StartSession({cmd:?}, {env:?})"),
+            Request::CancelSession => write!(formatter, "CancelSession"),
         }
     }
 }
@@ -132,7 +132,7 @@ impl Greetd {
                     .and_then(|body| send(&mut stream, &body))
                     .and_then(|()| receive(&mut stream))
                     .and_then(|body| serde_json::from_slice::<Response>(&body).map_err(std::io::Error::other))
-                    .map_err(|e| e.to_string());
+                    .map_err(|error| error.to_string());
                 drop(request);
                 let gone = result.is_err();
                 if results.send(result).is_err() {
@@ -162,14 +162,14 @@ pub fn demo(password: String, wake: impl Fn() + Send + 'static) -> std::io::Resu
         let mut user: Option<String> = None;
         while let Ok(body) = receive(&mut theirs) {
             let Ok(request) = serde_json::from_slice::<serde_json::Value>(&body) else { break };
-            let kind = request.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+            let kind = request.get("type").and_then(|value| value.as_str()).unwrap_or_default();
             let reply = match kind {
                 "create_session" => {
-                    user = request.get("username").and_then(|u| u.as_str()).map(str::to_owned);
+                    user = request.get("username").and_then(|value| value.as_str()).map(str::to_owned);
                     serde_json::json!({"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"})
                 }
                 "post_auth_message_response" if user.is_some() => {
-                    let answer = request.get("response").and_then(|r| r.as_str()).unwrap_or_default();
+                    let answer = request.get("response").and_then(|value| value.as_str()).unwrap_or_default();
                     if answer == password.as_str() {
                         serde_json::json!({"type": "success"})
                     } else {
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn requests_use_greetd_names() {
-        let json = |r: &Request| String::from_utf8(encode(r).expect("encodes").to_vec()).expect("UTF-8");
+        let json = |request: &Request| String::from_utf8(encode(request).expect("encodes").to_vec()).expect("UTF-8");
         assert_eq!(
             json(&Request::CreateSession { username: "sam".into() }),
             r#"{"type":"create_session","username":"sam"}"#
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn responses_parse() {
-        let parse = |s: &str| serde_json::from_str::<Response>(s).expect("parses");
+        let parse = |text: &str| serde_json::from_str::<Response>(text).expect("parses");
         assert_eq!(parse(r#"{"type":"success"}"#), Response::Success);
         assert_eq!(
             parse(r#"{"type":"error","error_type":"auth_error","description":"nope"}"#),

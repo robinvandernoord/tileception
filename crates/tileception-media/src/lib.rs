@@ -100,8 +100,8 @@ impl Player {
         // Players report their own rate; keep it sane so the sum stays finite.
         let rate = if self.rate.is_finite() { self.rate.clamp(0.0, 64.0) } else { 1.0 };
         let ran = now.saturating_duration_since(self.position_at).as_secs_f64() * rate;
-        let at = self.position.saturating_add(Duration::try_from_secs_f64(ran).unwrap_or_default());
-        self.length.map_or(at, |length| at.min(length))
+        let position = self.position.saturating_add(Duration::try_from_secs_f64(ran).unwrap_or_default());
+        self.length.map_or(position, |length| position.min(length))
     }
 }
 
@@ -116,7 +116,7 @@ pub struct Media {
 
 impl Media {
     pub fn active(&self) -> Option<&Player> {
-        self.active.and_then(|i| self.players.get(i))
+        self.active.and_then(|index| self.players.get(index))
     }
 }
 

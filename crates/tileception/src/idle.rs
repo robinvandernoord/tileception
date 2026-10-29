@@ -83,10 +83,12 @@ impl Tileception {
                 while let Some(parent) = get_parent(&root) {
                     root = parent;
                 }
-                visible
-                    .iter()
-                    .filter(|d| d.content.intersects(&self.output_rect()))
-                    .any(|d| self.windows.get(&d.id).and_then(|w| w.wl_surface()).is_some_and(|s| *s == root))
+                visible.iter().filter(|drawn| drawn.content.intersects(&self.output_rect())).any(|drawn| {
+                    self.windows
+                        .get(&drawn.window_id)
+                        .and_then(|window| window.wl_surface())
+                        .is_some_and(|surface| *surface == root)
+                })
             });
         if inhibited {
             self.idle.last_activity = Instant::now();
@@ -113,8 +115,8 @@ impl IdleInhibitHandler for Tileception {
         self.idle.inhibitors.push(surface);
     }
     fn uninhibit(&mut self, surface: WlSurface) {
-        if let Some(i) = self.idle.inhibitors.iter().position(|s| *s == surface) {
-            self.idle.inhibitors.remove(i);
+        if let Some(index) = self.idle.inhibitors.iter().position(|inhibitor| *inhibitor == surface) {
+            self.idle.inhibitors.remove(index);
         }
     }
 }

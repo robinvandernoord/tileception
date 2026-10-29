@@ -120,8 +120,8 @@ pub fn compose_text(compose: &mut Option<xkb::compose::State>, sym: u32) -> Opti
         }
     }
     char::from_u32(xkb::keysym_to_utf32(sym.into()))
-        .filter(|ch| !ch.is_control())
-        .map(|ch| Zeroizing::new(ch.to_string()))
+        .filter(|character| !character.is_control())
+        .map(|character| Zeroizing::new(character.to_string()))
 }
 
 impl Icons {
@@ -189,10 +189,10 @@ impl Glyphs {
 }
 
 fn render_glyph(glyph: &str, size: u32, colour: Colour) -> Option<MemoryRenderBuffer> {
-    let [r, g, b, a] = colour.straight_rgba8();
+    let [red, green, blue, alpha] = colour.straight_rgba8();
     let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="rgb({r},{g},{b})" stroke-opacity="{}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{glyph}</svg>"#,
-        a as f32 / 255.0,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="rgb({red},{green},{blue})" stroke-opacity="{}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{glyph}</svg>"#,
+        alpha as f32 / 255.0,
     );
     let tree = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).ok()?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
@@ -210,9 +210,9 @@ fn render_glyph(glyph: &str, size: u32, colour: Colour) -> Option<MemoryRenderBu
 }
 
 /// Eases a 0 to 1 progress so movement settles softly.
-pub fn ease_out(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    1.0 - (1.0 - t).powi(3)
+pub fn ease_out(progress: f64) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+    1.0 - (1.0 - progress).powi(3)
 }
 
 /// The wall clock in the local time zone.
@@ -230,21 +230,21 @@ impl LocalTime {
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
-        let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
-        // SAFETY: localtime_r reads `now` and fills the caller-owned `tm`, which lives past the call.
-        let filled = unsafe { libc::localtime_r(&now, tm.as_mut_ptr()) };
+        let mut calendar = std::mem::MaybeUninit::<libc::tm>::uninit();
+        // SAFETY: localtime_r reads `now` and fills the caller-owned `calendar`, which lives past the call.
+        let filled = unsafe { libc::localtime_r(&now, calendar.as_mut_ptr()) };
         if filled.is_null() {
             return None;
         }
-        // SAFETY: a non-null result means localtime_r initialised `tm`.
-        let tm = unsafe { tm.assume_init() };
+        // SAFETY: a non-null result means localtime_r initialised `calendar`.
+        let calendar = unsafe { calendar.assume_init() };
         Some(LocalTime {
-            year: tm.tm_year + 1900,
-            hour: tm.tm_hour,
-            minute: tm.tm_min,
-            weekday: tm.tm_wday.clamp(0, 6) as usize,
-            day: tm.tm_mday,
-            month: tm.tm_mon.clamp(0, 11) as usize,
+            year: calendar.tm_year + 1900,
+            hour: calendar.tm_hour,
+            minute: calendar.tm_min,
+            weekday: calendar.tm_wday.clamp(0, 6) as usize,
+            day: calendar.tm_mday,
+            month: calendar.tm_mon.clamp(0, 11) as usize,
         })
     }
 
@@ -275,7 +275,7 @@ impl LocalTime {
 
 /// "now", "4 min", "2 h", "3 d": how long ago something happened.
 pub fn ago(when: std::time::SystemTime) -> String {
-    let secs = when.elapsed().map(|d| d.as_secs()).unwrap_or(0);
+    let secs = when.elapsed().map(|duration| duration.as_secs()).unwrap_or(0);
     match secs {
         0..=59 => "now".into(),
         60..=3599 => format!("{} min", secs / 60),
@@ -358,8 +358,8 @@ impl<'a> Painter<'a> {
         if self.alpha <= 0.0 {
             return;
         }
-        if let Some(e) = self.shapes.as_ref().and_then(|s| s.element_faded(&rect, shape, self.alpha)) {
-            self.layers.push(OutputElement::Shape(e));
+        if let Some(element) = self.shapes.as_ref().and_then(|shapes| shapes.element_faded(&rect, shape, self.alpha)) {
+            self.layers.push(OutputElement::Shape(element));
         }
     }
 
@@ -370,56 +370,59 @@ impl<'a> Painter<'a> {
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
-    pub fn image_sized(&mut self, buffer: &MemoryRenderBuffer, at: (f64, f64), size: Option<(i32, i32)>) {
+    pub fn image_sized(&mut self, buffer: &MemoryRenderBuffer, position: (f64, f64), size: Option<(i32, i32)>) {
         if self.alpha <= 0.0 {
             return;
         }
-        let s = self.state.scale;
-        let at = (((at.0 + self.offset.0) * s).round(), ((at.1 + self.offset.1) * s).round());
+        let scale = self.state.scale;
+        let position = (((position.0 + self.offset.0) * scale).round(), ((position.1 + self.offset.1) * scale).round());
         let alpha = (self.alpha < 1.0).then_some(self.alpha);
         let (src, size) = match size {
-            Some((w, h)) => {
-                let (w, h) = (w.max(1), h.max(1));
-                let shown = ((f64::from(w) * s).round() as i32, (f64::from(h) * s).round() as i32);
-                (Some(smithay::utils::Rectangle::from_size((f64::from(w), f64::from(h)).into())), Some(shown.into()))
+            Some((width, height)) => {
+                let (width, height) = (width.max(1), height.max(1));
+                let shown = ((f64::from(width) * scale).round() as i32, (f64::from(height) * scale).round() as i32);
+                (
+                    Some(smithay::utils::Rectangle::from_size((f64::from(width), f64::from(height)).into())),
+                    Some(shown.into()),
+                )
             }
             None => (None, None),
         };
-        if let Ok(e) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
             self.renderer,
-            at,
+            position,
             buffer,
             alpha,
             src,
             size,
             smithay::backend::renderer::element::Kind::Unspecified,
         ) {
-            self.layers.push(OutputElement::Memory(e));
+            self.layers.push(OutputElement::Memory(element));
         }
     }
 
     /// A window's picture fitted into `rect`.
-    pub fn window(&mut self, id: tileception_core::WindowId, rect: Rect) {
+    pub fn window(&mut self, window_id: tileception_core::WindowId, rect: Rect) {
         if self.alpha <= 0.0 {
             return;
         }
         let rect = self.shifted(rect);
-        let elements = self.state.picture_faded(self.renderer, id, &rect, self.alpha);
+        let elements = self.state.picture_faded(self.renderer, window_id, &rect, self.alpha);
         // Pictures come topmost first; layers are kept in painting order.
         self.layers.extend(elements.into_iter().rev());
     }
 
-    pub fn image(&mut self, buffer: &MemoryRenderBuffer, at: (f64, f64)) {
-        self.image_sized(buffer, at, None);
+    pub fn image(&mut self, buffer: &MemoryRenderBuffer, position: (f64, f64)) {
+        self.image_sized(buffer, position, None);
     }
 
     /// Text inside `rect`, centred vertically and aligned horizontally.
     /// Returns its size, also when nothing could be drawn.
     pub fn text(&mut self, label: &str, rect: Rect, style: Style) -> (f64, f64) {
-        let t = self.theme();
+        let theme = self.theme();
         let image = self.state.text.borrow_mut().styled(
             label,
-            &t.font,
+            &theme.font,
             style.size,
             style.colour,
             rect.w.max(1.0) as f32,
@@ -427,37 +430,37 @@ impl<'a> Painter<'a> {
             style.lines,
         );
         let Some(image) = image else { return (0.0, 0.0) };
-        let (w, h) = (image.width, image.height);
-        let x = match style.align {
+        let (width, height) = (image.width, image.height);
+        let left = match style.align {
             Align::Left => rect.x,
-            Align::Centre => rect.x + (rect.w - w) / 2.0,
+            Align::Centre => rect.x + (rect.w - width) / 2.0,
         };
-        self.image(&image.buffer, (x, rect.y + (rect.h - h) / 2.0));
-        (w, h)
+        self.image(&image.buffer, (left, rect.y + (rect.h - height) / 2.0));
+        (width, height)
     }
 
     /// The size text would take, without drawing it.
     pub fn measure(&self, label: &str, max_width: f64, style: Style) -> (f64, f64) {
-        let t = self.theme();
+        let theme = self.theme();
         self.state
             .text
             .borrow_mut()
-            .styled(label, &t.font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| (i.width, i.height))
+            .styled(label, &theme.font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
+            .map(|rendered| (rendered.width, rendered.height))
             .unwrap_or((0.0, 0.0))
     }
 
     /// A line icon centred in `rect`.
     pub fn glyph(&mut self, glyph: &'static str, rect: Rect, size: u32, colour: Colour) {
         if let Some(image) = self.state.glyphs.image(glyph, size, colour) {
-            let at = (rect.x + (rect.w - size as f64) / 2.0, rect.y + (rect.h - size as f64) / 2.0);
-            self.image(&image, at);
+            let position = (rect.x + (rect.w - size as f64) / 2.0, rect.y + (rect.h - size as f64) / 2.0);
+            self.image(&image, position);
         }
     }
 
     fn keycap_style(&self) -> Style {
-        let t = self.theme();
-        Style::new(t.font_size * 0.8, t.text).bold()
+        let theme = self.theme();
+        Style::new(theme.font_size * 0.8, theme.text).bold()
     }
 
     pub fn keycap_width(&self, label: &str) -> f64 {
@@ -465,65 +468,68 @@ impl<'a> Painter<'a> {
     }
 
     /// A key on the keyboard, drawn as a small cap with its label. Returns its width.
-    pub fn keycap(&mut self, label: &str, x: f64, centre_y: f64) -> f64 {
-        let t = self.theme();
+    pub fn keycap(&mut self, label: &str, left: f64, centre_y: f64) -> f64 {
+        let theme = self.theme();
         let style = self.keycap_style();
-        let cap = Rect::new(x, centre_y - 10.0, self.keycap_width(label), 20.0);
+        let cap = Rect::new(left, centre_y - 10.0, self.keycap_width(label), 20.0);
         self.shape(Rect::new(cap.x, cap.y + 1.0, cap.w, cap.h), Shape::filled(Colour([0.0, 0.0, 0.0, 0.35]), 4.0));
-        self.shape(cap, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface_raised, 4.0) });
+        self.shape(cap, Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface_raised, 4.0) });
         self.text(label, cap, style.align(Align::Centre));
         cap.w
     }
 
     /// Keycaps followed by what they do, in a row; returns the row's width.
-    pub fn key_hints(&mut self, hints: &[(&str, &str)], x: f64, centre_y: f64, measure_only: bool) -> f64 {
-        let t = self.theme();
-        let style = Style::new(t.font_size * 0.85, t.muted);
-        let mut cursor = x;
-        for (i, (key, what)) in hints.iter().enumerate() {
-            if i > 0 {
+    pub fn key_hints(&mut self, hints: &[(&str, &str)], left: f64, centre_y: f64, measure_only: bool) -> f64 {
+        let theme = self.theme();
+        let style = Style::new(theme.font_size * 0.85, theme.muted);
+        let mut cursor = left;
+        for (index, (key, what)) in hints.iter().enumerate() {
+            if index > 0 {
                 cursor += 16.0;
             }
             let cap_w = if measure_only { self.keycap_width(key) } else { self.keycap(key, cursor, centre_y) };
             cursor += cap_w + 6.0;
-            let (w, _) = if measure_only {
+            let (text_width, _) = if measure_only {
                 self.measure(what, 300.0, style)
             } else {
                 self.text(what, Rect::new(cursor, centre_y - 12.0, 300.0, 24.0), style)
             };
-            cursor += w;
+            cursor += text_width;
         }
-        cursor - x
+        cursor - left
     }
 
     /// A popup surface: rounded, with a hairline border and a soft shadow.
     pub fn popup(&mut self, rect: Rect) {
-        let t = self.theme();
+        let theme = self.theme();
         self.shape(
             Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
             Shape {
-                radius: t.popup_radius,
+                radius: theme.popup_radius,
                 glow_radius: 28.0,
                 glow: Colour([0.0, 0.0, 0.0, 0.42]),
                 ..Default::default()
             },
         );
-        self.shape(rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.popup(), t.popup_radius) });
+        self.shape(
+            rect,
+            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.popup(), theme.popup_radius) },
+        );
     }
 
     /// A panel against a screen edge, full height: square, with a hairline
     /// and a soft shadow only on the side that faces the desktop.
     pub fn edge_panel(&mut self, rect: Rect, left: bool) {
-        let t = self.theme();
+        let theme = self.theme();
         self.shape(rect, Shape { glow_radius: 28.0, glow: Colour([0.0, 0.0, 0.0, 0.42]), ..Default::default() });
-        self.fill(rect, t.popup(), 0.0);
+        self.fill(rect, theme.popup(), 0.0);
         let edge = if left { rect.right() - 1.0 } else { rect.x };
-        self.fill(Rect::new(edge, rect.y, 1.0, rect.h), t.border, 0.0);
+        self.fill(Rect::new(edge, rect.y, 1.0, rect.h), theme.border, 0.0);
     }
 }
 
 fn load_icon(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
-    let pixels = if path.extension().is_some_and(|e| e == "svg") {
+    let pixels = if path.extension().is_some_and(|extension| extension == "svg") {
         let data = std::fs::read(path).ok()?;
         let options =
             resvg::usvg::Options { resources_dir: path.parent().map(Path::to_path_buf), ..Default::default() };

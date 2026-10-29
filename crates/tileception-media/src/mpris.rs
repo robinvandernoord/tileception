@@ -66,7 +66,7 @@ impl Worker {
                     Err(error) => tracing::warn!("media players unavailable, no session bus: {error}"),
                 }
             })
-            .map_err(|e| tracing::error!("could not start the media worker: {e}"))
+            .map_err(|error| tracing::error!("could not start the media worker: {error}"))
             .ok();
         Self { messages, thread }
     }
@@ -130,7 +130,7 @@ impl Players {
                 &(),
             )
             .unwrap_or_default();
-        for name in names.into_iter().filter(|n| is_player(n)) {
+        for name in names.into_iter().filter(|name| is_player(name)) {
             self.add(&name);
         }
         self.publish();
@@ -149,10 +149,10 @@ impl Players {
                     Msg::Owner { name, owner: None } => {
                         self.players.remove(&name);
                         self.started.remove(&name);
-                        self.owners.retain(|_, n| *n != name);
+                        self.owners.retain(|_, player_name| *player_name != name);
                     }
                     Msg::Owner { name, owner: Some(_) } => {
-                        self.owners.retain(|_, n| *n != name);
+                        self.owners.retain(|_, player_name| *player_name != name);
                         dirty.insert(name);
                     }
                     Msg::ArtReady => dirty.extend(self.players.keys().cloned()),
@@ -199,14 +199,14 @@ impl Players {
                 .spawn(move || {
                     for message in iterator.flatten() {
                         let header = message.header();
-                        let msg = if header.member().is_some_and(|m| m.as_str() == "NameOwnerChanged") {
+                        let msg = if header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged") {
                             let Ok((name, _, owner)) = message.body().deserialize::<(String, String, String)>() else {
                                 continue;
                             };
                             if !is_player(&name) {
                                 continue;
                             }
-                            Msg::Owner { name, owner: Some(owner).filter(|o| !o.is_empty()) }
+                            Msg::Owner { name, owner: Some(owner).filter(|owner| !owner.is_empty()) }
                         } else if let Some(unique) = header.sender() {
                             Msg::Changed(unique.to_string())
                         } else {
@@ -217,7 +217,7 @@ impl Players {
                         }
                     }
                 })
-                .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+                .map_err(|error| zbus::Error::Failure(error.to_string()))?;
         }
         Ok(())
     }
@@ -255,7 +255,7 @@ impl Players {
         };
         let art = &mut self.art;
         let player = parse(name, &root, &props, Instant::now(), &mut |url| art.get(url));
-        let was_playing = self.players.get(name).is_some_and(|p| p.status == Status::Playing);
+        let was_playing = self.players.get(name).is_some_and(|player| player.status == Status::Playing);
         if player.status == Status::Playing && (!was_playing || !self.started.contains_key(name)) {
             self.clock += 1;
             self.started.insert(name.to_string(), self.clock);
@@ -268,10 +268,10 @@ impl Players {
         let playing = self
             .players
             .iter()
-            .filter(|(_, p)| p.status == Status::Playing)
+            .filter(|(_, player)| player.status == Status::Playing)
             .max_by_key(|(name, _)| self.started.get(*name).copied().unwrap_or(0))
             .map(|(name, _)| name.as_str());
-        playing.or_else(|| self.used.as_deref().filter(|n| self.players.contains_key(*n))).or_else(|| {
+        playing.or_else(|| self.used.as_deref().filter(|name| self.players.contains_key(*name))).or_else(|| {
             self.players.keys().max_by_key(|name| self.started.get(*name).copied().unwrap_or(0)).map(String::as_str)
         })
     }
@@ -300,7 +300,7 @@ impl Players {
         let active = self.active();
         let media = Media {
             connected: true,
-            active: active.and_then(|a| self.players.keys().position(|n| n == a)),
+            active: active.and_then(|active_name| self.players.keys().position(|name| name == active_name)),
             players: self.players.values().cloned().collect(),
         };
         let mut snapshot = lock(&self.shared);
@@ -325,86 +325,89 @@ fn parse(
     now: Instant,
     art: &mut dyn FnMut(&str) -> Option<PathBuf>,
 ) -> Player {
-    let get = |map: &HashMap<String, OwnedValue>, key: &str| map.get(key).map(|v| Value::from(v.clone()));
-    let flag = |key: &str| get(props, key).and_then(|v| boolean(&v)).unwrap_or(false);
-    let metadata = get(props, "Metadata").map(|v| dict(&v)).unwrap_or_default();
+    let get = |map: &HashMap<String, OwnedValue>, key: &str| map.get(key).map(|value| Value::from(value.clone()));
+    let flag = |key: &str| get(props, key).and_then(|value| boolean(&value)).unwrap_or(false);
+    let metadata = get(props, "Metadata").map(|value| dict(&value)).unwrap_or_default();
     let meta = |key: &str| metadata.get(key);
-    let status = match get(props, "PlaybackStatus").and_then(|v| string(&v)).as_deref() {
+    let status = match get(props, "PlaybackStatus").and_then(|value| string(&value)).as_deref() {
         Some("Playing") => Status::Playing,
         Some("Paused") => Status::Paused,
         _ => Status::Stopped,
     };
-    let micros = |v: Option<i64>| v.and_then(|us| u64::try_from(us).ok()).map(Duration::from_micros);
+    let micros =
+        |value: Option<i64>| value.and_then(|microseconds| u64::try_from(microseconds).ok()).map(Duration::from_micros);
     Player {
         bus_name: name.to_string(),
         identity: get(root, "Identity")
-            .and_then(|v| string(&v))
+            .and_then(|value| string(&value))
             .unwrap_or_else(|| name.trim_start_matches(PREFIX).split('.').next().unwrap_or(name).to_string()),
-        desktop_entry: get(root, "DesktopEntry").and_then(|v| string(&v)).filter(|s| !s.is_empty()),
+        desktop_entry: get(root, "DesktopEntry").and_then(|value| string(&value)).filter(|entry| !entry.is_empty()),
         status,
         title: meta("xesam:title").and_then(string).unwrap_or_default(),
         artist: meta("xesam:artist").map(strings).unwrap_or_default().join(", "),
         album: meta("xesam:album").and_then(string).unwrap_or_default(),
         art: meta("mpris:artUrl").and_then(string).and_then(|url| art(&url)),
-        length: micros(meta("mpris:length").and_then(integer)).filter(|d| !d.is_zero()),
+        length: micros(meta("mpris:length").and_then(integer)).filter(|duration| !duration.is_zero()),
         can_next: flag("CanGoNext"),
         can_previous: flag("CanGoPrevious"),
         can_pause: flag("CanPause"),
         can_play: flag("CanPlay"),
-        position: micros(get(props, "Position").and_then(|v| integer(&v))).unwrap_or_default(),
+        position: micros(get(props, "Position").and_then(|value| integer(&value))).unwrap_or_default(),
         position_at: now,
-        rate: get(props, "Rate").and_then(|v| float(&v)).unwrap_or(1.0),
+        rate: get(props, "Rate").and_then(|value| float(&value)).unwrap_or(1.0),
     }
 }
 
-fn string(v: &Value) -> Option<String> {
-    match v {
-        Value::Str(s) => Some(s.to_string()),
-        Value::ObjectPath(p) => Some(p.to_string()),
+fn string(value: &Value) -> Option<String> {
+    match value {
+        Value::Str(text) => Some(text.to_string()),
+        Value::ObjectPath(path) => Some(path.to_string()),
         Value::Value(inner) => string(inner),
         _ => None,
     }
 }
 
-fn strings(v: &Value) -> Vec<String> {
-    match v {
+fn strings(value: &Value) -> Vec<String> {
+    match value {
         Value::Array(items) => items.iter().filter_map(string).collect(),
         Value::Value(inner) => strings(inner),
         other => string(other).into_iter().collect(),
     }
 }
 
-fn integer(v: &Value) -> Option<i64> {
-    match v {
-        Value::I64(n) => Some(*n),
-        Value::U64(n) => i64::try_from(*n).ok(),
-        Value::I32(n) => Some(i64::from(*n)),
-        Value::U32(n) => Some(i64::from(*n)),
-        Value::F64(n) => Some(*n as i64),
+fn integer(value: &Value) -> Option<i64> {
+    match value {
+        Value::I64(number) => Some(*number),
+        Value::U64(number) => i64::try_from(*number).ok(),
+        Value::I32(number) => Some(i64::from(*number)),
+        Value::U32(number) => Some(i64::from(*number)),
+        Value::F64(number) => Some(*number as i64),
         Value::Value(inner) => integer(inner),
         _ => None,
     }
 }
 
-fn float(v: &Value) -> Option<f64> {
-    match v {
-        Value::F64(n) => Some(*n),
+fn float(value: &Value) -> Option<f64> {
+    match value {
+        Value::F64(number) => Some(*number),
         Value::Value(inner) => float(inner),
-        other => integer(other).map(|n| n as f64),
+        other => integer(other).map(|number| number as f64),
     }
 }
 
-fn boolean(v: &Value) -> Option<bool> {
-    match v {
-        Value::Bool(b) => Some(*b),
+fn boolean(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(flag) => Some(*flag),
         Value::Value(inner) => boolean(inner),
         _ => None,
     }
 }
 
-fn dict<'a>(v: &Value<'a>) -> HashMap<String, Value<'a>> {
-    match v {
-        Value::Dict(d) => d.iter().filter_map(|(k, v)| Some((string(k)?, v.try_clone().ok()?))).collect(),
+fn dict<'a>(value: &Value<'a>) -> HashMap<String, Value<'a>> {
+    match value {
+        Value::Dict(entries) => {
+            entries.iter().filter_map(|(key, value)| Some((string(key)?, value.try_clone().ok()?))).collect()
+        }
         Value::Value(inner) => dict(inner),
         _ => HashMap::new(),
     }
@@ -415,17 +418,21 @@ pub(crate) fn local_path(url: &str) -> Option<PathBuf> {
     let rest = url.strip_prefix("file://")?;
     let bytes = rest.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        match (bytes[i], bytes.get(i + 1).and_then(|b| hex(*b)), bytes.get(i + 2).and_then(|b| hex(*b))) {
-            (b'%', Some(hi), Some(lo)) => {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = |byte: u8| (byte as char).to_digit(16);
+        match (
+            bytes[index],
+            bytes.get(index + 1).and_then(|byte| hex(*byte)),
+            bytes.get(index + 2).and_then(|byte| hex(*byte)),
+        ) {
+            (b'%', Some(high), Some(low)) => {
+                out.push((high * 16 + low) as u8);
+                index += 3;
             }
-            (b, ..) => {
-                out.push(b);
-                i += 1;
+            (byte, ..) => {
+                out.push(byte);
+                index += 1;
             }
         }
     }

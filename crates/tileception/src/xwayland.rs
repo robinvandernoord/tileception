@@ -41,7 +41,7 @@ impl Tileception {
             |_| (),
         );
         let (xwayland, client) = match spawned {
-            Ok(x) => x,
+            Ok(started) => started,
             Err(err) => {
                 tracing::warn!("Xwayland unavailable, X11 programs will not run: {err}");
                 self.start_pending_autostart();
@@ -51,8 +51,8 @@ impl Tileception {
         let inserted = self.loop_handle.insert_source(xwayland, move |event, _, state| match event {
             XWaylandEvent::Ready { x11_socket, display_number } => {
                 match X11Wm::start_wm(state.loop_handle.clone(), x11_socket, client.clone()) {
-                    Ok(wm) => {
-                        state.xwm = Some(wm);
+                    Ok(window_manager) => {
+                        state.xwm = Some(window_manager);
                         state.xdisplay = Some(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
                         if !state.nested {
@@ -87,7 +87,7 @@ impl Tileception {
     }
 
     fn x11_window_id(&self, surface: &X11Surface) -> Option<tileception_core::WindowId> {
-        self.windows.iter().find(|(_, w)| w.x11_surface() == Some(surface)).map(|(id, _)| *id)
+        self.windows.iter().find(|(_, window)| window.x11_surface() == Some(surface)).map(|(window_id, _)| *window_id)
     }
 }
 
@@ -122,9 +122,9 @@ impl XwmHandler for Tileception {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.x11_overlays.retain(|w| w != &window);
-        if let Some(id) = self.x11_window_id(&window) {
-            self.forget_window(id);
+        self.x11_overlays.retain(|overlay| overlay != &window);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.forget_window(window_id);
         }
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
@@ -132,9 +132,9 @@ impl XwmHandler for Tileception {
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        self.x11_overlays.retain(|w| w != &window);
-        if let Some(id) = self.x11_window_id(&window) {
-            self.forget_window(id);
+        self.x11_overlays.retain(|overlay| overlay != &window);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.forget_window(window_id);
         }
     }
 
@@ -155,17 +155,17 @@ impl XwmHandler for Tileception {
             return;
         }
         let mut geo = window.geometry();
-        if let Some(x) = x {
-            geo.loc.x = x;
+        if let Some(left) = x {
+            geo.loc.x = left;
         }
-        if let Some(y) = y {
-            geo.loc.y = y;
+        if let Some(top) = y {
+            geo.loc.y = top;
         }
-        if let Some(w) = w {
-            geo.size.w = w as i32;
+        if let Some(width) = w {
+            geo.size.w = width as i32;
         }
-        if let Some(h) = h {
-            geo.size.h = h as i32;
+        if let Some(height) = h {
+            geo.size.h = height as i32;
         }
         let _ = window.configure(geo);
     }
@@ -180,8 +180,8 @@ impl XwmHandler for Tileception {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(id) = self.x11_window_id(&window) {
-            self.world.focus_window(id, self.now());
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.world.focus_window(window_id, self.now());
             self.run(crate::input::Action::Maximize);
         }
     }
@@ -189,28 +189,28 @@ impl XwmHandler for Tileception {
     fn unmaximize_request(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(id) = self.x11_window_id(&window) {
-            self.set_fullscreen(id, true);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.set_fullscreen(window_id, true);
         }
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(id) = self.x11_window_id(&window) {
-            self.set_fullscreen(id, false);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.set_fullscreen(window_id, false);
         }
     }
 
     fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(id) = self.x11_window_id(&window) {
-            self.minimize_window(id);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.minimize_window(window_id);
             self.persist_layout();
         }
     }
 
     fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(id) = self.x11_window_id(&window) {
+        if let Some(window_id) = self.x11_window_id(&window) {
             let now = self.now();
-            if self.world.restore(id, now) {
+            if self.world.restore(window_id, now) {
                 self.apply_layout();
                 self.persist_layout();
             }
@@ -221,14 +221,14 @@ impl XwmHandler for Tileception {
 
     /// Dragging an X11 title bar picks the window up, like Mod+drag.
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
-        if let Some(id) = self.x11_window_id(&window) {
-            self.begin_title_drag(id);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.begin_title_drag(window_id);
         }
     }
 
     fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
-        let focus = self.seat.get_keyboard().and_then(|k| k.current_focus());
-        matches!(focus, Some(KeyboardFocus::X11(s)) if s.xwm_id() == Some(xwm))
+        let focus = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus());
+        matches!(focus, Some(KeyboardFocus::X11(surface)) if surface.xwm_id() == Some(xwm))
     }
 
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
@@ -239,10 +239,10 @@ impl XwmHandler for Tileception {
                     clip.send(fd);
                     return;
                 }
-                request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|e| format!("{e:?}"))
+                request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
             SelectionTarget::Primary => {
-                request_primary_client_selection(&self.seat, mime_type, fd).map_err(|e| format!("{e:?}"))
+                request_primary_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
         };
         if let Err(err) = result {

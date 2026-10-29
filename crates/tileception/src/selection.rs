@@ -23,7 +23,7 @@ pub struct Selection {
 impl Tileception {
     pub fn toggle_selection(&mut self, window: WindowId) {
         if self.selection.windows.is_empty()
-            && let Some(focus) = self.world.focus().filter(|id| *id != window)
+            && let Some(focus) = self.world.focus().filter(|focused| *focused != window)
         {
             self.selection.windows.insert(focus);
         }
@@ -40,7 +40,11 @@ impl Tileception {
             (point.x - anchor.x).abs(),
             (point.y - anchor.y).abs(),
         );
-        let selected = self.drawn_windows(self.now()).into_iter().filter(|d| d.content.intersects(&rect)).map(|d| d.id);
+        let selected = self
+            .drawn_windows(self.now())
+            .into_iter()
+            .filter(|drawn| drawn.content.intersects(&rect))
+            .map(|drawn| drawn.window_id);
         self.selection.windows = self.selection.additive.iter().copied().chain(selected).collect();
     }
 
@@ -49,7 +53,7 @@ impl Tileception {
             return false;
         }
         let windows: Vec<_> =
-            self.selection.windows.iter().copied().filter(|w| self.world.contains_window(*w)).collect();
+            self.selection.windows.iter().copied().filter(|window| self.world.contains_window(*window)).collect();
         let now = self.now();
         match action {
             Action::Close => {
@@ -59,7 +63,7 @@ impl Tileception {
                 self.selection.windows.clear();
             }
             Action::ToggleFloat => {
-                let float = windows.iter().any(|w| !self.world.tree().is_floating(*w));
+                let float = windows.iter().any(|window| !self.world.tree().is_floating(*window));
                 for window in windows {
                     if self.world.tree().is_floating(window) != float {
                         self.world.toggle_float(window, now);
@@ -104,12 +108,12 @@ impl Tileception {
         }
         let mut out = Vec::new();
         let shapes = self.shapes(renderer);
-        let t = &self.theme;
-        for d in self.drawn_windows(self.now()) {
-            if self.selection.windows.contains(&d.id) {
+        let theme = &self.theme;
+        for drawn in self.drawn_windows(self.now()) {
+            if self.selection.windows.contains(&drawn.window_id) {
                 // A tint and accent outline over the window, and a check mark in its top left corner.
-                let badge = Rect::new(d.slot.x + 8.0, d.slot.y + 8.0, 22.0, 22.0);
-                if let Some(check) = self.glyphs.image(crate::ui::glyph::CHECK, 14, t.on_accent) {
+                let badge = Rect::new(drawn.slot.x + 8.0, drawn.slot.y + 8.0, 22.0, 22.0);
+                if let Some(check) = self.glyphs.image(crate::ui::glyph::CHECK, 14, theme.on_accent) {
                     push_image(&mut out, renderer, &check, (badge.x + 4.0, badge.y + 4.0), self.scale);
                 }
                 push_shape(
@@ -118,7 +122,7 @@ impl Tileception {
                     &badge,
                     Shape {
                         radius: 11.0,
-                        fill: (t.accent, t.accent_end),
+                        fill: (theme.accent, theme.accent_end),
                         glow_radius: 10.0,
                         glow: Colour([0.0, 0.0, 0.0, 0.4]),
                         ..Default::default()
@@ -127,14 +131,14 @@ impl Tileception {
                 push_shape(
                     &mut out,
                     shapes.as_ref(),
-                    &d.slot,
+                    &drawn.slot,
                     Shape {
-                        radius: t.radius,
-                        fill: (t.accent.alpha(0.10), t.accent_end.alpha(0.10)),
+                        radius: theme.radius,
+                        fill: (theme.accent.alpha(0.10), theme.accent_end.alpha(0.10)),
                         border_width: 2.0,
-                        border: t.accent,
-                        glow_radius: t.glow * 0.6,
-                        glow: t.accent.alpha(0.2),
+                        border: theme.accent,
+                        glow_radius: theme.glow * 0.6,
+                        glow: theme.accent.alpha(0.2),
                         ..Default::default()
                     },
                 );
@@ -152,7 +156,7 @@ impl Tileception {
                 &mut out,
                 shapes.as_ref(),
                 &rect,
-                Shape { border_width: 1.0, border: t.accent, ..Shape::filled(t.accent.alpha(0.12), 2.0) },
+                Shape { border_width: 1.0, border: theme.accent, ..Shape::filled(theme.accent.alpha(0.12), 2.0) },
             );
         }
         out

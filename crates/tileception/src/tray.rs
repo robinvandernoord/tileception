@@ -136,14 +136,14 @@ impl Tileception {
     }
 
     /// Places slots from left to right, reserving the final one for overflow.
-    pub fn tray_slots(&self, right: &mut f64, y: f64, h: f64) -> Vec<(Slot, Rect)> {
+    pub fn tray_slots(&self, right: &mut f64, top: f64, height: f64) -> Vec<(Slot, Rect)> {
         let count = self.tray_items().len();
         let slots = count.min(self.tray_limit());
         let left = *right - slots as f64 * SLOT;
         let result = (0..slots)
-            .map(|i| {
-                let slot = if count > self.tray_limit() && i == slots - 1 { Slot::More } else { Slot::Item(i) };
-                (slot, Rect::new(left + i as f64 * SLOT, y, SLOT, h))
+            .map(|index| {
+                let slot = if count > self.tray_limit() && index == slots - 1 { Slot::More } else { Slot::Item(index) };
+                (slot, Rect::new(left + index as f64 * SLOT, top, SLOT, height))
             })
             .collect();
         if slots > 0 {
@@ -197,7 +197,7 @@ impl Tileception {
                 loading: false,
                 rows: vec![
                     MenuRow {
-                        id: 1,
+                        row_id: 1,
                         label: "Needs attention".into(),
                         enabled: true,
                         separator: false,
@@ -205,7 +205,7 @@ impl Tileception {
                         checked: Some(item.attention),
                     },
                     MenuRow {
-                        id: 2,
+                        row_id: 2,
                         label: "Remove debug entry".into(),
                         enabled: true,
                         separator: false,
@@ -297,24 +297,24 @@ impl Tileception {
             let key = menu.key.clone();
             let path = menu.path.clone();
             if key.starts_with("debug:") {
-                if entry.id == 1
+                if entry.row_id == 1
                     && let Some(item) = self.tray.debug.iter_mut().find(|item| item.key == key)
                 {
                     item.attention = !item.attention;
                 }
-                if entry.id == 2 {
+                if entry.row_id == 2 {
                     self.tray.debug.retain(|item| item.key != key);
                 }
                 self.close_tray();
             } else if entry.submenu {
                 let menu = self.tray.menu.as_mut().expect("a menu was selected above");
-                menu.parents.push(entry.id);
+                menu.parents.push(entry.row_id);
                 menu.rows.clear();
                 menu.loading = true;
                 self.tray.offset = 0;
-                self.tray_request(Request::Menu { key, path, parent: entry.id });
+                self.tray_request(Request::Menu { key, path, parent: entry.row_id });
             } else {
-                self.tray_request(Request::Click { key, path, id: entry.id });
+                self.tray_request(Request::Click { key, path, id: entry.row_id });
                 self.close_tray();
             }
         } else {
@@ -447,8 +447,8 @@ impl Tileception {
         if total > count {
             let track = rect.h - 44.0;
             let thumb = (track * count as f64 / total as f64).max(12.0);
-            let y = rect.y + 38.0 + (track - thumb) * self.tray.offset as f64 / (total - count) as f64;
-            painter.fill(Rect::new(rect.right() - 4.0, y, 2.0, thumb), self.theme.muted.alpha(0.6), 1.0);
+            let top = rect.y + 38.0 + (track - thumb) * self.tray.offset as f64 / (total - count) as f64;
+            painter.fill(Rect::new(rect.right() - 4.0, top, 2.0, thumb), self.theme.muted.alpha(0.6), 1.0);
         }
         if let Some(menu) = &self.tray.menu {
             if menu.loading || menu.rows.is_empty() {
@@ -458,8 +458,8 @@ impl Tileception {
                     style.colour(self.theme.muted),
                 );
             }
-            for (i, entry) in menu.rows.iter().skip(self.tray.offset).take(count).enumerate() {
-                let row = Rect::new(rect.x + 6.0, rect.y + 36.0 + i as f64 * ROW, rect.w - 12.0, ROW);
+            for (index, entry) in menu.rows.iter().skip(self.tray.offset).take(count).enumerate() {
+                let row = Rect::new(rect.x + 6.0, rect.y + 36.0 + index as f64 * ROW, rect.w - 12.0, ROW);
                 if entry.separator {
                     painter.fill(Rect::new(row.x + 6.0, row.y + ROW / 2.0, row.w - 12.0, 1.0), self.theme.border, 0.0);
                     continue;
@@ -480,10 +480,10 @@ impl Tileception {
                 );
             }
         } else {
-            for (i, item) in
+            for (index, item) in
                 self.tray_items().iter().skip(self.tray_inline_count() + self.tray.offset).take(count).enumerate()
             {
-                let row = Rect::new(rect.x + 6.0, rect.y + 36.0 + i as f64 * ROW, rect.w - 12.0, ROW);
+                let row = Rect::new(rect.x + 6.0, rect.y + 36.0 + index as f64 * ROW, rect.w - 12.0, ROW);
                 if row.contains(pointer) {
                     painter.fill(row, self.theme.surface_raised, 4.0);
                 }
@@ -510,10 +510,10 @@ impl Tileception {
 
     fn add_debug_tray_item(&mut self) {
         self.tray.next_debug += 1;
-        let n = self.tray.next_debug;
+        let number = self.tray.next_debug;
         self.tray.debug.push(Item {
-            key: format!("debug:{n}"),
-            title: format!("Debug entry {n}"),
+            key: format!("debug:{number}"),
+            title: format!("Debug entry {number}"),
             description: "Click to test the tray menu".into(),
             icon: String::new(),
             theme_path: String::new(),
@@ -537,19 +537,23 @@ impl Tileception {
 }
 
 fn bitmap(item: &Item) -> Option<MemoryRenderBuffer> {
-    let (w, h, bytes) = item
+    let (width, height, bytes) = item
         .pixmaps
         .iter()
-        .filter(|(w, h, bytes)| {
-            *w > 0 && *h > 0 && *w <= 1024 && *h <= 1024 && bytes.len() == (*w as usize * *h as usize * 4)
+        .filter(|(width, height, bytes)| {
+            *width > 0
+                && *height > 0
+                && *width <= 1024
+                && *height <= 1024
+                && bytes.len() == (*width as usize * *height as usize * 4)
         })
-        .min_by_key(|(w, _, _)| (*w - 32).unsigned_abs())?;
+        .min_by_key(|(width, _, _)| (*width - 32).unsigned_abs())?;
     let mut rgba = bytes.clone();
     for pixel in rgba.as_chunks_mut::<4>().0 {
-        let [a, r, g, b] = [pixel[0], pixel[1], pixel[2], pixel[3]];
-        pixel.copy_from_slice(&[r, g, b, a]);
+        let [alpha, red, green, blue] = [pixel[0], pixel[1], pixel[2], pixel[3]];
+        pixel.copy_from_slice(&[red, green, blue, alpha]);
     }
-    let image = image::RgbaImage::from_raw(*w as u32, *h as u32, rgba)?;
+    let image = image::RgbaImage::from_raw(*width as u32, *height as u32, rgba)?;
     let mut image = image::imageops::resize(&image, 16, 16, image::imageops::FilterType::Triangle);
     for pixel in image.pixels_mut() {
         let alpha = u32::from(pixel[3]);

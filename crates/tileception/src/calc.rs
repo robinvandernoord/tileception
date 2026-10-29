@@ -41,9 +41,9 @@ fn split_conversion(input: &str) -> Option<(&str, &str)> {
     let lower = input.to_ascii_lowercase();
     [" in ", " to ", " as "]
         .iter()
-        .filter_map(|word| lower.rfind(word).map(|at| (at, word.len())))
-        .max_by_key(|(at, _)| *at)
-        .map(|(at, len)| (input[..at].trim(), input[at + len..].trim()))
+        .filter_map(|word| lower.rfind(word).map(|position| (position, word.len())))
+        .max_by_key(|(position, _)| *position)
+        .map(|(position, len)| (input[..position].trim(), input[position + len..].trim()))
         .filter(|(left, right)| !left.is_empty() && !right.is_empty())
 }
 
@@ -70,13 +70,13 @@ impl Base {
         if value.fract() != 0.0 || value.abs() >= 2f64.powi(63) {
             return None;
         }
-        let n = value as i64;
-        let (sign, n) = (if n < 0 { "-" } else { "" }, n.unsigned_abs());
+        let integer = value as i64;
+        let (sign, magnitude) = (if integer < 0 { "-" } else { "" }, integer.unsigned_abs());
         let text = match self {
-            Base::Hex => format!("{sign}0x{n:x}"),
-            Base::Binary => format!("{sign}0b{n:b}"),
-            Base::Octal => format!("{sign}0o{n:o}"),
-            Base::Decimal => format!("{sign}{n}"),
+            Base::Hex => format!("{sign}0x{magnitude:x}"),
+            Base::Binary => format!("{sign}0b{magnitude:b}"),
+            Base::Octal => format!("{sign}0o{magnitude:o}"),
+            Base::Decimal => format!("{sign}{magnitude}"),
         };
         Some(Answer { copy: text.clone(), shown: text })
     }
@@ -123,28 +123,28 @@ struct Value {
 /// ```
 struct Parser<'a> {
     text: &'a str,
-    at: usize,
+    cursor: usize,
     worked: bool,
 }
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Parser<'a> {
-        Parser { text, at: 0, worked: false }
+        Parser { text, cursor: 0, worked: false }
     }
 
     fn parse(mut self) -> Option<Value> {
         let value = self.sum()?;
         self.skip_space();
-        (self.at == self.text.len() && value.is_finite()).then_some(Value { value, worked: self.worked })
+        (self.cursor == self.text.len() && value.is_finite()).then_some(Value { value, worked: self.worked })
     }
 
     fn rest(&self) -> &'a str {
-        &self.text[self.at..]
+        &self.text[self.cursor..]
     }
 
     fn skip_space(&mut self) {
         let rest = self.rest();
-        self.at += rest.len() - rest.trim_start().len();
+        self.cursor += rest.len() - rest.trim_start().len();
     }
 
     /// Takes `token` (case-insensitive) when it comes next.
@@ -153,11 +153,11 @@ impl<'a> Parser<'a> {
         let rest = self.rest();
         if rest.get(..token.len()).is_some_and(|head| head.eq_ignore_ascii_case(token)) {
             // A word must end there: "mod" is not the start of "modern".
-            let word = token.chars().all(|c| c.is_ascii_alphabetic());
-            if word && rest[token.len()..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            let word = token.chars().all(|character| character.is_ascii_alphabetic());
+            if word && rest[token.len()..].starts_with(|character: char| character.is_ascii_alphanumeric()) {
                 return false;
             }
-            self.at += token.len();
+            self.cursor += token.len();
             return true;
         }
         false
@@ -232,18 +232,18 @@ impl<'a> Parser<'a> {
             let value = self.sum()?;
             return self.eat(")").then_some(value);
         }
-        for (name, f) in FUNCTIONS {
-            let at = self.at;
+        for (name, function) in FUNCTIONS {
+            let start = self.cursor;
             if self.eat(name) {
                 if self.eat("(") {
                     let value = self.sum()?;
                     if self.eat(")") {
                         self.worked = true;
-                        return Some(f(value));
+                        return Some(function(value));
                     }
                     return None;
                 }
-                self.at = at;
+                self.cursor = start;
             }
         }
         // A constant on its own ("e", "pi") is not a sum: typing "e" searches.
@@ -261,9 +261,12 @@ impl<'a> Parser<'a> {
             .into_iter()
             .find(|(prefix, _)| rest.len() > 2 && rest.get(..2).is_some_and(|head| head.eq_ignore_ascii_case(prefix)));
         if let Some((_, radix)) = radix {
-            let digits: String = rest[2..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            let digits: String = rest[2..]
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
             let value = u64::from_str_radix(&digits.replace('_', ""), radix).ok()?;
-            self.at += 2 + digits.len();
+            self.cursor += 2 + digits.len();
             self.worked = true;
             return Some(value as f64);
         }
@@ -291,7 +294,7 @@ impl<'a> Parser<'a> {
             return None;
         }
         let value = rest[..end].replace('_', "").parse::<f64>().ok()?;
-        self.at += end;
+        self.cursor += end;
         Some(value)
     }
 }
@@ -307,9 +310,9 @@ const FUNCTIONS: [(&str, Function); 12] = [
     ("floor", f64::floor),
     ("ceil", f64::ceil),
     ("abs", f64::abs),
-    ("sin", |x| x.to_radians().sin()),
-    ("cos", |x| x.to_radians().cos()),
-    ("tan", |x| x.to_radians().tan()),
+    ("sin", |degrees| degrees.to_radians().sin()),
+    ("cos", |degrees| degrees.to_radians().cos()),
+    ("tan", |degrees| degrees.to_radians().tan()),
     ("log", f64::log10),
     ("ln", f64::ln),
     ("exp", f64::exp),
@@ -433,9 +436,11 @@ const UNITS: &[Unit] = &[
 fn find_unit(name: &str) -> Option<&'static Unit> {
     let name = name.trim();
     // Exact spelling first, so "Mb" (bits) and "MB" (bytes) stay apart.
-    UNITS.iter().find(|u| u.names.contains(&name)).or_else(|| {
+    UNITS.iter().find(|candidate| candidate.names.contains(&name)).or_else(|| {
         let lower = name.to_lowercase();
-        UNITS.iter().find(|u| !u.exact_case && u.names.iter().any(|n| n.to_lowercase() == lower))
+        UNITS.iter().find(|candidate| {
+            !candidate.exact_case && candidate.names.iter().any(|alias| alias.to_lowercase() == lower)
+        })
     })
 }
 
@@ -446,8 +451,8 @@ fn convert_units(input: &str) -> Option<Answer> {
     // The unit is whatever follows the amount: try the longest tail that names one.
     let (amount, from) = left
         .char_indices()
-        .filter(|(i, _)| *i > 0)
-        .map(|(i, _)| (&left[..i], &left[i..]))
+        .filter(|(split, _)| *split > 0)
+        .map(|(split, _)| (&left[..split], &left[split..]))
         .find_map(|(amount, unit)| Some((amount, find_unit(unit)?)))?;
     if from.dimension != target.dimension {
         return None;
@@ -464,8 +469,9 @@ fn convert_units(input: &str) -> Option<Answer> {
 /// one, so it is not mistaken for a question.
 pub fn looks_like_conversion(input: &str) -> bool {
     split_conversion(input).is_some_and(|(left, right)| {
-        left.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.' || c == '(')
-            && (find_unit(right).is_some() || Base::named(right).is_some())
+        left.starts_with(|character: char| {
+            character.is_ascii_digit() || character == '-' || character == '.' || character == '('
+        }) && (find_unit(right).is_some() || Base::named(right).is_some())
     })
 }
 
@@ -475,7 +481,7 @@ mod tests {
     use super::*;
 
     fn shown(input: &str) -> Option<String> {
-        answer(input).map(|a| a.shown)
+        answer(input).map(|result| result.shown)
     }
 
     fn close(input: &str, expected: f64) {

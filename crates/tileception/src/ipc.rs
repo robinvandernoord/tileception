@@ -32,7 +32,7 @@ pub fn listen(event_loop: &mut EventLoop<'static, Tileception>, path: &PathBuf) 
             }
             Ok(PostAction::Continue)
         })
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
     Ok(())
 }
 
@@ -61,43 +61,43 @@ pub fn describe(state: &Tileception) -> String {
         "framed {} overview {} focus {}\n",
         world.framed().0,
         world.in_overview(),
-        world.focus().map(|w| w.0.to_string()).unwrap_or("none".into())
+        world.focus().map(|window| window.0.to_string()).unwrap_or("none".into())
     );
     out.push_str(&format!(
         "locked {} display-asleep {} selected {:?}\n",
         state.is_locked(),
         state.idle.off,
-        state.selection.windows.iter().map(|id| id.0).collect::<Vec<_>>()
+        state.selection.windows.iter().map(|window_id| window_id.0).collect::<Vec<_>>()
     ));
-    out.push_str(&format!("minimized {:?}\n", world.minimized().map(|id| id.0).collect::<Vec<_>>()));
-    fn walk(state: &Tileception, id: NodeId, depth: usize, out: &mut String) {
+    out.push_str(&format!("minimized {:?}\n", world.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
+    fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
         let world = &state.world;
         let tree = world.tree();
         let pad = "  ".repeat(depth);
         let rect = world
-            .node_rect(id, world.target_view())
-            .map(|r| format!(" @ {:.0},{:.0} {:.0}x{:.0}", r.x, r.y, r.w, r.h))
+            .node_rect(node_id, world.target_view())
+            .map(|bounds| format!(" @ {:.0},{:.0} {:.0}x{:.0}", bounds.x, bounds.y, bounds.w, bounds.h))
             .unwrap_or_else(|| " hidden".into());
-        let line = match tree.node(id) {
-            Node::Split { axis, weights, .. } => format!("split {} {:?} {:.2?}", id.0, axis, weights),
+        let line = match tree.node(node_id) {
+            Node::Split { axis, weights, .. } => format!("split {} {:?} {:.2?}", node_id.0, axis, weights),
             Node::Tile { views, selected } => {
                 let titles: Vec<String> = views
                     .iter()
-                    .map(|v| {
-                        let app = state.windows.get(v).map(crate::state::app_id).unwrap_or_default();
-                        format!("{}:{}", v.0, app)
+                    .map(|window_id| {
+                        let app = state.windows.get(window_id).map(crate::state::app_id).unwrap_or_default();
+                        format!("{}:{}", window_id.0, app)
                     })
                     .collect();
-                format!("tile {} [{}] selected {}", id.0, titles.join(", "), selected)
+                format!("tile {} [{}] selected {}", node_id.0, titles.join(", "), selected)
             }
             Node::Desktop { floats, shown } => {
-                let f: Vec<String> = floats.iter().map(|w| w.0.to_string()).collect();
-                format!("desktop {} shown {} floats [{}]", id.0, shown, f.join(", "))
+                let float_ids: Vec<String> = floats.iter().map(|window| window.0.to_string()).collect();
+                format!("desktop {} shown {} floats [{}]", node_id.0, shown, float_ids.join(", "))
             }
         };
         out.push_str(&format!("{pad}{line}{rect}\n"));
-        for c in tree.children(id) {
-            walk(state, *c, depth + 1, out);
+        for child in tree.children(node_id) {
+            walk(state, *child, depth + 1, out);
         }
     }
     walk(state, tree.root(), 0, &mut out);
@@ -107,9 +107,9 @@ pub fn describe(state: &Tileception) -> String {
 fn only_socket() -> std::io::Result<PathBuf> {
     let dir = socket_path("x").parent().map(PathBuf::from).unwrap_or_default();
     let found: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("tileception-")))
-        .filter(|p| p.extension().is_some_and(|e| e == "sock"))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("tileception-")))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sock"))
         .collect();
     match &found[..] {
         [one] => Ok(one.clone()),
@@ -121,7 +121,7 @@ fn only_socket() -> std::io::Result<PathBuf> {
 /// `tileception msg ...`: sends a command to the running compositor.
 pub fn client(args: &[String]) -> std::io::Result<()> {
     let path = match std::env::var_os("TILECEPTION_SOCKET") {
-        Some(p) => PathBuf::from(p),
+        Some(socket) => PathBuf::from(socket),
         None => match std::env::var("WAYLAND_DISPLAY") {
             Ok(display) => socket_path(&display),
             // From a console there is no Wayland session in the environment:

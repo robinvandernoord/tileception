@@ -29,7 +29,7 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
                 command,
                 args: flags
                     .iter()
-                    .map(|f| f.to_string())
+                    .map(|flag| flag.to_string())
                     .chain([package.clone()])
                     .chain(args.iter().cloned())
                     .collect(),
@@ -42,7 +42,7 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
             env: env.clone(),
         }),
         Launch::Binary { archive, sha256, cmd, args, env } => {
-            let dir = crate::data_dir().join("agents").join(safe(&agent.id)).join(safe(&agent.version));
+            let dir = crate::data_dir().join("agents").join(safe(&agent.agent_id)).join(safe(&agent.version));
             let command = inside(&dir, cmd)?;
             if !command.is_file() {
                 report(&format!("Downloading {} {}\u{2026}", agent.name, agent.version));
@@ -59,7 +59,9 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
 /// The program's path inside the agent's folder; it may not climb out.
 fn inside(dir: &Path, cmd: &str) -> Result<PathBuf, String> {
     let relative = Path::new(cmd.trim_start_matches("./"));
-    if relative.is_absolute() || relative.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if relative.is_absolute()
+        || relative.components().any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err(format!("the registry names an unsafe program path: {cmd}"));
     }
     Ok(dir.join(relative))
@@ -67,7 +69,9 @@ fn inside(dir: &Path, cmd: &str) -> Result<PathBuf, String> {
 
 /// Keeps registry ids and versions usable as folder names.
 fn safe(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).collect()
+    name.chars()
+        .map(|character| if character.is_ascii_alphanumeric() || "._-".contains(character) { character } else { '_' })
+        .collect()
 }
 
 fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String> {
@@ -79,7 +83,7 @@ fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String
     partial.push(".part");
     let partial = PathBuf::from(partial);
     let _ = std::fs::remove_dir_all(&partial);
-    std::fs::create_dir_all(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+    std::fs::create_dir_all(&partial).map_err(|error| format!("{}: {error}", partial.display()))?;
     let name = url.rsplit('/').next().unwrap_or("archive");
     let archive = partial.join(format!("download-{}", safe(name)));
     crate::curl(url, &archive, MAX_ARCHIVE)?;
@@ -88,38 +92,39 @@ fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String
         let _ = std::fs::remove_dir_all(&partial);
         return Err(format!("the download's checksum does not match the registry ({actual} instead of {sha256})"));
     }
-    let a = archive.as_os_str();
-    let to = partial.as_os_str();
+    let archive_path = archive.as_os_str();
+    let destination = partial.as_os_str();
     let lower = name.to_lowercase();
     if lower.ends_with(".zip") {
-        run("unzip", &[OsStr::new("-q"), a, OsStr::new("-d"), to])?;
+        run("unzip", &[OsStr::new("-q"), archive_path, OsStr::new("-d"), destination])?;
     } else if lower.ends_with(".tar.gz")
         || lower.ends_with(".tgz")
         || lower.ends_with(".tar.bz2")
         || lower.ends_with(".tar.xz")
     {
         // tar picks the compression itself; --no-same-owner keeps files ours.
-        run("tar", &[OsStr::new("-xf"), a, OsStr::new("-C"), to, OsStr::new("--no-same-owner")])?;
+        run("tar", &[OsStr::new("-xf"), archive_path, OsStr::new("-C"), destination, OsStr::new("--no-same-owner")])?;
     } else if Path::new(cmd.trim_start_matches("./")).file_name() == Some(OsStr::new(name)) {
         // Not an archive but the program itself (sigit ships so).
         let program = partial.join(name);
-        std::fs::rename(&archive, &program).map_err(|e| format!("{}: {e}", program.display()))?;
+        std::fs::rename(&archive, &program).map_err(|error| format!("{}: {error}", program.display()))?;
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("{}: {e}", program.display()))?;
+            .map_err(|error| format!("{}: {error}", program.display()))?;
     } else {
         return Err(format!("unknown archive type: {name}"));
     }
     let _ = std::fs::remove_file(&archive);
     let _ = std::fs::remove_dir_all(dir);
     if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    std::fs::rename(&partial, dir).map_err(|e| e.to_string())
+    std::fs::rename(&partial, dir).map_err(|error| error.to_string())
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
-    let out = std::process::Command::new("sha256sum").arg(path).output().map_err(|e| format!("sha256sum: {e}"))?;
+    let out =
+        std::process::Command::new("sha256sum").arg(path).output().map_err(|error| format!("sha256sum: {error}"))?;
     if !out.status.success() {
         return Err("sha256sum failed".into());
     }
@@ -144,7 +149,7 @@ mod tests {
     #[test]
     fn package_agents_become_commands() {
         let agent = Agent {
-            id: "x".into(),
+            agent_id: "x".into(),
             name: "X".into(),
             version: "1".into(),
             description: String::new(),
@@ -152,8 +157,11 @@ mod tests {
             launch: Launch::Uvx { package: "x-acp==1".into(), args: vec!["-x".into()], env: BTreeMap::new() },
         };
         if crate::registry::on_path("uvx") {
-            let p = program(&agent, &|_| {}).expect("uvx agent");
-            assert_eq!((p.command, p.args), (PathBuf::from("uvx"), vec!["x-acp==1".to_string(), "-x".to_string()]));
+            let program = program(&agent, &|_| {}).expect("uvx agent");
+            assert_eq!(
+                (program.command, program.args),
+                (PathBuf::from("uvx"), vec!["x-acp==1".to_string(), "-x".to_string()])
+            );
         } else {
             assert!(program(&agent, &|_| {}).is_err());
         }

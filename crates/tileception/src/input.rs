@@ -50,6 +50,7 @@ pub enum Action {
     SaveView(usize),
     RecallView(usize),
     /// Switch to virtual terminal n.
+    #[allow(clippy::min_ident_chars, reason = "preserve the existing enum variant")]
     Vt(i32),
     /// Toggle fullscreen for the focused window.
     Fullscreen,
@@ -171,7 +172,7 @@ impl Tileception {
         let keycode = code.raw();
         let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
             let sym = handle.modified_sym().raw();
-            let raw_sym = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            let raw_sym = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
             if state.is_locked() {
                 state.tap_armed = None;
                 state.tap_fired.clear();
@@ -184,11 +185,11 @@ impl Tileception {
                 // Volume, brightness and media keys work on the lock screen.
                 if pressed {
                     let held = Mods::from_state(mods);
-                    let media = state
-                        .config
-                        .lookup(held, raw_sym)
-                        .or_else(|| state.config.lookup(held, sym))
-                        .filter(|c| !c.is_empty() && c.iter().all(|c| matches!(c, Command::Media(_))));
+                    let media = state.config.lookup(held, raw_sym).or_else(|| state.config.lookup(held, sym)).filter(
+                        |matched| {
+                            !matched.is_empty() && matched.iter().all(|command| matches!(command, Command::Media(_)))
+                        },
+                    );
                     if let Some(commands) = media {
                         return FilterResult::Intercept(commands.to_vec());
                     }
@@ -216,7 +217,7 @@ impl Tileception {
             }
             let mut held = Mods::from_state(mods);
             // Unmodified, so Super+Shift+1 is "1" and not "!".
-            let raw = handle.raw_syms().first().map(|s| s.raw()).unwrap_or(sym);
+            let raw = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
             if let Some(command) =
                 builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
             {
@@ -243,7 +244,7 @@ impl Tileception {
                 if bound.logo {
                     return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
                 }
-                if let Some(commands) = commands.filter(|c| !c.is_empty() && !types(sym)) {
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
                     return FilterResult::Intercept(commands.to_vec());
                 }
                 return FilterResult::Intercept(vec![Command::DuckKey(sym, Mods::from_state(mods))]);
@@ -279,7 +280,7 @@ impl Tileception {
                 if bound.logo {
                     return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
                 }
-                if let Some(commands) = commands.filter(|c| !c.is_empty() && !types(sym)) {
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
                     return FilterResult::Intercept(commands.to_vec());
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
@@ -309,7 +310,11 @@ impl Tileception {
         let commands = commands.unwrap_or_default();
         if !pressed {
             self.media_key_released(keycode);
-        } else if !commands.is_empty() && commands.iter().all(|c| matches!(c, Command::Media(m) if m.repeats())) {
+        } else if !commands.is_empty()
+            && commands
+                .iter()
+                .all(|command| matches!(command, Command::Media(media_command) if media_command.repeats()))
+        {
             self.start_media_repeat(keycode, commands.clone());
         } else {
             self.stop_media_repeat();
@@ -324,11 +329,11 @@ impl Tileception {
     /// Whether the launcher gets the pointer here: all of it when opened on
     /// purpose; as the welcome screen only over itself and not under the
     /// notification panel. Never under an overlay layer surface.
-    pub(crate) fn launcher_takes(&self, at: tileception_core::Point) -> bool {
-        if self.overlay_under(at) {
+    pub(crate) fn launcher_takes(&self, point: tileception_core::Point) -> bool {
+        if self.overlay_under(point) {
             return false;
         }
-        !self.launcher.home || (self.home_contains(at) && !self.notifications_contain(at))
+        !self.launcher.home || (self.home_contains(point) && !self.notifications_contain(point))
     }
 
     /// Follows a modifier pressed on its own. Returns the modifier when it is
@@ -337,11 +342,11 @@ impl Tileception {
         let this = crate::config::modifier_of(sym);
         match (pressed, this) {
             // Held now means held including this key: only it may be down.
-            (true, Some(m)) if held == m || held == Mods::default() => self.tap_armed = Some(m),
+            (true, Some(modifier)) if held == modifier || held == Mods::default() => self.tap_armed = Some(modifier),
             (true, _) => self.tap_armed = None,
-            (false, Some(m)) if self.tap_armed == Some(m) => {
+            (false, Some(modifier)) if self.tap_armed == Some(modifier) => {
                 self.tap_armed = None;
-                return Some(m);
+                return Some(modifier);
             }
             (false, _) => {}
         }
@@ -371,8 +376,8 @@ impl Tileception {
                 | Action::Notifications
                 | Action::DoNotDisturb
         );
-        if let (Some(id), false) = (self.fullscreen, keeps_fullscreen) {
-            self.set_fullscreen(id, false);
+        if let (Some(window_id), false) = (self.fullscreen, keeps_fullscreen) {
+            self.set_fullscreen(window_id, false);
         }
         tracing::debug!(?action, "action");
         match action {
@@ -390,13 +395,13 @@ impl Tileception {
             Action::ExitOverview => self.world.exit_overview(now),
             Action::StepIn => self.world.step_in(None, now),
             Action::StepInPointer => {
-                let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-                self.world.step_in(Some(p), now);
+                let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+                self.world.step_in(Some(point), now);
             }
             Action::Cycle(forward) => self.world.cycle(forward, now),
             Action::ToggleSplit => self.world.toggle_split(now),
-            Action::Resize(dw, dh) => {
-                self.world.resize_focused(dw, dh, now);
+            Action::Resize(width_delta, height_delta) => {
+                self.world.resize_focused(width_delta, height_delta, now);
             }
             Action::StepOut => self.world.step_out(now),
             Action::Neighbour(dir) => self.world.neighbour(dir, now),
@@ -406,17 +411,17 @@ impl Tileception {
             Action::Maximize => self.world.maximize(now),
             Action::ToggleDesktop => self.world.toggle_desktop(now),
             Action::ToggleFloat => {
-                if let Some(f) = self.world.focus() {
-                    self.world.toggle_float(f, now);
+                if let Some(focused) = self.world.focus() {
+                    self.world.toggle_float(focused, now);
                 }
             }
             Action::NextTab => self.world.cycle_tab(1),
             Action::PrevTab => self.world.cycle_tab(-1),
-            Action::SaveView(n) => self.world.save_view(n),
-            Action::RecallView(n) => {
-                self.world.recall_view(n, now);
+            Action::SaveView(slot) => self.world.save_view(slot),
+            Action::RecallView(slot) => {
+                self.world.recall_view(slot, now);
             }
-            Action::Vt(n) => self.change_vt(n),
+            Action::Vt(vt_number) => self.change_vt(vt_number),
             Action::Lock => {
                 self.lock_session(false);
             }
@@ -426,20 +431,20 @@ impl Tileception {
             Action::DoNotDisturb => self.toggle_dnd(),
             Action::Group => {}
             Action::Minimize => {
-                if let Some(id) = self.world.focus() {
-                    self.minimize_window(id);
+                if let Some(window_id) = self.world.focus() {
+                    self.minimize_window(window_id);
                 }
             }
-            Action::Restore(id) => {
-                match id {
-                    Some(id) => self.world.restore(id, now),
+            Action::Restore(target) => {
+                match target {
+                    Some(window_id) => self.world.restore(window_id, now),
                     None => self.world.restore_last(now),
                 };
             }
             Action::Fullscreen => {
-                if let Some(id) = self.world.focus() {
-                    let on = self.fullscreen != Some(id);
-                    self.set_fullscreen(id, on);
+                if let Some(window_id) = self.world.focus() {
+                    let enable = self.fullscreen != Some(window_id);
+                    self.set_fullscreen(window_id, enable);
                 }
             }
         }
@@ -468,17 +473,17 @@ impl Tileception {
             self.greeter_motion(pos.x, pos.y);
             return;
         }
-        let at = tileception_core::Point::new(pos.x, pos.y);
+        let point = tileception_core::Point::new(pos.x, pos.y);
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
-        if !self.is_locked() && self.launcher.open && self.launcher_takes(at) {
-            self.launcher_motion(at);
+        if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
+            self.launcher_motion(point);
             return;
         }
         if self.power_menu.is_some() {
-            if let (Some(i), Some(menu)) = (self.power_action_at(pos.x, pos.y), self.power_menu.as_mut()) {
-                menu.selected = i;
+            if let (Some(index), Some(menu)) = (self.power_action_at(pos.x, pos.y), self.power_menu.as_mut()) {
+                menu.selected = index;
             }
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -497,13 +502,13 @@ impl Tileception {
             self.controls_drag(pos.x);
             return;
         }
-        if self.duck_motion(at) {
+        if self.duck_motion(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
             return;
         }
-        if self.doctor_contains(at) {
+        if self.doctor_contains(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -536,15 +541,15 @@ impl Tileception {
             return;
         }
         if let Some(press) = self.pending_press {
-            let moved = (pos.x - press.at.x).hypot(pos.y - press.at.y);
+            let moved = (pos.x - press.position.x).hypot(pos.y - press.position.y);
             if let (Some(window), true) = (press.window, moved > DRAG_THRESHOLD) {
                 self.pending_press = None;
-                self.start_move_drag(window, press.at);
+                self.start_move_drag(window, press.position);
             }
         }
         if let Some(mut drag) = self.resize_drag {
-            let (dx, dy) = (pos.x - drag.last.x, pos.y - drag.last.y);
-            self.world.resize_window(drag.window, drag.side_x, dx, drag.side_y, dy, now);
+            let (delta_x, delta_y) = (pos.x - drag.last.x, pos.y - drag.last.y);
+            self.world.resize_window(drag.window, drag.side_x, delta_x, drag.side_y, delta_y, now);
             drag.last = pos;
             self.resize_drag = Some(drag);
             self.apply_layout();
@@ -556,16 +561,20 @@ impl Tileception {
         if let Some(mut drag) = self.move_drag {
             if drag.free {
                 // Floating windows move freely, as themselves.
-                if let Some(r) = self.world.float_rect(drag.window) {
-                    let moved =
-                        tileception_core::Rect::new(r.x + pos.x - drag.last.x, r.y + pos.y - drag.last.y, r.w, r.h);
+                if let Some(rect) = self.world.float_rect(drag.window) {
+                    let moved = tileception_core::Rect::new(
+                        rect.x + pos.x - drag.last.x,
+                        rect.y + pos.y - drag.last.y,
+                        rect.w,
+                        rect.h,
+                    );
                     self.world.set_float_rect(drag.window, moved);
                     self.apply_layout();
                 }
                 drag.last = pos;
             } else {
-                let p = tileception_core::Point::new(pos.x, pos.y);
-                drag.target = self.world.drop_target(p, drag.window, self.world.view(now));
+                let drop_point = tileception_core::Point::new(pos.x, pos.y);
+                drag.target = self.world.drop_target(drop_point, drag.window, self.world.view(now));
             }
             self.move_drag = Some(drag);
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -584,27 +593,31 @@ impl Tileception {
         if self.move_drag.is_none() && !self.world.in_overview() {
             self.world.focus_window(window, self.now());
             self.apply_layout();
-            let at = self.pointer;
-            self.start_move_drag(window, at);
+            let position = self.pointer;
+            self.start_move_drag(window, position);
         }
     }
 
     /// Picks a window up so it follows the pointer as a picture.
-    pub(crate) fn start_move_drag(&mut self, window: WindowId, at: Point<f64, Logical>) {
+    pub(crate) fn start_move_drag(&mut self, window: WindowId, position: Point<f64, Logical>) {
         let now = self.now();
         let screen = self.world.screen();
-        let shown = self.drawn_windows(now).into_iter().find(|d| d.id == window).map(|d| d.content);
+        let shown =
+            self.drawn_windows(now).into_iter().find(|drawn| drawn.window_id == window).map(|drawn| drawn.content);
         let (grab, size) = match shown {
-            Some(c) if c.w > 0.0 && c.h > 0.0 => {
-                let grab = (((at.x - c.x) / c.w).clamp(0.0, 1.0), ((at.y - c.y) / c.h).clamp(0.0, 1.0));
-                let k = (DRAG_PICTURE * screen.w / c.w).min(DRAG_PICTURE * screen.h / c.h).min(1.0);
-                (grab, (c.w * k, c.h * k))
+            Some(content) if content.w > 0.0 && content.h > 0.0 => {
+                let grab = (
+                    ((position.x - content.x) / content.w).clamp(0.0, 1.0),
+                    ((position.y - content.y) / content.h).clamp(0.0, 1.0),
+                );
+                let scale = (DRAG_PICTURE * screen.w / content.w).min(DRAG_PICTURE * screen.h / content.h).min(1.0);
+                (grab, (content.w * scale, content.h * scale))
             }
             // A tab that is not on show: a picture of a typical size.
             _ => ((0.5, 0.1), (DRAG_PICTURE * screen.w, DRAG_PICTURE * screen.h)),
         };
         let free = self.world.tree().is_floating(window) && !self.world.in_overview();
-        self.move_drag = Some(MoveDrag { window, grab, size, target: None, free, last: at });
+        self.move_drag = Some(MoveDrag { window, grab, size, target: None, free, last: position });
     }
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
@@ -626,7 +639,7 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        let at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if self.power_menu.is_none()
             && (self.tray.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
@@ -636,9 +649,9 @@ impl Tileception {
         if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
             self.launcher_release();
         }
-        if self.launcher.open && self.launcher_takes(at) {
+        if self.launcher.open && self.launcher_takes(pointer_at) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.launcher_click(at);
+                self.launcher_click(pointer_at);
             }
             return;
         }
@@ -646,34 +659,34 @@ impl Tileception {
             // A click picks a button; a click anywhere else closes the menu.
             if state == ButtonState::Pressed {
                 match self.power_action_at(self.pointer.x, self.pointer.y) {
-                    Some(i) => self.run_power_action(crate::power::PowerAction::ALL[i]),
+                    Some(index) => self.run_power_action(crate::power::PowerAction::ALL[index]),
                     None => self.close_power_menu(),
                 }
             }
             return;
         }
         let now = self.now();
-        let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
             return;
         }
         // A held duck lets go wherever the button comes up.
-        if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, p) {
+        if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, point) {
             return;
         }
-        if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(p) {
+        if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(point) {
             return;
         }
-        if self.doctor_contains(p) {
+        if self.doctor_contains(point) {
             return;
         }
-        if self.notifications_contain(p) {
+        if self.notifications_contain(point) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.notification_click(p);
+                self.notification_click(point);
             }
             return;
         }
-        if self.move_drag.is_none() && self.duck_button(button == BTN_LEFT, state == ButtonState::Pressed, p) {
+        if self.move_drag.is_none() && self.duck_button(button == BTN_LEFT, state == ButtonState::Pressed, point) {
             return;
         }
         if self.move_drag.is_none() && self.bar_button(button, state == ButtonState::Pressed) {
@@ -685,22 +698,25 @@ impl Tileception {
 
         if state == ButtonState::Released {
             if let Some(anchor) = self.selection.anchor.take() {
-                if (p.x - anchor.x).hypot(p.y - anchor.y) < DRAG_THRESHOLD {
+                if (point.x - anchor.x).hypot(point.y - anchor.y) < DRAG_THRESHOLD {
                     // A click, not a box: keep the selection as it was before the press,
                     // toggling the window under a Super+Shift click.
                     self.selection.windows = std::mem::take(&mut self.selection.additive);
                     let mods = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state();
                     if mods.shift && mods.logo {
-                        let at = self.tab_at(anchor, now).or_else(|| {
-                            self.drawn_windows(now).into_iter().find(|d| d.content.contains(anchor)).map(|d| d.id)
+                        let toggled = self.tab_at(anchor, now).or_else(|| {
+                            self.drawn_windows(now)
+                                .into_iter()
+                                .find(|drawn| drawn.content.contains(anchor))
+                                .map(|drawn| drawn.window_id)
                         });
-                        if let Some(window) = at {
+                        if let Some(window) = toggled {
                             self.toggle_selection(window);
                         }
                         return;
                     }
                 }
-                if self.world.in_overview() && (p.x - anchor.x).hypot(p.y - anchor.y) < DRAG_THRESHOLD {
+                if self.world.in_overview() && (point.x - anchor.x).hypot(point.y - anchor.y) < DRAG_THRESHOLD {
                     self.world.click_in_overview(anchor, now);
                     self.apply_layout();
                 }
@@ -723,8 +739,8 @@ impl Tileception {
             }
             if let Some(press) = self.pending_press.take() {
                 if self.world.in_overview() {
-                    let at = tileception_core::Point::new(press.at.x, press.at.y);
-                    self.world.click_in_overview(at, now);
+                    let press_point = tileception_core::Point::new(press.position.x, press.position.y);
+                    self.world.click_in_overview(press_point, now);
                     self.apply_layout();
                 }
                 return;
@@ -741,34 +757,35 @@ impl Tileception {
         };
         if state == ButtonState::Pressed && button == BTN_RIGHT && drag_held && !pointer.is_grabbed() && !over_layer {
             // Modifier + right drag resizes from the nearest corner.
-            if let Some(d) = self.drawn_windows(now).into_iter().find(|d| d.content.contains(p)) {
-                self.world.focus_window(d.id, now);
+            if let Some(shown) = self.drawn_windows(now).into_iter().find(|candidate| candidate.content.contains(point))
+            {
+                self.world.focus_window(shown.window_id, now);
                 self.apply_layout();
-                let c = d.content.center();
-                let side_x = if p.x < c.x { Side::Left } else { Side::Right };
-                let side_y = if p.y < c.y { Side::Top } else { Side::Bottom };
-                self.resize_drag = Some(ResizeDrag { window: d.id, side_x, side_y, last: self.pointer });
+                let centre = shown.content.center();
+                let side_x = if point.x < centre.x { Side::Left } else { Side::Right };
+                let side_y = if point.y < centre.y { Side::Top } else { Side::Bottom };
+                self.resize_drag = Some(ResizeDrag { window: shown.window_id, side_x, side_y, last: self.pointer });
                 return;
             }
         }
         if state == ButtonState::Pressed && button == BTN_LEFT && !pointer.is_grabbed() && !over_layer {
             let drawn = self.drawn_windows(now);
-            let under = drawn.iter().find(|d| d.content.contains(p)).copied();
+            let under = drawn.iter().find(|candidate| candidate.content.contains(point)).copied();
             let mods = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state();
-            let tab = self.tab_at(p, now);
+            let tab = self.tab_at(point, now);
             let overview = self.world.in_overview();
             // Super+Shift: a click toggles the window, a drag selects with a box.
             // In Overview a drag from empty space also selects with a box.
             if (mods.shift && mods.logo) || (overview && under.is_none() && tab.is_none()) {
-                self.selection.anchor = Some(p);
+                self.selection.anchor = Some(point);
                 self.selection.additive = if mods.shift { self.selection.windows.clone() } else { Default::default() };
                 return;
             }
             // Shift+click selects tabs and previews; on a live window it belongs
             // to the program, for example to extend a text selection.
             if mods.shift
-                && (tab.is_some() || under.is_some_and(|d| !d.live))
-                && let Some(window) = tab.or(under.map(|d| d.id))
+                && (tab.is_some() || under.is_some_and(|candidate| !candidate.live))
+                && let Some(window) = tab.or(under.map(|drawn| drawn.window_id))
             {
                 self.toggle_selection(window);
                 return;
@@ -778,7 +795,8 @@ impl Tileception {
             }
             if overview {
                 // Dragging a window in Overview moves it; a click zooms in.
-                self.pending_press = Some(PendingPress { at: self.pointer, window: under.map(|d| d.id) });
+                self.pending_press =
+                    Some(PendingPress { position: self.pointer, window: under.map(|drawn| drawn.window_id) });
                 return;
             }
 
@@ -790,26 +808,26 @@ impl Tileception {
                 self.gap_drag = Some(drag);
                 return;
             }
-            if let Some(tab) = self.tab_at(p, now) {
+            if let Some(tab) = self.tab_at(point, now) {
                 self.world.focus_window(tab, now);
                 self.apply_layout();
-                self.pending_press = Some(PendingPress { at: self.pointer, window: Some(tab) });
+                self.pending_press = Some(PendingPress { position: self.pointer, window: Some(tab) });
                 return;
             }
-            let Some(d) = under else {
+            let Some(shown) = under else {
                 pointer.button(self, &ButtonEvent { button, state, serial, time });
                 pointer.frame(self);
                 return;
             };
-            if self.world.focus() != Some(d.id) {
-                self.world.focus_window(d.id, now);
+            if self.world.focus() != Some(shown.window_id) {
+                self.world.focus_window(shown.window_id, now);
                 self.apply_layout();
             }
             if drag_held {
-                self.start_move_drag(d.id, self.pointer);
+                self.start_move_drag(shown.window_id, self.pointer);
                 return;
             }
-            if !d.live {
+            if !shown.live {
                 // A click on a preview only focuses it.
                 return;
             }
@@ -819,10 +837,11 @@ impl Tileception {
     }
 
     /// The window whose tab is under a point.
-    pub(crate) fn tab_at(&self, p: tileception_core::Point, now: f64) -> Option<WindowId> {
-        let strip = self.world.tab_strips(self.world.view(now)).into_iter().find(|s| s.rect.contains(p))?;
-        let i = ((p.x - strip.rect.x) / strip.rect.w * strip.views.len() as f64) as usize;
-        strip.views.get(i.min(strip.views.len() - 1)).copied()
+    pub(crate) fn tab_at(&self, point: tileception_core::Point, now: f64) -> Option<WindowId> {
+        let strip =
+            self.world.tab_strips(self.world.view(now)).into_iter().find(|tab_strip| tab_strip.rect.contains(point))?;
+        let index = ((point.x - strip.rect.x) / strip.rect.w * strip.views.len() as f64) as usize;
+        strip.views.get(index.min(strip.views.len() - 1)).copied()
     }
 
     fn on_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
@@ -832,8 +851,8 @@ impl Tileception {
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {
             let notches = event
                 .amount_v120(Axis::Vertical)
-                .map(|v| v / 120.0)
-                .or_else(|| event.amount(Axis::Vertical).map(|a| a / 50.0))
+                .map(|v120| v120 / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).map(|amount| amount / 50.0))
                 .unwrap_or(0.0);
             self.bar_scroll(notches);
             return;
@@ -842,8 +861,10 @@ impl Tileception {
             let notches = event
                 .amount_v120(Axis::Vertical)
                 .or_else(|| event.amount_v120(Axis::Horizontal))
-                .map(|v| v / 120.0)
-                .or_else(|| event.amount(Axis::Vertical).or_else(|| event.amount(Axis::Horizontal)).map(|a| a / 50.0))
+                .map(|v120| v120 / 120.0)
+                .or_else(|| {
+                    event.amount(Axis::Vertical).or_else(|| event.amount(Axis::Horizontal)).map(|amount| amount / 50.0)
+                })
                 .unwrap_or(0.0);
             if self.strip_scroll(notches) {
                 return;
@@ -871,10 +892,10 @@ impl Tileception {
             && self.notifications.open
             && self.notifications_contain(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
-            let p = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+            let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
             let discrete = event.amount_v120(Axis::Vertical).is_some() && event.source() == AxisSource::Wheel;
             let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
-            if amount != 0.0 && self.controls_scroll(p, amount, discrete) {
+            if amount != 0.0 && self.controls_scroll(point, amount, discrete) {
                 return;
             }
             if amount != 0.0 {
@@ -886,8 +907,8 @@ impl Tileception {
             // In notches: a wheel step is one, smooth scrolling adds up to one.
             let notches = event
                 .amount_v120(Axis::Vertical)
-                .map(|v| v / 120.0)
-                .or_else(|| event.amount(Axis::Vertical).map(|a| a / 50.0))
+                .map(|v120| v120 / 120.0)
+                .or_else(|| event.amount(Axis::Vertical).map(|amount| amount / 50.0))
                 .unwrap_or(0.0);
             self.bar_scroll(notches);
             return;
@@ -903,14 +924,14 @@ impl Tileception {
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         if horizontal != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal);
-            if let Some(d) = event.amount_v120(Axis::Horizontal) {
-                frame = frame.v120(Axis::Horizontal, d as i32);
+            if let Some(v120) = event.amount_v120(Axis::Horizontal) {
+                frame = frame.v120(Axis::Horizontal, v120 as i32);
             }
         }
         if vertical != 0.0 {
             frame = frame.value(Axis::Vertical, vertical);
-            if let Some(d) = event.amount_v120(Axis::Vertical) {
-                frame = frame.v120(Axis::Vertical, d as i32);
+            if let Some(v120) = event.amount_v120(Axis::Vertical) {
+                frame = frame.v120(Axis::Vertical, v120 as i32);
             }
         }
         if source == AxisSource::Finger {
@@ -938,7 +959,7 @@ impl Tileception {
             held.alt = false;
             held.logo = true;
         }
-        let bound = |k| self.config.lookup(held, k).is_some();
+        let bound = |keysym| self.config.lookup(held, keysym).is_some();
         if ![WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT].into_iter().any(bound) {
             return false;
         }
@@ -950,7 +971,7 @@ impl Tileception {
         let notch = |axis| {
             sign * event
                 .amount_v120(axis)
-                .map(|v| v / 120.0)
+                .map(|v120| v120 / 120.0)
                 .unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
         };
         self.wheel_accum.0 += notch(Axis::Horizontal);
@@ -1007,31 +1028,33 @@ impl Tileception {
                     geo.loc,
                     smithay::desktop::WindowSurfaceType::ALL,
                 );
-                if let Some((s, loc)) = hit {
-                    return Some((s, loc.to_f64()));
+                if let Some((hit_surface, loc)) = hit {
+                    return Some((hit_surface, loc.to_f64()));
                 }
             }
         }
-        let p = tileception_core::Point::new(pos.x, pos.y);
+        let point = tileception_core::Point::new(pos.x, pos.y);
         let now = self.now();
         let drawn = self.drawn_windows(now);
         // Menus may reach outside their window's tile.
-        for d in drawn.iter().filter(|d| d.live) {
-            let Some(window) = self.windows.get(&d.id) else { continue };
-            let origin: Point<f64, Logical> = (d.origin.x.round(), d.origin.y.round()).into();
-            if let Some((s, loc)) = window.surface_under(pos - origin, smithay::desktop::WindowSurfaceType::POPUP) {
-                return Some((s, loc.to_f64() + origin));
+        for shown in drawn.iter().filter(|candidate| candidate.live) {
+            let Some(window) = self.windows.get(&shown.window_id) else { continue };
+            let origin: Point<f64, Logical> = (shown.origin.x.round(), shown.origin.y.round()).into();
+            if let Some((hit_surface, loc)) =
+                window.surface_under(pos - origin, smithay::desktop::WindowSurfaceType::POPUP)
+            {
+                return Some((hit_surface, loc.to_f64() + origin));
             }
         }
-        let d = drawn.iter().find(|d| d.content.contains(p))?;
-        if !d.live {
+        let shown = drawn.iter().find(|candidate| candidate.content.contains(point))?;
+        if !shown.live {
             return None;
         }
-        let window = self.windows.get(&d.id)?;
-        let origin: Point<f64, Logical> = (d.origin.x.round(), d.origin.y.round()).into();
+        let window = self.windows.get(&shown.window_id)?;
+        let origin: Point<f64, Logical> = (shown.origin.x.round(), shown.origin.y.round()).into();
         window
             .surface_under(pos - origin, smithay::desktop::WindowSurfaceType::ALL)
-            .map(|(s, loc)| (s, loc.to_f64() + origin))
+            .map(|(hit_surface, loc)| (hit_surface, loc.to_f64() + origin))
     }
 
     /// The split boundary under a point, if any, for dragging gaps.
@@ -1041,18 +1064,26 @@ impl Tileception {
         let reach = self.world.settings.gap / 2.0 + 4.0;
         for split in tree.subtree(tree.root()) {
             let Node::Split { axis, children, .. } = tree.node(split) else { continue };
-            for i in 0..children.len().saturating_sub(1) {
-                let (Some(a), Some(_)) =
-                    (self.world.node_rect(children[i], view), self.world.node_rect(children[i + 1], view))
+            for index in 0..children.len().saturating_sub(1) {
+                let (Some(first_rect), Some(_)) =
+                    (self.world.node_rect(children[index], view), self.world.node_rect(children[index + 1], view))
                 else {
                     continue;
                 };
                 let hit = match axis {
-                    LayoutAxis::Horizontal => (pos.x - a.right()).abs() <= reach && pos.y >= a.y && pos.y < a.bottom(),
-                    LayoutAxis::Vertical => (pos.y - a.bottom()).abs() <= reach && pos.x >= a.x && pos.x < a.right(),
+                    LayoutAxis::Horizontal => {
+                        (pos.x - first_rect.right()).abs() <= reach
+                            && pos.y >= first_rect.y
+                            && pos.y < first_rect.bottom()
+                    }
+                    LayoutAxis::Vertical => {
+                        (pos.y - first_rect.bottom()).abs() <= reach
+                            && pos.x >= first_rect.x
+                            && pos.x < first_rect.right()
+                    }
                 };
                 if hit {
-                    return Some(GapDrag { split, index: i, last: pos, horizontal: *axis == LayoutAxis::Horizontal });
+                    return Some(GapDrag { split, index, last: pos, horizontal: *axis == LayoutAxis::Horizontal });
                 }
             }
         }
@@ -1105,5 +1136,6 @@ fn types(sym: u32) -> bool {
         KEY_Page_Down,
         KEY_Insert,
     ];
-    editing.contains(&sym) || smithay::input::keyboard::Keysym::new(sym).key_char().is_some_and(|c| !c.is_control())
+    editing.contains(&sym)
+        || smithay::input::keyboard::Keysym::new(sym).key_char().is_some_and(|character| !character.is_control())
 }

@@ -63,7 +63,7 @@ pub enum Piece {
 pub fn images(source: &str) -> Vec<String> {
     parse(source)
         .into_iter()
-        .filter_map(|p| match p {
+        .filter_map(|piece| match piece {
             Piece::Image { url, .. } => Some(url),
             _ => None,
         })
@@ -72,12 +72,12 @@ pub fn images(source: &str) -> Vec<String> {
 
 pub fn parse(source: &str) -> Vec<Piece> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let mut b = Builder::default();
+    let mut builder = Builder::default();
     for event in Parser::new_ext(source, options) {
-        b.event(event);
+        builder.event(event);
     }
-    b.flush();
-    b.pieces
+    builder.flush();
+    builder.pieces
 }
 
 /// The command a code block runs, when it is shell: its text without the
@@ -88,7 +88,7 @@ pub fn shell_command(lang: &str, text: &str) -> Option<String> {
     if !shell.contains(&lang.to_ascii_lowercase().as_str()) || text.trim().is_empty() {
         return None;
     }
-    let prompted: Vec<&str> = text.lines().filter_map(|l| l.trim_start().strip_prefix("$ ")).collect();
+    let prompted: Vec<&str> = text.lines().filter_map(|line| line.trim_start().strip_prefix("$ ")).collect();
     Some(if prompted.is_empty() { text.to_string() } else { prompted.join("\n") })
 }
 
@@ -139,7 +139,7 @@ impl Builder {
             }
             self.spans.pop();
         }
-        if self.spans.iter().all(|s| s.text.trim().is_empty()) {
+        if self.spans.iter().all(|span| span.text.trim().is_empty()) {
             self.spans.clear();
             return;
         }
@@ -231,9 +231,9 @@ impl Builder {
             Tag::Item => {
                 self.flush();
                 let marker = match self.lists.last_mut() {
-                    Some(Some(n)) => {
-                        *n += 1;
-                        format!("{}.", *n - 1)
+                    Some(Some(number)) => {
+                        *number += 1;
+                        format!("{}.", *number - 1)
                     }
                     _ => "\u{2022}".into(),
                 };
@@ -288,7 +288,7 @@ mod tests {
 
     fn text(piece: &Piece) -> String {
         match piece {
-            Piece::Text { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
+            Piece::Text { spans, .. } => spans.iter().map(|span| span.text.as_str()).collect(),
             other => format!("{other:?}"),
         }
     }
@@ -297,9 +297,9 @@ mod tests {
     fn inline_marks_and_links() {
         let pieces = parse("Some **bold** and `code` with [a link](https://example.com).");
         let [Piece::Text { kind: Kind::Paragraph, spans }] = pieces.as_slice() else { panic!("{pieces:?}") };
-        assert!(spans.iter().any(|s| s.text == "bold" && s.marks.bold));
-        assert!(spans.iter().any(|s| s.text == "code" && s.marks.code));
-        assert!(spans.iter().any(|s| s.text == "a link" && s.link.as_deref() == Some("https://example.com")));
+        assert!(spans.iter().any(|span| span.text == "bold" && span.marks.bold));
+        assert!(spans.iter().any(|span| span.text == "code" && span.marks.code));
+        assert!(spans.iter().any(|span| span.text == "a link" && span.link.as_deref() == Some("https://example.com")));
     }
 
     #[test]
@@ -307,8 +307,8 @@ mod tests {
         let pieces = parse("1. one\n2. two\n   - nested\n");
         let kinds: Vec<_> = pieces
             .iter()
-            .map(|p| match p {
-                Piece::Text { kind: Kind::Item { depth, marker }, .. } => (*depth, marker.clone(), text(p)),
+            .map(|piece| match piece {
+                Piece::Text { kind: Kind::Item { depth, marker }, .. } => (*depth, marker.clone(), text(piece)),
                 other => panic!("{other:?}"),
             })
             .collect();

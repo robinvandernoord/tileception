@@ -52,7 +52,7 @@ impl Clip {
     }
 
     /// Serves the contents without starting a Wayland client.
-    pub fn send(&self, fd: std::os::fd::OwnedFd) {
+    pub fn send(&self, pipe: std::os::fd::OwnedFd) {
         use std::io::Write;
         let clip = self.clone();
         std::thread::spawn(move || {
@@ -60,7 +60,7 @@ impl Clip {
                 Clip::Text(text) => text.as_bytes(),
                 Clip::Png(png) => png,
             };
-            let _ = std::fs::File::from(fd).write_all(bytes);
+            let _ = std::fs::File::from(pipe).write_all(bytes);
         });
     }
 }
@@ -227,7 +227,7 @@ pub struct Launcher {
 impl Default for Launcher {
     fn default() -> Self {
         let usage: HashMap<String, StoredUsage> =
-            std::fs::read_to_string(usage_path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
+            std::fs::read_to_string(usage_path()).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
         Self {
             open: false,
             home: false,
@@ -252,8 +252,8 @@ impl Default for Launcher {
             compose: crate::ui::compose_state(),
             usage: usage
                 .into_iter()
-                .map(|(id, value)| {
-                    (id, Usage { count: value.count, last_used: UNIX_EPOCH + Duration::from_secs(value.last_used) })
+                .map(|(app_id, value)| {
+                    (app_id, Usage { count: value.count, last_used: UNIX_EPOCH + Duration::from_secs(value.last_used) })
                 })
                 .collect(),
         }
@@ -284,7 +284,7 @@ impl Launcher {
 
     /// Whether Enter just copied this.
     fn just_copied(&self, text: &str) -> bool {
-        self.copied.as_ref().is_some_and(|(copied, at)| copied == text && at.elapsed() < COPIED_FOR)
+        self.copied.as_ref().is_some_and(|(copied, copied_at)| copied == text && copied_at.elapsed() < COPIED_FOR)
     }
 }
 
@@ -295,8 +295,8 @@ impl Tileception {
         use std::io::Read;
         let mut png = Vec::new();
         std::fs::File::open(path)
-            .and_then(|f| f.take(MAX_IMAGE + 1).read_to_end(&mut png))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+            .and_then(|file| file.take(MAX_IMAGE + 1).read_to_end(&mut png))
+            .map_err(|err| format!("{}: {err}", path.display()))?;
         if png.len() as u64 > MAX_IMAGE || !png.starts_with(b"\x89PNG") {
             return Err(format!("{} is not a PNG of at most 64 MB", path.display()));
         }
@@ -374,7 +374,7 @@ impl Tileception {
     /// Minimized windows and windows that never showed do not count: what
     /// matters is an empty layout.
     pub fn update_home(&mut self) {
-        if self.windows.keys().any(|id| self.world.contains_window(*id)) {
+        if self.windows.keys().any(|window_id| self.world.contains_window(*window_id)) {
             self.launcher.home_dismissed = false;
             self.launcher.quiet_until = None;
             if self.launcher.home {
@@ -446,13 +446,13 @@ impl Tileception {
                 .index
                 .search("", &launcher.usage, MAX_ROWS)
                 .iter()
-                .map(|a| Entry::App(a.id.clone()))
+                .map(|app| Entry::App(app.id.clone()))
                 .collect();
         }
         if let Some(line) = answers::command(text) {
             return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
         let found = answers::answers(text, now);
         if text.starts_with(':') {
             return found.into_iter().map(Entry::Answer).collect();
@@ -483,32 +483,36 @@ impl Tileception {
         let mut windows: Vec<(u8, WindowId)> = self
             .windows
             .iter()
-            .filter(|(id, _)| self.world.contains_window(**id) || self.world.is_minimized(**id))
-            .filter_map(|(id, window)| {
+            .filter(|(window_id, _)| self.world.contains_window(**window_id) || self.world.is_minimized(**window_id))
+            .filter_map(|(window_id, window)| {
                 let title = crate::state::window_title(window).to_lowercase();
                 let app = crate::state::app_id(window).to_lowercase();
                 let best = quality(&query, &title).into_iter().chain(quality(&query, &app)).min()?;
-                Some((best, *id))
+                Some((best, *window_id))
             })
             .collect();
-        windows.sort_by_key(|(quality, id)| (*quality, id.0));
-        ranked.extend(windows.into_iter().take(3).map(|(quality, id)| (quality, 1, Entry::Window(id))));
+        windows.sort_by_key(|(quality, window_id)| (*quality, window_id.0));
+        ranked.extend(windows.into_iter().take(3).map(|(quality, window_id)| (quality, 1, Entry::Window(window_id))));
         if query.chars().count() >= 2 {
             let commands = COMMANDS
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| !matches!(c.does, Does::Suspend) || self.config.file.general.suspend_enabled)
-                .filter(|(_, c)| !matches!(c.does, Does::Line("doctor")) || self.shell().doctor())
-                .filter_map(|(i, c)| {
-                    let by_name = quality(&query, &c.name.to_lowercase());
-                    let by_words = query.split_whitespace().all(|w| c.words.split(' ').any(|k| k.starts_with(w)));
+                .filter(|(_, command)| {
+                    !matches!(command.does, Does::Suspend) || self.config.file.general.suspend_enabled
+                })
+                .filter(|(_, command)| !matches!(command.does, Does::Line("doctor")) || self.shell().doctor())
+                .filter_map(|(index, command)| {
+                    let by_name = quality(&query, &command.name.to_lowercase());
+                    let by_words = query
+                        .split_whitespace()
+                        .all(|word| command.words.split(' ').any(|keyword| keyword.starts_with(word)));
                     let quality = by_name.or(by_words.then_some(3))?;
-                    Some((quality, 2, Entry::Command(i)))
+                    Some((quality, 2, Entry::Command(index)))
                 })
                 .take(3);
             ranked.extend(commands);
             for (app, action) in launcher.index.search_actions(text, 3) {
-                let index = app.actions.iter().position(|a| a.id == action.id).unwrap_or(0);
+                let index = app.actions.iter().position(|app_action| app_action.id == action.id).unwrap_or(0);
                 let quality = quality(&query, &action.name.to_lowercase()).unwrap_or(3);
                 ranked.push((quality, 3, Entry::Action { app: app.id.clone(), action: index }));
             }
@@ -520,7 +524,7 @@ impl Tileception {
         let room = MAX_ROWS.saturating_sub(entries.len()).max(2);
         entries.extend(ranked.into_iter().take(room).map(|(_, _, entry)| entry));
         // Sums and conversions are answers, not questions for the doctor.
-        let answered = entries.iter().any(|e| matches!(e, Entry::Answer(_)));
+        let answered = entries.iter().any(|entry| matches!(entry, Entry::Answer(_)));
         if !answered
             && !crate::calc::looks_like_conversion(text)
             && let Some(question) = question_in(text)
@@ -553,7 +557,7 @@ impl Tileception {
         }
         // Up and down scroll a command's output, a line or a page at a time.
         if let Some(lines) =
-            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|o| o.text.lines().count())
+            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|output| output.text.lines().count())
         {
             let room = self.launcher_output_lines();
             let page = room.saturating_sub(1).max(1);
@@ -644,8 +648,8 @@ impl Tileception {
         let mut wanted = "";
         for mime_type in mime_types {
             wanted = mime_type;
-            let Ok(fd) = writer.try_clone() else { return };
-            match request_data_device_client_selection(&self.seat, mime_type.into(), fd.into()) {
+            let Ok(pipe) = writer.try_clone() else { return };
+            match request_data_device_client_selection(&self.seat, mime_type.into(), pipe.into()) {
                 Ok(()) => {
                     requested = true;
                     break;
@@ -703,7 +707,7 @@ impl Tileception {
     }
 
     fn launcher_insert_paste(&mut self, text: &str) {
-        let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let text: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
         self.launcher.input.insert(&text);
         self.launcher.edited = Instant::now();
         self.refresh_launcher();
@@ -724,7 +728,7 @@ impl Tileception {
 
     pub fn launcher_scroll(&mut self, delta: isize) {
         if let Some(lines) =
-            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|o| o.text.lines().count())
+            self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|output| output.text.lines().count())
         {
             let most = lines.saturating_sub(self.launcher_output_lines());
             self.launcher.output_scroll = self.launcher.output_scroll.saturating_add_signed(-delta).min(most);
@@ -757,14 +761,14 @@ impl Tileception {
     fn launch_selected(&mut self, mods: crate::config::Mods) {
         let Some(entry) = self.launcher.entries.get(self.launcher.selected).cloned() else { return };
         match entry {
-            Entry::App(id) => {
-                let Some(command) = self.launcher.index.get(&id).map(|app| {
+            Entry::App(app_id) => {
+                let Some(command) = self.launcher.index.get(&app_id).map(|app| {
                     let extra = self.config.launch_args(&app.id);
                     tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra)
                 }) else {
                     return;
                 };
-                self.launch_command(command, &id);
+                self.launch_command(command, &app_id);
             }
             Entry::Action { app, action } => {
                 let Some(command) = self.launcher.index.get(&app).and_then(|entry| {
@@ -775,13 +779,13 @@ impl Tileception {
                 };
                 self.launch_command(command, &app);
             }
-            Entry::Window(id) => {
+            Entry::Window(window_id) => {
                 self.close_launcher();
-                self.fly_to_window(id);
+                self.fly_to_window(window_id);
             }
-            Entry::Command(i) => {
+            Entry::Command(index) => {
                 self.close_launcher();
-                self.run_builtin(COMMANDS[i].does);
+                self.run_builtin(COMMANDS[index].does);
             }
             Entry::Answer(answer) => {
                 self.copy_text(answer.copy.clone());
@@ -807,25 +811,25 @@ impl Tileception {
     }
 
     /// Starts an app's command line and counts it towards its usage.
-    fn launch_command(&mut self, command: String, id: &str) {
+    fn launch_command(&mut self, command: String, app_id: &str) {
         if self.launcher.home {
             self.launcher.quiet_until = Some(Instant::now() + HOME_QUIET);
         }
         self.close_launcher();
         self.spawn("sh", &["-c".into(), command]);
-        let entry = self.launcher.usage.entry(id.to_string()).or_insert(Usage { count: 0, last_used: UNIX_EPOCH });
+        let entry = self.launcher.usage.entry(app_id.to_string()).or_insert(Usage { count: 0, last_used: UNIX_EPOCH });
         entry.count = entry.count.saturating_add(1);
         entry.last_used = SystemTime::now();
         let stored: HashMap<_, _> = self
             .launcher
             .usage
             .iter()
-            .map(|(id, u)| {
+            .map(|(app_id, usage)| {
                 (
-                    id.clone(),
+                    app_id.clone(),
                     StoredUsage {
-                        count: u.count,
-                        last_used: u.last_used.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        count: usage.count,
+                        last_used: usage.last_used.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
                     },
                 )
             })
@@ -842,20 +846,20 @@ impl Tileception {
 
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
-    fn fly_to_window(&mut self, id: WindowId) {
+    fn fly_to_window(&mut self, window_id: WindowId) {
         let now = self.now();
         if let Some(full) = self.fullscreen
-            && full != id
+            && full != window_id
         {
             self.set_fullscreen(full, false);
         }
         if self.world.in_overview() {
             self.world.exit_overview(now);
         }
-        if self.world.is_minimized(id) {
-            self.world.restore(id, now);
+        if self.world.is_minimized(window_id) {
+            self.world.restore(window_id, now);
         } else {
-            self.world.focus_window(id, now);
+            self.world.focus_window(window_id, now);
         }
         self.apply_layout();
         self.persist_layout();
@@ -875,7 +879,7 @@ impl Tileception {
             Does::Power(action) => {
                 self.shell_power_menu();
                 if let Some(menu) = self.power_menu.as_mut() {
-                    menu.selected = PowerAction::ALL.iter().position(|a| *a == action).unwrap_or(0);
+                    menu.selected = PowerAction::ALL.iter().position(|candidate| *candidate == action).unwrap_or(0);
                 }
             }
         }
@@ -889,7 +893,7 @@ impl Tileception {
             Does::Suspend => return None,
         };
         let command = crate::commands::parse(line).ok()?;
-        let bind = self.config.binds.iter().find(|b| b.commands.first() == Some(&command))?;
+        let bind = self.config.binds.iter().find(|candidate| candidate.commands.first() == Some(&command))?;
         Some(combo_label(bind.mods, bind.key))
     }
 
@@ -927,7 +931,7 @@ impl Tileception {
     fn launcher_layout(&self) -> LauncherLayout {
         let results = self.launcher.entries.len();
         let screen = self.output_rect();
-        let w = (screen.w - 32.0).clamp(1.0, PANEL_W);
+        let width = (screen.w - 32.0).clamp(1.0, PANEL_W);
         let grid = self.home_grid();
         let columns = if grid { self.home_columns() } else { 1 };
         let row_h = if grid { TILE_H } else { ROW_H };
@@ -936,8 +940,8 @@ impl Tileception {
             .launcher
             .shown_run()
             .map(|_| (OUTPUT_LINES as f64 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD).min((available - row_h - 6.0).max(0.0)))
-            .filter(|h| *h >= 2.0 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD);
-        let reserved = output_h.map_or(0.0, |h| h + 6.0);
+            .filter(|output_height| *output_height >= 2.0 * OUTPUT_LINE_H + 2.0 * OUTPUT_PAD);
+        let reserved = output_h.map_or(0.0, |output_height| output_height + 6.0);
         let visible_rows = (((available - reserved) / row_h).floor() as usize).max(1);
         let row_count = results.div_ceil(columns).max(1);
         let selected_row = self.launcher.selected / columns;
@@ -948,36 +952,36 @@ impl Tileception {
         let first = first_row * columns;
         let visible = results.saturating_sub(first).min(visible_rows * columns);
         let list_h = row_count.min(visible_rows) as f64 * row_h + reserved;
-        let h = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
+        let height = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
         // A fixed top edge, so the field stays put while results come and go.
         // The welcome screen sits lower, under its clock.
         let top = if self.launcher.home {
-            (screen.y + screen.h * 0.30).max(screen.y + 180.0).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0)
+            (screen.y + screen.h * 0.30).max(screen.y + 180.0).min(screen.bottom() - 16.0 - height).max(screen.y + 16.0)
         } else {
-            (screen.y + screen.h * 0.18).min(screen.bottom() - 16.0 - h).max(screen.y + 16.0)
+            (screen.y + screen.h * 0.18).min(screen.bottom() - 16.0 - height).max(screen.y + 16.0)
         };
-        let panel = Rect::new(screen.x + (screen.w - w) / 2.0, top, w, h);
+        let panel = Rect::new(screen.x + (screen.w - width) / 2.0, top, width, height);
         let field = Rect::new(panel.x + PAD, panel.y + PAD, panel.w - 2.0 * PAD, FIELD_H);
         let caption = Rect::new(panel.x + PAD + 6.0, field.bottom(), panel.w - 2.0 * PAD - 12.0, CAPTION_H);
         let rows: Vec<Rect> = if grid {
             let tile_w = (panel.w - 2.0 * PAD) / columns as f64;
             (0..visible)
-                .map(|i| {
-                    let (column, row) = ((i % columns) as f64, (i / columns) as f64);
-                    let x = panel.x + PAD + column * tile_w;
-                    Rect::new(x + 2.0, caption.bottom() + row * TILE_H, tile_w - 4.0, TILE_H - 4.0)
+                .map(|index| {
+                    let (column, row) = ((index % columns) as f64, (index / columns) as f64);
+                    let left = panel.x + PAD + column * tile_w;
+                    Rect::new(left + 2.0, caption.bottom() + row * TILE_H, tile_w - 4.0, TILE_H - 4.0)
                 })
                 .collect()
         } else {
             (0..visible)
-                .map(|i| {
-                    Rect::new(panel.x + PAD, caption.bottom() + i as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0)
+                .map(|index| {
+                    Rect::new(panel.x + PAD, caption.bottom() + index as f64 * ROW_H, panel.w - 2.0 * PAD, ROW_H - 2.0)
                 })
                 .collect()
         };
-        let output = output_h.map(|h| {
-            let y = caption.bottom() + row_count.min(visible_rows) as f64 * row_h + 6.0;
-            Rect::new(panel.x + PAD, y, panel.w - 2.0 * PAD, h)
+        let output = output_h.map(|output_height| {
+            let output_top = caption.bottom() + row_count.min(visible_rows) as f64 * row_h + 6.0;
+            Rect::new(panel.x + PAD, output_top, panel.w - 2.0 * PAD, output_height)
         });
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
@@ -1001,12 +1005,12 @@ impl Tileception {
     /// desktop (bars, the notification panel) gets it as usual.
     pub fn home_contains(&self, point: Point) -> bool {
         let layout = self.launcher_layout();
-        layout.panel.contains(point) || layout.media.is_some_and(|m| m.rect.contains(point))
+        layout.panel.contains(point) || layout.media.is_some_and(|card| card.rect.contains(point))
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
         let layout = self.launcher_layout();
-        layout.rows.iter().position(|row| row.contains(point)).map(|i| layout.first + i)
+        layout.rows.iter().position(|row| row.contains(point)).map(|offset| layout.first + offset)
     }
 
     pub fn launcher_motion(&mut self, point: Point) {
@@ -1014,8 +1018,8 @@ impl Tileception {
             self.launcher_cursor_at(point, true);
             return;
         }
-        if let Some(i) = self.launcher_at(point) {
-            self.select_launcher(i);
+        if let Some(index) = self.launcher_at(point) {
+            self.select_launcher(index);
         }
     }
 
@@ -1034,8 +1038,8 @@ impl Tileception {
             self.media_card_press(card, point);
             return;
         }
-        if let Some(i) = self.launcher_at(point) {
-            self.select_launcher(i);
+        if let Some(index) = self.launcher_at(point) {
+            self.select_launcher(index);
             self.launch_selected(crate::config::Mods::default());
         } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
@@ -1065,15 +1069,15 @@ impl Tileception {
         if !self.launcher.open {
             return Vec::new();
         }
-        let t = &self.theme;
+        let theme = &self.theme;
         let entries = &self.launcher.entries;
         let layout = self.launcher_layout();
         let input = &self.launcher.input;
-        let mut p = Painter::new(self, renderer);
+        let mut painter = Painter::new(self, renderer);
 
         // Fades in while dropping into place.
         let shown = ease_out(self.launcher.opened.elapsed().as_secs_f64() / 0.16);
-        p.alpha = shown as f32;
+        painter.alpha = shown as f32;
         let clock_space = layout.panel.y - self.output_rect().y - 48.0;
         if self.launcher.home && clock_space >= 100.0 {
             // The welcome screen leaves the wallpaper as it is, under a clock.
@@ -1083,83 +1087,84 @@ impl Tileception {
             let scale = (clock_space / 156.0).min(1.0);
             let top = layout.panel.y - 156.0 * scale;
             let shadow = Colour([0.0, 0.0, 0.0, 0.45]);
-            let clock_style = Style::new(t.font_size * 5.4 * scale as f32, t.text).weight(300).align(Align::Centre);
-            let date_style = Style::new(t.font_size * 1.25, t.text.alpha(0.85)).align(Align::Centre);
+            let clock_style =
+                Style::new(theme.font_size * 5.4 * scale as f32, theme.text).weight(300).align(Align::Centre);
+            let date_style = Style::new(theme.font_size * 1.25, theme.text.alpha(0.85)).align(Align::Centre);
             let clock_rect = Rect::new(layout.panel.x, top, layout.panel.w, 96.0 * scale);
             let date_rect = Rect::new(layout.panel.x, top + 96.0 * scale, layout.panel.w, 30.0);
             // A soft shadow keeps the clock readable on any wallpaper.
-            p.text(
+            painter.text(
                 &clock,
                 Rect::new(clock_rect.x + 1.5, clock_rect.y + 2.0, clock_rect.w, clock_rect.h),
                 Style { colour: shadow, ..clock_style },
             );
-            p.text(&clock, clock_rect, clock_style);
-            p.text(
+            painter.text(&clock, clock_rect, clock_style);
+            painter.text(
                 &date,
                 Rect::new(date_rect.x + 1.0, date_rect.y + 1.5, date_rect.w, date_rect.h),
                 Style { colour: shadow, ..date_style },
             );
-            p.text(&date, date_rect, date_style);
+            painter.text(&date, date_rect, date_style);
         } else if !self.launcher.home {
-            p.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
+            painter.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
         }
-        p.offset = (0.0, (shown - 1.0) * 12.0);
-        p.popup(layout.panel);
+        painter.offset = (0.0, (shown - 1.0) * 12.0);
+        painter.popup(layout.panel);
 
         // The search field, glowing softly as the place where typing goes.
-        p.shape(
+        painter.shape(
             layout.field,
             Shape {
                 border_width: 1.0,
-                border: t.accent.alpha(0.45),
-                glow_radius: t.glow * 0.6,
-                glow: t.accent.alpha(0.12),
-                ..Shape::filled(t.background, t.radius)
+                border: theme.accent.alpha(0.45),
+                glow_radius: theme.glow * 0.6,
+                glow: theme.accent.alpha(0.12),
+                ..Shape::filled(theme.background, theme.radius)
             },
         );
         let typing = !input.text.is_empty();
         let running = answers::command(&input.text).is_some();
-        p.glyph(
+        painter.glyph(
             if running { glyph::TERMINAL } else { glyph::SEARCH },
             Rect::new(layout.field.x + 8.0, layout.field.y, 28.0, layout.field.h),
             18,
-            if typing { t.accent } else { t.muted },
+            if typing { theme.accent } else { theme.muted },
         );
-        let size = t.font_size * SEARCH_SCALE;
+        let size = theme.font_size * SEARCH_SCALE;
         if !typing {
             let hint = Rect::new(layout.text.x + 4.0, layout.text.y, layout.text.w - 4.0, layout.text.h);
-            p.text("Search, calculate, or > run a command", hint, Style::new(size, t.muted));
+            painter.text("Search, calculate, or > run a command", hint, Style::new(size, theme.muted));
         }
         let field = self.text.borrow_mut().field(
             &input.text,
-            &t.font,
+            &theme.font,
             size,
-            t.text,
+            theme.text,
             layout.text.w as f32,
             crate::text::Field {
                 cursor: input.cursor,
                 anchor: input.anchor,
                 visible: self.launcher.edited.elapsed().as_millis() % 1000 < 600,
-                accent: t.accent.straight_rgba8(),
+                accent: theme.accent.straight_rgba8(),
             },
         );
         if let Some(image) = field {
-            p.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height) / 2.0));
+            painter.image(&image.buffer, (layout.text.x, layout.text.y + (layout.text.h - image.height) / 2.0));
         }
         // The rest of the chosen name, greyed out after what was typed.
         let chosen = match entries.get(self.launcher.selected) {
-            Some(Entry::App(id)) => self.launcher.index.get(id).map(|app| app.name.as_str()),
+            Some(Entry::App(app_id)) => self.launcher.index.get(app_id).map(|app| app.name.as_str()),
             _ => None,
         };
         if let Some(rest) = chosen.and_then(|name| completion(&input.text, name))
             && input.cursor == input.text.len()
             && input.anchor.is_none()
         {
-            let typed = p.measure(&input.text, 4096.0, Style::new(size, t.text)).0;
+            let typed = painter.measure(&input.text, 4096.0, Style::new(size, theme.text)).0;
             let room = layout.text.w - typed - 4.0;
             if room > 24.0 {
-                let at = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
-                p.text(rest, at, Style::new(size, t.muted.alpha(0.8)));
+                let slot = Rect::new(layout.text.x + typed + 1.0, layout.text.y, room, layout.text.h);
+                painter.text(rest, slot, Style::new(size, theme.muted.alpha(0.8)));
             }
         }
 
@@ -1186,7 +1191,7 @@ impl Tileception {
         } else {
             caption.to_string()
         };
-        p.text(&caption, layout.caption, Style::new(t.font_size * 0.85, t.muted).bold());
+        painter.text(&caption, layout.caption, Style::new(theme.font_size * 0.85, theme.muted).bold());
 
         if entries.is_empty() {
             let area = Rect::new(
@@ -1202,32 +1207,32 @@ impl Tileception {
             } else {
                 (glyph::SEARCH, format!("Nothing matches \u{201c}{}\u{201d}", input.text.trim()))
             };
-            p.glyph(icon, Rect::new(area.x + 12.0, area.y, 36.0, area.h), 24, t.muted.alpha(0.7));
-            p.text(
+            painter.glyph(icon, Rect::new(area.x + 12.0, area.y, 36.0, area.h), 24, theme.muted.alpha(0.7));
+            painter.text(
                 &message,
                 Rect::new(area.x + 52.0, area.y, area.w - 68.0, area.h),
-                Style::new(t.font_size, t.muted).align(Align::Centre),
+                Style::new(theme.font_size, theme.muted).align(Align::Centre),
             );
         }
-        for (i, (entry, row)) in entries.iter().skip(layout.first).zip(&layout.rows).enumerate() {
-            let selected = layout.first + i == self.launcher.selected;
+        for (index, (entry, row)) in entries.iter().skip(layout.first).zip(&layout.rows).enumerate() {
+            let selected = layout.first + index == self.launcher.selected;
             if grid {
-                if let Entry::App(id) = entry
-                    && let Some(app) = self.launcher.index.get(id)
+                if let Entry::App(app_id) = entry
+                    && let Some(app) = self.launcher.index.get(app_id)
                 {
-                    self.draw_tile(&mut p, app, *row, selected);
+                    self.draw_tile(&mut painter, app, *row, selected);
                 }
                 continue;
             }
-            self.draw_entry(&mut p, entry, *row, selected);
+            self.draw_entry(&mut painter, entry, *row, selected);
         }
         if let (Some(area), Some(run)) = (layout.output, self.launcher.shown_run()) {
-            self.draw_output(&mut p, area, run);
+            self.draw_output(&mut painter, area, run);
         }
 
         // Keys along the bottom, under a hairline.
         let footer = layout.footer;
-        p.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), t.border, 0.0);
+        painter.fill(Rect::new(footer.x + 1.0, footer.y, footer.w - 2.0, 1.0), theme.border, 0.0);
         let selected = entries.get(self.launcher.selected);
         let enter = match selected {
             Some(Entry::Answer(_)) => "Copy",
@@ -1247,72 +1252,77 @@ impl Tileception {
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
-        p.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
-            p.popup(card.rect);
+            painter.popup(card.rect);
             let pointer = Point::new(self.pointer.x, self.pointer.y);
-            self.draw_media_card(&mut p, card, player, pointer);
+            self.draw_media_card(&mut painter, card, player, pointer);
         }
-        p.finish()
+        painter.finish()
     }
 
     /// One row of results: an icon, a title over a detail line, and on the
     /// right the key that acts on it (Enter when chosen, else its shortcut).
-    fn draw_entry(&self, p: &mut Painter, entry: &Entry, row: Rect, selected: bool) {
-        let t = &self.theme;
+    fn draw_entry(&self, painter: &mut Painter, entry: &Entry, row: Rect, selected: bool) {
+        let theme = &self.theme;
         if selected {
-            p.shape(
+            painter.shape(
                 row,
                 Shape {
-                    radius: t.radius,
-                    fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.06)),
+                    radius: theme.radius,
+                    fill: (theme.accent.alpha(0.20), theme.accent_end.alpha(0.06)),
                     ..Default::default()
                 },
             );
-            p.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(t.accent, 1.5));
+            painter.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(theme.accent, 1.5));
         }
         let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
-        let glyph_box = |p: &mut Painter, glyph: &'static str, colour: Colour| {
-            p.fill(icon, t.surface_raised, t.radius);
-            p.glyph(glyph, icon, 18, colour);
+        let glyph_box = |painter: &mut Painter, glyph: &'static str, colour: Colour| {
+            painter.fill(icon, theme.surface_raised, theme.radius);
+            painter.glyph(glyph, icon, 18, colour);
         };
-        let mut title_style = Style::new(t.font_size * 1.05, if selected { t.text } else { t.text.alpha(0.88) });
+        let mut title_style =
+            Style::new(theme.font_size * 1.05, if selected { theme.text } else { theme.text.alpha(0.88) });
         if selected {
             title_style = title_style.bold();
         }
         let mut right: Option<String> = None;
         let mut copied = false;
         let (title, detail): (String, Option<String>) = match entry {
-            Entry::App(id) => {
-                let Some(app) = self.launcher.index.get(id) else { return };
-                self.draw_app_icon(p, icon, &app.id, app.icon.as_deref(), &app.name);
+            Entry::App(app_id) => {
+                let Some(app) = self.launcher.index.get(app_id) else { return };
+                self.draw_app_icon(painter, icon, &app.id, app.icon.as_deref(), &app.name);
                 (app.name.clone(), subtitle(app).map(str::to_string))
             }
             Entry::Action { app, action } => {
                 let Some(entry) = self.launcher.index.get(app) else { return };
                 let Some(action) = entry.actions.get(*action) else { return };
                 let icon_name = action.icon.as_deref().or(entry.icon.as_deref());
-                self.draw_app_icon(p, icon, &entry.id, icon_name, &entry.name);
+                self.draw_app_icon(painter, icon, &entry.id, icon_name, &entry.name);
                 (action.name.clone(), Some(entry.name.clone()))
             }
-            Entry::Window(id) => {
-                let Some(window) = self.windows.get(id) else { return };
+            Entry::Window(window_id) => {
+                let Some(window) = self.windows.get(window_id) else { return };
                 let app = crate::state::app_id(window);
-                self.draw_app_icon(p, icon, &app, None, &app);
-                let state = if self.world.is_minimized(*id) { "Minimized window" } else { "Open window" };
-                let name = self.launcher.index.get(&format!("{app}.desktop")).map_or(app.clone(), |a| a.name.clone());
+                self.draw_app_icon(painter, icon, &app, None, &app);
+                let state = if self.world.is_minimized(*window_id) { "Minimized window" } else { "Open window" };
+                let name = self
+                    .launcher
+                    .index
+                    .get(&format!("{app}.desktop"))
+                    .map_or(app.clone(), |desktop| desktop.name.clone());
                 (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
             }
-            Entry::Command(i) => {
-                let command = &COMMANDS[*i];
-                glyph_box(p, command.glyph, t.accent);
+            Entry::Command(index) => {
+                let command = &COMMANDS[*index];
+                glyph_box(painter, command.glyph, theme.accent);
                 right = self.shortcut(command.does);
                 let detail = match command.does {
                     Does::Line("terminal") => format!("Opens {}", self.terminal),
                     Does::Line("do-not-disturb") => {
-                        let on = self.do_not_disturb();
-                        format!("Tileception \u{b7} now {}", if on { "on" } else { "off" })
+                        let enabled = self.do_not_disturb();
+                        format!("Tileception \u{b7} now {}", if enabled { "on" } else { "off" })
                     }
                     Does::Power(_) => "Tileception \u{b7} opens the power menu to confirm".into(),
                     _ => "Tileception".into(),
@@ -1321,20 +1331,28 @@ impl Tileception {
             }
             Entry::Answer(answer) => {
                 match answer.look {
-                    Look::Sum => glyph_box(p, glyph::CALCULATOR, t.accent),
-                    Look::Clock => glyph_box(p, glyph::CLOCK, t.accent),
-                    Look::Calendar => glyph_box(p, glyph::CALENDAR, t.accent),
-                    Look::Colour([r, g, b]) => {
-                        let colour = Colour([f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, 1.0]);
-                        p.shape(icon, Shape { border_width: 1.0, border: t.border, ..Shape::filled(colour, t.radius) });
+                    Look::Sum => glyph_box(painter, glyph::CALCULATOR, theme.accent),
+                    Look::Clock => glyph_box(painter, glyph::CLOCK, theme.accent),
+                    Look::Calendar => glyph_box(painter, glyph::CALENDAR, theme.accent),
+                    Look::Colour([red, green, blue]) => {
+                        let colour =
+                            Colour([f32::from(red) / 255.0, f32::from(green) / 255.0, f32::from(blue) / 255.0, 1.0]);
+                        painter.shape(
+                            icon,
+                            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(colour, theme.radius) },
+                        );
                     }
                     Look::Character => {
-                        p.fill(icon, t.surface_raised, t.radius);
-                        p.text(&answer.title, icon, Style::new(t.font_size * 1.3, t.text).align(Align::Centre));
+                        painter.fill(icon, theme.surface_raised, theme.radius);
+                        painter.text(
+                            &answer.title,
+                            icon,
+                            Style::new(theme.font_size * 1.3, theme.text).align(Align::Centre),
+                        );
                     }
                 }
                 copied = self.launcher.just_copied(&answer.copy);
-                title_style = Style::new(t.font_size * 1.15, t.text).bold();
+                title_style = Style::new(theme.font_size * 1.15, theme.text).bold();
                 let title = if answer.look == Look::Character { answer.detail.clone() } else { answer.title.clone() };
                 let detail = if answer.look == Look::Character { None } else { Some(answer.detail.clone()) };
                 (title, detail)
@@ -1347,16 +1365,16 @@ impl Tileception {
                 } else {
                     glyph::FILE
                 };
-                glyph_box(p, glyph, t.accent);
+                glyph_box(painter, glyph, theme.accent);
                 (place.title.clone(), Some(place.detail.clone()))
             }
             Entry::Run(line) => {
-                glyph_box(p, glyph::TERMINAL, t.accent);
+                glyph_box(painter, glyph::TERMINAL, theme.accent);
                 (format!("Run {line}"), Some("Shows the output here; Ctrl+Enter runs it in a terminal".into()))
             }
             Entry::Ask(question) => {
-                glyph_box(p, glyph::CHAT, t.accent);
-                title_style = Style::new(t.font_size * 1.05, t.text).bold();
+                glyph_box(painter, glyph::CHAT, theme.accent);
+                title_style = Style::new(theme.font_size * 1.05, theme.text).bold();
                 ("Ask Tileception".into(), Some(question.clone()))
             }
         };
@@ -1364,57 +1382,71 @@ impl Tileception {
         // What is on the right: "Copied", the Enter key, or a shortcut.
         let mut right_w = 0.0;
         if copied {
-            let label_style = Style::new(t.font_size * 0.9, t.accent).bold();
-            let w = p.measure("Copied", 200.0, label_style).0;
-            let x = row.right() - 12.0 - w;
-            p.text("Copied", Rect::new(x, row.y, w, row.h), label_style);
-            p.glyph(glyph::CHECK, Rect::new(x - 22.0, row.y, 18.0, row.h), 16, t.accent);
-            right_w = w + 28.0;
+            let label_style = Style::new(theme.font_size * 0.9, theme.accent).bold();
+            let width = painter.measure("Copied", 200.0, label_style).0;
+            let left = row.right() - 12.0 - width;
+            painter.text("Copied", Rect::new(left, row.y, width, row.h), label_style);
+            painter.glyph(glyph::CHECK, Rect::new(left - 22.0, row.y, 18.0, row.h), 16, theme.accent);
+            right_w = width + 28.0;
         } else if selected {
-            let w = p.keycap_width("Enter");
-            p.keycap("Enter", row.right() - 12.0 - w, row.y + row.h / 2.0);
-            right_w = w + 4.0;
+            let width = painter.keycap_width("Enter");
+            painter.keycap("Enter", row.right() - 12.0 - width, row.y + row.h / 2.0);
+            right_w = width + 4.0;
         } else if let Some(keys) = &right {
-            let w = p.keycap_width(keys);
-            p.keycap(keys, row.right() - 12.0 - w, row.y + row.h / 2.0);
-            right_w = w + 4.0;
+            let width = painter.keycap_width(keys);
+            painter.keycap(keys, row.right() - 12.0 - width, row.y + row.h / 2.0);
+            right_w = width + 4.0;
         }
         let text_x = icon.right() + 14.0;
         let text_w = row.right() - text_x - 12.0 - right_w - 8.0;
-        match detail.filter(|d| !d.is_empty()) {
+        match detail.filter(|text| !text.is_empty()) {
             Some(detail) => {
-                p.text(&title, Rect::new(text_x, row.y + 7.0, text_w, 22.0), title_style);
-                p.text(&detail, Rect::new(text_x, row.y + 27.0, text_w, 18.0), Style::new(t.font_size * 0.92, t.muted));
+                painter.text(&title, Rect::new(text_x, row.y + 7.0, text_w, 22.0), title_style);
+                painter.text(
+                    &detail,
+                    Rect::new(text_x, row.y + 27.0, text_w, 18.0),
+                    Style::new(theme.font_size * 0.92, theme.muted),
+                );
             }
             None => {
-                p.text(&title, Rect::new(text_x, row.y, text_w, row.h), title_style);
+                painter.text(&title, Rect::new(text_x, row.y, text_w, row.h), title_style);
             }
         }
     }
 
     /// An app's icon, or its initial on the accent when it has none.
-    fn draw_app_icon(&self, p: &mut Painter, at: Rect, app_id: &str, icon: Option<&str>, name: &str) {
-        let t = &self.theme;
+    fn draw_app_icon(&self, painter: &mut Painter, bounds: Rect, app_id: &str, icon: Option<&str>, name: &str) {
+        let theme = &self.theme;
         let image = icon.and_then(|icon| self.launcher.icon(icon, 32)).or_else(|| self.launcher.app_icon(app_id, 32));
         if let Some(image) = image {
-            p.image(&image, (at.x, at.y));
+            painter.image(&image, (bounds.x, bounds.y));
         } else {
-            p.shape(at, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
+            painter.shape(
+                bounds,
+                Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
+            );
             let initial: String = name.chars().take(1).collect::<String>().to_uppercase();
-            p.text(&initial, at, Style::new(t.font_size * 1.2, t.on_accent).bold().align(Align::Centre));
+            painter.text(
+                &initial,
+                bounds,
+                Style::new(theme.font_size * 1.2, theme.on_accent).bold().align(Align::Centre),
+            );
         }
     }
 
     /// What a `>` command printed: the last lines that fit, and how it ended.
-    fn draw_output(&self, p: &mut Painter, area: Rect, run: &Run) {
-        let t = &self.theme;
-        p.shape(area, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
+    fn draw_output(&self, painter: &mut Painter, area: Rect, run: &Run) {
+        let theme = &self.theme;
+        painter.shape(
+            area,
+            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.background, theme.radius) },
+        );
         let inner = Rect::new(area.x + 12.0, area.y + OUTPUT_PAD, area.w - 24.0, area.h - 2.0 * OUTPUT_PAD);
-        let line_style = Style::new(t.font_size * 0.88, t.text.alpha(0.9));
-        let status_style = Style::new(t.font_size * 0.85, t.muted);
+        let line_style = Style::new(theme.font_size * 0.88, theme.text.alpha(0.9));
+        let status_style = Style::new(theme.font_size * 0.85, theme.muted);
         let Some(output) = &run.output else {
             let dots = ".".repeat(1 + (run.started.elapsed().as_millis() / 400 % 3) as usize);
-            p.text(&format!("Running{dots}"), Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
+            painter.text(&format!("Running{dots}"), Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
             return;
         };
         let status = match &output.status {
@@ -1431,11 +1463,11 @@ impl Tileception {
         let start = end.saturating_sub(room);
         let shown = &lines[start..end];
         if lines.is_empty() {
-            p.text("No output", Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
+            painter.text("No output", Rect::new(inner.x, inner.y, inner.w, OUTPUT_LINE_H), status_style);
         }
-        for (i, line) in shown.iter().enumerate() {
-            let at = Rect::new(inner.x, inner.y + i as f64 * OUTPUT_LINE_H, inner.w, OUTPUT_LINE_H);
-            p.text(line, at, line_style);
+        for (index, line) in shown.iter().enumerate() {
+            let line_rect = Rect::new(inner.x, inner.y + index as f64 * OUTPUT_LINE_H, inner.w, OUTPUT_LINE_H);
+            painter.text(line, line_rect, line_style);
         }
         let status = if lines.len() > room {
             format!(
@@ -1446,43 +1478,50 @@ impl Tileception {
         } else {
             status
         };
-        let ok = matches!(output.status, RunStatus::Exited(0));
-        let colour = if ok { t.muted } else { Colour([0.95, 0.55, 0.35, 1.0]) };
+        let succeeded = matches!(output.status, RunStatus::Exited(0));
+        let colour = if succeeded { theme.muted } else { Colour([0.95, 0.55, 0.35, 1.0]) };
         let status_rect = Rect::new(inner.x, inner.bottom() - OUTPUT_LINE_H, inner.w, OUTPUT_LINE_H);
-        p.text(&status, status_rect, Style { colour, ..status_style });
+        painter.text(&status, status_rect, Style { colour, ..status_style });
     }
 
     /// One app on the welcome screen's grid: its icon over its name.
-    fn draw_tile(&self, p: &mut Painter, app: &tileception_apps::App, tile: Rect, selected: bool) {
-        let t = &self.theme;
+    fn draw_tile(&self, painter: &mut Painter, app: &tileception_apps::App, tile: Rect, selected: bool) {
+        let theme = &self.theme;
         let hover = tile.contains(Point::new(self.pointer.x, self.pointer.y));
         if selected {
-            p.shape(
+            painter.shape(
                 tile,
                 Shape {
-                    radius: t.radius,
-                    fill: (t.accent.alpha(0.20), t.accent_end.alpha(0.08)),
+                    radius: theme.radius,
+                    fill: (theme.accent.alpha(0.20), theme.accent_end.alpha(0.08)),
                     border_width: 1.0,
-                    border: t.accent.alpha(0.35),
+                    border: theme.accent.alpha(0.35),
                     ..Default::default()
                 },
             );
         } else if hover {
-            p.fill(tile, t.surface_raised, t.radius);
+            painter.fill(tile, theme.surface_raised, theme.radius);
         }
         let icon = Rect::new(tile.x + (tile.w - 48.0) / 2.0, tile.y + 12.0, 48.0, 48.0);
         if let Some(image) = self.launcher.app_icon(&app.id, 48) {
-            p.image(&image, (icon.x, icon.y));
+            painter.image(&image, (icon.x, icon.y));
         } else {
-            p.shape(icon, Shape { radius: t.radius * 1.5, fill: (t.accent, t.accent_end), ..Default::default() });
+            painter.shape(
+                icon,
+                Shape { radius: theme.radius * 1.5, fill: (theme.accent, theme.accent_end), ..Default::default() },
+            );
             let initial: String = app.name.chars().take(1).collect::<String>().to_uppercase();
-            p.text(&initial, icon, Style::new(t.font_size * 1.6, t.on_accent).bold().align(Align::Centre));
+            painter.text(
+                &initial,
+                icon,
+                Style::new(theme.font_size * 1.6, theme.on_accent).bold().align(Align::Centre),
+            );
         }
         let name = Rect::new(tile.x + 6.0, icon.bottom() + 6.0, tile.w - 12.0, 40.0);
-        let style = Style::new(t.font_size * 0.92, if selected { t.text } else { t.text.alpha(0.88) })
+        let style = Style::new(theme.font_size * 0.92, if selected { theme.text } else { theme.text.alpha(0.88) })
             .align(Align::Centre)
             .lines(2);
-        p.text(&app.name, name, if selected { style.bold() } else { style });
+        painter.text(&app.name, name, if selected { style.bold() } else { style });
     }
 }
 
@@ -1493,7 +1532,7 @@ fn quality(query: &str, text: &str) -> Option<u8> {
         Some(0)
     } else if text.starts_with(query) {
         Some(1)
-    } else if text.split(|c: char| !c.is_alphanumeric()).any(|word| word.starts_with(query)) {
+    } else if text.split(|character: char| !character.is_alphanumeric()).any(|word| word.starts_with(query)) {
         Some(2)
     } else if text.contains(query) {
         Some(3)
@@ -1567,8 +1606,8 @@ fn capture(mut command: std::process::Command, limit: usize, timeout: Duration) 
     };
     let buffer = Arc::new(Mutex::new((Vec::new(), false)));
     let pipes: Vec<Box<dyn Read + Send>> = [
-        child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
-        child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+        child.stdout.take().map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+        child.stderr.take().map(|stream| Box::new(stream) as Box<dyn Read + Send>),
     ]
     .into_iter()
     .flatten()
@@ -1581,14 +1620,14 @@ fn capture(mut command: std::process::Command, limit: usize, timeout: Duration) 
             // blocks on a full pipe.
             std::thread::spawn(move || {
                 let mut chunk = [0u8; 4096];
-                while let Ok(n) = pipe.read(&mut chunk) {
-                    if n == 0 {
+                while let Ok(count) = pipe.read(&mut chunk) {
+                    if count == 0 {
                         break;
                     }
                     let Ok(mut buffer) = buffer.lock() else { break };
                     let room = limit.saturating_sub(buffer.0.len());
-                    buffer.0.extend_from_slice(&chunk[..n.min(room)]);
-                    buffer.1 |= n > room;
+                    buffer.0.extend_from_slice(&chunk[..count.min(room)]);
+                    buffer.1 |= count > room;
                 }
             })
         })
@@ -1614,7 +1653,7 @@ fn capture(mut command: std::process::Command, limit: usize, timeout: Duration) 
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    let (bytes, truncated) = buffer.lock().map(|b| (b.0.clone(), b.1)).unwrap_or_default();
+    let (bytes, truncated) = buffer.lock().map(|shared| (shared.0.clone(), shared.1)).unwrap_or_default();
     let status = match status {
         None => RunStatus::TimedOut,
         Some(status) => match (status.code(), status.signal()) {
@@ -1640,14 +1679,14 @@ fn kill_group(pid: u32) {
 fn clean_output(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
+    while let Some(character) = chars.next() {
+        match character {
             '\u{1b}' => {
                 // CSI sequences such as ESC [ 1 ; 31 m end in a letter.
                 if chars.peek() == Some(&'[') {
                     chars.next();
-                    for c in chars.by_ref() {
-                        if c.is_ascii_alphabetic() {
+                    for character in chars.by_ref() {
+                        if character.is_ascii_alphabetic() {
                             break;
                         }
                     }
@@ -1655,8 +1694,8 @@ fn clean_output(text: &str) -> String {
             }
             '\r' => {}
             '\t' => out.push_str("    "),
-            c if c.is_control() && c != '\n' => {}
-            c => out.push(c),
+            character if character.is_control() && character != '\n' => {}
+            character => out.push(character),
         }
     }
     out
@@ -1671,7 +1710,7 @@ fn shell_quote(value: &str) -> String {
 fn question_in(typed: &str) -> Option<String> {
     let typed = typed.trim();
     if let Some(rest) = typed.strip_prefix('?') {
-        return Some(rest.trim().to_string()).filter(|q| !q.is_empty());
+        return Some(rest.trim().to_string()).filter(|question| !question.is_empty());
     }
     (typed.ends_with('?') || typed.split_whitespace().count() >= 3).then(|| typed.to_string())
 }
@@ -1683,22 +1722,22 @@ fn completion<'a>(typed: &str, name: &'a str) -> Option<&'a str> {
     }
     let mut rest = name.char_indices();
     for typed in typed.chars() {
-        let (_, c) = rest.next()?;
-        if !c.to_lowercase().eq(typed.to_lowercase()) {
+        let (_, character) = rest.next()?;
+        if !character.to_lowercase().eq(typed.to_lowercase()) {
             return None;
         }
     }
-    let at = rest.next().map(|(i, _)| i)?;
-    Some(&name[at..])
+    let offset = rest.next().map(|(index, _)| index)?;
+    Some(&name[offset..])
 }
 
 /// A short description under the name: the generic name, or else the comment.
 fn subtitle(app: &tileception_apps::App) -> Option<&str> {
     app.generic_name
         .as_deref()
-        .filter(|g| !g.is_empty() && !g.eq_ignore_ascii_case(&app.name))
+        .filter(|generic| !generic.is_empty() && !generic.eq_ignore_ascii_case(&app.name))
         .or(app.comment.as_deref())
-        .filter(|s| !s.is_empty())
+        .filter(|text| !text.is_empty())
 }
 
 /// The largest image `copy-image` takes.

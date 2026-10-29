@@ -87,7 +87,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorWatch {
         let mut message = Message(String::new());
         event.record(&mut message);
         if let Ok(mut last) = LAST_ERROR.lock() {
-            let seq = last.as_ref().map_or(1, |(n, _)| n + 1);
+            let seq = last.as_ref().map_or(1, |(seq, _)| seq + 1);
             *last = Some((seq, message.0.chars().take(400).collect()));
         }
     }
@@ -95,7 +95,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorWatch {
 
 /// An error not yet asked about: its number and text.
 fn unseen_error(seen: u64) -> Option<(u64, String)> {
-    LAST_ERROR.lock().ok()?.clone().filter(|(n, _)| *n > seen)
+    LAST_ERROR.lock().ok()?.clone().filter(|(seq, _)| *seq > seen)
 }
 
 pub struct Bar {
@@ -137,8 +137,12 @@ impl Default for Bar {
 
 impl Bar {
     fn reveal_level(&self) -> f64 {
-        let p = (self.changed.elapsed().as_secs_f64() / SLIDE).clamp(0.0, 1.0);
-        if self.revealed { self.level_then + (1.0 - self.level_then) * p } else { self.level_then * (1.0 - p) }
+        let progress = (self.changed.elapsed().as_secs_f64() / SLIDE).clamp(0.0, 1.0);
+        if self.revealed {
+            self.level_then + (1.0 - self.level_then) * progress
+        } else {
+            self.level_then * (1.0 - progress)
+        }
     }
 
     fn set_revealed(&mut self, revealed: bool) {
@@ -167,8 +171,13 @@ impl Default for Calendar {
 
 impl Calendar {
     fn level(&self, duration: f64) -> f64 {
-        let p = if duration <= 0.0 { 1.0 } else { (self.changed.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0) };
-        if self.open { self.level_then + (1.0 - self.level_then) * p } else { self.level_then * (1.0 - p) }
+        let progress =
+            if duration <= 0.0 { 1.0 } else { (self.changed.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0) };
+        if self.open {
+            self.level_then + (1.0 - self.level_then) * progress
+        } else {
+            self.level_then * (1.0 - progress)
+        }
     }
 }
 
@@ -291,18 +300,18 @@ impl Tileception {
     /// Place a bar popover towards the centre of the screen.
     pub(crate) fn bar_popup_y(&self, anchor: Rect, height: f64) -> f64 {
         let screen = self.output_rect();
-        let y = if self.bar_at_bottom() { anchor.y - height - 6.0 } else { anchor.bottom() + 6.0 };
-        y.clamp(screen.y + 8.0, (screen.bottom() - height - 8.0).max(screen.y + 8.0))
+        let top = if self.bar_at_bottom() { anchor.y - height - 6.0 } else { anchor.bottom() + 6.0 };
+        top.clamp(screen.y + 8.0, (screen.bottom() - height - 8.0).max(screen.y + 8.0))
     }
 
     /// What the bar takes off its edge of the layout area.
     pub fn bar_reserve(&self, usable: Rect) -> Rect {
-        let h = self.bar.reserved;
-        if h <= 0.0 || usable.h <= h {
+        let reserved = self.bar.reserved;
+        if reserved <= 0.0 || usable.h <= reserved {
             return usable;
         }
-        let y = if self.bar_at_bottom() { usable.y } else { usable.y + h };
-        Rect::new(usable.x, y, usable.w, usable.h - h)
+        let top = if self.bar_at_bottom() { usable.y } else { usable.y + reserved };
+        Rect::new(usable.x, top, usable.w, usable.h - reserved)
     }
 
     /// Follows the camera and the pointer: reserves the edge or gives it to a
@@ -320,9 +329,9 @@ impl Tileception {
             self.bar.reserved = reserved;
             self.update_usable_area();
         }
-        let p = Point::new(self.pointer.x, self.pointer.y);
+        let point = Point::new(self.pointer.x, self.pointer.y);
         let out = self.output_rect();
-        let distance = if self.bar_at_bottom() { out.bottom() - p.y } else { p.y - out.y };
+        let distance = if self.bar_at_bottom() { out.bottom() - point.y } else { point.y - out.y };
         let reveal = mode == Mode::Hairline
             && !self.is_locked()
             && self.move_drag.is_none()
@@ -356,17 +365,17 @@ impl Tileception {
             return None;
         }
         let out = self.output_rect();
-        let y = if self.bar_at_bottom() { out.bottom() - level * BAR_H } else { out.y - (1.0 - level) * BAR_H };
-        Some(Rect::new(out.x, y, out.w, BAR_H))
+        let top = if self.bar_at_bottom() { out.bottom() - level * BAR_H } else { out.y - (1.0 - level) * BAR_H };
+        Some(Rect::new(out.x, top, out.w, BAR_H))
     }
 
     /// Text width without drawing it.
     fn bar_measure(&self, text: &str, style: Style, max: f64) -> f64 {
-        let t = &self.theme;
+        let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &t.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| i.width)
+            .styled(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
+            .map(|rendered| rendered.width)
             .unwrap_or(0.0)
     }
 
@@ -377,15 +386,15 @@ impl Tileception {
     /// The apps in a space, most windows first, then by name.
     fn apps_in(&self, node: NodeId) -> Vec<String> {
         let mut counts: Vec<(String, usize)> = Vec::new();
-        for id in self.world.tree().windows_in(node) {
-            let Some(window) = self.windows.get(&id) else { continue };
+        for window_id in self.world.tree().windows_in(node) {
+            let Some(window) = self.windows.get(&window_id) else { continue };
             let app = crate::state::app_id(window);
-            match counts.iter_mut().find(|(a, _)| *a == app) {
-                Some((_, n)) => *n += 1,
+            match counts.iter_mut().find(|(name, _)| *name == app) {
+                Some((_, count)) => *count += 1,
                 None => counts.push((app, 1)),
             }
         }
-        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        counts.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
         counts.into_iter().map(|(app, _)| app).collect()
     }
 
@@ -397,8 +406,8 @@ impl Tileception {
         let tree = self.world.tree();
         let root = tree.root();
         let saved: Vec<(usize, NodeId)> =
-            (1..=9).filter_map(|slot| self.world.saved_view_node(slot).map(|n| (slot, n))).collect();
-        let slot_of = |node: NodeId| saved.iter().find(|(_, n)| *n == node).map(|(s, _)| *s);
+            (1..=9).filter_map(|slot| self.world.saved_view_node(slot).map(|saved_node| (slot, saved_node))).collect();
+        let slot_of = |node: NodeId| saved.iter().find(|(_, saved_node)| *saved_node == node).map(|(slot, _)| *slot);
         if self.world.in_overview() {
             let windows = tree.windows_in(root).len();
             let label = format!("Overview \u{b7} {windows} window{}", if windows == 1 { "" } else { "s" });
@@ -408,13 +417,18 @@ impl Tileception {
         let mut path = tree.ancestors(framed);
         path.reverse();
         path.into_iter()
-            .filter(|n| *n == root || *n == framed || slot_of(*n).is_some() || self.world.visited(*n))
+            .filter(|ancestor| {
+                *ancestor == root
+                    || *ancestor == framed
+                    || slot_of(*ancestor).is_some()
+                    || self.world.visited(*ancestor)
+            })
             .map(|node| {
                 let look = if node == root {
                     CrumbLook::Root("Everything".to_string())
                 } else if let Node::Tile { views, selected } = tree.node(node) {
-                    let id = views[*selected];
-                    let window = self.windows.get(&id);
+                    let window_id = views[*selected];
+                    let window = self.windows.get(&window_id);
                     CrumbLook::Window {
                         app: window.map(crate::state::app_id).unwrap_or_default(),
                         title: window.map(crate::state::window_title).unwrap_or_default(),
@@ -455,44 +469,44 @@ impl Tileception {
     fn bar_layout(&self) -> Option<Layout> {
         let bar = self.bar_rect()?;
         let style = self.bar_style();
-        let y = bar.y + 2.0;
-        let h = BAR_H - 4.0;
-        let mut x = bar.x + 6.0;
-        let doctor = Rect::new(x, y, 36.0, h);
-        x = doctor.right() + 4.0;
-        let launcher = Rect::new(x, y, 28.0, h);
-        x = launcher.right() + 4.0;
-        let back = Rect::new(x, y, 22.0, h);
-        let forward = Rect::new(back.right(), y, 22.0, h);
+        let top = bar.y + 2.0;
+        let height = BAR_H - 4.0;
+        let mut cursor_x = bar.x + 6.0;
+        let doctor = Rect::new(cursor_x, top, 36.0, height);
+        cursor_x = doctor.right() + 4.0;
+        let launcher = Rect::new(cursor_x, top, 28.0, height);
+        cursor_x = launcher.right() + 4.0;
+        let back = Rect::new(cursor_x, top, 22.0, height);
+        let forward = Rect::new(back.right(), top, 22.0, height);
         let left = forward.right() + 8.0;
 
         // The right side, from the edge inwards.
         let mut right = bar.right() - 6.0;
-        let count = self.notification_status().map_or(0, |(n, _)| n);
+        let count = self.notification_status().map_or(0, |(unread, _)| unread);
         let badge = if count > 0 { 6.0 + self.bar_measure(&count.to_string(), style.bold(), 40.0) } else { 0.0 };
-        let notifications = Rect::new(right - 28.0 - badge, y, 28.0 + badge, h);
+        let notifications = Rect::new(right - 28.0 - badge, top, 28.0 + badge, height);
         right = notifications.x - 4.0;
         let now = LocalTime::now();
-        let clock_text = now.as_ref().map(|n| format!("{}  {}", short_date(n), n.clock())).unwrap_or_default();
+        let clock_text = now.as_ref().map(|time| format!("{}  {}", short_date(time), time.clock())).unwrap_or_default();
         let clock_w = self.bar_measure(&clock_text, style.bold(), 240.0) + 16.0;
-        let clock = Rect::new(right - clock_w, y, clock_w, h);
+        let clock = Rect::new(right - clock_w, top, clock_w, height);
         right = clock.x - 6.0;
         let battery = self.battery.reading.map(|reading| {
             let label = format!("{}%", reading.percent);
             let bolt = if reading.charge == crate::battery::Charge::Charging { 14.0 } else { 0.0 };
-            let w = 34.0 + bolt + self.bar_measure(&label, style, 60.0);
-            let rect = Rect::new(right - w, y, w, h);
+            let width = 34.0 + bolt + self.bar_measure(&label, style, 60.0);
+            let rect = Rect::new(right - width, top, width, height);
             right = rect.x - 4.0;
             (rect, label)
         });
-        let tray = self.tray_slots(&mut right, y, h);
+        let tray = self.tray_slots(&mut right, top, height);
         let mut chips = Vec::new();
         for (kind, label) in self.chip_list() {
-            let w = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
-            if right - w < left + 120.0 {
+            let width = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
+            if right - width < left + 120.0 {
                 break;
             }
-            let rect = Rect::new(right - w, y + 1.0, w, h - 2.0);
+            let rect = Rect::new(right - width, top + 1.0, width, height - 2.0);
             right = rect.x - 4.0;
             chips.push(Chip { kind, label, rect });
         }
@@ -505,12 +519,16 @@ impl Tileception {
         }
         let show_slots = slots_x > left + 80.0;
         let slots: Vec<(usize, Rect)> = if show_slots {
-            (1..=9).map(|n| (n, Rect::new(slots_x + (n - 1) as f64 * SLOT_W, y + 2.0, SLOT_W - 2.0, h - 4.0))).collect()
+            (1..=9)
+                .map(|slot| {
+                    (slot, Rect::new(slots_x + (slot - 1) as f64 * SLOT_W, top + 2.0, SLOT_W - 2.0, height - 4.0))
+                })
+                .collect()
         } else {
             Vec::new()
         };
         let crumbs_end = if show_slots { slots_x - 12.0 } else { right - 8.0 };
-        let crumbs = self.place_crumbs(left, crumbs_end, y, h);
+        let crumbs = self.place_crumbs(left, crumbs_end, top, height);
         Some(Layout {
             bar,
             launcher,
@@ -529,21 +547,21 @@ impl Tileception {
     }
 
     /// Lays the crumbs out from `left`, collapsing the middle of a long path.
-    fn place_crumbs(&self, left: f64, end: f64, y: f64, h: f64) -> Vec<Crumb> {
+    fn place_crumbs(&self, left: f64, end: f64, top: f64, height: f64) -> Vec<Crumb> {
         let mut crumbs = self.crumb_path();
         let separator = 14.0;
         let total = |crumbs: &[Crumb]| -> f64 {
             let last = crumbs.len().saturating_sub(1);
-            crumbs.iter().enumerate().map(|(i, c)| self.crumb_width(c, i == last)).sum::<f64>()
+            crumbs.iter().enumerate().map(|(index, crumb)| self.crumb_width(crumb, index == last)).sum::<f64>()
                 + separator * last as f64
         };
         let room = end - left;
         // Drop crumbs after the root until it fits, keeping the last one.
         while crumbs.len() > 2 && total(&crumbs) > room {
-            let gap_at = crumbs.iter().position(|c| matches!(c.look, CrumbLook::Gap));
+            let gap_at = crumbs.iter().position(|crumb| matches!(crumb.look, CrumbLook::Gap));
             match gap_at {
-                Some(i) if i + 2 < crumbs.len() => {
-                    crumbs.remove(i + 1);
+                Some(index) if index + 2 < crumbs.len() => {
+                    crumbs.remove(index + 1);
                 }
                 Some(_) => break,
                 None => {
@@ -551,12 +569,12 @@ impl Tileception {
                 }
             }
         }
-        let mut x = left;
+        let mut cursor_x = left;
         let last = crumbs.len().saturating_sub(1);
-        for (i, crumb) in crumbs.iter_mut().enumerate() {
-            let w = self.crumb_width(crumb, i == last).min((end - x).max(24.0));
-            crumb.rect = Rect::new(x, y, w, h);
-            x += w + separator;
+        for (index, crumb) in crumbs.iter_mut().enumerate() {
+            let width = self.crumb_width(crumb, index == last).min((end - cursor_x).max(24.0));
+            crumb.rect = Rect::new(cursor_x, top, width, height);
+            cursor_x += width + separator;
         }
         crumbs
     }
@@ -565,8 +583,8 @@ impl Tileception {
     /// clock first.
     fn chip_list(&self) -> Vec<(ChipKind, String)> {
         let mut chips = Vec::new();
-        if let Some((at, sharing)) = self.bar.capture
-            && at.elapsed() < CAPTURE_LINGER
+        if let Some((captured, sharing)) = self.bar.capture
+            && captured.elapsed() < CAPTURE_LINGER
         {
             let label = if sharing { "Sharing screen" } else { "Screen captured" };
             chips.push((ChipKind::Capture, label.to_string()));
@@ -585,8 +603,8 @@ impl Tileception {
         chips
     }
 
-    fn bar_hit(&self, layout: &Layout, p: Point) -> Option<Hit> {
-        if !layout.bar.contains(p) {
+    fn bar_hit(&self, layout: &Layout, point: Point) -> Option<Hit> {
+        if !layout.bar.contains(point) {
             return None;
         }
         let hits = [
@@ -597,21 +615,21 @@ impl Tileception {
             (layout.clock, Hit::Clock),
             (layout.notifications, Hit::Notifications),
         ];
-        if let Some((_, hit)) = hits.iter().find(|(r, _)| r.contains(p)) {
+        if let Some((_, hit)) = hits.iter().find(|(rect, _)| rect.contains(point)) {
             return Some(*hit);
         }
-        if layout.battery.as_ref().is_some_and(|(r, _)| r.contains(p)) {
+        if layout.battery.as_ref().is_some_and(|(rect, _)| rect.contains(point)) {
             return Some(Hit::Battery);
         }
-        if let Some(crumb) = layout.crumbs.iter().find(|c| c.rect.contains(p))
+        if let Some(crumb) = layout.crumbs.iter().find(|crumb| crumb.rect.contains(point))
             && let Some(node) = crumb.node
         {
             return Some(Hit::Crumb(node));
         }
-        if let Some((n, _)) = layout.slots.iter().find(|(_, r)| r.contains(p)) {
-            return Some(Hit::Slot(*n));
+        if let Some((slot, _)) = layout.slots.iter().find(|(_, rect)| rect.contains(point)) {
+            return Some(Hit::Slot(*slot));
         }
-        if let Some(chip) = layout.chips.iter().find(|c| c.rect.contains(p)) {
+        if let Some(chip) = layout.chips.iter().find(|chip| chip.rect.contains(point)) {
             return match chip.kind {
                 ChipKind::Media => Some(Hit::Media),
                 ChipKind::Dnd => Some(Hit::Dnd),
@@ -622,23 +640,23 @@ impl Tileception {
     }
 
     /// Whether the bar (or the open calendar) takes the pointer here.
-    pub fn bar_takes(&self, p: Point) -> bool {
-        if self.overlay_under(p) {
+    pub fn bar_takes(&self, point: Point) -> bool {
+        if self.overlay_under(point) {
             return false;
         }
-        self.tray.open || self.bar.calendar.open || self.bar_rect().is_some_and(|r| r.contains(p))
+        self.tray.open || self.bar.calendar.open || self.bar_rect().is_some_and(|rect| rect.contains(point))
     }
 
     /// Pointer motion over the bar. Returns whether the bar took it.
     pub fn bar_motion(&mut self, pos: SPoint<f64, Logical>, time: u32) -> bool {
         self.update_bar();
-        let p = Point::new(pos.x, pos.y);
+        let point = Point::new(pos.x, pos.y);
         let busy = self.gap_drag.is_some()
             || self.resize_drag.is_some()
             || self.move_drag.is_some()
             || self.selection.anchor.is_some()
             || self.pending_press.is_some();
-        if busy || !self.bar_takes(p) {
+        if busy || !self.bar_takes(point) {
             return false;
         }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -649,15 +667,15 @@ impl Tileception {
 
     /// A button on the bar. Returns whether the bar took it.
     pub fn bar_button(&mut self, button: u32, pressed: bool) -> bool {
-        let p = Point::new(self.pointer.x, self.pointer.y);
+        let point = Point::new(self.pointer.x, self.pointer.y);
         if !pressed {
             return std::mem::take(&mut self.bar.pressed);
         }
-        if self.overlay_under(p) {
+        if self.overlay_under(point) {
             return false;
         }
         if let Some(layout) = self.bar_layout() {
-            if let Some((slot, _)) = layout.tray.iter().find(|(_, rect)| rect.contains(p)) {
+            if let Some((slot, _)) = layout.tray.iter().find(|(_, rect)| rect.contains(point)) {
                 self.bar.pressed = true;
                 self.tray_slot_button(*slot, button);
                 return true;
@@ -672,7 +690,7 @@ impl Tileception {
         if self.bar.calendar.open {
             self.bar.pressed = true;
             if button == crate::input::BTN_LEFT {
-                match self.calendar_hit(p) {
+                match self.calendar_hit(point) {
                     Some(CalendarHit::Previous) => self.bar.calendar.offset -= 1,
                     Some(CalendarHit::Next) => self.bar.calendar.offset += 1,
                     Some(CalendarHit::Today) => self.bar.calendar.offset = 0,
@@ -685,7 +703,7 @@ impl Tileception {
             }
             return true;
         }
-        if !self.bar_takes(p) {
+        if !self.bar_takes(point) {
             return false;
         }
         self.bar.pressed = true;
@@ -693,12 +711,12 @@ impl Tileception {
             return true;
         }
         let Some(layout) = self.bar_layout() else { return true };
-        let Some(hit) = self.bar_hit(&layout, p) else { return true };
+        let Some(hit) = self.bar_hit(&layout, point) else { return true };
         match hit {
             Hit::Launcher => self.shell_launcher(),
             Hit::Doctor => match unseen_error(self.bar.seen_error) {
-                Some((n, message)) => {
-                    self.bar.seen_error = n;
+                Some((seq, message)) => {
+                    self.bar.seen_error = seq;
                     self.ask_doctor(&format!(
                         "Tileception logged this error: \u{201c}{message}\u{201d}. What does it mean, and how do I fix it?"
                     ));
@@ -712,9 +730,9 @@ impl Tileception {
                 self.world.frame(node, now);
                 self.apply_layout();
             }
-            Hit::Slot(n) => {
-                if self.world.has_saved_view(n) {
-                    self.run(Action::RecallView(n));
+            Hit::Slot(slot) => {
+                if self.world.has_saved_view(slot) {
+                    self.run(Action::RecallView(slot));
                 }
             }
             Hit::Media => {
@@ -735,8 +753,8 @@ impl Tileception {
     /// over the calendar it turns the months. `amount` is in wheel notches
     /// (positive is down). Returns whether the bar took it.
     pub fn bar_scroll(&mut self, amount: f64) -> bool {
-        let p = Point::new(self.pointer.x, self.pointer.y);
-        if !self.bar_takes(p) {
+        let point = Point::new(self.pointer.x, self.pointer.y);
+        if !self.bar_takes(point) {
             return false;
         }
         if let Some(layout) = self.bar_layout() {
@@ -760,35 +778,35 @@ impl Tileception {
 
     pub fn open_calendar(&mut self) {
         self.close_tray();
-        let c = &mut self.bar.calendar;
-        if !c.open {
+        let calendar = &mut self.bar.calendar;
+        if !calendar.open {
             let duration = self.world.settings.animation;
-            c.level_then = c.level(duration);
-            c.open = true;
-            c.changed = Instant::now();
-            c.offset = 0;
+            calendar.level_then = calendar.level(duration);
+            calendar.open = true;
+            calendar.changed = Instant::now();
+            calendar.offset = 0;
         }
     }
 
     /// Zooms the calendar back into the clock. Returns whether it was open.
     pub fn close_calendar(&mut self) -> bool {
         let duration = self.world.settings.animation;
-        let c = &mut self.bar.calendar;
-        if !c.open {
+        let calendar = &mut self.bar.calendar;
+        if !calendar.open {
             return false;
         }
-        c.level_then = c.level(duration);
-        c.open = false;
-        c.changed = Instant::now();
+        calendar.level_then = calendar.level(duration);
+        calendar.open = false;
+        calendar.changed = Instant::now();
         true
     }
 
     /// The calendar card at its full size: centred under the bar.
     fn calendar_card(&self) -> Rect {
         let screen = self.world.screen();
-        let w = CALENDAR_W.min(screen.w - 32.0).max(1.0);
-        let h = CALENDAR_H.min(screen.h - 32.0).max(1.0);
-        Rect::new(screen.x + (screen.w - w) / 2.0, screen.y + ((screen.h - h) * 0.3).max(16.0), w, h)
+        let width = CALENDAR_W.min(screen.w - 32.0).max(1.0);
+        let height = CALENDAR_H.min(screen.h - 32.0).max(1.0);
+        Rect::new(screen.x + (screen.w - width) / 2.0, screen.y + ((screen.h - height) * 0.3).max(16.0), width, height)
     }
 
     fn calendar_parts(&self, card: Rect) -> (Rect, Rect, Rect) {
@@ -798,17 +816,17 @@ impl Tileception {
         (month, previous, next)
     }
 
-    fn calendar_hit(&self, p: Point) -> Option<CalendarHit> {
+    fn calendar_hit(&self, point: Point) -> Option<CalendarHit> {
         let card = self.calendar_card();
-        if !card.contains(p) {
+        if !card.contains(point) {
             return None;
         }
         let (month, previous, next) = self.calendar_parts(card);
-        if previous.contains(p) {
+        if previous.contains(point) {
             Some(CalendarHit::Previous)
-        } else if next.contains(p) {
+        } else if next.contains(point) {
             Some(CalendarHit::Next)
-        } else if month.contains(p) && p.x < previous.x {
+        } else if month.contains(point) && point.x < previous.x {
             Some(CalendarHit::Today)
         } else {
             Some(CalendarHit::Card)
@@ -820,28 +838,28 @@ impl Tileception {
         if matches!(mode, Mode::Off | Mode::Covered) || self.is_locked() {
             return Vec::new();
         }
-        let t = &self.theme;
-        let mut p = Painter::new(self, renderer);
+        let theme = &self.theme;
+        let mut painter = Painter::new(self, renderer);
         let layout = self.bar_layout();
         if mode == Mode::Hairline {
             let out = self.output_rect();
-            let y = if self.bar_at_bottom() { out.bottom() - 2.0 } else { out.y };
-            p.fill(Rect::new(out.x, y, out.w, 2.0), t.accent.alpha(0.35), 0.0);
+            let top = if self.bar_at_bottom() { out.bottom() - 2.0 } else { out.y };
+            painter.fill(Rect::new(out.x, top, out.w, 2.0), theme.accent.alpha(0.35), 0.0);
         }
         if let Some(layout) = &layout {
-            self.draw_bar(&mut p, layout, mode);
+            self.draw_bar(&mut painter, layout, mode);
         }
         let duration = self.world.settings.animation;
         let level = ease_out(self.bar.calendar.level(duration));
         if level > 0.001 {
-            let clock = layout.as_ref().map(|l| l.clock).unwrap_or_else(|| {
+            let clock = layout.as_ref().map(|placed| placed.clock).unwrap_or_else(|| {
                 let out = self.output_rect();
-                let y = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
-                Rect::new(out.right() - 120.0, y, 110.0, BAR_H)
+                let top = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+                Rect::new(out.right() - 120.0, top, 110.0, BAR_H)
             });
-            self.draw_calendar(&mut p, clock, level);
+            self.draw_calendar(&mut painter, clock, level);
         }
-        p.finish()
+        painter.finish()
     }
 
     /// Tray popovers float above the shell panels, below overlay clients.
@@ -858,76 +876,92 @@ impl Tileception {
         painter.finish()
     }
 
-    fn draw_bar(&self, p: &mut Painter, layout: &Layout, mode: Mode) {
-        let t = &self.theme;
+    fn draw_bar(&self, painter: &mut Painter, layout: &Layout, mode: Mode) {
+        let theme = &self.theme;
         let bar = layout.bar;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
         let hit = self.bar_hit(layout, pointer);
         let style = self.bar_style();
         if mode == Mode::Hairline {
             // Slid over a window: a shadow towards the layout separates it.
-            p.shape(
+            painter.shape(
                 Rect::new(bar.x, bar.y + if self.bar_at_bottom() { 0.0 } else { 4.0 }, bar.w, bar.h - 4.0),
                 Shape { glow_radius: 16.0, glow: Colour([0.0, 0.0, 0.0, 0.4]), ..Default::default() },
             );
         }
-        p.fill(bar, t.surface, 0.0);
+        painter.fill(bar, theme.surface, 0.0);
         let border_y = if self.bar_at_bottom() { bar.y } else { bar.bottom() - 1.0 };
-        p.fill(Rect::new(bar.x, border_y, bar.w, 1.0), t.border, 0.0);
-        let hover_fill = |p: &mut Painter, rect: Rect, on: bool| {
-            if on {
-                p.fill(rect, t.surface_raised, (t.radius - 1.0).max(2.0));
+        painter.fill(Rect::new(bar.x, border_y, bar.w, 1.0), theme.border, 0.0);
+        let hover_fill = |painter: &mut Painter, rect: Rect, hovered: bool| {
+            if hovered {
+                painter.fill(rect, theme.surface_raised, (theme.radius - 1.0).max(2.0));
             }
         };
 
         // Tide's tile mark is also the mouse entry point to the launcher.
-        hover_fill(p, layout.launcher, hit == Some(Hit::Launcher));
+        hover_fill(painter, layout.launcher, hit == Some(Hit::Launcher));
         let mark_x = layout.launcher.x + 6.0;
         let mark_y = layout.launcher.y + (layout.launcher.h - 16.0) / 2.0;
-        p.fill(Rect::new(mark_x, mark_y, 7.0, 16.0), t.accent, 1.5);
-        p.fill(Rect::new(mark_x + 9.0, mark_y, 7.0, 7.0), t.accent, 1.5);
-        p.fill(Rect::new(mark_x + 9.0, mark_y + 9.0, 7.0, 7.0), t.accent_end, 1.5);
+        painter.fill(Rect::new(mark_x, mark_y, 7.0, 16.0), theme.accent, 1.5);
+        painter.fill(Rect::new(mark_x + 9.0, mark_y, 7.0, 7.0), theme.accent, 1.5);
+        painter.fill(Rect::new(mark_x + 9.0, mark_y + 9.0, 7.0, 7.0), theme.accent_end, 1.5);
 
         // The doctor, with its health light.
         let error = unseen_error(self.bar.seen_error);
-        hover_fill(p, layout.doctor, hit == Some(Hit::Doctor));
-        p.glyph(STETHOSCOPE, Rect::new(layout.doctor.x + 2.0, layout.doctor.y, 22.0, layout.doctor.h), ICON, t.text);
+        hover_fill(painter, layout.doctor, hit == Some(Hit::Doctor));
+        painter.glyph(
+            STETHOSCOPE,
+            Rect::new(layout.doctor.x + 2.0, layout.doctor.y, 22.0, layout.doctor.h),
+            ICON,
+            theme.text,
+        );
         let light = Rect::new(layout.doctor.right() - 9.0, layout.doctor.y + layout.doctor.h / 2.0 - 3.0, 6.0, 6.0);
-        let (colour, glow) =
-            if error.is_some() { (t.warning, t.warning.alpha(0.6)) } else { (t.accent, t.accent.alpha(0.3)) };
-        p.shape(light, Shape { glow_radius: 4.0, glow, ..Shape::filled(colour, 3.0) });
+        let (colour, glow) = if error.is_some() {
+            (theme.warning, theme.warning.alpha(0.6))
+        } else {
+            (theme.accent, theme.accent.alpha(0.3))
+        };
+        painter.shape(light, Shape { glow_radius: 4.0, glow, ..Shape::filled(colour, 3.0) });
 
         for (rect, glyph_, which, enabled) in [
             (layout.back, BACK, Hit::Back, self.world.can_travel(-1)),
             (layout.forward, FORWARD, Hit::Forward, self.world.can_travel(1)),
         ] {
-            hover_fill(p, rect, enabled && hit == Some(which));
-            p.glyph(glyph_, rect, ICON, if enabled { t.text.alpha(0.86) } else { t.muted.alpha(0.5) });
+            hover_fill(painter, rect, enabled && hit == Some(which));
+            painter.glyph(glyph_, rect, ICON, if enabled { theme.text.alpha(0.86) } else { theme.muted.alpha(0.5) });
         }
 
-        self.draw_crumbs(p, layout, hit);
-        self.draw_tray_slots(p, &layout.tray);
+        self.draw_crumbs(painter, layout, hit);
+        self.draw_tray_slots(painter, &layout.tray);
 
         let current = (!self.world.in_overview()).then(|| self.world.framed());
-        for (n, rect) in &layout.slots {
-            let node = self.world.saved_view_node(*n);
+        for (slot, rect) in &layout.slots {
+            let node = self.world.saved_view_node(*slot);
             let here = node.is_some() && node == current;
-            let label = n.to_string();
+            let label = slot.to_string();
             match node {
                 Some(_) => {
-                    let lit = here || hit == Some(Hit::Slot(*n));
-                    p.shape(
+                    let lit = here || hit == Some(Hit::Slot(*slot));
+                    painter.shape(
                         *rect,
                         Shape {
                             border_width: if here { 1.0 } else { 0.0 },
-                            border: t.accent,
-                            ..Shape::filled(if lit { t.accent.alpha(0.32) } else { t.accent.alpha(0.16) }, 4.0)
+                            border: theme.accent,
+                            ..Shape::filled(if lit { theme.accent.alpha(0.32) } else { theme.accent.alpha(0.16) }, 4.0)
                         },
                     );
-                    p.text(&label, *rect, Style::new(t.font_size * 0.78, t.text).bold().align(Align::Centre));
+                    painter.text(
+                        &label,
+                        *rect,
+                        Style::new(theme.font_size * 0.78, theme.text).bold().align(Align::Centre),
+                    );
                 }
                 None => {
-                    p.text(&label, *rect, Style::new(t.font_size * 0.74, t.muted.alpha(0.45)).align(Align::Centre));
+                    painter.text(
+                        &label,
+                        *rect,
+                        Style::new(theme.font_size * 0.74, theme.muted.alpha(0.45)).align(Align::Centre),
+                    );
                 }
             }
         }
@@ -936,16 +970,16 @@ impl Tileception {
             let lit = matches!((chip.kind, hit), (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)));
             let (icon, tint) = match chip.kind {
                 ChipKind::Media => (
-                    match self.media.snapshot.media.active().map(|p| p.status) {
+                    match self.media.snapshot.media.active().map(|player| player.status) {
                         Some(tileception_media::Status::Playing) => glyph::MUSIC,
                         _ => glyph::PAUSE,
                     },
-                    t.accent,
+                    theme.accent,
                 ),
-                ChipKind::Capture => (SCREEN, t.danger),
-                ChipKind::Dnd => (glyph::MOON, t.warning),
+                ChipKind::Capture => (SCREEN, theme.danger),
+                ChipKind::Dnd => (glyph::MOON, theme.warning),
             };
-            p.shape(
+            painter.shape(
                 chip.rect,
                 Shape {
                     border_width: 1.0,
@@ -953,252 +987,291 @@ impl Tileception {
                     ..Shape::filled(if lit { tint.alpha(0.22) } else { tint.alpha(0.1) }, chip.rect.h as f32 / 2.0)
                 },
             );
-            p.glyph(icon, Rect::new(chip.rect.x + 4.0, chip.rect.y, 18.0, chip.rect.h), 13, tint);
+            painter.glyph(icon, Rect::new(chip.rect.x + 4.0, chip.rect.y, 18.0, chip.rect.h), 13, tint);
             let text = Rect::new(chip.rect.x + 24.0, chip.rect.y, chip.rect.w - 30.0, chip.rect.h);
-            p.text(&chip.label, text, Style::new(t.font_size * 0.8, t.text.alpha(0.9)));
+            painter.text(&chip.label, text, Style::new(theme.font_size * 0.8, theme.text.alpha(0.9)));
         }
 
         let calendar = self.bar.calendar.open;
-        hover_fill(p, layout.clock, calendar || hit == Some(Hit::Clock));
-        p.text(&layout.clock_text, layout.clock, style.bold().colour(t.text).align(Align::Centre));
+        hover_fill(painter, layout.clock, calendar || hit == Some(Hit::Clock));
+        painter.text(&layout.clock_text, layout.clock, style.bold().colour(theme.text).align(Align::Centre));
 
         if let (Some((rect, label)), Some(reading)) = (&layout.battery, &self.battery.reading) {
-            hover_fill(p, *rect, hit == Some(Hit::Battery));
-            self.draw_battery(p, *rect, label, reading);
+            hover_fill(painter, *rect, hit == Some(Hit::Battery));
+            self.draw_battery(painter, *rect, label, reading);
         }
 
-        hover_fill(p, layout.notifications, self.notifications.open || hit == Some(Hit::Notifications));
+        hover_fill(painter, layout.notifications, self.notifications.open || hit == Some(Hit::Notifications));
         let dnd = self.notification_status().is_some_and(|(_, dnd)| dnd);
         let bell = Rect::new(layout.notifications.x + 2.0, layout.notifications.y, 24.0, layout.notifications.h);
-        p.glyph(glyph::BELL, bell, ICON, if dnd { t.muted } else { t.text.alpha(0.86) });
-        if let Some((count, _)) = self.notification_status().filter(|(n, _)| *n > 0) {
+        painter.glyph(glyph::BELL, bell, ICON, if dnd { theme.muted } else { theme.text.alpha(0.86) });
+        if let Some((count, _)) = self.notification_status().filter(|(unread, _)| *unread > 0) {
             let label = count.to_string();
-            let w = layout.notifications.right() - bell.right() - 2.0;
+            let width = layout.notifications.right() - bell.right() - 2.0;
             let badge =
-                Rect::new(bell.right() - 4.0, layout.notifications.y + 4.0, w + 2.0, layout.notifications.h - 8.0);
-            p.fill(badge, if dnd { t.muted.alpha(0.4) } else { t.accent }, badge.h as f32 / 2.0);
-            p.text(&label, badge, Style::new(t.font_size * 0.72, t.on_accent).bold().align(Align::Centre));
+                Rect::new(bell.right() - 4.0, layout.notifications.y + 4.0, width + 2.0, layout.notifications.h - 8.0);
+            painter.fill(badge, if dnd { theme.muted.alpha(0.4) } else { theme.accent }, badge.h as f32 / 2.0);
+            painter.text(
+                &label,
+                badge,
+                Style::new(theme.font_size * 0.72, theme.on_accent).bold().align(Align::Centre),
+            );
         }
 
         // Tooltips and previews open towards the layout.
         if hit == Some(Hit::Launcher) {
-            self.bar_tooltip(p, layout.launcher.x, bar, "Launcher", "Search apps and commands (Super)");
+            self.bar_tooltip(painter, layout.launcher.x, bar, "Launcher", "Search apps and commands (Super)");
         }
         if hit == Some(Hit::Doctor) {
             let (title, body) = match &error {
                 Some((_, message)) => ("Something went wrong \u{b7} click to ask about it", message.as_str()),
                 None => ("Doctor", "Ask about settings, shortcuts and apps (Super+/)"),
             };
-            self.bar_tooltip(p, layout.doctor.x, bar, title, body);
+            self.bar_tooltip(painter, layout.doctor.x, bar, title, body);
         }
-        if let Some(Hit::Slot(n)) = hit {
-            self.draw_slot_preview(p, layout, n);
+        if let Some(Hit::Slot(slot)) = hit {
+            self.draw_slot_preview(painter, layout, slot);
         }
         if let (Some(Hit::Battery), Some((rect, _)), Some(reading)) = (hit, &layout.battery, &self.battery.reading) {
-            let x = (rect.x - 80.0).max(bar.x + 6.0);
-            self.bar_tooltip(p, x, bar, "Battery", &reading.describe());
+            let left = (rect.x - 80.0).max(bar.x + 6.0);
+            self.bar_tooltip(painter, left, bar, "Battery", &reading.describe());
         }
     }
 
     /// A small battery filled to the charge, in the border's colour when the
     /// charge gives it one, then the percentage.
-    fn draw_battery(&self, p: &mut Painter, rect: Rect, label: &str, reading: &crate::battery::Reading) {
-        let t = &self.theme;
-        let tint = self.battery_border().unwrap_or(t.text.alpha(0.86));
+    fn draw_battery(&self, painter: &mut Painter, rect: Rect, label: &str, reading: &crate::battery::Reading) {
+        let theme = &self.theme;
+        let tint = self.battery_border().unwrap_or(theme.text.alpha(0.86));
         let mid = rect.y + rect.h / 2.0;
         let body = Rect::new(rect.x + 6.0, mid - 5.5, 20.0, 11.0);
-        p.shape(body, Shape { border_width: 1.5, border: tint, radius: 3.0, ..Default::default() });
-        p.fill(Rect::new(body.right() + 1.0, mid - 2.5, 2.0, 5.0), tint, 1.0);
+        painter.shape(body, Shape { border_width: 1.5, border: tint, radius: 3.0, ..Default::default() });
+        painter.fill(Rect::new(body.right() + 1.0, mid - 2.5, 2.0, 5.0), tint, 1.0);
         let level = f64::from(reading.percent.clamp(4, 100)) / 100.0;
-        p.fill(Rect::new(body.x + 2.5, body.y + 2.5, (body.w - 5.0) * level, body.h - 5.0), tint, 1.0);
-        let mut x = body.right() + 6.0;
+        painter.fill(Rect::new(body.x + 2.5, body.y + 2.5, (body.w - 5.0) * level, body.h - 5.0), tint, 1.0);
+        let mut cursor_x = body.right() + 6.0;
         if reading.charge == crate::battery::Charge::Charging {
-            p.glyph(BOLT, Rect::new(x - 2.0, rect.y, 14.0, rect.h), 12, tint);
-            x += 13.0;
+            painter.glyph(BOLT, Rect::new(cursor_x - 2.0, rect.y, 14.0, rect.h), 12, tint);
+            cursor_x += 13.0;
         }
-        p.text(label, Rect::new(x, rect.y, rect.right() - x, rect.h), self.bar_style().colour(t.text.alpha(0.9)));
+        painter.text(
+            label,
+            Rect::new(cursor_x, rect.y, rect.right() - cursor_x, rect.h),
+            self.bar_style().colour(theme.text.alpha(0.9)),
+        );
     }
 
-    fn draw_crumbs(&self, p: &mut Painter, layout: &Layout, hit: Option<Hit>) {
-        let t = &self.theme;
+    fn draw_crumbs(&self, painter: &mut Painter, layout: &Layout, hit: Option<Hit>) {
+        let theme = &self.theme;
         let style = self.bar_style();
         let last = layout.crumbs.len().saturating_sub(1);
-        for (i, crumb) in layout.crumbs.iter().enumerate() {
-            let r = crumb.rect;
-            if i > 0 {
-                let sep = Rect::new(r.x - 14.0, r.y, 14.0, r.h);
-                p.glyph(glyph::CHEVRON_RIGHT, sep, 11, t.muted.alpha(0.7));
+        for (index, crumb) in layout.crumbs.iter().enumerate() {
+            let rect = crumb.rect;
+            if index > 0 {
+                let sep = Rect::new(rect.x - 14.0, rect.y, 14.0, rect.h);
+                painter.glyph(glyph::CHEVRON_RIGHT, sep, 11, theme.muted.alpha(0.7));
             }
-            let lit = crumb.node.is_some_and(|n| hit == Some(Hit::Crumb(n)));
+            let lit = crumb.node.is_some_and(|node| hit == Some(Hit::Crumb(node)));
             if lit {
-                p.fill(r, t.surface_raised, (t.radius - 1.0).max(2.0));
+                painter.fill(rect, theme.surface_raised, (theme.radius - 1.0).max(2.0));
             }
-            let current = i == last;
-            let colour = if current { t.text } else { t.text.alpha(0.72) };
-            let mut x = r.x + 7.0;
-            let cy = r.y + (r.h - ICON as f64) / 2.0;
-            let end = r.right() - 7.0 - if crumb.slot.is_some() { 18.0 } else { 0.0 };
+            let current = index == last;
+            let colour = if current { theme.text } else { theme.text.alpha(0.72) };
+            let mut cursor_x = rect.x + 7.0;
+            let icon_y = rect.y + (rect.h - ICON as f64) / 2.0;
+            let end = rect.right() - 7.0 - if crumb.slot.is_some() { 18.0 } else { 0.0 };
             match &crumb.look {
                 CrumbLook::Root(label) => {
-                    p.glyph(LAYERS, Rect::new(x - 2.0, r.y, 18.0, r.h), 14, colour);
-                    x += 18.0;
-                    let s = if current { style.bold() } else { style };
-                    p.text(label, Rect::new(x, r.y, end - x, r.h), s.colour(colour));
+                    painter.glyph(LAYERS, Rect::new(cursor_x - 2.0, rect.y, 18.0, rect.h), 14, colour);
+                    cursor_x += 18.0;
+                    let text_style = if current { style.bold() } else { style };
+                    painter.text(label, Rect::new(cursor_x, rect.y, end - cursor_x, rect.h), text_style.colour(colour));
                 }
                 CrumbLook::Window { app, title } => {
-                    self.app_mark(p, app, (x, cy));
-                    x += 22.0;
-                    let s = if current { style.bold() } else { style };
-                    p.text(title, Rect::new(x, r.y, (end - x).max(1.0), r.h), s.colour(colour));
+                    self.app_mark(painter, app, (cursor_x, icon_y));
+                    cursor_x += 22.0;
+                    let text_style = if current { style.bold() } else { style };
+                    painter.text(
+                        title,
+                        Rect::new(cursor_x, rect.y, (end - cursor_x).max(1.0), rect.h),
+                        text_style.colour(colour),
+                    );
                 }
                 CrumbLook::Apps { apps, more } => {
                     for app in apps {
-                        self.app_mark(p, app, (x, cy));
-                        x += 18.0;
+                        self.app_mark(painter, app, (cursor_x, icon_y));
+                        cursor_x += 18.0;
                     }
                     if *more > 0 {
-                        p.text(&format!("+{more}"), Rect::new(x + 2.0, r.y, end - x, r.h), style.colour(t.muted));
+                        painter.text(
+                            &format!("+{more}"),
+                            Rect::new(cursor_x + 2.0, rect.y, end - cursor_x, rect.h),
+                            style.colour(theme.muted),
+                        );
                     }
                 }
                 CrumbLook::Gap => {
-                    p.text("\u{2026}", r, style.colour(t.muted).align(Align::Centre));
+                    painter.text("\u{2026}", rect, style.colour(theme.muted).align(Align::Centre));
                 }
             }
             if let Some(slot) = crumb.slot {
-                let badge = Rect::new(r.right() - 22.0, r.y + 5.0, 15.0, r.h - 10.0);
-                p.fill(badge, t.accent.alpha(0.25), 3.0);
-                p.text(&slot.to_string(), badge, Style::new(t.font_size * 0.7, t.text).bold().align(Align::Centre));
+                let badge = Rect::new(rect.right() - 22.0, rect.y + 5.0, 15.0, rect.h - 10.0);
+                painter.fill(badge, theme.accent.alpha(0.25), 3.0);
+                painter.text(
+                    &slot.to_string(),
+                    badge,
+                    Style::new(theme.font_size * 0.7, theme.text).bold().align(Align::Centre),
+                );
             }
         }
     }
 
     /// An app's icon, or its initial in an accent square.
-    fn app_mark(&self, p: &mut Painter, app: &str, at: (f64, f64)) {
-        let t = &self.theme;
+    fn app_mark(&self, painter: &mut Painter, app: &str, origin: (f64, f64)) {
+        let theme = &self.theme;
         if let Some(icon) = self.launcher.app_icon(app, ICON) {
-            p.image(&icon, at);
+            painter.image(&icon, origin);
             return;
         }
-        let rect = Rect::new(at.0, at.1, ICON as f64, ICON as f64);
+        let rect = Rect::new(origin.0, origin.1, ICON as f64, ICON as f64);
         // Without an icon, apps still tell apart by colour.
-        let fills = [(t.accent, t.accent_end), (t.warning, t.warning), (t.danger, t.danger), (t.accent_end, t.accent)];
-        let hash = app.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
-        p.shape(rect, Shape { radius: 4.0, fill: fills[hash % fills.len()], ..Default::default() });
-        let initial: String = app.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-        p.text(&initial, rect, Style::new(t.font_size * 0.66, t.on_accent).bold().align(Align::Centre));
+        let fills = [
+            (theme.accent, theme.accent_end),
+            (theme.warning, theme.warning),
+            (theme.danger, theme.danger),
+            (theme.accent_end, theme.accent),
+        ];
+        let hash = app.bytes().fold(0usize, |running, byte| running.wrapping_mul(31).wrapping_add(byte as usize));
+        painter.shape(rect, Shape { radius: 4.0, fill: fills[hash % fills.len()], ..Default::default() });
+        let initial: String = app.chars().next().map(|letter| letter.to_uppercase().collect()).unwrap_or_default();
+        painter.text(&initial, rect, Style::new(theme.font_size * 0.66, theme.on_accent).bold().align(Align::Centre));
     }
 
-    pub(crate) fn bar_tooltip(&self, p: &mut Painter, x: f64, anchor: Rect, title: &str, body: &str) {
-        let t = &self.theme;
-        let w = 320.0_f64.min(self.output_rect().w - 16.0);
-        let x = x.min(self.output_rect().right() - w - 8.0).max(8.0);
-        let body_style = Style::new(t.font_size * 0.9, t.muted).lines(4);
-        let (_, body_h) = (0.0, self.bar_measure_height(body, body_style, w - 24.0));
-        let y = self.bar_popup_y(anchor, 40.0 + body_h);
-        let rect = Rect::new(x, y, w, 40.0 + body_h);
-        p.popup(rect);
-        p.text(title, Rect::new(x + 12.0, y + 8.0, w - 24.0, 20.0), Style::new(t.font_size * 0.86, t.text).bold());
-        p.text(body, Rect::new(x + 12.0, y + 30.0, w - 24.0, body_h), body_style);
+    pub(crate) fn bar_tooltip(&self, painter: &mut Painter, preferred_x: f64, anchor: Rect, title: &str, body: &str) {
+        let theme = &self.theme;
+        let width = 320.0_f64.min(self.output_rect().w - 16.0);
+        let left = preferred_x.min(self.output_rect().right() - width - 8.0).max(8.0);
+        let body_style = Style::new(theme.font_size * 0.9, theme.muted).lines(4);
+        let (_, body_h) = (0.0, self.bar_measure_height(body, body_style, width - 24.0));
+        let top = self.bar_popup_y(anchor, 40.0 + body_h);
+        let rect = Rect::new(left, top, width, 40.0 + body_h);
+        painter.popup(rect);
+        painter.text(
+            title,
+            Rect::new(left + 12.0, top + 8.0, width - 24.0, 20.0),
+            Style::new(theme.font_size * 0.86, theme.text).bold(),
+        );
+        painter.text(body, Rect::new(left + 12.0, top + 30.0, width - 24.0, body_h), body_style);
     }
 
     fn bar_measure_height(&self, text: &str, style: Style, max: f64) -> f64 {
-        let t = &self.theme;
+        let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &t.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| i.height)
+            .styled(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
+            .map(|rendered| rendered.height)
             .unwrap_or(0.0)
     }
 
     /// What a saved view frames, drawn small beside its slot.
-    fn draw_slot_preview(&self, p: &mut Painter, layout: &Layout, n: usize) {
-        let Some(node) = self.world.saved_view_node(n) else { return };
+    fn draw_slot_preview(&self, painter: &mut Painter, layout: &Layout, slot_number: usize) {
+        let Some(node) = self.world.saved_view_node(slot_number) else { return };
         let Some(unit) = self.world.layout().rect(node) else { return };
-        let Some((_, slot)) = layout.slots.iter().find(|(s, _)| *s == n) else { return };
+        let Some((_, slot)) = layout.slots.iter().find(|(number, _)| *number == slot_number) else { return };
         // The space as it looks framed from the root, at most 260 by 180.
         let screen = self.world.screen();
         let aspect = (unit.w * screen.w) / (unit.h * screen.h).max(1.0);
-        let (w, h) =
+        let (preview_width, preview_height) =
             if aspect >= 260.0 / 180.0 { (260.0, (260.0 / aspect).round()) } else { ((180.0 * aspect).round(), 180.0) };
-        let x = (slot.x + slot.w / 2.0 - w / 2.0).clamp(8.0, self.output_rect().right() - w - 8.0);
-        let height = h + 16.0 + 24.0;
-        let card = Rect::new(x, self.bar_popup_y(layout.bar, height), w + 16.0, height);
-        p.popup(card);
-        let area = Rect::new(card.x + 8.0, card.y + 8.0, w, h);
-        p.fill(area, self.theme.background, 4.0);
+        let left =
+            (slot.x + slot.w / 2.0 - preview_width / 2.0).clamp(8.0, self.output_rect().right() - preview_width - 8.0);
+        let height = preview_height + 16.0 + 24.0;
+        let card = Rect::new(left, self.bar_popup_y(layout.bar, height), preview_width + 16.0, height);
+        painter.popup(card);
+        let area = Rect::new(card.x + 8.0, card.y + 8.0, preview_width, preview_height);
+        painter.fill(area, self.theme.background, 4.0);
         let tree = self.world.tree();
         for leaf in tree.leaves(node) {
-            let Some(r) = self.world.layout().rect(leaf) else { continue };
+            let Some(leaf_rect) = self.world.layout().rect(leaf) else { continue };
             let Some(window) = tree.shown_windows_in(leaf).first().copied() else { continue };
             let rect = Rect::new(
-                area.x + (r.x - unit.x) / unit.w * area.w,
-                area.y + (r.y - unit.y) / unit.h * area.h,
-                r.w / unit.w * area.w,
-                r.h / unit.h * area.h,
+                area.x + (leaf_rect.x - unit.x) / unit.w * area.w,
+                area.y + (leaf_rect.y - unit.y) / unit.h * area.h,
+                leaf_rect.w / unit.w * area.w,
+                leaf_rect.h / unit.h * area.h,
             )
             .inset(2.0);
-            p.fill(rect, self.theme.surface, 3.0);
+            painter.fill(rect, self.theme.surface, 3.0);
             if let Some(fitted) = self.fit_into(window, rect) {
-                p.window(window, fitted);
+                painter.window(window, fitted);
             }
         }
         let windows = tree.windows_in(node).len();
-        let label = format!("View {n} \u{b7} {windows} window{}", if windows == 1 { "" } else { "s" });
-        let t = &self.theme;
-        p.text(&label, Rect::new(area.x, area.bottom() + 2.0, area.w, 22.0), Style::new(t.font_size * 0.8, t.muted));
+        let label = format!("View {slot_number} \u{b7} {windows} window{}", if windows == 1 { "" } else { "s" });
+        let theme = &self.theme;
+        painter.text(
+            &label,
+            Rect::new(area.x, area.bottom() + 2.0, area.w, 22.0),
+            Style::new(theme.font_size * 0.8, theme.muted),
+        );
     }
 
-    fn fit_into(&self, id: WindowId, area: Rect) -> Option<Rect> {
-        let geo = self.windows.get(&id)?.geometry();
+    fn fit_into(&self, window_id: WindowId, area: Rect) -> Option<Rect> {
+        let geo = self.windows.get(&window_id)?.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
             return None;
         }
-        let (w, h) = (geo.size.w as f64, geo.size.h as f64);
-        let s = (area.w / w).min(area.h / h).min(1.0);
-        Some(Rect::new(area.x + (area.w - w * s) / 2.0, area.y + (area.h - h * s) / 2.0, w * s, h * s))
+        let (width, height) = (geo.size.w as f64, geo.size.h as f64);
+        let scale = (area.w / width).min(area.h / height).min(1.0);
+        Some(Rect::new(
+            area.x + (area.w - width * scale) / 2.0,
+            area.y + (area.h - height * scale) / 2.0,
+            width * scale,
+            height * scale,
+        ))
     }
 
     /// The clock grown into a month, along the same curve the camera uses.
-    fn draw_calendar(&self, p: &mut Painter, clock: Rect, level: f64) {
-        let t = &self.theme;
+    fn draw_calendar(&self, painter: &mut Painter, clock: Rect, level: f64) {
+        let theme = &self.theme;
         let card = self.calendar_card();
         let rect = clock.zoom_lerp(&card, level);
-        let (alpha, offset) = (p.alpha, p.offset);
-        p.fill(self.world.screen(), Colour([0.0, 0.0, 0.0, 0.28 * level as f32]), 0.0);
-        p.popup(rect);
+        let (alpha, offset) = (painter.alpha, painter.offset);
+        painter.fill(self.world.screen(), Colour([0.0, 0.0, 0.0, 0.28 * level as f32]), 0.0);
+        painter.popup(rect);
         // The month fades in once the card is nearly there, and moves with it.
-        p.alpha = alpha * (((level - 0.85) / 0.15).clamp(0.0, 1.0) as f32);
-        let (from, to) = (card.center(), rect.center());
-        p.offset = (offset.0 + to.x - from.x, offset.1 + to.y - from.y);
-        if p.alpha <= 0.0 {
-            (p.alpha, p.offset) = (alpha, offset);
+        painter.alpha = alpha * (((level - 0.85) / 0.15).clamp(0.0, 1.0) as f32);
+        let (from, target) = (card.center(), rect.center());
+        painter.offset = (offset.0 + target.x - from.x, offset.1 + target.y - from.y);
+        if painter.alpha <= 0.0 {
+            (painter.alpha, painter.offset) = (alpha, offset);
             return;
         }
         let Some(now) = LocalTime::now() else { return };
         let pointer = Point::new(self.pointer.x, self.pointer.y);
         let over = self.calendar_hit(pointer);
 
-        p.text(
+        painter.text(
             &now.clock(),
             Rect::new(card.x + 20.0, card.y + 14.0, card.w - 40.0, 46.0),
-            Style::new(t.font_size * 2.6, t.text).weight(300),
+            Style::new(theme.font_size * 2.6, theme.text).weight(300),
         );
-        p.text(
+        painter.text(
             &now.date(),
             Rect::new(card.x + 22.0, card.y + 58.0, card.w - 40.0, 24.0),
-            Style::new(t.font_size, t.muted),
+            Style::new(theme.font_size, theme.muted),
         );
 
         let (year, month) = add_months(now.year, now.month as i32 + 1, self.bar.calendar.offset);
         let (header, previous, next) = self.calendar_parts(card);
         let title = format!("{} {year}", MONTHS[(month - 1) as usize]);
-        let title_style = Style::new(t.font_size * 1.05, t.text).bold();
-        p.text(&title, Rect::new(header.x + 4.0, header.y, header.w - 80.0, header.h), title_style);
+        let title_style = Style::new(theme.font_size * 1.05, theme.text).bold();
+        painter.text(&title, Rect::new(header.x + 4.0, header.y, header.w - 80.0, header.h), title_style);
         for (rect, icon, which) in [(previous, BACK, CalendarHit::Previous), (next, FORWARD, CalendarHit::Next)] {
             if over == Some(which) {
-                p.fill(rect, t.surface_raised, t.radius);
+                painter.fill(rect, theme.surface_raised, theme.radius);
             }
-            p.glyph(icon, rect, ICON, t.text.alpha(0.86));
+            painter.glyph(icon, rect, ICON, theme.text.alpha(0.86));
         }
 
         // Week numbers, then Monday to Sunday.
@@ -1206,49 +1279,50 @@ impl Tileception {
         let cell_w = (card.w - 32.0) / 8.0;
         let cell_h = 34.0;
         let days_y = header.bottom() + 8.0;
-        let small = Style::new(t.font_size * 0.74, t.muted).align(Align::Centre);
-        for (i, name) in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].iter().enumerate() {
-            let cell = Rect::new(grid_x + (i + 1) as f64 * cell_w, days_y, cell_w, 22.0);
-            p.text(name, cell, small.bold());
+        let small = Style::new(theme.font_size * 0.74, theme.muted).align(Align::Centre);
+        for (index, name) in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].iter().enumerate() {
+            let cell = Rect::new(grid_x + (index + 1) as f64 * cell_w, days_y, cell_w, 22.0);
+            painter.text(name, cell, small.bold());
         }
         let first = days_from_civil(year, month, 1);
         let start = first - monday_index(first);
         let today = days_from_civil(now.year, now.month as i32 + 1, now.day);
         for week in 0..6 {
-            let y = days_y + 24.0 + week as f64 * cell_h;
+            let top = days_y + 24.0 + week as f64 * cell_h;
             let monday = start + week * 7;
-            let number = Rect::new(grid_x, y, cell_w, cell_h);
-            p.text(&iso_week(monday).to_string(), number, small.colour(t.muted.alpha(0.6)));
-            for d in 0..7 {
-                let day = monday + d;
-                let (_, m, dom) = civil_from_days(day);
-                let cell = Rect::new(grid_x + (d + 1) as f64 * cell_w, y, cell_w, cell_h);
-                let inside = m == month;
-                let style = Style::new(t.font_size * 0.92, if inside { t.text } else { t.muted.alpha(0.5) })
-                    .align(Align::Centre);
+            let number = Rect::new(grid_x, top, cell_w, cell_h);
+            painter.text(&iso_week(monday).to_string(), number, small.colour(theme.muted.alpha(0.6)));
+            for weekday in 0..7 {
+                let day = monday + weekday;
+                let (_, cell_month, dom) = civil_from_days(day);
+                let cell = Rect::new(grid_x + (weekday + 1) as f64 * cell_w, top, cell_w, cell_h);
+                let inside = cell_month == month;
+                let style =
+                    Style::new(theme.font_size * 0.92, if inside { theme.text } else { theme.muted.alpha(0.5) })
+                        .align(Align::Centre);
                 if day == today {
                     let mark = Rect::new(cell.x + (cell.w - 30.0) / 2.0, cell.y + 2.0, 30.0, 30.0);
-                    p.shape(
+                    painter.shape(
                         mark,
                         Shape {
                             radius: 15.0,
-                            fill: (t.accent, t.accent_end),
-                            glow_radius: t.glow * 0.5,
-                            glow: t.accent.alpha(0.3),
+                            fill: (theme.accent, theme.accent_end),
+                            glow_radius: theme.glow * 0.5,
+                            glow: theme.accent.alpha(0.3),
                             ..Default::default()
                         },
                     );
-                    p.text(&dom.to_string(), cell, style.colour(t.on_accent).bold());
+                    painter.text(&dom.to_string(), cell, style.colour(theme.on_accent).bold());
                 } else {
-                    p.text(
+                    painter.text(
                         &dom.to_string(),
                         cell,
-                        if d >= 5 && inside { style.colour(t.text.alpha(0.7)) } else { style },
+                        if weekday >= 5 && inside { style.colour(theme.text.alpha(0.7)) } else { style },
                     );
                 }
             }
         }
-        (p.alpha, p.offset) = (alpha, offset);
+        (painter.alpha, painter.offset) = (alpha, offset);
     }
 
     /// Starts or stops an outside bar after `[shell] bar` changed, or at startup.
@@ -1307,25 +1381,25 @@ fn add_months(year: i32, month: i32, delta: i32) -> (i32, i32) {
 
 /// Days since 1970-01-01 for a date in the proleptic Gregorian calendar.
 fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
-    let y = i64::from(if month <= 2 { year - 1 } else { year });
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let m = i64::from(month);
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(day) - 1;
+    let adjusted_year = i64::from(if month <= 2 { year - 1 } else { year });
+    let era = adjusted_year.div_euclid(400);
+    let yoe = adjusted_year - era * 400;
+    let month_num = i64::from(month);
+    let doy = (153 * (if month_num > 2 { month_num - 3 } else { month_num + 9 }) + 2) / 5 + i64::from(day) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
 
 /// The date for a day number from [`days_from_civil`].
 fn civil_from_days(days: i64) -> (i32, i32, i32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
+    let shifted_days = days + 719_468;
+    let era = shifted_days.div_euclid(146_097);
+    let doe = shifted_days - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let march_month = (5 * doy + 2) / 153;
+    let day = doy - (153 * march_month + 2) / 5 + 1;
+    let month = if march_month < 10 { march_month + 3 } else { march_month - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     (year as i32, month as i32, day as i32)
 }

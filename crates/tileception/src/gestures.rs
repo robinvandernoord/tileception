@@ -70,7 +70,7 @@ impl TouchpadConfig {
         let _ = device.config_dwt_set_enabled(self.disable_while_typing);
         let _ = device.config_accel_set_speed(self.speed);
         let method = self.click_method().ok().flatten().or_else(|| device.config_click_default_method());
-        if let Some(method) = method.filter(|m| device.config_click_methods().contains(m)) {
+        if let Some(method) = method.filter(|method| device.config_click_methods().contains(method)) {
             let _ = device.config_click_set_method(method);
         }
     }
@@ -129,11 +129,13 @@ pub fn key(fingers: u32, motion: Motion) -> u32 {
 
 impl GestureKey {
     pub fn key(self) -> u32 {
-        let motion = |m| MOTIONS.iter().position(|x| *x == m).unwrap_or(0) as u32;
+        let motion_index = |motion| MOTIONS.iter().position(|candidate| *candidate == motion).unwrap_or(0) as u32;
         match self {
-            GestureKey::Pad(fingers, m) => GESTURE_KEYS + fingers * 8 + motion(m),
-            GestureKey::Touch(fingers, m) => TOUCH_KEYS + fingers * 8 + motion(m),
-            GestureKey::Edge(e) => EDGE_KEYS + EDGES.iter().position(|x| *x == e).unwrap_or(0) as u32,
+            GestureKey::Pad(fingers, motion) => GESTURE_KEYS + fingers * 8 + motion_index(motion),
+            GestureKey::Touch(fingers, motion) => TOUCH_KEYS + fingers * 8 + motion_index(motion),
+            GestureKey::Edge(edge) => {
+                EDGE_KEYS + EDGES.iter().position(|candidate| *candidate == edge).unwrap_or(0) as u32
+            }
         }
     }
 }
@@ -142,7 +144,7 @@ impl GestureKey {
 #[cfg(test)]
 fn decode(key: u32) -> Option<GestureKey> {
     if let Some(offset) = key.checked_sub(EDGE_KEYS) {
-        return EDGES.get(offset as usize).map(|e| GestureKey::Edge(*e));
+        return EDGES.get(offset as usize).map(|edge| GestureKey::Edge(*edge));
     }
     let (touch, offset) = match key.checked_sub(TOUCH_KEYS) {
         Some(offset) => (true, offset),
@@ -160,7 +162,7 @@ fn decode(key: u32) -> Option<GestureKey> {
 /// Parses `Swipe3Left`, `Pinch2In`, `TouchSwipe3Up` or `TouchEdgeTop`. None
 /// when the name is not a gesture.
 pub fn parse_key(name: &str) -> Option<Result<u32, String>> {
-    parse_gesture(name, false).map(|g| g.map(GestureKey::key))
+    parse_gesture(name, false).map(|gesture| gesture.map(GestureKey::key))
 }
 
 /// As `parse_key`, also allowing two-finger touch pinches, which Tileception
@@ -184,7 +186,7 @@ pub fn parse_gesture(name: &str, test: bool) -> Option<Result<GestureKey, String
         Some(rest) => (false, rest),
         None => (true, lower.strip_prefix("pinch")?),
     };
-    let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let digits = rest.find(|character: char| !character.is_ascii_digit()).unwrap_or(rest.len());
     let (count, way) = rest.split_at(digits);
     let motion = match (pinch, way) {
         (false, "left") => Motion::Left,
@@ -207,8 +209,8 @@ pub fn parse_gesture(name: &str, test: bool) -> Option<Result<GestureKey, String
         (true, true) => "TouchPinch3In",
     };
     match count.parse::<u32>() {
-        Ok(n) if (least..=5).contains(&n) => {
-            Some(Ok(if touch { GestureKey::Touch(n, motion) } else { GestureKey::Pad(n, motion) }))
+        Ok(fingers) if (least..=5).contains(&fingers) => {
+            Some(Ok(if touch { GestureKey::Touch(fingers, motion) } else { GestureKey::Pad(fingers, motion) }))
         }
         _ => Some(Err(format!("{name:?}: give {least} to 5 fingers, as in {example}"))),
     }
@@ -250,7 +252,7 @@ impl Tileception {
     }
 
     pub fn touchpad_removed(&mut self, device: &Device) {
-        self.touchpads.retain(|d| d != device);
+        self.touchpads.retain(|candidate| candidate != device);
     }
 
     pub(crate) fn configure_touchpads(&mut self) {
@@ -273,7 +275,10 @@ impl Tileception {
     }
 
     fn gesture_bound(&self, pinch: bool, fingers: u32, mods: Mods) -> bool {
-        MOTIONS.iter().filter(|m| m.is_pinch() == pinch).any(|m| self.config.lookup(mods, key(fingers, *m)).is_some())
+        MOTIONS
+            .iter()
+            .filter(|motion| motion.is_pinch() == pinch)
+            .any(|motion| self.config.lookup(mods, key(fingers, *motion)).is_some())
     }
 
     pub(crate) fn gesture_begin(&mut self, pinch: bool, fingers: u32, mods: Option<Mods>, time: u32) {
@@ -326,9 +331,9 @@ impl Tileception {
                 } else if gesture.pinch {
                     (scale <= PINCH_IN).then_some(Motion::In).or((scale >= PINCH_OUT).then_some(Motion::Out))
                 } else {
-                    let Point { x, y, .. } = gesture.travelled;
-                    (x.hypot(y) >= self.config.file.touchpad.swipe_distance).then(|| {
-                        match (x.abs() > y.abs(), x > 0.0, y > 0.0) {
+                    let Point { x: delta_x, y: delta_y, .. } = gesture.travelled;
+                    (delta_x.hypot(delta_y) >= self.config.file.touchpad.swipe_distance).then(|| {
+                        match (delta_x.abs() > delta_y.abs(), delta_x > 0.0, delta_y > 0.0) {
                             (true, true, _) => Motion::Right,
                             (true, false, _) => Motion::Left,
                             (false, _, true) => Motion::Down,
@@ -405,9 +410,9 @@ impl Tileception {
         }
         .into();
         let target = if motion == Motion::In { 0.6 } else { 1.6 };
-        for i in 1..=STEPS {
-            let scale = 1.0 + (target - 1.0) * f64::from(i) / f64::from(STEPS);
-            self.gesture_update(delta, scale, 0.0, time + i);
+        for index in 1..=STEPS {
+            let scale = 1.0 + (target - 1.0) * f64::from(index) / f64::from(STEPS);
+            self.gesture_update(delta, scale, 0.0, time + index);
         }
         self.gesture_end(false, time + STEPS + 1);
     }

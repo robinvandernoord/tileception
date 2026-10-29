@@ -71,8 +71,8 @@ pub struct FrameData {
     region: Rectangle<i32, Buffer>,
 }
 
-pub fn init_screencopy(dh: &DisplayHandle) {
-    dh.create_global::<Tileception, ZwlrScreencopyManagerV1, _>(3, ());
+pub fn init_screencopy(display_handle: &DisplayHandle) {
+    display_handle.create_global::<Tileception, ZwlrScreencopyManagerV1, _>(3, ());
 }
 
 impl Tileception {
@@ -115,7 +115,7 @@ impl Tileception {
         }
         let mut pending = std::mem::take(&mut self.pending_captures);
         // The duck's own screenshot leaves the duck out, so it has a scene of its own.
-        let duck = pending.extract_if(.., |c| matches!(c.target, CaptureTarget::Duck)).last();
+        let duck = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Duck)).last();
         if let Some(capture) = duck {
             self.duck.hidden = true;
             let scene = self.scene(renderer);
@@ -137,8 +137,8 @@ impl Tileception {
             match capture.target {
                 CaptureTarget::File(path) => match pixels(renderer, &mut texture, &scene, region) {
                     Ok(rgba) => {
-                        let (w, h) = (region.size.w as u32, region.size.h as u32);
-                        match write_png(&path, w, h, &rgba) {
+                        let (width, height) = (region.size.w as u32, region.size.h as u32);
+                        match write_png(&path, width, height, &rgba) {
                             Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
                             Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
                         }
@@ -166,11 +166,12 @@ fn render_scene<T>(renderer: &mut GlesRenderer, buffer: &mut T, scene: &Scene) -
 where
     GlesRenderer: Bind<T>,
 {
-    let mut target = renderer.bind(buffer).map_err(|e| e.to_string())?;
+    let mut target = renderer.bind(buffer).map_err(|err| err.to_string())?;
     let mut damage = OutputDamageTracker::new(scene.size, 1.0, Transform::Normal);
-    let result =
-        damage.render_output(renderer, &mut target, 0, &scene.elements, scene.clear).map_err(|e| format!("{e:?}"))?;
-    result.sync.wait().map_err(|e| format!("{e:?}"))
+    let result = damage
+        .render_output(renderer, &mut target, 0, &scene.elements, scene.clear)
+        .map_err(|err| format!("{err:?}"))?;
+    result.sync.wait().map_err(|err| format!("{err:?}"))
 }
 
 /// Reads a region of the scene as RGBA rows, rendering it into `texture` the
@@ -183,7 +184,7 @@ fn pixels(
 ) -> Result<Vec<u8>, String> {
     let rendered = texture.get_or_insert_with(|| {
         let mut texture: GlesTexture =
-            renderer.create_buffer(Fourcc::Abgr8888, scene.size.into()).map_err(|e| e.to_string())?;
+            renderer.create_buffer(Fourcc::Abgr8888, scene.size.into()).map_err(|err| err.to_string())?;
         render_scene(renderer, &mut texture, scene)?;
         Ok(texture)
     });
@@ -212,34 +213,34 @@ fn read_region(
     texture: &GlesTexture,
     region: Rectangle<i32, Buffer>,
 ) -> Result<Vec<u8>, String> {
-    let mapping = renderer.copy_texture(texture, region, Fourcc::Abgr8888).map_err(|e| e.to_string())?;
+    let mapping = renderer.copy_texture(texture, region, Fourcc::Abgr8888).map_err(|err| err.to_string())?;
     // GL keeps a texture's rows bottom-up; a texture we rendered into is not
     // marked flipped, but its rows still need reversing to read top-down.
     let flipped = !mapping.flipped();
-    let data = renderer.map_texture(&mapping).map_err(|e| e.to_string())?;
+    let data = renderer.map_texture(&mapping).map_err(|err| err.to_string())?;
     let row = region.size.w as usize * 4;
     let rows = region.size.h as usize;
     if data.len() < row * rows {
         return Err("short read".into());
     }
     let mut out = Vec::with_capacity(row * rows);
-    for y in 0..rows {
-        let src = if flipped { rows - 1 - y } else { y };
+    for line in 0..rows {
+        let src = if flipped { rows - 1 - line } else { line };
         out.extend_from_slice(&data[src * row..src * row + row]);
     }
     Ok(out)
 }
 
 /// Copies RGBA rows into a client's XRGB8888 shared memory buffer.
-fn copy_into_shm(buffer: &WlBuffer, w: i32, h: i32, rgba: &[u8]) -> Result<(), String> {
+fn copy_into_shm(buffer: &WlBuffer, width: i32, height: i32, rgba: &[u8]) -> Result<(), String> {
     with_buffer_contents_mut(buffer, |ptr, len, info| {
-        if info.width != w || info.height != h || info.stride < w * 4 {
-            return Err(format!("buffer is {}x{}, expected {w}x{h}", info.width, info.height));
+        if info.width != width || info.height != height || info.stride < width * 4 {
+            return Err(format!("buffer is {}x{}, expected {width}x{height}", info.width, info.height));
         }
         if !matches!(info.format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
             return Err(format!("unsupported format {:?}", info.format));
         }
-        let needed = info.offset as usize + info.stride as usize * h as usize;
+        let needed = info.offset as usize + info.stride as usize * height as usize;
         if needed > len {
             return Err("buffer too small".into());
         }
@@ -248,31 +249,32 @@ fn copy_into_shm(buffer: &WlBuffer, w: i32, h: i32, rgba: &[u8]) -> Result<(), S
         #[allow(unsafe_code, reason = "Smithay exposes the client's mapped SHM buffer as a raw pointer")]
         let dst =
             unsafe { std::slice::from_raw_parts_mut(ptr.add(info.offset as usize), needed - info.offset as usize) };
-        for y in 0..h as usize {
-            let src = &rgba[y * w as usize * 4..(y + 1) * w as usize * 4];
-            let row = &mut dst[y * info.stride as usize..y * info.stride as usize + w as usize * 4];
+        for line in 0..height as usize {
+            let src = &rgba[line * width as usize * 4..(line + 1) * width as usize * 4];
+            let row = &mut dst[line * info.stride as usize..line * info.stride as usize + width as usize * 4];
             // RGBA bytes to little-endian XRGB, which is B G R X in memory.
-            for (d, s) in row.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
-                d[0] = s[2];
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = 255;
+            for (dst_pixel, src_pixel) in row.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
+                dst_pixel[0] = src_pixel[2];
+                dst_pixel[1] = src_pixel[1];
+                dst_pixel[2] = src_pixel[0];
+                dst_pixel[3] = 255;
             }
         }
         Ok(())
     })
-    .map_err(|e| format!("{e:?}"))?
+    .map_err(|err| format!("{err:?}"))?
 }
 
-fn write_png(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+fn write_png(path: &PathBuf, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|err| err.to_string())?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
     // Opaque: the scene has no meaningful alpha.
-    let opaque: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
-    writer.write_image_data(&opaque).map_err(|e| e.to_string())
+    let opaque: Vec<u8> =
+        rgba.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255]).collect();
+    writer.write_image_data(&opaque).map_err(|err| err.to_string())
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
@@ -301,13 +303,16 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
         let full = state.output_region();
         let (frame, region) = match request {
             zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, .. } => (frame, full),
-            zwlr_screencopy_manager_v1::Request::CaptureOutputRegion { frame, x, y, width, height, .. } => {
+            zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
+                frame, x: left, y: top, width, height, ..
+            } => {
                 // Asked for in logical pixels (slurp's), copied in physical ones.
-                let r = crate::render::physical(
-                    &tileception_core::Rect::new(x as f64, y as f64, width as f64, height as f64),
+                let rect = crate::render::physical(
+                    &tileception_core::Rect::new(left as f64, top as f64, width as f64, height as f64),
                     state.scale,
                 );
-                let asked = Rectangle::<i32, Buffer>::new((r.loc.x, r.loc.y).into(), (r.size.w, r.size.h).into());
+                let asked =
+                    Rectangle::<i32, Buffer>::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into());
                 (frame, asked.intersection(full).unwrap_or(full))
             }
             _ => return,

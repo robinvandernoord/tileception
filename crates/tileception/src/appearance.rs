@@ -30,14 +30,14 @@ struct Appearance {
 }
 
 impl Appearance {
-    fn of(theme: &Theme) -> Appearance {
+    fn from_theme(theme: &Theme) -> Appearance {
         let colour_scheme = match theme.colour_scheme {
             ColourScheme::Default => 0,
             ColourScheme::Dark => 1,
             ColourScheme::Light => 2,
         };
-        let [r, g, b, _] = theme.accent.straight_rgba8().map(|c| f64::from(c) / 255.0);
-        Appearance { colour_scheme, accent: (r, g, b) }
+        let [red, green, blue, _] = theme.accent.straight_rgba8().map(|channel| f64::from(channel) / 255.0);
+        Appearance { colour_scheme, accent: (red, green, blue) }
     }
 
     /// The namespace's keys and values.
@@ -85,16 +85,17 @@ struct Settings(Arc<Mutex<Appearance>>);
 impl Settings {
     fn read_all(&self, namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedValue>> {
         let mut all = HashMap::new();
-        if namespaces.is_empty() || namespaces.iter().any(|p| selects(p, NAMESPACE)) {
-            let values = lock(&self.0).values().into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        if namespaces.is_empty() || namespaces.iter().any(|pattern| selects(pattern, NAMESPACE)) {
+            let values = lock(&self.0).values().into_iter().map(|(key, value)| (key.to_string(), value)).collect();
             all.insert(NAMESPACE.to_string(), values);
         }
         all
     }
 
     fn read(&self, namespace: &str, key: &str) -> Result<OwnedValue, Error> {
-        let found =
-            (namespace == NAMESPACE).then(|| lock(&self.0).values().into_iter().find(|(k, _)| *k == key)).flatten();
+        let found = (namespace == NAMESPACE)
+            .then(|| lock(&self.0).values().into_iter().find(|(candidate, _)| *candidate == key))
+            .flatten();
         found.map(|(_, value)| value).ok_or_else(|| Error::NotFound(format!("{namespace} {key}")))
     }
 
@@ -106,14 +107,14 @@ impl Settings {
 
 impl AppearanceService {
     fn start(bus: zbus::blocking::connection::Builder<'_>, theme: &Theme) -> zbus::Result<AppearanceService> {
-        let current = Arc::new(Mutex::new(Appearance::of(theme)));
+        let current = Arc::new(Mutex::new(Appearance::from_theme(theme)));
         let connection = bus.name(NAME)?.serve_at(PATH, Settings(current.clone()))?.build()?;
         Ok(AppearanceService { connection, current })
     }
 
     /// Announces the values that differ from what was served before.
     fn update(&self, theme: &Theme) {
-        let now = Appearance::of(theme);
+        let now = Appearance::from_theme(theme);
         let before = std::mem::replace(&mut *lock(&self.current), now);
         for ((key, value), (_, old)) in now.values().into_iter().zip(before.values()) {
             if value != old {
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn dark_by_default() {
-        let values = Appearance::of(&Theme::default()).values();
+        let values = Appearance::from_theme(&Theme::default()).values();
         assert_eq!(values[0], ("color-scheme", OwnedValue::from(1u32)));
         assert_eq!(values[1].0, "accent-color");
     }

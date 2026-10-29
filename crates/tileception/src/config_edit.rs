@@ -69,23 +69,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
 fn read(path: &Path) -> Result<DocumentMut, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::config::DEFAULT.to_string(),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => crate::config::DEFAULT.to_string(),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    text.parse().map_err(|e| format!("{}: {e}", path.display()))
+    text.parse().map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Writes through a temporary file, so a crash never leaves half a config;
 /// the running compositor reloads it once it changes.
 fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
     let text = doc.to_string();
-    crate::config::Config::parse(&text).map_err(|e| format!("not changed, the result would be invalid: {e}"))?;
+    crate::config::Config::parse(&text)
+        .map_err(|error| format!("not changed, the result would be invalid: {error}"))?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     }
     let tmp = path.with_extension("toml.new");
-    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::write(&tmp, text).map_err(|error| format!("{}: {error}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn split(key: &str) -> Result<(&str, &str), String> {
@@ -119,7 +120,7 @@ fn get(doc: &DocumentMut, key: &str) -> Result<String, String> {
     // The template leaves some settings commented out. Use the same defaults
     // as deserialization, rather than maintaining another list of settings.
     let values = toml::Table::try_from(crate::config::ConfigFile::default())
-        .map_err(|e| format!("cannot read config defaults: {e}"))?;
+        .map_err(|error| format!("cannot read config defaults: {error}"))?;
     values
         .get(section)
         .and_then(|table| table.get(name))
@@ -145,20 +146,20 @@ fn typed(like: Option<&Value>, text: &str, key: &str) -> Result<Value, String> {
     };
     match like {
         Some(Value::Boolean(_)) => match parse("true or false")? {
-            v @ Value::Boolean(_) => Ok(v),
+            value @ Value::Boolean(_) => Ok(value),
             _ => Err(format!("{key} takes true or false, not {text:?}")),
         },
         Some(Value::Integer(_) | Value::Float(_)) => match parse("a number")? {
-            v @ (Value::Integer(_) | Value::Float(_)) => Ok(v),
+            value @ (Value::Integer(_) | Value::Float(_)) => Ok(value),
             _ => Err(format!("{key} takes a number, not {text:?}")),
         },
         Some(Value::Array(_)) => match parse("a list, such as [\"a\", \"b\"]")? {
-            v @ Value::Array(_) => Ok(v),
+            value @ Value::Array(_) => Ok(value),
             _ => Err(format!("{key} takes a list, such as [\"a\", \"b\"], not {text:?}")),
         },
         Some(_) => Ok(Value::from(text)),
         None => match text.parse::<Value>() {
-            Ok(v @ (Value::Boolean(_) | Value::Integer(_) | Value::Float(_) | Value::Array(_))) => Ok(v),
+            Ok(value @ (Value::Boolean(_) | Value::Integer(_) | Value::Float(_) | Value::Array(_))) => Ok(value),
             _ => Ok(Value::from(text)),
         },
     }
@@ -197,11 +198,11 @@ fn add(doc: &mut DocumentMut, key: &str, text: &str) -> Result<bool, String> {
         None => toml_edit::Array::new(),
         Some(_) => return Err(format!("{key} is not a list")),
     };
-    if list.iter().any(|v| v.as_str() == Some(text)) {
+    if list.iter().any(|value| value.as_str() == Some(text)) {
         return Ok(false);
     }
     list.push(text);
-    let decor = lookup(doc, section, name).map(|v| v.decor().clone());
+    let decor = lookup(doc, section, name).map(|value| value.decor().clone());
     let mut value = Value::Array(list);
     if let Some(decor) = decor {
         *value.decor_mut() = decor;

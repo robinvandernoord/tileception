@@ -54,13 +54,14 @@ pub struct BatteryConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BorderLevel {
-    pub at: u32,
+    #[serde(rename = "at")]
+    pub threshold: u32,
     pub colour: String,
 }
 
 impl Default for BatteryConfig {
     fn default() -> Self {
-        let level = |at, colour: &str| BorderLevel { at, colour: colour.into() };
+        let level = |threshold, colour: &str| BorderLevel { threshold, colour: colour.into() };
         Self {
             border: true,
             charging: "#8fd65a".into(),
@@ -90,11 +91,14 @@ impl BatteryConfig {
             "accent" => Ok(theme.accent),
             "warning" => Ok(theme.warning),
             "danger" => Ok(theme.danger),
-            hex => Colour::parse(hex).map_err(|e| format!("[battery] {e}")),
+            hex => Colour::parse(hex).map_err(|err| format!("[battery] {err}")),
         };
-        let mut levels =
-            self.levels.iter().map(|l| Ok((l.at.min(100), colour(&l.colour)?))).collect::<Result<Vec<_>, String>>()?;
-        levels.sort_by_key(|(at, _)| *at);
+        let mut levels = self
+            .levels
+            .iter()
+            .map(|level| Ok((level.threshold.min(100), colour(&level.colour)?)))
+            .collect::<Result<Vec<_>, String>>()?;
+        levels.sort_by_key(|(threshold, _)| *threshold);
         Ok(BorderColours { charging: Some(colour(&self.charging)?), levels })
     }
 }
@@ -105,7 +109,9 @@ impl BorderColours {
         match reading.charge {
             Charge::Charging => self.charging,
             Charge::Plugged => None,
-            Charge::Discharging => self.levels.iter().find(|(at, _)| reading.percent <= *at).map(|(_, c)| *c),
+            Charge::Discharging => {
+                self.levels.iter().find(|(threshold, _)| reading.percent <= *threshold).map(|(_, colour)| *colour)
+            }
         }
     }
 }
@@ -138,9 +144,9 @@ impl Reading {
         if let Some(remaining) = self.remaining.filter(|_| self.charge != Charge::Plugged) {
             let minutes = remaining.as_secs() / 60;
             let time = match (minutes / 60, minutes % 60) {
-                (0, m) => format!("{m} min"),
-                (h, 0) => format!("{h} h"),
-                (h, m) => format!("{h} h {m} min"),
+                (0, mins) => format!("{mins} min"),
+                (hours, 0) => format!("{hours} h"),
+                (hours, mins) => format!("{hours} h {mins} min"),
             };
             text +=
                 &if self.charge == Charge::Charging { format!(", full in {time}") } else { format!(", {time} left") };
@@ -165,7 +171,9 @@ struct Supply {
 }
 
 fn read_supply(dir: &Path) -> Supply {
-    let text = |name: &str| std::fs::read_to_string(dir.join(name)).map(|s| s.trim().to_string()).unwrap_or_default();
+    let text = |name: &str| {
+        std::fs::read_to_string(dir.join(name)).map(|content| content.trim().to_string()).unwrap_or_default()
+    };
     let number = |name: &str| text(name).parse::<i64>().ok().map(i64::unsigned_abs);
     let first = |names: [&str; 2]| names.into_iter().find_map(number);
     Supply {
@@ -184,24 +192,28 @@ fn read_supply(dir: &Path) -> Supply {
 /// The system's batteries taken together. Peripherals (a mouse, a headset)
 /// report `scope = Device` and are left out, as UPower does.
 pub fn read(root: &Path) -> Option<Reading> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(root).ok()?.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    let mut entries: Vec<PathBuf> =
+        std::fs::read_dir(root).ok()?.filter_map(|result| result.ok().map(|entry| entry.path())).collect();
     entries.sort();
-    let supplies: Vec<Supply> = entries.iter().map(|dir| read_supply(dir)).filter(|s| s.scope != "Device").collect();
-    let batteries: Vec<&Supply> = supplies.iter().filter(|s| s.kind == "Battery" && s.present).collect();
+    let supplies: Vec<Supply> =
+        entries.iter().map(|dir| read_supply(dir)).filter(|supply| supply.scope != "Device").collect();
+    let batteries: Vec<&Supply> = supplies.iter().filter(|supply| supply.kind == "Battery" && supply.present).collect();
     if batteries.is_empty() {
         return None;
     }
-    let mains = supplies.iter().any(|s| s.kind != "Battery" && s.online);
+    let mains = supplies.iter().any(|supply| supply.kind != "Battery" && supply.online);
 
     // Energy adds up across two batteries; percentages would not.
     let energy: Option<(u64, u64)> = batteries
         .iter()
-        .map(|b| Some((b.now?, b.full.filter(|f| *f > 0)?)))
-        .try_fold((0, 0), |(now, full), b| b.map(|(n, f)| (now + n, full + f)));
+        .map(|battery| Some((battery.now?, battery.full.filter(|full| *full > 0)?)))
+        .try_fold((0, 0), |(now, full), battery| {
+            battery.map(|(battery_now, battery_full)| (now + battery_now, full + battery_full))
+        });
     let percent = match energy {
         Some((now, full)) => (now * 100 + full / 2) / full,
         None => {
-            let known: Vec<u64> = batteries.iter().filter_map(|b| b.capacity).collect();
+            let known: Vec<u64> = batteries.iter().filter_map(|battery| battery.capacity).collect();
             if known.is_empty() {
                 return None;
             }
@@ -210,7 +222,7 @@ pub fn read(root: &Path) -> Option<Reading> {
     }
     .min(100) as u32;
 
-    let has = |status: &str| batteries.iter().any(|b| b.status == status);
+    let has = |status: &str| batteries.iter().any(|battery| battery.status == status);
     let charge = if has("Charging") {
         Charge::Charging
     } else if has("Discharging") {
@@ -221,7 +233,7 @@ pub fn read(root: &Path) -> Option<Reading> {
         Charge::Discharging
     };
 
-    let rate: u64 = batteries.iter().filter_map(|b| b.rate).sum();
+    let rate: u64 = batteries.iter().filter_map(|battery| battery.rate).sum();
     let remaining = energy.filter(|_| rate > 0).and_then(|(now, full)| {
         let left = match charge {
             Charge::Discharging => now,
@@ -294,7 +306,7 @@ impl Tileception {
         let thread = thread::Builder::new()
             .name("tileception-battery".into())
             .spawn(move || run(&root, &sender, &incoming))
-            .map_err(|e| tracing::error!("could not start the battery worker: {e}"))
+            .map_err(|err| tracing::error!("could not start the battery worker: {err}"))
             .ok();
         self.battery.source = Some(token);
         self.battery.requests = Some(requests);
@@ -341,21 +353,21 @@ impl Tileception {
             }
             return;
         }
-        let alert = ALERTS.iter().rev().find(|(at, ..)| reading.percent <= *at);
-        let Some(&(at, timeout, urgency, summary, body)) = alert else {
+        let alert = ALERTS.iter().rev().find(|(threshold, ..)| reading.percent <= *threshold);
+        let Some(&(threshold, timeout, urgency, summary, body)) = alert else {
             self.battery.alerted = None;
             return;
         };
-        if self.config.file.battery.alerts && self.battery.alerted.is_none_or(|shown| at < shown) {
-            self.battery.alerted = Some(at);
+        if self.config.file.battery.alerts && self.battery.alerted.is_none_or(|shown| threshold < shown) {
+            self.battery.alerted = Some(threshold);
             let summary = format!("{summary} \u{b7} {}%", reading.percent);
             self.battery_request(Request::Notify { summary, body: body.into(), timeout, urgency });
         }
     }
 
     fn battery_hibernate(&mut self, reading: &Reading) {
-        let at = self.config.file.battery.hibernate_at.min(50);
-        let low = at > 0 && reading.charge == Charge::Discharging && reading.percent <= at;
+        let threshold = self.config.file.battery.hibernate_at.min(50);
+        let low = threshold > 0 && reading.charge == Charge::Discharging && reading.percent <= threshold;
         if !low {
             self.battery.hibernating = false;
         } else if !self.battery.hibernating {
@@ -389,8 +401,8 @@ impl Tileception {
         let Some(reading) = &self.battery.reading else { return "no battery\n".into() };
         let border = match self.battery_border() {
             Some(colour) => {
-                let [r, g, b, _] = colour.straight_rgba8();
-                format!("#{r:02x}{g:02x}{b:02x}")
+                let [red, green, blue, _] = colour.straight_rgba8();
+                format!("#{red:02x}{green:02x}{blue:02x}")
             }
             None => "accent".into(),
         };
@@ -472,8 +484,8 @@ impl Bus {
             )
         });
         match reply.and_then(|reply| reply.body().deserialize::<u32>()) {
-            Ok(id) => {
-                self.alert = id;
+            Ok(notification_id) => {
+                self.alert = notification_id;
                 Ok(())
             }
             Err(error) => {
@@ -484,8 +496,8 @@ impl Bus {
     }
 
     fn withdraw(&mut self) -> Result<(), String> {
-        let id = std::mem::take(&mut self.alert);
-        if id == 0 {
+        let notification_id = std::mem::take(&mut self.alert);
+        if notification_id == 0 {
             return Ok(());
         }
         self.session()
@@ -495,7 +507,7 @@ impl Bus {
                     "/org/freedesktop/Notifications",
                     Some("org.freedesktop.Notifications"),
                     "CloseNotification",
-                    &(id,),
+                    &(notification_id,),
                 )
             })
             .map(drop)
@@ -538,7 +550,7 @@ impl Bus {
             ("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles"),
             ("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"),
         ];
-        let bus = self.system().map_err(|e| e.to_string())?.clone();
+        let bus = self.system().map_err(|err| err.to_string())?.clone();
         let get = |name: &str, path: &str, property: &str| -> zbus::Result<OwnedValue> {
             let reply =
                 bus.call_method(Some(name), path, Some("org.freedesktop.DBus.Properties"), "Get", &(name, property))?;
@@ -552,11 +564,14 @@ impl Bus {
         };
         let offered: Vec<HashMap<String, OwnedValue>> = profiles.try_into().unwrap_or_default();
         let has = |profile: &str| {
-            offered.iter().any(|p| p.get("Profile").and_then(|v| <&str>::try_from(v).ok()) == Some(profile))
+            offered
+                .iter()
+                .any(|entry| entry.get("Profile").and_then(|value| <&str>::try_from(value).ok()) == Some(profile))
         };
         // Not every machine has a performance profile.
         let profile = if has(wanted) { wanted } else { "balanced" };
-        let active: String = get(name, path, "ActiveProfile").and_then(|v| Ok(v.try_into()?)).unwrap_or_default();
+        let active: String =
+            get(name, path, "ActiveProfile").and_then(|value| Ok(value.try_into()?)).unwrap_or_default();
         if active == profile {
             return Ok(());
         }
@@ -567,7 +582,7 @@ impl Bus {
             "Set",
             &(name, "ActiveProfile", Value::from(profile)),
         )
-        .map_err(|e| format!("could not switch to the {profile} power profile: {e}"))?;
+        .map_err(|err| format!("could not switch to the {profile} power profile: {err}"))?;
         tracing::info!("power profile: {profile}");
         Ok(())
     }
@@ -650,14 +665,14 @@ mod tests {
     fn border_follows_charge() {
         let theme = Theme::default();
         let colours = BatteryConfig::default().colours(&theme).unwrap();
-        let at = |percent, charge| colours.pick(&Reading { percent, charge, remaining: None });
-        assert_eq!(at(80, Charge::Discharging), None);
-        assert_eq!(at(36, Charge::Discharging), None);
-        assert_eq!(at(35, Charge::Discharging), Some(Colour::parse("#ecd75a").unwrap()));
-        assert_eq!(at(25, Charge::Discharging), Some(theme.warning));
-        assert_eq!(at(3, Charge::Discharging), Some(theme.danger));
-        assert_eq!(at(3, Charge::Charging), Some(Colour::parse("#8fd65a").unwrap()));
-        assert_eq!(at(100, Charge::Plugged), None);
+        let border = |percent, charge| colours.pick(&Reading { percent, charge, remaining: None });
+        assert_eq!(border(80, Charge::Discharging), None);
+        assert_eq!(border(36, Charge::Discharging), None);
+        assert_eq!(border(35, Charge::Discharging), Some(Colour::parse("#ecd75a").unwrap()));
+        assert_eq!(border(25, Charge::Discharging), Some(theme.warning));
+        assert_eq!(border(3, Charge::Discharging), Some(theme.danger));
+        assert_eq!(border(3, Charge::Charging), Some(Colour::parse("#8fd65a").unwrap()));
+        assert_eq!(border(100, Charge::Plugged), None);
         let off = BatteryConfig { border: false, ..Default::default() }.colours(&theme).unwrap();
         assert_eq!(off.pick(&Reading { percent: 3, charge: Charge::Discharging, remaining: None }), None);
         let bad = BatteryConfig { charging: "green".into(), ..Default::default() };

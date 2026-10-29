@@ -69,10 +69,10 @@ enum Mode {
 
 /// The middle of the fingers and their mean distance from it.
 fn shape<'a>(points: impl Iterator<Item = &'a Point<f64, Logical>> + Clone) -> (Point<f64, Logical>, f64) {
-    let n = points.clone().count().max(1) as f64;
-    let sum = points.clone().fold(Point::<f64, Logical>::default(), |acc, p| acc + *p);
-    let centre: Point<f64, Logical> = (sum.x / n, sum.y / n).into();
-    let spread = points.map(|p| (p.x - centre.x).hypot(p.y - centre.y)).sum::<f64>() / n;
+    let count = points.clone().count().max(1) as f64;
+    let sum = points.clone().fold(Point::<f64, Logical>::default(), |acc, point| acc + *point);
+    let centre: Point<f64, Logical> = (sum.x / count, sum.y / count).into();
+    let spread = points.map(|point| (point.x - centre.x).hypot(point.y - centre.y)).sum::<f64>() / count;
     (centre, spread)
 }
 
@@ -86,21 +86,21 @@ impl Tileception {
         if self.is_locked() {
             return self.lock_surface_under(pos);
         }
-        let at = tileception_core::Point::new(pos.x, pos.y);
+        let point = tileception_core::Point::new(pos.x, pos.y);
         let now = self.now();
-        let ours = (self.launcher.open && self.launcher_takes(at))
+        let ours = (self.launcher.open && self.launcher_takes(point))
             || self.power_menu.is_some()
-            || self.doctor_contains(at)
-            || self.notifications_contain(at)
-            || self.bar_takes(at)
-            || self.strip_takes(at)
+            || self.doctor_contains(point)
+            || self.notifications_contain(point)
+            || self.bar_takes(point)
+            || self.strip_takes(point)
             || self.world.in_overview()
             || self.selection.anchor.is_some()
             || self.move_drag.is_some()
             || self.gap_drag.is_some()
             || self.resize_drag.is_some()
             || self.gap_at(pos).is_some()
-            || self.tab_at(at, now).is_some();
+            || self.tab_at(point, now).is_some();
         if ours { None } else { self.surface_under(pos) }
     }
 
@@ -117,8 +117,8 @@ impl Tileception {
             (screen.right() - pos.x, Edge::Right),
         ]
         .into_iter()
-        .filter(|(d, _)| *d < EDGE)
-        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .filter(|(distance, _)| *distance < EDGE)
+        .min_by(|first, second| first.0.total_cmp(&second.0))
         .map(|(_, edge)| edge)
     }
 
@@ -189,7 +189,7 @@ impl Tileception {
 
     /// Takes the fingers on the screen for a gesture, from where they are.
     fn touch_take(&mut self, count: usize) {
-        let (centre, spread) = shape(self.touch.fingers.values().map(|f| &f.now));
+        let (centre, spread) = shape(self.touch.fingers.values().map(|touching| &touching.now));
         self.touch.mode = Some(Mode::Gesture { count, centre, spread });
     }
 
@@ -222,14 +222,18 @@ impl Tileception {
             return;
         }
         let now = self.now();
-        let p = tileception_core::Point::new(pos.x, pos.y);
+        let point = tileception_core::Point::new(pos.x, pos.y);
         self.selection.windows.clear();
         if self.world.is_animating(now) {
             self.world.finish_animation();
         }
-        let under = self.drawn_windows(now).into_iter().find(|d| d.content.contains(p)).map(|d| d.id);
-        if let Some(id) = under.filter(|id| self.world.focus() != Some(*id)) {
-            self.world.focus_window(id, now);
+        let under = self
+            .drawn_windows(now)
+            .into_iter()
+            .find(|drawn| drawn.content.contains(point))
+            .map(|drawn| drawn.window_id);
+        if let Some(window_id) = under.filter(|window_id| self.world.focus() != Some(*window_id)) {
+            self.world.focus_window(window_id, now);
             self.apply_layout();
         }
     }
@@ -240,12 +244,12 @@ impl Tileception {
         let finger = *finger;
         match self.touch.mode {
             Some(Mode::Edge(first, edge)) if first == slot => {
-                let d = finger.now - finger.start;
+                let delta = finger.now - finger.start;
                 let (inward, along) = match edge {
-                    Edge::Top => (d.y, d.x),
-                    Edge::Bottom => (-d.y, d.x),
-                    Edge::Left => (d.x, d.y),
-                    Edge::Right => (-d.x, d.y),
+                    Edge::Top => (delta.y, delta.x),
+                    Edge::Bottom => (-delta.y, delta.x),
+                    Edge::Left => (delta.x, delta.y),
+                    Edge::Right => (-delta.x, delta.y),
                 };
                 if inward >= EDGE_TRAVEL && inward > along.abs() {
                     self.touch.mode = Some(Mode::Done);
@@ -256,7 +260,7 @@ impl Tileception {
                 }
             }
             Some(Mode::Gesture { count, centre, spread }) => {
-                let (now, spread_now) = shape(self.touch.fingers.values().map(|f| &f.now));
+                let (now, spread_now) = shape(self.touch.fingers.values().map(|touching| &touching.now));
                 let ratio = if spread > 1.0 { spread_now / spread } else { 1.0 };
                 let travel = now - centre;
                 let motion = if ratio <= PINCH_IN {
@@ -361,64 +365,64 @@ impl Tileception {
         self.touch.fingers.clear();
     }
 
-    /// Fingers that go down at `from`, move in steps to `to` and lift, all in
+    /// Fingers that go down at `from`, move in steps to `destination` and lift, all in
     /// one frame per step. For scripted tests.
-    fn inject_fingers(&mut self, from: &[(f64, f64)], to: &[(f64, f64)], time: u32) {
+    fn inject_fingers(&mut self, from: &[(f64, f64)], destination: &[(f64, f64)], time: u32) {
         const STEPS: u32 = 8;
         let screen = self.output_rect();
-        let clamp = |(x, y): (f64, f64)| -> Point<f64, Logical> {
-            (x.clamp(screen.x, screen.right() - 1.0), y.clamp(screen.y, screen.bottom() - 1.0)).into()
+        let clamp = |(x_pos, y_pos): (f64, f64)| -> Point<f64, Logical> {
+            (x_pos.clamp(screen.x, screen.right() - 1.0), y_pos.clamp(screen.y, screen.bottom() - 1.0)).into()
         };
-        let slot = |i: usize| TouchSlot::from(Some(i as u32));
-        for (i, p) in from.iter().enumerate() {
-            self.touch_down(slot(i), clamp(*p), time + i as u32);
+        let slot = |index: usize| TouchSlot::from(Some(index as u32));
+        for (index, point) in from.iter().enumerate() {
+            self.touch_down(slot(index), clamp(*point), time + index as u32);
         }
         self.touch_frame();
-        if from != to {
+        if from != destination {
             for step in 1..=STEPS {
-                let t = f64::from(step) / f64::from(STEPS);
-                for (i, (a, b)) in from.iter().zip(to).enumerate() {
-                    let at = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
-                    self.touch_motion(slot(i), clamp(at), time + 10 + step);
+                let progress = f64::from(step) / f64::from(STEPS);
+                for (index, (start, end)) in from.iter().zip(destination).enumerate() {
+                    let position = (start.0 + (end.0 - start.0) * progress, start.1 + (end.1 - start.1) * progress);
+                    self.touch_motion(slot(index), clamp(position), time + 10 + step);
                 }
                 self.touch_frame();
             }
         }
-        for i in 0..from.len() {
-            self.touch_up(slot(i), time + 20 + STEPS);
+        for index in 0..from.len() {
+            self.touch_up(slot(index), time + 20 + STEPS);
         }
         self.touch_frame();
     }
 
     /// One finger: a tap, or a drag to a second point.
-    pub(crate) fn inject_touch(&mut self, from: (f64, f64), to: (f64, f64), time: u32) {
-        self.inject_fingers(&[from], &[to], time);
+    pub(crate) fn inject_touch(&mut self, from: (f64, f64), destination: (f64, f64), time: u32) {
+        self.inject_fingers(&[from], &[destination], time);
     }
 
     /// A touchscreen gesture around the pointer, or in from an edge.
     pub(crate) fn inject_touch_gesture(&mut self, gesture: GestureKey, time: u32) {
         let screen = self.output_rect();
-        let c = (self.pointer.x, self.pointer.y);
+        let centre = (self.pointer.x, self.pointer.y);
         match gesture {
             GestureKey::Edge(edge) => {
-                let (from, to) = match edge {
-                    Edge::Top => ((c.0, screen.y + 2.0), (c.0, screen.y + 150.0)),
-                    Edge::Bottom => ((c.0, screen.bottom() - 2.0), (c.0, screen.bottom() - 150.0)),
-                    Edge::Left => ((screen.x + 2.0, c.1), (screen.x + 150.0, c.1)),
-                    Edge::Right => ((screen.right() - 2.0, c.1), (screen.right() - 150.0, c.1)),
+                let (from, destination) = match edge {
+                    Edge::Top => ((centre.0, screen.y + 2.0), (centre.0, screen.y + 150.0)),
+                    Edge::Bottom => ((centre.0, screen.bottom() - 2.0), (centre.0, screen.bottom() - 150.0)),
+                    Edge::Left => ((screen.x + 2.0, centre.1), (screen.x + 150.0, centre.1)),
+                    Edge::Right => ((screen.right() - 2.0, centre.1), (screen.right() - 150.0, centre.1)),
                 };
-                self.inject_fingers(&[from], &[to], time);
+                self.inject_fingers(&[from], &[destination], time);
             }
             GestureKey::Touch(count, motion) | GestureKey::Pad(count, motion) => {
-                let around = |r: f64, (dx, dy): (f64, f64)| -> Vec<(f64, f64)> {
+                let around = |radius: f64, (offset_x, offset_y): (f64, f64)| -> Vec<(f64, f64)> {
                     (0..count)
-                        .map(|i| {
-                            let a = std::f64::consts::TAU * f64::from(i) / f64::from(count);
-                            (c.0 + dx + r * a.cos(), c.1 + dy + r * a.sin())
+                        .map(|index| {
+                            let angle = std::f64::consts::TAU * f64::from(index) / f64::from(count);
+                            (centre.0 + offset_x + radius * angle.cos(), centre.1 + offset_y + radius * angle.sin())
                         })
                         .collect()
                 };
-                let (from, to) = match motion {
+                let (from, destination) = match motion {
                     Motion::In => (around(150.0, (0.0, 0.0)), around(60.0, (0.0, 0.0))),
                     Motion::Out => (around(60.0, (0.0, 0.0)), around(150.0, (0.0, 0.0))),
                     Motion::Left => (around(60.0, (0.0, 0.0)), around(60.0, (-160.0, 0.0))),
@@ -426,7 +430,7 @@ impl Tileception {
                     Motion::Up => (around(60.0, (0.0, 0.0)), around(60.0, (0.0, -160.0))),
                     Motion::Down => (around(60.0, (0.0, 0.0)), around(60.0, (0.0, 160.0))),
                 };
-                self.inject_fingers(&from, &to, time);
+                self.inject_fingers(&from, &destination, time);
             }
         }
     }

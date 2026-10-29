@@ -82,8 +82,8 @@ pub struct Thumb {
 }
 
 impl Thumb {
-    fn new(rgba: &[u8], (w, h): (u32, u32)) -> Thumb {
-        let size = (w as i32, h as i32);
+    fn new(rgba: &[u8], (width, height): (u32, u32)) -> Thumb {
+        let size = (width as i32, height as i32);
         Thumb { buffer: MemoryRenderBuffer::from_slice(rgba, Fourcc::Abgr8888, size, 1, Transform::Normal, None), size }
     }
 }
@@ -124,7 +124,7 @@ pub enum Message {
     Info(String),
     /// A tool call: what it does and how far it got.
     Tool {
-        id: String,
+        tool_id: String,
         title: String,
         status: String,
     },
@@ -151,11 +151,11 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum AskReply {
     /// The agent's own permission request.
-    Agent { id: serde_json::Value, paths: Vec<PathBuf> },
+    Agent { request_id: serde_json::Value, paths: Vec<PathBuf> },
     /// A file the agent wants to read outside Tileception's places.
-    Read { id: serde_json::Value, path: PathBuf, line: Option<u64>, limit: Option<u64> },
+    Read { request_id: serde_json::Value, path: PathBuf, line: Option<u64>, limit: Option<u64> },
     /// A file the agent wants to write.
-    Write { id: serde_json::Value, path: PathBuf, content: String },
+    Write { request_id: serde_json::Value, path: PathBuf, content: String },
 }
 
 /// What the panel shows in place of the conversation.
@@ -262,7 +262,7 @@ pub struct Doctor {
 impl Default for Doctor {
     fn default() -> Self {
         let saved: Saved =
-            std::fs::read_to_string(saved_path()).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default();
+            std::fs::read_to_string(saved_path()).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
         Self {
             open: false,
             focused: false,
@@ -494,8 +494,8 @@ struct Frame {
 /// A code block's copy button and, for shell, its run button, right to left
 /// in its top bar.
 fn code_buttons(rect: Rect, run: bool) -> (Rect, Option<Rect>) {
-    let y = rect.y + (CODE_BAR - CODE_BUTTON) / 2.0;
-    let copy = Rect::new(rect.right() - 6.0 - CODE_BUTTON, y, CODE_BUTTON, CODE_BUTTON);
+    let top = rect.y + (CODE_BAR - CODE_BUTTON) / 2.0;
+    let copy = Rect::new(rect.right() - 6.0 - CODE_BUTTON, top, CODE_BUTTON, CODE_BUTTON);
     let run = run.then_some(Rect { x: copy.x - 4.0 - CODE_BUTTON, ..copy });
     (copy, run)
 }
@@ -572,13 +572,13 @@ impl Tileception {
                         state.doctor_event(event);
                     }
                 })
-                .map_err(|e| tracing::warn!("doctor events: {e}"))
+                .map_err(|err| tracing::warn!("doctor events: {err}"))
                 .ok()?;
             self.doctor.events = Some((sender, token));
         }
         let sender = Mutex::new(self.doctor.events.as_ref()?.0.clone());
         Some(Arc::new(move |event| {
-            let _ = sender.lock().unwrap_or_else(|p| p.into_inner()).send(event);
+            let _ = sender.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send(event);
         }))
     }
 
@@ -590,8 +590,8 @@ impl Tileception {
     }
 
     fn chosen_agent(&self) -> Option<Agent> {
-        let id = self.doctor.agent.as_ref()?;
-        self.doctor.registry.as_ref()?.as_ref().ok()?.iter().find(|a| &a.id == id).cloned()
+        let agent_id = self.doctor.agent.as_ref()?;
+        self.doctor.registry.as_ref()?.as_ref().ok()?.iter().find(|agent| &agent.agent_id == agent_id).cloned()
     }
 
     /// Starts the chosen agent if it is not running yet.
@@ -643,19 +643,19 @@ impl Tileception {
     }
 
     /// `doctor use <id>`: picks an agent by its registry id.
-    pub fn use_doctor_agent(&mut self, id: String) {
+    pub fn use_doctor_agent(&mut self, agent_id: String) {
         self.open_doctor();
         if !self.doctor.open {
             return;
         }
-        self.pick_agent(id);
+        self.pick_agent(agent_id);
     }
 
-    fn pick_agent(&mut self, id: String) {
-        if self.doctor.agent.as_ref() != Some(&id) {
+    fn pick_agent(&mut self, agent_id: String) {
+        if self.doctor.agent.as_ref() != Some(&agent_id) {
             self.doctor.session = None;
             self.doctor.busy = false;
-            self.doctor.agent = Some(id);
+            self.doctor.agent = Some(agent_id);
             self.save_doctor();
         }
         self.doctor.view = View::Conversation;
@@ -678,7 +678,7 @@ impl Tileception {
         question: String,
         prompt: String,
         png: Arc<[u8]>,
-        (rgba, w, h): (Vec<u8>, u32, u32),
+        (rgba, width, height): (Vec<u8>, u32, u32),
     ) -> Result<usize, &'static str> {
         if self.doctor.busy {
             return Err("I'm still thinking about the last one. It's in the doctor.");
@@ -690,7 +690,7 @@ impl Tileception {
         if self.doctor.registry.is_none() && !self.doctor.loading {
             self.load_registry(false);
         }
-        self.doctor.attachments.push(Attachment { png, thumb: Thumb::new(&rgba, (w, h)) });
+        self.doctor.attachments.push(Attachment { png, thumb: Thumb::new(&rgba, (width, height)) });
         let mark = self.doctor.messages.len();
         if !self.submit_to_doctor(question, prompt) {
             self.doctor.attachments.pop();
@@ -720,7 +720,9 @@ impl Tileception {
         }
         let attachments = std::mem::take(&mut self.doctor.attachments);
         if !attachments.is_empty() {
-            self.doctor.messages.push(Message::Attached(attachments.iter().map(|a| a.thumb.clone()).collect()));
+            self.doctor
+                .messages
+                .push(Message::Attached(attachments.iter().map(|attachment| attachment.thumb.clone()).collect()));
         }
         if !shown.is_empty() {
             self.doctor.messages.push(Message::User(shown));
@@ -742,7 +744,7 @@ impl Tileception {
         let (text, images) = if self.doctor.takes_images == Some(true) {
             let images = attachments
                 .into_iter()
-                .map(|a| tileception_acp::Image { mime: "image/png".into(), data: a.png })
+                .map(|attachment| tileception_acp::Image { mime: "image/png".into(), data: attachment.png })
                 .collect();
             (text, images)
         } else {
@@ -763,7 +765,7 @@ impl Tileception {
                         state.doctor_loaded(loaded);
                     }
                 })
-                .map_err(|e| tracing::warn!("doctor pictures: {e}"))
+                .map_err(|err| tracing::warn!("doctor pictures: {err}"))
                 .ok()?;
             self.doctor.loads = Some((sender, token));
         }
@@ -774,14 +776,16 @@ impl Tileception {
         match loaded {
             Loaded::Picture(url, pixels) => {
                 let picture = match pixels {
-                    Some((rgba, w, h)) => Picture::Ready(Thumb::new(&rgba, (w, h))),
+                    Some((rgba, width, height)) => Picture::Ready(Thumb::new(&rgba, (width, height))),
                     None => Picture::Failed,
                 };
                 self.doctor.pictures.insert(url, picture);
             }
-            Loaded::Attachment(Ok((png, (rgba, w, h)))) => {
+            Loaded::Attachment(Ok((png, (rgba, width, height)))) => {
                 if self.doctor.attachments.len() < MAX_ATTACHMENTS {
-                    self.doctor.attachments.push(Attachment { png: png.into(), thumb: Thumb::new(&rgba, (w, h)) });
+                    self.doctor
+                        .attachments
+                        .push(Attachment { png: png.into(), thumb: Thumb::new(&rgba, (width, height)) });
                 }
             }
             Loaded::Attachment(Err(error)) => self.doctor.messages.push(Message::Note(error)),
@@ -823,7 +827,7 @@ impl Tileception {
 
     /// A link or picture from an answer, in the browser or the app for it.
     fn open_link(&mut self, url: &str) {
-        let known = ["https://", "http://", "mailto:", "file://"].iter().any(|s| url.starts_with(s));
+        let known = ["https://", "http://", "mailto:", "file://"].iter().any(|scheme| url.starts_with(scheme));
         if known || url.starts_with('/') {
             self.spawn("xdg-open", &[url.to_string()]);
         }
@@ -832,72 +836,76 @@ impl Tileception {
     fn doctor_event(&mut self, event: Event) {
         // Questions and files depend on the permission mode.
         let event = match event {
-            Event::Permission { id, title, choices, action } => {
-                self.doctor_permission(id, title, choices, action);
+            Event::Permission { id: request_id, title, choices, action } => {
+                self.doctor_permission(request_id, title, choices, action);
                 self.schedule_render();
                 return;
             }
-            Event::File { id, op } => {
-                self.doctor_file(id, op);
+            Event::File { id: request_id, op: file_op } => {
+                self.doctor_file(request_id, file_op);
                 self.schedule_render();
                 return;
             }
             other => other,
         };
-        let d = &mut self.doctor;
+        let doctor = &mut self.doctor;
         match event {
             Event::Registry(result) => {
-                d.loading = false;
+                doctor.loading = false;
                 // A saved agent that left the registry: choose again.
-                if let (Ok(agents), Some(id), None) = (&result, &d.agent, &d.session)
-                    && !agents.iter().any(|a| &a.id == id)
+                if let (Ok(agents), Some(agent_id), None) = (&result, &doctor.agent, &doctor.session)
+                    && !agents.iter().any(|agent| &agent.agent_id == agent_id)
                 {
-                    d.view = View::Picker;
+                    doctor.view = View::Picker;
                 }
-                d.missing = match &result {
-                    Ok(agents) => agents.iter().filter_map(|a| Some((a.id.clone(), a.missing()?))).collect(),
+                doctor.missing = match &result {
+                    Ok(agents) => {
+                        agents.iter().filter_map(|agent| Some((agent.agent_id.clone(), agent.missing()?))).collect()
+                    }
                     Err(_) => Default::default(),
                 };
-                d.registry = Some(result);
-                if d.view == View::Conversation && (d.open || d.waiting.is_some()) {
+                doctor.registry = Some(result);
+                if doctor.view == View::Conversation && (doctor.open || doctor.waiting.is_some()) {
                     self.ensure_session();
                 }
                 // A question asked while the list loaded, for an agent that did not start.
-                let d = &mut self.doctor;
-                if d.session.is_none() && d.waiting.take().is_some() {
-                    d.busy = false;
-                    d.messages.push(Message::Note("The agent is not available.".into()));
+                let doctor = &mut self.doctor;
+                if doctor.session.is_none() && doctor.waiting.take().is_some() {
+                    doctor.busy = false;
+                    doctor.messages.push(Message::Note("The agent is not available.".into()));
                 }
             }
             Event::Status(status) => {
                 match &status {
                     Status::Failed(error) => {
-                        d.messages.push(Message::Note(error.clone()));
-                        d.waiting = None;
-                        d.session = None;
-                        d.busy = false;
-                        d.options.clear();
-                        d.menu = None;
+                        doctor.messages.push(Message::Note(error.clone()));
+                        doctor.waiting = None;
+                        doctor.session = None;
+                        doctor.busy = false;
+                        doctor.options.clear();
+                        doctor.menu = None;
                     }
                     Status::NeedsLogin(logins) => {
-                        d.busy = false;
-                        d.logins.clone_from(logins);
+                        doctor.busy = false;
+                        doctor.logins.clone_from(logins);
                     }
                     _ => {}
                 }
-                d.status = status;
+                doctor.status = status;
             }
             Event::Text(text) => {
-                match d.messages.last_mut() {
+                match doctor.messages.last_mut() {
                     Some(Message::Agent(last)) => last.push_str(&text),
-                    _ => d.messages.push(Message::Agent(text)),
+                    _ => doctor.messages.push(Message::Agent(text)),
                 }
                 self.load_pictures();
             }
             Event::Thought(_) => {}
-            Event::Tool { id, title, status, .. } => {
-                let existing = d.messages.iter_mut().rev().find_map(|m| match m {
-                    Message::Tool { id: tid, title, status } if *tid == id => Some((title, status)),
+            Event::Tool { id: tool_id, title, status, .. } => {
+                let existing = doctor.messages.iter_mut().rev().find_map(|message| match message {
+                    Message::Tool { tool_id: existing_id, title, status } if *existing_id == tool_id => {
+                        Some((title, status))
+                    }
                     _ => None,
                 });
                 match existing {
@@ -909,8 +917,8 @@ impl Tileception {
                             *old_status = status;
                         }
                     }
-                    None => d.messages.push(Message::Tool {
-                        id,
+                    None => doctor.messages.push(Message::Tool {
+                        tool_id,
                         title: title.unwrap_or_else(|| "Working".into()),
                         status: status.unwrap_or_else(|| "pending".into()),
                     }),
@@ -918,8 +926,8 @@ impl Tileception {
             }
             Event::Permission { .. } | Event::File { .. } => {}
             Event::TurnEnded(reason) => {
-                d.busy = false;
-                d.approved.clear();
+                doctor.busy = false;
+                doctor.approved.clear();
                 let note = match reason.as_str() {
                     "refusal" => Some("The agent declined to answer."),
                     "max_tokens" | "max_turn_requests" => Some("The agent stopped: its answer got too long."),
@@ -927,30 +935,30 @@ impl Tileception {
                     _ => None,
                 };
                 // Not after /clear: the conversation it ended is gone.
-                if let Some(note) = note.filter(|_| !d.messages.is_empty()) {
-                    d.messages.push(Message::Note(note.into()));
+                if let Some(note) = note.filter(|_| !doctor.messages.is_empty()) {
+                    doctor.messages.push(Message::Note(note.into()));
                 }
             }
-            Event::Note(text) => d.messages.push(Message::Note(text)),
+            Event::Note(text) => doctor.messages.push(Message::Note(text)),
             Event::Terminal(program) => self.run_login_terminal(&program),
             Event::Options(options) => {
-                d.options = options;
+                doctor.options = options;
                 // The model chosen before, for a new session too.
-                let wanted = d.agent.as_ref().and_then(|agent| d.models.get(agent));
-                let model = d.options.iter().find(|o| o.is_model());
-                if let (true, Some(wanted), Some(model)) = (std::mem::take(&mut d.restore_model), wanted, model)
+                let wanted = doctor.agent.as_ref().and_then(|agent| doctor.models.get(agent));
+                let model = doctor.options.iter().find(|option| option.is_model());
+                if let (true, Some(wanted), Some(model)) = (std::mem::take(&mut doctor.restore_model), wanted, model)
                     && *wanted != model.current
-                    && model.values.iter().any(|v| v.value == *wanted)
-                    && let Some(session) = &d.session
+                    && model.values.iter().any(|value| value.value == *wanted)
+                    && let Some(session) = &doctor.session
                 {
-                    session.send(Request::SetOption { id: model.id.clone(), value: wanted.clone() });
+                    session.send(Request::SetOption { id: model.option_id.clone(), value: wanted.clone() });
                 }
                 self.sync_agent_mode();
             }
-            Event::Commands(commands) => d.commands = commands,
+            Event::Commands(commands) => doctor.commands = commands,
             Event::Images(takes) => {
-                d.takes_images = Some(takes);
-                if let Some((text, attachments)) = d.waiting.take() {
+                doctor.takes_images = Some(takes);
+                if let Some((text, attachments)) = doctor.waiting.take() {
                     self.prompt_doctor(text, attachments);
                 }
             }
@@ -958,26 +966,26 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn doctor_reply(&self, id: serde_json::Value, result: Result<serde_json::Value, String>) {
+    fn doctor_reply(&self, request_id: serde_json::Value, result: Result<serde_json::Value, String>) {
         if let Some(session) = &self.doctor.session {
-            session.send(Request::Reply { id, result });
+            session.send(Request::Reply { id: request_id, result });
         }
     }
 
     /// The agent's own permission request: decided by the mode, or asked.
     fn doctor_permission(
         &mut self,
-        id: serde_json::Value,
+        request_id: serde_json::Value,
         title: String,
         choices: Vec<Choice>,
         action: tileception_acp::Action,
     ) {
         let paths: Vec<PathBuf> =
-            action.paths.iter().cloned().chain(action.diffs.iter().map(|d| d.0.clone())).collect();
+            action.paths.iter().cloned().chain(action.diffs.iter().map(|change| change.0.clone())).collect();
         if let Some(choice) = doctor_policy::auto_choice(self.doctor.mode, &action, &choices, &doctor_scope()) {
             self.doctor.approved.extend(paths);
             if let Some(session) = &self.doctor.session {
-                session.send(Request::Permission { id, choice: Some(choice) });
+                session.send(Request::Permission { id: request_id, choice: Some(choice) });
             }
             self.doctor.messages.push(Message::Note(format!("Went ahead ({}): {title}", self.doctor.mode.label())));
             return;
@@ -988,7 +996,7 @@ impl Tileception {
             .map(|(_, old, new)| doctor_policy::diff(old.as_deref().unwrap_or(""), new).0)
             .unwrap_or_default();
         self.doctor.messages.push(Message::Ask {
-            reply: AskReply::Agent { id, paths },
+            reply: AskReply::Agent { request_id, paths },
             title,
             choices,
             diff,
@@ -998,22 +1006,22 @@ impl Tileception {
     }
 
     /// A file the agent reads or writes through Tileception.
-    fn doctor_file(&mut self, id: serde_json::Value, op: tileception_acp::FileOp) {
+    fn doctor_file(&mut self, request_id: serde_json::Value, file_op: tileception_acp::FileOp) {
         let scope = doctor_scope();
         let mode = self.doctor.mode;
-        let yes_no = |yes: &str, no: &str| {
+        let yes_no = |yes: &str, decline: &str| {
             vec![
-                Choice { id: "allow".into(), name: yes.into(), kind: "allow_once".into() },
-                Choice { id: "deny".into(), name: no.into(), kind: "reject_once".into() },
+                Choice { choice_id: "allow".into(), name: yes.into(), kind: "allow_once".into() },
+                Choice { choice_id: "deny".into(), name: decline.into(), kind: "reject_once".into() },
             ]
         };
-        match op {
+        match file_op {
             tileception_acp::FileOp::Read { path, line, limit } => {
                 if doctor_policy::may_read(mode, &path, &scope) {
-                    self.doctor_reply(id, read_for_agent(&path, line, limit));
+                    self.doctor_reply(request_id, read_for_agent(&path, line, limit));
                 } else {
                     let title = format!("Read {}", path.display());
-                    let reply = AskReply::Read { id, path, line, limit };
+                    let reply = AskReply::Read { request_id, path, line, limit };
                     let choices = yes_no("Allow", "Deny");
                     self.doctor.messages.push(Message::Ask { reply, title, choices, diff: Vec::new(), answer: None });
                     self.doctor.scroll = 0.0;
@@ -1025,18 +1033,18 @@ impl Tileception {
                     && let Err(error) = crate::config::Config::parse(&content)
                 {
                     self.doctor_reply(
-                        id,
+                        request_id,
                         Err(format!("Tileception would not load this configuration: {error}. Nothing was written.")),
                     );
                     return;
                 }
                 if doctor_policy::may_write(mode, &path, &scope, &self.doctor.approved) {
-                    self.apply_write(id, path, content);
+                    self.apply_write(request_id, path, content);
                 } else {
                     let old = std::fs::read_to_string(&path).unwrap_or_default();
                     let diff = doctor_policy::diff(&old, &content).0;
                     let title = format!("Change {}", path.display());
-                    let reply = AskReply::Write { id, path, content };
+                    let reply = AskReply::Write { request_id, path, content };
                     let choices = yes_no("Apply", "Reject");
                     self.doctor.messages.push(Message::Ask { reply, title, choices, diff, answer: None });
                     self.doctor.scroll = 0.0;
@@ -1046,24 +1054,24 @@ impl Tileception {
     }
 
     /// Writes a file for the agent, keeping a copy of what was there.
-    fn apply_write(&mut self, id: serde_json::Value, path: PathBuf, content: String) {
+    fn apply_write(&mut self, request_id: serde_json::Value, path: PathBuf, content: String) {
         let old = std::fs::read_to_string(&path).unwrap_or_default();
         let result = doctor_policy::backup(&path, &backups_dir()).and_then(|backup| {
             if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
             }
-            std::fs::write(&path, &content).map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(&path, &content).map_err(|err| format!("{}: {err}", path.display()))?;
             Ok(backup)
         });
         match result {
             Ok(backup) => {
                 let (_, added, removed) = doctor_policy::diff(&old, &content);
                 self.doctor.messages.push(Message::Changed { path, backup, added, removed, undone: false });
-                self.doctor_reply(id, Ok(serde_json::json!({})));
+                self.doctor_reply(request_id, Ok(serde_json::json!({})));
             }
             Err(error) => {
                 self.doctor.messages.push(Message::Note(format!("Could not save: {error}")));
-                self.doctor_reply(id, Err(error));
+                self.doctor_reply(request_id, Err(error));
             }
         }
     }
@@ -1098,17 +1106,19 @@ impl Tileception {
     /// mode for that: Codex otherwise cannot reach `tileception msg`. Leaving
     /// Yolo puts the agent's mode back as it was.
     fn sync_agent_mode(&mut self) {
-        let d = &mut self.doctor;
-        let Some(option) = d.options.iter().find(|o| o.category.as_deref() == Some("mode")) else { return };
-        let Some(full) = option.values.iter().find(|v| FULL_ACCESS.contains(&v.value.as_str())) else { return };
+        let doctor = &mut self.doctor;
+        let Some(option) = doctor.options.iter().find(|option| option.category.as_deref() == Some("mode")) else {
+            return;
+        };
+        let Some(full) = option.values.iter().find(|value| FULL_ACCESS.contains(&value.value.as_str())) else { return };
         if option.current != full.value {
-            d.agent_mode = Some(option.current.clone());
+            doctor.agent_mode = Some(option.current.clone());
         }
-        let wanted = if d.mode == Mode::Yolo { Some(&full.value) } else { d.agent_mode.as_ref() };
-        if let Some(wanted) = wanted.filter(|w| **w != option.current)
-            && let Some(session) = &d.session
+        let wanted = if doctor.mode == Mode::Yolo { Some(&full.value) } else { doctor.agent_mode.as_ref() };
+        if let Some(wanted) = wanted.filter(|target| **target != option.current)
+            && let Some(session) = &doctor.session
         {
-            session.send(Request::SetOption { id: option.id.clone(), value: wanted.clone() });
+            session.send(Request::SetOption { id: option.option_id.clone(), value: wanted.clone() });
         }
     }
 
@@ -1250,9 +1260,9 @@ impl Tileception {
 
     pub fn doctor_insert_paste(&mut self, text: &str) {
         let text: String = if self.doctor.secret.is_some() {
-            text.trim().chars().filter(|c| !c.is_control()).collect()
+            text.trim().chars().filter(|character| !character.is_control()).collect()
         } else {
-            text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+            text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect()
         };
         self.doctor.input.insert(&text);
         self.doctor.edited = Instant::now();
@@ -1272,35 +1282,35 @@ impl Tileception {
                 let mut stops: Vec<f64> = self
                     .doctor_content(area)
                     .iter()
-                    .map(|b| (content - (b.rect().bottom() - area.y)).clamp(0.0, max))
+                    .map(|block| (content - (block.rect().bottom() - area.y)).clamp(0.0, max))
                     .chain([0.0, max])
                     .collect();
                 stops.sort_by(f64::total_cmp);
-                stops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+                stops.dedup_by(|left, right| (*left - *right).abs() < 0.5);
                 // One block per press or wheel notch, whatever its size.
-                let at = self.doctor.scroll;
+                let current = self.doctor.scroll;
                 if notches < 0.0 {
-                    stops.iter().copied().find(|s| *s > at + 0.5).unwrap_or(max)
+                    stops.iter().copied().find(|stop| *stop > current + 0.5).unwrap_or(max)
                 } else {
-                    stops.iter().rev().copied().find(|s| *s < at - 0.5).unwrap_or(0.0)
+                    stops.iter().rev().copied().find(|stop| *stop < current - 0.5).unwrap_or(0.0)
                 }
             }
             View::Picker => (self.doctor.scroll + delta).clamp(0.0, max),
         };
     }
 
-    pub fn doctor_contains(&self, p: Point) -> bool {
-        self.doctor.open && self.doctor_frame().panel.contains(p) && !self.overlay_under(p)
+    pub fn doctor_contains(&self, point: Point) -> bool {
+        self.doctor.open && self.doctor_frame().panel.contains(point) && !self.overlay_under(point)
     }
 
     /// A press anywhere: inside, the panel takes the keyboard and acts on
     /// what was clicked; outside, the desktop gets the keyboard back.
-    pub fn doctor_press(&mut self, p: Point) -> bool {
-        if !self.doctor.open || self.overlay_under(p) {
+    pub fn doctor_press(&mut self, point: Point) -> bool {
+        if !self.doctor.open || self.overlay_under(point) {
             return false;
         }
         let frame = self.doctor_frame();
-        if !frame.panel.contains(p) {
+        if !frame.panel.contains(point) {
             if self.doctor.focused {
                 self.doctor.focused = false;
                 self.force_keyboard_focus_sync();
@@ -1312,7 +1322,7 @@ impl Tileception {
             self.force_keyboard_focus_sync();
         }
         // An open menu or the slash command list first: they lie on top.
-        if let Some(hit) = self.menu_hit(p) {
+        if let Some(hit) = self.menu_hit(point) {
             self.doctor_hit(hit);
             return true;
         }
@@ -1320,7 +1330,7 @@ impl Tileception {
             self.schedule_render();
             return true;
         }
-        if frame.send.contains(p) {
+        if frame.send.contains(point) {
             if self.doctor.busy {
                 self.doctor_hit(Hit::Stop);
             } else {
@@ -1328,38 +1338,45 @@ impl Tileception {
             }
             return true;
         }
-        if let Some(i) = frame.modes.iter().position(|r| r.contains(p)) {
-            self.doctor_hit(Hit::SetMode(Mode::ALL[i]));
+        if let Some(index) = frame.modes.iter().position(|rect| rect.contains(point)) {
+            self.doctor_hit(Hit::SetMode(Mode::ALL[index]));
             return true;
         }
-        if let Some((option, _)) = self.model_button(&frame).filter(|(_, r)| r.contains(p)) {
-            self.doctor_hit(Hit::OpenMenu(option.id.clone()));
+        if let Some((option, _)) = self.model_button(&frame).filter(|(_, rect)| rect.contains(point)) {
+            self.doctor_hit(Hit::OpenMenu(option.option_id.clone()));
             return true;
         }
-        if frame.agent.contains(p) {
+        if frame.agent.contains(point) {
             self.doctor_hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker });
             return true;
         }
-        if let Some(i) = frame.attached.iter().position(|r| r.contains(p)) {
-            self.doctor_hit(Hit::Detach(i));
+        if let Some(index) = frame.attached.iter().position(|rect| rect.contains(point)) {
+            self.doctor_hit(Hit::Detach(index));
             return true;
         }
-        let hit = self.doctor_blocks(frame.messages).into_iter().find_map(|b| match b {
-            Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(p) => Some(hit),
-            Block::Picture { rect, open, .. } if rect.contains(p) => Some(Hit::Open(open)),
-            Block::Code { rect, copy, run, .. } if rect.contains(p) => {
+        let hit = self.doctor_blocks(frame.messages).into_iter().find_map(|block| match block {
+            Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(point) => {
+                Some(hit)
+            }
+            Block::Picture { rect, open, .. } if rect.contains(point) => Some(Hit::Open(open)),
+            Block::Code { rect, copy, run, .. } if rect.contains(point) => {
                 let (copy_at, run_at) = code_buttons(rect, run.is_some());
-                if copy_at.contains(p) {
+                if copy_at.contains(point) {
                     Some(Hit::Copy(copy))
                 } else {
-                    run.filter(|_| run_at.is_some_and(|r| r.contains(p))).map(Hit::Run)
+                    run.filter(|_| run_at.is_some_and(|run_button| run_button.contains(point))).map(Hit::Run)
                 }
             }
-            Block::Rich { rect, spans, style, .. } if rect.contains(p) => {
+            Block::Rich { rect, spans, style, .. } if rect.contains(point) => {
                 let image = self.rich_image(&spans, style, rect.w)?;
-                image.links.into_iter().find_map(|([x, y, w, h], url)| {
-                    let link = Rect::new(rect.x + f64::from(x), rect.y + f64::from(y), f64::from(w), f64::from(h));
-                    link.contains(p).then_some(Hit::Open(url))
+                image.links.into_iter().find_map(|([left, top, width, height], url)| {
+                    let link = Rect::new(
+                        rect.x + f64::from(left),
+                        rect.y + f64::from(top),
+                        f64::from(width),
+                        f64::from(height),
+                    );
+                    link.contains(point).then_some(Hit::Open(url))
                 })
             }
             _ => None,
@@ -1372,11 +1389,11 @@ impl Tileception {
 
     fn doctor_hit(&mut self, hit: Hit) {
         match hit {
-            Hit::Pick(id) => self.pick_agent(id),
+            Hit::Pick(agent_id) => self.pick_agent(agent_id),
             Hit::OpenPicker => {
                 self.doctor.view = View::Picker;
                 self.doctor.scroll = 0.0;
-                if self.doctor.registry.as_ref().is_none_or(|r| r.is_err()) && !self.doctor.loading {
+                if self.doctor.registry.as_ref().is_none_or(|registry| registry.is_err()) && !self.doctor.loading {
                     self.load_registry(false);
                 }
             }
@@ -1384,7 +1401,13 @@ impl Tileception {
             Hit::ClosePicker => {}
             Hit::ReloadRegistry => self.load_registry(true),
             Hit::Login(method) => {
-                let asks = self.doctor.logins.iter().find(|l| l.id == method).map(|l| l.how.asks()).unwrap_or_default();
+                let asks = self
+                    .doctor
+                    .logins
+                    .iter()
+                    .find(|login| login.method_id == method)
+                    .map(|login| login.how.asks())
+                    .unwrap_or_default();
                 if asks.is_empty() {
                     if let Some(session) = &self.doctor.session {
                         session.send(Request::Login { method, secrets: Vec::new() });
@@ -1411,44 +1434,48 @@ impl Tileception {
                 else {
                     return;
                 };
-                let picked = choice.as_ref().and_then(|c| choices.iter().find(|x| &x.id == c));
-                let allowed = picked.is_some_and(|c| c.kind.starts_with("allow"));
-                *answer = Some(picked.map_or_else(|| "Declined".to_string(), |c| c.name.clone()));
+                let picked =
+                    choice.as_ref().and_then(|choice_id| choices.iter().find(|option| &option.choice_id == choice_id));
+                let allowed = picked.is_some_and(|chosen| chosen.kind.starts_with("allow"));
+                *answer = Some(picked.map_or_else(|| "Declined".to_string(), |chosen| chosen.name.clone()));
                 let reply = reply.clone();
                 match reply {
-                    AskReply::Agent { id, paths } => {
+                    AskReply::Agent { request_id, paths } => {
                         if allowed {
                             self.doctor.approved.extend(paths);
                         }
                         if let Some(session) = &self.doctor.session {
-                            session.send(Request::Permission { id, choice });
+                            session.send(Request::Permission { id: request_id, choice });
                         }
                     }
-                    AskReply::Read { id, path, line, limit } => {
+                    AskReply::Read { request_id, path, line, limit } => {
                         let result =
                             if allowed { read_for_agent(&path, line, limit) } else { Err("The user declined.".into()) };
-                        self.doctor_reply(id, result);
+                        self.doctor_reply(request_id, result);
                     }
-                    AskReply::Write { id, path, content } => {
+                    AskReply::Write { request_id, path, content } => {
                         if allowed {
-                            self.apply_write(id, path, content);
+                            self.apply_write(request_id, path, content);
                         } else {
-                            self.doctor_reply(id, Err("The user rejected this change; nothing was written.".into()));
+                            self.doctor_reply(
+                                request_id,
+                                Err("The user rejected this change; nothing was written.".into()),
+                            );
                         }
                     }
                 }
             }
             Hit::Undo(index) => self.undo_change(index),
             Hit::SetMode(mode) => self.set_doctor_mode(mode),
-            Hit::OpenMenu(id) => {
-                let open = self.doctor.menu.as_ref() == Some(&id);
-                self.doctor.menu = (!open).then_some(id);
+            Hit::OpenMenu(option_id) => {
+                let open = self.doctor.menu.as_ref() == Some(&option_id);
+                self.doctor.menu = (!open).then_some(option_id);
                 // Start on the current value.
-                self.doctor.menu_selected = self.menu_values().iter().position(|v| v.1).unwrap_or(0);
+                self.doctor.menu_selected = self.menu_values().iter().position(|entry| entry.1).unwrap_or(0);
             }
-            Hit::SetOption(id, value) => {
+            Hit::SetOption(option_id, value) => {
                 self.doctor.menu = None;
-                if let Some(option) = self.doctor.options.iter().find(|o| o.id == id)
+                if let Some(option) = self.doctor.options.iter().find(|option| option.option_id == option_id)
                     && option.is_model()
                     && let Some(agent) = self.doctor.agent.clone()
                 {
@@ -1456,14 +1483,14 @@ impl Tileception {
                     self.save_doctor();
                 }
                 if let Some(session) = &self.doctor.session {
-                    session.send(Request::SetOption { id, value });
+                    session.send(Request::SetOption { id: option_id, value });
                 }
             }
-            Hit::Suggestion(i) => self.complete_suggestion(i, true),
+            Hit::Suggestion(index) => self.complete_suggestion(index, true),
             Hit::Open(url) => self.open_link(&url),
-            Hit::Detach(i) => {
-                if i < self.doctor.attachments.len() {
-                    self.doctor.attachments.remove(i);
+            Hit::Detach(index) => {
+                if index < self.doctor.attachments.len() {
+                    self.doctor.attachments.remove(index);
                 }
             }
             Hit::Copy(text) => {
@@ -1477,7 +1504,7 @@ impl Tileception {
                 });
             }
             Hit::Run(command) => self.run_code(&command),
-            Hit::Example(i) => self.send_to_doctor(EXAMPLES[i].to_string()),
+            Hit::Example(index) => self.send_to_doctor(EXAMPLES[index].to_string()),
             Hit::Stop => {
                 // Not sent yet: nothing to cancel but the wait.
                 if self.doctor.waiting.take().is_some() {
@@ -1489,16 +1516,16 @@ impl Tileception {
                 // The agent's own questions are cancelled with the turn; its
                 // file requests still need an answer, or it waits for ever.
                 let mut unanswered = Vec::new();
-                for m in &mut self.doctor.messages {
-                    if let Message::Ask { answer: answer @ None, reply, .. } = m {
+                for message in &mut self.doctor.messages {
+                    if let Message::Ask { answer: answer @ None, reply, .. } = message {
                         *answer = Some("Stopped".into());
-                        if let AskReply::Read { id, .. } | AskReply::Write { id, .. } = reply {
-                            unanswered.push(id.clone());
+                        if let AskReply::Read { request_id, .. } | AskReply::Write { request_id, .. } = reply {
+                            unanswered.push(request_id.clone());
                         }
                     }
                 }
-                for id in unanswered {
-                    self.doctor_reply(id, Err("The user stopped the agent.".into()));
+                for request_id in unanswered {
+                    self.doctor_reply(request_id, Err("The user stopped the agent.".into()));
                 }
             }
         }
@@ -1509,7 +1536,8 @@ impl Tileception {
     /// which go to the agent as they are.
     fn doctor_command(&mut self, line: &str) -> bool {
         let line = line.trim().trim_start_matches('/');
-        let (name, arg) = line.split_once(char::is_whitespace).map_or((line, ""), |(n, a)| (n, a.trim()));
+        let (name, arg) =
+            line.split_once(char::is_whitespace).map_or((line, ""), |(command, rest)| (command, rest.trim()));
         let note = |state: &mut Self, text: String| state.doctor.messages.push(Message::Note(text));
         match name {
             "help" => {
@@ -1519,8 +1547,8 @@ impl Tileception {
                 }
                 if !self.doctor.commands.is_empty() {
                     text += "\n\nFrom the agent:";
-                    for c in &self.doctor.commands {
-                        text += &format!("\n/{}  {}", c.name, c.description);
+                    for command in &self.doctor.commands {
+                        text += &format!("\n/{}  {}", command.name, command.description);
                     }
                 }
                 text += "\n\nTab fills in a command, Enter runs it. Ctrl+V pastes text or a picture.";
@@ -1549,11 +1577,15 @@ impl Tileception {
             "agent" if arg.is_empty() => self.doctor_hit(Hit::OpenPicker),
             "agent" => {
                 let wanted = arg.to_lowercase();
-                let found = self.doctor.registry.as_ref().and_then(|r| r.as_ref().ok()).and_then(|agents| {
-                    agents.iter().find(|a| a.id == wanted || a.name.to_lowercase() == wanted).map(|a| a.id.clone())
-                });
+                let found =
+                    self.doctor.registry.as_ref().and_then(|registry| registry.as_ref().ok()).and_then(|agents| {
+                        agents
+                            .iter()
+                            .find(|agent| agent.agent_id == wanted || agent.name.to_lowercase() == wanted)
+                            .map(|agent| agent.agent_id.clone())
+                    });
                 match found {
-                    Some(id) => self.pick_agent(id),
+                    Some(agent_id) => self.pick_agent(agent_id),
                     None => note(self, format!("There is no agent {arg} in the ACP Registry. /agent lists them.")),
                 }
             }
@@ -1572,7 +1604,7 @@ impl Tileception {
                 Some(session) => session.send(Request::Retry),
                 None => self.ensure_session(),
             },
-            _ if self.doctor.commands.iter().any(|c| c.name == name) => return false,
+            _ if self.doctor.commands.iter().any(|command| command.name == name) => return false,
             _ => note(self, format!("There is no command /{name}. /help lists them.")),
         }
         self.doctor.scroll = 0.0;
@@ -1597,7 +1629,7 @@ impl Tileception {
 
     /// `/model [name]`: the menu, or straight to a model by id or name.
     fn model_command(&mut self, arg: &str) {
-        let Some(option) = self.doctor.options.iter().find(|o| o.is_model()).cloned() else {
+        let Some(option) = self.doctor.options.iter().find(|option| option.is_model()).cloned() else {
             let text = if self.doctor.session.is_some() {
                 "This agent offers no choice of model here."
             } else {
@@ -1608,21 +1640,21 @@ impl Tileception {
         };
         if arg.is_empty() {
             self.doctor.menu = None;
-            return self.doctor_hit(Hit::OpenMenu(option.id));
+            return self.doctor_hit(Hit::OpenMenu(option.option_id));
         }
         let wanted = arg.to_lowercase();
         let found = option
             .values
             .iter()
-            .find(|v| v.value.to_lowercase() == wanted || v.name.to_lowercase() == wanted)
-            .or_else(|| option.values.iter().find(|v| v.name.to_lowercase().contains(&wanted)));
+            .find(|value| value.value.to_lowercase() == wanted || value.name.to_lowercase() == wanted)
+            .or_else(|| option.values.iter().find(|value| value.name.to_lowercase().contains(&wanted)));
         match found {
             Some(value) => {
                 self.doctor.messages.push(Message::Note(format!("Model: {}", value.name)));
-                self.doctor_hit(Hit::SetOption(option.id.clone(), value.value.clone()));
+                self.doctor_hit(Hit::SetOption(option.option_id.clone(), value.value.clone()));
             }
             None => {
-                let names: Vec<&str> = option.values.iter().map(|v| v.name.as_str()).collect();
+                let names: Vec<&str> = option.values.iter().map(|value| value.name.as_str()).collect();
                 let text = format!("There is no model {arg}. Choose from: {}.", names.join(", "));
                 self.doctor.messages.push(Message::Note(text));
             }
@@ -1649,24 +1681,27 @@ impl Tileception {
     /// The model setting and its button at the right of the toolbar, when
     /// the agent offers a choice.
     fn model_button(&self, frame: &Frame) -> Option<(&SessionOption, Rect)> {
-        let option = self.doctor.options.iter().find(|o| o.is_model())?;
+        let option = self.doctor.options.iter().find(|option| option.is_model())?;
         let label = model_label(option);
-        let w = (self.measure_text(&label, self.toolbar_style(), frame.model.w).0 + 40.0).min(frame.model.w);
-        Some((option, Rect::new(frame.model.right() - w, frame.model.y, w, frame.model.h)))
+        let width = (self.measure_text(&label, self.toolbar_style(), frame.model.w).0 + 40.0).min(frame.model.w);
+        Some((option, Rect::new(frame.model.right() - width, frame.model.y, width, frame.model.h)))
     }
 
     /// The open menu's values, each with whether it is the current one.
     fn menu_values(&self) -> Vec<(tileception_acp::OptionValue, bool)> {
-        let Some(id) = &self.doctor.menu else { return Vec::new() };
-        let Some(option) = self.doctor.options.iter().find(|o| &o.id == id) else { return Vec::new() };
-        option.values.iter().map(|v| (v.clone(), v.value == option.current)).collect()
+        let Some(option_id) = &self.doctor.menu else { return Vec::new() };
+        let Some(option) = self.doctor.options.iter().find(|option| &option.option_id == option_id) else {
+            return Vec::new();
+        };
+        option.values.iter().map(|value| (value.clone(), value.value == option.current)).collect()
     }
 
     fn choose_menu_value(&mut self, index: usize) {
-        let (Some(id), Some((value, _))) = (self.doctor.menu.clone(), self.menu_values().get(index).cloned()) else {
+        let (Some(option_id), Some((value, _))) = (self.doctor.menu.clone(), self.menu_values().get(index).cloned())
+        else {
             return;
         };
-        self.doctor_hit(Hit::SetOption(id, value.value));
+        self.doctor_hit(Hit::SetOption(option_id, value.value));
     }
 
     /// Slash commands starting with what is typed: the panel's, then the agent's.
@@ -1681,13 +1716,15 @@ impl Tileception {
             hint: hint.to_string(),
             description: description.to_string(),
         });
-        let theirs = self
-            .doctor
-            .commands
-            .iter()
-            .filter(|c| !COMMANDS.iter().any(|(n, ..)| *n == c.name))
-            .map(|c| Suggestion { name: c.name.clone(), hint: String::new(), description: c.description.clone() });
-        ours.chain(theirs).filter(|c| c.name.to_lowercase().starts_with(&typed)).collect()
+        let theirs =
+            self.doctor.commands.iter().filter(|command| !COMMANDS.iter().any(|(name, ..)| *name == command.name)).map(
+                |command| Suggestion {
+                    name: command.name.clone(),
+                    hint: String::new(),
+                    description: command.description.clone(),
+                },
+            );
+        ours.chain(theirs).filter(|suggestion| suggestion.name.to_lowercase().starts_with(&typed)).collect()
     }
 
     /// Takes a suggestion: runs it, or with `run` false fills it in to add
@@ -1717,14 +1754,19 @@ impl Tileception {
             selected: false,
             hit,
         };
-        let (mut rows, anchor, w): (Vec<MenuRow>, Rect, f64) = match &self.doctor.menu {
-            Some(id) => {
+        let (mut rows, anchor, width): (Vec<MenuRow>, Rect, f64) = match &self.doctor.menu {
+            Some(option_id) => {
                 let (_, button) = self.model_button(frame)?;
                 let rows = self
                     .menu_values()
                     .into_iter()
-                    .map(|(v, current)| {
-                        row(v.name, v.description.unwrap_or_default(), current, Hit::SetOption(id.clone(), v.value))
+                    .map(|(value, current)| {
+                        row(
+                            value.name,
+                            value.description.unwrap_or_default(),
+                            current,
+                            Hit::SetOption(option_id.clone(), value.value),
+                        )
                     })
                     .collect();
                 // Over the field, lined up with the button's right edge.
@@ -1736,9 +1778,9 @@ impl Tileception {
                     .suggestions()
                     .into_iter()
                     .enumerate()
-                    .map(|(i, s)| {
-                        let label = format!("/{} {}", s.name, s.hint).trim_end().to_string();
-                        row(label, s.description, false, Hit::Suggestion(i))
+                    .map(|(index, suggestion)| {
+                        let label = format!("/{} {}", suggestion.name, suggestion.hint).trim_end().to_string();
+                        row(label, suggestion.description, false, Hit::Suggestion(index))
                     })
                     .collect();
                 (rows, frame.field, frame.field.w)
@@ -1751,21 +1793,21 @@ impl Tileception {
         let limit = if self.doctor.menu.is_some() { usize::MAX } else { MENU_ROWS };
         let shown = rows.len().min(room).min(limit);
         let first = selected.saturating_sub(shown - 1).min(rows.len() - shown);
-        let h = shown as f64 * MENU_ROW_H + 8.0;
-        let x = (anchor.right() - w).max(frame.field.x);
-        let outline = Rect::new(x, anchor.y - 6.0 - h, w, h);
-        for (i, row) in rows.iter_mut().enumerate() {
-            let place = i as f64 - first as f64;
-            row.rect = Rect::new(x + 4.0, outline.y + 4.0 + place * MENU_ROW_H, w - 8.0, MENU_ROW_H);
-            row.selected = i == selected;
+        let height = shown as f64 * MENU_ROW_H + 8.0;
+        let left = (anchor.right() - width).max(frame.field.x);
+        let outline = Rect::new(left, anchor.y - 6.0 - height, width, height);
+        for (index, row) in rows.iter_mut().enumerate() {
+            let place = index as f64 - first as f64;
+            row.rect = Rect::new(left + 4.0, outline.y + 4.0 + place * MENU_ROW_H, width - 8.0, MENU_ROW_H);
+            row.selected = index == selected;
         }
         let rows = rows.into_iter().skip(first).take(shown).collect();
         Some((outline, rows))
     }
 
-    fn menu_hit(&self, p: Point) -> Option<Hit> {
+    fn menu_hit(&self, point: Point) -> Option<Hit> {
         let (_, rows) = self.menu_layout(&self.doctor_frame())?;
-        rows.into_iter().find(|r| r.rect.contains(p)).map(|r| r.hit)
+        rows.into_iter().find(|row| row.rect.contains(point)).map(|row| row.hit)
     }
 
     /// A login, a key being typed or a login in progress is on screen.
@@ -1775,8 +1817,8 @@ impl Tileception {
 
     fn doctor_frame(&self) -> Frame {
         let screen = self.output_rect();
-        let w = screen.w.clamp(1.0, PANEL_W);
-        let panel = Rect::new(screen.x, screen.y, w, screen.h.max(1.0));
+        let width = screen.w.clamp(1.0, PANEL_W);
+        let panel = Rect::new(screen.x, screen.y, width, screen.h.max(1.0));
         let hints = Rect::new(panel.x, panel.bottom() - HINTS_H, panel.w, HINTS_H);
         let toolbar = Rect::new(panel.x + PAD, hints.y - TOOLBAR_H, panel.w - 2.0 * PAD, TOOLBAR_H);
         let field = Rect::new(panel.x + PAD, toolbar.y - INPUT_H, panel.w - 2.0 * PAD, INPUT_H);
@@ -1785,19 +1827,19 @@ impl Tileception {
         let top = panel.y + HEADER_H + 8.0;
         let size = f64::from(THUMB);
         let attached: Vec<Rect> = (0..self.doctor.attachments.len())
-            .map(|i| Rect::new(field.x + i as f64 * (size + 8.0), field.y - size - 10.0, size, size))
+            .map(|index| Rect::new(field.x + index as f64 * (size + 8.0), field.y - size - 10.0, size, size))
             .collect();
-        let bottom = attached.first().map_or(field.y, |r| r.y);
+        let bottom = attached.first().map_or(field.y, |rect| rect.y);
         // The mode switch at the left of the toolbar, a segment per mode.
         let style = self.toolbar_style();
-        let mut x = toolbar.x;
+        let mut left = toolbar.x;
         let modes = Mode::ALL.map(|mode| {
-            let w = self.measure_text(mode.short(), style.bold(), 200.0).0 + 24.0;
-            let r = Rect::new(x, toolbar.y + 6.0, w, toolbar.h - 12.0);
-            x += w;
-            r
+            let segment_width = self.measure_text(mode.short(), style.bold(), 200.0).0 + 24.0;
+            let segment = Rect::new(left, toolbar.y + 6.0, segment_width, toolbar.h - 12.0);
+            left += segment_width;
+            segment
         });
-        let model_x = x + 12.0;
+        let model_x = left + 12.0;
         Frame {
             panel,
             title: Rect::new(panel.x + 18.0, panel.y + 12.0, 90.0, 32.0),
@@ -1814,11 +1856,11 @@ impl Tileception {
     }
 
     pub(crate) fn measure_text(&self, text: &str, style: Style, width: f64) -> (f64, f64) {
-        let t = &self.theme;
+        let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &t.font, style.size, style.colour, width.max(1.0) as f32, style.weight, style.lines)
-            .map(|i| (i.width, i.height))
+            .styled(text, &theme.font, style.size, style.colour, width.max(1.0) as f32, style.weight, style.lines)
+            .map(|layout| (layout.width, layout.height))
             .unwrap_or((0.0, 0.0))
     }
 
@@ -1847,23 +1889,27 @@ impl Tileception {
     /// The middle of the panel, laid out unscrolled from the top.
     fn doctor_content(&self, area: Rect) -> Vec<Block> {
         let mut blocks = Vec::new();
-        let mut y = area.y;
-        let w = area.w;
-        let x = area.x;
-        let push_note = |blocks: &mut Vec<Block>, y: &mut f64, text: &str| {
-            let (_, h) = self.measure_text(text, self.note_style(), w - 24.0);
-            blocks.push(Block::Note { rect: Rect::new(x + 12.0, *y, w - 24.0, h + 12.0), text: text.into() });
-            *y += h + 12.0 + GAP;
+        let mut top = area.y;
+        let width = area.w;
+        let left = area.x;
+        let push_note = |blocks: &mut Vec<Block>, top: &mut f64, text: &str| {
+            let (_, height) = self.measure_text(text, self.note_style(), width - 24.0);
+            blocks.push(Block::Note {
+                rect: Rect::new(left + 12.0, *top, width - 24.0, height + 12.0),
+                text: text.into(),
+            });
+            *top += height + 12.0 + GAP;
         };
         if self.doctor.view == View::Picker {
-            blocks.push(Block::Heading { rect: Rect::new(x + 4.0, y, w, 24.0), text: "CHOOSE AN AGENT".into() });
-            y += 28.0;
+            blocks
+                .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "CHOOSE AN AGENT".into() });
+            top += 28.0;
             match &self.doctor.registry {
-                None => push_note(&mut blocks, &mut y, "Loading the ACP Registry\u{2026}"),
+                None => push_note(&mut blocks, &mut top, "Loading the ACP Registry\u{2026}"),
                 Some(Err(error)) => {
-                    push_note(&mut blocks, &mut y, error);
+                    push_note(&mut blocks, &mut top, error);
                     blocks.push(Block::Button {
-                        rect: Rect::new(x + w / 2.0 - 60.0, y, 120.0, BUTTON_H),
+                        rect: Rect::new(left + width / 2.0 - 60.0, top, 120.0, BUTTON_H),
                         label: "Try again".into(),
                         hit: Hit::ReloadRegistry,
                         primary: true,
@@ -1871,208 +1917,224 @@ impl Tileception {
                 }
                 Some(Ok(agents)) => {
                     for agent in agents {
-                        let missing = self.doctor.missing.get(&agent.id).cloned();
+                        let missing = self.doctor.missing.get(&agent.agent_id).cloned();
                         let detail = if agent.description.is_empty() {
                             agent.kind().to_string()
                         } else {
                             agent.description.clone()
                         };
                         blocks.push(Block::Row {
-                            rect: Rect::new(x, y, w, ROW_H),
+                            rect: Rect::new(left, top, width, ROW_H),
                             title: agent.name.clone(),
                             detail,
                             note: missing.clone(),
-                            hit: missing.is_none().then(|| Hit::Pick(agent.id.clone())),
-                            current: self.doctor.agent.as_ref() == Some(&agent.id),
+                            hit: missing.is_none().then(|| Hit::Pick(agent.agent_id.clone())),
+                            current: self.doctor.agent.as_ref() == Some(&agent.agent_id),
                         });
-                        y += ROW_H + 4.0;
+                        top += ROW_H + 4.0;
                     }
-                    push_note(&mut blocks, &mut y, "From the official ACP Registry. Agents bring their own login.");
+                    push_note(&mut blocks, &mut top, "From the official ACP Registry. Agents bring their own login.");
                 }
             }
             return blocks;
         }
 
-        let back = |blocks: &mut Vec<Block>, y: &mut f64, logged_in: bool| {
-            let mut bx = x + w / 2.0 - if logged_in { 140.0 } else { 60.0 };
+        let back = |blocks: &mut Vec<Block>, top: &mut f64, logged_in: bool| {
+            let mut button_x = left + width / 2.0 - if logged_in { 140.0 } else { 60.0 };
             if logged_in {
                 blocks.push(Block::Button {
-                    rect: Rect::new(bx, *y, 160.0, BUTTON_H),
+                    rect: Rect::new(button_x, *top, 160.0, BUTTON_H),
                     label: "I've logged in".into(),
                     hit: Hit::LoggedIn,
                     primary: true,
                 });
-                bx += 168.0;
+                button_x += 168.0;
             }
             blocks.push(Block::Button {
-                rect: Rect::new(bx, *y, 112.0, BUTTON_H),
+                rect: Rect::new(button_x, *top, 112.0, BUTTON_H),
                 label: "Back".into(),
                 hit: Hit::BackToLogins,
                 primary: false,
             });
-            *y += BUTTON_H + 2.0 * GAP;
+            *top += BUTTON_H + 2.0 * GAP;
         };
         if let Some(secret) = &self.doctor.secret {
             let label = secret.labels.get(secret.values.len()).map_or("key", String::as_str);
-            blocks.push(Block::Heading { rect: Rect::new(x + 4.0, y, w, 24.0), text: "LOG IN".into() });
-            y += 28.0;
+            blocks.push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "LOG IN".into() });
+            top += 28.0;
             let text = format!("Paste the {label} into the field below and press Enter. Tileception does not save it.");
-            push_note(&mut blocks, &mut y, &text);
-            back(&mut blocks, &mut y, false);
+            push_note(&mut blocks, &mut top, &text);
+            back(&mut blocks, &mut top, false);
         } else if let Status::LoggingIn { terminal } = self.doctor.status {
-            blocks.push(Block::Heading { rect: Rect::new(x + 4.0, y, w, 24.0), text: "LOGGING IN".into() });
-            y += 28.0;
+            blocks.push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "LOGGING IN".into() });
+            top += 28.0;
             let text = if terminal {
                 "Finish logging in in the terminal that opened, then choose \"I've logged in\"."
             } else {
                 "Finish logging in where the agent sent you, usually your browser."
             };
-            push_note(&mut blocks, &mut y, text);
-            back(&mut blocks, &mut y, terminal);
+            push_note(&mut blocks, &mut top, text);
+            back(&mut blocks, &mut top, terminal);
         } else if let Status::NeedsLogin(logins) = &self.doctor.status {
-            blocks.push(Block::Heading { rect: Rect::new(x + 4.0, y, w, 24.0), text: "LOG IN".into() });
-            y += 28.0;
-            for Login { id, name, description, how } in logins {
-                let detail = description.clone().filter(|d| !d.trim().is_empty()).unwrap_or_else(|| {
-                    match how {
-                        LoginHow::Terminal(_) => "Opens a terminal",
-                        LoginHow::Key | LoginHow::Env(_) => "Asks for an API key",
-                        LoginHow::Agent => "The agent opens its own login",
-                    }
-                    .into()
-                });
+            blocks.push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "LOG IN".into() });
+            top += 28.0;
+            for Login { method_id, name, description, how } in logins {
+                let detail =
+                    description.clone().filter(|detail_text| !detail_text.trim().is_empty()).unwrap_or_else(|| {
+                        match how {
+                            LoginHow::Terminal(_) => "Opens a terminal",
+                            LoginHow::Key | LoginHow::Env(_) => "Asks for an API key",
+                            LoginHow::Agent => "The agent opens its own login",
+                        }
+                        .into()
+                    });
                 blocks.push(Block::Row {
-                    rect: Rect::new(x, y, w, ROW_H),
+                    rect: Rect::new(left, top, width, ROW_H),
                     title: name.clone(),
                     detail,
                     note: None,
-                    hit: Some(Hit::Login(id.clone())),
+                    hit: Some(Hit::Login(method_id.clone())),
                     current: false,
                 });
-                y += ROW_H + 4.0;
+                top += ROW_H + 4.0;
             }
-            if logins.iter().any(|l| matches!(l.how, LoginHow::Terminal(_))) {
+            if logins.iter().any(|login| matches!(login.how, LoginHow::Terminal(_))) {
                 blocks.push(Block::Button {
-                    rect: Rect::new(x + w / 2.0 - 80.0, y + 4.0, 160.0, BUTTON_H),
+                    rect: Rect::new(left + width / 2.0 - 80.0, top + 4.0, 160.0, BUTTON_H),
                     label: "I've logged in".into(),
                     hit: Hit::LoggedIn,
                     primary: false,
                 });
-                y += BUTTON_H + 4.0 + GAP;
+                top += BUTTON_H + 4.0 + GAP;
             }
-            y += GAP;
+            top += GAP;
         }
 
         if self.doctor.messages.is_empty() && !self.login_showing() {
-            for (i, example) in EXAMPLES.iter().enumerate() {
+            for (index, example) in EXAMPLES.iter().enumerate() {
                 blocks.push(Block::Row {
-                    rect: Rect::new(x + 16.0, y + 150.0 + i as f64 * 40.0, w - 32.0, 32.0),
+                    rect: Rect::new(left + 16.0, top + 150.0 + index as f64 * 40.0, width - 32.0, 32.0),
                     title: (*example).into(),
                     detail: String::new(),
                     note: None,
-                    hit: Some(Hit::Example(i)),
+                    hit: Some(Hit::Example(index)),
                     current: false,
                 });
             }
             return blocks;
         }
 
-        for (index, m) in self.doctor.messages.iter().enumerate() {
-            match m {
+        for (index, message) in self.doctor.messages.iter().enumerate() {
+            match message {
                 Message::User(text) => {
-                    let (tw, th) = self.measure_text(text, self.body_style(), w - 64.0);
-                    let bw = tw + 28.0;
+                    let (text_width, text_height) = self.measure_text(text, self.body_style(), width - 64.0);
+                    let bubble_width = text_width + 28.0;
                     blocks.push(Block::Bubble {
-                        rect: Rect::new(x + w - bw, y, bw, th + 20.0),
+                        rect: Rect::new(left + width - bubble_width, top, bubble_width, text_height + 20.0),
                         text: text.clone(),
                         user: true,
                     });
-                    y += th + 20.0 + GAP;
+                    top += text_height + 20.0 + GAP;
                 }
                 Message::Attached(thumbs) => {
                     let size = f64::from(THUMB);
-                    let tw = thumbs.len() as f64 * (size + 6.0) - 6.0;
-                    blocks.push(Block::Thumbs { rect: Rect::new(x + w - tw, y, tw, size), thumbs: thumbs.clone() });
-                    y += size + 6.0;
+                    let strip_width = thumbs.len() as f64 * (size + 6.0) - 6.0;
+                    blocks.push(Block::Thumbs {
+                        rect: Rect::new(left + width - strip_width, top, strip_width, size),
+                        thumbs: thumbs.clone(),
+                    });
+                    top += size + 6.0;
                 }
-                Message::Agent(text) => y = self.layout_answer(&mut blocks, text, Rect::new(x, y, w, 0.0)) + GAP,
-                Message::Note(text) => push_note(&mut blocks, &mut y, text),
+                Message::Agent(text) => {
+                    top = self.layout_answer(&mut blocks, text, Rect::new(left, top, width, 0.0)) + GAP
+                }
+                Message::Note(text) => push_note(&mut blocks, &mut top, text),
                 Message::Info(text) => {
-                    let (_, th) = self.measure_text(text, self.body_style(), w - 28.0);
-                    blocks.push(Block::Bubble { rect: Rect::new(x, y, w, th + 20.0), text: text.clone(), user: false });
-                    y += th + 20.0 + GAP;
+                    let (_, text_height) = self.measure_text(text, self.body_style(), width - 28.0);
+                    blocks.push(Block::Bubble {
+                        rect: Rect::new(left, top, width, text_height + 20.0),
+                        text: text.clone(),
+                        user: false,
+                    });
+                    top += text_height + 20.0 + GAP;
                 }
                 Message::Tool { title, status, .. } => {
                     blocks.push(Block::Tool {
-                        rect: Rect::new(x, y, w, 30.0),
+                        rect: Rect::new(left, top, width, 30.0),
                         title: title.clone(),
                         status: status.clone(),
                     });
-                    y += 30.0 + 4.0;
+                    top += 30.0 + 4.0;
                 }
                 Message::Changed { path, added, removed, undone, .. } => {
-                    let name = path
-                        .file_name()
-                        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |file_name| file_name.to_string_lossy().into_owned(),
+                    );
                     let text = if *undone {
                         format!("Changed {name}: undone")
                     } else {
                         format!("Changed {name} (+{added} \u{2212}{removed}), with a backup")
                     };
                     blocks.push(Block::Tool {
-                        rect: Rect::new(x, y, w - 84.0, 30.0),
+                        rect: Rect::new(left, top, width - 84.0, 30.0),
                         title: text,
                         status: "completed".into(),
                     });
                     if !*undone {
                         blocks.push(Block::Button {
-                            rect: Rect::new(x + w - 78.0, y, 78.0, 30.0),
+                            rect: Rect::new(left + width - 78.0, top, 78.0, 30.0),
                             label: "Undo".into(),
                             hit: Hit::Undo(index),
                             primary: false,
                         });
                     }
-                    y += 30.0 + 4.0;
+                    top += 30.0 + 4.0;
                 }
                 Message::Ask { title, choices, diff, answer, .. } => {
                     let style = self.body_style();
-                    let (_, th) = self.measure_text(title, style, w - 28.0);
+                    let (_, text_height) = self.measure_text(title, style, width - 28.0);
                     blocks.push(Block::Bubble {
-                        rect: Rect::new(x, y, w, th + 20.0),
+                        rect: Rect::new(left, top, width, text_height + 20.0),
                         text: title.clone(),
                         user: false,
                     });
-                    y += th + 20.0 + 6.0;
+                    top += text_height + 20.0 + 6.0;
                     if !diff.is_empty() && answer.is_none() {
                         let shown: Vec<DiffLine> = diff.iter().take(DIFF_LINES).cloned().collect();
-                        let h = shown.len() as f64 * DIFF_LINE_H
+                        let height = shown.len() as f64 * DIFF_LINE_H
                             + 12.0
                             + if diff.len() > DIFF_LINES { DIFF_LINE_H } else { 0.0 };
-                        blocks.push(Block::Diff { rect: Rect::new(x, y, w, h), lines: diff.clone() });
-                        y += h + 6.0;
+                        blocks.push(Block::Diff { rect: Rect::new(left, top, width, height), lines: diff.clone() });
+                        top += height + 6.0;
                     }
                     match answer {
-                        Some(answer) => push_note(&mut blocks, &mut y, &format!("You chose: {answer}")),
+                        Some(answer) => push_note(&mut blocks, &mut top, &format!("You chose: {answer}")),
                         None => {
-                            let n = choices.len().max(1) as f64;
-                            let bw = (w - 8.0 * (n - 1.0)) / n;
-                            for (i, choice) in choices.iter().enumerate() {
+                            let count = choices.len().max(1) as f64;
+                            let button_width = (width - 8.0 * (count - 1.0)) / count;
+                            for (choice_index, choice) in choices.iter().enumerate() {
                                 blocks.push(Block::Button {
-                                    rect: Rect::new(x + i as f64 * (bw + 8.0), y, bw, BUTTON_H),
+                                    rect: Rect::new(
+                                        left + choice_index as f64 * (button_width + 8.0),
+                                        top,
+                                        button_width,
+                                        BUTTON_H,
+                                    ),
                                     label: choice.name.clone(),
-                                    hit: Hit::Answer(index, Some(choice.id.clone())),
-                                    primary: choice.kind.starts_with("allow") && i == 0,
+                                    hit: Hit::Answer(index, Some(choice.choice_id.clone())),
+                                    primary: choice.kind.starts_with("allow") && choice_index == 0,
                                 });
                             }
                             if choices.is_empty() {
                                 blocks.push(Block::Button {
-                                    rect: Rect::new(x, y, w, BUTTON_H),
+                                    rect: Rect::new(left, top, width, BUTTON_H),
                                     label: "Decline".into(),
                                     hit: Hit::Answer(index, None),
                                     primary: false,
                                 });
                             }
-                            y += BUTTON_H + GAP;
+                            top += BUTTON_H + GAP;
                         }
                     }
                 }
@@ -2084,7 +2146,7 @@ impl Tileception {
                 Some(Message::User(_) | Message::Attached(_) | Message::Tool { .. })
             )
         {
-            blocks.push(Block::Dots { rect: Rect::new(x, y, 64.0, 30.0) });
+            blocks.push(Block::Dots { rect: Rect::new(left, top, 64.0, 30.0) });
         }
         blocks
     }
@@ -2092,34 +2154,34 @@ impl Tileception {
     /// How answers look: `scale` times the body size, wrapped to as many
     /// lines as fit the conversation (only whole blocks are drawn).
     fn rich_style(&self, scale: f32, weight: u16) -> RichStyle {
-        let t = &self.theme;
-        let size = t.font_size * 1.08 * scale;
+        let theme = &self.theme;
+        let size = theme.font_size * 1.08 * scale;
         let line = f64::from((size * 1.4).ceil());
         let room = self.doctor_frame().messages.h - 20.0;
         let lines = (room / line).floor().clamp(1.0, f64::from(MAX_LINES)) as u8;
-        RichStyle { size, colour: t.text, accent: t.accent, weight, lines, mono: false }
+        RichStyle { size, colour: theme.text, accent: theme.accent, weight, lines, mono: false }
     }
 
     fn rich_image(&self, spans: &[Span], style: RichStyle, width: f64) -> Option<RichImage> {
         self.text.borrow_mut().rich(spans, &self.theme.font, style, width as f32)
     }
 
-    /// An answer's markdown, laid out from the top of `at` across its
+    /// An answer's markdown, laid out from the top of `area` across its
     /// width, a block per paragraph, item, code block or picture. Returns
     /// where it ends.
-    fn layout_answer(&self, blocks: &mut Vec<Block>, text: &str, at: Rect) -> f64 {
-        let (x, w) = (at.x, at.w);
-        let mut y = at.y;
+    fn layout_answer(&self, blocks: &mut Vec<Block>, text: &str, area: Rect) -> f64 {
+        let (left, width) = (area.x, area.w);
+        let mut top = area.y;
         let body = self.rich_style(1.0, 400);
         let pieces = markdown::parse(text);
-        for (i, piece) in pieces.iter().enumerate() {
-            let after_item = i > 0 && matches!(pieces[i - 1], Piece::Text { kind: Kind::Item { .. }, .. });
+        for (index, piece) in pieces.iter().enumerate() {
+            let after_item = index > 0 && matches!(pieces[index - 1], Piece::Text { kind: Kind::Item { .. }, .. });
             match piece {
                 Piece::Text { kind, spans } => {
                     let (style, indent, marker, quote) = match kind {
                         Kind::Heading(level) => {
-                            if i > 0 {
-                                y += 4.0;
+                            if index > 0 {
+                                top += 4.0;
                             }
                             let scale = match level {
                                 1 => 1.3,
@@ -2130,7 +2192,7 @@ impl Tileception {
                         }
                         Kind::Item { depth, marker } => {
                             if after_item {
-                                y -= PIECE_GAP / 2.0;
+                                top -= PIECE_GAP / 2.0;
                             }
                             (body, 2.0 + f64::from(*depth) * 18.0, Some(marker.as_str()), false)
                         }
@@ -2138,26 +2200,32 @@ impl Tileception {
                         Kind::Paragraph => (body, 0.0, None, false),
                     };
                     let gutter = if marker.is_some() { 20.0 } else { 0.0 };
-                    let rect = Rect::new(x + 2.0 + indent + gutter, y, w - 2.0 - indent - gutter, 0.0);
+                    let rect = Rect::new(left + 2.0 + indent + gutter, top, width - 2.0 - indent - gutter, 0.0);
                     let Some(image) = self.rich_image(spans, style, rect.w) else { continue };
-                    let h = image.image.height;
+                    let height = image.image.height;
                     let line = f64::from((style.size * 1.4).ceil());
                     let marker = marker
-                        .filter(|m| !m.is_empty())
-                        .map(|m| (Rect::new(x + 2.0 + indent, y, gutter, line), m.to_string()));
-                    blocks.push(Block::Rich { rect: Rect { h, ..rect }, spans: spans.clone(), style, marker, quote });
-                    y += h + PIECE_GAP;
+                        .filter(|bullet| !bullet.is_empty())
+                        .map(|bullet| (Rect::new(left + 2.0 + indent, top, gutter, line), bullet.to_string()));
+                    blocks.push(Block::Rich {
+                        rect: Rect { h: height, ..rect },
+                        spans: spans.clone(),
+                        style,
+                        marker,
+                        quote,
+                    });
+                    top += height + PIECE_GAP;
                 }
                 Piece::Code { lang, text } => {
                     let style = RichStyle { size: body.size * 0.9, mono: true, ..body };
                     let spans = vec![Span::plain(text.clone())];
-                    let Some(image) = self.rich_image(&spans, style, w - 24.0) else { continue };
-                    let h = CODE_BAR + image.image.height + 18.0;
+                    let Some(image) = self.rich_image(&spans, style, width - 24.0) else { continue };
+                    let height = CODE_BAR + image.image.height + 18.0;
                     let run = markdown::shell_command(lang, text);
                     let copy = run.clone().unwrap_or_else(|| text.clone());
-                    let rect = Rect::new(x, y, w, h);
+                    let rect = Rect::new(left, top, width, height);
                     blocks.push(Block::Code { rect, spans, style, lang: lang.clone(), copy, run });
-                    y += h + PIECE_GAP;
+                    top += height + PIECE_GAP;
                 }
                 Piece::Image { url, alt, link } => {
                     let open = link.clone().unwrap_or_else(|| url.clone());
@@ -2165,73 +2233,78 @@ impl Tileception {
                         Some(Picture::Failed) => {
                             let name = if alt.trim().is_empty() { url.clone() } else { alt.clone() };
                             let spans = vec![Span::plain("Picture: "), Span { link: Some(open), ..Span::plain(name) }];
-                            let Some(image) = self.rich_image(&spans, body, w - 2.0) else { continue };
-                            let h = image.image.height;
-                            let rect = Rect::new(x + 2.0, y, w - 2.0, h);
+                            let Some(image) = self.rich_image(&spans, body, width - 2.0) else { continue };
+                            let height = image.image.height;
+                            let rect = Rect::new(left + 2.0, top, width - 2.0, height);
                             blocks.push(Block::Rich { rect, spans, style: body, marker: None, quote: false });
-                            y += h + PIECE_GAP;
+                            top += height + PIECE_GAP;
                         }
                         picture => {
-                            let (pw, ph) = match picture {
+                            let (picture_width, picture_height) = match picture {
                                 Some(Picture::Ready(thumb)) => {
-                                    let (tw, th) = (f64::from(thumb.size.0), f64::from(thumb.size.1));
-                                    let scale = (w / tw).min(1.0);
-                                    (tw * scale, th * scale)
+                                    let (thumb_width, thumb_height) =
+                                        (f64::from(thumb.size.0), f64::from(thumb.size.1));
+                                    let scale = (width / thumb_width).min(1.0);
+                                    (thumb_width * scale, thumb_height * scale)
                                 }
-                                _ => (w, 120.0),
+                                _ => (width, 120.0),
                             };
-                            blocks.push(Block::Picture { rect: Rect::new(x, y, pw, ph), url: url.clone(), open });
-                            y += ph + PIECE_GAP;
+                            blocks.push(Block::Picture {
+                                rect: Rect::new(left, top, picture_width, picture_height),
+                                url: url.clone(),
+                                open,
+                            });
+                            top += picture_height + PIECE_GAP;
                         }
                     }
                 }
                 Piece::Rule => {
-                    blocks.push(Block::Rule { rect: Rect::new(x, y + 4.0, w, 1.0) });
-                    y += 9.0 + PIECE_GAP;
+                    blocks.push(Block::Rule { rect: Rect::new(left, top + 4.0, width, 1.0) });
+                    top += 9.0 + PIECE_GAP;
                 }
             }
         }
-        if y > at.y { y - PIECE_GAP } else { y }
+        if top > area.y { top - PIECE_GAP } else { top }
     }
 
     fn doctor_content_height(&self, area: Rect) -> f64 {
         let blocks = self.doctor_content(area);
-        blocks.iter().map(|b| b.rect().bottom()).fold(area.y, f64::max) - area.y
+        blocks.iter().map(|block| block.rect().bottom()).fold(area.y, f64::max) - area.y
     }
 
     /// The middle, scrolled into place: the picker from the top, the
     /// conversation stuck to its newest message. Only whole blocks show.
     fn doctor_blocks(&self, area: Rect) -> Vec<Block> {
         let mut blocks = self.doctor_content(area);
-        let height = blocks.iter().map(|b| b.rect().bottom()).fold(area.y, f64::max) - area.y;
+        let height = blocks.iter().map(|block| block.rect().bottom()).fold(area.y, f64::max) - area.y;
         let shift = match self.doctor.view {
             View::Picker => -self.doctor.scroll,
             // Taller than the panel: the newest message sits at the bottom.
             View::Conversation if !self.doctor.messages.is_empty() => (area.h - height).min(0.0) + self.doctor.scroll,
             View::Conversation => 0.0,
         };
-        for b in &mut blocks {
-            b.rect_mut().y += shift;
+        for block in &mut blocks {
+            block.rect_mut().y += shift;
         }
-        blocks.retain(|b| {
-            let r = b.rect();
-            r.y >= area.y - 0.5 && r.bottom() <= area.bottom() + 0.5
+        blocks.retain(|block| {
+            let rect = block.rect();
+            rect.y >= area.y - 0.5 && rect.bottom() <= area.bottom() + 0.5
         });
         blocks
     }
 
     fn status_line(&self) -> (String, Colour) {
-        let t = &self.theme;
-        let name = self.chosen_agent().map(|a| a.name).or_else(|| self.doctor.agent.clone());
+        let theme = &self.theme;
+        let name = self.chosen_agent().map(|agent| agent.name).or_else(|| self.doctor.agent.clone());
         match (&name, &self.doctor.status) {
-            (None, _) => ("Choose an agent".into(), t.muted),
-            (Some(name), _) if self.doctor.session.is_none() => (name.clone(), t.muted),
-            (Some(name), Status::Ready) => (name.clone(), t.accent),
+            (None, _) => ("Choose an agent".into(), theme.muted),
+            (Some(name), _) if self.doctor.session.is_none() => (name.clone(), theme.muted),
+            (Some(name), Status::Ready) => (name.clone(), theme.accent),
             (Some(name), Status::NeedsLogin(_) | Status::LoggingIn { .. }) => {
-                (format!("{name} \u{b7} log in"), t.warning)
+                (format!("{name} \u{b7} log in"), theme.warning)
             }
-            (Some(_), Status::Starting(text)) => (text.clone(), t.warning),
-            (Some(name), Status::Failed(_)) => (format!("{name} \u{b7} stopped"), t.danger),
+            (Some(_), Status::Starting(text)) => (text.clone(), theme.warning),
+            (Some(name), Status::Failed(_)) => (format!("{name} \u{b7} stopped"), theme.danger),
         }
     }
 
@@ -2239,119 +2312,132 @@ impl Tileception {
         if !self.doctor.open {
             return Vec::new();
         }
-        let t = &self.theme;
+        let theme = &self.theme;
         let frame = self.doctor_frame();
         let pointer = Point::new(self.pointer.x, self.pointer.y);
-        let mut p = Painter::new(self, renderer);
+        let mut painter = Painter::new(self, renderer);
         // Slides in from the left edge.
         let shown = ease_out(self.doctor.opened.elapsed().as_secs_f64() / 0.2);
-        p.alpha = shown as f32;
-        p.offset = ((shown - 1.0) * 24.0, 0.0);
-        p.edge_panel(frame.panel, true);
+        painter.alpha = shown as f32;
+        painter.offset = ((shown - 1.0) * 24.0, 0.0);
+        painter.edge_panel(frame.panel, true);
 
-        p.text("Doctor", frame.title, Style::new(t.font_size * 1.3, t.text).bold());
+        painter.text("Doctor", frame.title, Style::new(theme.font_size * 1.3, theme.text).bold());
         // The agent, as a button that opens the picker.
         let (label, dot) = self.status_line();
-        let style = Style::new(t.font_size, t.text);
-        let (lw, _) = p.measure(&label, frame.agent.w - 48.0, style);
-        let button = Rect::new(frame.agent.right() - lw - 46.0, frame.agent.y, lw + 46.0, frame.agent.h);
+        let style = Style::new(theme.font_size, theme.text);
+        let (label_width, _) = painter.measure(&label, frame.agent.w - 48.0, style);
+        let button =
+            Rect::new(frame.agent.right() - label_width - 46.0, frame.agent.y, label_width + 46.0, frame.agent.h);
         if button.contains(pointer) {
-            p.fill(button, t.surface_raised, t.radius);
+            painter.fill(button, theme.surface_raised, theme.radius);
         }
-        p.fill(Rect::new(button.x + 12.0, button.y + button.h / 2.0 - 4.0, 8.0, 8.0), dot, 4.0);
-        p.text(&label, Rect::new(button.x + 26.0, button.y, lw + 1.0, button.h), style);
+        painter.fill(Rect::new(button.x + 12.0, button.y + button.h / 2.0 - 4.0, 8.0, 8.0), dot, 4.0);
+        painter.text(&label, Rect::new(button.x + 26.0, button.y, label_width + 1.0, button.h), style);
         let chevron = if self.doctor.view == View::Picker { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
-        p.glyph(chevron, Rect::new(button.right() - 20.0, button.y, 16.0, button.h), 12, t.muted);
-        p.fill(Rect::new(frame.panel.x + 12.0, frame.panel.y + HEADER_H, frame.panel.w - 24.0, 1.0), t.border, 0.0);
+        painter.glyph(chevron, Rect::new(button.right() - 20.0, button.y, 16.0, button.h), 12, theme.muted);
+        painter.fill(
+            Rect::new(frame.panel.x + 12.0, frame.panel.y + HEADER_H, frame.panel.w - 24.0, 1.0),
+            theme.border,
+            0.0,
+        );
 
         let area = frame.messages;
         let empty = self.doctor.view == View::Conversation && self.doctor.messages.is_empty() && !self.login_showing();
         if empty {
             let mid = area.y + 40.0;
-            p.fill(Rect::new(area.x + area.w / 2.0 - 32.0, mid, 64.0, 64.0), t.surface_raised, 32.0);
-            p.glyph(glyph::CHAT, Rect::new(area.x, mid, area.w, 64.0), 28, t.accent);
-            p.text(
+            painter.fill(Rect::new(area.x + area.w / 2.0 - 32.0, mid, 64.0, 64.0), theme.surface_raised, 32.0);
+            painter.glyph(glyph::CHAT, Rect::new(area.x, mid, area.w, 64.0), 28, theme.accent);
+            painter.text(
                 "Ask about your setup",
                 Rect::new(area.x, mid + 76.0, area.w, 24.0),
-                Style::new(t.font_size * 1.1, t.text).bold().align(Align::Centre),
+                Style::new(theme.font_size * 1.1, theme.text).bold().align(Align::Centre),
             );
         }
         for block in self.doctor_blocks(area) {
-            self.draw_block(&mut p, &block, pointer);
+            self.draw_block(&mut painter, &block, pointer);
         }
-        self.draw_toolbar(&mut p, &frame, pointer);
+        self.draw_toolbar(&mut painter, &frame, pointer);
         // Pictures waiting to go with the next message; a click takes one off.
-        for (attachment, r) in self.doctor.attachments.iter().zip(&frame.attached) {
-            p.image_sized(&attachment.thumb.buffer, (r.x, r.y), Some((THUMB, THUMB)));
-            let hover = r.contains(pointer);
-            let border = if hover { t.accent.alpha(0.6) } else { t.border };
-            p.shape(*r, Shape { border_width: 1.0, border, ..Shape::filled(Colour::TRANSPARENT, 2.0) });
+        for (attachment, slot) in self.doctor.attachments.iter().zip(&frame.attached) {
+            painter.image_sized(&attachment.thumb.buffer, (slot.x, slot.y), Some((THUMB, THUMB)));
+            let hover = slot.contains(pointer);
+            let border = if hover { theme.accent.alpha(0.6) } else { theme.border };
+            painter.shape(*slot, Shape { border_width: 1.0, border, ..Shape::filled(Colour::TRANSPARENT, 2.0) });
             if hover {
-                let x = Rect::new(r.right() - 22.0, r.y + 2.0, 20.0, 20.0);
-                p.fill(x, Colour([0.0, 0.0, 0.0, 0.6]), 10.0);
-                p.glyph(glyph::CLOSE, x, 10, t.text);
+                let close = Rect::new(slot.right() - 22.0, slot.y + 2.0, 20.0, 20.0);
+                painter.fill(close, Colour([0.0, 0.0, 0.0, 0.6]), 10.0);
+                painter.glyph(glyph::CLOSE, close, 10, theme.text);
             }
         }
 
         // Where typing goes, glowing while it has the keyboard.
         let focused = self.doctor.focused;
-        p.shape(
+        painter.shape(
             frame.field,
             Shape {
                 border_width: 1.0,
-                border: if focused { t.accent.alpha(0.45) } else { t.border },
-                glow_radius: if focused { t.glow * 0.5 } else { 0.0 },
-                glow: t.accent.alpha(0.10),
-                ..Shape::filled(t.background, t.radius)
+                border: if focused { theme.accent.alpha(0.45) } else { theme.border },
+                glow_radius: if focused { theme.glow * 0.5 } else { 0.0 },
+                glow: theme.accent.alpha(0.10),
+                ..Shape::filled(theme.background, theme.radius)
             },
         );
         let input = &self.doctor.input;
-        let size = t.font_size * 1.08;
-        let secret = self.doctor.secret.as_ref().and_then(|s| s.labels.get(s.values.len()));
+        let size = theme.font_size * 1.08;
+        let secret = self.doctor.secret.as_ref().and_then(|entry| entry.labels.get(entry.values.len()));
         if input.text.is_empty() {
             let hint = match secret {
                 Some(label) => format!("Paste the {label}"),
                 None if self.doctor.busy => "Answering...".into(),
                 None => "Ask about your setup, or / for commands".into(),
             };
-            p.text(&hint, frame.text, Style::new(size, t.muted));
+            painter.text(&hint, frame.text, Style::new(size, theme.muted));
         }
         // A key shows as stars, one per byte so the cursor stays in place.
         let shown = if secret.is_some() { "*".repeat(input.text.len()) } else { input.text.clone() };
         let field = self.text.borrow_mut().field(
             &shown,
-            &t.font,
+            &theme.font,
             size,
-            t.text,
+            theme.text,
             frame.text.w as f32,
             crate::text::Field {
                 cursor: input.cursor,
                 anchor: input.anchor,
                 visible: focused && self.doctor.edited.elapsed().as_millis() % 1000 < 600,
-                accent: t.accent.straight_rgba8(),
+                accent: theme.accent.straight_rgba8(),
             },
         );
         if let Some(image) = field {
-            p.image(&image.buffer, (frame.text.x, frame.text.y + (frame.text.h - image.height) / 2.0));
+            painter.image(&image.buffer, (frame.text.x, frame.text.y + (frame.text.h - image.height) / 2.0));
         }
         if self.doctor.busy {
             // While answering, the button stops it.
-            p.fill(frame.send, t.surface_raised, t.radius);
-            p.glyph(glyph::STOP, frame.send, 14, t.text);
+            painter.fill(frame.send, theme.surface_raised, theme.radius);
+            painter.glyph(glyph::STOP, frame.send, 14, theme.text);
         } else {
             let can_send = !input.text.trim().is_empty() || !self.doctor.attachments.is_empty();
             if can_send {
-                p.shape(frame.send, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
+                painter.shape(
+                    frame.send,
+                    Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
+                );
             }
-            p.glyph(glyph::ARROW_RIGHT, frame.send, 16, if can_send { t.on_accent } else { t.muted.alpha(0.6) });
+            painter.glyph(
+                glyph::ARROW_RIGHT,
+                frame.send,
+                16,
+                if can_send { theme.on_accent } else { theme.muted.alpha(0.6) },
+            );
         }
 
         let hints = frame.hints;
-        p.fill(Rect::new(hints.x + 1.0, hints.y, hints.w - 2.0, 1.0), t.border, 0.0);
+        painter.fill(Rect::new(hints.x + 1.0, hints.y, hints.w - 2.0, 1.0), theme.border, 0.0);
         // Over the mode switch, what the mode means instead of keys.
-        if let Some(i) = frame.modes.iter().position(|r| r.contains(pointer)) {
+        if let Some(index) = frame.modes.iter().position(|rect| rect.contains(pointer)) {
             let text = Rect::new(hints.x + 16.0, hints.y, hints.w - 32.0, hints.h);
-            p.text(Mode::ALL[i].description(), text, Style::new(t.font_size * 0.9, t.muted));
+            painter.text(Mode::ALL[index].description(), text, Style::new(theme.font_size * 0.9, theme.muted));
         } else {
             let keys: &[(&str, &str)] = if self.doctor.menu.is_some() {
                 &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Close")]
@@ -2364,60 +2450,61 @@ impl Tileception {
             } else {
                 &[("Enter", "Send"), ("/", "Commands"), ("PgUp", "Earlier"), ("Esc", "Close")]
             };
-            p.key_hints(keys, hints.x + 16.0, hints.y + hints.h / 2.0, false);
+            painter.key_hints(keys, hints.x + 16.0, hints.y + hints.h / 2.0, false);
         }
         // Menus lie over everything else.
         if let Some((outline, rows)) = self.menu_layout(&frame) {
-            p.popup(outline);
+            painter.popup(outline);
             for row in rows {
                 let hover = row.rect.contains(pointer);
                 if row.selected {
-                    p.fill(row.rect, t.accent.alpha(0.14), t.radius);
+                    painter.fill(row.rect, theme.accent.alpha(0.14), theme.radius);
                 } else if hover {
-                    p.fill(row.rect, t.surface_raised, t.radius);
+                    painter.fill(row.rect, theme.surface_raised, theme.radius);
                 }
-                let colour = if row.current { t.accent } else { t.text };
-                let label_w = p.measure(&row.label, row.rect.w * 0.6, Style::new(t.font_size, colour).bold()).0;
-                p.text(
+                let colour = if row.current { theme.accent } else { theme.text };
+                let label_w =
+                    painter.measure(&row.label, row.rect.w * 0.6, Style::new(theme.font_size, colour).bold()).0;
+                painter.text(
                     &row.label,
                     Rect::new(row.rect.x + 10.0, row.rect.y, label_w + 1.0, row.rect.h),
-                    Style::new(t.font_size, colour).bold(),
+                    Style::new(theme.font_size, colour).bold(),
                 );
                 let detail_x = row.rect.x + 22.0 + label_w;
                 let detail = Rect::new(detail_x, row.rect.y, row.rect.right() - 10.0 - detail_x, row.rect.h);
-                p.text(&row.detail, detail, Style::new(t.font_size * 0.88, t.muted).lines(1));
+                painter.text(&row.detail, detail, Style::new(theme.font_size * 0.88, theme.muted).lines(1));
                 if row.current {
-                    p.glyph(
+                    painter.glyph(
                         glyph::CHECK,
                         Rect::new(row.rect.right() - 26.0, row.rect.y, 20.0, row.rect.h),
                         12,
-                        t.accent,
+                        theme.accent,
                     );
                 }
             }
         }
-        p.finish()
+        painter.finish()
     }
 
     /// Under the field: the permission mode as a switch, and the model.
-    fn draw_toolbar(&self, p: &mut Painter, frame: &Frame, pointer: Point) {
-        let t = &self.theme;
+    fn draw_toolbar(&self, painter: &mut Painter, frame: &Frame, pointer: Point) {
+        let theme = &self.theme;
         let style = self.toolbar_style();
         let whole =
             Rect::new(frame.modes[0].x, frame.modes[0].y, frame.modes[2].right() - frame.modes[0].x, frame.modes[0].h);
-        p.shape(
+        painter.shape(
             whole,
-            Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, (whole.h / 2.0) as f32) },
+            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface, (whole.h / 2.0) as f32) },
         );
         for (mode, rect) in Mode::ALL.into_iter().zip(frame.modes) {
             let colour = match mode {
-                Mode::Ask => t.text,
-                Mode::Config => t.accent,
-                Mode::Yolo => t.warning,
+                Mode::Ask => theme.text,
+                Mode::Config => theme.accent,
+                Mode::Yolo => theme.warning,
             };
             let chosen = mode == self.doctor.mode;
             if chosen {
-                p.shape(
+                painter.shape(
                     rect,
                     Shape {
                         border_width: 1.0,
@@ -2426,144 +2513,165 @@ impl Tileception {
                     },
                 );
             } else if rect.contains(pointer) {
-                p.fill(rect, t.surface_raised, (rect.h / 2.0) as f32);
+                painter.fill(rect, theme.surface_raised, (rect.h / 2.0) as f32);
             }
-            let style = if chosen { style.bold().colour(colour) } else { style.colour(t.muted) };
-            p.text(mode.short(), rect, style.align(Align::Centre));
+            let style = if chosen { style.bold().colour(colour) } else { style.colour(theme.muted) };
+            painter.text(mode.short(), rect, style.align(Align::Centre));
         }
         match self.model_button(frame) {
             Some((option, button)) => {
-                let open = self.doctor.menu.as_ref() == Some(&option.id);
+                let open = self.doctor.menu.as_ref() == Some(&option.option_id);
                 if open || button.contains(pointer) {
-                    p.fill(button, t.surface_raised, t.radius);
+                    painter.fill(button, theme.surface_raised, theme.radius);
                 }
                 let label = model_label(option);
-                p.text(&label, Rect::new(button.x + 10.0, button.y, button.w - 34.0, button.h), style.lines(1));
+                painter.text(&label, Rect::new(button.x + 10.0, button.y, button.w - 34.0, button.h), style.lines(1));
                 let chevron = if open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_UP };
-                p.glyph(chevron, Rect::new(button.right() - 24.0, button.y, 16.0, button.h), 12, t.muted);
+                painter.glyph(chevron, Rect::new(button.right() - 24.0, button.y, 16.0, button.h), 12, theme.muted);
             }
             // Running, but with no choice of model to offer.
             None if matches!(self.doctor.status, Status::Ready) => {
                 let text = "Agent's default model";
-                let w = self.measure_text(text, style, frame.model.w).0;
-                let r = Rect::new(frame.model.right() - w - 10.0, frame.model.y, w + 1.0, frame.model.h);
-                p.text(text, r, style.colour(t.muted));
+                let width = self.measure_text(text, style, frame.model.w).0;
+                let rect = Rect::new(frame.model.right() - width - 10.0, frame.model.y, width + 1.0, frame.model.h);
+                painter.text(text, rect, style.colour(theme.muted));
             }
             None => {}
         }
     }
 
-    fn draw_block(&self, p: &mut Painter, block: &Block, pointer: Point) {
-        let t = &self.theme;
+    fn draw_block(&self, painter: &mut Painter, block: &Block, pointer: Point) {
+        let theme = &self.theme;
         match block {
             Block::Bubble { rect, text, user } => {
                 let shape = if *user {
                     Shape {
-                        radius: t.popup_radius,
-                        fill: (t.accent.alpha(0.22), t.accent_end.alpha(0.16)),
+                        radius: theme.popup_radius,
+                        fill: (theme.accent.alpha(0.22), theme.accent_end.alpha(0.16)),
                         ..Default::default()
                     }
                 } else {
-                    Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface_raised, t.popup_radius) }
+                    Shape {
+                        border_width: 1.0,
+                        border: theme.border,
+                        ..Shape::filled(theme.surface_raised, theme.popup_radius)
+                    }
                 };
-                p.shape(*rect, shape);
-                p.text(text, Rect::new(rect.x + 14.0, rect.y + 10.0, rect.w - 27.0, rect.h - 20.0), self.body_style());
+                painter.shape(*rect, shape);
+                painter.text(
+                    text,
+                    Rect::new(rect.x + 14.0, rect.y + 10.0, rect.w - 27.0, rect.h - 20.0),
+                    self.body_style(),
+                );
             }
             Block::Note { rect, text } => {
-                p.text(text, *rect, self.note_style());
+                painter.text(text, *rect, self.note_style());
             }
             Block::Tool { rect, title, status } => {
-                let (g, colour) = match status.as_str() {
-                    "completed" => (glyph::CHECK, t.accent),
-                    "failed" => (glyph::CLOSE, t.danger),
-                    _ => (glyph::RESTART, t.warning),
+                let (icon, colour) = match status.as_str() {
+                    "completed" => (glyph::CHECK, theme.accent),
+                    "failed" => (glyph::CLOSE, theme.danger),
+                    _ => (glyph::RESTART, theme.warning),
                 };
-                p.fill(*rect, t.surface, t.radius);
-                p.glyph(g, Rect::new(rect.x + 4.0, rect.y, 26.0, rect.h), 13, colour);
-                p.text(
+                painter.fill(*rect, theme.surface, theme.radius);
+                painter.glyph(icon, Rect::new(rect.x + 4.0, rect.y, 26.0, rect.h), 13, colour);
+                painter.text(
                     title,
                     Rect::new(rect.x + 32.0, rect.y, rect.w - 40.0, rect.h),
-                    Style::new(t.font_size * 0.95, t.text.alpha(0.75)).lines(1),
+                    Style::new(theme.font_size * 0.95, theme.text.alpha(0.75)).lines(1),
                 );
             }
             Block::Heading { rect, text } => {
-                p.text(text, *rect, Style::new(t.font_size * 0.85, t.muted).bold());
+                painter.text(text, *rect, Style::new(theme.font_size * 0.85, theme.muted).bold());
             }
             Block::Row { rect, title, detail, note, hit, current } => {
                 let hover = hit.is_some() && rect.contains(pointer);
                 let fill = if *current {
-                    t.accent.alpha(0.14)
+                    theme.accent.alpha(0.14)
                 } else if hover {
-                    t.surface_raised
+                    theme.surface_raised
                 } else {
-                    t.surface
+                    theme.surface
                 };
-                p.shape(
+                painter.shape(
                     *rect,
                     Shape {
                         border_width: 1.0,
-                        border: if *current { t.accent.alpha(0.4) } else { t.border },
-                        ..Shape::filled(fill, t.radius)
+                        border: if *current { theme.accent.alpha(0.4) } else { theme.border },
+                        ..Shape::filled(fill, theme.radius)
                     },
                 );
                 let enabled = hit.is_some();
-                let colour = if enabled { t.text } else { t.muted };
+                let colour = if enabled { theme.text } else { theme.muted };
                 if detail.is_empty() {
-                    p.text(
+                    painter.text(
                         title,
                         Rect::new(rect.x + 12.0, rect.y, rect.w - 24.0, rect.h),
-                        Style::new(t.font_size, if hover { t.text } else { t.text.alpha(0.7) }),
+                        Style::new(theme.font_size, if hover { theme.text } else { theme.text.alpha(0.7) }),
                     );
                     return;
                 }
-                let note_w = note
-                    .as_ref()
-                    .map_or(0.0, |n| p.measure(n, 200.0, Style::new(t.font_size * 0.78, t.warning)).0 + 12.0);
-                p.text(
+                let note_w = note.as_ref().map_or(0.0, |note_text| {
+                    painter.measure(note_text, 200.0, Style::new(theme.font_size * 0.78, theme.warning)).0 + 12.0
+                });
+                painter.text(
                     title,
                     Rect::new(rect.x + 14.0, rect.y + 8.0, rect.w - 28.0 - note_w, 22.0),
-                    Style::new(t.font_size, colour).bold(),
+                    Style::new(theme.font_size, colour).bold(),
                 );
-                p.text(
+                painter.text(
                     detail,
                     Rect::new(rect.x + 14.0, rect.y + 29.0, rect.w - 28.0, 18.0),
-                    Style::new(t.font_size * 0.9, t.text.alpha(0.65)).lines(1),
+                    Style::new(theme.font_size * 0.9, theme.text.alpha(0.65)).lines(1),
                 );
                 if let Some(note) = note {
-                    let style = Style::new(t.font_size * 0.78, t.warning);
-                    p.text(note, Rect::new(rect.right() - note_w - 2.0, rect.y + 8.0, note_w, 22.0), style);
+                    let style = Style::new(theme.font_size * 0.78, theme.warning);
+                    painter.text(note, Rect::new(rect.right() - note_w - 2.0, rect.y + 8.0, note_w, 22.0), style);
                 }
             }
             Block::Button { rect, label, primary, .. } => {
                 let hover = rect.contains(pointer);
                 if *primary {
-                    p.shape(*rect, Shape { radius: t.radius, fill: (t.accent, t.accent_end), ..Default::default() });
+                    painter.shape(
+                        *rect,
+                        Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
+                    );
                 } else {
-                    let fill = if hover { t.surface_raised } else { t.surface };
-                    p.shape(*rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(fill, t.radius) });
+                    let fill = if hover { theme.surface_raised } else { theme.surface };
+                    painter.shape(
+                        *rect,
+                        Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, theme.radius) },
+                    );
                 }
-                let colour = if *primary { t.on_accent } else { t.text };
-                p.text(label, *rect, Style::new(t.font_size * 0.9, colour).bold().align(Align::Centre));
+                let colour = if *primary { theme.on_accent } else { theme.text };
+                painter.text(label, *rect, Style::new(theme.font_size * 0.9, colour).bold().align(Align::Centre));
             }
             Block::Diff { rect, lines } => {
-                p.shape(*rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
-                let size = t.font_size * 0.82;
-                for (i, line) in lines.iter().take(DIFF_LINES).enumerate() {
+                painter.shape(
+                    *rect,
+                    Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.background, theme.radius) },
+                );
+                let size = theme.font_size * 0.82;
+                for (index, line) in lines.iter().take(DIFF_LINES).enumerate() {
                     let row =
-                        Rect::new(rect.x + 8.0, rect.y + 6.0 + i as f64 * DIFF_LINE_H, rect.w - 16.0, DIFF_LINE_H);
+                        Rect::new(rect.x + 8.0, rect.y + 6.0 + index as f64 * DIFF_LINE_H, rect.w - 16.0, DIFF_LINE_H);
                     let (mark, colour) = match line.sign {
-                        Sign::Added => ("+", t.accent),
-                        Sign::Removed => ("\u{2212}", t.danger),
-                        Sign::Same => (" ", t.muted),
-                        Sign::Skipped => ("\u{22ef}", t.muted.alpha(0.6)),
+                        Sign::Added => ("+", theme.accent),
+                        Sign::Removed => ("\u{2212}", theme.danger),
+                        Sign::Same => (" ", theme.muted),
+                        Sign::Skipped => ("\u{22ef}", theme.muted.alpha(0.6)),
                     };
                     if line.sign == Sign::Added {
-                        p.fill(row, t.accent.alpha(0.08), 2.0);
+                        painter.fill(row, theme.accent.alpha(0.08), 2.0);
                     } else if line.sign == Sign::Removed {
-                        p.fill(row, t.danger.alpha(0.08), 2.0);
+                        painter.fill(row, theme.danger.alpha(0.08), 2.0);
                     }
-                    p.text(mark, Rect::new(row.x + 2.0, row.y, 12.0, row.h), Style::new(size, colour).bold());
-                    p.text(&line.text, Rect::new(row.x + 16.0, row.y, row.w - 18.0, row.h), Style::new(size, colour));
+                    painter.text(mark, Rect::new(row.x + 2.0, row.y, 12.0, row.h), Style::new(size, colour).bold());
+                    painter.text(
+                        &line.text,
+                        Rect::new(row.x + 16.0, row.y, row.w - 18.0, row.h),
+                        Style::new(size, colour),
+                    );
                 }
                 if lines.len() > DIFF_LINES {
                     let more = format!("and {} more lines", lines.len() - DIFF_LINES);
@@ -2573,102 +2681,132 @@ impl Tileception {
                         rect.w - 32.0,
                         DIFF_LINE_H,
                     );
-                    p.text(&more, row, Style::new(size, t.muted));
+                    painter.text(&more, row, Style::new(size, theme.muted));
                 }
             }
             Block::Rich { rect, spans, style, marker, quote } => {
-                if let Some((at, marker)) = marker {
-                    p.text(marker, *at, Style::new(style.size, t.muted).align(Align::Centre));
+                if let Some((marker_rect, marker)) = marker {
+                    painter.text(marker, *marker_rect, Style::new(style.size, theme.muted).align(Align::Centre));
                 }
                 if *quote {
-                    p.fill(Rect::new(rect.x - 12.0, rect.y + 2.0, 3.0, rect.h - 4.0), t.accent.alpha(0.5), 1.5);
+                    painter.fill(
+                        Rect::new(rect.x - 12.0, rect.y + 2.0, 3.0, rect.h - 4.0),
+                        theme.accent.alpha(0.5),
+                        1.5,
+                    );
                 }
                 if let Some(image) = self.rich_image(spans, *style, rect.w) {
-                    let hover = image.links.iter().any(|([x, y, w, h], _)| {
-                        Rect::new(rect.x + f64::from(*x), rect.y + f64::from(*y), f64::from(*w), f64::from(*h))
-                            .contains(pointer)
+                    let hover = image.links.iter().any(|([left, top, width, height], _)| {
+                        Rect::new(
+                            rect.x + f64::from(*left),
+                            rect.y + f64::from(*top),
+                            f64::from(*width),
+                            f64::from(*height),
+                        )
+                        .contains(pointer)
                     });
                     if hover {
-                        for ([x, y, w, h], _) in &image.links {
-                            let r =
-                                Rect::new(rect.x + f64::from(*x), rect.y + f64::from(*y), f64::from(*w), f64::from(*h));
-                            if r.contains(pointer) {
-                                p.fill(r, t.accent.alpha(0.14), 3.0);
+                        for ([left, top, width, height], _) in &image.links {
+                            let link = Rect::new(
+                                rect.x + f64::from(*left),
+                                rect.y + f64::from(*top),
+                                f64::from(*width),
+                                f64::from(*height),
+                            );
+                            if link.contains(pointer) {
+                                painter.fill(link, theme.accent.alpha(0.14), 3.0);
                             }
                         }
                     }
-                    p.image(&image.image.buffer, (rect.x, rect.y));
+                    painter.image(&image.image.buffer, (rect.x, rect.y));
                 }
             }
             Block::Code { rect, spans, style, lang, copy, run } => {
-                p.shape(*rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.background, t.radius) });
-                p.fill(Rect::new(rect.x + 1.0, rect.y + CODE_BAR, rect.w - 2.0, 1.0), t.border, 0.0);
-                let small = Style::new(t.font_size * 0.8, t.muted).lines(1);
-                p.text(lang, Rect::new(rect.x + 12.0, rect.y, rect.w - 80.0, CODE_BAR), small);
+                painter.shape(
+                    *rect,
+                    Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.background, theme.radius) },
+                );
+                painter.fill(Rect::new(rect.x + 1.0, rect.y + CODE_BAR, rect.w - 2.0, 1.0), theme.border, 0.0);
+                let small = Style::new(theme.font_size * 0.8, theme.muted).lines(1);
+                painter.text(lang, Rect::new(rect.x + 12.0, rect.y, rect.w - 80.0, CODE_BAR), small);
                 let (copy_at, run_at) = code_buttons(*rect, run.is_some());
-                let copied =
-                    self.doctor.copied.as_ref().is_some_and(|(text, at)| text == copy && at.elapsed() < COPIED_FOR);
+                let copied = self
+                    .doctor
+                    .copied
+                    .as_ref()
+                    .is_some_and(|(text, since)| text == copy && since.elapsed() < COPIED_FOR);
                 let buttons = [
                     Some((copy_at, if copied { glyph::CHECK } else { glyph::COPY }, copied)),
-                    run_at.map(|r| (r, glyph::PLAY, false)),
+                    run_at.map(|run_button| (run_button, glyph::PLAY, false)),
                 ];
-                for (at, g, done) in buttons.into_iter().flatten() {
-                    let hover = at.contains(pointer);
+                for (button_rect, icon, done) in buttons.into_iter().flatten() {
+                    let hover = button_rect.contains(pointer);
                     if hover {
-                        p.fill(at, t.surface_raised, t.radius);
+                        painter.fill(button_rect, theme.surface_raised, theme.radius);
                     }
                     let colour = if done {
-                        t.accent
+                        theme.accent
                     } else if hover {
-                        t.text
+                        theme.text
                     } else {
-                        t.muted
+                        theme.muted
                     };
-                    p.glyph(g, at, 14, colour);
+                    painter.glyph(icon, button_rect, 14, colour);
                 }
                 if let Some(image) = self.rich_image(spans, *style, rect.w - 24.0) {
-                    p.image(&image.image.buffer, (rect.x + 12.0, rect.y + CODE_BAR + 9.0));
+                    painter.image(&image.image.buffer, (rect.x + 12.0, rect.y + CODE_BAR + 9.0));
                 }
             }
             Block::Picture { rect, url, .. } => {
                 let hover = rect.contains(pointer);
                 match self.doctor.pictures.get(url) {
                     Some(Picture::Ready(thumb)) => {
-                        p.image_sized(&thumb.buffer, (rect.x, rect.y), Some((rect.w as i32, rect.h as i32)));
-                        let border = if hover { t.accent.alpha(0.6) } else { t.border };
-                        p.shape(*rect, Shape { border_width: 1.0, border, ..Shape::filled(Colour::TRANSPARENT, 2.0) });
+                        painter.image_sized(&thumb.buffer, (rect.x, rect.y), Some((rect.w as i32, rect.h as i32)));
+                        let border = if hover { theme.accent.alpha(0.6) } else { theme.border };
+                        painter.shape(
+                            *rect,
+                            Shape { border_width: 1.0, border, ..Shape::filled(Colour::TRANSPARENT, 2.0) },
+                        );
                     }
                     _ => {
-                        p.shape(
+                        painter.shape(
                             *rect,
-                            Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, t.radius) },
+                            Shape {
+                                border_width: 1.0,
+                                border: theme.border,
+                                ..Shape::filled(theme.surface, theme.radius)
+                            },
                         );
-                        let style = Style::new(t.font_size * 0.9, t.muted).align(Align::Centre);
-                        p.text("Loading picture...", *rect, style);
+                        let style = Style::new(theme.font_size * 0.9, theme.muted).align(Align::Centre);
+                        painter.text("Loading picture...", *rect, style);
                     }
                 }
             }
-            Block::Rule { rect } => p.fill(*rect, t.border, 0.0),
+            Block::Rule { rect } => painter.fill(*rect, theme.border, 0.0),
             Block::Thumbs { rect, thumbs } => {
                 let size = f64::from(THUMB);
-                for (i, thumb) in thumbs.iter().enumerate() {
-                    let r = Rect::new(rect.x + i as f64 * (size + 6.0), rect.y, size, size);
-                    p.image_sized(&thumb.buffer, (r.x, r.y), Some((THUMB, THUMB)));
-                    p.shape(
-                        r,
-                        Shape { border_width: 1.0, border: t.border, ..Shape::filled(Colour::TRANSPARENT, 2.0) },
+                for (index, thumb) in thumbs.iter().enumerate() {
+                    let slot = Rect::new(rect.x + index as f64 * (size + 6.0), rect.y, size, size);
+                    painter.image_sized(&thumb.buffer, (slot.x, slot.y), Some((THUMB, THUMB)));
+                    painter.shape(
+                        slot,
+                        Shape { border_width: 1.0, border: theme.border, ..Shape::filled(Colour::TRANSPARENT, 2.0) },
                     );
                 }
             }
             Block::Dots { rect } => {
                 let phase = (self.doctor.edited.elapsed().as_secs_f64() * 3.0) as usize % 3;
-                p.shape(
+                painter.shape(
                     *rect,
-                    Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface_raised, t.popup_radius) },
+                    Shape {
+                        border_width: 1.0,
+                        border: theme.border,
+                        ..Shape::filled(theme.surface_raised, theme.popup_radius)
+                    },
                 );
-                for i in 0..3 {
-                    let colour = if i == phase { t.accent } else { t.muted.alpha(0.6) };
-                    p.fill(Rect::new(rect.x + 17.0 + i as f64 * 11.0, rect.y + 12.0, 6.0, 6.0), colour, 3.0);
+                for dot in 0..3 {
+                    let colour = if dot == phase { theme.accent } else { theme.muted.alpha(0.6) };
+                    painter.fill(Rect::new(rect.x + 17.0 + dot as f64 * 11.0, rect.y + 12.0, 6.0, 6.0), colour, 3.0);
                 }
             }
         }
@@ -2682,12 +2820,12 @@ fn test_agent() -> Option<String> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    std::env::var("TILECEPTION_DOCTOR_TEST_AGENT").ok().filter(|c| !c.trim().is_empty())
+    std::env::var("TILECEPTION_DOCTOR_TEST_AGENT").ok().filter(|command| !command.trim().is_empty())
 }
 
-/// `s` as one word for `sh`.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// `text` as one word for `sh`.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 fn state_dir() -> PathBuf {
@@ -2732,7 +2870,7 @@ fn backups_dir() -> PathBuf {
 }
 
 fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>) -> Result<serde_json::Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
     Ok(serde_json::json!({ "content": doctor_policy::read_lines(&text, line, limit) }))
 }
 
@@ -2770,7 +2908,7 @@ fn doctor_context(mode: &str) -> String {
 
 /// Premultiplied, as the renderer wants pictures.
 fn premultiplied(image: image::RgbaImage) -> Pixels {
-    let (w, h) = image.dimensions();
+    let (width, height) = image.dimensions();
     let mut raw = image.into_raw();
     for pixel in raw.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
@@ -2778,7 +2916,7 @@ fn premultiplied(image: image::RgbaImage) -> Pixels {
             *channel = (u32::from(*channel) * alpha / 255) as u8;
         }
     }
-    (raw, w, h)
+    (raw, width, height)
 }
 
 /// A picture from an answer, downloaded (https only) or read from a file,
@@ -2811,15 +2949,19 @@ fn load_picture(url: &str) -> Option<Pixels> {
         return None;
     };
     let image = image::load_from_memory(&bytes).ok()?;
-    let (w, h) = ((PANEL_W - 2.0 * PAD) as u32, PICTURE_H);
-    let image = if image.width() > w || image.height() > h { image.thumbnail(w, h) } else { image };
+    let (max_width, max_height) = ((PANEL_W - 2.0 * PAD) as u32, PICTURE_H);
+    let image = if image.width() > max_width || image.height() > max_height {
+        image.thumbnail(max_width, max_height)
+    } else {
+        image
+    };
     Some(premultiplied(image.to_rgba8()))
 }
 
 /// A pasted picture as a PNG small enough to send, and its thumbnail.
 fn prepare_attachment(bytes: &[u8]) -> Result<(Vec<u8>, Pixels), String> {
     use image::imageops::FilterType;
-    let image = image::load_from_memory(bytes).map_err(|e| format!("That picture could not be read: {e}"))?;
+    let image = image::load_from_memory(bytes).map_err(|err| format!("That picture could not be read: {err}"))?;
     let image = if image.width().max(image.height()) > SEND_SIZE {
         image.resize(SEND_SIZE, SEND_SIZE, FilterType::Triangle)
     } else {
@@ -2828,7 +2970,7 @@ fn prepare_attachment(bytes: &[u8]) -> Result<(Vec<u8>, Pixels), String> {
     let mut png = Vec::new();
     image
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .map_err(|e| format!("That picture could not be prepared: {e}"))?;
+        .map_err(|err| format!("That picture could not be prepared: {err}"))?;
     let size = THUMB as u32;
     Ok((png, premultiplied(image.resize_to_fill(size, size, FilterType::Triangle).to_rgba8())))
 }
@@ -2840,10 +2982,12 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
         return text;
     }
     let dir = state_dir().join("pictures");
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since_epoch| since_epoch.as_millis());
     let mut text = text;
-    for (i, attachment) in attachments.iter().enumerate() {
-        let path = dir.join(format!("pasted-{stamp}-{i}.png"));
+    for (index, attachment) in attachments.iter().enumerate() {
+        let path = dir.join(format!("pasted-{stamp}-{index}.png"));
         match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &attachment.png)) {
             Ok(()) => text += &format!("\n\n[The user attached a picture: {}]", path.display()),
             Err(error) => tracing::warn!("{}: {error}", path.display()),

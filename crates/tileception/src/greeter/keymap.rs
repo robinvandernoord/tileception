@@ -60,7 +60,7 @@ pub fn remembered(layout: &str, variant: &str) -> String {
 
 /// A remembered layout back as layout and variant.
 pub fn recall(text: &str) -> (String, String) {
-    match text.strip_suffix(')').and_then(|t| t.split_once('(')) {
+    match text.strip_suffix(')').and_then(|layout| layout.split_once('(')) {
         Some((layout, variant)) => (layout.to_string(), variant.to_string()),
         None => (text.to_string(), String::new()),
     }

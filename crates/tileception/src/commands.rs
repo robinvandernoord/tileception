@@ -157,8 +157,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let args: Vec<&str> = rest.split_whitespace().collect();
     let slot = || -> Result<usize, String> {
         args.first()
-            .and_then(|a| a.parse::<usize>().ok())
-            .filter(|n| (1..=9).contains(n))
+            .and_then(|arg| arg.parse::<usize>().ok())
+            .filter(|number| (1..=9).contains(number))
             .ok_or_else(|| format!("{verb} needs a slot from 1 to 9"))
     };
     let dir = || -> Result<Dir, String> {
@@ -184,8 +184,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 ["debug", count] => count
                     .parse::<usize>()
                     .ok()
-                    .filter(|n| *n <= 1000)
-                    .map(|n| Command::TrayDebug(Some(n)))
+                    .filter(|parsed| *parsed <= 1000)
+                    .map(|parsed| Command::TrayDebug(Some(parsed)))
                     .ok_or_else(|| "tray debug needs a count from 0 to 1000".into()),
                 _ => Err("tray takes no arguments or debug [n]".into()),
             };
@@ -193,8 +193,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "select" => {
             let ids = args
                 .iter()
-                .map(|id| {
-                    id.parse::<u64>()
+                .map(|id_text| {
+                    id_text
+                        .parse::<u64>()
                         .map(tileception_core::WindowId)
                         .map_err(|_| "select needs numeric window ids".to_string())
                 })
@@ -243,9 +244,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return Ok(Command::CopyImage(rest.into()));
         }
         "drop" => {
-            let coords: Vec<f64> = args.iter().filter_map(|a| a.parse().ok()).collect();
-            let [x, y] = coords[..] else { return Err("drop needs x and y".into()) };
-            return Ok(Command::Drop(x, y));
+            let coords: Vec<f64> = args.iter().filter_map(|arg| arg.parse().ok()).collect();
+            let [x_pos, y_pos] = coords[..] else { return Err("drop needs x and y".into()) };
+            return Ok(Command::Drop(x_pos, y_pos));
         }
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
@@ -265,13 +266,14 @@ pub fn parse(line: &str) -> Result<Command, String> {
         },
         "toggle-split" => Action::ToggleSplit,
         "resize" => {
-            let d = dir()?;
-            let px: f64 = args.get(1).and_then(|a| a.parse().ok()).ok_or("resize needs a direction and pixels")?;
-            match d {
-                Dir::Right => Action::Resize(px, 0.0),
-                Dir::Left => Action::Resize(-px, 0.0),
-                Dir::Down => Action::Resize(0.0, px),
-                Dir::Up => Action::Resize(0.0, -px),
+            let direction = dir()?;
+            let pixels: f64 =
+                args.get(1).and_then(|arg| arg.parse().ok()).ok_or("resize needs a direction and pixels")?;
+            match direction {
+                Dir::Right => Action::Resize(pixels, 0.0),
+                Dir::Left => Action::Resize(-pixels, 0.0),
+                Dir::Down => Action::Resize(0.0, pixels),
+                Dir::Up => Action::Resize(0.0, -pixels),
             }
         }
         "step-out" => Action::StepOut,
@@ -296,8 +298,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "minimize" => Action::Minimize,
         "restore" => match args.first() {
             None => Action::Restore(None),
-            Some(id) => Action::Restore(Some(tileception_core::WindowId(
-                id.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
+            Some(id_text) => Action::Restore(Some(tileception_core::WindowId(
+                id_text.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
             ))),
         },
         "next-tab" => Action::NextTab,
@@ -305,8 +307,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "save" => Action::SaveView(slot()?),
         "go" => Action::RecallView(slot()?),
         "vt" => {
-            let n = args.first().and_then(|a| a.parse::<i32>().ok()).ok_or("vt needs a number")?;
-            Action::Vt(n)
+            let number = args.first().and_then(|arg| arg.parse::<i32>().ok()).ok_or("vt needs a number")?;
+            Action::Vt(number)
         }
         other => return Err(format!("unknown command {other:?}")),
     };
@@ -350,7 +352,7 @@ impl Tileception {
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
             Command::DoctorKey(sym, mods) => self.doctor_key(sym, mods),
-            Command::DoctorUse(id) => self.use_doctor_agent(id),
+            Command::DoctorUse(agent_id) => self.use_doctor_agent(agent_id),
             Command::Inject(input) => self.inject(input)?,
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::Duck => self.toggle_duck(),
@@ -362,17 +364,19 @@ impl Tileception {
                 self.update_appearance();
             }
             Command::Select(ids) => {
-                if ids.iter().any(|id| !self.world.contains_window(*id)) {
+                if ids.iter().any(|window_id| !self.world.contains_window(*window_id)) {
                     return Err("select contains an unknown window id".into());
                 }
                 self.selection.windows = ids.into_iter().collect();
             }
-            Command::Drop(x, y) => {
+            Command::Drop(x_pos, y_pos) => {
                 let win = self.world.focus().ok_or("nothing is focused")?;
                 let now = self.now();
                 let view = self.world.view(now);
-                let target =
-                    self.world.drop_target(tileception_core::Point::new(x, y), win, view).ok_or("no target there")?;
+                let target = self
+                    .world
+                    .drop_target(tileception_core::Point::new(x_pos, y_pos), win, view)
+                    .ok_or("no target there")?;
                 self.world.apply_drop(win, target, now);
                 self.apply_layout();
                 self.persist_layout();
@@ -391,13 +395,13 @@ mod tests {
     fn help_lists_only_real_commands() {
         let verbs: Vec<&str> = HELP
             .lines()
-            .filter(|l| l.starts_with("  ") && !l.starts_with("   "))
-            .filter_map(|l| l.split_whitespace().next())
+            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
+            .filter_map(|line| line.split_whitespace().next())
             .collect();
         assert!(verbs.len() > 50, "help lists {} commands", verbs.len());
         for verb in verbs {
-            if let Err(e) = parse(verb) {
-                assert!(!e.starts_with("unknown"), "help lists {verb:?}: {e}");
+            if let Err(err) = parse(verb) {
+                assert!(!err.starts_with("unknown"), "help lists {verb:?}: {err}");
             }
         }
     }

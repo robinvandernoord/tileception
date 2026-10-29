@@ -42,12 +42,17 @@ impl Tileception {
             (Some((surface, origin)), true) => {
                 let local = (self.pointer - *origin).to_i32_round();
                 with_pointer_constraint(surface, &pointer, |constraint| match constraint {
-                    Some(c) if c.is_active() && c.region().is_none_or(|r| r.contains(local)) => match &*c {
-                        PointerConstraint::Locked(_) => Held::Locked,
-                        PointerConstraint::Confined(confined) => {
-                            Held::Confined(surface.clone(), *origin, confined.region().cloned())
+                    Some(constraint)
+                        if constraint.is_active()
+                            && constraint.region().is_none_or(|region| region.contains(local)) =>
+                    {
+                        match &*constraint {
+                            PointerConstraint::Locked(_) => Held::Locked,
+                            PointerConstraint::Confined(confined) => {
+                                Held::Confined(surface.clone(), *origin, confined.region().cloned())
+                            }
                         }
-                    },
+                    }
                     _ => Held::Free,
                 })
             }
@@ -63,8 +68,9 @@ impl Tileception {
                 None
             }
             Held::Confined(surface, origin, region) => {
-                let leaves_surface = self.constraint_surface_under(target).is_none_or(|(s, _)| s != surface);
-                let leaves_region = region.is_some_and(|r| !r.contains((target - origin).to_i32_round()));
+                let leaves_surface =
+                    self.constraint_surface_under(target).is_none_or(|(target_surface, _)| target_surface != surface);
+                let leaves_region = region.is_some_and(|region| !region.contains((target - origin).to_i32_round()));
                 if leaves_surface || leaves_region {
                     pointer.frame(self);
                     None
@@ -88,20 +94,20 @@ impl Tileception {
         }
         let local = (self.pointer - origin).to_i32_round();
         with_pointer_constraint(&surface, &pointer, |constraint| {
-            if let Some(c) = constraint
-                && !c.is_active()
-                && c.region().is_none_or(|r| r.contains(local))
+            if let Some(constraint) = constraint
+                && !constraint.is_active()
+                && constraint.region().is_none_or(|region| region.contains(local))
             {
-                c.activate();
+                constraint.activate();
             }
         });
     }
 
-    /// The surface a constraint would belong to under `at`, with its origin.
+    /// The surface a constraint would belong to under `point`, with its origin.
     /// Programs often draw into a subsurface but put the constraint on their
     /// main surface, so this is the root of the surface tree.
-    fn constraint_surface_under(&self, at: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (surface, origin) = self.surface_under(at)?;
+    fn constraint_surface_under(&self, point: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let (surface, origin) = self.surface_under(point)?;
         let mut root = surface.clone();
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
@@ -110,9 +116,12 @@ impl Tileception {
             return Some((surface, origin));
         }
         // A window's main surface sits at the origin it is drawn at.
-        let drawn = self
-            .window_id(&root)
-            .and_then(|id| self.drawn_windows(self.now()).into_iter().find(|d| d.id == id && d.live).map(|d| d.origin));
+        let drawn = self.window_id(&root).and_then(|window_id| {
+            self.drawn_windows(self.now())
+                .into_iter()
+                .find(|drawn| drawn.window_id == window_id && drawn.live)
+                .map(|drawn| drawn.origin)
+        });
         Some(match drawn {
             Some(origin) => (root, origin),
             None => (surface, origin),
@@ -133,14 +142,18 @@ impl PointerConstraintsHandler for Tileception {
         location: Point<f64, Logical>,
     ) {
         // Where the program would like the cursor to reappear once unlocked.
-        let active = with_pointer_constraint(surface, pointer, |c| c.is_some_and(|c| c.is_active()));
+        let active = with_pointer_constraint(surface, pointer, |constraint| {
+            constraint.is_some_and(|constraint| constraint.is_active())
+        });
         if !active {
             return;
         }
-        if let Some((_, origin)) = self.constraint_surface_under(self.pointer).filter(|(s, _)| s == surface) {
-            let at = origin + location;
-            self.pointer = at;
-            pointer.set_location(at);
+        if let Some((_, origin)) =
+            self.constraint_surface_under(self.pointer).filter(|(target_surface, _)| target_surface == surface)
+        {
+            let position = origin + location;
+            self.pointer = position;
+            pointer.set_location(position);
         }
     }
 }

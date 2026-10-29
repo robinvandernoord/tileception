@@ -61,7 +61,7 @@ pub enum FadeIn {
 /// How one window is drawn this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct Drawn {
-    pub id: WindowId,
+    pub window_id: WindowId,
     pub role: WindowRole,
     pub leaf: NodeId,
     /// The rectangle the layout gives the window.
@@ -95,16 +95,16 @@ impl Tileception {
         let screen = self.world.screen();
         let focus = self.world.focus();
 
-        if let Some(id) = self.fullscreen
-            && let Some(window) = self.windows.get(&id)
+        if let Some(window_id) = self.fullscreen
+            && let Some(window) = self.windows.get(&window_id)
         {
             let geo = window.geometry();
             let out = self.output_rect();
             let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
             let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
-            let leaf = self.world.tree().leaf_of(id).unwrap_or(self.world.tree().root());
+            let leaf = self.world.tree().leaf_of(window_id).unwrap_or(self.world.tree().root());
             return vec![Drawn {
-                id,
+                window_id,
                 role: WindowRole::Tiled,
                 leaf,
                 slot: out,
@@ -116,33 +116,38 @@ impl Tileception {
             }];
         }
 
-        let dragged = self.move_drag.filter(|d| !d.free).map(|d| d.window);
+        let dragged = self.move_drag.filter(|drag| !drag.free).map(|drag| drag.window);
         let mut out = Vec::new();
-        for p in self.world.placements(view) {
-            if !p.rect.intersects(&screen) || Some(p.window) == dragged {
+        for placement in self.world.placements(view) {
+            if !placement.rect.intersects(&screen) || Some(placement.window) == dragged {
                 continue;
             }
-            let Some(window) = self.windows.get(&p.window) else { continue };
+            let Some(window) = self.windows.get(&placement.window) else { continue };
             let geo = window.geometry();
             if geo.size.w <= 0 || geo.size.h <= 0 {
                 continue;
             }
-            let (gw, gh) = (geo.size.w as f64, geo.size.h as f64);
+            let (geometry_width, geometry_height) = (geo.size.w as f64, geo.size.h as f64);
             // Floating windows hang still while the camera moves.
-            let moving = moving && p.role == WindowRole::Tiled;
-            let (over_w, over_h) = (gw - p.rect.w, gh - p.rect.h);
-            let tiled = p.role == WindowRole::Tiled;
+            let moving = moving && placement.role == WindowRole::Tiled;
+            let (over_w, over_h) = (geometry_width - placement.rect.w, geometry_height - placement.rect.h);
+            let tiled = placement.role == WindowRole::Tiled;
             if tiled && !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
                 // Just too big, usually from a minimum size: drawn 1:1 from
                 // the slot's top left and cut off at its edges, so it stays
                 // sharp and usable instead of becoming a preview.
-                let content = Rect::new(p.rect.x, p.rect.y, gw.min(p.rect.w), gh.min(p.rect.h));
+                let content = Rect::new(
+                    placement.rect.x,
+                    placement.rect.y,
+                    geometry_width.min(placement.rect.w),
+                    geometry_height.min(placement.rect.h),
+                );
                 let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
                 out.push(Drawn {
-                    id: p.window,
-                    role: p.role,
-                    leaf: p.leaf,
-                    slot: p.rect,
+                    window_id: placement.window,
+                    role: placement.role,
+                    leaf: placement.leaf,
+                    slot: placement.rect,
                     content,
                     origin,
                     scale: (1.0, 1.0),
@@ -151,37 +156,38 @@ impl Tileception {
                 });
                 continue;
             }
-            let (sx, sy) = if moving {
+            let (scale_x, scale_y) = if moving {
                 // Stretch into the moving slot; the client catches up after.
-                (p.rect.w / gw, p.rect.h / gh)
+                (placement.rect.w / geometry_width, placement.rect.h / geometry_height)
             } else {
                 // Fit without enlarging: a window too big for its slot shows
                 // as a preview, a smaller one sits in the middle.
-                let s = (p.rect.w / gw).min(p.rect.h / gh).min(1.0);
-                (s, s)
+                let uniform_scale =
+                    (placement.rect.w / geometry_width).min(placement.rect.h / geometry_height).min(1.0);
+                (uniform_scale, uniform_scale)
             };
             let content = Rect::new(
-                p.rect.x + (p.rect.w - gw * sx) / 2.0,
-                p.rect.y + (p.rect.h - gh * sy) / 2.0,
-                gw * sx,
-                gh * sy,
+                placement.rect.x + (placement.rect.w - geometry_width * scale_x) / 2.0,
+                placement.rect.y + (placement.rect.h - geometry_height * scale_y) / 2.0,
+                geometry_width * scale_x,
+                geometry_height * scale_y,
             );
-            let origin = (content.x - geo.loc.x as f64 * sx, content.y - geo.loc.y as f64 * sy).into();
-            let live = !moving && !overview && sx >= 0.999 && sy >= 0.999;
+            let origin = (content.x - geo.loc.x as f64 * scale_x, content.y - geo.loc.y as f64 * scale_y).into();
+            let live = !moving && !overview && scale_x >= 0.999 && scale_y >= 0.999;
             out.push(Drawn {
-                id: p.window,
-                role: p.role,
-                leaf: p.leaf,
-                slot: p.rect,
+                window_id: placement.window,
+                role: placement.role,
+                leaf: placement.leaf,
+                slot: placement.rect,
                 content,
                 origin,
-                scale: (sx, sy),
+                scale: (scale_x, scale_y),
                 live,
                 clipped: false,
             });
         }
         // Floating windows above tiles, the focused one above its peers.
-        out.sort_by_key(|d| (d.role != WindowRole::Floating, Some(d.id) != focus));
+        out.sort_by_key(|drawn| (drawn.role != WindowRole::Floating, Some(drawn.window_id) != focus));
         out
     }
 
@@ -196,14 +202,14 @@ impl Tileception {
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let mut elements = self.render_elements(renderer, now);
         if let Some(buffer) = wallpaper {
-            let o = self.output_rect();
-            push_image(&mut elements, renderer, &buffer, (o.x, o.y), self.scale);
+            let output_rect = self.output_rect();
+            push_image(&mut elements, renderer, &buffer, (output_rect.x, output_rect.y), self.scale);
         }
         if self.fade_in == FadeIn::Waiting {
             self.fade_in = FadeIn::Since(std::time::Instant::now());
         }
-        if let FadeIn::Since(at) = self.fade_in {
-            let shown = crate::ui::ease_out(at.elapsed().as_secs_f64() / FADE_IN);
+        if let FadeIn::Since(started) = self.fade_in {
+            let shown = crate::ui::ease_out(started.elapsed().as_secs_f64() / FADE_IN);
             if shown >= 1.0 {
                 self.fade_in = FadeIn::Off;
             } else {
@@ -223,7 +229,7 @@ impl Tileception {
         }
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
-        let drawn = self.drawn_windows(now);
+        let drawn_windows = self.drawn_windows(now);
         let focus = self.world.focus();
         let view = self.world.view(now);
         let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
@@ -249,9 +255,9 @@ impl Tileception {
 
         // Then bars. A fullscreen window covers everything but the above.
         if self.fullscreen.is_some() {
-            for d in &drawn {
-                if let Some(window) = self.windows.get(&d.id) {
-                    let origin = physical_point((d.origin.x, d.origin.y), self.scale);
+            for drawn in &drawn_windows {
+                if let Some(window) = self.windows.get(&drawn.window_id) {
+                    let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                         window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
                     elements.extend(enlarged(surfaces, origin, self.scale));
@@ -271,22 +277,22 @@ impl Tileception {
         }
 
         // Then the window being dragged, then where it would land.
-        if let Some(drag) = self.move_drag.filter(|d| !d.free) {
-            let r = Rect::new(
+        if let Some(drag) = self.move_drag.filter(|drag| !drag.free) {
+            let rect = Rect::new(
                 self.pointer.x - drag.grab.0 * drag.size.0,
                 self.pointer.y - drag.grab.1 * drag.size.1,
                 drag.size.0,
                 drag.size.1,
             );
-            push_shape(&mut elements, shapes.as_ref(), &r, self.frame(true, false));
-            elements.extend(self.picture(renderer, drag.window, &r));
+            push_shape(&mut elements, shapes.as_ref(), &rect, self.frame(true, false));
+            elements.extend(self.picture(renderer, drag.window, &rect));
             push_shape(
                 &mut elements,
                 shapes.as_ref(),
-                &r,
+                &rect,
                 Shape { glow_radius: 24.0, glow: Colour([0.0, 0.0, 0.0, 0.45]), ..Default::default() },
             );
-            if let Some(preview) = drag.target.and_then(|t| self.world.drop_preview(t, view)) {
+            if let Some(preview) = drag.target.and_then(|target| self.world.drop_preview(target, view)) {
                 let shape = Shape {
                     radius: theme.radius,
                     fill: (theme.accent.alpha(0.16), theme.accent_end.alpha(0.16)),
@@ -303,21 +309,22 @@ impl Tileception {
         // reach over a neighbour or past their own window's border.
         let above_windows = elements.len();
         let mut popups = Vec::new();
-        for d in &drawn {
-            let Some(window) = self.windows.get(&d.id) else { continue };
-            let focused = Some(d.id) == focus && self.windows.len() > 1;
-            let floating = d.role == WindowRole::Floating;
+        for drawn in &drawn_windows {
+            let Some(window) = self.windows.get(&drawn.window_id) else { continue };
+            let focused = Some(drawn.window_id) == focus && self.windows.len() > 1;
+            let floating = drawn.role == WindowRole::Floating;
             // A tabbed tile's frame takes in its strip of tabs.
-            let mut frame_rect = d.content;
-            if let Some(strip) = strips.iter().find(|s| s.tile == d.leaf) {
-                frame_rect = Rect::new(d.content.x, strip.rect.y, d.content.w, d.content.bottom() - strip.rect.y);
+            let mut frame_rect = drawn.content;
+            if let Some(strip) = strips.iter().find(|strip| strip.tile == drawn.leaf) {
+                frame_rect =
+                    Rect::new(drawn.content.x, strip.rect.y, drawn.content.w, drawn.content.bottom() - strip.rect.y);
             }
             push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
-            if d.live {
-                popups.extend(popup_elements(renderer, window, d, self.scale));
-                elements.extend(live(renderer, window, d, self.scale));
+            if drawn.live {
+                popups.extend(popup_elements(renderer, window, drawn, self.scale));
+                elements.extend(live(renderer, window, drawn, self.scale));
             } else {
-                elements.extend(self.picture(renderer, d.id, &d.content));
+                elements.extend(self.picture(renderer, drawn.window_id, &drawn.content));
             }
             if floating {
                 // Floating windows cast a soft shadow onto the layout.
@@ -327,7 +334,7 @@ impl Tileception {
                     glow: Colour([0.0, 0.0, 0.0, 0.4]),
                     ..Default::default()
                 };
-                push_shape(&mut elements, shapes.as_ref(), &d.content, shadow);
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, shadow);
             }
         }
 
@@ -344,12 +351,12 @@ impl Tileception {
             if matches!(tree.node(leaf), Node::Desktop { .. }) {
                 continue;
             }
-            let Some(r) = self.world.node_rect(leaf, view) else { continue };
-            let r = r.inset(half_gap);
-            if !r.intersects(&self.world.screen()) {
+            let Some(rect) = self.world.node_rect(leaf, view) else { continue };
+            let rect = rect.inset(half_gap);
+            if !rect.intersects(&self.world.screen()) {
                 continue;
             }
-            push_shape(&mut elements, shapes.as_ref(), &r, Shape::filled(theme.surface, theme.radius));
+            push_shape(&mut elements, shapes.as_ref(), &rect, Shape::filled(theme.surface, theme.radius));
         }
 
         // Bottommost: desktop widgets and wallpaper.
@@ -362,8 +369,8 @@ impl Tileception {
     pub fn shapes(&self, renderer: &mut GlesRenderer) -> Option<Shapes> {
         if self.shapes.get().is_none() {
             match Shapes::compile(renderer) {
-                Ok(s) => {
-                    let _ = self.shapes.set(s);
+                Ok(compiled) => {
+                    let _ = self.shapes.set(compiled);
                 }
                 Err(err) => {
                     tracing::error!("shape shader: {err}");
@@ -371,7 +378,7 @@ impl Tileception {
                 }
             }
         }
-        self.shapes.get().cloned().map(|s| s.at_scale(self.scale))
+        self.shapes.get().cloned().map(|shapes| shapes.at_scale(self.scale))
     }
 
     /// A window's frame: rounded corners masked in the background colour (for
@@ -379,15 +386,15 @@ impl Tileception {
     /// On a laptop the accent follows the battery: green while charging,
     /// yellow to red as it runs low.
     fn frame(&self, focused: bool, mask_corners: bool) -> Shape {
-        let t = &self.theme;
-        let accent = self.battery_border().unwrap_or(t.accent);
+        let theme = &self.theme;
+        let accent = self.battery_border().unwrap_or(theme.accent);
         Shape {
-            radius: t.radius,
+            radius: theme.radius,
             border_width: 1.0,
-            border: if focused { accent } else { t.border },
-            glow_radius: if focused { t.glow } else { 0.0 },
+            border: if focused { accent } else { theme.border },
+            glow_radius: if focused { theme.glow } else { 0.0 },
             glow: accent.alpha(0.27),
-            corner_mask: if mask_corners { t.background } else { Colour::TRANSPARENT },
+            corner_mask: if mask_corners { theme.background } else { Colour::TRANSPARENT },
             ..Default::default()
         }
     }
@@ -399,20 +406,20 @@ impl Tileception {
         strip: &tileception_core::TabStrip,
         focus: Option<WindowId>,
     ) -> Vec<OutputElement> {
-        let t = &self.theme;
+        let theme = &self.theme;
         let mut out: Vec<OutputElement> = Vec::new();
         let pad = 3.0;
         let inner = strip.rect.inset(pad);
-        let n = strip.views.len() as f64;
+        let count = strip.views.len() as f64;
         let gap = 3.0;
-        let tab_w = (inner.w - gap * (n - 1.0)) / n;
-        let font_size = t.font_size.min((inner.h as f32 * 0.62).max(6.0));
-        for (i, win) in strip.views.iter().enumerate() {
-            let tab = Rect::new(inner.x + i as f64 * (tab_w + gap), inner.y, tab_w, inner.h);
-            let active = i == strip.selected;
+        let tab_w = (inner.w - gap * (count - 1.0)) / count;
+        let font_size = theme.font_size.min((inner.h as f32 * 0.62).max(6.0));
+        for (index, win) in strip.views.iter().enumerate() {
+            let tab = Rect::new(inner.x + index as f64 * (tab_w + gap), inner.y, tab_w, inner.h);
+            let active = index == strip.selected;
             let focused = active && Some(*win) == focus;
             let title = self.windows.get(win).map(crate::state::window_title).unwrap_or_default();
-            let text_colour = if active { t.text } else { t.muted };
+            let text_colour = if active { theme.text } else { theme.muted };
             // App mark: a small rounded square, accent on the shown tab.
             let mark = 16.0;
             let mark_rect = Rect::new(tab.x + 8.0, tab.y + (tab.h - mark) / 2.0, mark, mark);
@@ -420,20 +427,20 @@ impl Tileception {
             let text_x = mark_rect.right() + 6.0;
             let text_max = (tab.right() - close_w - 6.0 - text_x) as f32;
             let mut text = self.text.borrow_mut();
-            if let Some(img) = text.line(&title, &t.font, font_size, text_colour, text_max, active) {
-                let y = tab.y + (tab.h - img.height) / 2.0;
-                push_image(&mut out, renderer, &img.buffer, (text_x, y), self.scale);
+            if let Some(img) = text.line(&title, &theme.font, font_size, text_colour, text_max, active) {
+                let top = tab.y + (tab.h - img.height) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (text_x, top), self.scale);
             }
-            if active && let Some(img) = text.line("\u{00d7}", &t.font, font_size, t.muted, 20.0, false) {
-                let x = tab.right() - close_w + (close_w - img.width) / 2.0 - 2.0;
-                let y = tab.y + (tab.h - img.height) / 2.0;
-                push_image(&mut out, renderer, &img.buffer, (x, y), self.scale);
+            if active && let Some(img) = text.line("\u{00d7}", &theme.font, font_size, theme.muted, 20.0, false) {
+                let left = tab.right() - close_w + (close_w - img.width) / 2.0 - 2.0;
+                let top = tab.y + (tab.h - img.height) / 2.0;
+                push_image(&mut out, renderer, &img.buffer, (left, top), self.scale);
             }
             drop(text);
             let mark_shape = if active {
-                Shape { radius: 2.0, fill: (t.accent, t.accent_end), ..Default::default() }
+                Shape { radius: 2.0, fill: (theme.accent, theme.accent_end), ..Default::default() }
             } else {
-                Shape::filled(t.muted.alpha(0.5), 2.0)
+                Shape::filled(theme.muted.alpha(0.5), 2.0)
             };
             let icon =
                 self.windows.get(win).and_then(|window| self.launcher.app_icon(&crate::state::app_id(window), 16));
@@ -445,13 +452,13 @@ impl Tileception {
             if active {
                 // The shown tab: tinted, with an accent line along the bottom.
                 let underline = Rect::new(tab.x + 2.0, tab.bottom() - 2.0, tab.w - 4.0, 2.0);
-                let line = Shape { radius: 1.0, fill: (t.accent, t.accent_end), ..Default::default() };
+                let line = Shape { radius: 1.0, fill: (theme.accent, theme.accent_end), ..Default::default() };
                 push_shape(&mut out, shapes, &underline, line);
-                let tint = if focused { t.accent.alpha(0.12) } else { t.surface_raised };
+                let tint = if focused { theme.accent.alpha(0.12) } else { theme.surface_raised };
                 push_shape(&mut out, shapes, &tab, Shape::filled(tint, 4.0));
             }
         }
-        push_shape(&mut out, shapes, &strip.rect, Shape::filled(t.background.alpha(0.6), t.radius));
+        push_shape(&mut out, shapes, &strip.rect, Shape::filled(theme.background.alpha(0.6), theme.radius));
         out
     }
 
@@ -479,68 +486,69 @@ impl Tileception {
                     states
                         .data_map
                         .get::<std::sync::Mutex<CursorImageAttributes>>()
-                        .and_then(|a| a.lock().ok().map(|a| a.hotspot))
+                        .and_then(|attributes| attributes.lock().ok().map(|attributes| attributes.hotspot))
                         .unwrap_or_default()
                 });
-                let at = physical_point((pos.x - hotspot.x as f64, pos.y - hotspot.y as f64), scale);
+                let origin = physical_point((pos.x - hotspot.x as f64, pos.y - hotspot.y as f64), scale);
                 let surfaces =
-                    render_elements_from_surface_tree(&mut udev.renderer, surface, at, 1.0, 1.0, Kind::Cursor);
-                enlarged(surfaces, at, scale).collect()
+                    render_elements_from_surface_tree(&mut udev.renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
+                enlarged(surfaces, origin, scale).collect()
             }
             CursorImageStatus::Named(_) => {
                 // The theme's image is loaded at the scale, its hotspot in its own pixels.
                 let hot = udev.cursor.hotspot;
-                let at = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
+                let position = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
                     &mut udev.renderer,
-                    at,
+                    position,
                     &udev.cursor.buffer,
                     None,
                     None,
                     None,
                     Kind::Cursor,
                 )
-                .map(|e| vec![OutputElement::Memory(e)])
+                .map(|element| vec![OutputElement::Memory(element)])
                 .unwrap_or_default()
             }
         }
     }
 
     /// A window scaled into `content`, which is where its visible geometry goes.
-    pub fn picture(&self, renderer: &mut GlesRenderer, id: WindowId, content: &Rect) -> Vec<OutputElement> {
-        self.picture_faded(renderer, id, content, 1.0)
+    pub fn picture(&self, renderer: &mut GlesRenderer, window_id: WindowId, content: &Rect) -> Vec<OutputElement> {
+        self.picture_faded(renderer, window_id, content, 1.0)
     }
 
     /// A window picture at some opacity.
     pub fn picture_faded(
         &self,
         renderer: &mut GlesRenderer,
-        id: WindowId,
+        window_id: WindowId,
         content: &Rect,
         alpha: f32,
     ) -> Vec<OutputElement> {
-        let Some(window) = self.windows.get(&id) else { return Vec::new() };
+        let Some(window) = self.windows.get(&window_id) else { return Vec::new() };
         let geo = window.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
             return Vec::new();
         }
         // From the window's logical size to the content's physical one.
-        let s = self.scale;
-        let scale = Scale { x: content.w / geo.size.w as f64 * s, y: content.h / geo.size.h as f64 * s };
+        let output_scale = self.scale;
+        let scale =
+            Scale { x: content.w / geo.size.w as f64 * output_scale, y: content.h / geo.size.h as f64 * output_scale };
         let origin = physical_point(
             (
                 content.x - geo.loc.x as f64 * content.w / geo.size.w as f64,
                 content.y - geo.loc.y as f64 * content.h / geo.size.h as f64,
             ),
-            s,
+            output_scale,
         );
-        let crop = physical(content, s);
+        let crop = physical(content, output_scale);
         let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
             window.render_elements(renderer, origin, Scale::from(1.0), alpha);
         surfaces
             .into_iter()
-            .filter_map(|s| {
-                let scaled = RescaleRenderElement::from_element(s, origin, scale);
+            .filter_map(|surface| {
+                let scaled = RescaleRenderElement::from_element(surface, origin, scale);
                 CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
             })
             .collect()
@@ -552,40 +560,45 @@ impl Tileception {
 fn popup_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
-    d: &Drawn,
+    drawn: &Drawn,
     scale: f64,
 ) -> Vec<OutputElement> {
     let Some(toplevel) = window.toplevel() else { return Vec::new() };
     smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
         .flat_map(|(popup, offset)| {
             let loc = (window.geometry().loc + offset - popup.geometry().loc).to_f64();
-            let at = physical_point((d.origin.x + loc.x, d.origin.y + loc.y), scale);
+            let origin = physical_point((drawn.origin.x + loc.x, drawn.origin.y + loc.y), scale);
             let surfaces =
-                render_elements_from_surface_tree(renderer, popup.wl_surface(), at, 1.0, 1.0, Kind::Unspecified);
-            enlarged(surfaces, at, scale)
+                render_elements_from_surface_tree(renderer, popup.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified);
+            enlarged(surfaces, origin, scale)
         })
         .collect()
 }
 
-/// A live window without its popups, cut off at `d.content` when it is
+/// A live window without its popups, cut off at `drawn.content` when it is
 /// larger than its slot.
-fn live(renderer: &mut GlesRenderer, window: &smithay::desktop::Window, d: &Drawn, scale: f64) -> Vec<OutputElement> {
-    let origin = physical_point((d.origin.x, d.origin.y), scale);
+fn live(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    drawn: &Drawn,
+    scale: f64,
+) -> Vec<OutputElement> {
+    let origin = physical_point((drawn.origin.x, drawn.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
         Some(toplevel) => {
             render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
         }
         None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
     };
-    if !d.clipped {
+    if !drawn.clipped {
         return enlarged(surfaces, origin, scale).collect();
     }
-    let crop = physical(&d.content, scale);
+    let crop = physical(&drawn.content, scale);
     surfaces
         .into_iter()
-        .filter_map(|s| {
-            let s = RescaleRenderElement::from_element(s, origin, scale);
-            CropRenderElement::from_element(s, 1.0, crop).map(OutputElement::Scaled)
+        .filter_map(|surface| {
+            let scaled = RescaleRenderElement::from_element(surface, origin, scale);
+            CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
         })
         .collect()
 }
@@ -598,46 +611,54 @@ pub fn enlarged(
     origin: Point<i32, Physical>,
     scale: f64,
 ) -> impl Iterator<Item = OutputElement> {
-    surfaces.into_iter().map(move |s| OutputElement::Live(RescaleRenderElement::from_element(s, origin, scale)))
+    surfaces
+        .into_iter()
+        .map(move |surface| OutputElement::Live(RescaleRenderElement::from_element(surface, origin, scale)))
 }
 
 pub fn push_shape(out: &mut Vec<OutputElement>, shapes: Option<&Shapes>, rect: &Rect, shape: Shape) {
-    if let Some(e) = shapes.and_then(|s| s.element(rect, shape)) {
-        out.push(OutputElement::Shape(e));
+    if let Some(element) = shapes.and_then(|shapes| shapes.element(rect, shape)) {
+        out.push(OutputElement::Shape(element));
     }
 }
 
-/// An image rasterised at the output's scale, its top left at `at` in
+/// An image rasterised at the output's scale, its top left at `position` in
 /// logical pixels, drawn one buffer pixel to one screen pixel.
 pub fn push_image(
     out: &mut Vec<OutputElement>,
     renderer: &mut GlesRenderer,
     buffer: &smithay::backend::renderer::element::memory::MemoryRenderBuffer,
-    at: (f64, f64),
+    position: (f64, f64),
     scale: f64,
 ) {
-    let at = ((at.0 * scale).round(), (at.1 * scale).round());
-    if let Ok(e) =
-        MemoryRenderBufferRenderElement::from_buffer(renderer, at, buffer, None, None, None, Kind::Unspecified)
+    let position = ((position.0 * scale).round(), (position.1 * scale).round());
+    if let Ok(element) =
+        MemoryRenderBufferRenderElement::from_buffer(renderer, position, buffer, None, None, None, Kind::Unspecified)
     {
-        out.push(OutputElement::Memory(e));
+        out.push(OutputElement::Memory(element));
     }
 }
 
 /// A point in logical pixels, in whole physical ones.
-pub fn physical_point(p: (f64, f64), scale: f64) -> Point<i32, Physical> {
-    ((p.0 * scale).round() as i32, (p.1 * scale).round() as i32).into()
+pub fn physical_point(point: (f64, f64), scale: f64) -> Point<i32, Physical> {
+    ((point.0 * scale).round() as i32, (point.1 * scale).round() as i32).into()
 }
 
 /// A rectangle in logical pixels, in whole physical ones.
-pub fn physical(r: &Rect, scale: f64) -> Rectangle<i32, Physical> {
-    let x0 = (r.x * scale).round() as i32;
-    let y0 = (r.y * scale).round() as i32;
-    let x1 = (r.right() * scale).round() as i32;
-    let y1 = (r.bottom() * scale).round() as i32;
-    Rectangle::new((x0, y0).into(), ((x1 - x0).max(0), (y1 - y0).max(0)).into())
+pub fn physical(rect: &Rect, scale: f64) -> Rectangle<i32, Physical> {
+    let left = (rect.x * scale).round() as i32;
+    let top = (rect.y * scale).round() as i32;
+    let right = (rect.right() * scale).round() as i32;
+    let bottom = (rect.bottom() * scale).round() as i32;
+    Rectangle::new((left, top).into(), ((right - left).max(0), (bottom - top).max(0)).into())
 }
 
-pub fn solid(r: &Rect, colour: [f32; 4], scale: f64) -> OutputElement {
-    OutputElement::Solid(SolidColorRenderElement::new(Id::new(), physical(r, scale), 0usize, colour, Kind::Unspecified))
+pub fn solid(rect: &Rect, colour: [f32; 4], scale: f64) -> OutputElement {
+    OutputElement::Solid(SolidColorRenderElement::new(
+        Id::new(),
+        physical(rect, scale),
+        0usize,
+        colour,
+        Kind::Unspecified,
+    ))
 }

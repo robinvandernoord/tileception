@@ -22,13 +22,18 @@ use smithay::{
         egl::{EGLContext, EGLDisplay, context::ContextPriority},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
+        renderer::{
+            ImportDma, ImportMemWl,
+            gles::GlesRenderer,
+            utils::{Buffer, RendererSurfaceStateUserData},
+        },
         session::{
             Event as SessionEvent, Session,
             libseat::{LibSeatSession, LibSeatSessionNotifier},
         },
         udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu},
     },
+    desktop::layer_map_for_output,
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
@@ -41,11 +46,12 @@ use smithay::{
         },
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::backend::GlobalId,
+        wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
     },
     utils::DeviceFd,
     wayland::{
-        dmabuf::{DmabufFeedbackBuilder, DmabufState},
+        compositor::SurfaceData,
+        dmabuf::{DmabufFeedbackBuilder, DmabufState, get_dmabuf},
         drm_syncobj::{DrmSyncobjState, supports_syncobj_eventfd},
     },
 };
@@ -90,6 +96,9 @@ pub struct Udev {
     quiet: u32,
     /// Something asked for the frame being made, rather than the poll.
     asked: bool,
+    /// The client buffers the queued frame draws from, held until it is on
+    /// screen. See [`Tileception::frame_buffers`].
+    in_flight: Vec<Buffer>,
 }
 
 struct Lit {
@@ -132,20 +141,20 @@ pub fn init(
     event_loop: &mut EventLoop<'static, Tileception>,
     state: &mut Tileception,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut session, notifier) = LibSeatSession::new().map_err(|e| format!("no seat session: {e}"))?;
+    let (mut session, notifier) = LibSeatSession::new().map_err(|err| format!("no seat session: {err}"))?;
     let notifier = wait_until_active(&session, notifier)?;
     let seat = session.seat();
 
     let gpu_path = primary_gpu(&seat)?.or_else(|| all_gpus(&seat).ok()?.into_iter().next()).ok_or("no GPU found")?;
     let node = DrmNode::from_path(&gpu_path)?;
-    let primary = node.node_with_type(NodeType::Primary).and_then(|n| n.ok()).unwrap_or(node);
+    let primary = node.node_with_type(NodeType::Primary).and_then(|result| result.ok()).unwrap_or(node);
     let card = primary.dev_path().unwrap_or(gpu_path);
     tracing::info!("using GPU {}", card.display());
 
-    let fd = session.open(&card, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
-    let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
-    let gbm = GbmDevice::new(fd.clone())?;
+    let opened = session.open(&card, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
+    let device_fd = DrmDeviceFd::new(DeviceFd::from(opened));
+    let (drm, drm_notifier) = DrmDevice::new(device_fd.clone(), true)?;
+    let gbm = GbmDevice::new(device_fd.clone())?;
 
     // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
     #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
@@ -164,8 +173,8 @@ pub fn init(
     state.dmabuf = Some((dmabuf_state, global));
 
     // Explicit sync, which NVIDIA needs to avoid flicker in GPU clients.
-    if supports_syncobj_eventfd(&fd) {
-        state.syncobj_state = Some(DrmSyncobjState::new::<Tileception>(&state.display_handle, fd.clone()));
+    if supports_syncobj_eventfd(&device_fd) {
+        state.syncobj_state = Some(DrmSyncobjState::new::<Tileception>(&state.display_handle, device_fd.clone()));
         tracing::info!("explicit sync enabled");
     }
 
@@ -194,6 +203,7 @@ pub fn init(
         poll: None,
         quiet: 0,
         asked: false,
+        in_flight: Vec::new(),
     }));
 
     // Input.
@@ -221,6 +231,7 @@ pub fn init(
                 udev.manager.pause();
                 udev.frame_pending = false;
                 udev.render_pending = false;
+                udev.in_flight.clear();
             }
         }
         SessionEvent::ActivateSession => {
@@ -257,7 +268,7 @@ pub fn init(
     let udev_backend = UdevBackend::new(&seat)?;
     event_loop.handle().insert_source(udev_backend, |event, _, state| match event {
         UdevEvent::Changed { device_id } | UdevEvent::Added { device_id, .. } => {
-            if state.udev.as_ref().is_some_and(|u| u.node.dev_id() == device_id) {
+            if state.udev.as_ref().is_some_and(|backend| backend.node.dev_id() == device_id) {
                 state.scan_connectors();
             }
         }
@@ -310,7 +321,7 @@ impl Tileception {
                     }
                 }
                 DrmScanEvent::Disconnected { crtc: Some(crtc), .. }
-                    if udev.surface.as_ref().is_some_and(|s| s.crtc == crtc) =>
+                    if udev.surface.as_ref().is_some_and(|lit_surface| lit_surface.crtc == crtc) =>
                 {
                     if let Some(lit) = udev.surface.take() {
                         self.display_handle.remove_global::<Tileception>(lit.global);
@@ -329,18 +340,18 @@ impl Tileception {
         let Some(mode) = connector
             .modes()
             .iter()
-            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .find(|candidate| candidate.mode_type().contains(ModeTypeFlags::PREFERRED))
             .or(connector.modes().first())
             .copied()
         else {
             return;
         };
         let wl_mode = WlMode::from(mode);
-        let (w, h) = connector.size().unwrap_or((0, 0));
+        let (width_mm, height_mm) = connector.size().unwrap_or((0, 0));
         let output = Output::new(
             name.clone(),
             PhysicalProperties {
-                size: (w as i32, h as i32).into(),
+                size: (width_mm as i32, height_mm as i32).into(),
                 subpixel: connector.subpixel().into(),
                 make: "Unknown".into(),
                 model: "Unknown".into(),
@@ -362,7 +373,7 @@ impl Tileception {
             .manager
             .device()
             .get_driver()
-            .map(|d| d.name().to_string_lossy().to_lowercase().contains("nvidia"))
+            .map(|driver| driver.name().to_string_lossy().to_lowercase().contains("nvidia"))
             .unwrap_or(false);
         if nvidia {
             planes.overlay.clear();
@@ -383,7 +394,7 @@ impl Tileception {
             &mut udev.renderer,
             &DrmOutputRenderElements::default(),
         ) {
-            Ok(o) => o,
+            Ok(initialized) => initialized,
             Err(err) => {
                 tracing::error!("could not light {name}: {err}");
                 self.display_handle.remove_global::<Tileception>(global);
@@ -416,9 +427,39 @@ impl Tileception {
         self.loop_handle.insert_idle(|state| state.render_udev());
     }
 
+    /// The dmabufs of every surface on screen. Smithay signals a buffer's
+    /// explicit-sync release point from the CPU as soon as nothing refers to
+    /// it, which can be while the GPU still draws a queued frame from it. A
+    /// client that reuses the buffer then draws into what is being composited:
+    /// Chromium on NVIDIA showed black patches. Holding the buffers until the
+    /// frame is on screen closes that gap, since KMS flips only once the
+    /// frame's GPU work is done.
+    fn frame_buffers(&self, output: &Output) -> Vec<Buffer> {
+        let mut buffers = Vec::new();
+        let mut hold = |_: &WlSurface, data: &SurfaceData| {
+            if let Some(state) = data.data_map.get::<RendererSurfaceStateUserData>()
+                && let Ok(state) = state.lock()
+                && let Some(buffer) = state.buffer()
+                && get_dmabuf(buffer).is_ok()
+            {
+                buffers.push(buffer.clone());
+            }
+        };
+        for (_, window) in self.windows.iter().filter(|(window_id, _)| !self.world.is_minimized(**window_id)) {
+            window.with_surfaces(&mut hold);
+        }
+        for layer in layer_map_for_output(output).layers() {
+            layer.with_surfaces(&mut hold);
+        }
+        buffers
+    }
+
     fn on_vblank(&mut self, _crtc: crtc::Handle) {
         let Some(udev) = self.udev.as_mut() else { return };
         udev.frame_pending = false;
+        // The flip waited for the frame's GPU work, so clients may have
+        // these buffers back.
+        udev.in_flight.clear();
         if let Some(lit) = udev.surface.as_mut()
             && let Err(err) = lit.drm_output.frame_submitted()
         {
@@ -429,7 +470,8 @@ impl Tileception {
         // away, so what clients commit in the meantime still makes it.
         // Asking for a frame before then waits for this one.
         let Some(udev) = self.udev.as_mut() else { return };
-        let refresh = udev.surface.as_ref().and_then(|lit| lit.output.current_mode()).map_or(60_000, |m| m.refresh);
+        let refresh =
+            udev.surface.as_ref().and_then(|lit| lit.output.current_mode()).map_or(60_000, |mode| mode.refresh);
         let period = Duration::from_secs_f64(1000.0 / f64::from(refresh.max(1_000)));
         udev.render_pending = true;
         let drawn = self.loop_handle.insert_source(
@@ -472,7 +514,10 @@ impl Tileception {
                         tracing::warn!("render sync: {err:?}");
                     } else {
                         match lit.drm_output.queue_frame(()) {
-                            Ok(()) => queued = true,
+                            Ok(()) => {
+                                queued = true;
+                                udev.in_flight = self.frame_buffers(&lit.output);
+                            }
                             Err(err) => tracing::warn!("queue frame: {err}"),
                         }
                     }
@@ -482,7 +527,7 @@ impl Tileception {
             }
             let elapsed = self.start.elapsed();
             // Minimized windows are hidden: no frames, so they need not draw.
-            for (_, window) in self.windows.iter().filter(|(id, _)| !self.world.is_minimized(**id)) {
+            for (_, window) in self.windows.iter().filter(|(window_id, _)| !self.world.is_minimized(**window_id)) {
                 window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
             }
             udev.surface = Some(lit);
@@ -517,11 +562,11 @@ impl Tileception {
     }
 
     /// Opens a device for a VT switch, from the keyboard shortcut.
-    pub fn change_vt(&mut self, vt: i32) {
+    pub fn change_vt(&mut self, vt_number: i32) {
         if let Some(udev) = self.udev.as_mut()
-            && let Err(err) = udev.session.change_vt(vt)
+            && let Err(err) = udev.session.change_vt(vt_number)
         {
-            tracing::warn!("could not switch to VT {vt}: {err}");
+            tracing::warn!("could not switch to VT {vt_number}: {err}");
         }
     }
 }

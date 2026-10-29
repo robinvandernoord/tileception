@@ -14,6 +14,7 @@ unsafe_op_in_unsafe_fn = "deny"
 unused_unsafe = "deny"
 
 [workspace.lints.clippy]
+min_ident_chars = "deny"
 unwrap_used = "deny"
 undocumented_unsafe_blocks = "deny"
 allow_attributes_without_reason = "deny"

@@ -11,7 +11,7 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
     /// The entry's file name without `.desktop`, such as `tileception`.
-    pub id: String,
+    pub session_id: String,
     pub name: String,
     /// The command line, field codes removed.
     pub exec: String,
@@ -27,7 +27,7 @@ impl Session {
             Kind::Wayland => (self.exec.clone(), "wayland"),
             Kind::X11 => (format!("{} {}", xsession_wrapper.trim(), self.exec), "x11"),
         };
-        let mut env = vec![format!("XDG_SESSION_TYPE={kind}"), format!("XDG_SESSION_DESKTOP={}", self.id)];
+        let mut env = vec![format!("XDG_SESSION_TYPE={kind}"), format!("XDG_SESSION_DESKTOP={}", self.session_id)];
         if let Some(names) = &self.desktop_names {
             env.push(format!("XDG_CURRENT_DESKTOP={}", names.trim_end_matches(';').replace(';', ":")));
         }
@@ -65,15 +65,15 @@ fn parse_entry(text: &str) -> Option<(String, String, Option<String>, Option<Str
 fn strip_field_codes(exec: &str) -> String {
     let mut out = String::with_capacity(exec.len());
     let mut chars = exec.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
+    while let Some(character) = chars.next() {
+        if character == '%' {
             if let Some(next) = chars.next()
                 && next == '%'
             {
                 out.push('%');
             }
         } else {
-            out.push(c);
+            out.push(character);
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -98,18 +98,20 @@ pub fn scan(dirs: &[(PathBuf, Kind)], hidden: &[String]) -> Vec<Session> {
             .flatten()
             .filter_map(|entry| {
                 let path = entry.path();
-                let id = path.file_name()?.to_str()?.strip_suffix(".desktop")?.to_string();
+                let session_id = path.file_name()?.to_str()?.strip_suffix(".desktop")?.to_string();
                 let (name, exec, try_exec, desktop_names) = parse_entry(&std::fs::read_to_string(&path).ok()?)?;
-                if try_exec.is_some_and(|t| !on_path(&t)) || exec.is_empty() {
+                if try_exec.is_some_and(|program| !on_path(&program)) || exec.is_empty() {
                     return None;
                 }
-                Some(Session { id, name, exec, kind: *kind, desktop_names })
+                Some(Session { session_id, name, exec, kind: *kind, desktop_names })
             })
-            .filter(|s| !hidden.iter().any(|h| *h == s.id || *h == s.name))
+            .filter(|session| {
+                !hidden.iter().any(|hidden_name| *hidden_name == session.session_id || *hidden_name == session.name)
+            })
             .collect();
-        found.sort_by_key(|a| a.name.to_lowercase());
+        found.sort_by_key(|session| session.name.to_lowercase());
         for session in found {
-            if !sessions.iter().any(|s| s.id == session.id) {
+            if !sessions.iter().any(|existing| existing.session_id == session.session_id) {
                 sessions.push(session);
             }
         }
@@ -119,8 +121,8 @@ pub fn scan(dirs: &[(PathBuf, Kind)], hidden: &[String]) -> Vec<Session> {
 
 /// Moves the session with id `default` to the top, as the one most people want.
 pub fn sort_default_first(sessions: &mut [Session], default: &str) {
-    if let Some(i) = sessions.iter().position(|s| s.id == default) {
-        sessions[..=i].rotate_right(1);
+    if let Some(index) = sessions.iter().position(|session| session.session_id == default) {
+        sessions[..=index].rotate_right(1);
     }
 }
 
@@ -128,7 +130,7 @@ pub fn sort_default_first(sessions: &mut [Session], default: &str) {
 /// session directories, colon separated) for tests.
 pub fn list(hidden: &[String], xsession_wrapper: &str) -> Vec<Session> {
     let dirs: Vec<(PathBuf, Kind)> = match std::env::var_os("TILECEPTION_GREETER_SESSIONS") {
-        Some(dirs) => std::env::split_paths(&dirs).map(|d| (d, Kind::Wayland)).collect(),
+        Some(dirs) => std::env::split_paths(&dirs).map(|directory| (directory, Kind::Wayland)).collect(),
         None => {
             let mut dirs = vec![
                 ("/usr/local/share/wayland-sessions".into(), Kind::Wayland),
@@ -166,7 +168,7 @@ mod tests {
     #[test]
     fn commands_carry_the_session_type() {
         let session = Session {
-            id: "sway".into(),
+            session_id: "sway".into(),
             name: "Sway".into(),
             exec: "sway".into(),
             kind: Kind::Wayland,
@@ -175,30 +177,30 @@ mod tests {
         let (cmd, env) = session.command("startx /usr/bin/env");
         assert_eq!(cmd, ["sway"]);
         assert_eq!(env, ["XDG_SESSION_TYPE=wayland", "XDG_SESSION_DESKTOP=sway", "XDG_CURRENT_DESKTOP=sway:wlroots"]);
-        let x = Session { kind: Kind::X11, exec: "cinnamon-session".into(), ..session };
-        assert_eq!(x.command("startx /usr/bin/env").0, ["startx /usr/bin/env cinnamon-session"]);
+        let xsession = Session { kind: Kind::X11, exec: "cinnamon-session".into(), ..session };
+        assert_eq!(xsession.command("startx /usr/bin/env").0, ["startx /usr/bin/env cinnamon-session"]);
     }
 
     #[test]
     fn wayland_wins_and_hidden_ones_go() {
         let root = std::env::temp_dir().join(format!("tileception-sessions-{}", std::process::id()));
-        let (wayland, x) = (root.join("wayland"), root.join("x"));
+        let (wayland, xorg) = (root.join("wayland"), root.join("x"));
         std::fs::create_dir_all(&wayland).expect("dir");
-        std::fs::create_dir_all(&x).expect("dir");
+        std::fs::create_dir_all(&xorg).expect("dir");
         let entry = |name: &str| format!("[Desktop Entry]\nName={name}\nExec=true\n");
         std::fs::write(wayland.join("tileception.desktop"), entry("Tileception")).expect("write");
         std::fs::write(wayland.join("tileception-nested.desktop"), entry("Nested")).expect("write");
         std::fs::write(wayland.join("gnome.desktop"), entry("GNOME")).expect("write");
-        std::fs::write(x.join("gnome.desktop"), entry("GNOME on Xorg")).expect("write");
-        std::fs::write(x.join("i3.desktop"), entry("i3")).expect("write");
-        std::fs::write(x.join("missing.desktop"), "[Desktop Entry]\nName=M\nExec=m\nTryExec=/no/such/file\n")
+        std::fs::write(xorg.join("gnome.desktop"), entry("GNOME on Xorg")).expect("write");
+        std::fs::write(xorg.join("i3.desktop"), entry("i3")).expect("write");
+        std::fs::write(xorg.join("missing.desktop"), "[Desktop Entry]\nName=M\nExec=m\nTryExec=/no/such/file\n")
             .expect("write");
-        let found = scan(&[(wayland, Kind::Wayland), (x, Kind::X11)], &["tileception-nested".into()]);
-        let names: Vec<(&str, Kind)> = found.iter().map(|s| (s.name.as_str(), s.kind)).collect();
+        let found = scan(&[(wayland, Kind::Wayland), (xorg, Kind::X11)], &["tileception-nested".into()]);
+        let names: Vec<(&str, Kind)> = found.iter().map(|session| (session.name.as_str(), session.kind)).collect();
         assert_eq!(names, [("GNOME", Kind::Wayland), ("Tileception", Kind::Wayland), ("i3", Kind::X11)]);
         let mut sorted = found.clone();
         sort_default_first(&mut sorted, "tileception");
-        let ids: Vec<&str> = sorted.iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = sorted.iter().map(|session| session.session_id.as_str()).collect();
         assert_eq!(ids, ["tileception", "gnome", "i3"]);
         let _ = std::fs::remove_dir_all(root);
     }

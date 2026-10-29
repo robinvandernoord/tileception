@@ -97,18 +97,18 @@ impl Default for Text {
     }
 }
 
-/// Paints a glyph's coverage `c` at (`x`, `y`), premultiplied "over" what is
-/// already in the `w` x `h` pixels.
-fn blend(pixels: &mut [u8], w: i32, h: i32, (x, y): (i32, i32), c: Color) {
-    if x < 0 || y < 0 || x >= w || y >= h {
+/// Paints a glyph's coverage at (`x_pos`, `y_pos`), premultiplied "over" what
+/// is already in the `width` x `height` pixels.
+fn blend(pixels: &mut [u8], width: i32, height: i32, (x_pos, y_pos): (i32, i32), colour: Color) {
+    if x_pos < 0 || y_pos < 0 || x_pos >= width || y_pos >= height {
         return;
     }
-    let i = ((y * w + x) * 4) as usize;
-    let alpha = c.a() as f32 / 255.0;
-    let src = [c.r() as f32 * alpha, c.g() as f32 * alpha, c.b() as f32 * alpha, c.a() as f32];
-    for k in 0..4 {
-        let dst = pixels[i + k] as f32;
-        pixels[i + k] = (src[k] + dst * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+    let offset = ((y_pos * width + x_pos) * 4) as usize;
+    let alpha = colour.a() as f32 / 255.0;
+    let src = [colour.r() as f32 * alpha, colour.g() as f32 * alpha, colour.b() as f32 * alpha, colour.a() as f32];
+    for channel in 0..4 {
+        let dst = pixels[offset + channel] as f32;
+        pixels[offset + channel] = (src[channel] + dst * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
     }
 }
 
@@ -116,10 +116,10 @@ fn blend(pixels: &mut [u8], w: i32, h: i32, (x, y): (i32, i32), c: Color) {
 fn cut_spans(spans: &[Span], mut chars: usize) -> Vec<Span> {
     let mut out = Vec::new();
     for span in spans {
-        let n = span.text.chars().count();
-        if n < chars {
+        let count = span.text.chars().count();
+        if count < chars {
             out.push(span.clone());
-            chars -= n;
+            chars -= count;
             continue;
         }
         let text: String = span.text.chars().take(chars).collect();
@@ -147,7 +147,7 @@ impl Text {
     /// Spans of bold, italic, code and links, wrapped at word boundaries
     /// to `max_width`.
     pub fn rich(&mut self, spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<RichImage> {
-        if spans.iter().all(|s| s.text.is_empty()) || max_width < 4.0 {
+        if spans.iter().all(|span| span.text.is_empty()) || max_width < 4.0 {
             return None;
         }
         let key = RichKey {
@@ -180,9 +180,9 @@ impl Text {
         let metrics = Metrics::new(size, (size * 1.4).ceil());
         let family = if key.mono { Family::Monospace } else { Family::Name(&key.font) };
         let base = Attrs::new().family(family).weight(Weight(key.weight));
-        let [ar, ag, ab, aa] = key.accent;
-        let accent = Color::rgba(ar, ag, ab, aa);
-        let [r, g, b, a] = key.colour;
+        let [accent_red, accent_green, accent_blue, accent_alpha] = key.accent;
+        let accent = Color::rgba(accent_red, accent_green, accent_blue, accent_alpha);
+        let [red, green, blue, alpha] = key.colour;
         // Links and code by their place in the spans, counted from 1 (0 is
         // neither), to find them in the layout.
         let attrs = |span: &Span, index: usize| {
@@ -194,7 +194,12 @@ impl Text {
                 attrs = attrs.style(cosmic_text::Style::Italic);
             }
             if span.marks.code {
-                attrs = attrs.family(Family::Monospace).color(Color::rgba(r, g, b, (a as u32 * 85 / 100) as u8));
+                attrs = attrs.family(Family::Monospace).color(Color::rgba(
+                    red,
+                    green,
+                    blue,
+                    (alpha as u32 * 85 / 100) as u8,
+                ));
             }
             if span.marks.strike {
                 attrs = attrs.strikethrough();
@@ -212,47 +217,47 @@ impl Text {
         buffer.set_size(Some(max_width), None);
         let layout = |buffer: &mut Buffer, fonts: &mut FontSystem, spans: &[Span]| {
             let list: Vec<(&str, Attrs)> =
-                spans.iter().enumerate().map(|(i, s)| (s.text.as_str(), attrs(s, i))).collect();
+                spans.iter().enumerate().map(|(index, span)| (span.text.as_str(), attrs(span, index))).collect();
             buffer.set_rich_text(list, &base, Shaping::Advanced, None);
             buffer.shape_until_scroll(fonts, false);
             buffer.layout_runs().count()
         };
         let mut spans = key.spans.clone();
         if layout(&mut buffer, fonts, &spans) > key.lines as usize {
-            let total: usize = key.spans.iter().map(|s| s.text.chars().count()).sum();
-            let (mut lo, mut hi) = (0usize, total);
-            while lo < hi {
-                let mid = (lo + hi).div_ceil(2);
+            let total: usize = key.spans.iter().map(|span| span.text.chars().count()).sum();
+            let (mut low, mut high) = (0usize, total);
+            while low < high {
+                let mid = (low + high).div_ceil(2);
                 if layout(&mut buffer, fonts, &cut_spans(&key.spans, mid)) <= key.lines as usize {
-                    lo = mid;
+                    low = mid;
                 } else {
-                    hi = mid - 1;
+                    high = mid - 1;
                 }
             }
-            spans = cut_spans(&key.spans, lo);
+            spans = cut_spans(&key.spans, low);
             layout(&mut buffer, fonts, &spans);
         }
-        let width = buffer.layout_runs().map(|r| r.line_w).fold(0.0f32, f32::max);
+        let width = buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max);
         let rows = buffer.layout_runs().count().max(1);
         // Room for the shading behind code at the end of a line.
-        let w = width.ceil().max(1.0) as i32 + (3.0 * scale).ceil() as i32;
-        let h = (metrics.line_height * rows as f32).ceil() as i32;
-        buffer.set_size(Some(max_width), Some(h as f32));
+        let pixel_width = width.ceil().max(1.0) as i32 + (3.0 * scale).ceil() as i32;
+        let pixel_height = (metrics.line_height * rows as f32).ceil() as i32;
+        buffer.set_size(Some(max_width), Some(pixel_height as f32));
 
         // Where the links and code are: their glyphs, a rectangle per line.
         let mut marked: Vec<([f32; 4], &Span)> = Vec::new();
         for run in buffer.layout_runs() {
             let mut current: Option<(usize, f32, f32)> = None;
             let mut close = |current: &mut Option<(usize, f32, f32)>| {
-                if let Some((index, x0, x1)) = current.take()
+                if let Some((index, start_x, end_x)) = current.take()
                     && let Some(span) = spans.get(index - 1)
                 {
-                    marked.push(([x0, run.line_top, x1 - x0, run.line_height], span));
+                    marked.push(([start_x, run.line_top, end_x - start_x, run.line_height], span));
                 }
             };
             for glyph in run.glyphs {
                 match current {
-                    Some((index, _, ref mut x1)) if index == glyph.metadata => *x1 = glyph.x + glyph.w,
+                    Some((index, _, ref mut end_x)) if index == glyph.metadata => *end_x = glyph.x + glyph.w,
                     _ => {
                         close(&mut current);
                         if glyph.metadata > 0 {
@@ -264,31 +269,51 @@ impl Text {
             close(&mut current);
         }
 
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let mut pixels = vec![0u8; (pixel_width * pixel_height * 4) as usize];
         // Code is shaded, faintly in the text's own colour.
-        let shade = [r, g, b].map(|c| (c as u32 * 28 / 255) as u8);
-        for ([x, y, cw, ch], _) in marked.iter().filter(|(_, s)| s.marks.code && s.link.is_none()) {
+        let shade = [red, green, blue].map(|channel| (channel as u32 * 28 / 255) as u8);
+        for ([span_x, span_y, span_width, span_height], _) in
+            marked.iter().filter(|(_, span)| span.marks.code && span.link.is_none())
+        {
             let pad = 2.0 * scale;
-            let (x0, x1) = (((x - pad).floor() as i32).max(0), ((x + cw + pad).ceil() as i32).min(w));
-            let (y0, y1) = (((y + ch * 0.12).floor() as i32).max(0), ((y + ch * 0.92).ceil() as i32).min(h));
-            for py in y0..y1 {
-                for px in x0..x1 {
-                    let i = ((py * w + px) * 4) as usize;
-                    pixels[i..i + 4].copy_from_slice(&[shade[0], shade[1], shade[2], 28]);
+            let (left, right) =
+                (((span_x - pad).floor() as i32).max(0), ((span_x + span_width + pad).ceil() as i32).min(pixel_width));
+            let (top, bottom) = (
+                ((span_y + span_height * 0.12).floor() as i32).max(0),
+                ((span_y + span_height * 0.92).ceil() as i32).min(pixel_height),
+            );
+            for pixel_y in top..bottom {
+                for pixel_x in left..right {
+                    let offset = ((pixel_y * pixel_width + pixel_x) * 4) as usize;
+                    pixels[offset..offset + 4].copy_from_slice(&[shade[0], shade[1], shade[2], 28]);
                 }
             }
         }
-        buffer.draw(fonts, &mut self.swash, Color::rgba(r, g, b, a), |x, y, cw, ch, c| {
-            for dy in 0..ch as i32 {
-                for dx in 0..cw as i32 {
-                    blend(&mut pixels, w, h, (x + dx, y + dy), c);
+        buffer.draw(
+            fonts,
+            &mut self.swash,
+            Color::rgba(red, green, blue, alpha),
+            |glyph_x, glyph_y, glyph_width, glyph_height, colour| {
+                for delta_y in 0..glyph_height as i32 {
+                    for delta_x in 0..glyph_width as i32 {
+                        blend(&mut pixels, pixel_width, pixel_height, (glyph_x + delta_x, glyph_y + delta_y), colour);
+                    }
                 }
-            }
-        });
-        let links =
-            marked.into_iter().filter_map(|(rect, s)| Some((rect.map(|v| v / scale), s.link.clone()?))).collect();
-        let buffer = MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (w, h), 1, Transform::Normal, None);
-        let (width, height) = (f64::from(w) / f64::from(scale), f64::from(h) / f64::from(scale));
+            },
+        );
+        let links = marked
+            .into_iter()
+            .filter_map(|(rect, span)| Some((rect.map(|coord| coord / scale), span.link.clone()?)))
+            .collect();
+        let buffer = MemoryRenderBuffer::from_slice(
+            &pixels,
+            Fourcc::Abgr8888,
+            (pixel_width, pixel_height),
+            1,
+            Transform::Normal,
+            None,
+        );
+        let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
         Some(RichImage { image: TextImage { buffer, width, height }, links })
     }
 
@@ -375,17 +400,18 @@ impl Text {
         Some(image)
     }
 
-    pub fn field_hit(&mut self, text: &str, font: &str, size: f32, width: f32, cursor: usize, x: f32) -> usize {
+    pub fn field_hit(&mut self, text: &str, font: &str, size: f32, width: f32, cursor: usize, x_pos: f32) -> usize {
         let fonts = self.fonts.get_or_insert_with(FontSystem::new);
         // In physical pixels, as the field was drawn.
-        let (size, width, x) = (size * self.scale, width * self.scale, x * self.scale);
+        let (size, width, x_pos) = (size * self.scale, width * self.scale, x_pos * self.scale);
         let mut buffer = Buffer::new(fonts, Metrics::new(size, (size * 1.3).ceil()));
         buffer.set_wrap(Wrap::None);
         buffer.set_text(text, &Attrs::new().family(Family::Name(font)), Shaping::Advanced, None);
         buffer.shape_until_scroll(fonts, false);
-        let cursor_x = buffer.cursor_position(&cosmic_text::Cursor::new(0, cursor)).map(|p| p.0).unwrap_or(0.0);
+        let cursor_x =
+            buffer.cursor_position(&cosmic_text::Cursor::new(0, cursor)).map(|position| position.0).unwrap_or(0.0);
         let scroll = (cursor_x - width + 8.0 * self.scale).max(0.0).ceil();
-        buffer.hit(x + scroll, size * 0.6).map(|c| c.index).unwrap_or(text.len())
+        buffer.hit(x_pos + scroll, size * 0.6).map(|hit| hit.index).unwrap_or(text.len())
     }
 
     fn render(&mut self, key: &Key) -> Option<TextImage> {
@@ -409,49 +435,51 @@ impl Text {
             buffer.set_wrap(Wrap::None);
         }
         let max_lines = key.lines as usize;
-        let width_of = |buffer: &mut Buffer, fonts: &mut FontSystem, s: &str| {
-            buffer.set_text(s, &attrs, Shaping::Advanced, None);
+        let width_of = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
+            buffer.set_text(sample, &attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(fonts, false);
-            buffer.layout_runs().map(|r| r.line_w).fold(0.0f32, f32::max)
+            buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max)
         };
         // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
-        let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, s: &str| {
-            let width = width_of(buffer, fonts, s);
+        let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
+            let width = width_of(buffer, fonts, sample);
             if wrapped { buffer.layout_runs().count() > max_lines } else { width > max_width as f32 }
         };
         let mut width = width_of(&mut buffer, fonts, &shown);
         if key.field.is_none() && too_long(&mut buffer, fonts, &shown) {
             let chars: Vec<char> = key.text.chars().collect();
-            let (mut lo, mut hi) = (0usize, chars.len());
-            while lo < hi {
-                let mid = (lo + hi).div_ceil(2);
+            let (mut low, mut high) = (0usize, chars.len());
+            while low < high {
+                let mid = (low + high).div_ceil(2);
                 let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "...";
                 if !too_long(&mut buffer, fonts, &candidate) {
-                    lo = mid;
+                    low = mid;
                 } else {
-                    hi = mid - 1;
+                    high = mid - 1;
                 }
             }
-            shown = chars[..lo].iter().collect::<String>().trim_end().to_string() + "...";
+            shown = chars[..low].iter().collect::<String>().trim_end().to_string() + "...";
             width = width_of(&mut buffer, fonts, &shown);
         }
-        let cursor_x = |index| buffer.cursor_position(&cosmic_text::Cursor::new(0, index)).map(|p| p.0).unwrap_or(0.0);
+        let cursor_x = |index| {
+            buffer.cursor_position(&cosmic_text::Cursor::new(0, index)).map(|position| position.0).unwrap_or(0.0)
+        };
         let caret = key.field.map(|field| cursor_x(field.cursor)).unwrap_or(0.0);
         let selection = key
             .field
             .and_then(|field| field.anchor.map(|anchor| (cursor_x(anchor).min(caret), cursor_x(anchor).max(caret))));
         let scroll = if key.field.is_some() { (caret - max_width as f32 + 8.0 * scale).max(0.0).ceil() } else { 0.0 };
-        let w = if key.field.is_some() { max_width.max(1) } else { width.ceil().max(1.0) as i32 };
+        let pixel_width = if key.field.is_some() { max_width.max(1) } else { width.ceil().max(1.0) as i32 };
         let rows = if wrapped { buffer.layout_runs().count().max(1) } else { 1 };
-        let h = (metrics.line_height * rows as f32).ceil() as i32;
+        let pixel_height = (metrics.line_height * rows as f32).ceil() as i32;
         if wrapped {
-            buffer.set_size(Some(max_width as f32), Some(h as f32));
+            buffer.set_size(Some(max_width as f32), Some(pixel_height as f32));
         } else {
-            buffer.set_size(Some(w as f32 + 1.0), Some(h as f32));
+            buffer.set_size(Some(pixel_width as f32 + 1.0), Some(pixel_height as f32));
         }
 
-        let [r, g, b, a] = key.colour;
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let [red, green, blue, alpha] = key.colour;
+        let mut pixels = vec![0u8; (pixel_width * pixel_height * 4) as usize];
         if let (Some(field), Some((start, end))) = (key.field, selection) {
             let alpha = field.accent[3] / 4;
             let colour = [
@@ -460,37 +488,61 @@ impl Text {
                 field.accent[2] as u32 * alpha as u32 / 255,
                 alpha as u32,
             ]
-            .map(|c| c as u8);
-            for y in 0..h {
-                for x in ((start - scroll).floor() as i32).max(0)..((end - scroll).ceil() as i32).min(w) {
-                    let i = ((y * w + x) * 4) as usize;
-                    pixels[i..i + 4].copy_from_slice(&colour);
+            .map(|channel| channel as u8);
+            for pixel_y in 0..pixel_height {
+                for pixel_x in ((start - scroll).floor() as i32).max(0)..((end - scroll).ceil() as i32).min(pixel_width)
+                {
+                    let offset = ((pixel_y * pixel_width + pixel_x) * 4) as usize;
+                    pixels[offset..offset + 4].copy_from_slice(&colour);
                 }
             }
         }
-        buffer.draw(fonts, &mut self.swash, Color::rgba(r, g, b, a), |x, y, cw, ch, c| {
-            for dy in 0..ch as i32 {
-                for dx in 0..cw as i32 {
-                    blend(&mut pixels, w, h, (x + dx - scroll as i32, y + dy), c);
+        buffer.draw(
+            fonts,
+            &mut self.swash,
+            Color::rgba(red, green, blue, alpha),
+            |glyph_x, glyph_y, glyph_width, glyph_height, colour| {
+                for delta_y in 0..glyph_height as i32 {
+                    for delta_x in 0..glyph_width as i32 {
+                        blend(
+                            &mut pixels,
+                            pixel_width,
+                            pixel_height,
+                            (glyph_x + delta_x - scroll as i32, glyph_y + delta_y),
+                            colour,
+                        );
+                    }
                 }
-            }
-        });
+            },
+        );
         if let Some(field) = key.field.filter(|field| field.visible) {
-            let x = ((caret - scroll).round() as i32).clamp(0, w - 1);
-            let [r, g, b, a] = field.accent;
-            let colour = [r as u32 * a as u32 / 255, g as u32 * a as u32 / 255, b as u32 * a as u32 / 255, a as u32]
-                .map(|c| c as u8);
+            let caret_x = ((caret - scroll).round() as i32).clamp(0, pixel_width - 1);
+            let [accent_red, accent_green, accent_blue, accent_alpha] = field.accent;
+            let colour = [
+                accent_red as u32 * accent_alpha as u32 / 255,
+                accent_green as u32 * accent_alpha as u32 / 255,
+                accent_blue as u32 * accent_alpha as u32 / 255,
+                accent_alpha as u32,
+            ]
+            .map(|channel| channel as u8);
             // One logical pixel wide.
             let caret_w = scale.round().max(1.0) as i32;
-            for y in 1..h - 1 {
-                for x in x..(x + caret_w).min(w) {
-                    let i = ((y * w + x) * 4) as usize;
-                    pixels[i..i + 4].copy_from_slice(&colour);
+            for pixel_y in 1..pixel_height - 1 {
+                for pixel_x in caret_x..(caret_x + caret_w).min(pixel_width) {
+                    let offset = ((pixel_y * pixel_width + pixel_x) * 4) as usize;
+                    pixels[offset..offset + 4].copy_from_slice(&colour);
                 }
             }
         }
-        let buffer = MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (w, h), 1, Transform::Normal, None);
-        let (width, height) = (f64::from(w) / f64::from(scale), f64::from(h) / f64::from(scale));
+        let buffer = MemoryRenderBuffer::from_slice(
+            &pixels,
+            Fourcc::Abgr8888,
+            (pixel_width, pixel_height),
+            1,
+            Transform::Normal,
+            None,
+        );
+        let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
         Some(TextImage { buffer, width, height })
     }
 }

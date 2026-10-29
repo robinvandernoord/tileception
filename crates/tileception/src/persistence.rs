@@ -9,7 +9,8 @@ use crate::Tileception;
 
 #[derive(Serialize, Deserialize)]
 struct WindowRecord {
-    id: WindowId,
+    #[serde(rename = "id")]
+    window_id: WindowId,
     app: String,
 }
 
@@ -30,15 +31,15 @@ impl Persistence {
     pub fn load() -> Self {
         let saved = std::fs::read_to_string(layout_path())
             .ok()
-            .filter(|s| s.len() <= 1024 * 1024)
+            .filter(|text| text.len() <= 1024 * 1024)
             .and_then(|text| toml::from_str::<SessionLayout>(&text).ok())
-            .filter(|s| s.version == 1);
+            .filter(|layout| layout.version == 1);
         Self { saved, matched: HashMap::new() }
     }
 }
 
 impl Tileception {
-    pub fn restore_window_layout(&mut self, id: WindowId) {
+    pub fn restore_window_layout(&mut self, window: WindowId) {
         if !self.config.file.general.restore_layout {
             return;
         }
@@ -47,20 +48,22 @@ impl Tileception {
             self.persist_layout();
             return;
         };
-        let app = self.windows.get(&id).map(crate::state::app_id).unwrap_or_default();
+        let app = self.windows.get(&window).map(crate::state::app_id).unwrap_or_default();
         if !app.is_empty()
-            && let Some(record) =
-                saved.windows.iter().find(|r| r.app == app && !self.persistence.matched.contains_key(&r.id))
+            && let Some(record) = saved
+                .windows
+                .iter()
+                .find(|record| record.app == app && !self.persistence.matched.contains_key(&record.window_id))
         {
-            self.persistence.matched.insert(record.id, id);
+            self.persistence.matched.insert(record.window_id, window);
         }
         let extras: Vec<_> = self
             .world
             .tree()
             .windows_in(self.world.tree().root())
             .into_iter()
-            .filter(|live| !self.persistence.matched.values().any(|id| id == live))
-            .map(|id| (id, self.world.float_rect(id)))
+            .filter(|live| !self.persistence.matched.values().any(|matched| matched == live))
+            .map(|live| (live, self.world.float_rect(live)))
             .collect();
         let now = self.now();
         if !self.world.restore_layout(&saved.layout, &self.persistence.matched, now) {
@@ -74,7 +77,7 @@ impl Tileception {
                 self.world.set_float_rect(extra, rect);
             }
         }
-        self.world.focus_window(id, now);
+        self.world.focus_window(window, now);
         let complete = self.persistence.matched.len() >= saved.windows.len();
         if complete {
             self.persist_layout();
@@ -96,7 +99,10 @@ impl Tileception {
         }
         let windows = ids
             .into_iter()
-            .map(|id| WindowRecord { id, app: self.windows.get(&id).map(crate::state::app_id).unwrap_or_default() })
+            .map(|window| WindowRecord {
+                window_id: window,
+                app: self.windows.get(&window).map(crate::state::app_id).unwrap_or_default(),
+            })
             .collect();
         let snapshot = SessionLayout { version: 1, layout: self.world.snapshot(), windows };
         let result = (|| {

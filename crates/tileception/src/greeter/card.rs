@@ -68,12 +68,12 @@ pub struct Publish {
 }
 
 fn hex(colour: Colour) -> String {
-    let [r, g, b, _] = colour.straight_rgba8();
-    format!("#{r:02x}{g:02x}{b:02x}")
+    let [red, green, blue, _] = colour.straight_rgba8();
+    format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
 impl Publish {
-    pub fn of(theme: &Theme, share: bool, screen: (u32, u32)) -> Publish {
+    pub fn from_theme(theme: &Theme, share: bool, screen: (u32, u32)) -> Publish {
         let colour_scheme = match theme.colour_scheme {
             crate::theme::ColourScheme::Dark => "dark",
             crate::theme::ColourScheme::Light => "light",
@@ -105,7 +105,7 @@ impl Publish {
         let result = match (&self.wallpaper, self.share) {
             (Some(source), true) => write_wallpaper(source, &file, self.screen),
             _ => match std::fs::remove_file(&file) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.to_string()),
                 _ => Ok(()),
             },
         };
@@ -149,24 +149,24 @@ fn set_colours(uid: u32, accent: &str, accent_end: &str, scheme: &str) -> zbus::
 /// The wallpaper, no larger than the screen, as a JPEG at `file`. Written
 /// next to it first, so the greeter never reads half a file.
 fn write_wallpaper(source: &Path, file: &Path, screen: (u32, u32)) -> Result<(), String> {
-    let image = image::open(source).map_err(|e| format!("{}: {e}", source.display()))?;
-    let (w, h) = (screen.0.clamp(1, MAX_SIZE.0), screen.1.clamp(1, MAX_SIZE.1));
-    let image = if image.width() > w || image.height() > h {
-        image.resize_to_fill(w, h, image::imageops::FilterType::Triangle)
+    let image = image::open(source).map_err(|err| format!("{}: {err}", source.display()))?;
+    let (width, height) = (screen.0.clamp(1, MAX_SIZE.0), screen.1.clamp(1, MAX_SIZE.1));
+    let image = if image.width() > width || image.height() > height {
+        image.resize_to_fill(width, height, image::imageops::FilterType::Triangle)
     } else {
         image
     };
     let mut jpeg = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
         .encode_image(&image.to_rgb8())
-        .map_err(|e| e.to_string())?;
+        .map_err(|err| err.to_string())?;
     let temporary = file.with_extension(format!("jpg.{}.new", std::process::id()));
     let written = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o644)
         .open(&temporary)
-        .and_then(|mut f| f.write_all(&jpeg))
+        .and_then(|mut output| output.write_all(&jpeg))
         .and_then(|()| std::fs::rename(&temporary, file));
     if let Err(error) = written {
         let _ = std::fs::remove_file(&temporary);
@@ -211,7 +211,7 @@ fn read_colours(login: &str) -> zbus::Result<Option<(Colour, Colour)>> {
 
 /// Both colours, or neither: half a pair would clash with the fallback.
 fn parse_accent(accent: &str, accent_end: &str) -> Option<(Colour, Colour)> {
-    let colour = |s: &str| Colour::parse(s.trim()).ok().filter(|c| c.0[3] > 0.99);
+    let colour = |text: &str| Colour::parse(text.trim()).ok().filter(|parsed| parsed.0[3] > 0.99);
     Some((colour(accent)?, colour(accent_end)?))
 }
 
@@ -223,8 +223,8 @@ fn trusted_wallpaper(folder: &Path, uid: u32) -> Option<PathBuf> {
     (meta.file_type().is_file() && meta.uid() == uid && meta.len() > 0 && meta.len() <= MAX_BYTES).then_some(file)
 }
 
-/// A wallpaper filling `w` x `h` pixels, premultiplied RGBA.
-pub fn decode(file: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
+/// A wallpaper filling `width` x `height` pixels, premultiplied RGBA.
+pub fn decode(file: &Path, width: u32, height: u32) -> Option<Vec<u8>> {
     let reader = image::ImageReader::open(file).ok()?.with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
@@ -232,7 +232,7 @@ pub fn decode(file: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
     let mut reader = reader;
     reader.limits(limits);
     let image = reader.decode().ok()?;
-    let filled = image.resize_to_fill(w.max(1), h.max(1), image::imageops::FilterType::Triangle).to_rgba8();
+    let filled = image.resize_to_fill(width.max(1), height.max(1), image::imageops::FilterType::Triangle).to_rgba8();
     // Photos are opaque, so premultiplying changes nothing.
     Some(filled.into_raw())
 }
@@ -246,31 +246,31 @@ pub fn accent_from(rgba: &[u8]) -> Option<(Colour, Colour)> {
     let mut weight = [0.0_f32; BINS];
     let mut sum = [[0.0_f32; 3]; BINS];
     for pixel in rgba.as_chunks::<4>().0 {
-        let rgb = [pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.0);
+        let rgb = [pixel[0], pixel[1], pixel[2]].map(|channel| f32::from(channel) / 255.0);
         let (hue, saturation, value) = hsv(rgb);
         if saturation < 0.35 || value < 0.3 {
             continue;
         }
         let bin = ((hue / 360.0 * BINS as f32) as usize).min(BINS - 1);
-        let w = saturation * value;
-        weight[bin] += w;
+        let strength = saturation * value;
+        weight[bin] += strength;
         for (total, channel) in sum[bin].iter_mut().zip(rgb) {
-            *total += channel * w;
+            *total += channel * strength;
         }
     }
     let pixels = (rgba.len() / 4).max(1) as f32;
-    let by_weight = |&a: &usize, &b: &usize| weight[a].total_cmp(&weight[b]);
-    let first = (0..BINS).max_by(by_weight).filter(|&b| weight[b] / pixels > 0.02)?;
+    let by_weight = |&left: &usize, &right: &usize| weight[left].total_cmp(&weight[right]);
+    let first = (0..BINS).max_by(by_weight).filter(|&bin| weight[bin] / pixels > 0.02)?;
     // Two bins (60 degrees) or more away on the colour wheel.
-    let apart = |b: usize| (b + BINS - first) % BINS >= 2 && (first + BINS - b) % BINS >= 2;
-    let second = (0..BINS).filter(|&b| apart(b)).max_by(by_weight).filter(|&b| weight[b] / pixels > 0.01);
-    let colour = |bin: usize| readable(sum[bin].map(|c| c / weight[bin]));
+    let apart = |bin: usize| (bin + BINS - first) % BINS >= 2 && (first + BINS - bin) % BINS >= 2;
+    let second = (0..BINS).filter(|&bin| apart(bin)).max_by(by_weight).filter(|&bin| weight[bin] / pixels > 0.01);
+    let colour = |bin: usize| readable(sum[bin].map(|channel| channel / weight[bin]));
     let start = colour(first)?;
     let end = match second {
         Some(bin) => colour(bin)?,
         // One hue only: the same, turned 40 degrees.
         None => {
-            let (hue, saturation, value) = hsv(sum[first].map(|c| c / weight[first]));
+            let (hue, saturation, value) = hsv(sum[first].map(|channel| channel / weight[first]));
             readable(rgb_of((hue + 40.0) % 360.0, saturation, value))?
         }
     };
@@ -286,45 +286,46 @@ fn readable(rgb: [f32; 3]) -> Option<Colour> {
         if (luminance(rgb) + 0.05) / 0.056 >= 4.5 {
             return Some(Colour([rgb[0], rgb[1], rgb[2], 1.0]));
         }
-        rgb = rgb.map(|c| c + (1.0 - c) * 0.15);
+        rgb = rgb.map(|channel| channel + (1.0 - channel) * 0.15);
     }
     None
 }
 
 /// WCAG relative luminance of sRGB.
 fn luminance(rgb: [f32; 3]) -> f32 {
-    let linear = rgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
+    let linear =
+        rgb.map(|channel| if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) });
     0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
 }
 
 /// Hue in degrees, saturation and value, each of the latter 0 to 1.
-fn hsv([r, g, b]: [f32; 3]) -> (f32, f32, f32) {
-    let max = r.max(g).max(b);
-    let delta = max - r.min(g).min(b);
+fn hsv([red, green, blue]: [f32; 3]) -> (f32, f32, f32) {
+    let max = red.max(green).max(blue);
+    let delta = max - red.min(green).min(blue);
     let hue = if delta <= f32::EPSILON {
         0.0
-    } else if max == r {
-        60.0 * ((g - b) / delta).rem_euclid(6.0)
-    } else if max == g {
-        60.0 * ((b - r) / delta + 2.0)
+    } else if max == red {
+        60.0 * ((green - blue) / delta).rem_euclid(6.0)
+    } else if max == green {
+        60.0 * ((blue - red) / delta + 2.0)
     } else {
-        60.0 * ((r - g) / delta + 4.0)
+        60.0 * ((red - green) / delta + 4.0)
     };
     (hue, if max <= f32::EPSILON { 0.0 } else { delta / max }, max)
 }
 
 fn rgb_of(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
-    let c = value * saturation;
-    let x = c * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
-    let (r, g, b) = match (hue / 60.0) as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+    let chroma = value * saturation;
+    let intermediate = chroma * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match (hue / 60.0) as u32 {
+        0 => (chroma, intermediate, 0.0),
+        1 => (intermediate, chroma, 0.0),
+        2 => (0.0, chroma, intermediate),
+        3 => (0.0, intermediate, chroma),
+        4 => (intermediate, 0.0, chroma),
+        _ => (chroma, 0.0, intermediate),
     };
-    [r, g, b].map(|channel| channel + value - c)
+    [red, green, blue].map(|channel| channel + value - chroma)
 }
 
 #[cfg(test)]
@@ -332,7 +333,11 @@ mod tests {
     use super::*;
 
     fn picture(colours: &[([u8; 3], usize)]) -> Vec<u8> {
-        colours.iter().flat_map(|&(rgb, n)| std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], n)).flatten().collect()
+        colours
+            .iter()
+            .flat_map(|&(rgb, count)| std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], count))
+            .flatten()
+            .collect()
     }
 
     #[test]

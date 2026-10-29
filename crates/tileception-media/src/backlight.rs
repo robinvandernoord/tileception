@@ -25,7 +25,7 @@ impl Worker {
         let thread = thread::Builder::new()
             .name("tileception-backlight".into())
             .spawn(move || run(Path::new(ROOT), &shared, &notifier, &incoming))
-            .map_err(|e| tracing::error!("could not start the backlight worker: {e}"))
+            .map_err(|error| tracing::error!("could not start the backlight worker: {error}"))
             .ok();
         Self { requests, thread }
     }
@@ -55,7 +55,7 @@ pub fn pick_device(root: &Path) -> Option<PathBuf> {
     };
     let mut found: Vec<(i32, PathBuf)> = std::fs::read_dir(root)
         .ok()?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| read_number(&path.join("max_brightness")).is_some_and(|max| max > 0))
         .map(|path| (std::fs::read_to_string(path.join("type")).map_or(3, |kind| rank(&kind)), path))
         .collect();
@@ -68,12 +68,12 @@ fn read_number(path: &Path) -> Option<u32> {
 }
 
 fn name(device: &Path) -> String {
-    device.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    device.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// The device's level now, as a percentage of its range.
 fn level(device: &Path) -> Option<(Percent, u32, u32)> {
-    let max = read_number(&device.join("max_brightness")).filter(|m| *m > 0)?;
+    let max = read_number(&device.join("max_brightness")).filter(|maximum| *maximum > 0)?;
     let now = read_number(&device.join("brightness"))?;
     let percent = (u64::from(now) * 100 + u64::from(max) / 2) / u64::from(max);
     Some((percent as Percent, max, now))
@@ -148,7 +148,7 @@ fn set(logind: &mut Option<zbus::blocking::Connection>, device: &Path, value: u3
             *logind = None;
             // Writable directly when a udev rule allows it.
             std::fs::write(device.join("brightness"), value.to_string())
-                .map_err(|e| format!("logind: {error}; sysfs: {e}"))
+                .map_err(|write_error| format!("logind: {error}; sysfs: {write_error}"))
         }
     }
 }

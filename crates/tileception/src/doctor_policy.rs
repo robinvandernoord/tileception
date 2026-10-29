@@ -55,8 +55,8 @@ impl Mode {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Mode> {
-        match s {
+    pub fn parse(name: &str) -> Option<Mode> {
+        match name {
             "ask" => Some(Mode::Ask),
             "tweak" | "config" | "tileception" => Some(Mode::Config),
             "yolo" => Some(Mode::Yolo),
@@ -87,7 +87,7 @@ impl Scope {
 /// Whether `path` lies under `dir`, without `..` tricks.
 fn within(path: &Path, dir: &Path) -> bool {
     path.is_absolute()
-        && !path.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        && !path.components().any(|component| matches!(component, std::path::Component::ParentDir))
         && path.starts_with(dir)
 }
 
@@ -95,28 +95,28 @@ fn within(path: &Path, dir: &Path) -> bool {
 pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scope) -> Option<String> {
     let allow = choices
         .iter()
-        .find(|c| c.kind == "allow_once")
-        .or_else(|| choices.iter().find(|c| c.kind.starts_with("allow")))?;
+        .find(|choice| choice.kind == "allow_once")
+        .or_else(|| choices.iter().find(|choice| choice.kind.starts_with("allow")))?;
     let allowed = match mode {
         Mode::Yolo => true,
         Mode::Ask => false,
         Mode::Config => match action.kind.as_deref() {
             Some("think") => true,
-            Some("read" | "search") => !action.paths.is_empty() && action.paths.iter().all(|p| scope.readable(p)),
+            Some("read" | "search") => !action.paths.is_empty() && action.paths.iter().all(|path| scope.readable(path)),
             Some("edit" | "delete" | "move") => {
                 let paths: Vec<&Path> = action
                     .paths
                     .iter()
                     .map(PathBuf::as_path)
-                    .chain(action.diffs.iter().map(|d| d.0.as_path()))
+                    .chain(action.diffs.iter().map(|change| change.0.as_path()))
                     .collect();
-                !paths.is_empty() && paths.iter().all(|p| scope.changeable(p))
+                !paths.is_empty() && paths.iter().all(|path| scope.changeable(path))
             }
             Some("execute") => action.command.as_deref().is_some_and(tileception_command),
             _ => false,
         },
     };
-    allowed.then(|| allow.id.clone())
+    allowed.then(|| allow.choice_id.clone())
 }
 
 /// Compositor commands the agent may run unasked in config mode: ones that
@@ -144,7 +144,7 @@ pub fn may_write(mode: Mode, path: &Path, scope: &Scope, approved: &[PathBuf]) -
     match mode {
         Mode::Yolo => true,
         Mode::Config => scope.changeable(path),
-        Mode::Ask => approved.iter().any(|p| p == path),
+        Mode::Ask => approved.iter().any(|approved_path| approved_path == path),
     }
 }
 
@@ -169,60 +169,71 @@ const MAX_DIFF_CELLS: usize = 4_000_000;
 /// A line diff with two lines of context around changes, plus how many
 /// lines were added and removed.
 pub fn diff(old: &str, new: &str) -> (Vec<DiffLine>, usize, usize) {
-    let a: Vec<&str> = old.lines().collect();
-    let b: Vec<&str> = new.lines().collect();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
     // Lines the same at both ends need no table.
-    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let suffix = a[prefix..].iter().rev().zip(b[prefix..].iter().rev()).take_while(|(x, y)| x == y).count();
-    let (a_mid, b_mid) = (&a[prefix..a.len() - suffix], &b[prefix..b.len() - suffix]);
-    let mut all: Vec<(Sign, &str)> = a[..prefix].iter().map(|l| (Sign::Same, *l)).collect();
+    let prefix = old_lines.iter().zip(&new_lines).take_while(|(old_line, new_line)| old_line == new_line).count();
+    let suffix = old_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(new_lines[prefix..].iter().rev())
+        .take_while(|(old_line, new_line)| old_line == new_line)
+        .count();
+    let (a_mid, b_mid) = (&old_lines[prefix..old_lines.len() - suffix], &new_lines[prefix..new_lines.len() - suffix]);
+    let mut all: Vec<(Sign, &str)> = old_lines[..prefix].iter().map(|line| (Sign::Same, *line)).collect();
     if a_mid.len().saturating_mul(b_mid.len()) > MAX_DIFF_CELLS {
         // Too big to compare line by line on the compositor's thread: the
         // whole middle is shown as replaced.
-        all.extend(a_mid.iter().map(|l| (Sign::Removed, *l)));
-        all.extend(b_mid.iter().map(|l| (Sign::Added, *l)));
+        all.extend(a_mid.iter().map(|line| (Sign::Removed, *line)));
+        all.extend(b_mid.iter().map(|line| (Sign::Added, *line)));
     } else {
         // Longest common subsequence, from the end.
-        let (a, b) = (a_mid, b_mid);
-        let mut lcs = vec![vec![0u32; b.len() + 1]; a.len() + 1];
-        for i in (0..a.len()).rev() {
-            for j in (0..b.len()).rev() {
-                lcs[i][j] = if a[i] == b[j] { lcs[i + 1][j + 1] + 1 } else { lcs[i + 1][j].max(lcs[i][j + 1]) };
+        let (old_part, new_part) = (a_mid, b_mid);
+        let mut lcs = vec![vec![0u32; new_part.len() + 1]; old_part.len() + 1];
+        for old_index in (0..old_part.len()).rev() {
+            for new_index in (0..new_part.len()).rev() {
+                lcs[old_index][new_index] = if old_part[old_index] == new_part[new_index] {
+                    lcs[old_index + 1][new_index + 1] + 1
+                } else {
+                    lcs[old_index + 1][new_index].max(lcs[old_index][new_index + 1])
+                };
             }
         }
-        let (mut i, mut j) = (0, 0);
-        while i < a.len() || j < b.len() {
-            if i < a.len() && j < b.len() && a[i] == b[j] {
-                all.push((Sign::Same, a[i]));
-                i += 1;
-                j += 1;
-            } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+        let (mut old_index, mut new_index) = (0, 0);
+        while old_index < old_part.len() || new_index < new_part.len() {
+            if old_index < old_part.len() && new_index < new_part.len() && old_part[old_index] == new_part[new_index] {
+                all.push((Sign::Same, old_part[old_index]));
+                old_index += 1;
+                new_index += 1;
+            } else if old_index < old_part.len()
+                && (new_index == new_part.len() || lcs[old_index + 1][new_index] >= lcs[old_index][new_index + 1])
+            {
                 // Removed lines before the added ones that replace them.
-                all.push((Sign::Removed, a[i]));
-                i += 1;
+                all.push((Sign::Removed, old_part[old_index]));
+                old_index += 1;
             } else {
-                all.push((Sign::Added, b[j]));
-                j += 1;
+                all.push((Sign::Added, new_part[new_index]));
+                new_index += 1;
             }
         }
     }
-    all.extend(a[a.len() - suffix..].iter().map(|l| (Sign::Same, *l)));
-    let added = all.iter().filter(|(s, _)| *s == Sign::Added).count();
-    let removed = all.iter().filter(|(s, _)| *s == Sign::Removed).count();
-    let near = |k: usize| {
-        let lo = k.saturating_sub(2);
-        let hi = (k + 3).min(all.len());
-        all[lo..hi].iter().any(|(s, _)| *s != Sign::Same)
+    all.extend(old_lines[old_lines.len() - suffix..].iter().map(|line| (Sign::Same, *line)));
+    let added = all.iter().filter(|(sign, _)| *sign == Sign::Added).count();
+    let removed = all.iter().filter(|(sign, _)| *sign == Sign::Removed).count();
+    let near = |index: usize| {
+        let start = index.saturating_sub(2);
+        let end = (index + 3).min(all.len());
+        all[start..end].iter().any(|(sign, _)| *sign != Sign::Same)
     };
     let mut out: Vec<DiffLine> = Vec::new();
-    for (k, (sign, text)) in all.iter().enumerate() {
-        if *sign != Sign::Same || near(k) {
+    for (index, (sign, text)) in all.iter().enumerate() {
+        if *sign != Sign::Same || near(index) {
             out.push(DiffLine { sign: *sign, text: (*text).to_string() });
-        } else if out.last().is_none_or(|l| l.sign != Sign::Skipped) {
+        } else if out.last().is_none_or(|last| last.sign != Sign::Skipped) {
             out.push(DiffLine { sign: Sign::Skipped, text: String::new() });
         }
     }
-    while out.last().is_some_and(|l| l.sign == Sign::Skipped) {
+    while out.last().is_some_and(|last| last.sign == Sign::Skipped) {
         out.pop();
     }
     (out, added, removed)
@@ -234,15 +245,22 @@ pub fn backup(path: &Path, backups: &Path) -> Result<Option<PathBuf>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    std::fs::create_dir_all(backups).map_err(|e| format!("{}: {e}", backups.display()))?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
-    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    std::fs::create_dir_all(backups).map_err(|err| format!("{}: {err}", backups.display()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since_epoch| since_epoch.as_millis());
+    let name = path.file_name().map_or_else(|| "file".into(), |file_name| file_name.to_string_lossy().into_owned());
     let copy = backups.join(format!("{name}.{stamp}"));
-    std::fs::copy(path, &copy).map_err(|e| format!("could not back up {}: {e}", path.display()))?;
+    std::fs::copy(path, &copy).map_err(|err| format!("could not back up {}: {err}", path.display()))?;
     if let Ok(entries) = std::fs::read_dir(backups) {
-        let mut files: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+        let mut files: Vec<_> = entries.filter_map(Result::ok).map(|entry| entry.path()).collect();
         // Oldest first, by the stamp after the name (not by the name).
-        files.sort_by_key(|p| p.extension().and_then(|s| s.to_str()).and_then(|s| s.parse::<u128>().ok()));
+        files.sort_by_key(|backup_path| {
+            backup_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .and_then(|digits| digits.parse::<u128>().ok())
+        });
         let excess = files.len().saturating_sub(50);
         for old in &files[..excess] {
             let _ = std::fs::remove_file(old);
@@ -257,7 +275,7 @@ pub fn read_lines(text: &str, line: Option<u64>, limit: Option<u64>) -> String {
         return text.to_string();
     }
     let skip = line.unwrap_or(1).saturating_sub(1) as usize;
-    let take = limit.map_or(usize::MAX, |l| l as usize);
+    let take = limit.map_or(usize::MAX, |count| count as usize);
     let mut out: String = text.lines().skip(skip).take(take).collect::<Vec<_>>().join("\n");
     if !out.is_empty() {
         out.push('\n');
@@ -275,9 +293,9 @@ mod tests {
 
     fn choices() -> Vec<Choice> {
         vec![
-            Choice { id: "always".into(), name: "Always".into(), kind: "allow_always".into() },
-            Choice { id: "once".into(), name: "Allow".into(), kind: "allow_once".into() },
-            Choice { id: "no".into(), name: "Reject".into(), kind: "reject_once".into() },
+            Choice { choice_id: "always".into(), name: "Always".into(), kind: "allow_always".into() },
+            Choice { choice_id: "once".into(), name: "Allow".into(), kind: "allow_once".into() },
+            Choice { choice_id: "no".into(), name: "Reject".into(), kind: "reject_once".into() },
         ]
     }
 
@@ -292,40 +310,44 @@ mod tests {
 
     #[test]
     fn modes_decide() {
-        let s = scope();
+        let places = scope();
         let config = "/home/r/.config/tileception/config.toml";
         let edit = action("edit", &[config], None);
-        assert_eq!(auto_choice(Mode::Ask, &edit, &choices(), &s), None);
-        assert_eq!(auto_choice(Mode::Config, &edit, &choices(), &s).as_deref(), Some("once"));
+        assert_eq!(auto_choice(Mode::Ask, &edit, &choices(), &places), None);
+        assert_eq!(auto_choice(Mode::Config, &edit, &choices(), &places).as_deref(), Some("once"));
         let elsewhere = action("edit", &["/home/r/.bashrc"], None);
-        assert_eq!(auto_choice(Mode::Config, &elsewhere, &choices(), &s), None);
-        assert_eq!(auto_choice(Mode::Yolo, &elsewhere, &choices(), &s).as_deref(), Some("once"));
+        assert_eq!(auto_choice(Mode::Config, &elsewhere, &choices(), &places), None);
+        assert_eq!(auto_choice(Mode::Yolo, &elsewhere, &choices(), &places).as_deref(), Some("once"));
         let sneaky = action("edit", &["/home/r/.config/tileception/../../.bashrc"], None);
-        assert_eq!(auto_choice(Mode::Config, &sneaky, &choices(), &s), None);
+        assert_eq!(auto_choice(Mode::Config, &sneaky, &choices(), &places), None);
         let msg = action("execute", &[], Some("tileception msg tree"));
-        assert!(auto_choice(Mode::Config, &msg, &choices(), &s).is_some());
+        assert!(auto_choice(Mode::Config, &msg, &choices(), &places).is_some());
         let chained = action("execute", &[], Some("tileception msg tree; rm -rf ~"));
-        assert_eq!(auto_choice(Mode::Config, &chained, &choices(), &s), None);
+        assert_eq!(auto_choice(Mode::Config, &chained, &choices(), &places), None);
         for risky in ["tileception msg spawn rm -rf ~", "tileception msg doctor mode yolo", "tileception msg type hi"] {
-            assert_eq!(auto_choice(Mode::Config, &action("execute", &[], Some(risky)), &choices(), &s), None);
+            assert_eq!(auto_choice(Mode::Config, &action("execute", &[], Some(risky)), &choices(), &places), None);
         }
         let log = action("read", &["/home/r/.local/state/tileception/tileception.log"], None);
-        assert!(auto_choice(Mode::Config, &log, &choices(), &s).is_some());
+        assert!(auto_choice(Mode::Config, &log, &choices(), &places).is_some());
         // Nothing to allow with: nothing is chosen.
-        let rejects = vec![Choice { id: "no".into(), name: "No".into(), kind: "reject_once".into() }];
-        assert_eq!(auto_choice(Mode::Yolo, &edit, &rejects, &s), None);
+        let rejects = vec![Choice { choice_id: "no".into(), name: "No".into(), kind: "reject_once".into() }];
+        assert_eq!(auto_choice(Mode::Yolo, &edit, &rejects, &places), None);
     }
 
     #[test]
     fn files_follow_the_mode() {
-        let s = scope();
+        let places = scope();
         let config = Path::new("/home/r/.config/tileception/config.toml");
         let other = Path::new("/etc/passwd");
-        assert!(may_read(Mode::Ask, config, &s) && !may_read(Mode::Ask, other, &s) && may_read(Mode::Yolo, other, &s));
-        assert!(!may_write(Mode::Ask, config, &s, &[]));
-        assert!(may_write(Mode::Ask, config, &s, &[config.to_path_buf()]));
-        assert!(may_write(Mode::Config, config, &s, &[]) && !may_write(Mode::Config, other, &s, &[]));
-        assert!(may_write(Mode::Yolo, other, &s, &[]));
+        assert!(
+            may_read(Mode::Ask, config, &places)
+                && !may_read(Mode::Ask, other, &places)
+                && may_read(Mode::Yolo, other, &places)
+        );
+        assert!(!may_write(Mode::Ask, config, &places, &[]));
+        assert!(may_write(Mode::Ask, config, &places, &[config.to_path_buf()]));
+        assert!(may_write(Mode::Config, config, &places, &[]) && !may_write(Mode::Config, other, &places, &[]));
+        assert!(may_write(Mode::Yolo, other, &places, &[]));
     }
 
     #[test]
@@ -336,18 +358,18 @@ mod tests {
         assert_eq!((added, removed), (2, 1));
         let shown: Vec<String> = lines
             .iter()
-            .map(|l| match l.sign {
-                Sign::Same => format!(" {}", l.text),
-                Sign::Added => format!("+{}", l.text),
-                Sign::Removed => format!("-{}", l.text),
+            .map(|line| match line.sign {
+                Sign::Same => format!(" {}", line.text),
+                Sign::Added => format!("+{}", line.text),
+                Sign::Removed => format!("-{}", line.text),
                 Sign::Skipped => "...".into(),
             })
             .collect();
         assert_eq!(shown, ["...", " c", " d", "-e", "+E", " f", " g", " h", "+i"]);
         assert_eq!(diff("same\n", "same\n").1, 0);
         // Huge files are not compared line by line, but still counted.
-        let big: String = (0..3000).map(|i| format!("{i}\n")).collect();
-        let other: String = (0..3000).map(|i| format!("x{i}\n")).collect();
+        let big: String = (0..3000).map(|number| format!("{number}\n")).collect();
+        let other: String = (0..3000).map(|number| format!("x{number}\n")).collect();
         let (_, added, removed) = diff(&big, &other);
         assert_eq!((added, removed), (3000, 3000));
     }

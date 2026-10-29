@@ -66,16 +66,18 @@ impl CompositorHandler for Tileception {
             let mut acquire = None;
             let dmabuf = with_states(surface, |data| {
                 acquire.clone_from(&data.cached_state.get::<DrmSyncobjCachedState>().pending().acquire_point);
-                data.cached_state.get::<SurfaceAttributes>().pending().buffer.as_ref().and_then(|b| match b {
-                    BufferAssignment::NewBuffer(buffer) => get_dmabuf(buffer).cloned().ok(),
-                    _ => None,
+                data.cached_state.get::<SurfaceAttributes>().pending().buffer.as_ref().and_then(|assignment| {
+                    match assignment {
+                        BufferAssignment::NewBuffer(buffer) => get_dmabuf(buffer).cloned().ok(),
+                        _ => None,
+                    }
                 })
             });
             let Some(dmabuf) = dmabuf else { return };
             let Some(client) = surface.client() else { return };
             let release = move |state: &mut Tileception| {
-                let dh = state.display_handle.clone();
-                state.client_compositor_state(&client).blocker_cleared(state, &dh);
+                let display_handle = state.display_handle.clone();
+                state.client_compositor_state(&client).blocker_cleared(state, &display_handle);
             };
             if let Some(point) = acquire
                 && let Ok((blocker, source)) = point.generate_blocker()
@@ -128,27 +130,28 @@ impl CompositorHandler for Tileception {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(id) = self.window_id(&root) {
-                let window = &self.windows[&id];
+            if let Some(window_id) = self.window_id(&root) {
+                let window = &self.windows[&window_id];
                 window.on_commit();
-                let unplaced = root == *surface && window.toplevel().is_some_and(|t| !t.is_initial_configure_sent());
+                let unplaced =
+                    root == *surface && window.toplevel().is_some_and(|toplevel| !toplevel.is_initial_configure_sent());
                 let geo = window.geometry();
                 if unplaced {
-                    self.place_window(id);
-                } else if self.world.float_needs_size(id) && geo.size.w > 0 && geo.size.h > 0 {
+                    self.place_window(window_id);
+                } else if self.world.float_needs_size(window_id) && geo.size.w > 0 && geo.size.h > 0 {
                     // A new floating window has drawn at the size it wants.
-                    self.world.size_float(id, geo.size.w as f64, geo.size.h as f64);
+                    self.world.size_float(window_id, geo.size.w as f64, geo.size.h as f64);
                     self.apply_layout();
-                } else if let Some(rect) = self.world.float_rect(id) {
+                } else if let Some(rect) = self.world.float_rect(window_id) {
                     // A floating window that grew past its rectangle (a dialog
                     // filling in) gets the room, rather than being shrunk into
                     // a preview that takes no clicks. Not while being resized.
-                    let (w, h) = (geo.size.w as f64, geo.size.h as f64);
-                    let resizing = self.resize_drag.is_some_and(|d| d.window == id);
+                    let (width, height) = (geo.size.w as f64, geo.size.h as f64);
+                    let resizing = self.resize_drag.is_some_and(|drag| drag.window == window_id);
                     // Fullscreen is the screen's size, not the window's own.
-                    let fullscreen = self.fullscreen == Some(id);
-                    if !resizing && !fullscreen && (w > rect.w + 0.5 || h > rect.h + 0.5) {
-                        self.world.grow_float(id, w, h);
+                    let fullscreen = self.fullscreen == Some(window_id);
+                    if !resizing && !fullscreen && (width > rect.w + 0.5 || height > rect.h + 0.5) {
+                        self.world.grow_float(window_id, width, height);
                         self.apply_layout();
                     }
                 }
@@ -193,10 +196,12 @@ impl SeatHandler for Tileception {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&crate::focus::KeyboardFocus>) {
         use smithay::wayland::seat::WaylandFocus;
-        let dh = &self.display_handle;
-        let client = focused.and_then(|f| f.wl_surface()).and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client.clone());
-        set_primary_focus(dh, seat, client);
+        let display_handle = &self.display_handle;
+        let client = focused
+            .and_then(|target| target.wl_surface())
+            .and_then(|surface| display_handle.get_client(surface.id()).ok());
+        set_data_device_focus(display_handle, seat, client.clone());
+        set_primary_focus(display_handle, seat, client);
     }
 }
 
@@ -209,7 +214,7 @@ impl SelectionHandler for Tileception {
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
         if let Some(xwm) = self.xwm.as_mut()
-            && let Err(err) = xwm.new_selection(ty, source.map(|s| s.mime_types()))
+            && let Err(err) = xwm.new_selection(ty, source.map(|offered| offered.mime_types()))
         {
             tracing::warn!("could not offer the selection to X11: {err:?}");
         }
@@ -303,8 +308,8 @@ impl XdgShellHandler for Tileception {
 
     /// Dragging a title bar picks the window up, like Alt+drag.
     fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        if let Some(id) = self.window_id(surface.wl_surface()) {
-            self.begin_title_drag(id);
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.begin_title_drag(window_id);
         }
     }
 
@@ -325,10 +330,11 @@ impl XdgShellHandler for Tileception {
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
         match self.window_id(surface.wl_surface()) {
-            Some(id) => self.set_fullscreen(id, true),
+            Some(window_id) => self.set_fullscreen(window_id, true),
             // Not placed yet: remember it for the first configure.
-            None => surface.with_pending_state(|s| {
-                s.states
+            None => surface.with_pending_state(|pending| {
+                pending
+                    .states
                     .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen);
             }),
         }
@@ -336,15 +342,15 @@ impl XdgShellHandler for Tileception {
 
     /// The minimize button in a program's own title bar.
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.window_id(surface.wl_surface()) {
-            self.minimize_window(id);
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.minimize_window(window_id);
             self.persist_layout();
         }
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.window_id(surface.wl_surface()) {
-            self.set_fullscreen(id, false);
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.set_fullscreen(window_id, false);
         }
     }
 
@@ -390,8 +396,9 @@ impl Tileception {
     /// Keeps popups inside the screen, relative to their window's place on it.
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
-        let Some(id) = self.window_id(&root) else { return };
-        let Some(placement) = self.world.placements(self.world.target_view()).into_iter().find(|p| p.window == id)
+        let Some(window_id) = self.window_id(&root) else { return };
+        let Some(placement) =
+            self.world.placements(self.world.target_view()).into_iter().find(|candidate| candidate.window == window_id)
         else {
             return;
         };
@@ -433,12 +440,12 @@ impl DmabufHandler for Tileception {
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
         let renderer = match (self.udev.as_mut(), self.headless.as_mut()) {
-            (Some(u), _) => Some(&mut u.renderer),
-            (None, Some(h)) => Some(&mut h.renderer),
+            (Some(udev), _) => Some(&mut udev.renderer),
+            (None, Some(headless)) => Some(&mut headless.renderer),
             _ => None,
         };
-        let ok = renderer.is_some_and(|r| r.import_dmabuf(&dmabuf, None).is_ok());
-        if ok {
+        let imported = renderer.is_some_and(|gles| gles.import_dmabuf(&dmabuf, None).is_ok());
+        if imported {
             let _ = notifier.successful::<Tileception>();
         } else {
             notifier.failed();

@@ -14,7 +14,7 @@ const FRESH: Duration = Duration::from_secs(24 * 60 * 60);
 /// An agent listed in the registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
-    pub id: String,
+    pub agent_id: String,
     pub name: String,
     pub version: String,
     pub description: String,
@@ -53,7 +53,7 @@ impl Agent {
             Launch::Uvx { .. } if !on_path("uvx") => Some("needs uv (uvx)".into()),
             Launch::Binary { archive, .. } => {
                 let tools: &[&str] = if archive.ends_with(".zip") { &["curl", "unzip"] } else { &["curl", "tar"] };
-                tools.iter().find(|t| !on_path(t)).map(|t| format!("needs {t}"))
+                tools.iter().find(|tool| !on_path(tool)).map(|tool| format!("needs {tool}"))
             }
             _ => None,
         }
@@ -76,7 +76,8 @@ struct File {
 
 #[derive(Deserialize)]
 struct Entry {
-    id: String,
+    #[serde(rename = "id")]
+    agent_id: String,
     name: String,
     version: String,
     #[serde(default)]
@@ -121,29 +122,48 @@ pub fn platform() -> String {
 /// Reads the registry JSON. Binary agents without a build for `platform`
 /// (or without a checksum) are left out; a downloaded binary must be checked.
 pub fn parse(json: &str, platform: &str) -> Result<Vec<Agent>, String> {
-    let file: File = serde_json::from_str(json).map_err(|e| format!("the ACP Registry could not be read: {e}"))?;
+    let file: File =
+        serde_json::from_str(json).map_err(|error| format!("the ACP Registry could not be read: {error}"))?;
     let mut agents = Vec::new();
-    for e in file.agents {
-        let d = e.distribution;
+    for entry in file.agents {
+        let distribution = entry.distribution;
         // Prefer a checked download; then the package managers.
-        let binary = d.binary.and_then(|mut b| b.remove(platform)).and_then(|a| {
-            Some(Launch::Binary { archive: a.archive, sha256: a.sha256?, cmd: a.cmd, args: a.args, env: a.env })
+        let binary = distribution.binary.and_then(|mut builds| builds.remove(platform)).and_then(|archive| {
+            Some(Launch::Binary {
+                archive: archive.archive,
+                sha256: archive.sha256?,
+                cmd: archive.cmd,
+                args: archive.args,
+                env: archive.env,
+            })
         });
         let launch = binary
-            .or_else(|| d.npx.map(|p| Launch::Npx { package: p.package, args: p.args, env: p.env }))
-            .or_else(|| d.uvx.map(|p| Launch::Uvx { package: p.package, args: p.args, env: p.env }));
+            .or_else(|| {
+                distribution.npx.map(|package| Launch::Npx {
+                    package: package.package,
+                    args: package.args,
+                    env: package.env,
+                })
+            })
+            .or_else(|| {
+                distribution.uvx.map(|package| Launch::Uvx {
+                    package: package.package,
+                    args: package.args,
+                    env: package.env,
+                })
+            });
         if let Some(launch) = launch {
             agents.push(Agent {
-                id: e.id,
-                name: e.name,
-                version: e.version,
-                description: e.description,
-                icon: e.icon,
+                agent_id: entry.agent_id,
+                name: entry.name,
+                version: entry.version,
+                description: entry.description,
+                icon: entry.icon,
                 launch,
             });
         }
     }
-    agents.sort_by_key(|a| a.name.to_lowercase());
+    agents.sort_by_key(|agent| agent.name.to_lowercase());
     Ok(agents)
 }
 
@@ -156,8 +176,8 @@ fn cache_file() -> PathBuf {
 pub fn load(refresh: bool) -> Result<Vec<Agent>, String> {
     let path = cache_file();
     let fresh = std::fs::metadata(&path)
-        .and_then(|m| m.modified())
-        .is_ok_and(|t| SystemTime::now().duration_since(t).is_ok_and(|age| age < FRESH));
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| SystemTime::now().duration_since(modified).is_ok_and(|age| age < FRESH));
     if (!fresh || refresh)
         && let Err(error) = download(&path)
     {
@@ -166,17 +186,17 @@ pub fn load(refresh: bool) -> Result<Vec<Agent>, String> {
             return Err(error);
         }
     }
-    let json = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let json = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     parse(&json, &platform())
 }
 
 fn download(path: &Path) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     }
     let partial = path.with_extension("part");
     crate::curl(REGISTRY_URL, &partial, "4000000")?;
-    std::fs::rename(&partial, path).map_err(|e| e.to_string())
+    std::fs::rename(&partial, path).map_err(|error| error.to_string())
 }
 
 /// The runner for npm packages and its arguments before the package: npx,
@@ -209,7 +229,7 @@ pub(crate) fn run(program: &str, args: &[&std::ffi::OsStr]) -> Result<(), String
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("{program}: {e}"))?;
+        .map_err(|error| format!("{program}: {error}"))?;
     if status.status.success() {
         Ok(())
     } else {
@@ -236,12 +256,12 @@ mod tests {
     #[test]
     fn reads_the_registry_for_this_platform() {
         let agents = parse(SAMPLE, "linux-x86_64").expect("parses");
-        let ids: Vec<_> = agents.iter().map(|a| a.id.as_str()).collect();
+        let ids: Vec<_> = agents.iter().map(|agent| agent.agent_id.as_str()).collect();
         assert_eq!(ids, ["claude-acp", "fast-agent", "goose"]);
         assert!(matches!(&agents[2].launch, Launch::Binary { cmd, args, .. } if cmd == "./goose" && args == &["acp"]));
         assert!(matches!(&agents[1].launch, Launch::Uvx { env, .. } if env["FAST_AGENT_MODEL"] == "codexplan"));
         // No build for this machine: not offered.
-        assert!(parse(SAMPLE, "linux-aarch64").expect("parses").iter().all(|a| a.id != "goose"));
+        assert!(parse(SAMPLE, "linux-aarch64").expect("parses").iter().all(|agent| agent.agent_id != "goose"));
         assert!(parse("{", "linux-x86_64").is_err());
     }
 }

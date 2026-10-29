@@ -19,32 +19,36 @@ impl Layout {
     }
 
     /// The node's rectangle, or none when it takes no room (a hidden Desktop).
-    pub fn rect(&self, id: NodeId) -> Option<Rect> {
-        self.rects.get(&id).copied()
+    pub fn rect(&self, node_id: NodeId) -> Option<Rect> {
+        self.rects.get(&node_id).copied()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (NodeId, Rect)> + '_ {
-        self.rects.iter().map(|(k, v)| (*k, *v))
+        self.rects.iter().map(|(node_id, rect)| (*node_id, *rect))
     }
 
-    fn place(&mut self, tree: &Tree, id: NodeId, rect: Rect) {
-        if !tree.is_visible(id) {
+    fn place(&mut self, tree: &Tree, node_id: NodeId, rect: Rect) {
+        if !tree.is_visible(node_id) {
             return;
         }
-        self.rects.insert(id, rect);
-        let Node::Split { axis, children, weights } = tree.node(id) else { return };
-        let shown: Vec<(NodeId, f64)> =
-            children.iter().zip(weights).filter(|(c, _)| tree.is_visible(**c)).map(|(c, w)| (*c, *w)).collect();
-        let total: f64 = shown.iter().map(|(_, w)| w).sum();
+        self.rects.insert(node_id, rect);
+        let Node::Split { axis, children, weights } = tree.node(node_id) else { return };
+        let shown: Vec<(NodeId, f64)> = children
+            .iter()
+            .zip(weights)
+            .filter(|(child, _)| tree.is_visible(**child))
+            .map(|(child, weight)| (*child, *weight))
+            .collect();
+        let total: f64 = shown.iter().map(|(_, weight)| weight).sum();
         let mut offset = 0.0;
         for (child, weight) in shown {
             let frac = weight / total;
-            let r = match axis {
+            let child_rect = match axis {
                 Axis::Horizontal => Rect::new(rect.x + offset * rect.w, rect.y, frac * rect.w, rect.h),
                 Axis::Vertical => Rect::new(rect.x, rect.y + offset * rect.h, rect.w, frac * rect.h),
             };
             offset += frac;
-            self.place(tree, child, r);
+            self.place(tree, child, child_rect);
         }
     }
 }
@@ -57,22 +61,22 @@ mod tests {
 
     #[test]
     fn hidden_desktop_takes_no_room() {
-        let mut t = Tree::new();
-        let a = t.dock(WindowId(1), t.desktop(), Side::Right);
-        let b = t.dock(WindowId(2), a, Side::Bottom);
-        let l = Layout::compute(&t);
-        assert!(l.rect(t.desktop()).is_none());
-        assert!(l.rect(a).unwrap().approx_eq(&Rect::new(0.0, 0.0, 1.0, 0.5), 1e-9));
-        assert!(l.rect(b).unwrap().approx_eq(&Rect::new(0.0, 0.5, 1.0, 0.5), 1e-9));
+        let mut tree = Tree::new();
+        let top_tile = tree.dock(WindowId(1), tree.desktop(), Side::Right);
+        let bottom_tile = tree.dock(WindowId(2), top_tile, Side::Bottom);
+        let layout = Layout::compute(&tree);
+        assert!(layout.rect(tree.desktop()).is_none());
+        assert!(layout.rect(top_tile).unwrap().approx_eq(&Rect::new(0.0, 0.0, 1.0, 0.5), 1e-9));
+        assert!(layout.rect(bottom_tile).unwrap().approx_eq(&Rect::new(0.0, 0.5, 1.0, 0.5), 1e-9));
     }
 
     #[test]
     fn shown_desktop_shares_the_row() {
-        let mut t = Tree::new();
-        let a = t.dock(WindowId(1), t.desktop(), Side::Right);
-        t.set_desktop_shown(true);
-        let l = Layout::compute(&t);
-        assert!(l.rect(t.desktop()).unwrap().approx_eq(&Rect::new(0.0, 0.0, 0.5, 1.0), 1e-9));
-        assert!(l.rect(a).unwrap().approx_eq(&Rect::new(0.5, 0.0, 0.5, 1.0), 1e-9));
+        let mut tree = Tree::new();
+        let window_tile = tree.dock(WindowId(1), tree.desktop(), Side::Right);
+        tree.set_desktop_shown(true);
+        let layout = Layout::compute(&tree);
+        assert!(layout.rect(tree.desktop()).unwrap().approx_eq(&Rect::new(0.0, 0.0, 0.5, 1.0), 1e-9));
+        assert!(layout.rect(window_tile).unwrap().approx_eq(&Rect::new(0.5, 0.0, 0.5, 1.0), 1e-9));
     }
 }

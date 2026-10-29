@@ -70,7 +70,7 @@ impl Tileception {
                 let (worker, results) = Authenticator::start(move || ping.ping())?;
                 self.loop_handle
                     .insert_source(source, |_, _, state| state.authentication_ready())
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
                 Ok::<_, std::io::Error>((worker, results))
             })();
             match started {
@@ -135,7 +135,7 @@ impl Tileception {
     }
 
     fn authentication_ready(&mut self) {
-        let result = self.builtin_locker.results.as_ref().and_then(|rx| rx.try_recv().ok());
+        let result = self.builtin_locker.results.as_ref().and_then(|receiver| receiver.try_recv().ok());
         let Some(result) = result else { return };
         let epoch = self.builtin_locker.submitted.take();
         if !matches!(self.lock, LockState::BuiltIn) || epoch != Some(self.builtin_locker.epoch) {

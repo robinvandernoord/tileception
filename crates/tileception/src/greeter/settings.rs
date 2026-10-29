@@ -165,9 +165,9 @@ impl Default for GreeterFile {
 
 impl GreeterFile {
     pub fn parse(text: &str) -> Result<GreeterFile, String> {
-        let file: GreeterFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        let file: GreeterFile = toml::from_str(text).map_err(|error| error.to_string())?;
         crate::theme::Theme::from_file(&file.theme)?;
-        if file.panels.columns.iter().all(|c| !c.contains(&Panel::Login)) {
+        if file.panels.columns.iter().all(|column| !column.contains(&Panel::Login)) {
             return Err("[panels] columns must include \"login\"".into());
         }
         Ok(file)
@@ -184,13 +184,13 @@ impl GreeterFile {
     pub fn load() -> GreeterFile {
         let path = Self::path();
         match std::fs::read_to_string(&path) {
-            Ok(text) => GreeterFile::parse(&text).unwrap_or_else(|e| {
-                tracing::error!("greeter: {}: {e}; using defaults", path.display());
+            Ok(text) => GreeterFile::parse(&text).unwrap_or_else(|error| {
+                tracing::error!("greeter: {}: {error}; using defaults", path.display());
                 GreeterFile::default()
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => GreeterFile::default(),
-            Err(e) => {
-                tracing::error!("greeter: {}: {e}; using defaults", path.display());
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => GreeterFile::default(),
+            Err(error) => {
+                tracing::error!("greeter: {}: {error}; using defaults", path.display());
                 GreeterFile::default()
             }
         }
@@ -201,7 +201,8 @@ impl GreeterFile {
         if self.keyboard.layout.is_some() {
             return self.keyboard.clone();
         }
-        let system = std::fs::read_to_string("/etc/default/keyboard").map(|t| system_keyboard(&t)).unwrap_or_default();
+        let system =
+            std::fs::read_to_string("/etc/default/keyboard").map(|text| system_keyboard(&text)).unwrap_or_default();
         Keyboard { repeat_delay: self.keyboard.repeat_delay, repeat_rate: self.keyboard.repeat_rate, ..system }
     }
 
@@ -252,11 +253,11 @@ impl Memory {
 
     /// Written to a temporary file first, so a crash never leaves half of it.
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
-        let text = toml::to_string(self).map_err(|e| e.to_string())?;
+        let text = toml::to_string(self).map_err(|error| error.to_string())?;
         let temporary = path.with_extension("toml.new");
         std::fs::write(&temporary, text)
             .and_then(|()| std::fs::rename(&temporary, path))
-            .map_err(|e| format!("{}: {e}", path.display()))
+            .map_err(|error| format!("{}: {error}", path.display()))
     }
 }
 

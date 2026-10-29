@@ -74,13 +74,13 @@ fn time_in(text: &str, now: i64) -> Option<Answer> {
         .or_else(|| lower.strip_suffix(" time"))?;
     let (name, zone) = zones::find(place)?;
     let local = zone.local(now);
-    let there = Civil::at(now + local.offset);
+    let there = Civil::from_seconds(now + local.offset);
     let ahead = local.offset - zones::local_offset(now);
     let relative = match ahead {
         0 => "same as here".to_string(),
         _ => {
-            let (h, m) = (ahead.abs() / 3600, ahead.abs() / 60 % 60);
-            let amount = if m == 0 { format!("{h} h") } else { format!("{h}:{m:02} h") };
+            let (hours, minutes) = (ahead.abs() / 3600, ahead.abs() / 60 % 60);
+            let amount = if minutes == 0 { format!("{hours} h") } else { format!("{hours}:{minutes:02} h") };
             format!("{amount} {}", if ahead > 0 { "ahead" } else { "behind" })
         }
     };
@@ -104,13 +104,15 @@ fn days_between(text: &str, now: i64) -> Option<Answer> {
     let (until, rest) = ["days until ", "days till ", "days to "]
         .iter()
         .find_map(|prefix| lower.strip_prefix(prefix).map(|rest| (true, rest)))
-        .or_else(|| ["days since ", "days from "].iter().find_map(|p| lower.strip_prefix(p).map(|r| (false, r))))?;
+        .or_else(|| {
+            ["days since ", "days from "].iter().find_map(|prefix| lower.strip_prefix(prefix).map(|rest| (false, rest)))
+        })?;
     let today = (now + zones::local_offset(now)).div_euclid(86_400);
     let (year, month, day) = parse_date(rest.trim(), today, until)?;
     let target = zones::days_from_civil(year, month, day);
     let days = if until { target - today } else { today - target };
     let unit = if days.abs() == 1 { "day" } else { "days" };
-    let date = Civil::at(target * 86_400);
+    let date = Civil::from_seconds(target * 86_400);
     Some(Answer {
         title: format!("{days} {unit}"),
         detail: format!("{} {} {year}", if until { "until" } else { "since" }, date.long_date()),
@@ -124,21 +126,28 @@ fn days_between(text: &str, now: i64) -> Option<Answer> {
 /// down, the last one when counting up.
 fn parse_date(text: &str, today: i64, upcoming: bool) -> Option<(i64, u32, u32)> {
     let numbers: Vec<&str> = text.split(['-', '.', '/']).collect();
-    if let [a, b, c] = numbers[..]
-        && let (Ok(a), Ok(b), Ok(c)) = (a.trim().parse::<i64>(), b.trim().parse::<u32>(), c.trim().parse::<i64>())
+    if let [first, second, third] = numbers[..]
+        && let (Ok(first), Ok(second), Ok(third)) =
+            (first.trim().parse::<i64>(), second.trim().parse::<u32>(), third.trim().parse::<i64>())
     {
-        let (year, month, day) = if a > 31 { (a, b, c as u32) } else { (c, b, a as u32) };
+        let (year, month, day) = if first > 31 { (first, second, third as u32) } else { (third, second, first as u32) };
         return zones::valid_date(year, month, day).then_some((year, month, day));
     }
     let words: Vec<&str> = text.split_whitespace().collect();
     let month = |word: &str| {
         (word.len() >= 3).then_some(())?;
-        MONTHS.iter().position(|m| m.to_lowercase().starts_with(word)).map(|i| i as u32 + 1)
+        MONTHS.iter().position(|name| name.to_lowercase().starts_with(word)).map(|index| index as u32 + 1)
     };
     let (day, month, year) = match words[..] {
-        [d, m] | [m, d] if d.parse::<u32>().is_ok() && month(m).is_some() => (d.parse().ok()?, month(m)?, None),
-        [d, m, y] | [m, d, y] if d.parse::<u32>().is_ok() && month(m).is_some() => {
-            (d.parse().ok()?, month(m)?, Some(y.parse().ok()?))
+        [day_word, month_word] | [month_word, day_word]
+            if day_word.parse::<u32>().is_ok() && month(month_word).is_some() =>
+        {
+            (day_word.parse().ok()?, month(month_word)?, None)
+        }
+        [day_word, month_word, year_word] | [month_word, day_word, year_word]
+            if day_word.parse::<u32>().is_ok() && month(month_word).is_some() =>
+        {
+            (day_word.parse().ok()?, month(month_word)?, Some(year_word.parse().ok()?))
         }
         _ => return None,
     };
@@ -165,13 +174,17 @@ fn timestamp(text: &str, now: i64) -> Option<Answer> {
             look: Look::Clock,
         });
     }
-    if text.bytes().all(|b| b.is_ascii_digit()) && matches!(text.len(), 9 | 10 | 12 | 13) {
-        let n: i64 = text.parse().ok()?;
-        let (seconds, unit) = if text.len() > 10 { (n / 1000, "milliseconds") } else { (n, "seconds") };
-        let local = Civil::at(seconds + zones::local_offset(seconds));
+    if text.bytes().all(|byte| byte.is_ascii_digit()) && matches!(text.len(), 9 | 10 | 12 | 13) {
+        let value: i64 = text.parse().ok()?;
+        let (seconds, unit) = if text.len() > 10 { (value / 1000, "milliseconds") } else { (value, "seconds") };
+        let local = Civil::from_seconds(seconds + zones::local_offset(seconds));
         let local_text = local.iso();
         return Some(Answer {
-            detail: format!("{} \u{b7} unix time in {unit} \u{b7} UTC {}", local.long_date(), Civil::at(seconds).iso()),
+            detail: format!(
+                "{} \u{b7} unix time in {unit} \u{b7} UTC {}",
+                local.long_date(),
+                Civil::from_seconds(seconds).iso()
+            ),
             copy: local_text.clone(),
             title: local_text,
             look: Look::Calendar,
@@ -180,22 +193,22 @@ fn timestamp(text: &str, now: i64) -> Option<Answer> {
     // "2026-10-16", "2026-10-16 14:30", "2026-10-16T14:30:05"
     let (date, time) = text.split_once([' ', 'T']).unwrap_or((text, ""));
     let parts: Vec<&str> = date.split('-').collect();
-    let [y, m, d] = parts[..] else { return None };
-    if y.len() != 4 {
+    let [year_text, month_text, day_text] = parts[..] else { return None };
+    if year_text.len() != 4 {
         return None;
     }
-    let (year, month, day) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
+    let (year, month, day) = (year_text.parse().ok()?, month_text.parse().ok()?, day_text.parse().ok()?);
     if !zones::valid_date(year, month, day) {
         return None;
     }
     let clock: Vec<u32> = if time.is_empty() {
         vec![0, 0, 0]
     } else {
-        time.split(':').map(|p| p.parse().ok()).collect::<Option<Vec<_>>>()?
+        time.split(':').map(|part| part.parse().ok()).collect::<Option<Vec<_>>>()?
     };
     let (hour, minute, second) = match clock[..] {
-        [h, m] => (h, m, 0),
-        [h, m, s] => (h, m, s),
+        [hour, minute] => (hour, minute, 0),
+        [hour, minute, second] => (hour, minute, second),
         _ => return None,
     };
     if hour > 23 || minute > 59 || second > 59 {
@@ -208,7 +221,7 @@ fn timestamp(text: &str, now: i64) -> Option<Answer> {
     let seconds = zones::from_local(civil);
     Some(Answer {
         title: seconds.to_string(),
-        detail: format!("Unix time of {} local", Civil::at(civil).iso()),
+        detail: format!("Unix time of {} local", Civil::from_seconds(civil).iso()),
         copy: seconds.to_string(),
         look: Look::Clock,
     })
@@ -217,12 +230,12 @@ fn timestamp(text: &str, now: i64) -> Option<Answer> {
 /// A colour in the other notations: hex, rgb() and hsl().
 fn colours(text: &str) -> Vec<Answer> {
     let Some(rgb) = parse_colour(text) else { return Vec::new() };
-    let [r, g, b] = rgb;
-    let (h, s, l) = to_hsl(rgb);
+    let [red, green, blue] = rgb;
+    let (hue, saturation, lightness) = to_hsl(rgb);
     let notations = [
-        (format!("#{r:02x}{g:02x}{b:02x}"), "Hex"),
-        (format!("rgb({r}, {g}, {b})"), "Red, green, blue"),
-        (format!("hsl({h}, {s}%, {l}%)"), "Hue, saturation, lightness"),
+        (format!("#{red:02x}{green:02x}{blue:02x}"), "Hex"),
+        (format!("rgb({red}, {green}, {blue})"), "Red, green, blue"),
+        (format!("hsl({hue}, {saturation}%, {lightness}%)"), "Hue, saturation, lightness"),
     ];
     notations
         .into_iter()
@@ -238,71 +251,74 @@ fn colours(text: &str) -> Vec<Answer> {
 pub fn parse_colour(text: &str) -> Option<[u8; 3]> {
     let text = text.trim().to_lowercase();
     if let Some(hex) = text.strip_prefix('#') {
-        let digits: Vec<u8> = hex.chars().map(|c| c.to_digit(16).map(|d| d as u8)).collect::<Option<_>>()?;
+        let digits: Vec<u8> =
+            hex.chars().map(|character| character.to_digit(16).map(|digit| digit as u8)).collect::<Option<_>>()?;
         return match digits[..] {
-            [r, g, b] | [r, g, b, _] => Some([r * 17, g * 17, b * 17]),
-            [r1, r2, g1, g2, b1, b2] | [r1, r2, g1, g2, b1, b2, _, _] => {
-                Some([r1 * 16 + r2, g1 * 16 + g2, b1 * 16 + b2])
+            [red, green, blue] | [red, green, blue, _] => Some([red * 17, green * 17, blue * 17]),
+            [red_high, red_low, green_high, green_low, blue_high, blue_low]
+            | [red_high, red_low, green_high, green_low, blue_high, blue_low, _, _] => {
+                Some([red_high * 16 + red_low, green_high * 16 + green_low, blue_high * 16 + blue_low])
             }
             _ => None,
         };
     }
     let (function, args) = text.strip_suffix(')')?.split_once('(')?;
-    let args: Vec<&str> = args.split([',', ' ', '/']).filter(|a| !a.is_empty()).collect();
+    let args: Vec<&str> = args.split([',', ' ', '/']).filter(|arg| !arg.is_empty()).collect();
     if args.len() != 3 && args.len() != 4 {
         return None;
     }
-    let number = |a: &str| a.trim_end_matches(['%', '°']).trim_end_matches("deg").parse::<f64>().ok();
+    let number = |arg: &str| arg.trim_end_matches(['%', '°']).trim_end_matches("deg").parse::<f64>().ok();
     match function.trim() {
         "rgb" | "rgba" => {
-            let channel = |a: &str| {
-                let n = number(a)?;
-                let n = if a.ends_with('%') { n * 2.55 } else { n };
-                (0.0..=255.0).contains(&n).then_some(n.round() as u8)
+            let channel = |arg: &str| {
+                let value = number(arg)?;
+                let value = if arg.ends_with('%') { value * 2.55 } else { value };
+                (0.0..=255.0).contains(&value).then_some(value.round() as u8)
             };
             Some([channel(args[0])?, channel(args[1])?, channel(args[2])?])
         }
         "hsl" | "hsla" => {
-            let (h, s, l) = (number(args[0])?, number(args[1])?, number(args[2])?);
-            ((0.0..=100.0).contains(&s) && (0.0..=100.0).contains(&l)).then(|| from_hsl(h, s / 100.0, l / 100.0))
+            let (hue, saturation, lightness) = (number(args[0])?, number(args[1])?, number(args[2])?);
+            ((0.0..=100.0).contains(&saturation) && (0.0..=100.0).contains(&lightness))
+                .then(|| from_hsl(hue, saturation / 100.0, lightness / 100.0))
         }
         _ => None,
     }
 }
 
-fn to_hsl([r, g, b]: [u8; 3]) -> (i32, i32, i32) {
-    let (r, g, b) = (f64::from(r) / 255.0, f64::from(g) / 255.0, f64::from(b) / 255.0);
-    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-    let l = (max + min) / 2.0;
-    let d = max - min;
-    if d == 0.0 {
-        return (0, 0, (l * 100.0).round() as i32);
+fn to_hsl([red, green, blue]: [u8; 3]) -> (i32, i32, i32) {
+    let (red, green, blue) = (f64::from(red) / 255.0, f64::from(green) / 255.0, f64::from(blue) / 255.0);
+    let (max, min) = (red.max(green).max(blue), red.min(green).min(blue));
+    let lightness = (max + min) / 2.0;
+    let delta = max - min;
+    if delta == 0.0 {
+        return (0, 0, (lightness * 100.0).round() as i32);
     }
-    let s = d / (1.0 - (2.0 * l - 1.0).abs());
-    let h = if max == r {
-        60.0 * ((g - b) / d).rem_euclid(6.0)
-    } else if max == g {
-        60.0 * ((b - r) / d + 2.0)
+    let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs());
+    let hue = if max == red {
+        60.0 * ((green - blue) / delta).rem_euclid(6.0)
+    } else if max == green {
+        60.0 * ((blue - red) / delta + 2.0)
     } else {
-        60.0 * ((r - g) / d + 4.0)
+        60.0 * ((red - green) / delta + 4.0)
     };
-    (h.round() as i32 % 360, (s * 100.0).round() as i32, (l * 100.0).round() as i32)
+    (hue.round() as i32 % 360, (saturation * 100.0).round() as i32, (lightness * 100.0).round() as i32)
 }
 
-fn from_hsl(h: f64, s: f64, l: f64) -> [u8; 3] {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let h = h.rem_euclid(360.0) / 60.0;
-    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
-    let (r, g, b) = match h as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+fn from_hsl(hue: f64, saturation: f64, lightness: f64) -> [u8; 3] {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue.rem_euclid(360.0) / 60.0;
+    let intermediate = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
+    let (red, green, blue) = match sector as u32 {
+        0 => (chroma, intermediate, 0.0),
+        1 => (intermediate, chroma, 0.0),
+        2 => (0.0, chroma, intermediate),
+        3 => (0.0, intermediate, chroma),
+        4 => (intermediate, 0.0, chroma),
+        _ => (chroma, 0.0, intermediate),
     };
-    let m = l - c / 2.0;
-    [r, g, b].map(|v| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8)
+    let offset = lightness - chroma / 2.0;
+    [red, green, blue].map(|channel| ((channel + offset) * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 /// Emoji and symbols, by words in their names: every word typed must start a
@@ -317,34 +333,34 @@ pub fn characters(query: &str, limit: usize) -> Vec<Answer> {
     let mut found: Vec<(u8, usize, &str, &str)> = TABLE
         .lines()
         .filter_map(|line| line.split_once(' '))
-        .filter_map(|(c, entry)| {
+        .filter_map(|(character, entry)| {
             let (name, keywords) = entry.split_once('|').unwrap_or((entry, ""));
             let all = name.split(' ').chain(keywords.split(' '));
-            if !words.iter().all(|w| all.clone().any(|n| n.starts_with(w.as_str()))) {
+            if !words.iter().all(|word| all.clone().any(|part| part.starts_with(word.as_str()))) {
                 return None;
             }
             // A chosen keyword first ("heart" is ❤), then a whole word ("lol",
             // not "lollipop"), then a name that starts with it.
-            let tier = if keywords.split(' ').any(|k| k == words[0]) {
+            let tier = if keywords.split(' ').any(|keyword| keyword == words[0]) {
                 0
-            } else if name.split(' ').any(|n| n == words[0]) {
+            } else if name.split(' ').any(|part| part == words[0]) {
                 1
             } else if name.starts_with(words[0].as_str()) {
                 2
             } else {
                 3
             };
-            Some((tier, name.split(' ').count(), c, name))
+            Some((tier, name.split(' ').count(), character, name))
         })
         .collect();
     found.sort_by_key(|(tier, length, _, _)| (*tier, *length));
     found
         .into_iter()
         .take(limit)
-        .map(|(_, _, c, name)| Answer {
-            title: c.to_string(),
+        .map(|(_, _, character, name)| Answer {
+            title: character.to_string(),
             detail: name.to_string(),
-            copy: c.to_string(),
+            copy: character.to_string(),
             look: Look::Character,
         })
         .collect()
@@ -375,10 +391,10 @@ pub fn places(text: &str, home: &Path) -> Vec<Place> {
     // "~/Doc" lists ~/ for names starting with "Doc"; "~/Documents/" lists that folder.
     let typed = expanded.to_string_lossy();
     let (dir, prefix) = match typed.rfind('/') {
-        Some(at) => (PathBuf::from(&typed[..=at]), typed[at + 1..].to_string()),
+        Some(slash) => (PathBuf::from(&typed[..=slash]), typed[slash + 1..].to_string()),
         None => return Vec::new(),
     };
-    let shown_dir = &text[..text.rfind('/').map_or(text.len(), |at| at + 1)];
+    let shown_dir = &text[..text.rfind('/').map_or(text.len(), |slash| slash + 1)];
     let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
     let lower = prefix.to_lowercase();
     let mut found: Vec<(bool, String)> = entries
@@ -387,12 +403,12 @@ pub fn places(text: &str, home: &Path) -> Vec<Place> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let hidden = name.starts_with('.') && !prefix.starts_with('.');
-            let folder = entry.file_type().is_ok_and(|t| t.is_dir())
-                || (entry.file_type().is_ok_and(|t| t.is_symlink()) && entry.path().is_dir());
+            let folder = entry.file_type().is_ok_and(|kind| kind.is_dir())
+                || (entry.file_type().is_ok_and(|kind| kind.is_symlink()) && entry.path().is_dir());
             (!hidden && name.to_lowercase().starts_with(&lower)).then_some((folder, name))
         })
         .collect();
-    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    found.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.to_lowercase().cmp(&right.1.to_lowercase())));
     let mut places = Vec::new();
     // The folder typed so far, to open it as it is.
     if prefix.is_empty() && dir.is_dir() {
@@ -496,7 +512,7 @@ mod tests {
     #[test]
     fn colour_notations() {
         let rows = answers("#ff8800", NOW);
-        let titles: Vec<&str> = rows.iter().map(|a| a.title.as_str()).collect();
+        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(titles, ["#ff8800", "rgb(255, 136, 0)", "hsl(32, 100%, 50%)"]);
         assert_eq!(rows[0].look, Look::Colour([255, 136, 0]));
         assert_eq!(parse_colour("#f80"), Some([255, 136, 0]));
@@ -511,11 +527,11 @@ mod tests {
     #[test]
     fn characters_by_name() {
         let found = characters("thumbs", 8);
-        assert_eq!(found.first().map(|a| a.title.as_str()), Some("👍"));
+        assert_eq!(found.first().map(|row| row.title.as_str()), Some("👍"));
         assert_eq!(characters("tears joy", 8)[0].title, "😂");
         assert_eq!(characters("lol", 8)[0].title, "😂");
         assert_eq!(characters("arrow right", 3)[0].title, "→");
-        assert!(characters("alpha", 8).iter().any(|a| a.title == "α"));
+        assert!(characters("alpha", 8).iter().any(|row| row.title == "α"));
         assert_eq!(answers(":fire", NOW)[0].title, "🔥");
         assert_eq!(characters("heart", 1)[0].title, "❤");
         assert!(characters("", 8).is_empty());
@@ -536,7 +552,7 @@ mod tests {
         std::fs::create_dir_all(root.join("Downloads")).unwrap();
         std::fs::write(root.join("dotfile"), "").unwrap();
         std::fs::write(root.join(".hidden"), "").unwrap();
-        let titles = |text: &str| places(text, &root).into_iter().map(|p| p.title).collect::<Vec<_>>();
+        let titles = |text: &str| places(text, &root).into_iter().map(|place| place.title).collect::<Vec<_>>();
         assert_eq!(titles("~/"), ["~/", "Documents/", "Downloads/", "dotfile"]);
         assert_eq!(titles("~/do"), ["Documents/", "Downloads/", "dotfile"]);
         assert_eq!(titles("~/.h"), [".hidden"]);

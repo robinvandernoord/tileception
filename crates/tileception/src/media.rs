@@ -137,15 +137,17 @@ pub fn parse(verb: &str, args: &[&str]) -> Result<Control, String> {
         _ => None,
     };
     let percent = |arg: Option<&&str>| -> Result<Option<u32>, String> {
-        arg.map(|a| a.trim_end_matches('%').parse::<u32>().map_err(|_| format!("{verb}: {a:?} is not a percentage")))
-            .transpose()
+        arg.map(|text| {
+            text.trim_end_matches('%').parse::<u32>().map_err(|_| format!("{verb}: {text:?} is not a percentage"))
+        })
+        .transpose()
     };
     if let Some(level) = level {
         if let (Some(&kind @ ("output" | "input")), Level::Volume | Level::Mic) = (args.first(), level) {
             let which = args
                 .get(1)
-                .and_then(|n| n.parse::<usize>().ok())
-                .filter(|n| *n > 0)
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|number| *number > 0)
                 .ok_or(format!("{verb} {kind} needs a device number from `tileception msg volume`"))?;
             return Ok(Control::Choose { output: kind == "output", which });
         }
@@ -160,7 +162,9 @@ pub fn parse(verb: &str, args: &[&str]) -> Result<Control, String> {
                 Some("off") => Toggle::Off,
                 Some(other) => return Err(format!("{verb} mute takes on, off or toggle, not {other:?}")),
             }),
-            Some(n) if n.trim_end_matches('%').parse::<u32>().is_ok() => Adjust::Set(percent(Some(&n))?.unwrap_or(0)),
+            Some(text) if text.trim_end_matches('%').parse::<u32>().is_ok() => {
+                Adjust::Set(percent(Some(&text))?.unwrap_or(0))
+            }
             _ if level == Level::Brightness => return Err("brightness takes up, down, set or a percentage".into()),
             _ => return Err(format!("{verb} takes up, down, set, mute or a percentage")),
         };
@@ -185,12 +189,12 @@ impl Tileception {
     /// Starts the workers. `bus` overrides the session bus, for tests.
     pub fn start_media(&mut self, bus: Option<String>) {
         let result = (|| {
-            let (ping, source) = make_ping().map_err(|e| e.to_string())?;
+            let (ping, source) = make_ping().map_err(|err| err.to_string())?;
             let (service, events) = MediaService::start(bus, move || ping.ping());
             let token = self
                 .loop_handle
                 .insert_source(source, |_, _, state| state.media_events())
-                .map_err(|e| e.to_string())?;
+                .map_err(|err| err.to_string())?;
             Ok::<_, String>((service, events, token))
         })();
         match result {
@@ -248,12 +252,12 @@ impl Tileception {
     /// Changes a level from the panel or a key.
     pub fn adjust(&mut self, level: Level, adjust: Adjust) {
         let config = &self.config.file.media;
-        let step = |n: Option<u32>, default: u32| n.unwrap_or(default).clamp(1, 200) as i32;
+        let step = |amount: Option<u32>, default: u32| amount.unwrap_or(default).clamp(1, 200) as i32;
         let (volume_step, brightness_step, max) = (config.volume_step, config.brightness_step, config.max_volume());
         let change = |default: u32| match adjust {
-            Adjust::Up(n) => Change::Step(step(n, default)),
-            Adjust::Down(n) => Change::Step(-step(n, default)),
-            Adjust::Set(n) => Change::Set(n),
+            Adjust::Up(amount) => Change::Step(step(amount, default)),
+            Adjust::Down(amount) => Change::Step(-step(amount, default)),
+            Adjust::Set(amount) => Change::Set(amount),
             Adjust::Mute(toggle) => Change::Mute(toggle),
         };
         let request = match level {
@@ -311,25 +315,28 @@ impl Tileception {
     }
 
     fn media_status(&self) -> String {
-        let s = &self.media.snapshot;
+        let snapshot = &self.media.snapshot;
         let mut out = String::new();
-        let level = |d: &Option<tileception_media::Device>| match d {
-            Some(d) => format!("{}%{} ({})", d.percent, if d.muted { " muted" } else { "" }, d.description),
+        let level = |slot: &Option<tileception_media::Device>| match slot {
+            Some(device) => {
+                format!("{}%{} ({})", device.percent, if device.muted { " muted" } else { "" }, device.description)
+            }
             None => "none".into(),
         };
-        if s.audio.connected {
-            out += &format!("volume: {}\nmic: {}\n", level(&s.audio.output), level(&s.audio.input));
-            let current =
-                |d: &Option<tileception_media::Device>, name: &str| d.as_ref().is_some_and(|d| d.name == name);
-            for (i, c) in s.audio.outputs.iter().enumerate() {
-                let mark = if current(&s.audio.output, &c.name) { "*" } else { " " };
-                out += &format!("output {}{mark} {}\n", i + 1, c.description);
+        if snapshot.audio.connected {
+            out += &format!("volume: {}\nmic: {}\n", level(&snapshot.audio.output), level(&snapshot.audio.input));
+            let current = |slot: &Option<tileception_media::Device>, name: &str| {
+                slot.as_ref().is_some_and(|device| device.name == name)
+            };
+            for (index, device) in snapshot.audio.outputs.iter().enumerate() {
+                let mark = if current(&snapshot.audio.output, &device.name) { "*" } else { " " };
+                out += &format!("output {}{mark} {}\n", index + 1, device.description);
             }
-            for (i, c) in s.audio.inputs.iter().enumerate() {
-                let mark = if current(&s.audio.input, &c.name) { "*" } else { " " };
-                out += &format!("input {}{mark} {}\n", i + 1, c.description);
+            for (index, device) in snapshot.audio.inputs.iter().enumerate() {
+                let mark = if current(&snapshot.audio.input, &device.name) { "*" } else { " " };
+                out += &format!("input {}{mark} {}\n", index + 1, device.description);
             }
-            for app in &s.audio.apps {
+            for app in &snapshot.audio.apps {
                 out += &format!(
                     "app {}: {} {}%{} ({})\n",
                     app.index,
@@ -342,15 +349,15 @@ impl Tileception {
         } else {
             out += "volume: no sound server\n";
         }
-        match &s.backlight {
-            Some(b) => out += &format!("brightness: {}% ({})\n", b.percent, b.device),
+        match &snapshot.backlight {
+            Some(backlight) => out += &format!("brightness: {}% ({})\n", backlight.percent, backlight.device),
             None => out += "brightness: none\n",
         }
-        match s.media.active() {
-            Some(p) => {
-                out += &format!("player: {} {:?}: {}", p.identity, p.status, p.title);
-                if !p.artist.is_empty() {
-                    out += &format!(" by {}", p.artist);
+        match snapshot.media.active() {
+            Some(player) => {
+                out += &format!("player: {} {:?}: {}", player.identity, player.status, player.title);
+                if !player.artist.is_empty() {
+                    out += &format!(" by {}", player.artist);
                 }
                 out += "\n";
             }
@@ -362,9 +369,9 @@ impl Tileception {
     /// Repeats a held volume or brightness key, at the keyboard's repeat rate.
     pub fn start_media_repeat(&mut self, keycode: u32, commands: Vec<Command>) {
         self.stop_media_repeat();
-        let k = &self.config.file.keyboard;
-        let delay = Duration::from_millis(k.repeat_delay.unwrap_or(400).max(1) as u64);
-        let interval = Duration::from_secs_f64(1.0 / f64::from(k.repeat_rate.unwrap_or(30).max(1)));
+        let keyboard_config = &self.config.file.keyboard;
+        let delay = Duration::from_millis(keyboard_config.repeat_delay.unwrap_or(400).max(1) as u64);
+        let interval = Duration::from_secs_f64(1.0 / f64::from(keyboard_config.repeat_rate.unwrap_or(30).max(1)));
         let token = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
             for command in &commands {
                 if let Err(error) = state.execute(command.clone()) {

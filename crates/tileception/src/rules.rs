@@ -33,29 +33,30 @@ impl WindowRule {
         if self.app_id.is_none() && self.title.is_none() {
             return false;
         }
-        self.app_id.as_deref().is_none_or(|p| glob(p, app_id)) && self.title.as_deref().is_none_or(|p| glob(p, title))
+        self.app_id.as_deref().is_none_or(|pattern| glob(pattern, app_id))
+            && self.title.as_deref().is_none_or(|pattern| glob(pattern, title))
     }
 }
 
 /// Applies every matching rule in order; later ones override earlier ones.
 pub fn decide(rules: &[WindowRule], app_id: &str, title: &str) -> Decision {
-    let mut d = Decision::default();
-    for rule in rules.iter().filter(|r| r.matches(app_id, title)) {
-        d.float = rule.float.or(d.float);
-        d.size = rule.size.or(d.size);
-        d.fullscreen = rule.fullscreen.unwrap_or(d.fullscreen);
-        d.minimized = rule.minimized.unwrap_or(d.minimized);
+    let mut decision = Decision::default();
+    for rule in rules.iter().filter(|rule| rule.matches(app_id, title)) {
+        decision.float = rule.float.or(decision.float);
+        decision.size = rule.size.or(decision.size);
+        decision.fullscreen = rule.fullscreen.unwrap_or(decision.fullscreen);
+        decision.minimized = rule.minimized.unwrap_or(decision.minimized);
     }
-    d
+    decision
 }
 
 pub fn validate(rules: &[WindowRule]) -> Result<(), String> {
-    for (i, rule) in rules.iter().enumerate() {
+    for (index, rule) in rules.iter().enumerate() {
         if rule.app_id.is_none() && rule.title.is_none() {
-            return Err(format!("[[rules]] entry {} needs app_id or title", i + 1));
+            return Err(format!("[[rules]] entry {} needs app_id or title", index + 1));
         }
-        if rule.size.is_some_and(|[w, h]| w == 0 || h == 0) {
-            return Err(format!("[[rules]] entry {}: size needs a width and height above 0", i + 1));
+        if rule.size.is_some_and(|[width, height]| width == 0 || height == 0) {
+            return Err(format!("[[rules]] entry {}: size needs a width and height above 0", index + 1));
         }
     }
     Ok(())
@@ -63,27 +64,29 @@ pub fn validate(rules: &[WindowRule]) -> Result<(), String> {
 
 /// Case-insensitive glob with `*` and `?`.
 fn glob(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.to_lowercase().chars().collect();
-    let t: Vec<char> = text.to_lowercase().chars().collect();
+    let pattern_chars: Vec<char> = pattern.to_lowercase().chars().collect();
+    let text_chars: Vec<char> = text.to_lowercase().chars().collect();
     // Classic two-pointer match, backtracking to the last star.
-    let (mut pi, mut ti) = (0, 0);
+    let (mut pattern_index, mut text_index) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some((pi, ti));
-            pi += 1;
-        } else if let Some((sp, st)) = star {
-            pi = sp + 1;
-            ti = st + 1;
-            star = Some((sp, st + 1));
+    while text_index < text_chars.len() {
+        if pattern_index < pattern_chars.len()
+            && (pattern_chars[pattern_index] == '?' || pattern_chars[pattern_index] == text_chars[text_index])
+        {
+            pattern_index += 1;
+            text_index += 1;
+        } else if pattern_index < pattern_chars.len() && pattern_chars[pattern_index] == '*' {
+            star = Some((pattern_index, text_index));
+            pattern_index += 1;
+        } else if let Some((star_pattern_index, star_text_index)) = star {
+            pattern_index = star_pattern_index + 1;
+            text_index = star_text_index + 1;
+            star = Some((star_pattern_index, star_text_index + 1));
         } else {
             return false;
         }
     }
-    p[pi..].iter().all(|c| *c == '*')
+    pattern_chars[pattern_index..].iter().all(|character| *character == '*')
 }
 
 #[cfg(test)]

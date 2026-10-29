@@ -18,7 +18,7 @@ pub use session::Session;
 /// A way to log in that an agent offers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Login {
-    pub id: String,
+    pub method_id: String,
     pub name: String,
     pub description: Option<String>,
     pub how: LoginHow,
@@ -42,7 +42,9 @@ impl LoginHow {
     pub fn asks(&self) -> Vec<String> {
         match self {
             LoginHow::Key => vec!["API key".into()],
-            LoginHow::Env(vars) => vars.iter().map(|v| v.label.clone().unwrap_or_else(|| v.name.clone())).collect(),
+            LoginHow::Env(vars) => {
+                vars.iter().map(|variable| variable.label.clone().unwrap_or_else(|| variable.name.clone())).collect()
+            }
             LoginHow::Agent | LoginHow::Terminal(_) => Vec::new(),
         }
     }
@@ -92,7 +94,7 @@ pub enum FileOp {
 /// A setting the agent offers for its session, such as the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOption {
-    pub id: String,
+    pub option_id: String,
     pub name: String,
     /// model, mode, thought_level, ...
     pub category: Option<String>,
@@ -102,11 +104,11 @@ pub struct SessionOption {
 
 impl SessionOption {
     pub fn is_model(&self) -> bool {
-        self.category.as_deref() == Some("model") || self.id == "model"
+        self.category.as_deref() == Some("model") || self.option_id == "model"
     }
 
     pub fn current_name(&self) -> &str {
-        self.values.iter().find(|v| v.value == self.current).map_or(&self.current, |v| &v.name)
+        self.values.iter().find(|option| option.value == self.current).map_or(&self.current, |option| &option.name)
     }
 }
 
@@ -127,13 +129,14 @@ pub struct AgentCommand {
 /// A choice offered when the agent asks for permission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
-    pub id: String,
+    pub choice_id: String,
     pub name: String,
     /// allow_once, allow_always, reject_once or reject_always.
     pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::min_ident_chars, reason = "preserve existing enum fields")]
 pub enum Event {
     Registry(Result<Vec<Agent>, String>),
     Status(Status),
@@ -183,6 +186,7 @@ pub struct Image {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::min_ident_chars, reason = "preserve existing enum fields")]
 pub enum Request {
     /// A message, with pictures for agents that take them ([`Event::Images`]).
     Prompt {
@@ -244,23 +248,23 @@ pub fn data_dir() -> PathBuf {
         .join("tileception")
 }
 
-/// Downloads `url` to `to` over http(s), bounded in size and time.
-pub fn curl(url: &str, to: &Path, max_bytes: &str) -> Result<(), String> {
+/// Downloads `url` to `destination` over http(s), bounded in size and time.
+pub fn curl(url: &str, destination: &Path, max_bytes: &str) -> Result<(), String> {
     let agent = concat!("Tileception/", env!("CARGO_PKG_VERSION"), " (doctor; +https://tileception.space)");
     let out = std::process::Command::new("curl")
         .args(["--fail", "--silent", "--show-error", "--location", "--max-redirs", "5"])
         .args(["--proto", "=https", "--proto-redir", "=https", "--user-agent", agent])
         .args(["--max-filesize", max_bytes, "--max-time", "300", "--output"])
-        .arg(to)
+        .arg(destination)
         .arg("--")
         .arg(url)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|e| format!("curl: {e}"))?;
+        .map_err(|error| format!("curl: {error}"))?;
     if out.status.success() {
         Ok(())
     } else {
-        let _ = std::fs::remove_file(to);
+        let _ = std::fs::remove_file(destination);
         Err(format!("download failed: {}", String::from_utf8_lossy(&out.stderr).trim()))
     }
 }

@@ -120,8 +120,8 @@ fn follows_and_controls_a_player() {
         .unwrap();
 
     let (service, _events) = MediaService::start(Some(bus.1.clone()), || {});
-    let s = wait_for(&service, "the player", |s| s.media.active().is_some());
-    let player = s.media.active().unwrap();
+    let snapshot = wait_for(&service, "the player", |snapshot| snapshot.media.active().is_some());
+    let player = snapshot.media.active().unwrap();
     assert_eq!(player.identity, "Fake Player");
     assert_eq!(player.title, "Midnight City");
     assert_eq!(player.artist, "M83");
@@ -131,12 +131,16 @@ fn follows_and_controls_a_player() {
     assert!(player.can_next && !player.can_previous);
 
     service.send(Request::Player(PlayerCommand::Next));
-    wait_for(&service, "the next track", |s| s.media.active().is_some_and(|p| p.title == "Teardrop"));
+    wait_for(&service, "the next track", |snapshot| {
+        snapshot.media.active().is_some_and(|player| player.title == "Teardrop")
+    });
     service.send(Request::Player(PlayerCommand::PlayPause));
-    wait_for(&service, "pausing", |s| s.media.active().is_some_and(|p| p.status == Status::Paused));
+    wait_for(&service, "pausing", |snapshot| {
+        snapshot.media.active().is_some_and(|player| player.status == Status::Paused)
+    });
     assert_eq!(*fake.calls.lock().unwrap(), ["Next", "PlayPause"]);
 
     // A player that leaves is forgotten.
     drop(_player);
-    wait_for(&service, "the player to leave", |s| s.media.players.is_empty());
+    wait_for(&service, "the player to leave", |snapshot| snapshot.media.players.is_empty());
 }

@@ -37,15 +37,15 @@ pub fn init(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::var("TILECEPTION_RENDER_NODE").map(std::path::PathBuf::from).or_else(|_| {
         std::fs::read_dir("/dev/dri")?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("renderD")))
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("renderD")))
             .ok_or_else(|| std::io::Error::other("no render node in /dev/dri"))
     })?;
     tracing::info!("headless on {}", path.display());
     let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
-    let fd = DrmDeviceFd::new(DeviceFd::from(OwnedFd::from(file)));
+    let descriptor = DrmDeviceFd::new(DeviceFd::from(OwnedFd::from(file)));
     let node = DrmNode::from_path(&path)?;
-    let gbm = GbmDevice::new(fd)?;
+    let gbm = GbmDevice::new(descriptor)?;
     // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
     #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
     let egl = unsafe { EGLDisplay::new(gbm)? };
@@ -58,9 +58,11 @@ pub fn init(
     let global = dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
     state.dmabuf = Some((dmabuf_state, global));
 
-    let (w, h) = std::env::var("TILECEPTION_HEADLESS_SIZE")
+    let (width, height) = std::env::var("TILECEPTION_HEADLESS_SIZE")
         .ok()
-        .and_then(|s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))))
+        .and_then(|size| {
+            size.split_once('x').and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+        })
         .unwrap_or((1280, 800));
     let output = Output::new(
         "headless".into(),
@@ -72,10 +74,10 @@ pub fn init(
         },
     );
     let _global = output.create_global::<Tileception>(&state.display_handle);
-    let mode = Mode { size: (w, h).into(), refresh: 60_000 };
+    let mode = Mode { size: (width, height).into(), refresh: 60_000 };
     output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    state.world.set_screen(Rect::new(0.0, 0.0, w as f64, h as f64));
+    state.world.set_screen(Rect::new(0.0, 0.0, width as f64, height as f64));
     state.output = Some(output.clone());
     state.headless = Some(Box::new(Headless { renderer, output }));
     state.apply_output_scale();
@@ -93,7 +95,7 @@ impl Tileception {
         self.process_captures(&mut headless.renderer);
         let elapsed = self.start.elapsed();
         // Minimized windows are hidden: no frames, so they need not draw.
-        for (_, window) in self.windows.iter().filter(|(id, _)| !self.world.is_minimized(**id)) {
+        for (_, window) in self.windows.iter().filter(|(window_id, _)| !self.world.is_minimized(**window_id)) {
             window.send_frame(&headless.output, elapsed, Some(Duration::ZERO), |_, _| Some(headless.output.clone()));
         }
         self.headless = Some(headless);

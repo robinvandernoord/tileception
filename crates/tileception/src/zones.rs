@@ -35,14 +35,14 @@ pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 
 /// The date of a day count since 1970-01-01: (year, month, day).
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let doe = shifted - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let month_index = (5 * doy + 2) / 153;
+    let day = (doy - (153 * month_index + 2) / 5 + 1) as u32;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 } as u32;
     (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
@@ -80,7 +80,7 @@ pub struct Civil {
 }
 
 impl Civil {
-    pub fn at(seconds: i64) -> Civil {
+    pub fn from_seconds(seconds: i64) -> Civil {
         let days = seconds.div_euclid(86_400);
         let secs = seconds.rem_euclid(86_400) as u32;
         let (year, month, day) = civil_from_days(days);
@@ -107,8 +107,8 @@ pub fn offset_label(offset: i64) -> String {
         return "UTC".into();
     }
     let sign = if offset < 0 { '-' } else { '+' };
-    let (h, m) = (offset.abs() / 3600, offset.abs() / 60 % 60);
-    if m == 0 { format!("UTC{sign}{h}") } else { format!("UTC{sign}{h}:{m:02}") }
+    let (hours, minutes) = (offset.abs() / 3600, offset.abs() / 60 % 60);
+    if minutes == 0 { format!("UTC{sign}{hours}") } else { format!("UTC{sign}{hours}:{minutes:02}") }
 }
 
 /// One local time type: its offset from UTC in seconds and its abbreviation.
@@ -142,9 +142,9 @@ impl Zone {
                 return None;
             }
             let mut counts = [0; 6];
-            for (i, count) in counts.iter_mut().enumerate() {
-                let at = 20 + i * 4;
-                *count = u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?) as usize;
+            for (index, count) in counts.iter_mut().enumerate() {
+                let offset = 20 + index * 4;
+                *count = u32::from_be_bytes(data.get(offset..offset + 4)?.try_into().ok()?) as usize;
             }
             Some(counts)
         };
@@ -154,10 +154,10 @@ impl Zone {
         // Version 2 and later repeat the data with 64-bit times, then a TZ rule.
         let (data, size) = if version >= b'2' { (data.get(44 + v1_len..)?, 8) } else { (data, 4) };
         let [isut, isstd, leap, time, kinds, chars] = header(data)?;
-        let mut at = 44;
-        let mut take = |n: usize| -> Option<&[u8]> {
-            let slice = data.get(at..at + n)?;
-            at += n;
+        let mut cursor = 44;
+        let mut take = |length: usize| -> Option<&[u8]> {
+            let slice = data.get(cursor..cursor + length)?;
+            cursor += length;
             Some(slice)
         };
         let times = take(time * size)?;
@@ -172,7 +172,7 @@ impl Zone {
             .map(|info| {
                 let offset = i64::from(i32::from_be_bytes(info[..4].try_into().ok()?));
                 let name = &names.get(usize::from(info[5])..)?;
-                let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+                let end = name.iter().position(|byte| *byte == 0).unwrap_or(name.len());
                 Some(Local { offset, abbreviation: String::from_utf8_lossy(&name[..end]).into_owned() })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -188,21 +188,25 @@ impl Zone {
                 (usize::from(*index) < types.len()).then_some((time, usize::from(*index)))
             })
             .collect::<Option<Vec<_>>>()?;
-        let rule = std::str::from_utf8(footer).ok().map(str::trim).filter(|s| !s.is_empty()).and_then(Rule::parse);
+        let rule = std::str::from_utf8(footer)
+            .ok()
+            .map(str::trim)
+            .filter(|rule_text| !rule_text.is_empty())
+            .and_then(Rule::parse);
         if types.is_empty() && rule.is_none() {
             return None;
         }
         Some(Zone { transitions, types, rule })
     }
 
-    /// The local time type in force at `t` (seconds since the epoch, UTC).
-    pub fn local(&self, t: i64) -> Local {
-        let after_last = self.transitions.last().is_none_or(|(last, _)| t >= *last);
+    /// The local time type in force at `seconds` (seconds since the epoch, UTC).
+    pub fn local(&self, seconds: i64) -> Local {
+        let after_last = self.transitions.last().is_none_or(|(last, _)| seconds >= *last);
         if after_last && let Some(rule) = &self.rule {
-            return rule.local(t);
+            return rule.local(seconds);
         }
-        match self.transitions.iter().rposition(|(time, _)| *time <= t) {
-            Some(i) => self.types[self.transitions[i].1].clone(),
+        match self.transitions.iter().rposition(|(time, _)| *time <= seconds) {
+            Some(index) => self.types[self.transitions[index].1].clone(),
             None => self.types.first().cloned().unwrap_or(Local { offset: 0, abbreviation: "UTC".into() }),
         }
     }
@@ -250,13 +254,14 @@ impl Rule {
         Some(Rule { standard, summer: Some((summer, start, end)) })
     }
 
-    fn local(&self, t: i64) -> Local {
+    fn local(&self, seconds: i64) -> Local {
         let Some((summer, start, end)) = &self.summer else { return self.standard.clone() };
-        let (year, _, _) = civil_from_days(t.div_euclid(86_400));
+        let (year, _, _) = civil_from_days(seconds.div_euclid(86_400));
         // Both changes are given in the local time in force before them.
-        let starts = start.at(year) - self.standard.offset;
-        let ends = end.at(year) - summer.offset;
-        let in_summer = if starts < ends { (starts..ends).contains(&t) } else { !(ends..starts).contains(&t) };
+        let starts = start.in_year(year) - self.standard.offset;
+        let ends = end.in_year(year) - summer.offset;
+        let in_summer =
+            if starts < ends { (starts..ends).contains(&seconds) } else { !(ends..starts).contains(&seconds) };
         if in_summer { summer.clone() } else { self.standard.clone() }
     }
 }
@@ -271,19 +276,23 @@ impl Change {
             None => (text, 7200),
         };
         if let Some(rest) = date.strip_prefix('M') {
-            let mut parts = rest.split('.').map(|p| p.parse::<u32>().ok());
+            let mut parts = rest.split('.').map(|part| part.parse::<u32>().ok());
             let (month, week, day) = (parts.next()??, parts.next()??, parts.next()??);
             let valid = (1..=12).contains(&month) && (1..=5).contains(&week) && day <= 6 && parts.next().is_none();
             return valid.then_some(Change::Month { month, week, day, time });
         }
         if let Some(day) = date.strip_prefix('J') {
-            return day.parse().ok().filter(|d| (1..=365).contains(d)).map(|day| Change::Julian { day, time });
+            return day
+                .parse()
+                .ok()
+                .filter(|number| (1..=365).contains(number))
+                .map(|day| Change::Julian { day, time });
         }
-        date.parse().ok().filter(|d| *d <= 365).map(|day| Change::Day { day, time })
+        date.parse().ok().filter(|number| *number <= 365).map(|day| Change::Day { day, time })
     }
 
     /// The change in `year`, as seconds since the epoch in local time.
-    fn at(self, year: i64) -> i64 {
+    fn in_year(self, year: i64) -> i64 {
         let (days, time) = match self {
             Change::Month { month, week, day, time } => {
                 let first = days_from_civil(year, month, 1);
@@ -313,7 +322,7 @@ fn name(rest: &mut &str) -> Option<String> {
         *rest = after;
         return Some(name.to_string());
     }
-    let end = rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len());
+    let end = rest.find(|character: char| !character.is_ascii_alphabetic()).unwrap_or(rest.len());
     if end < 3 {
         return None;
     }
@@ -329,14 +338,14 @@ fn signed_time(rest: &mut &str) -> Option<i64> {
         Some(b'+') => (1, &rest[1..]),
         _ => (1, *rest),
     };
-    let end = body.find(|c: char| !c.is_ascii_digit() && c != ':').unwrap_or(body.len());
+    let end = body.find(|character: char| !character.is_ascii_digit() && character != ':').unwrap_or(body.len());
     if end == 0 {
         return None;
     }
     let mut seconds = 0;
-    for (i, part) in body[..end].split(':').enumerate() {
-        let n: i64 = part.parse().ok()?;
-        seconds += n * [3600, 60, 1].get(i)?;
+    for (index, part) in body[..end].split(':').enumerate() {
+        let value: i64 = part.parse().ok()?;
+        seconds += value * [3600, 60, 1].get(index)?;
     }
     *rest = &body[end..];
     Some(sign * seconds)
@@ -450,14 +459,14 @@ pub fn find(place: &str) -> Option<(String, Zone)> {
         return None;
     }
     if let Some((_, zone)) = ALIASES.iter().find(|(alias, _)| *alias == place) {
-        return Zone::load(zone).map(|z| (zone.to_string(), z));
+        return Zone::load(zone).map(|loaded| (zone.to_string(), loaded));
     }
     let wanted = place.replace([' ', '-'], "_");
     let name = zone_names().iter().find(|name| {
         let lower = name.to_lowercase();
         lower == wanted || lower.rsplit('/').next() == Some(wanted.as_str())
     })?;
-    Zone::load(name).map(|z| (name.clone(), z))
+    Zone::load(name).map(|loaded| (name.clone(), loaded))
 }
 
 /// Every zone name under the zoneinfo directory, read once.
@@ -491,23 +500,23 @@ fn zone_names() -> &'static [String] {
             }
         }
         // Region zones before the old top-level aliases, and stable.
-        names.sort_by_key(|n| (!n.contains('/'), n.clone()));
+        names.sort_by_key(|name| (!name.contains('/'), name.clone()));
         names
     })
 }
 
-/// The local time zone's offset at `t`, through libc.
+/// The local time zone's offset at `seconds`, through libc.
 #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
-pub fn local_offset(t: i64) -> i64 {
-    let now = t as libc::time_t;
-    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: localtime_r reads `now` and fills the caller-owned `tm`, which lives past the call.
-    let filled = unsafe { libc::localtime_r(&now, tm.as_mut_ptr()) };
+pub fn local_offset(seconds: i64) -> i64 {
+    let now = seconds as libc::time_t;
+    let mut calendar = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: localtime_r reads `now` and fills the caller-owned `calendar`, which lives past the call.
+    let filled = unsafe { libc::localtime_r(&now, calendar.as_mut_ptr()) };
     if filled.is_null() {
         return 0;
     }
-    // SAFETY: a non-null result means localtime_r initialised `tm`.
-    unsafe { tm.assume_init() }.tm_gmtoff
+    // SAFETY: a non-null result means localtime_r initialised `calendar`.
+    unsafe { calendar.assume_init() }.tm_gmtoff
 }
 
 /// Seconds since the epoch of a local wall-clock time.
@@ -534,8 +543,8 @@ mod tests {
         assert!(valid_date(2024, 2, 29));
         assert!(!valid_date(2026, 2, 29));
         assert!(!valid_date(2026, 13, 1));
-        assert_eq!(Civil::at(1_700_000_000).iso(), "2023-11-14 22:13:20");
-        assert_eq!(Civil::at(0).long_date(), "Thursday 1 January");
+        assert_eq!(Civil::from_seconds(1_700_000_000).iso(), "2023-11-14 22:13:20");
+        assert_eq!(Civil::from_seconds(0).long_date(), "Thursday 1 January");
         assert_eq!(offset_label(9 * 3600), "UTC+9");
         assert_eq!(offset_label(-(3 * 3600 + 1800)), "UTC-3:30");
     }
@@ -579,7 +588,7 @@ mod tests {
         assert_eq!(find("Japan").unwrap().0, "Asia/Tokyo");
         assert!(find("atlantis").is_none());
         assert!(Zone::load("../etc/passwd").is_none());
-        for (zone, t) in [
+        for (zone, seconds) in [
             ("Europe/Amsterdam", 1_700_000_000),
             ("Europe/Amsterdam", 1_790_000_000),
             ("America/New_York", 1_720_000_000),
@@ -587,13 +596,15 @@ mod tests {
             ("America/Sao_Paulo", 2_200_000_000),
             ("Asia/Kolkata", 1_000_000_000),
         ] {
-            let Ok(out) =
-                std::process::Command::new("date").env("TZ", zone).args(["-d", &format!("@{t}"), "+%z %Z"]).output()
+            let Ok(out) = std::process::Command::new("date")
+                .env("TZ", zone)
+                .args(["-d", &format!("@{seconds}"), "+%z %Z"])
+                .output()
             else {
                 return;
             };
             let expected = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let local = Zone::load(zone).unwrap().local(t);
+            let local = Zone::load(zone).unwrap().local(seconds);
             let sign = if local.offset < 0 { '-' } else { '+' };
             let got = format!(
                 "{sign}{:02}{:02} {}",
@@ -601,7 +612,7 @@ mod tests {
                 local.offset.abs() / 60 % 60,
                 local.abbreviation
             );
-            assert_eq!(got, expected, "{zone} at {t}");
+            assert_eq!(got, expected, "{zone} at {seconds}");
         }
     }
 }

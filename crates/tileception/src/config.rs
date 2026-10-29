@@ -56,8 +56,8 @@ pub enum BindValue {
 impl BindValue {
     fn lines(&self) -> Vec<&str> {
         match self {
-            BindValue::One(s) => vec![s.as_str()],
-            BindValue::Many(v) => v.iter().map(String::as_str).collect(),
+            BindValue::One(line) => vec![line.as_str()],
+            BindValue::Many(lines) => lines.iter().map(String::as_str).collect(),
         }
     }
 }
@@ -157,9 +157,12 @@ impl Mods {
         Mods { logo: state.logo, alt: state.alt, ctrl: state.ctrl, shift: state.shift }
     }
 
-    /// Whether `self` (what is held) includes the single modifier `m`.
-    pub fn has(&self, m: Mods) -> bool {
-        (!m.logo || self.logo) && (!m.alt || self.alt) && (!m.ctrl || self.ctrl) && (!m.shift || self.shift)
+    /// Whether `self` (what is held) includes the single `modifier`.
+    pub fn has(&self, modifier: Mods) -> bool {
+        (!modifier.logo || self.logo)
+            && (!modifier.alt || self.alt)
+            && (!modifier.ctrl || self.ctrl)
+            && (!modifier.shift || self.shift)
     }
 }
 
@@ -183,7 +186,7 @@ pub struct Config {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
-        let file: ConfigFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        let file: ConfigFile = toml::from_str(text).map_err(|error| error.to_string())?;
         let defaults: ConfigFile = toml::from_str(DEFAULT).expect("built-in config parses");
         let mut binds: Vec<Bind> = Vec::new();
         let mut errors = Vec::new();
@@ -197,13 +200,13 @@ impl Config {
         for (combo, value) in tables.iter().flatten() {
             let combo_keys = match parse_combo(combo) {
                 Ok(keys) => keys,
-                Err(e) => {
-                    errors.push(format!("{combo:?}: {e}"));
+                Err(error) => {
+                    errors.push(format!("{combo:?}: {error}"));
                     continue;
                 }
             };
-            binds.retain(|b| (b.mods, b.key) != combo_keys);
-            if matches!(value, BindValue::One(s) if s.trim() == "none") {
+            binds.retain(|bind| (bind.mods, bind.key) != combo_keys);
+            if matches!(value, BindValue::One(line) if line.trim() == "none") {
                 continue;
             }
             let parsed: Result<Vec<Command>, String> = value
@@ -221,7 +224,7 @@ impl Config {
                 .collect();
             match parsed {
                 Ok(commands) => binds.push(Bind { mods: combo_keys.0, key: combo_keys.1, commands }),
-                Err(e) => errors.push(format!("{combo:?}: {e}")),
+                Err(error) => errors.push(format!("{combo:?}: {error}")),
             }
         }
         if !errors.is_empty() {
@@ -229,7 +232,7 @@ impl Config {
         }
         let drag_mod = parse_modifier(&file.general.drag_modifier)
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
-        let theme = crate::theme::Theme::from_file(&file.theme).map_err(|e| format!("[theme] {e}"))?;
+        let theme = crate::theme::Theme::from_file(&file.theme).map_err(|error| format!("[theme] {error}"))?;
         file.shell.validate()?;
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
@@ -246,13 +249,13 @@ impl Config {
     /// keysym; modifiers must match exactly.
     pub fn lookup(&self, mods: Mods, key: u32) -> Option<&[Command]> {
         let key = lower(key);
-        self.binds.iter().find(|b| b.mods == mods && b.key == key).map(|b| b.commands.as_slice())
+        self.binds.iter().find(|bind| bind.mods == mods && bind.key == key).map(|bind| bind.commands.as_slice())
     }
 
     /// Extra launch arguments for a desktop entry id (`spotify.desktop`), from
     /// `[launch_args]`; the key may leave off `.desktop`.
-    pub fn launch_args(&self, id: &str) -> Vec<String> {
-        let name = id.strip_suffix(".desktop").unwrap_or(id);
+    pub fn launch_args(&self, desktop_id: &str) -> Vec<String> {
+        let name = desktop_id.strip_suffix(".desktop").unwrap_or(desktop_id);
         self.file
             .launch_args
             .iter()
@@ -262,26 +265,26 @@ impl Config {
     }
 
     pub fn world_settings(&self) -> tileception_core::Settings {
-        let g = &self.file.general;
+        let general = &self.file.general;
         tileception_core::Settings {
-            gap: g.gap.max(0.0),
-            animation: (g.animation_ms / 1000.0).max(0.0),
-            share_removed_space: g.share_removed_space,
-            tab_height: g.tab_height.max(0.0),
+            gap: general.gap.max(0.0),
+            animation: (general.animation_ms / 1000.0).max(0.0),
+            share_removed_space: general.share_removed_space,
+            tab_height: general.tab_height.max(0.0),
         }
     }
 }
 
 fn parse_modifier(name: &str) -> Option<Mods> {
-    let mut m = Mods::default();
+    let mut modifier = Mods::default();
     match name.to_ascii_lowercase().as_str() {
-        "super" | "logo" | "mod4" | "win" | "meta" => m.logo = true,
-        "alt" | "mod1" => m.alt = true,
-        "ctrl" | "control" => m.ctrl = true,
-        "shift" => m.shift = true,
+        "super" | "logo" | "mod4" | "win" | "meta" => modifier.logo = true,
+        "alt" | "mod1" => modifier.alt = true,
+        "ctrl" | "control" => modifier.ctrl = true,
+        "shift" => modifier.shift = true,
         _ => return None,
     }
-    Some(m)
+    Some(modifier)
 }
 
 /// Parses `Super+Shift+T` into modifiers and a lower-case keysym.
@@ -289,14 +292,14 @@ pub fn parse_combo(combo: &str) -> Result<(Mods, u32), String> {
     let parts: Vec<&str> = combo.split('+').map(str::trim).collect();
     if let [only] = parts[..] {
         // A modifier on its own: pressed and let go with nothing else.
-        if let Some(m) = parse_modifier(only) {
-            return Ok((m, TAP));
+        if let Some(modifier) = parse_modifier(only) {
+            return Ok((modifier, TAP));
         }
     }
     let (key, mods) = parts.split_last().ok_or("empty key binding")?;
     let mut all = Mods::default();
-    for m in mods {
-        let one = parse_modifier(m).ok_or_else(|| format!("unknown modifier {m:?}"))?;
+    for modifier in mods {
+        let one = parse_modifier(modifier).ok_or_else(|| format!("unknown modifier {modifier:?}"))?;
         all.logo |= one.logo;
         all.alt |= one.alt;
         all.ctrl |= one.ctrl;
@@ -306,7 +309,7 @@ pub fn parse_combo(combo: &str) -> Result<(Mods, u32), String> {
         return Ok((all, wheel));
     }
     if let Some(gesture) = crate::gestures::parse_key(key) {
-        return gesture.map(|g| (all, g));
+        return gesture.map(|gesture| (all, gesture));
     }
     let mut sym = xkb::keysym_from_name(key, xkb::KEYSYM_NO_FLAGS);
     if sym.raw() == 0 {
@@ -328,15 +331,15 @@ pub const TAP: u32 = 0x7f00_0010;
 
 /// The modifier a key is, if it is one.
 pub fn modifier_of(sym: u32) -> Option<Mods> {
-    let mut m = Mods::default();
+    let mut modifier = Mods::default();
     match sym {
-        0xffeb | 0xffec => m.logo = true,  // Super_L, Super_R
-        0xffe9 | 0xffea => m.alt = true,   // Alt_L, Alt_R
-        0xffe3 | 0xffe4 => m.ctrl = true,  // Control_L, Control_R
-        0xffe1 | 0xffe2 => m.shift = true, // Shift_L, Shift_R
+        0xffeb | 0xffec => modifier.logo = true,  // Super_L, Super_R
+        0xffe9 | 0xffea => modifier.alt = true,   // Alt_L, Alt_R
+        0xffe3 | 0xffe4 => modifier.ctrl = true,  // Control_L, Control_R
+        0xffe1 | 0xffe2 => modifier.shift = true, // Shift_L, Shift_R
         _ => return None,
     }
-    Some(m)
+    Some(modifier)
 }
 
 fn wheel_key(name: &str) -> Option<u32> {
@@ -361,7 +364,7 @@ fn lower(sym: u32) -> u32 {
 pub fn path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("tileception").join("config.toml")
 }
@@ -377,7 +380,7 @@ pub fn load(path: &Path) -> Config {
             Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
         }
     }
-    match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| Config::parse(&t)) {
+    match std::fs::read_to_string(path).map_err(|error| error.to_string()).and_then(|text| Config::parse(&text)) {
         Ok(config) => config,
         Err(err) => {
             tracing::error!("config {}: {err}; using defaults", path.display());
@@ -387,7 +390,7 @@ pub fn load(path: &Path) -> Config {
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
 }
 
 /// Reloads the config whenever the file changes.
@@ -408,7 +411,7 @@ pub fn watch(handle: &LoopHandle<'static, Tileception>, path: PathBuf) {
 impl Tileception {
     pub fn reload_config(&mut self) -> Result<(), String> {
         let path = path();
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let config = Config::parse(&text)?;
         self.apply_config(config);
         tracing::info!("config reloaded");
@@ -419,11 +422,14 @@ impl Tileception {
         let republish = self.theme != config.theme || self.config.file.greeter != config.file.greeter;
         self.world.settings = config.world_settings();
         if let Some(keyboard) = self.seat.get_keyboard() {
-            let k = &config.file.keyboard;
-            keyboard.change_repeat_info(k.repeat_rate.unwrap_or(30), k.repeat_delay.unwrap_or(400));
+            let keyboard_config = &config.file.keyboard;
+            keyboard.change_repeat_info(
+                keyboard_config.repeat_rate.unwrap_or(30),
+                keyboard_config.repeat_delay.unwrap_or(400),
+            );
         }
-        if let Some(t) = &config.file.general.terminal {
-            self.terminal = t.clone();
+        if let Some(terminal) = &config.file.general.terminal {
+            self.terminal = terminal.clone();
         }
         if self.theme != config.theme {
             self.theme = config.theme.clone();
@@ -451,8 +457,8 @@ mod tests {
 
     #[test]
     fn keyboard_defaults_to_us_international() {
-        let names = |k: Keyboard| {
-            let (_, layout, variant, _) = k.names();
+        let names = |keyboard: Keyboard| {
+            let (_, layout, variant, _) = keyboard.names();
             (layout, variant)
         };
         assert_eq!(names(Keyboard::default()), ("us".into(), "altgr-intl".into()));
@@ -465,13 +471,13 @@ mod tests {
         let quote = keymap.key_by_name("AC11").expect("apostrophe key");
         let dead_acute = xkb::keysym_from_name("dead_acute", xkb::KEYSYM_NO_FLAGS);
         assert_eq!(keymap.key_get_syms_by_level(quote, 0, 2), [dead_acute]);
-        let nl = Keyboard { layout: Some("nl".into()), ..Default::default() };
-        assert_eq!(names(nl), ("nl".into(), String::new()));
+        let dutch = Keyboard { layout: Some("nl".into()), ..Default::default() };
+        assert_eq!(names(dutch), ("nl".into(), String::new()));
     }
 
     #[test]
     fn layouts_pair_with_variants() {
-        let pair = |l: &str, v: &str| (l.to_string(), v.to_string());
+        let pair = |layout: &str, variant: &str| (layout.to_string(), variant.to_string());
         assert_eq!(Keyboard::default().layouts(), [pair("us", "altgr-intl")]);
         let two = Keyboard { layout: Some("us, nl".into()), variant: Some("intl,".into()), ..Default::default() };
         assert_eq!(two.layouts(), [pair("us", "intl"), pair("nl", "")]);
@@ -479,23 +485,23 @@ mod tests {
 
     #[test]
     fn default_config_parses() {
-        let c = Config::default_config();
-        assert!(c.binds.len() > 30);
-        let t = xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS).raw();
+        let config = Config::default_config();
+        assert!(config.binds.len() > 30);
+        let t_key = xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS).raw();
         let logo = Mods { logo: true, ..Default::default() };
-        assert_eq!(c.lookup(logo, t), Some(&[Command::Action(Action::Spawn)][..]));
+        assert_eq!(config.lookup(logo, t_key), Some(&[Command::Action(Action::Spawn)][..]));
         let one = xkb::keysym_from_name("1", xkb::KEYSYM_NO_FLAGS).raw();
         let logo_shift = Mods { logo: true, shift: true, ..Default::default() };
-        assert_eq!(c.lookup(logo_shift, one), Some(&[Command::Action(Action::SaveView(1))][..]));
-        assert_eq!(c.lookup(logo, WHEEL_UP), Some(&[Command::Action(Action::StepInPointer)][..]));
-        assert_eq!(c.lookup(Mods::default(), t), None);
+        assert_eq!(config.lookup(logo_shift, one), Some(&[Command::Action(Action::SaveView(1))][..]));
+        assert_eq!(config.lookup(logo, WHEEL_UP), Some(&[Command::Action(Action::StepInPointer)][..]));
+        assert_eq!(config.lookup(Mods::default(), t_key), None);
     }
 
     #[test]
     fn combos_and_errors() {
-        let (m, k) = parse_combo("Ctrl+Alt+Page_Up").unwrap();
-        assert!(m.ctrl && m.alt && !m.logo);
-        assert_eq!(k, xkb::keysym_from_name("Page_Up", xkb::KEYSYM_NO_FLAGS).raw());
+        let (mods, keysym) = parse_combo("Ctrl+Alt+Page_Up").unwrap();
+        assert!(mods.ctrl && mods.alt && !mods.logo);
+        assert_eq!(keysym, xkb::keysym_from_name("Page_Up", xkb::KEYSYM_NO_FLAGS).raw());
         assert!(parse_combo("Hyper+T").is_err());
         assert!(parse_combo("Super+NoSuchKey").is_err());
         assert!(Config::parse("[binds]\n\"Super+T\" = \"fly\"").is_err());
@@ -504,18 +510,18 @@ mod tests {
 
     #[test]
     fn modifier_taps() {
-        let c = Config::parse("[binds]\n\"Super\" = \"spawn fuzzel\"").unwrap();
+        let config = Config::parse("[binds]\n\"Super\" = \"spawn fuzzel\"").unwrap();
         let logo = Mods { logo: true, ..Default::default() };
-        assert_eq!(c.lookup(logo, TAP), Some(&[Command::Action(crate::input::Action::Launcher)][..]));
+        assert_eq!(config.lookup(logo, TAP), Some(&[Command::Action(crate::input::Action::Launcher)][..]));
         assert_eq!(modifier_of(0xffeb), Some(logo));
     }
 
     #[test]
     fn several_commands_per_key() {
-        let c = Config::parse("[binds]\n\"Super+Escape\" = [\"reload\", \"spawn notify-send hi\"]").unwrap();
+        let config = Config::parse("[binds]\n\"Super+Escape\" = [\"reload\", \"spawn notify-send hi\"]").unwrap();
         let esc = xkb::keysym_from_name("Escape", xkb::KEYSYM_NO_FLAGS).raw();
         let logo = Mods { logo: true, ..Default::default() };
-        assert_eq!(c.lookup(logo, esc).map(|c| c.len()), Some(2));
+        assert_eq!(config.lookup(logo, esc).map(|commands| commands.len()), Some(2));
     }
 
     #[test]
@@ -523,36 +529,37 @@ mod tests {
         let defaults = Config::default_config().binds.len();
         let logo = Mods { logo: true, ..Default::default() };
         let key = |name| xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS).raw();
-        let c = Config::parse("[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
-        assert_eq!(c.binds.len(), defaults + 1, "a new key joins the defaults");
-        assert_eq!(c.lookup(logo, key("h")), Some(&[Command::Action(crate::input::Action::Minimize)][..]));
+        let config = Config::parse("[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
+        assert_eq!(config.binds.len(), defaults + 1, "a new key joins the defaults");
+        assert_eq!(config.lookup(logo, key("h")), Some(&[Command::Action(crate::input::Action::Minimize)][..]));
         // The same key written another way still replaces its default.
-        let c = Config::parse("[binds]\n\"Shift+Super+h\" = \"close\"").unwrap();
+        let config = Config::parse("[binds]\n\"Shift+Super+h\" = \"close\"").unwrap();
         let logo_shift = Mods { logo: true, shift: true, ..Default::default() };
-        assert_eq!(c.binds.len(), defaults);
-        assert_eq!(c.lookup(logo_shift, key("h")), Some(&[Command::Action(crate::input::Action::Close)][..]));
-        let c = Config::parse("[binds]\n\"Super+H\" = \"none\"").unwrap();
-        assert_eq!(c.binds.len(), defaults - 1);
-        assert_eq!(c.lookup(logo, key("h")), None);
-        let c = Config::parse("[general]\ndefault_binds = false\n[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
-        assert_eq!(c.binds.len(), 1, "without defaults the table is the whole list");
-        let c = Config::parse("[general]\ngap = 4").unwrap();
-        assert_eq!(c.binds.len(), defaults);
-        assert_eq!(c.world_settings().gap, 4.0);
+        assert_eq!(config.binds.len(), defaults);
+        assert_eq!(config.lookup(logo_shift, key("h")), Some(&[Command::Action(crate::input::Action::Close)][..]));
+        let config = Config::parse("[binds]\n\"Super+H\" = \"none\"").unwrap();
+        assert_eq!(config.binds.len(), defaults - 1);
+        assert_eq!(config.lookup(logo, key("h")), None);
+        let config =
+            Config::parse("[general]\ndefault_binds = false\n[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
+        assert_eq!(config.binds.len(), 1, "without defaults the table is the whole list");
+        let config = Config::parse("[general]\ngap = 4").unwrap();
+        assert_eq!(config.binds.len(), defaults);
+        assert_eq!(config.world_settings().gap, 4.0);
     }
 
     #[test]
     fn launch_args_come_from_the_config_only() {
-        let c = Config::default_config();
-        assert!(c.launch_args("spotify.desktop").is_empty(), "nothing is built in");
-        let c = Config::parse(
+        let config = Config::default_config();
+        assert!(config.launch_args("spotify.desktop").is_empty(), "nothing is built in");
+        let config = Config::parse(
             "[launch_args]\nspotify = [\"--ozone-platform=wayland\"]\n\"com.spotify.Client.desktop\" = [\"--ozone-platform=x11\"]\nfirefox = [\"-P\", \"work\"]",
         )
         .unwrap();
-        assert_eq!(c.launch_args("spotify.desktop"), ["--ozone-platform=wayland"]);
-        assert_eq!(c.launch_args("com.spotify.Client.desktop"), ["--ozone-platform=x11"]);
-        assert!(c.launch_args("spotify_spotify.desktop").is_empty());
-        assert_eq!(c.launch_args("firefox"), ["-P", "work"]);
+        assert_eq!(config.launch_args("spotify.desktop"), ["--ozone-platform=wayland"]);
+        assert_eq!(config.launch_args("com.spotify.Client.desktop"), ["--ozone-platform=x11"]);
+        assert!(config.launch_args("spotify_spotify.desktop").is_empty());
+        assert_eq!(config.launch_args("firefox"), ["-P", "work"]);
         assert!(Config::parse("[launch_args]\nspotify = \"--ozone-platform=x11\"").is_err());
     }
 }

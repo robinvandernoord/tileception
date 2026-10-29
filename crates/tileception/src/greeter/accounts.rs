@@ -45,7 +45,10 @@ pub fn parse(passwd: &str, login_defs: &str, hidden: &[String]) -> Vec<Account> 
             let fields: Vec<&str> = line.split(':').collect();
             let [login, _, uid, _, gecos, _, shell] = fields[..] else { return None };
             let uid: u32 = uid.parse().ok()?;
-            if !(min..=max).contains(&uid) || !can_log_in(shell) || hidden.iter().any(|h| h == login) {
+            if !(min..=max).contains(&uid)
+                || !can_log_in(shell)
+                || hidden.iter().any(|hidden_login| hidden_login == login)
+            {
                 return None;
             }
             let full = gecos.split(',').next().unwrap_or_default().trim();
@@ -53,8 +56,8 @@ pub fn parse(passwd: &str, login_defs: &str, hidden: &[String]) -> Vec<Account> 
             Some(Account { login: login.to_string(), name, uid, icon: None, accent: None })
         })
         .collect();
-    accounts.sort_by_key(|a| a.uid);
-    accounts.dedup_by(|a, b| a.login == b.login);
+    accounts.sort_by_key(|account| account.uid);
+    accounts.dedup_by(|first, second| first.login == second.login);
     accounts
 }
 
@@ -63,8 +66,8 @@ pub fn parse(passwd: &str, login_defs: &str, hidden: &[String]) -> Vec<Account> 
 pub fn list(hidden: &[String]) -> Vec<Account> {
     let passwd_path =
         std::env::var_os("TILECEPTION_GREETER_PASSWD").map(PathBuf::from).unwrap_or_else(|| "/etc/passwd".into());
-    let passwd = std::fs::read_to_string(&passwd_path).unwrap_or_else(|e| {
-        tracing::error!("greeter: could not read {}: {e}", passwd_path.display());
+    let passwd = std::fs::read_to_string(&passwd_path).unwrap_or_else(|error| {
+        tracing::error!("greeter: could not read {}: {error}", passwd_path.display());
         String::new()
     });
     let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
@@ -77,7 +80,7 @@ pub fn list(hidden: &[String]) -> Vec<Account> {
 
 fn icon(dir: &Path, login: &str) -> Option<PathBuf> {
     let path = dir.join(login);
-    std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() > 0).then_some(path)
+    std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0).then_some(path)
 }
 
 /// Accent pairs for people who have not shared theirs, checked for contrast
@@ -97,26 +100,29 @@ const ACCENTS: [(&str, &str); 8] = [
 /// between people.
 pub fn accent(login: &str) -> (Colour, Colour) {
     // FNV-1a: stable, unlike the standard library's randomly seeded hashers.
-    let hash = login.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
-    let (a, b) = ACCENTS[(hash % ACCENTS.len() as u64) as usize];
-    (Colour::parse(a).unwrap_or(Colour::TRANSPARENT), Colour::parse(b).unwrap_or(Colour::TRANSPARENT))
+    let hash = login
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3));
+    let (start, end) = ACCENTS[(hash % ACCENTS.len() as u64) as usize];
+    (Colour::parse(start).unwrap_or(Colour::TRANSPARENT), Colour::parse(end).unwrap_or(Colour::TRANSPARENT))
 }
 
 /// An avatar `size` pixels across, cut to a circle, premultiplied RGBA.
 pub fn avatar_pixels(path: &Path, size: u32) -> Option<Vec<u8>> {
     let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
     let image = reader.decode().ok()?.resize_to_fill(size, size, image::imageops::FilterType::Triangle).to_rgba8();
-    let r = size as f32 / 2.0;
+    let radius = size as f32 / 2.0;
     let mut pixels = image.into_raw();
-    for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let (x, y) = ((i as u32 % size) as f32 + 0.5, (i as u32 / size) as f32 + 0.5);
+    for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (pixel_x, pixel_y) = ((index as u32 % size) as f32 + 0.5, (index as u32 / size) as f32 + 0.5);
         // A one pixel soft edge.
-        let coverage = (r - ((x - r).powi(2) + (y - r).powi(2)).sqrt() + 0.5).clamp(0.0, 1.0);
-        let alpha = f32::from(px[3]) / 255.0 * coverage;
-        for c in &mut px[..3] {
-            *c = (f32::from(*c) * alpha).round() as u8;
+        let coverage =
+            (radius - ((pixel_x - radius).powi(2) + (pixel_y - radius).powi(2)).sqrt() + 0.5).clamp(0.0, 1.0);
+        let alpha = f32::from(pixel[3]) / 255.0 * coverage;
+        for channel in &mut pixel[..3] {
+            *channel = (f32::from(*channel) * alpha).round() as u8;
         }
-        px[3] = (alpha * 255.0).round() as u8;
+        pixel[3] = (alpha * 255.0).round() as u8;
     }
     Some(pixels)
 }
@@ -139,7 +145,7 @@ broken line
     #[test]
     fn lists_ordinary_accounts() {
         let accounts = parse(PASSWD, "", &["backup".into()]);
-        let logins: Vec<&str> = accounts.iter().map(|a| a.login.as_str()).collect();
+        let logins: Vec<&str> = accounts.iter().map(|account| account.login.as_str()).collect();
         assert_eq!(logins, ["robin", "sam"]);
         assert_eq!(accounts[0].name, "Robin van der Noord");
     }
@@ -147,7 +153,7 @@ broken line
     #[test]
     fn follows_login_defs() {
         let defs = "# comment\nUID_MIN\t\t 1002\nUID_MAX 1002\n";
-        let logins: Vec<String> = parse(PASSWD, defs, &[]).into_iter().map(|a| a.login).collect();
+        let logins: Vec<String> = parse(PASSWD, defs, &[]).into_iter().map(|account| account.login).collect();
         assert_eq!(logins, ["sam"]);
     }
 
@@ -161,7 +167,7 @@ broken line
     fn accents_are_stable_and_varied() {
         assert_eq!(accent("robin"), accent("robin"));
         let distinct: std::collections::HashSet<String> =
-            ["robin", "sam", "alex", "kim", "jo", "max"].iter().map(|l| format!("{:?}", accent(l))).collect();
+            ["robin", "sam", "alex", "kim", "jo", "max"].iter().map(|login| format!("{:?}", accent(login))).collect();
         assert!(distinct.len() >= 3, "{distinct:?}");
     }
 }

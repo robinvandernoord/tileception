@@ -48,8 +48,8 @@ impl Serialize for ScaleSetting {
     }
 }
 
-fn auto<'de, D: serde::Deserializer<'de>>(d: D) -> Result<(), D::Error> {
-    let word = String::deserialize(d)?;
+fn auto<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    let word = String::deserialize(deserializer)?;
     if word == "auto" {
         Ok(())
     } else {
@@ -87,8 +87,8 @@ pub fn tidy(scale: f64) -> f64 {
 /// aspect ratio (projectors, some TVs), get 1.
 pub fn guess(size_mm: (i32, i32), mode: (i32, i32)) -> f64 {
     let (wmm, hmm) = (f64::from(size_mm.0), f64::from(size_mm.1));
-    let (w, h) = (f64::from(mode.0), f64::from(mode.1));
-    if wmm <= 0.0 || hmm <= 0.0 || w <= 0.0 || h <= 0.0 {
+    let (width, height) = (f64::from(mode.0), f64::from(mode.1));
+    if wmm <= 0.0 || hmm <= 0.0 || width <= 0.0 || height <= 0.0 {
         return 1.0;
     }
     let inches = wmm.hypot(hmm) / 25.4;
@@ -97,11 +97,11 @@ pub fn guess(size_mm: (i32, i32), mode: (i32, i32)) -> f64 {
     if !(8.0..=120.0).contains(&inches) {
         return 1.0;
     }
-    let dpi = w.hypot(h) / inches;
+    let dpi = width.hypot(height) / inches;
     let target = if inches < 20.0 { 135.0 } else { 110.0 };
     let mut scale = ((dpi / target) * 4.0 + 0.3).floor() / 4.0;
     scale = scale.clamp(1.0, 3.0);
-    while scale > 1.0 && (w / scale < 1024.0 || h / scale < 640.0) {
+    while scale > 1.0 && (width / scale < 1024.0 || height / scale < 640.0) {
         scale -= 0.25;
     }
     scale
@@ -111,16 +111,18 @@ impl Tileception {
     /// The scale an output should have: `TILECEPTION_SCALE`, else its
     /// `[outputs]` entry, else `[outputs."*"]`, else a guess from its size.
     pub fn wanted_scale(&self, output: &Output) -> f64 {
-        if let Some(scale) = std::env::var("TILECEPTION_SCALE").ok().and_then(|s| s.trim().parse::<f64>().ok()) {
+        if let Some(scale) = std::env::var("TILECEPTION_SCALE").ok().and_then(|value| value.trim().parse::<f64>().ok())
+        {
             return tidy(scale);
         }
         let outputs = &self.config.file.outputs;
-        let setting = outputs.get(&output.name()).or_else(|| outputs.get("*")).map(|o| o.scale).unwrap_or_default();
+        let setting =
+            outputs.get(&output.name()).or_else(|| outputs.get("*")).map(|output| output.scale).unwrap_or_default();
         match setting {
             ScaleSetting::Fixed(scale) => tidy(scale),
             ScaleSetting::Auto => {
                 let size = output.physical_properties().size;
-                let mode = output.current_mode().map(|m| m.size).unwrap_or_default();
+                let mode = output.current_mode().map(|mode| mode.size).unwrap_or_default();
                 guess((size.w, size.h), (mode.w, mode.h))
             }
         }
@@ -169,12 +171,13 @@ impl Tileception {
 
     /// The output's size in physical pixels.
     pub fn output_pixels(&self) -> (i32, i32) {
-        let size = self.output.as_ref().and_then(|o| o.current_mode()).map(|m| m.size).unwrap_or_default();
+        let size =
+            self.output.as_ref().and_then(|output| output.current_mode()).map(|mode| mode.size).unwrap_or_default();
         if size.w > 0 && size.h > 0 {
             (size.w, size.h)
         } else {
-            let r = self.world.screen();
-            ((r.w * self.scale).round() as i32, (r.h * self.scale).round() as i32)
+            let rect = self.world.screen();
+            ((rect.w * self.scale).round() as i32, (rect.h * self.scale).round() as i32)
         }
     }
 
@@ -210,7 +213,7 @@ impl Tileception {
                     smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
                         .map(|(popup, _)| popup.wl_surface().clone()),
                 );
-            } else if let Some(surface) = window.x11_surface().and_then(|x| x.wl_surface()) {
+            } else if let Some(surface) = window.x11_surface().and_then(|x11| x11.wl_surface()) {
                 roots.push(surface);
             }
         }
@@ -233,7 +236,10 @@ pub fn has_buffer(surface: &WlSurface) -> bool {
 
 /// `has_buffer`, given the surface's states.
 fn buffered(states: &SurfaceData) -> bool {
-    states.data_map.get::<RendererSurfaceStateUserData>().is_some_and(|s| s.lock().is_ok_and(|s| s.buffer().is_some()))
+    states
+        .data_map
+        .get::<RendererSurfaceStateUserData>()
+        .is_some_and(|state| state.lock().is_ok_and(|state| state.buffer().is_some()))
 }
 
 /// The preferred buffer scale (rounded up, for clients without fractional
@@ -290,7 +296,7 @@ mod tests {
 
     #[test]
     fn config_takes_auto_or_a_number() {
-        let parse = |text: &str| toml::from_str::<OutputConfig>(text).map(|o| o.scale);
+        let parse = |text: &str| toml::from_str::<OutputConfig>(text).map(|output| output.scale);
         assert_eq!(parse("scale = \"auto\"").unwrap(), ScaleSetting::Auto);
         assert_eq!(parse("scale = 1.5").unwrap(), ScaleSetting::Fixed(1.5));
         assert_eq!(parse("scale = 2").unwrap(), ScaleSetting::Fixed(2.0));

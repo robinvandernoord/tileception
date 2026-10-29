@@ -21,8 +21,8 @@ pub struct Toplevels {
 }
 
 impl Toplevels {
-    pub fn new(dh: &smithay::reexports::wayland_server::DisplayHandle) -> Self {
-        Self { state: ForeignToplevelListState::new::<Tileception>(dh), listed: HashMap::new() }
+    pub fn new(display: &smithay::reexports::wayland_server::DisplayHandle) -> Self {
+        Self { state: ForeignToplevelListState::new::<Tileception>(display), listed: HashMap::new() }
     }
 }
 
@@ -31,20 +31,21 @@ impl Tileception {
     /// appear, renamed ones update and closed ones go.
     pub fn update_toplevels(&mut self) {
         // Minimized windows are still open, so they stay listed.
-        let open = |id: WindowId| self.world.contains_window(id) || self.world.is_minimized(id);
-        let gone: Vec<WindowId> = self.toplevels.listed.keys().filter(|id| !open(**id)).copied().collect();
-        for id in gone {
-            if let Some((handle, ..)) = self.toplevels.listed.remove(&id) {
+        let open = |window_id: WindowId| self.world.contains_window(window_id) || self.world.is_minimized(window_id);
+        let gone: Vec<WindowId> =
+            self.toplevels.listed.keys().filter(|window_id| !open(**window_id)).copied().collect();
+        for window_id in gone {
+            if let Some((handle, ..)) = self.toplevels.listed.remove(&window_id) {
                 self.toplevels.state.remove_toplevel(&handle);
             }
         }
-        for (id, window) in &self.windows {
+        for (window_id, window) in &self.windows {
             // Wayland windows count once they are placed, on their first commit.
-            if !open(*id) {
+            if !open(*window_id) {
                 continue;
             }
             let (title, app) = (window_title(window), app_id(window));
-            match self.toplevels.listed.get_mut(id) {
+            match self.toplevels.listed.get_mut(window_id) {
                 Some((handle, sent_title, sent_app)) => {
                     if *sent_title == title && *sent_app == app {
                         continue;
@@ -61,7 +62,7 @@ impl Tileception {
                 }
                 None => {
                     let handle = self.toplevels.state.new_toplevel::<Tileception>(title.clone(), app.clone());
-                    self.toplevels.listed.insert(*id, (handle, title, app));
+                    self.toplevels.listed.insert(*window_id, (handle, title, app));
                 }
             }
         }

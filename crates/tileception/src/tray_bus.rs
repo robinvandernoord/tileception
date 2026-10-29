@@ -33,7 +33,7 @@ pub struct Item {
 
 #[derive(Clone, Debug)]
 pub struct MenuRow {
-    pub id: i32,
+    pub row_id: i32,
     pub label: String,
     pub enabled: bool,
     pub separator: bool,
@@ -47,6 +47,7 @@ pub enum Event {
     Stopped,
 }
 
+#[allow(clippy::min_ident_chars, reason = "preserve existing enum fields")]
 pub enum Request {
     Activate { key: String, method: &'static str, x: i32, y: i32 },
     Scroll { key: String, delta: i32 },
@@ -75,11 +76,11 @@ impl Watcher {
             (sender.to_string(), service.to_string())
         } else {
             let proxy = zbus::fdo::DBusProxy::new(connection).await?;
-            let name =
-                zbus::names::BusName::try_from(service).map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+            let name = zbus::names::BusName::try_from(service)
+                .map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))?;
             (proxy.get_name_owner(name).await?.to_string(), "/StatusNotifierItem".into())
         };
-        OwnedObjectPath::try_from(path.as_str()).map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+        OwnedObjectPath::try_from(path.as_str()).map_err(|error| zbus::fdo::Error::InvalidArgs(error.to_string()))?;
         let key = format!("{bus}{path}");
         let added = self
             .0
@@ -135,15 +136,19 @@ impl Watcher {
 }
 
 fn string(properties: &Properties, name: &str) -> String {
-    properties.get(name).and_then(|v| <&str>::try_from(v).ok()).unwrap_or_default().to_string()
+    properties.get(name).and_then(|value| <&str>::try_from(value).ok()).unwrap_or_default().to_string()
 }
 
 fn boolean(properties: &Properties, name: &str, default: bool) -> bool {
-    properties.get(name).and_then(|v| bool::try_from(v).ok()).unwrap_or(default)
+    properties.get(name).and_then(|value| bool::try_from(value).ok()).unwrap_or(default)
 }
 
 fn pixmaps(properties: &Properties, name: &str) -> Pixmaps {
-    properties.get(name).and_then(|v| v.try_clone().ok()).and_then(|v| Pixmaps::try_from(v).ok()).unwrap_or_default()
+    properties
+        .get(name)
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| Pixmaps::try_from(value).ok())
+        .unwrap_or_default()
 }
 
 fn read_item(connection: &Connection, key: &str, bus: &str, path: &str) -> zbus::Result<Item> {
@@ -170,15 +175,15 @@ fn read_item(connection: &Connection, key: &str, bus: &str, path: &str) -> zbus:
     let title = if title.is_empty() { string(&properties, "Id") } else { title };
     let tooltip = properties
         .get("ToolTip")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| <(String, Pixmaps, String, String)>::try_from(v).ok());
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| <(String, Pixmaps, String, String)>::try_from(value).ok());
     let description =
         tooltip.map(|(_, _, title, body)| format!("{title}\n{body}").trim().to_string()).unwrap_or_default();
     let menu = properties
         .get("Menu")
-        .and_then(|v| <&zbus::zvariant::ObjectPath<'_>>::try_from(v).ok())
+        .and_then(|value| <&zbus::zvariant::ObjectPath<'_>>::try_from(value).ok())
         .map(ToString::to_string)
-        .filter(|p| p != "/");
+        .filter(|path| path != "/");
     Ok(Item {
         key: key.into(),
         title,
@@ -200,9 +205,9 @@ fn split_key(key: &str) -> Option<(&str, &str)> {
 
 fn handle(connection: &Connection, request: Request, events: &channel::Sender<Event>) -> zbus::Result<()> {
     match request {
-        Request::Activate { key, method, x, y } => {
+        Request::Activate { key, method, x: event_x, y: event_y } => {
             if let Some((bus, path)) = split_key(&key) {
-                Proxy::new(connection, bus, path, ITEM)?.call::<_, _, ()>(method, &(x, y))?;
+                Proxy::new(connection, bus, path, ITEM)?.call::<_, _, ()>(method, &(event_x, event_y))?;
             }
         }
         Request::Scroll { key, delta } => {
@@ -220,15 +225,16 @@ fn handle(connection: &Connection, request: Request, events: &channel::Sender<Ev
                     let rows = children
                         .into_iter()
                         .filter_map(|child| {
-                            let (id, props, _): Layout = child.try_into().ok()?;
+                            let (row_id, props, _): Layout = child.try_into().ok()?;
                             if !boolean(&props, "visible", true) {
                                 return None;
                             }
                             let toggle = string(&props, "toggle-type");
-                            let checked = (!toggle.is_empty())
-                                .then(|| props.get("toggle-state").and_then(|v| i32::try_from(v).ok()) == Some(1));
+                            let checked = (!toggle.is_empty()).then(|| {
+                                props.get("toggle-state").and_then(|value| i32::try_from(value).ok()) == Some(1)
+                            });
                             Some(MenuRow {
-                                id,
+                                row_id,
                                 label: string(&props, "label").replace('_', ""),
                                 enabled: boolean(&props, "enabled", true),
                                 separator: string(&props, "type") == "separator",
@@ -243,7 +249,7 @@ fn handle(connection: &Connection, request: Request, events: &channel::Sender<Ev
                 let rows = result.unwrap_or_else(|error| {
                     tracing::warn!("tray menu: {error}");
                     vec![MenuRow {
-                        id: 0,
+                        row_id: 0,
                         label: "Unable to load menu".into(),
                         enabled: false,
                         separator: false,
@@ -254,10 +260,10 @@ fn handle(connection: &Connection, request: Request, events: &channel::Sender<Ev
                 let _ = events.send(Event::Menu { key, parent, rows });
             }
         }
-        Request::Click { key, path, id } => {
+        Request::Click { key, path, id: row_id } => {
             if let Some((bus, _)) = split_key(&key) {
                 Proxy::new(connection, bus, path.as_str(), MENU)?
-                    .call::<_, _, ()>("Event", &(id, "clicked", Value::from(0i32), 0u32))?;
+                    .call::<_, _, ()>("Event", &(row_id, "clicked", Value::from(0i32), 0u32))?;
             }
         }
     }

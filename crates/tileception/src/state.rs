@@ -69,7 +69,7 @@ pub struct ResizeDrag {
 /// A press that turns into a drag once the pointer moves far enough.
 #[derive(Debug, Clone, Copy)]
 pub struct PendingPress {
-    pub at: Point<f64, Logical>,
+    pub position: Point<f64, Logical>,
     pub window: Option<WindowId>,
 }
 
@@ -201,34 +201,34 @@ impl Tileception {
         config: Config,
         nested: bool,
     ) -> Self {
-        let dh = display.handle();
+        let display_handle = display.handle();
 
-        let compositor_state = CompositorState::new::<Self>(&dh);
-        crate::capture::init_screencopy(&dh);
-        let xdg_shell_state = XdgShellState::new::<Self>(&dh);
-        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
-        let shm_state = ShmState::new::<Self>(&dh, vec![]);
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
+        let compositor_state = CompositorState::new::<Self>(&display_handle);
+        crate::capture::init_screencopy(&display_handle);
+        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
-        let data_device_state = DataDeviceState::new::<Self>(&dh);
-        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
         let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<Self, _>(
-            &dh,
+            &display_handle,
             Some(&primary_selection_state),
             |_| true,
         );
         let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<Self, _>(
-            &dh,
+            &display_handle,
             Some(&primary_selection_state),
             |_| true,
         );
-        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
 
-        let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
-        let k = &config.file.keyboard;
-        let (model, layout, variant, options) = k.names();
+        let mut seat: Seat<Self> = seat_state.new_wl_seat(&display_handle, "seat0");
+        let keyboard_config = &config.file.keyboard;
+        let (model, layout, variant, options) = keyboard_config.names();
         let xkb = XkbConfig { layout: &layout, variant: &variant, model: &model, options, ..Default::default() };
-        let (delay, rate) = (k.repeat_delay.unwrap_or(400), k.repeat_rate.unwrap_or(30));
+        let (delay, rate) = (keyboard_config.repeat_delay.unwrap_or(400), keyboard_config.repeat_rate.unwrap_or(30));
         if seat.add_keyboard(xkb, delay, rate).is_err() {
             tracing::warn!("keyboard layout {layout:?} {variant:?} did not compile, using us");
             seat.add_keyboard(Default::default(), delay, rate).expect("default keymap compiles");
@@ -249,7 +249,7 @@ impl Tileception {
             start: Instant::now(),
             loop_handle: event_loop.handle(),
             socket_name,
-            display_handle: dh.clone(),
+            display_handle: display_handle.clone(),
             loop_signal: event_loop.get_signal(),
             compositor_state,
             xdg_shell_state,
@@ -261,10 +261,16 @@ impl Tileception {
             primary_selection_state,
             wlr_data_control_state,
             ext_data_control_state,
-            toplevels: crate::toplevels::Toplevels::new(&dh),
-            pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&dh),
-            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&dh),
-            pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(&dh),
+            toplevels: crate::toplevels::Toplevels::new(&display_handle),
+            pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(
+                &display_handle,
+            ),
+            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(
+                &display_handle,
+            ),
+            pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(
+                &display_handle,
+            ),
             xwayland_shell_state,
             xwm: None,
             xdisplay: None,
@@ -280,8 +286,10 @@ impl Tileception {
             next_window: 1,
             output: None,
             scale: 1.0,
-            fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&dh),
-            viewporter_state: smithay::wayland::viewporter::ViewporterState::new::<Self>(&dh),
+            fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(
+                &display_handle,
+            ),
+            viewporter_state: smithay::wayland::viewporter::ViewporterState::new::<Self>(&display_handle),
             pointer: (0.0, 0.0).into(),
             config,
             nested,
@@ -299,10 +307,13 @@ impl Tileception {
             ipc_socket: None,
             keyboard_focus: None,
             keyboard_dirty: false,
-            layer_shell_state: WlrLayerShellState::new::<Self>(&dh),
+            layer_shell_state: WlrLayerShellState::new::<Self>(&display_handle),
             layer_focus: None,
             fullscreen: None,
-            session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(&dh, |_| true),
+            session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(
+                &display_handle,
+                |_| true,
+            ),
             lock: Default::default(),
             builtin_locker: Default::default(),
             greeter: None,
@@ -410,7 +421,7 @@ impl Tileception {
             .env("QT_QPA_PLATFORM", "wayland;xcb")
             .env("MOZ_ENABLE_WAYLAND", "1")
             .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
-            .envs(self.ipc_socket.iter().map(|p| ("TILECEPTION_SOCKET", p)));
+            .envs(self.ipc_socket.iter().map(|socket| ("TILECEPTION_SOCKET", socket)));
         if self.session_services {
             command.env("XDG_SESSION_TYPE", "wayland");
             command.env(
@@ -420,96 +431,99 @@ impl Tileception {
         }
         // X11 programs go to our Xwayland, never to a host X server.
         match self.xdisplay {
-            Some(n) => command.env("DISPLAY", format!(":{n}")),
+            Some(number) => command.env("DISPLAY", format!(":{number}")),
             None => command.env_remove("DISPLAY"),
         };
         command
     }
 
     pub fn window_id(&self, surface: &WlSurface) -> Option<WindowId> {
-        self.windows.iter().find(|(_, w)| w.wl_surface().is_some_and(|s| *s == *surface)).map(|(id, _)| *id)
+        self.windows
+            .iter()
+            .find(|(_, window)| window.wl_surface().is_some_and(|candidate| *candidate == *surface))
+            .map(|(window_id, _)| *window_id)
     }
 
     fn next_id(&mut self) -> WindowId {
-        let id = WindowId(self.next_window);
+        let window_id = WindowId(self.next_window);
         self.next_window += 1;
-        id
+        window_id
     }
 
     pub fn new_window(&mut self, toplevel: ToplevelSurface) {
-        toplevel.with_pending_state(|s| {
-            s.states.set(xdg_toplevel::State::TiledLeft);
-            s.states.set(xdg_toplevel::State::TiledRight);
-            s.states.set(xdg_toplevel::State::TiledTop);
-            s.states.set(xdg_toplevel::State::TiledBottom);
+        toplevel.with_pending_state(|pending| {
+            pending.states.set(xdg_toplevel::State::TiledLeft);
+            pending.states.set(xdg_toplevel::State::TiledRight);
+            pending.states.set(xdg_toplevel::State::TiledTop);
+            pending.states.set(xdg_toplevel::State::TiledBottom);
         });
-        let id = self.next_id();
-        self.windows.insert(id, Window::new_wayland_window(toplevel));
+        let window_id = self.next_id();
+        self.windows.insert(window_id, Window::new_wayland_window(toplevel));
     }
 
     pub fn new_x11_window(&mut self, surface: X11Surface) {
-        let id = self.next_id();
-        self.windows.insert(id, Window::new_x11_window(surface));
-        self.place_window(id);
+        let window_id = self.next_id();
+        self.windows.insert(window_id, Window::new_x11_window(surface));
+        self.place_window(window_id);
     }
 
     /// Puts a new window into the layout: dialogs and fixed-size windows
     /// float, everything else docks. Wayland windows call this on their first
     /// commit, once they have said what they are.
-    pub fn place_window(&mut self, id: WindowId) {
-        let Some(window) = self.windows.get(&id) else { return };
+    pub fn place_window(&mut self, window_id: WindowId) {
+        let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
         let float = rule.float.unwrap_or_else(|| wants_float(window));
         let placement = if float { Placement::Float } else { Placement::Dock };
-        tracing::info!(window = id.0, app = app_id(window), ?placement, "new window");
+        tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
-        self.world.add_window(id, placement, now);
-        self.restore_window_layout(id);
-        if let Some([w, h]) = rule.size.filter(|_| float) {
-            self.world.size_float(id, f64::from(w), f64::from(h));
+        self.world.add_window(window_id, placement, now);
+        self.restore_window_layout(window_id);
+        if let Some([width, height]) = rule.size.filter(|_| float) {
+            self.world.size_float(window_id, f64::from(width), f64::from(height));
         }
-        if let Some(x11) = self.windows.get(&id).and_then(|w| w.x11_surface()) {
-            let g = x11.geometry();
-            if self.world.float_needs_size(id) && g.size.w > 0 && g.size.h > 0 {
-                self.world.size_float(id, g.size.w as f64, g.size.h as f64);
+        if let Some(x11) = self.windows.get(&window_id).and_then(|placed| placed.x11_surface()) {
+            let geometry = x11.geometry();
+            if self.world.float_needs_size(window_id) && geometry.size.w > 0 && geometry.size.h > 0 {
+                self.world.size_float(window_id, geometry.size.w as f64, geometry.size.h as f64);
             }
         }
         self.apply_layout();
-        if let Some(toplevel) = self.windows.get(&id).and_then(|w| w.toplevel()) {
+        if let Some(toplevel) = self.windows.get(&window_id).and_then(|placed| placed.toplevel()) {
             toplevel.send_configure();
             // The layout held the keyboard back until this first configure.
             self.force_keyboard_focus_sync();
         }
         if rule.minimized {
-            self.minimize_window(id);
+            self.minimize_window(window_id);
         } else if rule.fullscreen {
-            self.set_fullscreen(id, true);
+            self.set_fullscreen(window_id, true);
         }
     }
 
     pub fn remove_window(&mut self, surface: &WlSurface) {
-        if let Some(id) = self.window_id(surface) {
-            self.forget_window(id);
+        if let Some(window_id) = self.window_id(surface) {
+            self.forget_window(window_id);
         }
     }
 
-    pub fn forget_window(&mut self, id: WindowId) {
-        self.selection.windows.remove(&id);
-        if self.windows.remove(&id).is_none() {
+    pub fn forget_window(&mut self, window_id: WindowId) {
+        self.selection.windows.remove(&window_id);
+        if self.windows.remove(&window_id).is_none() {
             return;
         }
-        if self.move_drag.is_some_and(|d| d.window == id) {
+        if self.move_drag.is_some_and(|drag| drag.window == window_id) {
             self.move_drag = None;
         }
-        if self.resize_drag.is_some_and(|d| d.window == id) {
+        if self.resize_drag.is_some_and(|drag| drag.window == window_id) {
             self.resize_drag = None;
         }
-        if self.fullscreen == Some(id) {
+        if self.fullscreen == Some(window_id) {
             self.fullscreen = None;
         }
         let now = self.now();
-        self.world.remove_window(id, now);
-        if self.keyboard_focus == Some(id) {
+        self.world.remove_window(window_id, now);
+        if self.keyboard_focus == Some(window_id) {
             self.keyboard_focus = None;
         }
         self.apply_layout();
@@ -524,40 +538,40 @@ impl Tileception {
         let focus = self.world.focus();
         if !self.world.in_overview() {
             let screen = self.world.screen();
-            for p in self.world.placements(self.world.target_view()) {
-                if !p.rect.intersects(&screen) {
+            for placement in self.world.placements(self.world.target_view()) {
+                if !placement.rect.intersects(&screen) {
                     continue;
                 }
                 // Fullscreen windows have their own size; new floating
                 // windows choose theirs.
-                if Some(p.window) == self.fullscreen || self.world.float_needs_size(p.window) {
+                if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let Some(window) = self.windows.get(&p.window) else { continue };
+                let Some(window) = self.windows.get(&placement.window) else { continue };
                 let size: Size<i32, Logical> =
-                    (p.rect.w.round().max(1.0) as i32, p.rect.h.round().max(1.0) as i32).into();
+                    (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
                 if let Some(toplevel) = window.toplevel() {
-                    toplevel.with_pending_state(|s| s.size = Some(size));
+                    toplevel.with_pending_state(|pending| pending.size = Some(size));
                 } else if let Some(x11) = window.x11_surface() {
                     // X11 programs place their menus from this position.
-                    let loc = (p.rect.x.round() as i32, p.rect.y.round() as i32);
+                    let loc = (placement.rect.x.round() as i32, placement.rect.y.round() as i32);
                     let _ = x11.configure(Rectangle::new(loc.into(), size));
                 }
             }
         }
-        for (id, window) in &self.windows {
-            window.set_activated(Some(*id) == focus);
+        for (window_id, window) in &self.windows {
+            window.set_activated(Some(*window_id) == focus);
             // Minimized windows are told they are hidden, so they can stop drawing.
-            let hidden = self.world.is_minimized(*id);
-            if let Some(x11) = window.x11_surface().filter(|x| x.is_minimized() != hidden) {
+            let hidden = self.world.is_minimized(*window_id);
+            if let Some(x11) = window.x11_surface().filter(|x11| x11.is_minimized() != hidden) {
                 let _ = x11.set_suspended(hidden);
             }
             if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|s| {
+                toplevel.with_pending_state(|pending| {
                     if hidden {
-                        s.states.set(xdg_toplevel::State::Suspended);
+                        pending.states.set(xdg_toplevel::State::Suspended);
                     } else {
-                        s.states.unset(xdg_toplevel::State::Suspended);
+                        pending.states.unset(xdg_toplevel::State::Suspended);
                     }
                 });
                 if toplevel.is_initial_configure_sent() {
@@ -574,14 +588,14 @@ impl Tileception {
         let focus = self.world.focus();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         // A closed surface can still hold the keyboard; take it back then.
-        let stale = keyboard.current_focus().is_some_and(|f| !f.alive());
+        let stale = keyboard.current_focus().is_some_and(|focused| !focused.alive());
         if focus == self.keyboard_focus && !self.keyboard_dirty && !stale {
             return;
         }
         self.keyboard_focus = focus;
         self.keyboard_dirty = false;
         let target = if self.is_locked() {
-            self.lock_surface().map(|s| KeyboardFocus::Wayland(s.clone()))
+            self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
         } else if self.power_menu.is_some() {
             None
         } else if let Some(layer) = &self.layer_focus {
@@ -590,7 +604,7 @@ impl Tileception {
         } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
-            focus.and_then(|id| self.windows.get(&id)).and_then(focus_target)
+            focus.and_then(|window_id| self.windows.get(&window_id)).and_then(focus_target)
         };
         if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
             let _ = xwm.raise_window(x11);
@@ -605,50 +619,50 @@ impl Tileception {
     }
 
     /// Makes a window cover the whole output, or puts it back in its tile.
-    pub fn set_fullscreen(&mut self, id: WindowId, on: bool) {
+    pub fn set_fullscreen(&mut self, window_id: WindowId, enable: bool) {
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-        if on {
-            if let Some(old) = self.fullscreen.filter(|old| *old != id) {
+        if enable {
+            if let Some(old) = self.fullscreen.filter(|old| *old != window_id) {
                 self.set_fullscreen(old, false);
             }
-        } else if self.fullscreen != Some(id) {
+        } else if self.fullscreen != Some(window_id) {
             return;
         }
-        let Some(window) = self.windows.get(&id) else { return };
+        let Some(window) = self.windows.get(&window_id) else { return };
         let out = self.output_rect();
         let size: Size<i32, Logical> = (out.w as i32, out.h as i32).into();
-        if let Some(t) = window.toplevel() {
-            t.with_pending_state(|s| {
-                if on {
-                    s.states.set(State::Fullscreen);
-                    s.size = Some(size);
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.with_pending_state(|pending| {
+                if enable {
+                    pending.states.set(State::Fullscreen);
+                    pending.size = Some(size);
                 } else {
-                    s.states.unset(State::Fullscreen);
+                    pending.states.unset(State::Fullscreen);
                 }
             });
         } else if let Some(x11) = window.x11_surface() {
-            let _ = x11.set_fullscreen(on);
-            if on {
+            let _ = x11.set_fullscreen(enable);
+            if enable {
                 let _ = x11.configure(Rectangle::new((0, 0).into(), size));
             }
         }
-        self.fullscreen = on.then_some(id);
-        if on {
-            self.world.focus_window(id, self.now());
+        self.fullscreen = enable.then_some(window_id);
+        if enable {
+            self.world.focus_window(window_id, self.now());
         }
         self.apply_layout();
     }
 
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
-    pub fn minimize_window(&mut self, id: WindowId) {
-        if self.fullscreen == Some(id) {
-            self.set_fullscreen(id, false);
+    pub fn minimize_window(&mut self, window_id: WindowId) {
+        if self.fullscreen == Some(window_id) {
+            self.set_fullscreen(window_id, false);
         }
-        self.selection.windows.remove(&id);
+        self.selection.windows.remove(&window_id);
         let now = self.now();
-        if self.world.minimize(id, now) {
-            tracing::info!(window = id.0, "minimized");
+        if self.world.minimize(window_id, now) {
+            tracing::info!(window = window_id.0, "minimized");
             self.peek_minimized();
         }
         self.apply_layout();
@@ -656,7 +670,8 @@ impl Tileception {
 
     /// The whole output in logical pixels, including what bars reserve.
     pub fn output_rect(&self) -> Rect {
-        let Some((output, mode)) = self.output.as_ref().and_then(|o| Some((o, o.current_mode()?))) else {
+        let Some((output, mode)) = self.output.as_ref().and_then(|active| Some((active, active.current_mode()?)))
+        else {
             return self.world.screen();
         };
         // Worked out as layer surfaces are arranged.
@@ -667,15 +682,15 @@ impl Tileception {
     }
 
     pub fn close_focused(&self) {
-        if let Some(id) = self.world.focus() {
-            self.close_window(id);
+        if let Some(window_id) = self.world.focus() {
+            self.close_window(window_id);
         }
     }
 
-    pub fn close_window(&self, id: WindowId) {
-        let Some(window) = self.windows.get(&id) else { return };
-        if let Some(t) = window.toplevel() {
-            t.send_close();
+    pub fn close_window(&self, window_id: WindowId) {
+        let Some(window) = self.windows.get(&window_id) else { return };
+        if let Some(toplevel) = window.toplevel() {
+            toplevel.send_close();
         } else if let Some(x11) = window.x11_surface() {
             let _ = x11.close();
         }
@@ -695,7 +710,7 @@ fn wants_float(window: &Window) -> bool {
     }
     if let Some(x11) = window.x11_surface() {
         use smithay::xwayland::xwm::WmWindowType;
-        let fixed = matches!((x11.min_size(), x11.max_size()), (Some(a), Some(b)) if a == b && a.w > 0);
+        let fixed = matches!((x11.min_size(), x11.max_size()), (Some(min_size), Some(max_size)) if min_size == max_size && min_size.w > 0);
         let dialog = matches!(
             x11.window_type(),
             Some(WmWindowType::Dialog | WmWindowType::Utility | WmWindowType::Splash | WmWindowType::Toolbar)
@@ -707,39 +722,41 @@ fn wants_float(window: &Window) -> bool {
 
 /// Not before a window's first configure: foot crashes on an enter then.
 fn focus_target(window: &Window) -> Option<KeyboardFocus> {
-    if let Some(t) = window.toplevel() {
-        t.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(t.wl_surface().clone()))
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(toplevel.wl_surface().clone()))
     } else {
-        window.x11_surface().map(|x| KeyboardFocus::X11(x.clone()))
+        window.x11_surface().map(|x11| KeyboardFocus::X11(x11.clone()))
     }
 }
 
 /// The title a window shows, falling back to its app id.
 pub fn window_title(window: &Window) -> String {
-    let title = if let Some(t) = window.toplevel() {
-        with_states(t.wl_surface(), |s| {
-            s.data_map
+    let title = if let Some(toplevel) = window.toplevel() {
+        with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
                 .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().ok().and_then(|d| d.title.clone()))
+                .and_then(|data| data.lock().ok().and_then(|attributes| attributes.title.clone()))
         })
         .unwrap_or_default()
     } else {
-        window.x11_surface().map(|x| x.title()).unwrap_or_default()
+        window.x11_surface().map(|x11| x11.title()).unwrap_or_default()
     };
     if title.trim().is_empty() { app_id(window) } else { title }
 }
 
 /// The app id (Wayland) or class (X11) of a window.
 pub fn app_id(window: &Window) -> String {
-    if let Some(t) = window.toplevel() {
-        with_states(t.wl_surface(), |s| {
-            s.data_map
+    if let Some(toplevel) = window.toplevel() {
+        with_states(toplevel.wl_surface(), |states| {
+            states
+                .data_map
                 .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
+                .and_then(|data| data.lock().ok().and_then(|attributes| attributes.app_id.clone()))
         })
         .unwrap_or_default()
     } else {
-        window.x11_surface().map(|x| x.class()).unwrap_or_default()
+        window.x11_surface().map(|x11| x11.class()).unwrap_or_default()
     }
 }
 
@@ -783,8 +800,8 @@ const CHILD_LOG_LINES: usize = 50;
 fn watch_child(mut child: std::process::Child, name: String) {
     use std::io::{BufRead, BufReader};
     let streams: Vec<Box<dyn std::io::Read + Send>> = [
-        child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
-        child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>),
+        child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn std::io::Read + Send>),
     ]
     .into_iter()
     .flatten()
@@ -797,7 +814,7 @@ fn watch_child(mut child: std::process::Child, name: String) {
                 let left = budget.try_update(
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
-                    |n| n.checked_sub(1),
+                    |remaining| remaining.checked_sub(1),
                 );
                 match left {
                     Ok(1) => tracing::info!(target: "program", "[{name}] {line} (further output dropped)"),
@@ -818,7 +835,7 @@ fn default_terminal() -> String {
     let path = std::env::var_os("PATH").unwrap_or_default();
     ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "gnome-terminal"]
         .into_iter()
-        .find(|t| std::env::split_paths(&path).any(|dir| dir.join(t).is_file()))
+        .find(|terminal| std::env::split_paths(&path).any(|dir| dir.join(terminal).is_file()))
         .unwrap_or("lxterminal")
         .to_string()
 }

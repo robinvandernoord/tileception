@@ -50,7 +50,7 @@ impl Tileception {
 
     fn sleep_event(&mut self, event: Event) {
         match event {
-            Event::Inhibitor(fd) => self.sleep.inhibitor = Some(fd),
+            Event::Inhibitor(descriptor) => self.sleep.inhibitor = Some(descriptor),
             Event::Preparing => {
                 tracing::info!("preparing for sleep");
                 let locking =
@@ -118,9 +118,9 @@ fn watch(events: &channel::Sender<Event>) -> zbus::Result<()> {
         "org.freedesktop.login1.Manager",
     )?;
     let inhibit = || -> zbus::Result<Event> {
-        let fd: zbus::zvariant::OwnedFd =
+        let descriptor: zbus::zvariant::OwnedFd =
             manager.call("Inhibit", &("sleep", "Tileception", "Locking the screen first", "delay"))?;
-        Ok(Event::Inhibitor(fd.into()))
+        Ok(Event::Inhibitor(descriptor.into()))
     };
     // Listening first, so no signal falls between the two.
     let signals = manager.receive_signal("PrepareForSleep")?;

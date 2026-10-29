@@ -24,7 +24,7 @@ const DRAG_INTERVAL: f64 = 1.0 / 30.0;
 /// A slider row: a button (mute) on the left, the track, the value.
 #[derive(Debug, Clone)]
 pub struct Slider {
-    pub id: SliderId,
+    pub kind: SliderId,
     pub button: Rect,
     pub track: Rect,
     pub label: Rect,
@@ -42,9 +42,9 @@ impl Slider {
     }
 
     /// The value under the pointer, snapping to 100 when boosting is possible.
-    fn value_at(&self, x: f64) -> u32 {
-        let v = ((x - self.track.x) / self.track.w).clamp(0.0, 1.0) * self.max as f64;
-        if self.max > 100 && (v - 100.0).abs() < SNAP { 100 } else { v.round() as u32 }
+    fn value_at(&self, pointer_x: f64) -> u32 {
+        let value = ((pointer_x - self.track.x) / self.track.w).clamp(0.0, 1.0) * self.max as f64;
+        if self.max > 100 && (value - 100.0).abs() < SNAP { 100 } else { value.round() as u32 }
     }
 }
 
@@ -86,9 +86,9 @@ pub struct Controls {
 
 impl Tileception {
     /// The controls block with its top left at (x, y).
-    pub fn controls_layout(&self, x: f64, y: f64, w: f64) -> Controls {
+    pub fn controls_layout(&self, left: f64, top: f64, width: f64) -> Controls {
         if !self.shell().media() {
-            let none = Rect::new(x, y, w, 0.0);
+            let none = Rect::new(left, top, width, 0.0);
             return Controls {
                 rect: none,
                 sound: none,
@@ -101,12 +101,12 @@ impl Tileception {
                 media: None,
             };
         }
-        let s = &self.media.snapshot;
+        let snapshot = &self.media.snapshot;
         let max = self.config.file.media.max_volume();
-        let inner = Rect::new(x + 12.0, y, w - 24.0, 0.0);
-        let mut cursor = y + 10.0;
+        let inner = Rect::new(left + 12.0, top, width - 24.0, 0.0);
+        let mut cursor = top + 10.0;
         let mut sliders = Vec::new();
-        let row = |id, top: f64, value, max, muted, name: Option<String>| {
+        let row = |kind, top: f64, value, max, muted, name: Option<String>| {
             let button = Rect::new(inner.x, top, ROW, ROW);
             let label = Rect::new(inner.right() - 46.0, top, 46.0, ROW);
             let (start, name) = match name {
@@ -114,19 +114,20 @@ impl Tileception {
                 None => (inner.x + 44.0, None),
             };
             let track = Rect::new(start, top, label.x - 12.0 - start, ROW);
-            Slider { id, button, track, label, value, max, muted, name }
+            Slider { kind, button, track, label, value, max, muted, name }
         };
         // The output's name, or why there is no sound, heads the block.
         let device = Some(Rect::new(inner.x - 4.0, cursor - 3.0, inner.w + 8.0, 24.0));
         cursor += 24.0;
         let mut headings = Vec::new();
         let mut choices = Vec::new();
-        let choosable = s.audio.connected && (s.audio.outputs.len() > 1 || s.audio.inputs.len() > 1);
-        if s.audio.connected {
+        let choosable =
+            snapshot.audio.connected && (snapshot.audio.outputs.len() > 1 || snapshot.audio.inputs.len() > 1);
+        if snapshot.audio.connected {
             if choosable && self.media.devices_open {
                 let lists = [
-                    ("OUTPUT", true, &s.audio.outputs, s.audio.output.as_ref()),
-                    ("MICROPHONE", false, &s.audio.inputs, s.audio.input.as_ref()),
+                    ("OUTPUT", true, &snapshot.audio.outputs, snapshot.audio.output.as_ref()),
+                    ("MICROPHONE", false, &snapshot.audio.inputs, snapshot.audio.input.as_ref()),
                 ];
                 for (title, output, list, current) in lists {
                     if list.is_empty() {
@@ -140,32 +141,32 @@ impl Tileception {
                             output,
                             name: choice.name.clone(),
                             description: choice.description.clone(),
-                            current: current.is_some_and(|d| d.name == choice.name),
+                            current: current.is_some_and(|selected| selected.name == choice.name),
                         });
                         cursor += 30.0;
                     }
                 }
                 cursor += 6.0;
             }
-            if let Some(output) = &s.audio.output {
+            if let Some(output) = &snapshot.audio.output {
                 sliders.push(row(SliderId::Volume, cursor, output.percent, max, output.muted, None));
                 cursor += ROW + 4.0;
             }
-            if let Some(input) = &s.audio.input {
+            if let Some(input) = &snapshot.audio.input {
                 sliders.push(row(SliderId::Mic, cursor, input.percent, 100, input.muted, None));
                 cursor += ROW + 4.0;
             }
         }
-        if let Some(backlight) = &s.backlight {
+        if let Some(backlight) = &snapshot.backlight {
             sliders.push(row(SliderId::Brightness, cursor, backlight.percent, 100, false, None));
             cursor += ROW + 4.0;
         }
         let mut apps = None;
-        if !s.audio.apps.is_empty() {
+        if !snapshot.audio.apps.is_empty() {
             apps = Some(Rect::new(inner.x, cursor, inner.w, 28.0));
             cursor += 30.0;
             if self.media.apps_open {
-                for app in &s.audio.apps {
+                for app in &snapshot.audio.apps {
                     sliders.push(row(
                         SliderId::App(app.index),
                         cursor,
@@ -179,18 +180,18 @@ impl Tileception {
             }
         }
         // Slider values follow the pointer while dragged, ahead of the sound server.
-        if let Some((id, _, value)) = self.media.drag
-            && let Some(slider) = sliders.iter_mut().find(|s| s.id == id)
+        if let Some((kind, _, value)) = self.media.drag
+            && let Some(slider) = sliders.iter_mut().find(|candidate| candidate.kind == kind)
         {
             slider.value = value;
         }
-        let sound = Rect::new(x, y, w, cursor + 6.0 - y);
+        let sound = Rect::new(left, top, width, cursor + 6.0 - top);
         cursor = sound.bottom();
 
-        let media = s.media.active().map(|_| media_card_layout(x, cursor + 8.0, w));
-        let bottom = media.as_ref().map_or(sound.bottom(), |m| m.rect.bottom());
+        let media = snapshot.media.active().map(|_| media_card_layout(left, cursor + 8.0, width));
+        let bottom = media.as_ref().map_or(sound.bottom(), |card| card.rect.bottom());
         Controls {
-            rect: Rect::new(x, y, w, bottom - y),
+            rect: Rect::new(left, top, width, bottom - top),
             sound,
             device,
             choosable,
@@ -203,49 +204,49 @@ impl Tileception {
     }
 
     /// A press in the panel; returns whether the controls took it.
-    pub fn controls_press(&mut self, controls: &Controls, p: Point) -> bool {
-        if !controls.rect.contains(p) {
+    pub fn controls_press(&mut self, controls: &Controls, point: Point) -> bool {
+        if !controls.rect.contains(point) {
             return false;
         }
-        if controls.choosable && controls.device.is_some_and(|r| r.contains(p)) {
+        if controls.choosable && controls.device.is_some_and(|rect| rect.contains(point)) {
             self.media.devices_open = !self.media.devices_open;
             return true;
         }
-        if let Some(choice) = controls.choices.iter().find(|c| c.rect.contains(p)) {
+        if let Some(choice) = controls.choices.iter().find(|candidate| candidate.rect.contains(point)) {
             if !choice.current {
                 self.media_request(Request::Default { output: choice.output, name: choice.name.clone() });
             }
             return true;
         }
         for slider in &controls.sliders {
-            if slider.button.contains(p) {
-                self.slider_mute(slider.id);
+            if slider.button.contains(point) {
+                self.slider_mute(slider.kind);
                 return true;
             }
-            if slider.grab_area().contains(p) {
-                let value = slider.value_at(p.x);
-                self.media.drag = Some((slider.id, Instant::now(), value));
-                self.slider_set(slider.id, value);
+            if slider.grab_area().contains(point) {
+                let value = slider.value_at(point.x);
+                self.media.drag = Some((slider.kind, Instant::now(), value));
+                self.slider_set(slider.kind, value);
                 return true;
             }
         }
-        if controls.apps.is_some_and(|r| r.contains(p)) {
+        if controls.apps.is_some_and(|rect| rect.contains(point)) {
             self.media.apps_open = !self.media.apps_open;
             return true;
         }
         if let Some(card) = &controls.media {
-            self.media_card_press(card, p);
+            self.media_card_press(card, point);
         }
         true
     }
 
     /// A press on a playback card's buttons.
-    pub fn media_card_press(&mut self, card: &MediaCard, p: Point) {
-        let command = if card.previous.contains(p) {
+    pub fn media_card_press(&mut self, card: &MediaCard, point: Point) {
+        let command = if card.previous.contains(point) {
             Some(PlayerCommand::Previous)
-        } else if card.play.contains(p) {
+        } else if card.play.contains(point) {
             Some(PlayerCommand::PlayPause)
-        } else if card.next.contains(p) {
+        } else if card.next.contains(point) {
             Some(PlayerCommand::Next)
         } else {
             None
@@ -256,36 +257,35 @@ impl Tileception {
     }
 
     /// The pointer moved while a slider is held.
-    pub fn controls_drag(&mut self, x: f64) {
-        let Some((id, sent, _)) = self.media.drag else { return };
+    pub fn controls_drag(&mut self, pointer_x: f64) {
+        let Some((kind, sent, _)) = self.media.drag else { return };
         let Some(controls) = self.panel_media_controls() else { return };
-        let Some(slider) = controls.sliders.iter().find(|s| s.id == id) else { return };
-        let value = slider.value_at(x);
+        let Some(slider) = controls.sliders.iter().find(|candidate| candidate.kind == kind) else { return };
+        let value = slider.value_at(pointer_x);
         let now = Instant::now();
         if now.duration_since(sent).as_secs_f64() >= DRAG_INTERVAL {
-            self.slider_set(id, value);
-            self.media.drag = Some((id, now, value));
+            self.slider_set(kind, value);
+            self.media.drag = Some((kind, now, value));
         } else {
-            self.media.drag = Some((id, sent, value));
+            self.media.drag = Some((kind, sent, value));
         }
     }
 
     /// Lets go of a slider, sending where it ended.
     pub fn controls_release(&mut self) -> bool {
-        let Some((id, _, value)) = self.media.drag.take() else { return false };
-        self.slider_set(id, value);
+        let Some((kind, _, value)) = self.media.drag.take() else { return false };
+        self.slider_set(kind, value);
         true
     }
 
     /// Scrolling over a slider steps it. Returns whether it was over one.
-    pub fn controls_scroll(&mut self, p: Point, amount: f64, discrete: bool) -> bool {
+    pub fn controls_scroll(&mut self, point: Point, amount: f64, discrete: bool) -> bool {
         let Some(controls) = self.panel_media_controls() else { return false };
-        let Some(slider) = controls
-            .sliders
-            .iter()
-            .find(|s| Rect::new(s.button.x, s.button.y, s.label.right() - s.button.x, ROW).contains(p))
-        else {
-            return controls.rect.contains(p);
+        let Some(slider) = controls.sliders.iter().find(|candidate| {
+            Rect::new(candidate.button.x, candidate.button.y, candidate.label.right() - candidate.button.x, ROW)
+                .contains(point)
+        }) else {
+            return controls.rect.contains(point);
         };
         // A wheel notch is a step; on a touchpad, every 24 pixels are.
         self.media.scrolled += if discrete { amount.signum() * 24.0 } else { amount };
@@ -294,10 +294,10 @@ impl Tileception {
             return true;
         }
         self.media.scrolled -= steps * 24.0;
-        let n = steps.abs() as u32;
+        let count = steps.abs() as u32;
         let adjust = if steps < 0.0 { Adjust::Up(None) } else { Adjust::Down(None) };
-        for _ in 0..n {
-            match slider.id {
+        for _ in 0..count {
+            match slider.kind {
                 SliderId::Volume => self.adjust(Level::Volume, adjust),
                 SliderId::Mic => self.adjust(Level::Mic, adjust),
                 SliderId::Brightness => self.adjust(Level::Brightness, adjust),
@@ -312,9 +312,9 @@ impl Tileception {
         true
     }
 
-    fn slider_set(&mut self, id: SliderId, value: u32) {
+    fn slider_set(&mut self, kind: SliderId, value: u32) {
         let max = self.config.file.media.max_volume();
-        let request = match id {
+        let request = match kind {
             SliderId::Volume => Request::Volume { target: Target::Output, change: Change::Set(value), max },
             SliderId::Mic => Request::Volume { target: Target::Input, change: Change::Set(value), max: 100 },
             SliderId::Brightness => Request::Brightness(Change::Set(value)),
@@ -323,8 +323,8 @@ impl Tileception {
         self.media_request(request);
     }
 
-    fn slider_mute(&mut self, id: SliderId) {
-        let target = match id {
+    fn slider_mute(&mut self, kind: SliderId) {
+        let target = match kind {
             SliderId::Volume => Target::Output,
             SliderId::Mic => Target::Input,
             SliderId::Brightness => return,
@@ -334,47 +334,59 @@ impl Tileception {
         self.media_request(Request::Volume { target, change: Change::Mute(Toggle::Flip), max });
     }
 
-    pub fn draw_controls(&self, p: &mut Painter, controls: &Controls, pointer: Point) {
+    pub fn draw_controls(&self, painter: &mut Painter, controls: &Controls, pointer: Point) {
         if controls.rect.h <= 0.0 {
             return;
         }
-        let t = &self.theme;
-        let s = &self.media.snapshot;
-        p.shape(controls.sound, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, t.radius) });
+        let theme = &self.theme;
+        let snapshot = &self.media.snapshot;
+        painter.shape(
+            controls.sound,
+            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface, theme.radius) },
+        );
         if let Some(device) = controls.device {
-            let label = match &s.audio.output {
-                _ if !s.audio.connected => "Sound unavailable: no sound server".to_string(),
+            let label = match &snapshot.audio.output {
+                _ if !snapshot.audio.connected => "Sound unavailable: no sound server".to_string(),
                 Some(output) => output.description.clone(),
                 None => "No audio output".to_string(),
             };
             let hover = controls.choosable && device.contains(pointer);
             if hover {
-                p.fill(device, t.surface_raised, t.radius);
+                painter.fill(device, theme.surface_raised, theme.radius);
             }
             let text = Rect::new(device.x + 4.0, device.y, device.w - 30.0, device.h);
-            p.text(&label, text, Style::new(t.font_size * 0.92, if hover { t.text } else { t.muted }));
+            painter.text(
+                &label,
+                text,
+                Style::new(theme.font_size * 0.92, if hover { theme.text } else { theme.muted }),
+            );
             if controls.choosable {
                 let chevron = if self.media.devices_open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
-                p.glyph(chevron, Rect::new(device.right() - 26.0, device.y, 24.0, device.h), 13, t.muted);
+                painter.glyph(chevron, Rect::new(device.right() - 26.0, device.y, 24.0, device.h), 13, theme.muted);
             }
         }
         for (rect, title) in &controls.headings {
-            p.text(title, *rect, Style::new(t.font_size * 0.85, t.muted).bold());
+            painter.text(title, *rect, Style::new(theme.font_size * 0.85, theme.muted).bold());
         }
         for choice in &controls.choices {
             if choice.rect.contains(pointer) && !choice.current {
-                p.fill(choice.rect, t.surface_raised, t.radius);
+                painter.fill(choice.rect, theme.surface_raised, theme.radius);
             }
             if choice.current {
-                p.glyph(glyph::CHECK, Rect::new(choice.rect.x + 4.0, choice.rect.y, 24.0, choice.rect.h), 14, t.accent);
+                painter.glyph(
+                    glyph::CHECK,
+                    Rect::new(choice.rect.x + 4.0, choice.rect.y, 24.0, choice.rect.h),
+                    14,
+                    theme.accent,
+                );
             }
-            let colour = if choice.current { t.text } else { t.text.alpha(0.8) };
+            let colour = if choice.current { theme.text } else { theme.text.alpha(0.8) };
             let text = Rect::new(choice.rect.x + 32.0, choice.rect.y, choice.rect.w - 36.0, choice.rect.h);
-            p.text(&choice.description, text, Style::new(t.font_size * 0.92, colour));
+            painter.text(&choice.description, text, Style::new(theme.font_size * 0.92, colour));
         }
         for slider in &controls.sliders {
             let hover = slider.button.contains(pointer);
-            let (icon, label) = match slider.id {
+            let (icon, label) = match slider.kind {
                 SliderId::Volume => (volume_glyph(slider.value, slider.muted), None),
                 SliderId::Mic => (if slider.muted { glyph::MIC_OFF } else { glyph::MIC }, None),
                 SliderId::Brightness => (glyph::SUN, None),
@@ -382,73 +394,87 @@ impl Tileception {
                     (if slider.muted { glyph::VOLUME_OFF } else { glyph::VOLUME_LOW }, slider.name.as_ref())
                 }
             };
-            if hover && slider.id != SliderId::Brightness {
-                p.fill(slider.button, t.surface_raised, t.radius);
+            if hover && slider.kind != SliderId::Brightness {
+                painter.fill(slider.button, theme.surface_raised, theme.radius);
             }
-            let app_icon = match slider.id {
-                SliderId::App(index) => {
-                    s.audio.apps.iter().find(|a| a.index == index).and_then(|a| self.stream_icon(a, 20))
-                }
+            let app_icon = match slider.kind {
+                SliderId::App(index) => snapshot
+                    .audio
+                    .apps
+                    .iter()
+                    .find(|stream| stream.index == index)
+                    .and_then(|stream| self.stream_icon(stream, 20)),
                 _ => None,
             };
             match app_icon {
-                Some(image) if !hover => p.image(&image, (slider.button.x + 6.0, slider.button.y + 6.0)),
-                _ => p.glyph(icon, slider.button, 16, if slider.muted { t.muted } else { t.text }),
+                Some(image) if !hover => painter.image(&image, (slider.button.x + 6.0, slider.button.y + 6.0)),
+                _ => painter.glyph(icon, slider.button, 16, if slider.muted { theme.muted } else { theme.text }),
             }
             if let Some((rect, name)) = label {
-                p.text(name, *rect, Style::new(t.font_size * 0.92, if slider.muted { t.muted } else { t.text }));
+                painter.text(
+                    name,
+                    *rect,
+                    Style::new(theme.font_size * 0.92, if slider.muted { theme.muted } else { theme.text }),
+                );
             }
-            let held = self.media.drag.is_some_and(|(id, ..)| id == slider.id);
+            let held = self.media.drag.is_some_and(|(dragged, ..)| dragged == slider.kind);
             let active = held || slider.grab_area().contains(pointer);
-            level_bar(p, slider.track, slider.value, slider.max, slider.muted, Some(active));
-            let (text, colour) = value_label(slider.value, slider.muted, slider.max > 100, t);
-            p.text(&text, slider.label, Style::new(t.font_size * 0.9, colour).bold().align(Align::Centre));
+            level_bar(painter, slider.track, slider.value, slider.max, slider.muted, Some(active));
+            let (text, colour) = value_label(slider.value, slider.muted, slider.max > 100, theme);
+            painter.text(&text, slider.label, Style::new(theme.font_size * 0.9, colour).bold().align(Align::Centre));
         }
         if let Some(row) = controls.apps {
             let hover = row.contains(pointer);
             if hover {
-                p.fill(row, t.surface_raised, t.radius);
+                painter.fill(row, theme.surface_raised, theme.radius);
             }
             let chevron = if self.media.apps_open { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT };
-            p.glyph(chevron, Rect::new(row.x, row.y, ROW, row.h), 14, t.muted);
-            let count = s.audio.apps.len();
+            painter.glyph(chevron, Rect::new(row.x, row.y, ROW, row.h), 14, theme.muted);
+            let count = snapshot.audio.apps.len();
             let label = if count == 1 { "1 program playing".to_string() } else { format!("{count} programs playing") };
-            p.text(&label, Rect::new(row.x + 36.0, row.y, row.w - 40.0, row.h), Style::new(t.font_size * 0.9, t.muted));
+            painter.text(
+                &label,
+                Rect::new(row.x + 36.0, row.y, row.w - 40.0, row.h),
+                Style::new(theme.font_size * 0.9, theme.muted),
+            );
         }
-        if let (Some(card), Some(player)) = (&controls.media, s.media.active()) {
-            self.draw_media_card(p, card, player, pointer);
+        if let (Some(card), Some(player)) = (&controls.media, snapshot.media.active()) {
+            self.draw_media_card(painter, card, player, pointer);
         }
     }
 
-    pub fn draw_media_card(&self, p: &mut Painter, card: &MediaCard, player: &Player, pointer: Point) {
-        let t = &self.theme;
-        p.shape(card.rect, Shape { border_width: 1.0, border: t.border, ..Shape::filled(t.surface, t.radius) });
-        self.draw_art(p, card.art, player);
+    pub fn draw_media_card(&self, painter: &mut Painter, card: &MediaCard, player: &Player, pointer: Point) {
+        let theme = &self.theme;
+        painter.shape(
+            card.rect,
+            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface, theme.radius) },
+        );
+        self.draw_art(painter, card.art, player);
         let title = if player.title.is_empty() { player.identity.as_str() } else { player.title.as_str() };
-        p.text(title, card.title, Style::new(t.font_size, t.text).bold());
+        painter.text(title, card.title, Style::new(theme.font_size, theme.text).bold());
         if !player.artist.is_empty() {
-            p.text(&player.artist, card.artist, Style::new(t.font_size * 0.9, t.muted));
+            painter.text(&player.artist, card.artist, Style::new(theme.font_size * 0.9, theme.muted));
         }
-        let button = |p: &mut Painter, rect: Rect, g: &'static str, enabled: bool, primary: bool| {
+        let button = |painter: &mut Painter, rect: Rect, icon: &'static str, enabled: bool, primary: bool| {
             let hover = enabled && rect.contains(pointer);
             if primary {
-                p.shape(
+                painter.shape(
                     rect,
-                    Shape { radius: rect.h as f32 / 2.0, fill: (t.accent, t.accent_end), ..Default::default() },
+                    Shape { radius: rect.h as f32 / 2.0, fill: (theme.accent, theme.accent_end), ..Default::default() },
                 );
-                p.glyph(g, rect, 14, t.on_accent);
+                painter.glyph(icon, rect, 14, theme.on_accent);
                 return;
             }
             if hover {
-                p.fill(rect, t.surface_raised, rect.h as f32 / 2.0);
+                painter.fill(rect, theme.surface_raised, rect.h as f32 / 2.0);
             }
-            p.glyph(g, rect, 15, if enabled { t.text } else { t.muted.alpha(0.5) });
+            painter.glyph(icon, rect, 15, if enabled { theme.text } else { theme.muted.alpha(0.5) });
         };
-        button(p, card.previous, glyph::PREVIOUS, player.can_previous, false);
+        button(painter, card.previous, glyph::PREVIOUS, player.can_previous, false);
         let playing = player.status == Status::Playing;
         let play_glyph = if playing { glyph::PAUSE } else { glyph::PLAY };
-        button(p, card.play, play_glyph, player.can_pause || player.can_play, true);
-        button(p, card.next, glyph::NEXT, player.can_next, false);
+        button(painter, card.play, play_glyph, player.can_pause || player.can_play, true);
+        button(painter, card.next, glyph::NEXT, player.can_next, false);
 
         let now = Instant::now();
         let position = player.position(now);
@@ -456,24 +482,24 @@ impl Tileception {
             Some(length) => format!("{} / {}  ·  {}", clock(position), clock(length), player.identity),
             None => player.identity.clone(),
         };
-        p.text(&detail, card.player, Style::new(t.font_size * 0.85, t.muted));
+        painter.text(&detail, card.player, Style::new(theme.font_size * 0.85, theme.muted));
         if let Some(length) = player.length {
             let share = (position.as_secs_f64() / length.as_secs_f64().max(1.0)).clamp(0.0, 1.0);
-            p.fill(card.progress, t.border, 1.5);
+            painter.fill(card.progress, theme.border, 1.5);
             let done = Rect::new(card.progress.x, card.progress.y, (card.progress.w * share).max(3.0), card.progress.h);
-            p.shape(done, Shape { radius: 1.5, fill: (t.accent, t.accent_end), ..Default::default() });
+            painter.shape(done, Shape { radius: 1.5, fill: (theme.accent, theme.accent_end), ..Default::default() });
         }
     }
 
     /// Cover art, or the player's icon, or a note.
-    pub fn draw_art(&self, p: &mut Painter, rect: Rect, player: &Player) {
-        let t = &self.theme;
+    pub fn draw_art(&self, painter: &mut Painter, rect: Rect, player: &Player) {
+        let theme = &self.theme;
         let size = rect.w as u32;
         if let Some(art) = player.art.as_deref().and_then(|path| self.cover_art(path, size)) {
-            p.image(&art, (rect.x, rect.y));
+            painter.image(&art, (rect.x, rect.y));
             return;
         }
-        p.fill(rect, t.surface_raised, t.radius);
+        painter.fill(rect, theme.surface_raised, theme.radius);
         let icon_size = size / 2;
         let icon = player
             .desktop_entry
@@ -482,10 +508,10 @@ impl Tileception {
             .or_else(|| self.launcher.app_icon(&player.identity.to_lowercase(), icon_size));
         match icon {
             Some(icon) => {
-                let at = rect.x + (rect.w - icon_size as f64) / 2.0;
-                p.image(&icon, (at, rect.y + (rect.h - icon_size as f64) / 2.0));
+                let icon_x = rect.x + (rect.w - icon_size as f64) / 2.0;
+                painter.image(&icon, (icon_x, rect.y + (rect.h - icon_size as f64) / 2.0));
             }
-            None => p.glyph(glyph::MUSIC, rect, icon_size.min(28), t.muted),
+            None => painter.glyph(glyph::MUSIC, rect, icon_size.min(28), theme.muted),
         }
     }
 
@@ -529,14 +555,14 @@ fn load_cover(path: &std::path::Path, size: u32, radius: f32) -> Option<MemoryRe
     }
     let image = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
     let mut image = image.resize_to_fill(size, size, image::imageops::FilterType::Triangle).to_rgba8();
-    let r = f64::from(radius);
+    let corner = f64::from(radius);
     let edge = f64::from(size);
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
+    for (column, row, pixel) in image.enumerate_pixels_mut() {
         // Distance outside the rounded corner, softened over one pixel.
-        let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-        let cx = px.clamp(r, edge - r);
-        let cy = py.clamp(r, edge - r);
-        let outside = ((px - cx).hypot(py - cy) - r + 0.5).clamp(0.0, 1.0);
+        let (pixel_x, pixel_y) = (f64::from(column) + 0.5, f64::from(row) + 0.5);
+        let nearest_x = pixel_x.clamp(corner, edge - corner);
+        let nearest_y = pixel_y.clamp(corner, edge - corner);
+        let outside = ((pixel_x - nearest_x).hypot(pixel_y - nearest_y) - corner + 0.5).clamp(0.0, 1.0);
         let alpha = f64::from(pixel.0[3]) / 255.0 * (1.0 - outside);
         for channel in &mut pixel.0[..3] {
             *channel = (f64::from(*channel) * alpha).round() as u8;
@@ -554,8 +580,8 @@ fn load_cover(path: &std::path::Path, size: u32, radius: f32) -> Option<MemoryRe
 }
 
 /// A playback card with its top left at (x, y).
-pub fn media_card_layout(x: f64, y: f64, w: f64) -> MediaCard {
-    let rect = Rect::new(x, y, w, 100.0);
+pub fn media_card_layout(left: f64, top: f64, width: f64) -> MediaCard {
+    let rect = Rect::new(left, top, width, 100.0);
     let art = Rect::new(rect.x + 12.0, rect.y + 12.0, 64.0, 64.0);
     let text_x = art.right() + 12.0;
     let text_w = rect.right() - 12.0 - text_x;
@@ -588,75 +614,76 @@ pub fn value_label(
     value: u32,
     muted: bool,
     boostable: bool,
-    t: &crate::theme::Theme,
+    theme: &crate::theme::Theme,
 ) -> (String, crate::theme::Colour) {
     if muted {
-        ("Muted".into(), t.muted)
+        ("Muted".into(), theme.muted)
     } else if boostable && value > 100 {
-        (format!("{value}%"), t.warning)
+        (format!("{value}%"), theme.warning)
     } else {
-        (format!("{value}%"), t.text)
+        (format!("{value}%"), theme.text)
     }
 }
 
 /// A level as a bar: the accent up to 100%, the warning colour past it with a
 /// mark at 100%, and a knob when `knob` is given (larger while held).
-pub fn level_bar(p: &mut Painter, area: Rect, value: u32, max: u32, muted: bool, knob: Option<bool>) {
-    let t = p.theme();
+pub fn level_bar(painter: &mut Painter, area: Rect, value: u32, max: u32, muted: bool, knob: Option<bool>) {
+    let theme = painter.theme();
     let max = max.max(1) as f64;
     let bar = Rect::new(area.x, area.y + area.h / 2.0 - 2.0, area.w, 4.0);
-    p.fill(bar, t.border, 2.0);
-    let x_of = |v: f64| bar.x + bar.w * (v / max).clamp(0.0, 1.0);
+    painter.fill(bar, theme.border, 2.0);
+    let x_of = |level: f64| bar.x + bar.w * (level / max).clamp(0.0, 1.0);
     if max > 100.0 {
         // The unused boost range stays visible before volume reaches it.
-        let colour = if muted { t.muted.alpha(0.2) } else { t.warning.alpha(0.3) };
-        p.fill(Rect::new(x_of(100.0), bar.y, bar.right() - x_of(100.0), bar.h), colour, 2.0);
+        let colour = if muted { theme.muted.alpha(0.2) } else { theme.warning.alpha(0.3) };
+        painter.fill(Rect::new(x_of(100.0), bar.y, bar.right() - x_of(100.0), bar.h), colour, 2.0);
     }
     let value = value as f64;
     let normal = value.min(100.0);
-    let (a, b) = if muted { (t.muted.alpha(0.6), t.muted.alpha(0.6)) } else { (t.accent, t.accent_end) };
+    let (start, end) =
+        if muted { (theme.muted.alpha(0.6), theme.muted.alpha(0.6)) } else { (theme.accent, theme.accent_end) };
     if normal > 0.0 {
-        p.shape(
+        painter.shape(
             Rect::new(bar.x, bar.y, (x_of(normal) - bar.x).max(4.0), bar.h),
-            Shape { radius: 2.0, fill: (a, b), ..Default::default() },
+            Shape { radius: 2.0, fill: (start, end), ..Default::default() },
         );
     }
     if value > 100.0 {
-        let colour = if muted { t.muted.alpha(0.6) } else { t.warning };
-        p.fill(Rect::new(x_of(100.0) - 2.0, bar.y, x_of(value) - x_of(100.0) + 2.0, bar.h), colour, 2.0);
+        let colour = if muted { theme.muted.alpha(0.6) } else { theme.warning };
+        painter.fill(Rect::new(x_of(100.0) - 2.0, bar.y, x_of(value) - x_of(100.0) + 2.0, bar.h), colour, 2.0);
     }
     if max > 100.0 {
         // Where boosting starts.
-        p.fill(Rect::new(x_of(100.0) - 1.0, bar.y - 5.0, 2.0, bar.h + 10.0), t.text.alpha(0.8), 1.0);
+        painter.fill(Rect::new(x_of(100.0) - 1.0, bar.y - 5.0, 2.0, bar.h + 10.0), theme.text.alpha(0.8), 1.0);
     }
     if let Some(held) = knob {
-        let r = if held { 8.0 } else { 6.0 };
+        let radius = if held { 8.0 } else { 6.0 };
         let centre = (x_of(value), bar.y + bar.h / 2.0);
         let colour = if muted {
-            t.muted
+            theme.muted
         } else if value > 100.0 {
-            t.warning
+            theme.warning
         } else {
-            t.text
+            theme.text
         };
-        p.shape(
-            Rect::new(centre.0 - r, centre.1 - r, r * 2.0, r * 2.0),
+        painter.shape(
+            Rect::new(centre.0 - radius, centre.1 - radius, radius * 2.0, radius * 2.0),
             Shape {
                 glow_radius: if held { 8.0 } else { 0.0 },
-                glow: t.accent.alpha(0.35),
-                ..Shape::filled(colour, r as f32)
+                glow: theme.accent.alpha(0.35),
+                ..Shape::filled(colour, radius as f32)
             },
         );
     }
 }
 
 /// 3:07, or 1:02:03 for long tracks.
-fn clock(d: std::time::Duration) -> String {
-    let s = d.as_secs();
-    if s >= 3600 {
-        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+fn clock(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds >= 3600 {
+        format!("{}:{:02}:{:02}", seconds / 3600, seconds / 60 % 60, seconds % 60)
     } else {
-        format!("{}:{:02}", s / 60, s % 60)
+        format!("{}:{:02}", seconds / 60, seconds % 60)
     }
 }
 
@@ -666,7 +693,7 @@ mod tests {
 
     fn slider(max: u32) -> Slider {
         Slider {
-            id: SliderId::Volume,
+            kind: SliderId::Volume,
             button: Rect::new(0.0, 0.0, 32.0, 32.0),
             track: Rect::new(100.0, 0.0, 150.0, 32.0),
             label: Rect::new(260.0, 0.0, 46.0, 32.0),
@@ -679,14 +706,14 @@ mod tests {
 
     #[test]
     fn slider_values_follow_the_pointer() {
-        let s = slider(150);
-        assert_eq!(s.value_at(90.0), 0);
-        assert_eq!(s.value_at(175.0), 75);
-        assert_eq!(s.value_at(300.0), 150);
+        let volume = slider(150);
+        assert_eq!(volume.value_at(90.0), 0);
+        assert_eq!(volume.value_at(175.0), 75);
+        assert_eq!(volume.value_at(300.0), 150);
         // Close to 100% lands on it.
-        assert_eq!(s.value_at(100.0 + 102.0), 100);
-        assert_eq!(s.value_at(100.0 + 98.0), 100);
-        assert_eq!(s.value_at(100.0 + 105.0), 105);
+        assert_eq!(volume.value_at(100.0 + 102.0), 100);
+        assert_eq!(volume.value_at(100.0 + 98.0), 100);
+        assert_eq!(volume.value_at(100.0 + 105.0), 105);
         // Without boosting there is nothing to snap to.
         assert_eq!(slider(100).value_at(100.0 + 148.5), 99);
     }

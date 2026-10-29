@@ -54,7 +54,7 @@ impl WlrLayerShellHandler for Tileception {
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         let Some(output) = self.output.clone() else { return };
         let mut map = layer_map_for_output(&output);
-        let layer = map.layers().find(|l| l.layer_surface() == &surface).cloned();
+        let layer = map.layers().find(|layer| layer.layer_surface() == &surface).cloned();
         if let Some(layer) = layer {
             map.unmap_layer(&layer);
         }
@@ -84,7 +84,7 @@ impl Tileception {
             states
                 .data_map
                 .get::<LayerSurfaceData>()
-                .and_then(|d| d.lock().ok().map(|d| d.initial_configure_sent))
+                .and_then(|data| data.lock().ok().map(|data| data.initial_configure_sent))
                 .unwrap_or(true)
         });
         if !initial_sent {
@@ -140,8 +140,8 @@ impl Tileception {
 
     /// Whether an overlay layer surface (slurp, a launcher) takes the pointer
     /// here, ahead of Tileception's own panels.
-    pub fn overlay_under(&self, p: tileception_core::Point) -> bool {
-        self.layer_surface_under((p.x, p.y).into(), &[Layer::Overlay]).is_some()
+    pub fn overlay_under(&self, point: tileception_core::Point) -> bool {
+        self.layer_surface_under((point.x, point.y).into(), &[Layer::Overlay]).is_some()
     }
 
     /// The layer surface under a point, among the given kinds.
@@ -155,8 +155,8 @@ impl Tileception {
         for kind in layers {
             if let Some(layer) = map.layer_under(*kind, pos) {
                 let geo = map.layer_geometry(layer)?;
-                if let Some((s, loc)) = layer.surface_under(pos - geo.loc.to_f64(), WindowSurfaceType::ALL) {
-                    return Some((s, (loc + geo.loc).to_f64()));
+                if let Some((surface, location)) = layer.surface_under(pos - geo.loc.to_f64(), WindowSurfaceType::ALL) {
+                    return Some((surface, (location + geo.loc).to_f64()));
                 }
             }
         }
@@ -182,7 +182,7 @@ impl Tileception {
             .lock_surface()
             .cloned()
             .into_iter()
-            .chain(self.x11_overlays.iter().filter_map(|o| o.wl_surface()))
+            .chain(self.x11_overlays.iter().filter_map(|overlay| overlay.wl_surface()))
             .chain(cursor);
         for surface in extra {
             smithay::desktop::utils::send_frames_surface_tree(
