@@ -94,8 +94,38 @@ the keyboard only once its first configure is sent.)
 
 ### Next
 
-- More monitors: a layout per screen, moving windows between them. Comes first
-  once Robin can test it on a second screen.
+#### Multiple screens
+
+**In progress, 2026-10-29.** Build local multi-screen support before handoff;
+Robin has connected a second monitor through the Intel GPU and enabled it in
+BIOS. Multi-GPU scanout still needs hardware verification. Each output has
+its own tree, camera, saved views, minimized windows and fullscreen state.
+Bindings act on the active screen and its focused window. Handoff will use
+the same targeting semantics for its active machine and screen.
+
+- [ ] Drive connected outputs across GPUs, with scanout and buffer lifetimes
+  tracked per device; retain the single-output nested backend. Secondary GPUs
+  use CPU frame copies from the primary renderer for driver compatibility.
+- [ ] Pointer crossing activates the destination screen; desktop shortcuts
+  target it. Add explicit output focus and window-transfer commands.
+- [ ] Move windows by command and compositor drag. On unplug, move windows
+  (including minimized windows) to a surviving screen; preserve clients when
+  the last screen disappears.
+- [ ] Per-output scale and logical positions in `[outputs]`, automatic horizontal
+  arrangement otherwise; route commits, popups, layers and capture to their owner.
+- [ ] Lock every output. The built-in lock UI follows the active screen; other
+  outputs remain black. External lockers can create one surface per output.
+- [ ] Verify using multiple headless outputs and existing checks, without adding
+  tests or driving the live session. Hardware hotplug, mixed refresh rates and
+  mixed scales still need verification with the second monitor.
+
+Log:
+
+- 2026-10-29: Prioritized local outputs before network handoff. Implementation
+  started with independent output contexts and active-screen input routing.
+- 2026-10-29: Added per-GPU discovery, connector scans, page-flip routing and
+  scanout, using frame copies for secondary GPUs. Build and Clippy pass;
+  physical NVIDIA/Intel output verification remains pending.
 
 #### Login screen
 
@@ -193,23 +223,67 @@ Decisions:
 - Discovery through mDNS on the LAN, with optional fixed addresses in the
   config for networks that block it.
 - The pointer crosses at screen edges, onto the machine arranged on that side.
+- On authenticated discovery, both machines show a dismissible popup naming the
+  other machine. Each user drags it to any edge of a particular screen; edges
+  are independent and need not be opposite. Connect only after both choose.
+  Dismissal or timeout on either side cancels the attempt. Do not persist the
+  arrangement; each new connection repeats this flow. Suppress repeated prompts
+  after cancellation until an explicit retry.
+- Desktop bindings act on the active machine, not necessarily the machine with
+  the physical keyboard. Within it, they target the active screen and focused
+  window, exactly as with multiple local monitors. A fixed return-home shortcut
+  is always intercepted by the machine supplying input.
+- Local and forwarded input are both accepted; neither requires an exclusive
+  controller mode. Normal use assumes only one is active at a time. Track each
+  source's held keys and buttons so disconnecting one cannot leave them stuck
+  or release another source's input.
 - The clipboard is shared lazily: a copy announces its MIME types, and the
   content goes over only when it is pasted on the other machine.
-- Windows move by streaming: the app keeps running on its own machine and its
-  surface is forwarded to the other, as waypipe does.
+- Window handoff uses compositor-managed streaming: an already-open app stays
+  connected to its owning Tileception compositor, which renders its window for
+  an interactive tile on the destination. Input and resize requests travel back
+  to the owner. This does not require launching apps through a Wayland proxy.
+- On disconnect, the app survives on its owner and the destination shows an
+  unavailable tile. The owner can reclaim the window immediately; reconnection
+  resumes it only if it has not been reclaimed. There is only one active window
+  destination at a time. A sleeping owner makes the window unavailable.
+- Locking either participant returns forwarded input home and pauses input,
+  window streaming and clipboard transfer between them. Unlocking does not
+  automatically resume sharing; reactivation is explicit.
 
-- [ ] Input: pointer and keyboard to the neighbouring machine and back. While
-  remote, local bindings stay local except a fixed way back.
+- [ ] Input: pointer and keyboard to the neighbouring machine and back, active
+  machine/screen binding targeting, and the fixed return-home shortcut. Release
+  each source's held input and cancel its grabs on transfer, disconnect, lock
+  or suspend; prevent forwarding loops.
 - [ ] Clipboard: text first, then images and other MIME types. Primary
-  selection to decide.
-- [ ] Window handoff: send a window to another machine and take it back; what
-  happens when the network drops or the owning machine sleeps to decide.
+  selection to decide. Define origin/version tracking to prevent echoes,
+  concurrent-copy ordering, transfer limits/timeouts and source disappearance.
+- [ ] Window handoff: send an already-open window to another machine and take
+  it back, including unavailable tiles, owner reclaim and reconnection.
 - [ ] Security: encrypted and authenticated with keys derived from the shared
-  key; input is never forwarded into a locked machine, and locking either side
-  returns input home.
-- [ ] Still open: how machines are arranged (which edge leads where), where
-  the key comes from (generated by `tileception config` or setup), and
+  key, using established authenticated encryption. Apply the lock policy to
+  input, streamed windows and clipboard transfers, including in-flight work.
+- [ ] Implement discovery/edge-selection popups and mutual acceptance. Decide
+  where the key comes from (generated by `tileception config` or setup), and
   dragging files across.
+- [ ] Define stable machine identities, key rotation/revocation, keyboard-layout
+  ownership, edge mapping for unequal monitors and pointer-locked apps, and
+  shortcut routing inside a streamed window. Decide initial support for
+  popups/dialogs, Xwayland, audio and owner-side portal dialogs.
+- [ ] First milestone after local multi-screen support: two machines with
+  authenticated discovery and mutually selected edges, input and text
+  clipboard. Then prove one already-open streamed window with a popup,
+  resizing, locking and disconnect recovery before broadening window support.
+
+Review log:
+
+- 2026-10-29: Chose compositor-managed window streaming; confirmed active
+  machine/screen shortcut semantics shared with multi-monitor work, coexistence
+  of local and forwarded input, pausing sharing on lock with explicit
+  reactivation, and owner reclaim with guarded reconnection after disconnect.
+- 2026-10-29: Edge choices are independent, with no saved arrangements. Both
+  machines must choose through a popup before connecting; dismiss or timeout
+  cancels. Local multi-screen support comes first.
 
 ### Design ideas from LunariaOS
 
