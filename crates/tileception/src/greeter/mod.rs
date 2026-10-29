@@ -15,12 +15,13 @@ mod accounts;
 mod card;
 mod draw;
 mod greetd;
+mod keymap;
 mod layout;
 mod sessions;
 mod settings;
 
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     collections::HashMap,
     path::PathBuf,
     sync::mpsc::TryRecvError,
@@ -97,6 +98,10 @@ pub enum Action {
     Firmware,
     Session(usize),
     Person(usize),
+    /// One of the keymap's own layouts, by position.
+    Layout(usize),
+    /// Any layout xkb knows, by position in the catalogue.
+    Keymap(usize),
 }
 
 #[derive(Debug, Default)]
@@ -153,6 +158,17 @@ pub struct Greeter {
     /// The session is starting: fading out, then the greeter ends.
     leaving: Option<Instant>,
     hostname: String,
+    /// The configured keymap's layouts and variants, and which is active.
+    pub layouts: Vec<(String, String)>,
+    pub layout: usize,
+    /// A layout picked here instead of the configured keymap.
+    keymap: Option<(String, String)>,
+    /// Every layout xkb knows, read when first asked for.
+    catalogue: OnceCell<Vec<keymap::Known>>,
+    /// The administrator's message, for the motd panel.
+    motd: String,
+    /// The running kernel's release, such as "6.17.0-5-generic".
+    kernel: String,
     avatars: RefCell<HashMap<(String, u32), Option<MemoryRenderBuffer>>>,
 }
 
@@ -169,7 +185,11 @@ impl Greeter {
         if file.users_as == settings::UsersAs::Tiles {
             tracing::info!("greeter: users_as = \"tiles\" is not drawn yet; showing tabs");
         }
-        Greeter::with(file, accounts, sessions, memory, memory_path, user)
+        let mut greeter = Greeter::with(file, accounts, sessions, memory, memory_path, user);
+        if greeter.file.panels.columns.iter().flatten().any(|p| *p == Panel::Motd) {
+            greeter.motd = greeter.file.motd.message();
+        }
+        greeter
     }
 
     fn with(
@@ -184,6 +204,8 @@ impl Greeter {
             .or_else(|_| std::fs::read_to_string("/etc/hostname"))
             .map(|h| h.trim().to_string())
             .unwrap_or_default();
+        let kernel =
+            std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|k| k.trim().to_string()).unwrap_or_default();
         let mut greeter = Greeter {
             mode: Mode::Login,
             file,
@@ -217,6 +239,12 @@ impl Greeter {
             notice: None,
             leaving: None,
             hostname,
+            layouts: Vec::new(),
+            layout: 0,
+            keymap: None,
+            catalogue: OnceCell::new(),
+            kernel,
+            motd: String::new(),
             avatars: RefCell::new(HashMap::new()),
         };
         greeter.session_cursor = greeter.session_of_selected();
@@ -233,9 +261,12 @@ impl Greeter {
             icon: None,
             accent: None,
         });
-        let mut file = GreeterFile::default();
-        file.per_user.accent = false;
-        file.per_user.wallpaper = false;
+        let file = GreeterFile {
+            // The administrator decides what a locked screen may show.
+            lock: GreeterFile::load().lock,
+            per_user: settings::PerUser { accent: false, wallpaper: false, ..Default::default() },
+            ..Default::default()
+        };
         let mut greeter = Greeter::with(file, vec![account], Vec::new(), Memory::default(), PathBuf::new(), 0);
         greeter.mode = Mode::Lock { locked_at: draw::local_time("%H:%M"), notifications };
         greeter
@@ -298,6 +329,11 @@ impl Greeter {
         self.sessions.iter().position(|s| &s.id == id)
     }
 
+    /// When `login` last logged in here, in seconds since 1970.
+    fn last_login(&self, login: &str) -> Option<i64> {
+        self.memory.logins.get(login).copied()
+    }
+
     fn choose_session(&mut self, index: usize) {
         if index >= self.sessions.len() {
             return;
@@ -354,8 +390,54 @@ impl Greeter {
             list.push((Action::Person(self.accounts.len()), "Log in as someone not listed".to_string()));
         }
         let query = self.palette.as_ref().map(|p| p.query.to_lowercase()).unwrap_or_default();
-        list.retain(|(_, label)| label.to_lowercase().contains(query.trim()));
+        let active = self.active_layout();
+        for (i, (layout, variant)) in self.layouts.iter().enumerate() {
+            if self.keymap.is_some() || i != self.layout {
+                list.push((Action::Layout(i), format!("Keyboard layout: {}", self.describe(layout, variant))));
+            }
+        }
+        // All of xkb's layouts only once there is something to search for.
+        if !query.trim().is_empty() {
+            for (i, known) in self.known().iter().enumerate() {
+                let pair = (&known.layout, &known.variant);
+                if active != Some(pair) && !self.layouts.iter().any(|(l, v)| (l, v) == pair) {
+                    let short = keymap::short(&known.layout, &known.variant);
+                    list.push((Action::Keymap(i), format!("Keyboard layout: {} ({short})", known.description)));
+                }
+            }
+        }
+        // Every word typed, in any order.
+        list.retain(|(_, label)| {
+            let label = label.to_lowercase();
+            query.split_whitespace().all(|word| label.contains(word))
+        });
         list
+    }
+
+    fn known(&self) -> &[keymap::Known] {
+        self.catalogue.get_or_init(keymap::catalogue)
+    }
+
+    /// The layout and variant typed with now.
+    pub fn active_layout(&self) -> Option<(&String, &String)> {
+        match &self.keymap {
+            Some((layout, variant)) => Some((layout, variant)),
+            None => self.layouts.get(self.layout).map(|(l, v)| (l, v)),
+        }
+    }
+
+    /// "Dutch (nl)", or just "nl" for a layout xkb does not describe.
+    fn describe(&self, layout: &str, variant: &str) -> String {
+        let short = keymap::short(layout, variant);
+        match self.known().iter().find(|k| k.layout == layout && k.variant == variant) {
+            Some(known) => format!("{} ({short})", known.description),
+            None => short,
+        }
+    }
+
+    /// The layout `login` picked here last time, if not the configured one.
+    fn remembered_keymap(&self, login: &str) -> Option<(String, String)> {
+        self.memory.layouts.get(login).map(|text| keymap::recall(text))
     }
 }
 
@@ -407,6 +489,8 @@ impl Tileception {
         self.lock = LockState::Greeter;
         self.apply_greeter_accent();
         self.read_greeter_cards(people, wallpapers);
+        self.greeter_keyboard_layouts();
+        self.greeter_person_keymap();
         self.force_keyboard_focus_sync();
         self.schedule_render();
         Ok(())
@@ -431,7 +515,12 @@ impl Tileception {
         let spawned = std::thread::Builder::new().name("tileception-greeter-cards".into()).spawn(move || {
             let folder = card::folder();
             for (index, login, uid) in people {
-                let found = card::read(&login, uid, &folder);
+                let mut found = card::read(&login, uid, &folder);
+                // A wallpaper but no colours: take them from the picture.
+                if found.accent.is_none() {
+                    let small = found.wallpaper.as_deref().and_then(|file| card::decode(file, 96, 54));
+                    found.accent = small.and_then(|rgba| card::accent_from(&rgba));
+                }
                 let pixels = found
                     .wallpaper
                     .as_deref()
@@ -522,6 +611,7 @@ impl Tileception {
         greeter.failed_at = None;
         greeter.session_cursor = greeter.session_of_selected();
         self.apply_greeter_accent();
+        self.greeter_person_keymap();
     }
 
     fn step_person(&mut self, delta: isize) {
@@ -531,10 +621,13 @@ impl Tileception {
     }
 
     /// A key on the greeter, pressed or let go.
-    pub fn greeter_key(&mut self, sym: u32, mods: Mods, caps_lock: bool, pressed: bool) {
+    /// `layout` is the keymap's active layout, which xkb options such as
+    /// grp:alt_shift_toggle can change too.
+    pub fn greeter_key(&mut self, sym: u32, mods: Mods, caps_lock: bool, layout: u32, pressed: bool) {
         let nested = self.nested;
         let Some(greeter) = self.greeter.as_deref_mut() else { return };
         greeter.caps_lock = caps_lock;
+        greeter.layout = layout as usize;
         // Nested, Alt stands in for Super, which belongs to the outer desktop.
         let super_key = matches!(sym, keysyms::KEY_Super_L | keysyms::KEY_Super_R)
             || (nested && matches!(sym, keysyms::KEY_Alt_L | keysyms::KEY_Alt_R));
@@ -582,8 +675,13 @@ impl Tileception {
             return;
         }
         if mods.ctrl {
-            if matches!(sym, keysyms::KEY_u | keysyms::KEY_U) {
-                greeter.field.clear();
+            match sym {
+                keysyms::KEY_u | keysyms::KEY_U => greeter.field.clear(),
+                keysyms::KEY_space if greeter.layouts.len() > 1 && greeter.keymap.is_none() => {
+                    self.next_keyboard_layout();
+                }
+                keysyms::KEY_space => self.open_layout_picker(),
+                _ => {}
             }
             return;
         }
@@ -645,6 +743,107 @@ impl Tileception {
                 greeter.session_cursor = greeter.session_of_selected();
             }
             greeter.focus = next;
+        }
+    }
+
+    /// The keymap's layouts for the bar and the launcher, and the active one.
+    pub fn greeter_keyboard_layouts(&mut self) {
+        let labels = self.config.file.keyboard.layouts();
+        let active = self.seat.get_keyboard().map_or(0, |keyboard| {
+            keyboard.with_xkb_state(self, |context| context.xkb().lock().map_or(0, |xkb| xkb.active_layout().0))
+        });
+        if let Some(greeter) = self.greeter.as_deref_mut() {
+            greeter.layouts = labels;
+            greeter.layout = active as usize;
+        }
+    }
+
+    /// Switches to the keymap's next layout. Keys reach the greeter while
+    /// the keyboard is busy with them, so the switch waits until it is not.
+    fn next_keyboard_layout(&mut self) {
+        if self.greeter.as_deref().is_none_or(|g| g.layouts.len() < 2) {
+            return;
+        }
+        self.loop_handle.insert_idle(|state| {
+            if let Some(keyboard) = state.seat.get_keyboard() {
+                keyboard.with_xkb_state(state, |mut context| context.cycle_next_layout());
+            }
+            state.greeter_keyboard_layouts();
+            state.schedule_render();
+        });
+    }
+
+    /// The launcher, searching keyboard layouts.
+    fn open_layout_picker(&mut self) {
+        let Some(greeter) = self.greeter.as_deref_mut() else { return };
+        if greeter.busy() {
+            return;
+        }
+        greeter.palette = Some(Palette { query: "layout ".into(), selected: 0, opened: Some(Instant::now()) });
+    }
+
+    /// Types with `picked` instead of the configured keymap, or with the
+    /// configured keymap again (at its layout `group`). Waits until the
+    /// keyboard is not busy with a key.
+    fn set_greeter_keymap(&mut self, picked: Option<(String, String)>, group: Option<usize>) {
+        self.loop_handle.insert_idle(move |state| {
+            let current = state.greeter.as_deref().and_then(|g| g.keymap.clone());
+            if picked != current && !state.load_keymap(picked.as_ref()) {
+                return;
+            }
+            if let (Some(group), Some(keyboard)) = (group, state.seat.get_keyboard()) {
+                keyboard.with_xkb_state(state, |mut context| {
+                    context.set_layout(smithay::input::keyboard::Layout(group as u32));
+                });
+            }
+            if let Some(greeter) = state.greeter.as_deref_mut() {
+                greeter.keymap = picked.clone();
+            }
+            state.greeter_keyboard_layouts();
+            state.schedule_render();
+        });
+    }
+
+    /// Compiles `picked` (layout, variant), or the configured keymap, with the
+    /// configured model and options. Not while the keyboard handles a key.
+    fn load_keymap(&mut self, picked: Option<&(String, String)>) -> bool {
+        let Some(keyboard) = self.seat.get_keyboard() else { return false };
+        let k = &self.config.file.keyboard;
+        let (model, layout, variant, options) = match picked {
+            Some((layout, variant)) => {
+                (k.model.clone().unwrap_or_default(), layout.clone(), variant.clone(), k.options.clone())
+            }
+            None => k.names(),
+        };
+        let xkb = smithay::input::keyboard::XkbConfig {
+            layout: &layout,
+            variant: &variant,
+            model: &model,
+            options,
+            ..Default::default()
+        };
+        if let Err(error) = keyboard.set_xkb_config(self, xkb) {
+            tracing::warn!("greeter: keyboard layout {layout:?} {variant:?} did not compile: {error:?}");
+            return false;
+        }
+        true
+    }
+
+    /// The selected person's own layout, if they picked one here before.
+    fn greeter_person_keymap(&mut self) {
+        let Some(greeter) = self.greeter.as_deref() else { return };
+        let wanted = greeter.selected().and_then(|a| greeter.remembered_keymap(&a.login));
+        if wanted != greeter.keymap {
+            self.set_greeter_keymap(wanted, None);
+        }
+    }
+
+    /// Unlocking: back to the session's keymap if one was picked while locked.
+    pub fn end_greeter_keymap(&mut self) {
+        if self.greeter.as_deref().is_some_and(|g| g.keymap.is_some()) {
+            self.loop_handle.insert_idle(|state| {
+                state.load_keymap(None);
+            });
         }
     }
 
@@ -711,6 +910,17 @@ impl Tileception {
             }
             Action::Person(i) => {
                 self.select_person(i);
+                return;
+            }
+            Action::Layout(i) => {
+                self.set_greeter_keymap(None, Some(i));
+                return;
+            }
+            Action::Keymap(i) => {
+                let picked = greeter.known().get(i).map(|k| (k.layout.clone(), k.variant.clone()));
+                if picked.is_some() {
+                    self.set_greeter_keymap(picked, None);
+                }
                 return;
             }
         };
@@ -895,6 +1105,7 @@ impl Tileception {
             }
             Some(draw::Target::Run(action)) => self.run_greeter_action(action),
             Some(draw::Target::Launcher) => self.toggle_greeter_palette(),
+            Some(draw::Target::Layout) => self.open_layout_picker(),
             Some(draw::Target::Panel(panel)) => {
                 if panel == Panel::Session && greeter.focus != Panel::Session {
                     greeter.session_cursor = greeter.session_of_selected();
@@ -984,7 +1195,13 @@ impl Greeter {
         if !self.other() {
             self.memory.last_user = Some(login.clone());
         }
-        self.memory.sessions.insert(login, session.id.clone());
+        self.memory.sessions.insert(login.clone(), session.id.clone());
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.memory.logins.insert(login.clone(), i64::try_from(now).unwrap_or(0));
+        match &self.keymap {
+            Some((layout, variant)) => self.memory.layouts.insert(login, keymap::remembered(layout, variant)),
+            None => self.memory.layouts.remove(&login),
+        };
         if !self.demo
             && let Err(error) = self.memory.save(&self.memory_path)
         {

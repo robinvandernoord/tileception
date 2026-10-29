@@ -1802,7 +1802,7 @@ impl Tileception {
         }
     }
 
-    fn measure_text(&self, text: &str, style: Style, width: f64) -> (f64, f64) {
+    pub(crate) fn measure_text(&self, text: &str, style: Style, width: f64) -> (f64, f64) {
         let t = &self.theme;
         self.text
             .borrow_mut()

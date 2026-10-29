@@ -131,6 +131,17 @@ impl Keyboard {
         };
         (self.model.clone().unwrap_or_default(), layout, variant, self.options.clone())
     }
+
+    /// Each layout in the keymap with its variant, in xkb's order, such as
+    /// ("us", "") and ("nl", "") for `layout = "us,nl"`.
+    pub fn layouts(&self) -> Vec<(String, String)> {
+        let (_, layout, variant, _) = self.names();
+        let mut variants = variant.split(',');
+        layout
+            .split(',')
+            .map(|layout| (layout.trim().to_string(), variants.next().unwrap_or_default().trim().to_string()))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -456,6 +467,14 @@ mod tests {
         assert_eq!(keymap.key_get_syms_by_level(quote, 0, 2), [dead_acute]);
         let nl = Keyboard { layout: Some("nl".into()), ..Default::default() };
         assert_eq!(names(nl), ("nl".into(), String::new()));
+    }
+
+    #[test]
+    fn layouts_pair_with_variants() {
+        let pair = |l: &str, v: &str| (l.to_string(), v.to_string());
+        assert_eq!(Keyboard::default().layouts(), [pair("us", "altgr-intl")]);
+        let two = Keyboard { layout: Some("us, nl".into()), variant: Some("intl,".into()), ..Default::default() };
+        assert_eq!(two.layouts(), [pair("us", "intl"), pair("nl", "")]);
     }
 
     #[test]

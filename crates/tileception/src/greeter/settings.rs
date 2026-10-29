@@ -33,6 +33,42 @@ pub enum Panel {
     Login,
     Clock,
     Session,
+    /// A message from the administrator; see `[motd]`.
+    Motd,
+}
+
+/// The message-of-the-day panel.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Motd {
+    pub title: String,
+    /// The message itself; blank lines separate paragraphs.
+    pub text: String,
+    /// A file to show instead when `text` is empty, such as /etc/motd.
+    pub file: Option<PathBuf>,
+}
+
+impl Default for Motd {
+    fn default() -> Self {
+        Motd { title: "Message".into(), text: String::new(), file: None }
+    }
+}
+
+impl Motd {
+    /// The message to show: the text, else the file's first few kilobytes.
+    pub fn message(&self) -> String {
+        if !self.text.trim().is_empty() {
+            return self.text.trim().to_string();
+        }
+        let Some(path) = &self.file else { return String::new() };
+        match std::fs::read(path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).trim().to_string(),
+            Err(error) => {
+                tracing::warn!("greeter: motd {}: {error}", path.display());
+                String::new()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +102,22 @@ impl Default for PerUser {
     }
 }
 
+/// What a locked session shows before it is unlocked.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lock {
+    /// The player's controls, with the title hidden.
+    pub show_media: bool,
+    /// How many notifications arrived while locked.
+    pub show_notification_count: bool,
+}
+
+impl Default for Lock {
+    fn default() -> Self {
+        Lock { show_media: true, show_notification_count: true }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GreeterFile {
@@ -83,6 +135,8 @@ pub struct GreeterFile {
     pub state_file: Option<PathBuf>,
     pub panels: Panels,
     pub per_user: PerUser,
+    pub lock: Lock,
+    pub motd: Motd,
     pub theme: ThemeFile,
     /// The same keys as the session's `[keyboard]`; without a layout, the
     /// system's keymap from `/etc/default/keyboard`.
@@ -101,6 +155,8 @@ impl Default for GreeterFile {
             state_file: None,
             panels: Panels::default(),
             per_user: PerUser::default(),
+            lock: Lock::default(),
+            motd: Motd::default(),
             theme: ThemeFile::default(),
             keyboard: Keyboard::default(),
         }
@@ -182,6 +238,11 @@ pub struct Memory {
     pub last_user: Option<String>,
     /// Each person's last session, by login.
     pub sessions: BTreeMap<String, String>,
+    /// When each person last logged in here, in seconds since 1970, by login.
+    pub logins: BTreeMap<String, i64>,
+    /// The keyboard layout each person picked here, such as "nl" or
+    /// "us(altgr-intl)", by login. Absent: the configured keymap.
+    pub layouts: BTreeMap<String, String>,
 }
 
 impl Memory {
@@ -213,13 +274,25 @@ users_as = "tabs"
 clock_format = "%H:%M"
 
 [panels]
-columns = [["login"], ["clock", "session"]]
-ratios = [1.75, 1]
+columns = [["login"], ["clock", "session"], ["motd"]]
+ratios = [1.75, 1, 0.6]
 
 [per_user]
 accent = true
 wallpaper = true
 wallpaper_fallback = "generated"
+
+[lock]
+show_media = true
+show_notification_count = false
+
+[motd]
+title = "Notice"
+text = """
+Backups run at 22:00.
+
+Call 1234 for help.
+"""
 
 [theme]
 accent = "#2bd4a7"
@@ -230,6 +303,9 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         assert_eq!(file.hidden_users, ["backup"]);
         assert_eq!(file.panels.columns[1], [Panel::Clock, Panel::Session]);
         assert_eq!(file.per_user.wallpaper_fallback, WallpaperFallback::Generated);
+        assert!(file.lock.show_media && !file.lock.show_notification_count);
+        assert_eq!(file.panels.columns[2], [Panel::Motd]);
+        assert_eq!(file.motd.message(), "Backups run at 22:00.\n\nCall 1234 for help.");
         assert_eq!(file.theme.wallpaper.as_deref(), Some("/usr/share/backgrounds/tide.jpg"));
     }
 
@@ -244,6 +320,8 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         assert_eq!(file.panels.columns, defaults.panels.columns);
         assert_eq!(file.panels.ratios, defaults.panels.ratios);
         assert_eq!(file.per_user.wallpaper_fallback, defaults.per_user.wallpaper_fallback);
+        assert_eq!(file.lock.show_media, defaults.lock.show_media);
+        assert_eq!(file.lock.show_notification_count, defaults.lock.show_notification_count);
     }
 
     #[test]
@@ -269,6 +347,7 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         let path = std::env::temp_dir().join(format!("tileception-greeter-state-{}.toml", std::process::id()));
         let mut memory = Memory { last_user: Some("sam".into()), ..Default::default() };
         memory.sessions.insert("sam".into(), "gnome".into());
+        memory.logins.insert("sam".into(), 1_790_000_000);
         memory.save(&path).expect("saves");
         assert_eq!(Memory::load(&path), memory);
         let _ = std::fs::remove_file(&path);

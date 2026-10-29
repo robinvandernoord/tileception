@@ -195,7 +195,13 @@ impl Tileception {
                 }
                 // The built-in lock screen and the greeter are the same tiles.
                 if state.draws_lock_screen() {
-                    state.greeter_key(sym, Mods::from_state(mods), mods.caps_lock, pressed);
+                    state.greeter_key(
+                        sym,
+                        Mods::from_state(mods),
+                        mods.caps_lock,
+                        mods.serialized.layout_effective,
+                        pressed,
+                    );
                     return FilterResult::Intercept(Vec::new());
                 }
                 return FilterResult::Forward;

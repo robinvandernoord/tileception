@@ -604,7 +604,7 @@ function sessionFace() {
     <span class="ic">${i === 0 ? I('tiles') : ''}</span>${s}${i === u.session && !u.other ? '<small>last used</small>' : ''}</div>`).join('');
   return `<div class="title">Session</div><div class="rows">${rows}</div>
     <div class="powerrow"><span class="pbtn" data-act="suspend" title="Suspend">${I('moon')}</span><span class="pbtn" data-act="restart" title="Restart">${I('restart')}</span>
-    <span class="pbtn" data-act="shutdown" title="Shut down">${I('power')}</span><small>more in the launcher</small></div>`;
+    <span class="pbtn" data-act="shutdown" title="Shut down">${I('power')}</span><small><span class="k">Super</span> more actions</small></div>`;
 }
 function bar() {
   const c = clock();

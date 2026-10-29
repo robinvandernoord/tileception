@@ -80,6 +80,7 @@ impl Tileception {
         if self.is_locked() && !matches!(self.lock, LockState::Greeter) {
             tracing::warn!("session unlocked by command");
             self.lock = LockState::Unlocked;
+            self.end_greeter_keymap();
             self.greeter = None;
             self.force_keyboard_focus_sync();
         }

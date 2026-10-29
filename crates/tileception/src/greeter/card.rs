@@ -237,9 +237,128 @@ pub fn decode(file: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(filled.into_raw())
 }
 
+/// An accent pair from a wallpaper (RGBA bytes), for someone who shared a
+/// wallpaper but no colours: its most common vivid hue and the next one at
+/// least 60 degrees round, brightened until dark text reads on them. None for
+/// a grey or dull picture, which then gets the colours made from the login.
+pub fn accent_from(rgba: &[u8]) -> Option<(Colour, Colour)> {
+    const BINS: usize = 12;
+    let mut weight = [0.0_f32; BINS];
+    let mut sum = [[0.0_f32; 3]; BINS];
+    for pixel in rgba.as_chunks::<4>().0 {
+        let rgb = [pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.0);
+        let (hue, saturation, value) = hsv(rgb);
+        if saturation < 0.35 || value < 0.3 {
+            continue;
+        }
+        let bin = ((hue / 360.0 * BINS as f32) as usize).min(BINS - 1);
+        let w = saturation * value;
+        weight[bin] += w;
+        for (total, channel) in sum[bin].iter_mut().zip(rgb) {
+            *total += channel * w;
+        }
+    }
+    let pixels = (rgba.len() / 4).max(1) as f32;
+    let by_weight = |&a: &usize, &b: &usize| weight[a].total_cmp(&weight[b]);
+    let first = (0..BINS).max_by(by_weight).filter(|&b| weight[b] / pixels > 0.02)?;
+    // Two bins (60 degrees) or more away on the colour wheel.
+    let apart = |b: usize| (b + BINS - first) % BINS >= 2 && (first + BINS - b) % BINS >= 2;
+    let second = (0..BINS).filter(|&b| apart(b)).max_by(by_weight).filter(|&b| weight[b] / pixels > 0.01);
+    let colour = |bin: usize| readable(sum[bin].map(|c| c / weight[bin]));
+    let start = colour(first)?;
+    let end = match second {
+        Some(bin) => colour(bin)?,
+        // One hue only: the same, turned 40 degrees.
+        None => {
+            let (hue, saturation, value) = hsv(sum[first].map(|c| c / weight[first]));
+            readable(rgb_of((hue + 40.0) % 360.0, saturation, value))?
+        }
+    };
+    Some((start, end))
+}
+
+/// `rgb` made vivid and light enough for dark text on it (4.5:1 against the
+/// theme's near-black), or None if even lightened it is not.
+fn readable(rgb: [f32; 3]) -> Option<Colour> {
+    let (hue, saturation, value) = hsv(rgb);
+    let mut rgb = rgb_of(hue, saturation.clamp(0.45, 0.85), value.max(0.85));
+    for _ in 0..5 {
+        if (luminance(rgb) + 0.05) / 0.056 >= 4.5 {
+            return Some(Colour([rgb[0], rgb[1], rgb[2], 1.0]));
+        }
+        rgb = rgb.map(|c| c + (1.0 - c) * 0.15);
+    }
+    None
+}
+
+/// WCAG relative luminance of sRGB.
+fn luminance(rgb: [f32; 3]) -> f32 {
+    let linear = rgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
+    0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+}
+
+/// Hue in degrees, saturation and value, each of the latter 0 to 1.
+fn hsv([r, g, b]: [f32; 3]) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let delta = max - r.min(g).min(b);
+    let hue = if delta <= f32::EPSILON {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / delta).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    (hue, if max <= f32::EPSILON { 0.0 } else { delta / max }, max)
+}
+
+fn rgb_of(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
+    let c = value * saturation;
+    let x = c * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match (hue / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [r, g, b].map(|channel| channel + value - c)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn picture(colours: &[([u8; 3], usize)]) -> Vec<u8> {
+        colours.iter().flat_map(|&(rgb, n)| std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], n)).flatten().collect()
+    }
+
+    #[test]
+    fn accents_come_from_the_wallpapers_strongest_hues() {
+        // Mostly sunset orange, some purple, and a lot of dark sky.
+        let rgba = picture(&[([230, 120, 40], 500), ([130, 70, 200], 300), ([20, 22, 30], 1200)]);
+        let (start, end) = accent_from(&rgba).expect("an accent");
+        let (start_hue, _, _) = hsv([start.0[0], start.0[1], start.0[2]]);
+        let (end_hue, _, _) = hsv([end.0[0], end.0[1], end.0[2]]);
+        assert!((15.0..45.0).contains(&start_hue), "orange first, got {start_hue}");
+        assert!((250.0..290.0).contains(&end_hue), "purple second, got {end_hue}");
+        for colour in [start, end] {
+            assert!((luminance([colour.0[0], colour.0[1], colour.0[2]]) + 0.05) / 0.056 >= 4.5);
+        }
+    }
+
+    #[test]
+    fn grey_wallpapers_give_no_accent() {
+        assert_eq!(accent_from(&picture(&[([128, 128, 128], 1000), ([10, 10, 10], 1000)])), None);
+    }
+
+    #[test]
+    fn one_hue_is_turned_for_the_second_colour() {
+        let (start, end) = accent_from(&picture(&[([40, 160, 90], 1000)])).expect("an accent");
+        assert_ne!(start, end);
+    }
 
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tileception-cards-{name}-{}", std::process::id()));

@@ -94,6 +94,8 @@ impl Tileception {
         }
         self.greeter = Some(Box::new(screen));
         self.lock = LockState::BuiltIn;
+        // Locking can start from a key binding, while the keyboard is busy.
+        self.loop_handle.insert_idle(|state| state.greeter_keyboard_layouts());
         self.power_menu = None;
         self.launcher.open = false;
         self.notifications.open = false;
@@ -143,6 +145,7 @@ impl Tileception {
         match screen.unlock_result(&result) {
             None => {
                 tracing::info!("session unlocked");
+                self.end_greeter_keymap();
                 self.greeter = None;
                 self.lock = LockState::Unlocked;
                 self.force_keyboard_focus_sync();

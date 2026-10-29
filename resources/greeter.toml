@@ -25,7 +25,9 @@ xsession_wrapper = "startx /usr/bin/env"
 
 [panels]
 # Columns of panels, each top to bottom, sized by ratio. On a portrait screen
-# the columns become rows. Panels: login (required), clock, session.
+# the columns become rows. Panels: login (required), clock, session, motd.
+# For example, a message under the clock and sessions:
+# columns = [["login"], ["clock", "session", "motd"]]
 columns = [["login"], ["clock", "session"]]
 ratios = [1.75, 1]
 
@@ -39,6 +41,21 @@ wallpaper = true
 # generated (from the accent), system (the [theme] wallpaper) or flat.
 wallpaper_fallback = "generated"
 
+[motd]
+# The motd panel: a message for everyone who logs in here. Blank lines
+# separate paragraphs. With no text, the file is shown instead.
+title = "Message"
+text = ""
+# file = "/etc/motd"
+
+[lock]
+# What a locked Tileception session shows before it is unlocked. Locking
+# happens inside the session, which reads only this table from this file.
+# The player's controls, with the title hidden.
+show_media = true
+# How many notifications arrived while locked, without their text.
+show_notification_count = true
+
 [theme]
 # The same keys as the session's [theme], such as:
 # accent = "#2bd4a7"
@@ -49,5 +66,9 @@ wallpaper_fallback = "generated"
 # The same keys as the session's [keyboard]. Without a layout, the system's
 # keymap from /etc/default/keyboard is used.
 # layout = "nl"
+# Several layouts, switched with Ctrl+Space:
+# layout = "us,nl"
+# Anyone can also pick another layout from the bar (or Ctrl+Space with one
+# layout); the greeter remembers it for them once they log in.
 # variant = ""
 # options = "compose:ralt"
