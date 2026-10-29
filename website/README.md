@@ -11,8 +11,8 @@ website/
     install          the `curl -fsSL https://tileception.space/install | sh` script:
                      asks how to set up, adds apt.tileception.space and installs
                      the package
-    setup            a copy of resources/tileception-setup, which install fetches
-                     to ask its questions first (check.sh keeps them equal)
+    setup            a symlink to resources/tileception-setup, which install
+                     fetches to ask its questions first (deploy uploads the file)
     .htaccess        Apache settings for OVH (HTTPS redirect, types, caching)
   tools/
     check.sh         sanity checks, run in CI

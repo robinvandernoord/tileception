@@ -5,10 +5,12 @@ on:
     branches: [master]
     paths:
       - "website/**"
+      - "resources/tileception-setup"
       - ".github/workflows/website.yml"
   pull_request:
     paths:
       - "website/**"
+      - "resources/tileception-setup"
       - ".github/workflows/website.yml"
   workflow_dispatch:
 
@@ -53,3 +55,5 @@ jobs:
           case $page in *"Tile it."*) ;; *) echo "home page does not look deployed"; exit 1 ;; esac
           script=$(curl -fsS https://tileception.space/install)
           case $script in '#!/bin/sh'*) ;; *) echo "/install is not the shell script"; exit 1 ;; esac
+          setup=$(curl -fsS https://tileception.space/setup)
+          case $setup in '#!/bin/sh'*) ;; *) echo "/setup is not the setup script"; exit 1 ;; esac

@@ -7,7 +7,8 @@
 #   OVH_FTP_PROTOCOL  ftp (default, works on every OVH plan) or sftp (plans with SSH)
 #   OVH_FTP_DIR       remote web root, default www
 #
-# Files on the server that are not in website/public are removed.
+# Files on the server that are not in website/public are removed. Symlinks
+# (setup) are uploaded as the files they point to.
 set -eu
 : "${OVH_FTP_HOST:?set OVH_FTP_HOST}" "${OVH_FTP_USER:?set OVH_FTP_USER}" "${OVH_FTP_PASSWORD:?set OVH_FTP_PASSWORD}"
 proto=${OVH_FTP_PROTOCOL:-ftp}
@@ -26,7 +27,7 @@ set ftp:ssl-allow yes
 set ftp:passive-mode yes
 set ssl:verify-certificate yes
 set sftp:auto-confirm yes
-mirror --reverse --delete --verbose --no-perms --parallel=4 "$src/" "$dir/"
+mirror --reverse --delete --verbose --no-perms --dereference --parallel=4 "$src/" "$dir/"
 bye
 LFTP
 echo "deploy: uploaded $src to $proto://$OVH_FTP_HOST/$dir"

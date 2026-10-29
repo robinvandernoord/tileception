@@ -37,7 +37,10 @@ xml.dom.minidom.parse('sitemap.xml')
 PY
 
 sh -n install
-# The installer fetches setup from the site; it must be the one the packages ship.
-cmp -s setup ../../resources/tileception-setup || fail "setup differs from resources/tileception-setup; copy it over"
+# The installer fetches setup from the site; it must be the script the packages
+# ship, so it is a link to it (deploy.sh uploads the file it points to).
+[ "$(readlink setup)" = ../../resources/tileception-setup ] \
+  || fail "setup must be a symlink to ../../resources/tileception-setup"
+sh -n setup
 if command -v node >/dev/null 2>&1; then node --check assets/zoom.js; fi
 echo "check: ok"
