@@ -36,6 +36,8 @@ pub enum Command {
     Battery,
     /// Lists tray entries; debug entries can be added or replaced by count.
     Tray,
+    /// Prints how much the image caches hold.
+    Caches,
     TrayDebug(Option<usize>),
     /// Slides out the strip of minimized windows for a moment.
     ShowMinimized,
@@ -73,6 +75,7 @@ Inspecting:
                             lock and display-sleep status
   battery                   print the charge and the border colour it gives
   tray                      list visible tray entries and the configured limit
+  caches                    print the image caches' sizes and texture memory
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
@@ -177,6 +180,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
+        "caches" => return Ok(Command::Caches),
         "tray" => {
             return match args.as_slice() {
                 [] => Ok(Command::Tray),
@@ -348,6 +352,7 @@ impl Tileception {
             Command::Media(control) => return self.media_command(control),
             Command::Battery => return Ok(self.battery_status()),
             Command::Tray => return Ok(self.tray_status()),
+            Command::Caches => return Ok(self.cache_status()),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),

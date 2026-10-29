@@ -124,7 +124,20 @@ pub fn compose_text(compose: &mut Option<xkb::compose::State>, sym: u32) -> Opti
         .map(|character| Zeroizing::new(character.to_string()))
 }
 
+/// Entries and texture bytes of a cache of square images, by their size in
+/// physical pixels; missing images take nothing.
+pub fn square_stats<'a>(images: impl Iterator<Item = (u32, Option<&'a MemoryRenderBuffer>)>) -> (usize, usize) {
+    images.fold((0, 0), |(count, bytes), (size, image)| {
+        (count + 1, bytes + image.map_or(0, |_| size as usize * size as usize * 4))
+    })
+}
+
 impl Icons {
+    /// Entries and texture bytes, for `tileception msg caches`.
+    pub fn stats(&self) -> (usize, usize) {
+        square_stats(self.cache.borrow().iter().map(|(key, image)| (key.1, image.as_ref())))
+    }
+
     pub fn set_scale(&self, scale: f64) {
         self.scale.set(scale);
     }
@@ -167,6 +180,11 @@ impl Default for Glyphs {
 type GlyphKey = (&'static str, u32, [u8; 4]);
 
 impl Glyphs {
+    /// Entries and texture bytes, for `tileception msg caches`.
+    pub fn stats(&self) -> (usize, usize) {
+        square_stats(self.cache.borrow().iter().map(|(key, image)| (key.1, image.as_ref())))
+    }
+
     pub fn set_scale(&self, scale: f64) {
         self.scale.set(scale);
     }
@@ -591,5 +609,29 @@ impl Tileception {
         ) {
             push_image(out, renderer, &image.buffer, (rect.x, rect.y + (rect.h - image.height) / 2.0), self.scale);
         }
+    }
+}
+
+impl crate::Tileception {
+    /// `tileception msg caches`: how many images each cache holds and how
+    /// much texture memory they take once drawn.
+    pub fn cache_status(&self) -> String {
+        let (text, rich) = self.text.borrow().stats();
+        let art = square_stats(self.media.art.borrow().iter().map(|(key, image)| (key.1, image.as_ref())));
+        let rows = [
+            ("text", text),
+            ("rich text", rich),
+            ("app icons", self.launcher.icons.stats()),
+            ("line icons", self.glyphs.stats()),
+            ("cover art", art),
+        ];
+        let mib = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+        let mut out = String::new();
+        for (name, (count, bytes)) in rows {
+            out.push_str(&format!("{name:<11} {count:>4} images {:>8.1} MiB\n", mib(bytes)));
+        }
+        let total: usize = rows.iter().map(|(_, (_, bytes))| bytes).sum();
+        out.push_str(&format!("{:<11} {:>4}        {:>8.1} MiB", "total", "", mib(total)));
+        out
     }
 }

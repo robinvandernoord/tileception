@@ -130,6 +130,17 @@ fn cut_spans(spans: &[Span], mut chars: usize) -> Vec<Span> {
 }
 
 impl Text {
+    /// Entries and texture bytes of the plain and rich text caches, for
+    /// `tileception msg caches`.
+    pub fn stats(&self) -> ((usize, usize), (usize, usize)) {
+        let pixels = f64::from(self.scale) * f64::from(self.scale);
+        let bytes = |image: &TextImage| (image.width * image.height * pixels * 4.0) as usize;
+        let sum = |images: &mut dyn Iterator<Item = &TextImage>| {
+            images.fold((0, 0), |(count, total), image| (count + 1, total + bytes(image)))
+        };
+        (sum(&mut self.cache.values()), sum(&mut self.rich.values().map(|rich| &rich.image)))
+    }
+
     /// Drops cached images, for example after the theme changed.
     pub fn clear(&mut self) {
         self.cache.clear();
