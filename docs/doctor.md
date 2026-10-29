@@ -6,9 +6,10 @@ setup and making changes in plain language. Press **Super+/** to open it;
 
 ## Choose an agent and sign in
 
-1. Open Doctor and choose an agent from the ACP Registry.
+1. Open Doctor and choose an agent from the
+   [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) registry.
 2. Follow the sign-in options offered by that agent.
-3. Make a request, such as “Please reduce the gaps between windows to 8 pixels.”
+3. Make a request, such as "Please reduce the gaps between windows to 8 pixels."
 
 The panel shows any missing tools before you select an agent. Depending on its
 distribution, an agent may need Bun (`bunx`) or Node.js (`npx`), uv (`uvx`),
@@ -25,20 +26,15 @@ button or **Ctrl+C** to interrupt it.
 
 ## Context
 
-Doctor tells the agent where to find your config, session log and a fresh copy
-of the built-in default config, including its comments. The default config is
-exported to `~/.local/state/tileception/default-config.toml` when the agent starts,
-so it is available even without a source checkout. It also tells the agent to
-use `tileception msg help` for the current command list.
+Doctor tells the agent where to find your config, session log, the commented
+default config and these guides. Copies of the default config and guides are
+written under `~/.local/state/tileception/` (or `$XDG_STATE_HOME/tileception/`)
+when an agent starts, so they are available without a source checkout. The
+agent reads them only as needed.
 
-The Markdown guides are bundled into the binary and refreshed under
-`~/.local/state/tileception/docs/` when an agent starts, with the README beside
-that directory. Doctor points the agent to `docs/index.md`, so it can find and
-read relevant guides without a source checkout. `XDG_STATE_HOME` is respected.
-
-Only the index's location is included in the agent's initial context; the guides
-are read as needed. Images and HTML design prototypes are not bundled.
-Screenshots are supplied when you attach them.
+Your messages, attachments and anything the agent reads, such as config files
+and log lines, are sent to the agent's provider. Session logs can contain window
+titles, paths and commands.
 
 ## Permissions
 
@@ -89,7 +85,7 @@ Doctor saves the image locally and includes its file path instead.
 | `/help`         | List panel and agent commands                             |
 | `/agent`        | Choose an agent                                           |
 | `/model`        | Choose a model offered by the agent                       |
-| `/mode ask`     | Return to Ask mode                                        |
+| `/mode <name>`  | Switch to `ask`, `tweak` or `yolo` mode                   |
 | `/image <file>` | Attach an image to the next message                       |
 | `/clear`        | Start a new conversation with the same agent              |
 | `/restart`      | Restart the agent, for example after signing in elsewhere |

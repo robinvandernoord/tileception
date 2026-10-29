@@ -58,7 +58,7 @@ Log out of Tileception and back in to start the new version.
 
 ### Remove
 
-Log into another desktop before removing Tileception. If you configured
+Log in to another desktop before removing Tileception. If you configured
 Tileception as your greetd login screen, restore your previous login setup first.
 
 ```sh
@@ -89,8 +89,8 @@ cd tileception
 make tools
 ```
 
-`make tools` installs [cargo-plane](https://github.com/robinvandernoord/cargo-plane)
-automatically. It runs builds locally or on a remote machine.
+`make tools` installs [cargo-plane](https://github.com/robinvandernoord/cargo-plane),
+which runs builds locally or on a remote machine.
 
 ### Choose a builder
 
@@ -121,7 +121,8 @@ export CARGO_PLANE_REMOTE=codespace
 
 This reuses the configured Codespace or creates one requesting 16 GB of RAM
 and a 30-minute idle timeout. It installs the remote build dependencies too.
-Keep the export set in each terminal where you build.
+Set this variable in every terminal you build from, or add it to your shell
+profile.
 
 The builder must match your CPU architecture and use a glibc version no newer
 than your local system. Builds return the binaries to your machine, where they
@@ -170,7 +171,7 @@ Log out, then select **Tileception** on the login screen.
 
 ### Update or remove
 
-To update an unmodified checkout and reinstall:
+To update a checkout without local changes and reinstall:
 
 ```sh
 git pull --ff-only
@@ -179,7 +180,7 @@ make install
 
 The running session keeps its current binary until you log out and back in.
 
-To remove a source installation, log into another desktop and run this from the
+To remove a source installation, log in to another desktop and run this from the
 repository root:
 
 ```sh

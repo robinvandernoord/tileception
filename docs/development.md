@@ -26,10 +26,10 @@ Formatting runs locally, including when the build uses a remote machine.
 system dependencies. For a Rust installation without rustup, it checks that
 both tools are already available.
 
-To apply Rust formatting:
+For a focused layout-engine test run:
 
 ```sh
-make fmt
+cargo plane test -p tileception-core
 ```
 
 ### Independent crates
@@ -37,12 +37,6 @@ make fmt
 `tileception-apps`, `tileception-auth` and `tileception-notify` have independent
 workspaces. Root `--workspace` commands do not test or lint them; `make fmt`,
 `make test` and `make lint` include them explicitly.
-
-For a focused layout-engine test run:
-
-```sh
-cargo plane test -p tileception-core
-```
 
 For an independent crate, run from that crate's directory. For example:
 
@@ -160,8 +154,8 @@ installing a package, since both use the same session files.
   [below](#releases).
 - [Website](../.github/workflows/website.yml) checks changes to `website/` or
   its workflow on pull requests and pushes to `master`. It can also run
-  manually. Successful runs on `master` outside pull requests deploy the site
-  and installer, then check the live endpoints. See the
+  manually. Passing runs on pushes to `master` deploy the site and installer,
+  then check the live endpoints. See the
   [website guide](../website/README.md) for deployment settings.
 
 The release workflow does not rerun the CI lint and test jobs; run the checks
@@ -169,8 +163,11 @@ before releasing.
 
 ## Releases
 
-Release settings live in [pyproject.toml](../pyproject.toml). From a clean
-`master` checkout, run the checks and preview the release:
+Releases use vommit, configured in [pyproject.toml](../pyproject.toml). It
+derives the version bump from [Conventional Commits](https://www.conventionalcommits.org/)
+messages such as `feat(shell): ...` and `fix(greeter): ...`, so use that format
+for every commit. From a clean `master` checkout, run the checks and preview the
+release:
 
 ```sh
 make lint
@@ -186,8 +183,8 @@ vommit release
 
 Vommit determines the version bump from the commits, updates the Cargo version,
 `Cargo.lock` and `CHANGELOG.md`, creates a release commit and `v<version>` tag,
-and pushes them to `origin`. It asks for confirmation before proceeding. Local build and
-publish hooks are empty; package building and publishing happen in CI.
+and pushes them to `origin`. It asks for confirmation before proceeding. Local
+build and publish hooks are empty; package building and publishing happen in CI.
 
 Pushing the tag starts the [release workflow](../.github/workflows/release.yml):
 
@@ -226,3 +223,6 @@ version.
 When adding a Markdown guide, link it from [the documentation index](index.md)
 and add it to `export_doctor_docs` in `crates/tileception/src/doctor.rs`.
 Doctor bundles these guides into the binary for installations without source.
+Links to other repository files do not resolve in that copy, except the default
+config: write it exactly as `../crates/tileception/src/default-config.toml`,
+which the export rewrites.

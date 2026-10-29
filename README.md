@@ -53,9 +53,8 @@ inside other splits, so a browser and its notes can sit together beside a group
 of development tools. Drag the gaps to adjust how much space each part gets.
 
 Zoom into a group to fill the screen with its windows, or into a single window
-to focus on it.
-Zoom back out to see the surrounding layout. Saved views let you return to
-particular parts of the tree without rearranging your windows.
+to focus on it. Zoom back out to see the surrounding layout. Saved views let
+you return to particular parts of the tree without rearranging your windows.
 
 Drag a window to a tile's edge to place it beside that tile, or to its centre to
 combine them into tabs. Windows can also float above the tiled layout.
@@ -65,9 +64,11 @@ screen, power menu, and volume and brightness controls. You can disable built-in
 components or use external tools such as Waybar, fuzzel and swaylock through the
 [configuration](#configuration).
 
+Doctor, an optional panel opened with **Super+/**, lets a coding agent of your
+choice answer questions about your setup and change it for you.
+
 Touchpad gestures, touchscreen input and fractional display scaling are supported
-too. Some applications may lag at non-integer scales such as 1.25 or 1.5; try an
-integer scale such as 1 or 2 if that happens.
+too.
 
 <a id="default-shortcuts"></a>
 
@@ -80,16 +81,17 @@ place so your current desktop can keep its Super shortcuts.
 |-------------------|------------------------------------------------------|
 | Super             | Open the launcher                                    |
 | Super+T           | Open a terminal                                      |
-| Super+Arrow keys  | Focus a neighbouring space                           |
+| Super+Arrow keys  | Focus a neighbouring window or group                 |
 | Super+= / Super+- | Zoom one level in / out                              |
 | Super+O           | Show the overview                                    |
-| Super+F           | Toggle app fullscreen; the app may hide its controls |
-| Super+M           | Toggle zoom to the focused window; keep app controls |
+| Super+F           | Make the app fullscreen, or restore it               |
+| Super+M           | Fill the screen with the focused window, or restore  |
 | Super+J           | Switch the current split between rows and columns    |
 | Super+V           | Switch the focused window between floating and tiled |
 | Super+C           | Close the focused window                             |
 | Super+L           | Lock the screen                                      |
 | Super+X           | Open the power menu                                  |
+| Super+/           | Open Doctor                                          |
 
 Hold **Super** and scroll to zoom in towards the pointer or back out. Hold
 **Alt** and drag with the left mouse button to move a window, or with the right
@@ -98,7 +100,8 @@ button to resize it. Drag a gap between tiles to resize their split.
 Save the current view with **Super+Shift+1** through **9**, then return to it with
 **Super+1** through **9**.
 
-See the [usage guide](docs/usage.md) for navigation and saved views.
+See the [usage guide](docs/usage.md) for selections, tabs, floating windows and
+gestures.
 The [default configuration](crates/tileception/src/default-config.toml) lists
 the complete bindings, including tabs, window moves, screenshots and gestures.
 
@@ -137,14 +140,15 @@ command names.
 
 ## Help and development
 
-Found a problem? [Open an issue](https://github.com/robinvandernoord/tileception/issues)
-with your Tileception version, distribution, graphics hardware and steps to
-reproduce it. Mention whether it happens in a nested window or a desktop session.
+Found a problem? [Open an issue](https://github.com/robinvandernoord/tileception/issues);
+[Report a problem](docs/troubleshooting.md#report-a-problem) lists what to include.
 
 Session logs are in `~/.local/state/tileception/tileception.log`, or under
 `$XDG_STATE_HOME/tileception/` if set. Nested sessions print logs to the terminal
 you started them from. Check logs for personal information before sharing them.
 
+- [Documentation](docs/index.md): all user guides, including Doctor and the
+  login screen.
 - [Troubleshooting](docs/troubleshooting.md): startup problems, config errors
   and logs.
 - [Development](docs/development.md): local and remote builds with cargo-plane,
@@ -154,4 +158,4 @@ you started them from. Check logs for personal information before sharing them.
 - [Changelog](CHANGELOG.md): changes between releases.
 
 Tileception is MIT licensed. Its nested tiling model is inspired by TrellisWM
-for macOS, implemented independently in Rust using Smithay.
+for macOS.

@@ -19,7 +19,7 @@ between views.
 
 | Shortcut                | Action                                               |
 |-------------------------|------------------------------------------------------|
-| Super+Arrow keys        | Focus a neighbouring space                           |
+| Super+Arrow keys        | Focus a neighbouring window or group                 |
 | Alt+Tab / Alt+Shift+Tab | Cycle through windows forward / backward             |
 | Super+= / Super+I       | Zoom one level in towards the focused window         |
 | Super+- / Super+U       | Zoom one level out                                   |
@@ -27,10 +27,9 @@ between views.
 | Super+O                 | Toggle the overview                                  |
 | Super+F                 | Toggle app fullscreen; the app may hide its controls |
 | Super+M                 | Toggle zoom to the focused window; keep app controls |
-| Super+[ / Super+]       | Go back / forward through previously viewed spaces   |
+| Super+[ / Super+]       | Go back / forward through previous views             |
 
-Zooming in follows the focused window unless you use the mouse wheel, which
-follows the pointer. Each step moves one level through the tree.
+Each zoom step moves one level through the tree.
 
 The overview shows the whole layout. Click a window to zoom to it, or press
 Escape to leave the overview and return to your previous view.
@@ -44,7 +43,7 @@ Use slots 1 through 9 to return to useful parts of the layout:
 3. Move elsewhere, then press **Super+1** to return.
 
 Use another number for another slot. Saving to an occupied slot replaces its
-previous view. The numbered slots are also accessible from the bar.
+previous view. Saved slots also appear in the bar; click one to return to it.
 
 Saved views refer to windows in the running session. Recalling one also restores
 any minimized windows that belong to it.
@@ -60,28 +59,26 @@ drag from empty space in the overview. Press **Escape** to clear the selection.
 Move, close, minimize and float commands apply to the selection when one exists.
 Otherwise, they act on the focused window.
 
-With tiled windows selected, **Super+I** zooms to exactly that selection.
-**Super+J** switches just those windows between rows and columns. Both create
-a layout subgroup when needed, keeping the windows in separate tiles.
-Selecting across different branches can move them into the first selected
-tile's position; adjacent sibling tiles keep their sizes. Use **Super+U** to
-zoom back out, or **Escape** to clear the selection.
+With tiled windows selected, **Super+I** zooms to exactly that selection, and
+**Super+J** switches just those windows between rows and columns. If the
+selected windows are in different groups, they are first gathered into a new
+group where the first selected window was. Use **Super+U** to zoom back out, or
+**Escape** to clear the selection.
 
 ### Shortcuts
 
-| Shortcut                   | Action                                                        |
-|----------------------------|---------------------------------------------------------------|
-| Super+Shift+Arrow keys     | Move windows in the chosen direction                          |
-| Super+Alt+Arrow keys       | Resize the focused window in 40-pixel steps                    |
-| Super+J                    | Switch the selection or current split between rows and columns |
-| Super+G                    | Combine selected windows into tabs                            |
-| Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                             |
-| Super+V                    | Switch between floating and tiled                             |
-| Super+Shift+F              | Switch selected windows together between floating and tiled    |
-| Super+D                    | Show or hide the Desktop tile                                 |
-| Super+H                    | Minimize windows                                              |
-| Super+Shift+H              | Restore the most recently minimized window                     |
-| Super+C                    | Close windows                                                 |
+| Shortcut                    | Action                                                         |
+|-----------------------------|----------------------------------------------------------------|
+| Super+Shift+Arrow keys      | Move windows in the chosen direction                           |
+| Super+Alt+Arrow keys        | Resize the focused window in 40-pixel steps                    |
+| Super+J                     | Switch the selection or current split between rows and columns |
+| Super+G                     | Combine selected windows into tabs                             |
+| Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
+| Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
+| Super+D                     | Show or hide the Desktop tile                                  |
+| Super+H                     | Minimize windows                                               |
+| Super+Shift+H               | Restore the most recently minimized window                     |
+| Super+C                     | Close windows                                                  |
 
 ### Moving and resizing
 
@@ -198,11 +195,14 @@ built-in controls. These alternatives are available without dedicated keys:
 
 | Gesture                         | Action                                         |
 |---------------------------------|------------------------------------------------|
-| Three-finger swipe left / right | Focus the space to the right / left            |
-| Three-finger swipe up / down    | Focus the space below / above                  |
+| Three-finger swipe left / right | Focus the window or group to the right / left  |
+| Three-finger swipe up / down    | Focus the window or group below / above        |
 | Three-finger pinch in / out     | Zoom one level out / in                        |
 | Four-finger swipe up / down     | Show the overview / zoom to the focused window |
-| Four-finger swipe left / right  | Go forward / back through viewed spaces        |
+| Four-finger swipe left / right  | Go forward / back through previous views       |
+
+Swipes move the layout with your fingers, so swiping left brings the window on
+the right into focus.
 
 You can also hold **Super** and pinch with two fingers to zoom out or in.
 Gestures without a Tileception binding are passed to the application, so an

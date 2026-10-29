@@ -7,7 +7,7 @@
 
 Tileception includes an optional login screen for greetd. It lists local users
 and installed desktop sessions, including other Wayland and X11 desktops.
-Choosing it changes the login screen for the whole machine, not just Tileception.
+Enabling it changes the login screen for the whole machine, not just Tileception.
 
 Installing the Tileception session does not enable this greeter automatically.
 
@@ -58,8 +58,9 @@ and testing a real login, run from the repository root:
 make install-greeter
 ```
 
-The installer builds a separate copy in `/usr/local/bin/tileception`, configures
-greetd to run it, and enables greetd in place of your previous display manager.
+`make install-greeter` builds a separate copy in `/usr/local/bin/tileception`,
+configures greetd to run it, and enables greetd in place of your previous
+display manager.
 It saves the previous display manager and greetd configuration for restoration.
 An existing `/etc/tileception/greeter.toml` is kept.
 
@@ -87,7 +88,9 @@ read when the greeter starts.
 
 By default, Tileception sessions share their accent colour and wallpaper with
 the greeter. To turn sharing off, set `share = false` in the existing `[greeter]`
-section of your personal `~/.config/tileception/config.toml`.
+section of your personal `~/.config/tileception/config.toml`. Shared
+wallpapers are copied to `/var/cache/tileception-greeter`, so everyone using
+this login screen can see them.
 
 ## Restore the previous login screen
 
@@ -98,12 +101,13 @@ make uninstall-greeter
 ```
 
 This restores the saved display manager and greetd configuration. Reboot to
-complete the switch. If greetd was still running, the script keeps its Tileception
-binary until then; run `make uninstall-greeter` again after reboot to remove it.
+complete the switch. While greetd is still running, `/usr/local/bin/tileception`
+is kept; run `make uninstall-greeter` again after the reboot to remove it.
 
 The greetd package and `/etc/tileception/greeter.toml` are kept. To remove that
-configuration too, use `scripts/uninstall-greeter.sh --purge` instead.
+configuration too, run `scripts/uninstall-greeter.sh --purge`, the script
+behind `make uninstall-greeter`.
 
-If there was no previous display manager, the script asks you to enable another
-one before it removes the greeter. If the graphical login is unavailable, switch
+If there was no previous display manager, you are asked to enable another one
+before the greeter is removed. If the graphical login is unavailable, switch
 to a text console with **Ctrl+Alt+F3**, log in, and run the restore command there.

@@ -13,6 +13,3 @@
   recovery, logs and bug reports.
 - [Development](development.md): repository structure, builds, checks, debugging
   and packaging.
-
-Doctor has a copy of these Markdown guides matching the installed binary.
-Images, HTML design prototypes and repository source files are not included.

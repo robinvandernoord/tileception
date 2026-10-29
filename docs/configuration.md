@@ -27,6 +27,7 @@ to reload the config and show a notification. Lists of commands run in order.
 Modifiers are `Super`, `Alt`, `Ctrl` and `Shift`. Keys use XKB names such as
 `Return`, `Left`, `bracketleft` and `Page_Up`. Mouse-wheel bindings use `WheelUp`,
 `WheelDown`, `WheelLeft` or `WheelRight`. Super on its own is also a valid binding.
+In a nested window, Alt stands in for Super in your bindings too.
 
 Your bindings add to or override the defaults. To use only the bindings listed
 in your file, set:
@@ -67,9 +68,9 @@ Use an existing PNG, JPEG or WebP image for the wallpaper. It also appears on
 the built-in lock screen. `wallpaper_fit` accepts `fill`, `fit`, `stretch` or
 `center`.
 
-Set `theme.colour_scheme` to `"dark"`, `"light"` or `"default"` to tell
-applications which appearance you prefer. The compositor's own colours are
-controlled by the other theme settings.
+Set `theme.colour_scheme` to `"dark"` or `"light"` to tell applications which
+appearance you prefer, or `"default"` for no preference. The compositor's own
+colours are controlled by the other theme settings.
 
 ## Display scaling
 
@@ -89,6 +90,8 @@ connector, use its name from the session log, for example:
 scale = 2
 ```
 
+Only one monitor is used for now; additional monitors stay inactive.
+
 Scales from 0.5 to 4 are accepted. Larger values make text and interface elements
 bigger. Use `scale = "auto"` to return to automatic selection.
 
@@ -102,14 +105,13 @@ For a temporary override when starting Tileception, set `TILECEPTION_SCALE`:
 TILECEPTION_SCALE=2 tileception --nested
 ```
 
-This overrides the output settings for that instance. Multiple monitors are
-not yet supported.
+This overrides the output settings for that instance.
 
 ## Desktop components
 
 Each `[shell]` entry uses `"builtin"` for Tileception's own component or `"none"`
-to disable it. The launcher, bar, power menu and lock screen also accept a
-replacement command. Install replacement programs separately.
+to disable it. The launcher, bar, notifications, power menu and lock screen also
+accept a replacement command. Install replacement programs separately.
 
 ```toml
 [shell]
@@ -205,7 +207,7 @@ ones. Editing a rule affects newly opened windows.
 
 ## Autostart
 
-Use `[general].autostart` for shell commands to run once when Tileception starts:
+Use `general.autostart` for shell commands to run once when Tileception starts:
 
 ```toml
 [general]
@@ -231,8 +233,8 @@ to `general.autostart` if an XDG entry already starts it.
 ### Keyboard
 
 The default layout is US international with AltGr accents (`us`, `altgr-intl`),
-so apostrophes and quotation marks type normally. For a plain US layout with
-Right Alt as a Compose key:
+so apostrophes and quotation marks type immediately instead of acting as dead
+keys. For a plain US layout with Right Alt as a Compose key:
 
 ```toml
 [keyboard]
@@ -308,14 +310,15 @@ Times are in seconds; `0` disables that timer. Automatic idle locking is off by
 default, and the display turns off after ten minutes. Set `lock_after = 300`,
 for example, to lock after five minutes.
 
-`off_after` turns off the display without suspending the computer. Input wakes
-the display; the first input is used to wake it. Visible applications using
-Wayland idle inhibition, such as video players, can pause both timers. These
-idle timers do not run in nested mode.
+`off_after` turns off the display without suspending the computer. The first
+input after that, such as a key press, pointer movement or touch, only wakes the
+display and is not passed to applications. Visible applications using Wayland
+idle inhibition, such as video players, can pause both timers. These idle timers
+do not run in nested mode.
 
-With locking enabled, `lock_before_sleep` locks before suspend or hibernation,
-including sleep requested by closing the lid or by another program. Set it to
-`false` to disable that behaviour.
+Unless `shell.lock` is `"none"`, `lock_before_sleep` locks before suspend or
+hibernation, including sleep requested by closing the lid or by another program.
+Set it to `false` to disable that behaviour.
 
 Suspend is available in the power menu by default. To disable that menu action:
 

@@ -37,7 +37,7 @@ If it is missing, repeat the appropriate [installation](installation.md).
 For source installations, `make build` only builds the binary; `make install`
 also installs the login session entry. Log out to check the session list again.
 
-### Login returns to the greeter or shows a blank screen
+### Login returns to the login screen or shows a blank screen
 
 Log into another working desktop and check the session log. If no log was
 created, include that in your report; the session launcher may not have reached
@@ -51,8 +51,9 @@ tileception --nested
 
 Report whether nested mode works even if the desktop session fails. Include
 messages about graphics initialization, device access or missing libraries.
-For a source build, run `make check-deps` from the checkout and review the
-[builder compatibility requirements](installation.md#choose-a-builder).
+For a source build, run `make check-deps` from the checkout. If you build on a
+remote machine, check that it matches your CPU architecture and does not use a
+newer glibc than your system.
 
 If the issue is the Tileception login screen itself, see the
 [greeter guide](greeter.md).
@@ -103,9 +104,9 @@ After logging into the text console with your account password, run:
 tileception msg unlock
 ```
 
-This forcibly ends the desktop's lock so you can return to your session. It
-does not log you in through the greeter. If an external locker caused the
-problem, check its configuration before locking again.
+This forcibly ends the desktop's lock so you can return to your session. If an
+external locker caused the problem, check its configuration before locking
+again.
 
 ### End a responsive session
 
@@ -139,6 +140,8 @@ For example, if its display is `wayland-1`:
 export TILECEPTION_SOCKET="$XDG_RUNTIME_DIR/tileception-wayland-1.sock"
 tileception msg tree
 ```
+
+If Doctor does not connect, see [its own checklist](doctor.md#if-it-does-not-connect).
 
 If the graphical login screen itself is broken, follow the
 [greeter restoration instructions](greeter.md#restore-the-previous-login-screen)
