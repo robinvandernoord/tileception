@@ -2,6 +2,30 @@
 
 <!-- next-version-placeholder -->
 
+## v0.8.0 (2026-10-29)
+
+### Features
+* **commands:** report image cache usage
+* **setup:** add guided desktop and greeter setup
+* **greeter:** add layout picker and richer login panels
+* **doctor:** bundle user guides for the assistant
+* **shell:** support positioning the built-in bar at the bottom
+* **greeter:** add login screen setup and testing commands
+* **greeter:** add login screen and setup tools
+* **session:** share the SSH agent with graphical apps
+
+### Fixes
+* **greeter:** restore the previous greetd configuration
+* **screenshot:** ask before saving or copying captures
+* **render:** synchronize frames and cursor callbacks
+* **ui:** improve launcher and compact-screen controls
+
+### Documentation
+* **usage:** update setup and feature guides
+* info about new greeter config options
+* **project:** add user guides and refresh project information
+* tweaked planned greeter design
+
 ## v0.7.0 (2026-10-18)
 
 ### Feature
