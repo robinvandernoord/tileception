@@ -165,6 +165,9 @@ lock = "builtin"
 # Volume, media keys and brightness: "builtin" or "none". To use your own
 # commands instead, bind the keys to them in [binds].
 media = "builtin"
+# Doctor, the panel for asking an agent about your setup (Super+/):
+# "builtin" or "none".
+doctor = "builtin"
 # The bar: where the camera is, saved views, the clock (click
 # it for a calendar) and notifications. "none" leaves the edge to the
 # windows; a command such as "waybar" runs in its place and is stopped again

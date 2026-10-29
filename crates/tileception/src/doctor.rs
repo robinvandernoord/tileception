@@ -520,7 +520,12 @@ impl Tileception {
         }
     }
 
+    /// Does nothing when the doctor is switched off in `[shell]`.
     pub fn open_doctor(&mut self) {
+        if !self.shell().doctor() {
+            tracing::info!("the doctor is switched off in [shell]");
+            return;
+        }
         if !self.doctor.open {
             self.doctor.opened = Instant::now();
         }
@@ -547,6 +552,9 @@ impl Tileception {
     /// Opens the panel and asks `question` straight away.
     pub fn ask_doctor(&mut self, question: &str) {
         self.open_doctor();
+        if !self.doctor.open {
+            return;
+        }
         let question = question.trim();
         if !question.is_empty() {
             self.send_to_doctor(question.to_string());
@@ -637,6 +645,9 @@ impl Tileception {
     /// `doctor use <id>`: picks an agent by its registry id.
     pub fn use_doctor_agent(&mut self, id: String) {
         self.open_doctor();
+        if !self.doctor.open {
+            return;
+        }
         self.pick_agent(id);
     }
 

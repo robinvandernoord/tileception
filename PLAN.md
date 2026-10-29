@@ -119,53 +119,48 @@ On the `feature/greeter` branch, not merged or released. See
   `make uninstall-greeter` (switching the display manager and back). The `.deb`
   ships the config and the extension but does not switch.
 - [ ] Try it on hardware with `make try-greeter`, then as the login screen.
-- [ ] One setup for `.deb` and `/install` users, shared with the make targets
-  (see the greeter step under Guided installation). Where it lives is undecided.
+- [x] One setup for `.deb` and `/install` users, shared with the make targets:
+  `tileception-setup --greeter tileception|previous` (see Guided installation).
 - [ ] Not built yet: `users_as = "tiles"`, message-of-the-day and accessibility
   panels, Ctrl+Space layout switching, more than one screen, reduced motion, an
   accent taken from a shared wallpaper, and the full tile-to-window morph at login.
 
 #### Guided installation
 
-Decided 2026-10-18. Implementation is pending.
+Decided 2026-10-18. Built 2026-10-29 as `tileception-setup` (POSIX sh, shipped in
+the `.deb` and `~/.local/bin`, a copy served as tileception.space/setup) plus
+`tileception config get|set|add`, which edits config.toml with toml_edit and
+keeps its comments. `/install` runs setup with `--print-flags` before
+downloading, then applies the flags at the end. `make install` asks nothing and
+keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
 
-- [ ] Collect all setup answers early, after quick compatibility and existing-install
-  checks and before downloads, builds or system changes. Show a summary before
-  starting installation so the user can leave it running without more setup questions.
-- [ ] Start with "How would you like to set up Tileception?": Recommended,
-  Customize or Minimal. Recommended enables sensible desktop defaults; Customize
-  asks about individual features; Minimal disables optional desktop features while
-  keeping session essentials and an obvious way to launch a terminal or applications.
-- [ ] Let users choose the top bar, Super launcher, Doctor, notifications and other
-  applicable shell components. For components supporting replacements, offer
-  Built-in, Disabled or Custom command, then ask for the command, such as `waybar`.
-  Store choices in the existing config settings. Explain whether a replacement
-  starts a persistent service or opens a UI on demand, particularly for notifications.
-- [ ] Ask about the greeter explicitly for Recommended and Customize, even when a
-  login screen already exists, so users know the option is available. Detect and
-  default to keeping the current login setup. Minimal skips this question, but an
-  explicit greeter flag can override that. Choosing the greeter does what
-  `make install-greeter` does from a checkout (greetd, its config, the display
-  manager switch); see Login screen above. Changes affect login to other desktop
-  sessions too.
-- [ ] Treat Doctor setup separately, explaining any provider/account requirements
-  and permissions. Recommended should not require configuring an agent.
-- [ ] Provide `--non-interactive` and equivalent flags for presets, greeter choice
-  and feature/custom-command overrides. Proposed examples:
-  `--non-interactive --preset recommended --greeter keep` and
-  `--non-interactive --preset minimal --bar waybar`.
-- [ ] On reinstall, read the intended desktop user's existing
-  `$XDG_CONFIG_HOME/tileception/config.toml` (normally
-  `~/.config/tileception/config.toml`), including when installation uses sudo.
-  Prefill interactive choices and preserve unattended reinstall preferences.
-  Handle a missing config too: currently it is created when Tileception first loads it.
-  Precedence: explicit flags or answers, then existing config, then preset defaults.
-  Preserve comments and unrelated settings when editing the file.
-- [ ] Read interactive answers from `/dev/tty` so `curl ... | sh` remains supported;
-  handle a missing terminal predictably and support fully unattended execution.
-- [ ] Keep choices reversible through normal configuration and provide a way to
-  reopen setup without reinstalling. Finish with instructions for entering the
-  session and changing preferences later.
+- [x] Collect all setup answers early, after quick compatibility and existing-install
+  checks and before downloads, builds or system changes, with a summary to confirm.
+- [x] "How would you like to set up Tileception?": Recommended, Customize or
+  Minimal (no bar, notifications or Doctor; the launcher, Super+T and the lock
+  screen stay), plus Keep when a config exists.
+- [x] Customize: bar (and its edge), launcher, notifications, power menu, lock
+  screen as Built-in, Turned off or another program, saying which run for the
+  whole session and which on demand; media keys on or off. Another notification
+  daemon goes into `general.autostart`, with what Super+N runs asked separately.
+- [x] The greeter question for Recommended, Customize and Keep, defaulting to the
+  current login screen; Minimal skips it unless `--greeter` says. Removing the
+  package switches back (prerm). make install-greeter, uninstall-greeter and
+  try-greeter use the same functions.
+- [x] Doctor separately (`[shell] doctor = "builtin" | "none"`), explaining
+  agents, accounts and approvals; no agent is configured during setup.
+- [x] `--non-interactive`, `--preset`, `--greeter`, `--bar` and the other parts,
+  `--notification-daemon`, `--user`, `--yes`; `make install SETUP_ARGS=...`.
+- [x] Reinstall reads the desktop user's config (also under sudo, via
+  SUDO_USER or `--user`). Precedence: flags and answers, then the existing
+  config, then the preset; unattended without a preset keeps everything.
+- [x] Answers come from `/dev/tty`; without a terminal nothing is asked and the
+  current settings are kept.
+- [x] Reopen with `tileception-setup` (or `make setup`); finishes with how to
+  enter the session and change things later.
+- [ ] Try `/install` end to end on a clean trixie and noble machine, once the
+  package with tileception-setup and the site's /setup are published together.
+- [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
 
 ### Later
 

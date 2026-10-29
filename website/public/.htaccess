@@ -8,10 +8,11 @@ AddType font/woff2 .woff2
 AddType image/svg+xml .svg
 AddType application/manifest+json .webmanifest
 
-# /install is a shell script meant for `curl | sh`; serve it as plain text.
-<Files "install">
+# /install is a shell script meant for `curl | sh`, and /setup the one it
+# fetches; serve them as plain text.
+<FilesMatch "^(install|setup)$">
   ForceType "text/plain; charset=utf-8"
-</Files>
+</FilesMatch>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On

@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::{
     delegate_idle_inhibit,
     reexports::{
@@ -19,7 +19,7 @@ use smithay::{
 use crate::Tileception;
 use smithay::wayland::seat::WaylandFocus;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IdleConfig {
     pub lock_after: u64,

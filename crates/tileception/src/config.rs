@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::{
     input::keyboard::{ModifiersState, xkb},
     reexports::calloop::{
@@ -22,7 +22,7 @@ use crate::{
 
 pub const DEFAULT: &str = include_str!("default-config.toml");
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 #[derive(Default)]
 pub struct ConfigFile {
@@ -46,7 +46,7 @@ pub struct ConfigFile {
 }
 
 /// One command, or several run in order.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum BindValue {
     One(String),
@@ -62,7 +62,7 @@ impl BindValue {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct General {
     pub terminal: Option<String>,
@@ -110,7 +110,7 @@ impl Default for General {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Keyboard {
     pub layout: Option<String>,

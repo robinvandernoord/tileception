@@ -86,7 +86,7 @@ mkdir -p "$root/DEBIAN" "$dbg/DEBIAN"
 
 # Files. The same set install-session.sh puts in ~/.local, at system paths.
 install -D -m 755 "$built" "$root/usr/bin/tileception"
-for helper in tileception-session tileception-power tileception-screenshot; do
+for helper in tileception-session tileception-power tileception-screenshot tileception-setup; do
     install -D -m 755 "resources/$helper" "$root/usr/bin/$helper"
 done
 mkdir -p "$root/usr/share/wayland-sessions"
@@ -206,7 +206,16 @@ if [ "$1" = purge ]; then
     rm -rf /var/lib/tileception-greeter /var/cache/tileception-greeter
 fi
 EOF
-chmod 755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm"
+# Without the package greetd could not start the login screen any more, so
+# removing it switches back to the login screen tileception-setup replaced.
+cat > "$root/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && grep -qs "/usr/bin/tileception --greeter" /etc/greetd/config.toml; then
+    tileception-setup --non-interactive --greeter previous || true
+fi
+EOF
+chmod 755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm" "$root/DEBIAN/prerm"
 
 cat > "$dbg/DEBIAN/control" <<EOF
 Package: $package-dbgsym

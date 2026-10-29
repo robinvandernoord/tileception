@@ -4,6 +4,7 @@
 //!   `tileception [--nested | --session] [-- command args...]`
 //!   `tileception --greeter` is the login screen, started by greetd.
 //!   `tileception msg <command>` controls a running instance.
+//!   `tileception config <command>` reads or changes one setting.
 //!
 //! Without a flag, Tileception runs nested when started inside another desktop
 //! (`WAYLAND_DISPLAY` or `DISPLAY` is set) and as the session otherwise.
@@ -17,6 +18,7 @@ mod calc;
 mod capture;
 mod commands;
 mod config;
+mod config_edit;
 mod controls;
 mod cursor;
 mod doctor;
@@ -75,8 +77,11 @@ Usage:
   tileception --greeter [--nested | --headless]
   tileception msg <command> [args...]
   tileception msg --help
+  tileception config get|set|add <section.key> [value]
 
 Starts the Tileception compositor, or with `msg` controls a running one.
+`config` reads or changes one setting in config.toml, keeping its comments
+(`tileception config --help`).
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -125,6 +130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match argv.get(1).map(String::as_str) {
             None | Some("-h" | "--help" | "help") => print!("{}", commands::HELP),
             _ => ipc::client(&argv[1..])?,
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("config") {
+        if let Err(err) = config_edit::run(&argv[1..]) {
+            eprintln!("tileception config: {err}");
+            std::process::exit(1);
         }
         return Ok(());
     }

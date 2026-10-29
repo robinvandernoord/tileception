@@ -3,7 +3,7 @@
 //! to the program under the pointer through pointer-gestures. `[touchpad]`
 //! sets libinput's options: tap to click, natural scrolling and the rest.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::{
     delegate_pointer_gestures,
     input::pointer::{
@@ -16,7 +16,7 @@ use smithay::{
 
 use crate::{Tileception, commands::Command, config::Mods};
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TouchpadConfig {
     /// Tap to click: one finger left, two right, three middle.

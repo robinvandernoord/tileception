@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use zbus::zvariant::{OwnedObjectPath, Value};
 
 use crate::theme::{Colour, Theme};
@@ -30,7 +30,7 @@ const MAX_BYTES: u64 = 16 << 20;
 const MAX_SIZE: (u32, u32) = (3840, 2160);
 
 /// `[greeter]` in the session's config.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShareConfig {
     /// Show this session's accent and wallpaper on the login screen.

@@ -1,10 +1,10 @@
 //! Window rules: `[[rules]]` entries that decide how matching windows open.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One `[[rules]]` entry. Patterns are case-insensitive, with `*` for any
 /// run of characters and `?` for one; a rule without patterns matches nothing.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowRule {
     /// The Wayland app id or the X11 class.

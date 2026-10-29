@@ -3,6 +3,10 @@
 # a "Tileception" entry to the login screen and its desktop portal backend
 # (these need sudo, and are skipped when already up to date).
 #
+# Asks nothing and keeps your config: options are passed to
+# resources/tileception-setup, such as --preset minimal or --greeter
+# tileception, and applied at the end. `make setup` asks the questions.
+#
 # Safe to run from inside a Tileception session: the running compositor keeps
 # going, and the new build starts at the next login.
 set -e
@@ -21,6 +25,9 @@ if ! scripts/deps.sh check build runtime; then
     exit 1
 fi
 
+# Checks the options before the build. They come back as flags.
+flags=$(resources/tileception-setup --print-flags --non-interactive "$@") || exit 1
+
 bindir="$HOME/.local/bin"
 cargo plane build --release -p tileception
 mkdir -p "$bindir"
@@ -28,6 +35,7 @@ install -m 755 target/release/tileception "$bindir/tileception"
 install -m 755 resources/tileception-session "$bindir/tileception-session"
 install -m 755 resources/tileception-power "$bindir/tileception-power"
 install -m 755 resources/tileception-screenshot "$bindir/tileception-screenshot"
+install -m 755 resources/tileception-setup "$bindir/tileception-setup"
 echo "Installed tileception and its helpers in $bindir"
 
 pam_service=/etc/pam.d/tileception
@@ -84,21 +92,16 @@ if [ -d /usr/share/slick-greeter/badges ]; then
     fi
 fi
 
-# Once make install-greeter set up the login screen, keep its copy current:
-# greetd runs /usr/local/bin/tileception, which cannot be the one in ~/.local.
-greeter=/usr/local/bin/tileception
-if [ -e "$greeter" ]; then
-    if cmp -s target/release/tileception "$greeter"; then
-        echo "The login screen's tileception is up to date"
-    else
-        sudo install -m 755 target/release/tileception "$greeter"
-        echo "Updated the login screen's $greeter"
-    fi
-    extension=/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml
-    if ! cmp -s resources/org.tileception.Greeter.xml "$extension"; then
-        sudo install -D -m 644 resources/org.tileception.Greeter.xml "$extension"
-        # AccountsService reads its extensions when it starts.
-        sudo systemctl try-restart accounts-daemon.service
-        echo "Updated the org.tileception.Greeter AccountsService extension"
-    fi
+# The login screen runs /usr/local/bin/tileception, which cannot be the one in
+# ~/.local: keep it current once make install-greeter put it there, and put it
+# there when the answers switch to Tileception's login screen.
+case " $flags " in
+    *" --greeter tileception "*) greeter=1 ;;
+    *) greeter="" ;;
+esac
+if [ -n "$greeter" ] || [ -e /usr/local/bin/tileception ]; then
+    scripts/install-greeter.sh --files
 fi
+
+eval "set -- $flags"
+TILECEPTION_BIN="$bindir/tileception" resources/tileception-setup "$@"

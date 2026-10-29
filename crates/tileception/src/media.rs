@@ -5,7 +5,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::reexports::calloop::{
     RegistrationToken,
@@ -17,7 +17,7 @@ use tileception_media::{Change, Event, MediaService, PlayerCommand, Request, Sna
 use crate::{Tileception, commands::Command};
 
 /// The `[media]` section.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
     /// Percent per volume key press.

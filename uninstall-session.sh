@@ -32,7 +32,7 @@ if [ -e "$portal" ]; then
 fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"
-for f in "$bindir/tileception" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$portals"; do
+for f in "$bindir/tileception" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$portals"; do
     if [ -e "$f" ]; then
         rm -f "$f"
         echo "Removed $f"

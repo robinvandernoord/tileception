@@ -1,31 +1,15 @@
 #!/bin/sh
-# Undoes install-greeter.sh: switches back to the login screen it replaced and
-# restores greetd's config, then removes /usr/local/bin/tileception, the
-# greeter's memory of the last login, the shared looks and their AccountsService
-# extension. greetd and /etc/tileception/greeter.toml are kept; pass --purge to
-# remove the config too. The switch back takes effect at the next boot.
+# Undoes install-greeter.sh: tileception-setup switches back to the login
+# screen it replaced and restores greetd's config, then this removes
+# /usr/local/bin/tileception, the greeter's memory of the last login, the
+# shared looks and their AccountsService extension. greetd and
+# /etc/tileception/greeter.toml are kept; pass --purge to remove the config
+# too. The switch back takes effect at the next boot.
 set -e
 cd "$(dirname "$0")/.."
-. scripts/greeter-lib.sh
+TILECEPTION_SETUP_LIB=1 . resources/tileception-setup
 
-if grep -qs "tileception --greeter" "$greetd_config"; then
-    previous=$(cat "$previous_dm_file" 2>/dev/null || true)
-    if [ "$(current_dm)" = greetd.service ]; then
-        if [ -z "$previous" ]; then
-            echo "greetd runs the Tileception greeter, and there is no earlier login screen to go back to." >&2
-            echo "Enable another one first, such as: sudo systemctl enable --force sddm" >&2
-            exit 1
-        fi
-        sudo systemctl disable greetd.service
-        sudo systemctl enable "$previous"
-        echo "$previous is the login screen again from the next boot"
-    fi
-    if [ -e "$greetd_backup" ]; then
-        sudo mv "$greetd_backup" "$greetd_config"
-        echo "Restored greetd's own config"
-    fi
-fi
-sudo rm -f "$previous_dm_file"
+restore_login_screen
 
 # greetd only reads its config when it starts: while it runs, it would start
 # the greeter again after a logout, so the binary stays until the next boot.

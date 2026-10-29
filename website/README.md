@@ -9,7 +9,10 @@ website/
     assets/site.css  De Stijl look, stacked layout and zoom layout
     assets/zoom.js   the scroll-driven zoom
     install          the `curl -fsSL https://tileception.space/install | sh` script:
-                     adds apt.tileception.space and installs the package
+                     asks how to set up, adds apt.tileception.space and installs
+                     the package
+    setup            a copy of resources/tileception-setup, which install fetches
+                     to ask its questions first (check.sh keeps them equal)
     .htaccess        Apache settings for OVH (HTTPS redirect, types, caching)
   tools/
     check.sh         sanity checks, run in CI

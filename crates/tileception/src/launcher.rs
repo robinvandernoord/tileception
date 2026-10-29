@@ -498,6 +498,7 @@ impl Tileception {
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| !matches!(c.does, Does::Suspend) || self.config.file.general.suspend_enabled)
+                .filter(|(_, c)| !matches!(c.does, Does::Line("doctor")) || self.shell().doctor())
                 .filter_map(|(i, c)| {
                     let by_name = quality(&query, &c.name.to_lowercase());
                     let by_words = query.split_whitespace().all(|w| c.words.split(' ').any(|k| k.starts_with(w)));

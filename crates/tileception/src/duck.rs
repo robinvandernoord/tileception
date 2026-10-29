@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -65,7 +65,7 @@ const PREVIEW: (u32, u32) = (64, 40);
 const THUMB: u32 = 56;
 
 /// The `[duck]` section of the config.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DuckConfig {
     /// How big the duck is: 1 is normal, 2 twice as big (0.5 to 4).

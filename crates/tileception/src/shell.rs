@@ -1,7 +1,7 @@
 //! The `[shell]` section: each built-in tool can be kept, switched off, or
 //! replaced by an outside program, as a lasting choice.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Tileception;
 
@@ -31,7 +31,7 @@ impl Part {
 }
 
 /// The edge used by the built-in bar.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BarPosition {
     #[default]
@@ -40,7 +40,7 @@ pub enum BarPosition {
 }
 
 /// The `[shell]` section as written.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ShellConfig {
     pub launcher: String,
@@ -48,6 +48,8 @@ pub struct ShellConfig {
     pub power_menu: String,
     pub lock: String,
     pub media: String,
+    /// The doctor panel: "builtin" or "none".
+    pub doctor: String,
     /// The built-in bar or its replacement.
     pub bar: String,
     pub bar_position: BarPosition,
@@ -64,6 +66,7 @@ impl Default for ShellConfig {
             power_menu: builtin(),
             lock: builtin(),
             media: builtin(),
+            doctor: builtin(),
             bar: builtin(),
             bar_position: BarPosition::Top,
             tray_max_icons: 3,
@@ -89,15 +92,21 @@ impl ShellConfig {
     pub fn media(&self) -> bool {
         Part::parse(&self.media).is_builtin()
     }
+    /// The doctor panel has no outside replacement: it is on or off.
+    pub fn doctor(&self) -> bool {
+        Part::parse(&self.doctor).is_builtin()
+    }
 
     pub fn validate(&self) -> Result<(), String> {
         if self.tray_max_icons == 0 {
             return Err("[shell] tray_max_icons must be at least 1".into());
         }
-        match Part::parse(&self.media) {
-            Part::Command(other) => Err(format!("[shell] media is builtin or none, not {other:?}")),
-            _ => Ok(()),
+        for (name, value) in [("media", &self.media), ("doctor", &self.doctor)] {
+            if let Part::Command(other) = Part::parse(value) {
+                return Err(format!("[shell] {name} is builtin or none, not {other:?}"));
+            }
         }
+        Ok(())
     }
 }
 
@@ -163,6 +172,9 @@ impl Tileception {
         if !new.power_menu().is_builtin() {
             self.power_menu = None;
         }
+        if !new.doctor() && self.doctor.open {
+            self.close_doctor();
+        }
         self.apply_bar_command();
         self.apply_tray();
     }
@@ -180,7 +192,10 @@ mod tests {
         assert_eq!(Part::parse("fuzzel --dmenu"), Part::Command("fuzzel --dmenu".into()));
         let shell = ShellConfig { media: "pamixer".into(), ..ShellConfig::default() };
         assert!(shell.validate().is_err());
+        let shell = ShellConfig { doctor: "claude".into(), ..ShellConfig::default() };
+        assert!(shell.validate().is_err());
         assert!(ShellConfig::default().validate().is_ok());
         assert!(ShellConfig::default().media());
+        assert!(ShellConfig::default().doctor());
     }
 }

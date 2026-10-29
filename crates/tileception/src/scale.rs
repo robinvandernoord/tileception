@@ -7,7 +7,7 @@
 //! where it makes render elements, and rasterises its own text and icons at
 //! the physical size. Xwayland clients draw at scale 1 and are enlarged.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use smithay::{
     backend::renderer::utils::RendererSurfaceStateUserData,
     delegate_fractional_scale, delegate_viewporter,
@@ -23,7 +23,7 @@ use smithay::{
 use crate::Tileception;
 
 /// One screen's settings, under `[outputs."<connector>"]`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
     pub scale: ScaleSetting,
@@ -37,6 +37,15 @@ pub enum ScaleSetting {
     #[serde(deserialize_with = "auto")]
     Auto,
     Fixed(f64),
+}
+
+impl Serialize for ScaleSetting {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Auto => serializer.serialize_str("auto"),
+            Self::Fixed(scale) => serializer.serialize_f64(*scale),
+        }
+    }
 }
 
 fn auto<'de, D: serde::Deserializer<'de>>(d: D) -> Result<(), D::Error> {

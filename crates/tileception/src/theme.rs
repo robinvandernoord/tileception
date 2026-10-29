@@ -2,7 +2,7 @@
 //! teal to blue accent with a soft glow. Colours can be overridden in the
 //! `[theme]` section of the config.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A colour as premultiplied RGBA, ready for the renderer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +47,7 @@ impl Colour {
 }
 
 /// The `[theme]` section as written in the config file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThemeFile {
     pub background: String,

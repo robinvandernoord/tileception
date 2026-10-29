@@ -2,21 +2,27 @@
 # Tileception installer: https://tileception.space/install
 #
 #   curl -fsSL https://tileception.space/install | sh
+#   curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset minimal
 #
-# Adds the Tileception apt repository (https://apt.tileception.space) with its
+# First asks how to set Tileception up (with tileception-setup, fetched from
+# https://tileception.space/setup; options after `--` are passed to it), then
+# adds the Tileception apt repository (https://apt.tileception.space) with its
 # signing key, then installs the tileception package and
 # tileception-archive-keyring, which owns that key and source from then on. Runs on Debian 13
 # (trixie), Debian unstable (sid), Ubuntu 24.04 (noble) and 26.04 (resolute),
 # and on systems built on them such as PikaOS and Linux Mint, for amd64 and
-# arm64. Uses sudo when not run as root.
+# arm64. Uses sudo when not run as root. Finally it applies the answers with
+# the installed tileception-setup, which can be run again later.
 #
-# TILECEPTION_REPO overrides the repository URL (for testing a mirror).
+# TILECEPTION_REPO overrides the repository URL (for testing a mirror), and
+# TILECEPTION_SITE the site the setup script comes from.
 set -eu
 
 # Everything runs from main, called on the last line, so a download that
 # breaks off halfway runs nothing at all.
 main() {
     repo="${TILECEPTION_REPO:-https://apt.tileception.space}"
+    site="${TILECEPTION_SITE:-https://tileception.space}"
     suites="trixie sid noble resolute"
     keyring=/usr/share/keyrings/tileception-archive-keyring.gpg
     sources=/etc/apt/sources.list.d/tileception.sources
@@ -45,16 +51,23 @@ main() {
         fail "run this as root, or install sudo"
     fi
 
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
+        || fail "curl or wget is needed to download Tileception"
+
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    say "Fetching the signing key from $repo"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$repo/tileception.gpg" -o "$tmp/key"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$tmp/key" "$repo/tileception.gpg"
-    else
-        fail "curl or wget is needed to fetch the signing key"
+    if dpkg-query -W -f '${Status}' tileception 2>/dev/null | grep -q 'ok installed'; then
+        say "Tileception is installed; this updates it"
     fi
+
+    # Every question comes now, before anything is downloaded or changed, so
+    # the rest can run unattended. The answers come back as flags.
+    fetch "$site/setup" "$tmp/setup"
+    [ -s "$tmp/setup" ] || fail "the setup script from $site is empty"
+    flags=$(sh "$tmp/setup" --print-flags "$@") || fail "setup was cancelled; nothing was changed"
+
+    say "Fetching the signing key from $repo"
+    fetch "$repo/tileception.gpg" "$tmp/key"
     [ -s "$tmp/key" ] || fail "the signing key from $repo is empty"
 
     cat > "$tmp/sources" <<EOF
@@ -78,8 +91,18 @@ EOF
     $sudo apt-get update </dev/null
     $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tileception-archive-keyring tileception </dev/null
 
-    say "Done. Reboot (or log out), then pick Tileception on the login screen."
+    say "Applying your choices"
+    eval "set -- $flags"
+    /usr/bin/tileception-setup "$@" </dev/null
     say "Updates arrive with your normal system updates."
+}
+
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$1" -o "$2"
+    else
+        wget -qO "$2" "$1"
+    fi
 }
 
 say() { printf '==> %s\n' "$*"; }

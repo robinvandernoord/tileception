@@ -4,7 +4,7 @@
 # config until Ctrl+C here. VT=9 make try-greeter picks another console.
 set -e
 cd "$(dirname "$0")/.."
-. scripts/greeter-lib.sh
+TILECEPTION_SETUP_LIB=1 . resources/tileception-setup
 
 vt=${VT:-8}
 cargo plane build --release -p tileception

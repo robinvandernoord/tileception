@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
 use zbus::zvariant::Value;
 
@@ -33,7 +33,7 @@ const ALERTS: [(u32, i32, u8, &str, &str); 3] = [
 ];
 
 /// The `[battery]` section.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatteryConfig {
     /// Colour the focus border by charge.
@@ -51,7 +51,7 @@ pub struct BatteryConfig {
     pub power_saver_at: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BorderLevel {
     pub at: u32,

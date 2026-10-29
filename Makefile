@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall install-greeter uninstall-greeter try-greeter nested deb deb-docker
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested deb deb-docker
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -15,7 +15,9 @@ help:
 	@echo "make test        run the tests of every crate"
 	@echo "make fmt         format the workspace and independent crates"
 	@echo "make lint        clippy and formatting checks"
-	@echo "make install     check packages, build, install the session"
+	@echo "make install     check packages, build, install the session (config kept;"
+	@echo "                 SETUP_ARGS='--preset minimal' passes setup choices)"
+	@echo "make setup       choose the parts of the desktop and the login screen"
 	@echo "make uninstall   remove the session (config and logs are kept)"
 	@echo "make install-greeter    make the Tileception greeter the login screen (from the next boot)"
 	@echo "make uninstall-greeter  switch back to the previous login screen and remove it"
@@ -80,7 +82,10 @@ lint: tools
 
 install: tools
 	@scripts/deps.sh check build runtime
-	./install-session.sh
+	./install-session.sh $(SETUP_ARGS)
+
+setup:
+	resources/tileception-setup $(SETUP_ARGS)
 
 uninstall:
 	./uninstall-session.sh
