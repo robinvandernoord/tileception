@@ -3,7 +3,7 @@
 # a "Tileception" entry to the login screen and its desktop portal backend
 # (these need sudo, and are skipped when already up to date).
 #
-# Asks nothing and keeps your config: options are passed to
+# Prompts for sudo before building and keeps your config: options are passed to
 # resources/tileception-setup, such as --preset minimal or --greeter
 # tileception, and applied at the end. `make setup` asks the questions.
 #
@@ -27,6 +27,9 @@ fi
 
 # Checks the options before the build. They come back as flags.
 flags=$(resources/tileception-setup --print-flags --non-interactive "$@") || exit 1
+
+# Authenticate before the build so installation can reuse the sudo cache.
+sudo -v
 
 bindir="$HOME/.local/bin"
 cargo plane build --release -p tileception
