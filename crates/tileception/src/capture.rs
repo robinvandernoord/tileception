@@ -60,18 +60,6 @@ struct Scene {
     clear: [f32; 4],
 }
 
-/// Compatibility transfer for outputs on another GPU. Render on the client's
-/// GPU, then upload RGBA to the scanout GPU instead of sharing driver buffers.
-pub fn read_frame(
-    renderer: &mut GlesRenderer,
-    elements: Vec<OutputElement>,
-    size: (i32, i32),
-    clear: [f32; 4],
-) -> Result<Vec<u8>, String> {
-    let scene = Scene { elements, size, clear };
-    pixels(renderer, &mut None, &scene, Rectangle::from_size(size.into()))
-}
-
 pub struct PendingCapture {
     /// Part of the output, in pixels.
     pub region: Rectangle<i32, Buffer>,
@@ -231,7 +219,7 @@ fn finish_frame(frame: &ZwlrScreencopyFrameV1, size: Size<i32, Buffer>, damage: 
 }
 
 /// Reads a region of a texture as RGBA rows, top to bottom.
-fn read_region(
+pub fn read_region(
     renderer: &mut GlesRenderer,
     texture: &GlesTexture,
     region: Rectangle<i32, Buffer>,

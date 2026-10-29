@@ -39,6 +39,7 @@ mod lock;
 mod markdown;
 mod media;
 mod minimized;
+mod mirror;
 mod notifications;
 mod osd;
 mod outputs;
@@ -64,6 +65,7 @@ mod tray_bus;
 mod udev;
 #[allow(clippy::min_ident_chars, reason = "ui is the established name for the interface drawing module")]
 mod ui;
+mod wake;
 mod wallpaper;
 mod winit;
 mod xwayland;

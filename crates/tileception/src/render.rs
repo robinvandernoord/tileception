@@ -19,9 +19,10 @@ use smithay::{
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            texture::TextureRenderElement,
             utils::{CropRenderElement, RescaleRenderElement},
         },
-        gles::{GlesRenderer, element::PixelShaderElement},
+        gles::{GlesRenderer, GlesTexture, element::PixelShaderElement},
     },
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
@@ -29,10 +30,10 @@ use smithay::{
 use tileception_core::{Node, NodeId, Rect, WindowId, WindowRole};
 
 use crate::{
+    cursor::Cursor,
     shapes::{Shape, Shapes},
     state::Tileception,
     theme::Colour,
-    udev::Udev,
 };
 
 smithay::backend::renderer::element::render_elements! {
@@ -42,6 +43,7 @@ smithay::backend::renderer::element::render_elements! {
     Solid = SolidColorRenderElement,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
+    Texture = TextureRenderElement<GlesTexture>,
 }
 
 /// How long a session takes to fade in from black, in seconds: it follows the
@@ -470,7 +472,7 @@ impl Tileception {
 
     /// The pointer, drawn by us when Tileception owns the screen: the client's own
     /// cursor surface when it set one, otherwise the theme's arrow.
-    pub fn cursor_elements(&mut self, udev: &mut Udev) -> Vec<OutputElement> {
+    pub fn cursor_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
         if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
@@ -482,8 +484,8 @@ impl Tileception {
         }
         let pos = self.pointer;
         let scale = self.scale;
-        if udev.cursor.scale != scale {
-            udev.cursor = crate::cursor::Cursor::load(scale);
+        if cursor.scale != scale {
+            *cursor = Cursor::load(scale);
         }
         match &self.cursor_status {
             CursorImageStatus::Hidden => Vec::new(),
@@ -496,18 +498,17 @@ impl Tileception {
                         .unwrap_or_default()
                 });
                 let origin = physical_point((pos.x - hotspot.x as f64, pos.y - hotspot.y as f64), scale);
-                let surfaces =
-                    render_elements_from_surface_tree(&mut udev.renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
+                let surfaces = render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
                 enlarged(surfaces, origin, scale).collect()
             }
             CursorImageStatus::Named(_) => {
                 // The theme's image is loaded at the scale, its hotspot in its own pixels.
-                let hot = udev.cursor.hotspot;
+                let hot = cursor.hotspot;
                 let position = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
-                    &mut udev.renderer,
+                    renderer,
                     position,
-                    &udev.cursor.buffer,
+                    &cursor.buffer,
                     None,
                     None,
                     None,

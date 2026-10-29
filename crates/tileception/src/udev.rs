@@ -2,10 +2,11 @@
 //! input, libseat for device access and VT switching.
 //!
 //! Independent scanout devices per GPU, with one primary compositor renderer.
+//! Outputs on other GPUs show frames it draws; see `mirror`.
 
 use std::time::{Duration, Instant};
 
-use crate::{Tileception, cursor::Cursor};
+use crate::{Tileception, cursor::Cursor, mirror::Mirror};
 use smithay::{
     backend::{
         allocator::{
@@ -23,10 +24,6 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma, ImportMemWl,
-            element::{
-                Kind,
-                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-            },
             gles::GlesRenderer,
             utils::{Buffer, RendererSurfaceStateUserData},
         },
@@ -97,6 +94,7 @@ pub struct Udev {
 
 struct Gpu {
     node: DrmNode,
+    gbm: GbmDevice<DrmDeviceFd>,
     manager: OutputManager,
     scanner: DrmScanner,
     surfaces: Vec<Lit>,
@@ -115,42 +113,31 @@ struct Lit {
     in_flight: Vec<Buffer>,
     lock_queued: bool,
     lock_shown: bool,
-    copy: Option<(Vec<u8>, MemoryRenderBuffer)>,
+    /// Frames from the primary renderer, for an output on a secondary GPU.
+    mirror: Option<Mirror>,
 }
 
 impl Lit {
-    fn copied_elements(
+    /// The primary renderer's frame, shown on this secondary-GPU output.
+    fn mirrored(
         &mut self,
-        source: &mut GlesRenderer,
-        target: &mut GlesRenderer,
-        elements: Vec<crate::render::OutputElement>,
+        gbm: &GbmDevice<DrmDeviceFd>,
+        primary: &mut GlesRenderer,
+        secondary: &mut GlesRenderer,
+        scene: &[crate::render::OutputElement],
         size: (i32, i32),
         clear: [f32; 4],
-    ) -> Result<Vec<crate::render::OutputElement>, String> {
-        let pixels = crate::capture::read_frame(source, elements, size, clear)?;
-        if self.copy.as_ref().is_none_or(|(previous, _)| previous != &pixels) {
-            let buffer = MemoryRenderBuffer::from_slice(
-                &pixels,
-                Fourcc::Abgr8888,
-                size,
-                1,
-                smithay::utils::Transform::Normal,
-                None,
-            );
-            self.copy = Some((pixels, buffer));
+    ) -> Result<crate::render::OutputElement, String> {
+        if self.mirror.as_ref().is_none_or(|mirror| mirror.size() != size) {
+            self.mirror = Some(Mirror::new(gbm, primary, secondary, size)?);
         }
-        let (_, buffer) = self.copy.as_ref().ok_or("missing secondary GPU frame")?;
-        let element = MemoryRenderBufferRenderElement::from_buffer(
-            target,
-            (0.0, 0.0),
-            buffer,
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(vec![crate::render::OutputElement::Memory(element)])
+        let mirror = self.mirror.as_mut().ok_or("no mirror")?;
+        let frame = mirror.render(primary, secondary, scene, clear);
+        if frame.is_err() {
+            // Its buffers may hold half a frame: start afresh next time.
+            self.mirror = None;
+        }
+        frame
     }
 }
 
@@ -177,15 +164,29 @@ impl Gpu {
         let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
         let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
         let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(node));
-        let manager =
-            DrmOutputManager::new(drm, allocator, exporter, Some(gbm), COLOR_FORMATS.iter().copied(), render_formats);
+        let manager = DrmOutputManager::new(
+            drm,
+            allocator,
+            exporter,
+            Some(gbm.clone()),
+            COLOR_FORMATS.iter().copied(),
+            render_formats,
+        );
         let token = handle.insert_source(notifier, move |event, _, state| match event {
             DrmEvent::VBlank(crtc) => state.on_vblank(node, crtc),
             DrmEvent::Error(error) => tracing::error!("drm {node:?}: {error:?}"),
         })?;
         tracing::info!("opened GPU {}", card.display());
         Ok((
-            Self { node, manager, scanner: DrmScanner::new(), surfaces: Vec::new(), _drm_token: token, renderer: None },
+            Self {
+                node,
+                gbm,
+                manager,
+                scanner: DrmScanner::new(),
+                surfaces: Vec::new(),
+                _drm_token: token,
+                renderer: None,
+            },
             renderer,
             device_fd,
         ))
@@ -540,7 +541,7 @@ impl Tileception {
             in_flight: Vec::new(),
             lock_queued: false,
             lock_shown: false,
-            copy: None,
+            mirror: None,
         });
     }
 
@@ -641,6 +642,10 @@ impl Tileception {
         let now = self.now();
         let mut queued = false;
         let mut gpus = std::mem::take(&mut udev.gpus);
+        let Some(gbm) = gpus.first().map(|primary| primary.gbm.clone()) else {
+            self.udev = Some(udev);
+            return;
+        };
         for gpu in &mut gpus {
             for lit in &mut gpu.surfaces {
                 if lit.frame_pending {
@@ -650,24 +655,35 @@ impl Tileception {
                 self.with_output(&output, |state| {
                     state.update_bar();
                     state.process_captures(&mut udev.renderer);
-                    let mut elements =
-                        if state.is_active_output() { state.cursor_elements(&mut udev) } else { Vec::new() };
-                    elements.extend(state.frame_elements(&mut udev.renderer, now));
                     let clear = state.clear_colour();
-                    let elements = if let Some(renderer) = gpu.renderer.as_mut() {
-                        match lit.copied_elements(&mut udev.renderer, renderer, elements, state.output_pixels(), clear)
-                        {
-                            Ok(elements) => elements,
-                            Err(error) => {
-                                tracing::warn!("secondary GPU copy for {}: {error}", lit.output.name());
-                                return;
-                            }
-                        }
+                    let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                    let mut elements = if state.is_active_output() {
+                        state.cursor_elements(renderer, &mut udev.cursor)
                     } else {
-                        elements
+                        Vec::new()
+                    };
+                    let elements = if let Some(secondary) = gpu.renderer.as_mut() {
+                        let scene = state.frame_elements(&mut udev.renderer, now);
+                        let size = state.output_pixels();
+                        // The pointer is drawn by the secondary GPU itself, so
+                        // moving it needs nothing new from the primary.
+                        lit.mirrored(&gbm, &mut udev.renderer, secondary, &scene, size, clear).map(|frame| {
+                            elements.push(frame);
+                            elements
+                        })
+                    } else {
+                        elements.extend(state.frame_elements(&mut udev.renderer, now));
+                        Ok(elements)
                     };
                     let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
-                    match lit.drm_output.render_frame(renderer, &elements, clear, FrameFlags::DEFAULT) {
+                    let rendered = match &elements {
+                        Ok(elements) => lit
+                            .drm_output
+                            .render_frame(renderer, elements, clear, FrameFlags::DEFAULT)
+                            .map_err(|error| format!("render: {error:?}")),
+                        Err(error) => Err(format!("secondary GPU frame: {error}")),
+                    };
+                    match rendered {
                         Ok(result) if !result.is_empty => {
                             // If KMS cannot wait on the render fence, finish GPU work
                             // before scanout rather than displaying an unfinished frame.
@@ -689,7 +705,7 @@ impl Tileception {
                             }
                         }
                         Ok(_) => {}
-                        Err(err) => tracing::warn!("render: {err:?}"),
+                        Err(error) => tracing::warn!("{}: {error}", lit.output.name()),
                     }
                     let elapsed = state.start.elapsed();
                     // Minimized windows are hidden: no frames, so they need not draw.
