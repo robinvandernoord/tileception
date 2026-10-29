@@ -32,6 +32,35 @@ The [installer](website/public/install) adds the signed Tileception APT reposito
 and installs the package, using sudo when needed. Updates arrive through your
 normal system updates.
 
+<a id="install-options"></a>
+<details>
+<summary>Unattended or custom install</summary>
+
+The installer asks how to set Tileception up before it changes anything. To
+answer up front, pass options after `sh -s --`:
+
+```sh
+# No questions, recommended setup
+curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset recommended
+
+# Minimal: no bar, notifications or Doctor
+curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset minimal
+
+# Recommended, but your own programs in place of Tileception's launcher and bar
+curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset recommended --launcher fuzzel --bar waybar
+
+# Also make Tileception's greeter the login screen
+curl -fsSL https://tileception.space/install | sh -s -- --greeter tileception
+```
+
+Presets are `recommended`, `minimal`, `customize` and `keep`. `--bar`,
+`--launcher`, `--notifications`, `--power-menu` and `--lock` take `builtin`,
+`none` or a command; `--media` and `--doctor` take `builtin` or `none`. Run `tileception-setup --help`
+after installing for every option, or run `tileception-setup` again at any time
+to change your choices.
+
+</details>
+
 See the [installation guide](docs/installation.md) for details, updates and
 removal instructions.
 

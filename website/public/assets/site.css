@@ -83,6 +83,12 @@ h3 { font-family: var(--f-display); font-weight: 900; text-transform: uppercase;
 .cmd code { flex: 1; min-width: 0; padding: .7em .9em; font-size: .8em; overflow-wrap: anywhere; }
 .copy { font: 700 .7em var(--f-body); background: var(--yellow); color: var(--ink); border: 0; padding: 0 1.1em; cursor: pointer; }
 .copy:hover { background: var(--canvas); }
+.cmd-tabs { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3em; margin-top: .5em; font-size: .7em; }
+.cmd-tabs[hidden] { display: none; }
+.tab { font: 700 1em var(--f-body); background: transparent; color: var(--ink); border: .16em solid var(--ink); padding: .15em .7em; cursor: pointer; }
+.tab:hover { background: var(--yellow); }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--canvas); }
+.tab-more { margin-left: auto; font-weight: 700; }
 .loop-link { font-weight: 700; }
 
 .foot { background: var(--ink); color: var(--canvas); font-size: 14px; padding-block: 28px calc(28px + env(safe-area-inset-bottom, 0px));

@@ -170,6 +170,12 @@
       <h2 id="h-get" class="display"><span class="sq sq-r">Get it.</span></h2>
       <p class="warn"><strong>Alpha.</strong> 0.x releases are unstable and may break between versions. 1.0 will be the first stable one.</p>
       <p>On Debian 13 / sid or Ubuntu 24.04 / 26.04:</p>
+      <div class="cmd-tabs" role="tablist" aria-label="Install command" hidden>
+        <button type="button" class="tab" role="tab" aria-selected="true" aria-controls="install-cmd" data-cmd="curl -fsSL https://tileception.space/install | sh">Guided</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="install-cmd" data-cmd="curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset recommended">Unattended</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="install-cmd" data-cmd="curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset minimal">Minimal</button>
+        <a class="tab-more" href="https://github.com/robinvandernoord/tileception#install-options">All options</a>
+      </div>
       <div class="cmd"><code id="install-cmd">curl -fsSL https://tileception.space/install | sh</code><button type="button" class="copy" data-copy="install-cmd">Copy</button></div>
       <p class="small">Rather build it yourself? Clone <a href="https://github.com/robinvandernoord/tileception#installing-as-a-session">the repository</a> and run <code>./install-session.sh</code>, then pick Tileception on the login screen.</p>
     </div>

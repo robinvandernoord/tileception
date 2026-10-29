@@ -17,6 +17,17 @@
     });
   });
 
+  // Install variants swap the command in place, so the block keeps its size.
+  document.querySelectorAll('.cmd-tabs').forEach(tabs => {
+    const buttons = [...tabs.querySelectorAll('[role="tab"]')];
+    const select = btn => {
+      buttons.forEach(other => other.setAttribute('aria-selected', String(other === btn)));
+      document.getElementById(btn.getAttribute('aria-controls')).textContent = btn.dataset.cmd;
+    };
+    buttons.forEach(btn => btn.addEventListener('click', () => select(btn)));
+    tabs.hidden = false;
+  });
+
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
   const scroller = document.getElementById('scroller');
