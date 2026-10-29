@@ -239,6 +239,7 @@ impl Tileception {
         if active {
             elements.extend(self.osd_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
+            elements.extend(self.handoff_elements(renderer));
         }
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
@@ -249,11 +250,11 @@ impl Tileception {
             if !self.launcher.home {
                 elements.extend(self.launcher_elements(renderer));
             }
-            elements.extend(self.notification_elements(renderer));
-            elements.extend(self.doctor_elements(renderer));
         }
-        // Over the strip, which it can stand on. Drawn on its own screen,
-        // whichever is active.
+        // These stay on the screen they appeared on, whichever is active.
+        elements.extend(self.notification_elements(renderer));
+        elements.extend(self.doctor_elements(renderer));
+        // Over the strip, which it can stand on.
         elements.extend(self.duck_elements(renderer));
         if active {
             elements.extend(self.strip_elements(renderer));
@@ -477,6 +478,10 @@ impl Tileception {
     /// cursor surface when it set one, otherwise the theme's arrow.
     pub fn cursor_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
+        // The pointer is on another machine.
+        if self.handoff.forwarding.is_some() {
+            return Vec::new();
+        }
         if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
         }

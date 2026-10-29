@@ -35,23 +35,26 @@ use crate::{
     ui::{Align, Icons, LocalTime, Painter, Style, ease_out, glyph},
 };
 
-/// Clipboard contents the compositor owns itself: launcher text, or a
-/// screenshot from `tileception msg copy-image`.
+/// Clipboard contents the compositor owns itself: launcher text, a
+/// screenshot from `tileception msg copy-image`, or what another machine
+/// offers (fetched when pasted).
 #[derive(Debug, Clone)]
 pub enum Clip {
     Text(String),
     Png(std::sync::Arc<[u8]>),
+    Remote(crate::handoff::RemoteClip),
 }
 
 impl Clip {
     pub fn text(&self) -> Option<&str> {
         match self {
             Clip::Text(text) => Some(text),
-            Clip::Png(_) => None,
+            Clip::Png(_) | Clip::Remote(_) => None,
         }
     }
 
-    /// Serves the contents without starting a Wayland client.
+    /// Serves the contents without starting a Wayland client. Another
+    /// machine's selection goes through `Tileception::handoff_fetch` instead.
     pub fn send(&self, pipe: std::os::fd::OwnedFd) {
         use std::io::Write;
         let clip = self.clone();
@@ -59,6 +62,7 @@ impl Clip {
             let bytes = match &clip {
                 Clip::Text(text) => text.as_bytes(),
                 Clip::Png(png) => png,
+                Clip::Remote(_) => return,
             };
             let _ = std::fs::File::from(pipe).write_all(bytes);
         });
@@ -303,6 +307,7 @@ impl Tileception {
         }
         let mime_types = vec!["image/png".to_string()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
+        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
@@ -315,6 +320,7 @@ impl Tileception {
     pub(crate) fn copy_text(&mut self, text: String) {
         let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
+        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
@@ -628,8 +634,9 @@ impl Tileception {
     /// field, or a picture into the doctor's next message.
     pub fn paste(&mut self, target: Paste) {
         use std::os::unix::net::UnixStream;
-        if let Some(clip) = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
-            self.insert_paste(target, clip);
+        let owned = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+        if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
+            self.insert_paste(target, clip.clone());
             return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
@@ -646,6 +653,16 @@ impl Tileception {
             Paste::Doctor => [&["image/png"][..], &text].concat(),
             Paste::Launcher(_) => text.to_vec(),
         };
+        if let Some(Clip::Remote(remote)) = owned {
+            let Some(wanted) =
+                mime_types.into_iter().find(|mime_type| remote.mime_types.iter().any(|offered| offered == mime_type))
+            else {
+                return;
+            };
+            self.handoff_fetch(&remote, wanted.into(), writer.into());
+            self.launcher_read_paste(reader, sender, target, wanted.starts_with("image/"));
+            return;
+        }
         let mut wanted = "";
         for mime_type in mime_types {
             wanted = mime_type;

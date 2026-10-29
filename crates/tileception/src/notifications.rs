@@ -12,6 +12,7 @@ use smithay::{
         allocator::Fourcc,
         renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer},
     },
+    output::Output,
     reexports::calloop::ping::make_ping,
     utils::Transform,
 };
@@ -33,6 +34,9 @@ pub struct Notifications {
     active: BTreeMap<u32, Arc<Notification>>,
     history: Vec<Arc<Notification>>,
     pub open: bool,
+    /// The screen the panel or the popups showing appeared on; the active
+    /// one when unset.
+    pub home: Option<Output>,
     offset: usize,
     thumbnails: RefCell<HashMap<u32, Option<Preview>>>,
     /// Shown by [`Tileception::notify_locally`] so far, for their ids.
@@ -92,6 +96,7 @@ impl Tileception {
         for event in events {
             match event {
                 Event::Shown(notification) | Event::Replaced(notification) => {
+                    self.notifications_appear();
                     self.notifications.thumbnails.borrow_mut().remove(&notification.id);
                     self.notifications.active.insert(notification.id, Arc::new(notification));
                 }
@@ -110,10 +115,28 @@ impl Tileception {
         if self.is_locked() {
             return;
         }
-        self.notifications.open = !self.notifications.open;
+        // Open on another screen, it comes over to this one.
+        self.notifications.open = !self.notifications.open || !self.notifications_here();
+        self.notifications.home = self.outputs.active.clone();
         self.notifications.offset = 0;
         if self.notifications.open {
             self.refresh_notification_history();
+        }
+    }
+
+    /// Whether the notifications show on the output being drawn or handled.
+    pub fn notifications_here(&self) -> bool {
+        match &self.notifications.home {
+            Some(home) => self.output.as_ref() == Some(home),
+            None => self.is_active_output(),
+        }
+    }
+
+    /// A new popup shows on the active screen, unless others are showing
+    /// somewhere already: they stay together.
+    fn notifications_appear(&mut self) {
+        if !self.notifications.open && self.notifications.active.is_empty() {
+            self.notifications.home = self.outputs.active.clone();
         }
     }
 
@@ -164,6 +187,7 @@ impl Tileception {
             expires: Some(Instant::now() + LOCAL_TIMEOUT),
             show_popup: true,
         };
+        self.notifications_appear();
         self.notifications.active.insert(notification_id, Arc::new(notification));
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(LOCAL_TIMEOUT);
         let removed = self.loop_handle.insert_source(timer, move |_, _, state| {
@@ -330,7 +354,7 @@ impl Tileception {
     }
 
     pub fn notifications_contain(&self, point: Point) -> bool {
-        if self.overlay_under(point) {
+        if !self.notifications_here() || self.overlay_under(point) {
             return false;
         }
         if self.notifications.open && self.notification_panel().contains(point) {
@@ -385,6 +409,9 @@ impl Tileception {
     }
 
     pub fn notification_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        if !self.notifications_here() {
+            return Vec::new();
+        }
         let theme = &self.theme;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
         let dnd = self.notifications.service.as_ref().is_some_and(|service| service.do_not_disturb());

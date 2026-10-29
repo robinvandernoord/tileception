@@ -61,6 +61,21 @@ const BOLT: &str = r#"<path d="M13 3L6 13h5l-1 8 7-10h-5z"/>"#;
 /// by [`ErrorWatch`].
 static LAST_ERROR: Mutex<Option<(u64, String)>> = Mutex::new(None);
 
+thread_local! {
+    /// Errors logged now are expected and handled: see [`expecting_errors`].
+    static EXPECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `probe`, whose errors (from a library trying something that may not
+/// work here) are handled by the caller: they stay in the log, but do not
+/// light up the bar.
+pub fn expecting_errors<T>(probe: impl FnOnce() -> T) -> T {
+    let before = EXPECTED.replace(true);
+    let result = probe();
+    EXPECTED.set(before);
+    result
+}
+
 /// A tracing layer that remembers errors, so the bar can show that
 /// something went wrong (a config that did not load, a service that did not
 /// start) and offer to ask the doctor about it.
@@ -68,7 +83,7 @@ pub struct ErrorWatch;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorWatch {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        if *event.metadata().level() != tracing::Level::ERROR {
+        if *event.metadata().level() != tracing::Level::ERROR || EXPECTED.get() {
             return;
         }
         struct Message(String);

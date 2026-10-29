@@ -42,6 +42,8 @@ pub struct ConfigFile {
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
+    /// Sharing the mouse, keyboard and clipboard with other machines.
+    pub handoff: crate::handoff::HandoffConfig,
     /// Extra arguments for programs the launcher starts, by desktop file name.
     pub launch_args: BTreeMap<String, Vec<String>>,
     pub binds: Option<BTreeMap<String, BindValue>>,
@@ -444,8 +446,9 @@ impl Tileception {
             self.wallpaper = None;
             self.wallpaper_failed = None;
         }
-        let old_shell = std::mem::replace(&mut self.config, config).file.shell;
-        self.apply_shell(&old_shell);
+        let old = std::mem::replace(&mut self.config, config).file;
+        self.apply_shell(&old.shell);
+        self.apply_handoff_config(&old.handoff);
         if republish {
             self.publish_greeter_card();
         }

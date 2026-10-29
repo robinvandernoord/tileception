@@ -62,6 +62,8 @@ pub enum Command {
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
+    /// Sharing with other machines.
+    Handoff(crate::handoff::HandoffCommand),
 }
 
 /// What `tileception msg --help` prints. Every verb here must parse (a test
@@ -135,6 +137,14 @@ Shell:
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
+  handoff                   machines sharing this mouse and keyboard
+  handoff edge [machine] <output> <side>
+                            place a machine at an edge (left, right, top,
+                            bottom), as dragging its card there does
+  handoff dismiss [machine] stop sharing with a machine, or decline it
+  handoff retry             ask again about machines declined before
+  handoff resume            share again after a lock paused it
+  handoff home              bring input back (also Ctrl+Super+Escape)
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
@@ -150,6 +160,8 @@ Sound, light and media:
 
 Pretend input (headless or nested only):
   pointer <x> <y>           move the pointer
+  motion <dx> <dy>          move it by this much, like a mouse (crosses to
+                            machines linked with handoff)
   click [x y] [left|right|middle]
   key <combo>               press a key, such as Return or Super+slash
   type <text>               type text
@@ -193,6 +205,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             });
         }
         "show-minimized" => return Ok(Command::ShowMinimized),
+        "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
@@ -239,7 +252,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "click" | "key" | "type" | "gesture" | "touch" => {
+        "pointer" | "motion" | "click" | "key" | "type" | "gesture" | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {
@@ -353,6 +366,7 @@ impl Tileception {
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
                     | Command::Battery
+                    | Command::Handoff(crate::handoff::HandoffCommand::Status)
             )
         {
             return Err("session is locked".into());
@@ -400,6 +414,7 @@ impl Tileception {
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
+            Command::Handoff(command) => return self.handoff_command(command),
             Command::ColourScheme(scheme) => {
                 self.theme.colour_scheme = scheme;
                 self.update_appearance();

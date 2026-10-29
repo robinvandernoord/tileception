@@ -14,6 +14,7 @@ use smithay::{
     utils::{Logical, Point, SERIAL_COUNTER},
 };
 use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId};
+use tileception_handoff::Source;
 
 use crate::{
     commands::Command,
@@ -109,6 +110,9 @@ impl Tileception {
         {
             return;
         }
+        if self.forward_input(&event) {
+            return;
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_key::<I>(event),
             InputEvent::PointerMotionAbsolute { event } => {
@@ -118,7 +122,12 @@ impl Tileception {
                 let screen = self.desktop_bounds();
                 let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
                 let origin = self.output.as_ref().map(|output| output.current_location().to_f64()).unwrap_or_default();
-                let pos = self.desktop_motion(pos + Point::from((screen.x, screen.y)) - origin);
+                self.handoff.absolute = Some(pos);
+                let pos = pos + Point::from((screen.x, screen.y)) - origin;
+                if self.handoff_cross(Source::Local, pos) {
+                    return;
+                }
+                let pos = self.desktop_motion(pos);
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
@@ -126,15 +135,22 @@ impl Tileception {
                 let pos = self.pointer + event.delta();
                 // A locked or confined pointer may not move; raw motion is reported either way.
                 if let Some(pos) = self.constrained_motion(event.delta(), event.delta_unaccel(), event.time(), pos) {
+                    if self.handoff_cross(Source::Local, pos) {
+                        return;
+                    }
                     let pos = self.desktop_motion(pos);
                     self.on_motion(pos, event.time_msec());
                     self.activate_constraint_under();
                 }
             }
             InputEvent::PointerButton { event } => {
-                self.on_button(event.button_code(), event.state(), event.time_msec())
+                // Only the first press and the last release when another
+                // machine holds the same button.
+                if self.handoff.held.button(Source::Local, event.button_code(), event.state() == ButtonState::Pressed) {
+                    self.on_button(event.button_code(), event.state(), event.time_msec())
+                }
             }
-            InputEvent::PointerAxis { event } => self.on_axis::<I>(&event),
+            InputEvent::PointerAxis { event } => self.on_axis(&AxisInput::from_event::<I>(&event)),
             InputEvent::GestureSwipeBegin { event } => {
                 self.gesture_begin(false, event.fingers(), None, event.time_msec())
             }
@@ -180,6 +196,17 @@ impl Tileception {
 
     /// A key, from a keyboard or from `tileception msg key` in tests.
     pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        let visible =
+            self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
+        if let Some(peer) = self.handoff.forwarding {
+            self.forward_key(peer, code, key_state, time);
+        } else if visible {
+            self.deliver_key(code, key_state, time);
+        }
+    }
+
+    /// A key for this machine, from here or from another machine.
+    pub(crate) fn deliver_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = key_state == KeyState::Pressed;
@@ -493,6 +520,12 @@ impl Tileception {
             return;
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
+        if !self.is_locked() && self.power_menu.is_none() && self.handoff_prompt_motion(pos) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
@@ -521,7 +554,7 @@ impl Tileception {
             self.controls_drag(pos.x);
             return;
         }
-        if self.duck_motion(point) {
+        if self.duck_motion(point) || self.doctor_drag(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -659,6 +692,9 @@ impl Tileception {
             return;
         }
         let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.power_menu.is_none() && self.handoff_prompt_button(button, state == ButtonState::Pressed) {
+            return;
+        }
         if self.power_menu.is_none()
             && (self.tray.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
@@ -691,6 +727,9 @@ impl Tileception {
         }
         // A held duck lets go wherever the button comes up.
         if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, point) {
+            return;
+        }
+        if state == ButtonState::Released && button == BTN_LEFT && self.doctor_release() {
             return;
         }
         if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(point) {
@@ -863,7 +902,7 @@ impl Tileception {
         strip.views.get(index.min(strip.views.len() - 1)).copied()
     }
 
-    fn on_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
+    pub(crate) fn on_axis(&mut self, event: &AxisInput) {
         if self.draws_lock_screen() {
             return;
         }
@@ -934,7 +973,7 @@ impl Tileception {
         }
         self.tap_armed = None;
         let source = event.source();
-        if !self.is_locked() && self.wheel_binding::<I>(event) {
+        if !self.is_locked() && self.wheel_binding(event) {
             return;
         }
         let amount = |axis| event.amount(axis).unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
@@ -968,7 +1007,7 @@ impl Tileception {
 
     /// Runs a binding like `Super+WheelUp`. Returns whether the scroll was
     /// taken: scrolling with a bound modifier never reaches the client.
-    fn wheel_binding<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) -> bool {
+    fn wheel_binding(&mut self, event: &AxisInput) -> bool {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let mut held = Mods::from_state(&keyboard.modifier_state());
         if held == Mods::default() {
@@ -1111,6 +1150,51 @@ impl Tileception {
 }
 
 /// Keys that work whatever the config says.
+/// One scroll step, from a local pointer or from another machine.
+pub(crate) struct AxisInput {
+    pub source: AxisSource,
+    pub time: u32,
+    pub horizontal: Option<f64>,
+    pub vertical: Option<f64>,
+    pub horizontal_v120: Option<f64>,
+    pub vertical_v120: Option<f64>,
+}
+
+impl AxisInput {
+    fn from_event<I: InputBackend>(event: &I::PointerAxisEvent) -> AxisInput {
+        AxisInput {
+            source: event.source(),
+            time: event.time_msec(),
+            horizontal: event.amount(Axis::Horizontal),
+            vertical: event.amount(Axis::Vertical),
+            horizontal_v120: event.amount_v120(Axis::Horizontal),
+            vertical_v120: event.amount_v120(Axis::Vertical),
+        }
+    }
+
+    fn source(&self) -> AxisSource {
+        self.source
+    }
+
+    fn time_msec(&self) -> u32 {
+        self.time
+    }
+
+    fn amount(&self, axis: Axis) -> Option<f64> {
+        match axis {
+            Axis::Horizontal => self.horizontal,
+            Axis::Vertical => self.vertical,
+        }
+    }
+
+    fn amount_v120(&self, axis: Axis) -> Option<f64> {
+        match axis {
+            Axis::Horizontal => self.horizontal_v120,
+            Axis::Vertical => self.vertical_v120,
+        }
+    }
+}
+
 fn builtin(held: Mods, sym: u32, raw: u32, in_overview: bool) -> Option<Command> {
     let plain = held == Mods::default();
     if in_overview && plain && sym == keysyms::KEY_Escape {

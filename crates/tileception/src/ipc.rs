@@ -123,6 +123,16 @@ fn only_socket() -> std::io::Result<PathBuf> {
 
 /// `tileception msg ...`: sends a command to the running compositor.
 pub fn client(args: &[String]) -> std::io::Result<()> {
+    let reply = request(args)?;
+    print!("{reply}");
+    if reply.starts_with("error") {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Sends one command to the running compositor and returns its reply.
+pub fn request(args: &[String]) -> std::io::Result<String> {
     let path = match std::env::var_os("TILECEPTION_SOCKET") {
         Some(socket) => PathBuf::from(socket),
         None => match std::env::var("WAYLAND_DISPLAY") {
@@ -136,9 +146,5 @@ pub fn client(args: &[String]) -> std::io::Result<()> {
     stream.write_all(format!("{}\n", args.join(" ")).as_bytes())?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
-    print!("{reply}");
-    if reply.starts_with("error") {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(reply)
 }

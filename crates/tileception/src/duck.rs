@@ -354,7 +354,7 @@ impl Tileception {
         let left_wall = screen.x + side;
         let right_wall = screen.right() - side;
         let wander =
-            if self.doctor.open { (left_wall + crate::doctor::PANEL_W + 16.0).min(right_wall) } else { left_wall };
+            if self.doctor_here() { (left_wall + crate::doctor::PANEL_W + 16.0).min(right_wall) } else { left_wall };
         (left_wall, right_wall, wander)
     }
 

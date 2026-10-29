@@ -28,6 +28,7 @@ mod focus;
 mod gestures;
 mod greeter;
 mod handlers;
+mod handoff;
 mod headless;
 mod idle;
 mod inject;
@@ -82,10 +83,15 @@ Usage:
   tileception msg <command> [args...]
   tileception msg --help
   tileception config get|set|add <section.key> [value]
+  tileception setup [options]
+  tileception pair [<passphrase words...> | --new | --off | --show]
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
-(`tileception config --help`).
+(`tileception config --help`). `setup` chooses the desktop's parts and the
+login screen again (`tileception setup --help`). `pair` shows or sets the
+passphrase that lets other computers share this mouse and keyboard
+(`tileception pair --help`).
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -127,6 +133,23 @@ Environment:
   TILECEPTION_GREETER_SESSIONS Wayland session directories, for tests
 ";
 
+/// `tileception setup` runs tileception-setup, a shell script so that the
+/// installer can ask its questions before Tileception is installed. Only
+/// returns when it could not be started.
+fn run_setup(args: &[String]) -> String {
+    use std::os::unix::process::CommandExt;
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("tileception-setup")));
+    let home = std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/bin/tileception-setup"));
+    let script = beside
+        .into_iter()
+        .chain(home)
+        .chain(["/usr/bin/tileception-setup".into(), "/usr/local/bin/tileception-setup".into()])
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| "tileception-setup".into());
+    let error = std::process::Command::new(&script).args(args).exec();
+    format!("cannot run {}: {error}", script.display())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("msg") {
@@ -136,6 +159,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => ipc::client(&argv[1..])?,
         }
         return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("pair") {
+        if let Err(err) = handoff::pair::run(&argv[1..]) {
+            eprintln!("tileception pair: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("setup") {
+        let error = run_setup(&argv[1..]);
+        eprintln!("tileception setup: {error}");
+        std::process::exit(1);
     }
     if argv.first().map(String::as_str) == Some("config") {
         if let Err(err) = config_edit::run(&argv[1..]) {
@@ -224,6 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket.display()
     );
 
+    state.start_handoff();
     state.session_services = !nested && !headless;
     if !nested && !headless {
         state.fade_in = render::FadeIn::Waiting;

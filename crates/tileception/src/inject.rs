@@ -18,6 +18,9 @@ const BTN_MIDDLE: u32 = 0x112;
 pub enum Inject {
     /// Moves the pointer.
     Pointer(f64, f64),
+    /// Moves the pointer by this much, as a mouse does: past a screen edge
+    /// linked to another machine, and on there.
+    Motion(f64, f64),
     /// Presses and lets go of a button, after moving there when given.
     Click { position: Option<(f64, f64)>, button: u32 },
     /// A key combination such as `Super+slash` or `Return`.
@@ -39,6 +42,10 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
         "pointer" => match args[..] {
             [x_arg, y_arg] => Ok(Inject::Pointer(number(x_arg)?, number(y_arg)?)),
             _ => Err("pointer needs x and y".into()),
+        },
+        "motion" => match args[..] {
+            [x_arg, y_arg] => Ok(Inject::Motion(number(x_arg)?, number(y_arg)?)),
+            _ => Err("motion needs dx and dy".into()),
         },
         "click" => {
             let (position, button) = match args[..] {
@@ -127,12 +134,21 @@ impl Tileception {
         let time = (self.now() * 1000.0) as u32;
         match input {
             Inject::Pointer(x_pos, y_pos) => self.inject_motion(x_pos, y_pos, time),
+            Inject::Motion(right, down) => {
+                if !self.forward_message(tileception_handoff::Message::Motion { right, down }) {
+                    self.inject_motion(self.pointer.x + right, self.pointer.y + down, time);
+                }
+            }
             Inject::Click { position, button } => {
                 if let Some((x_pos, y_pos)) = position {
                     self.inject_motion(x_pos, y_pos, time);
                 }
-                self.on_button(button, ButtonState::Pressed, time);
-                self.on_button(button, ButtonState::Released, time + 1);
+                for pressed in [true, false] {
+                    if !self.forward_message(tileception_handoff::Message::Button { button, pressed }) {
+                        let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+                        self.on_button(button, state, time + u32::from(!pressed));
+                    }
+                }
             }
             Inject::Key(combo) => {
                 let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
@@ -179,6 +195,11 @@ impl Tileception {
     }
 
     fn inject_motion(&mut self, x_pos: f64, y_pos: f64, time: u32) {
+        if self.handoff.forwarding.is_some()
+            || self.handoff_cross(tileception_handoff::Source::Local, (x_pos, y_pos).into())
+        {
+            return;
+        }
         let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
         self.on_motion(pos, time);
     }

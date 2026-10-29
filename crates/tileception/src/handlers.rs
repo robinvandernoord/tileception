@@ -219,8 +219,10 @@ impl SelectionHandler for Tileception {
 
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        let mime_types = source.map(|offered| offered.mime_types());
+        self.selection_offered(ty, mime_types.clone());
         if let Some(xwm) = self.xwm.as_mut()
-            && let Err(err) = xwm.new_selection(ty, source.map(|offered| offered.mime_types()))
+            && let Err(err) = xwm.new_selection(ty, mime_types)
         {
             tracing::warn!("could not offer the selection to X11: {err:?}");
         }
@@ -235,6 +237,10 @@ impl SelectionHandler for Tileception {
         _seat: Seat<Self>,
         clip: &Option<crate::launcher::Clip>,
     ) {
+        if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+            self.handoff_fetch(&remote.clone(), mime_type, fd);
+            return;
+        }
         if let Some(clip) = clip {
             clip.send(fd);
             return;

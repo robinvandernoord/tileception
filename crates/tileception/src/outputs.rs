@@ -277,6 +277,13 @@ impl Tileception {
                 window.with_surfaces(|surface, _| output.leave(surface));
             }
         });
+        // Panels on it move to the active screen.
+        if self.doctor.home.as_ref() == Some(output) {
+            self.doctor.home = None;
+        }
+        if self.notifications.home.as_ref() == Some(output) {
+            self.notifications.home = None;
+        }
         let previous = self.outputs.active.clone();
         let Some(target) = self.all_outputs().into_iter().find(|candidate| candidate != output) else {
             self.output = None;

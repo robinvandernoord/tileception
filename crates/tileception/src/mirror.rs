@@ -118,21 +118,36 @@ impl Mirror {
     }
 }
 
-/// A linear buffer on the primary GPU, which the secondary can sample.
+/// A buffer on the primary GPU, in a layout the secondary can sample.
 fn shared(
     gbm: &GbmDevice<DrmDeviceFd>,
     primary: &mut GlesRenderer,
     secondary: &mut GlesRenderer,
     size: Size<i32, Physical>,
 ) -> Result<(Handover, GlesTexture), String> {
+    let sampled = ImportDma::dmabuf_formats(secondary);
+    let modifiers: Vec<Modifier> = primary
+        .egl_context()
+        .dmabuf_render_formats()
+        .iter()
+        .filter(|format| format.code == Fourcc::Abgr8888 && sampled.contains(format))
+        .map(|format| format.modifier)
+        .collect();
+    if modifiers.is_empty() {
+        return Err("no buffer layout both can use".into());
+    }
     let buffer = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING)
-        .create_buffer(size.w as u32, size.h as u32, Fourcc::Abgr8888, &[Modifier::Linear])
+        .create_buffer(size.w as u32, size.h as u32, Fourcc::Abgr8888, &modifiers)
         .map_err(|error| error.to_string())?;
     let mut dmabuf = buffer.export().map_err(|error| error.to_string())?;
-    // Fails early if the primary cannot draw into it.
-    primary.bind(&mut dmabuf).map_err(|error| error.to_string())?;
-    let texture = secondary.import_dmabuf(&dmabuf, None).map_err(|error| error.to_string())?;
-    Ok((Handover::Shared(dmabuf), texture))
+    // Drivers may still refuse what they listed, and log it as a GL error:
+    // expected here, as the copy through memory takes over.
+    crate::bar::expecting_errors(|| {
+        // Fails early if the primary cannot draw into it.
+        primary.bind(&mut dmabuf).map_err(|error| error.to_string())?;
+        secondary.import_dmabuf(&dmabuf, None).map_err(|error| error.to_string())
+    })
+    .map(|texture| (Handover::Shared(dmabuf), texture))
 }
 
 fn memory(

@@ -242,6 +242,10 @@ impl XwmHandler for Tileception {
         let result = match selection {
             SelectionTarget::Clipboard => {
                 let clip = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+                    self.handoff_fetch(&remote, mime_type, fd);
+                    return;
+                }
                 if let Some(clip) = clip {
                     clip.send(fd);
                     return;
@@ -249,6 +253,11 @@ impl XwmHandler for Tileception {
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
             SelectionTarget::Primary => {
+                let clip = current_primary_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+                    self.handoff_fetch(&remote, mime_type, fd);
+                    return;
+                }
                 request_primary_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
         };
@@ -258,6 +267,7 @@ impl XwmHandler for Tileception {
     }
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        self.selection_offered(selection, Some(mime_types.clone()));
         match selection {
             SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, None),
             SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, None),
@@ -268,7 +278,8 @@ impl XwmHandler for Tileception {
         match selection {
             SelectionTarget::Clipboard => {
                 if current_data_device_selection_userdata(&self.seat).is_some_and(|data| data.is_none()) {
-                    clear_data_device_selection(&self.display_handle, &self.seat)
+                    clear_data_device_selection(&self.display_handle, &self.seat);
+                    self.selection_offered(selection, None);
                 }
             }
             SelectionTarget::Primary => {

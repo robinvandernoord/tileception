@@ -188,6 +188,7 @@ pub struct Tileception {
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
     pub sleep: crate::sleep::Sleep,
+    pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
@@ -344,6 +345,7 @@ impl Tileception {
             idle: Default::default(),
             battery: Default::default(),
             sleep: Default::default(),
+            handoff: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
             headless: None,
@@ -625,7 +627,7 @@ impl Tileception {
             None
         } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
-        } else if self.power_menu.is_some() {
+        } else if self.power_menu.is_some() || self.handoff.forwarding.is_some() {
             None
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.

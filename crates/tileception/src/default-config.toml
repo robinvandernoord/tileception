@@ -214,6 +214,23 @@ tray_max_icons = 3
 # [outputs."*"]
 # scale = 1
 
+# Handoff: share this mouse, keyboard and clipboard with other Tileception
+# machines on the network that know the same passphrase. When one appears,
+# drag its card to the edge of the screen where it stands; the pointer then
+# crosses there once its user has placed this machine too. Ctrl+Super+Escape
+# brings input back. Locking pauses sharing until you resume it on the card.
+# Pick several random words for the passphrase: guesses are slowed down, but
+# a short phrase can still be guessed. Nothing listens until this is enabled
+# with a passphrase. `tileception msg handoff` shows what is connected.
+#
+# [handoff]
+# enabled = true
+# passphrase = "several random words go here"
+# name = "laptop"               # what others see; the host name by default
+# port = 24850                  # TCP, on every machine
+# discovery = true              # find machines with mDNS
+# peers = ["192.168.1.20"]      # or fixed addresses (host or host:port)
+
 # Extra arguments for programs started from the launcher and the welcome
 # screen, by desktop file name (without .desktop; Snap and Flatpak entries
 # have their own, such as spotify_spotify and com.spotify.Client). Each is
