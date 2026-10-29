@@ -142,13 +142,18 @@ restore_login_screen() {
         previous=$(cat "$previous_dm_file" 2>/dev/null || true)
         if [ "$(current_dm)" = greetd.service ]; then
             if [ -z "$previous" ]; then
-                echo "greetd runs the Tileception greeter, and there is no earlier login screen to go back to." >&2
-                echo "Enable another one first, such as: sudo systemctl enable --force sddm" >&2
-                exit 1
+                if [ ! -e "$greetd_backup" ]; then
+                    echo "greetd runs the Tileception greeter, and there is no earlier login screen to go back to." >&2
+                    echo "Enable another one first, such as: sudo systemctl enable --force sddm" >&2
+                    exit 1
+                fi
+                # greetd was already the display manager: keep it enabled
+                # and restore the greeter it ran before Tileception.
+            else
+                $as_root systemctl disable greetd.service
+                $as_root systemctl enable "$previous"
+                echo "$previous is the login screen again from the next boot"
             fi
-            $as_root systemctl disable greetd.service
-            $as_root systemctl enable "$previous"
-            echo "$previous is the login screen again from the next boot"
         fi
         if [ -e "$greetd_backup" ]; then
             $as_root mv "$greetd_backup" "$greetd_config"
@@ -550,6 +555,9 @@ ask_greeter() {
     if greeter_active; then
         previous=$(cat "$previous_dm_file" 2>/dev/null || true)
         say "  Tileception's login screen is in use."
+        if [ -z "$previous" ] && [ -e "$greetd_backup" ]; then
+            previous=greetd.service
+        fi
         if [ -z "$previous" ]; then
             greeter=keep
             return
