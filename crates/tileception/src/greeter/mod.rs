@@ -53,6 +53,14 @@ const DEMO_PASSWORD: &str = "tide";
 /// decoded for the screen (RGBA, width, height).
 type FoundCard = (usize, card::Card, Option<(Vec<u8>, u32, u32)>);
 
+/// The greeter's log of its last run, `greeter.log` beside its memory file
+/// (normally /var/lib/tileception-greeter), started afresh each time. None
+/// when that directory cannot be written, such as when testing nested.
+pub fn log_file() -> Option<std::fs::File> {
+    let dir = settings::GreeterFile::load().state_path().parent()?.to_path_buf();
+    std::fs::File::create(dir.join("greeter.log")).ok()
+}
+
 /// How long the greeter takes to fade out once the session starts.
 const FADE_OUT: Duration = Duration::from_millis(250);
 

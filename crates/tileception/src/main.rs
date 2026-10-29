@@ -161,15 +161,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,smithay=warn"));
-    {
-        use tracing_subscriber::prelude::*;
-        tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).with(bar::ErrorWatch).init();
-    }
-
     let headless = argv.iter().any(|argument| argument == "--headless");
     let greeter = argv.iter().take_while(|argument| *argument != "--").any(|argument| argument == "--greeter");
+    // greetd drops the greeter's output, so the greeter also keeps a log of
+    // its last run, with every answer from greetd, beside its memory file.
+    let greeter_log = greeter.then(greeter::log_file).flatten();
+    let default_filter =
+        if greeter_log.is_some() { "info,smithay=warn,tileception::greeter=debug" } else { "info,smithay=warn" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+    {
+        use tracing_subscriber::prelude::*;
+        // greetd's greeter must not log to stdout: when nothing drains it (a
+        // console with output stopped, a full pipe), a log line blocks, and
+        // with it the thread waiting for greetd, so logging in never ends.
+        let on_hardware = greeter && !headless && !argv.iter().any(|argument| argument == "--nested");
+        let stdout_layer = (!on_hardware).then(tracing_subscriber::fmt::layer);
+        let file_layer = greeter_log
+            .map(|file| tracing_subscriber::fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(file)));
+        tracing_subscriber::registry().with(filter).with(stdout_layer).with(file_layer).with(bar::ErrorWatch).init();
+    }
+
     let nested = if argv.iter().any(|argument| argument == "--session") || headless {
         false
     } else if greeter {
