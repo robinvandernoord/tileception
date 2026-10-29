@@ -103,6 +103,10 @@ install -D -m 644 resources/tileception.portal \
     "$root/usr/share/xdg-desktop-portal/portals/tileception.portal"
 install -D -m 644 crates/tileception-auth/pam/tileception "$root/etc/pam.d/tileception"
 install -D -m 644 resources/greeter.toml "$root/etc/tileception/greeter.toml"
+# Suspending until a set time: the unit sets the wake-up alarm, polkit lets
+# the person at the computer start it.
+install -D -m 644 "resources/tileception-wake@.service" "$root/usr/lib/systemd/system/tileception-wake@.service"
+install -D -m 644 resources/tileception-wake.rules "$root/usr/share/polkit-1/rules.d/40-tileception-wake.rules"
 install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
 mkdir -p "$root/usr/share/accountsservice/interfaces"
 ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
@@ -194,6 +198,9 @@ if [ "$1" = configure ]; then
     fi
     install -d -m 1733 /var/cache/tileception-greeter
     systemctl try-restart accounts-daemon.service >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
 fi
 EOF
 cat > "$root/DEBIAN/postrm" <<'EOF'
@@ -204,6 +211,9 @@ if [ "$1" = remove ] || [ "$1" = purge ]; then
 fi
 if [ "$1" = purge ]; then
     rm -rf /var/lib/tileception-greeter /var/cache/tileception-greeter
+fi
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 EOF
 # Without the package greetd could not start the login screen any more, so

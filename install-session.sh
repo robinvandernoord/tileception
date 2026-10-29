@@ -52,6 +52,18 @@ mkdir -p "$portals"
 install -m 644 resources/tileception-portals.conf "$portals/tileception-portals.conf"
 echo "Installed $portals/tileception-portals.conf (screen sharing through xdg-desktop-portal-wlr)"
 
+# Suspending until a set time: the unit sets the hardware clock's wake-up
+# alarm, and the polkit rule lets the person at the computer start it. Only
+# root may read polkit's rules directory.
+wake_unit=/etc/systemd/system/tileception-wake@.service
+wake_rules=/etc/polkit-1/rules.d/40-tileception-wake.rules
+if ! cmp -s "resources/tileception-wake@.service" "$wake_unit" || ! sudo cmp -s resources/tileception-wake.rules "$wake_rules"; then
+    sudo install -m 644 "resources/tileception-wake@.service" "$wake_unit"
+    sudo install -D -m 644 resources/tileception-wake.rules "$wake_rules"
+    sudo systemctl daemon-reload
+    echo "Installed the wake-up alarm unit and its polkit rule (Suspend until in the power menu)"
+fi
+
 # The portal only looks for backends in this system directory.
 portal=/usr/share/xdg-desktop-portal/portals/tileception.portal
 if ! cmp -s resources/tileception.portal "$portal"; then
