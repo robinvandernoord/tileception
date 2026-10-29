@@ -264,6 +264,7 @@ impl Tileception {
 
     pub fn remove_output(&mut self, output: &Output) {
         self.with_output(output, |state| {
+            state.touch_cancel((state.now() * 1000.0) as u32);
             state.fail_captures();
             let mut map = smithay::desktop::layer_map_for_output(output);
             let layers = map.layers().cloned().collect::<Vec<_>>();

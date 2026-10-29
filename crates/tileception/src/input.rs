@@ -2,7 +2,7 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device as _, Event, GestureBeginEvent, GestureEndEvent,
         GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
         PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
     },
@@ -78,6 +78,20 @@ pub enum Action {
 
 impl Tileception {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        let touchscreen = match &event {
+            InputEvent::TouchDown { event } => Some(event.device().name()),
+            InputEvent::TouchMotion { event } => Some(event.device().name()),
+            InputEvent::TouchUp { event } => Some(event.device().name()),
+            InputEvent::TouchCancel { event } => Some(event.device().name()),
+            InputEvent::TouchFrame { event } => Some(event.device().name()),
+            _ => None,
+        };
+        if let Some(mapping) = touchscreen.as_ref().and_then(|name| self.config.file.touchscreens.get(name)) {
+            // An explicitly mapped touchscreen never falls through to another
+            // screen when its display is disconnected.
+            let Some(output) = self.output_named(&mapping.output) else { return };
+            self.activate_output(&output);
+        }
         // The pointer, hover states and whatever the input changes.
         self.schedule_render();
         if matches!(
