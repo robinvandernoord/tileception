@@ -21,6 +21,7 @@ use smithay::{
         renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer},
     },
     input::keyboard::{keysyms, xkb},
+    output::Output,
     reexports::calloop::{RegistrationToken, channel},
     utils::Transform,
 };
@@ -174,6 +175,8 @@ pub struct Duck {
     /// Left out of the frame for a moment, while the duck takes its screenshot.
     pub hidden: bool,
     placed: bool,
+    /// The screen it dropped onto, where it stays until dragged to another.
+    home: Option<Output>,
     /// The middle of its feet.
     pos: (f64, f64),
     vel: (f64, f64),
@@ -217,6 +220,7 @@ impl Default for Duck {
             out: saved_path().exists(),
             hidden: false,
             placed: false,
+            home: None,
             pos: (0.0, 0.0),
             vel: (0.0, 0.0),
             left: false,
@@ -314,9 +318,13 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Whether the duck is on screen now.
+    /// Whether the duck is on screen now, and this is its screen.
     fn duck_shown(&self) -> bool {
-        self.duck.out && self.duck.placed && !self.is_locked() && self.fullscreen.is_none()
+        self.duck.out
+            && self.duck.placed
+            && self.duck.home == self.output
+            && !self.is_locked()
+            && self.fullscreen.is_none()
     }
 
     /// The configured size, as a factor on the duck's measurements.
@@ -356,7 +364,8 @@ impl Tileception {
         Rect::new(duck_x - 26.0 * scale, duck_y - 50.0 * scale, 52.0 * scale, 50.0 * scale)
     }
 
-    /// Moves the duck on by the time since the last frame. Called after each frame.
+    /// Moves the duck on by the time since the last frame, on its own
+    /// screen. Called after each frame.
     pub fn update_duck(&mut self) {
         let now = Instant::now();
         let delta = now.duration_since(self.duck.last_tick).as_secs_f64().min(0.05);
@@ -364,8 +373,23 @@ impl Tileception {
         if !self.duck.out || self.is_locked() {
             return;
         }
+        let elsewhere = self.duck.home.clone().filter(|home| self.output.as_ref() != Some(home));
+        if let Some(home) = &elsewhere
+            && self.with_output(home, |state| state.duck_tick(delta, now)).is_some()
+        {
+            return;
+        }
+        if elsewhere.is_some() {
+            // Its screen went away: it drops onto this one.
+            self.duck.placed = false;
+        }
+        self.duck_tick(delta, now);
+    }
+
+    fn duck_tick(&mut self, delta: f64, now: Instant) {
         let screen = self.output_rect();
         if !self.duck.placed {
+            self.duck.home = self.output.clone();
             // Dropped in from above, somewhere on the right.
             let drop_x = screen.x + screen.w * self.duck.between(0.55, 0.85);
             self.duck.pos = (drop_x, screen.y - SIZE * self.duck_scale());
@@ -730,6 +754,9 @@ impl Tileception {
             self.duck.since = now;
             self.duck.trail = [(position, now); 2];
         }
+        // Dragged across screens, it moves to the one under the pointer,
+        // whose coordinates `position` is in.
+        self.duck.home = self.output.clone();
         self.duck.pos = (position.x - press.grab.0, position.y - press.grab.1);
         if (position.x - self.duck.trail[1].0.x).abs() > 0.5 {
             self.duck.left = position.x < self.duck.trail[1].0.x;
