@@ -60,6 +60,18 @@ struct Scene {
     clear: [f32; 4],
 }
 
+/// Compatibility transfer for outputs on another GPU. Render on the client's
+/// GPU, then upload RGBA to the scanout GPU instead of sharing driver buffers.
+pub fn read_frame(
+    renderer: &mut GlesRenderer,
+    elements: Vec<OutputElement>,
+    size: (i32, i32),
+    clear: [f32; 4],
+) -> Result<Vec<u8>, String> {
+    let scene = Scene { elements, size, clear };
+    pixels(renderer, &mut None, &scene, Rectangle::from_size(size.into()))
+}
+
 pub struct PendingCapture {
     /// Part of the output, in pixels.
     pub region: Rectangle<i32, Buffer>,
@@ -69,6 +81,7 @@ pub struct PendingCapture {
 /// What a screencopy frame was asked to capture.
 pub struct FrameData {
     region: Rectangle<i32, Buffer>,
+    output: smithay::output::Output,
 }
 
 pub fn init_screencopy(display_handle: &DisplayHandle) {
@@ -76,6 +89,16 @@ pub fn init_screencopy(display_handle: &DisplayHandle) {
 }
 
 impl Tileception {
+    pub fn fail_captures(&mut self) {
+        for capture in self.pending_captures.drain(..) {
+            match capture.target {
+                CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
+                CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
+                CaptureTarget::Duck => {}
+            }
+        }
+    }
+
     /// The whole output, in pixels.
     fn output_region(&self) -> Rectangle<i32, Buffer> {
         Rectangle::from_size(self.output_pixels().into())
@@ -300,24 +323,42 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
         _dh: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        let full = state.output_region();
-        let (frame, region) = match request {
-            zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, .. } => (frame, full),
+        let (frame, wl_output, requested) = match request {
+            zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, output, .. } => (frame, output, None),
             zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
-                frame, x: left, y: top, width, height, ..
-            } => {
-                // Asked for in logical pixels (slurp's), copied in physical ones.
-                let rect = crate::render::physical(
-                    &tileception_core::Rect::new(left as f64, top as f64, width as f64, height as f64),
-                    state.scale,
-                );
-                let asked =
-                    Rectangle::<i32, Buffer>::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into());
-                (frame, asked.intersection(full).unwrap_or(full))
-            }
+                frame,
+                output,
+                x: left,
+                y: top,
+                width,
+                height,
+                ..
+            } => (frame, output, Some((left, top, width, height))),
             _ => return,
         };
-        let frame = init.init(frame, FrameData { region });
+        let Some(output) = smithay::output::Output::from_resource(&wl_output)
+            .filter(|output| state.output_named(&output.name()).is_some())
+        else {
+            // The resource still needs initializing before reporting failure.
+            let Some(output) = state.output.clone() else { return };
+            let frame = init.init(frame, FrameData { region: state.output_region(), output });
+            frame.failed();
+            return;
+        };
+        let full = state.with_output(&output, |state| state.output_region()).expect("connected output");
+        let region = if let Some((left, top, width, height)) = requested {
+            // Asked for in logical pixels (slurp's), copied in physical ones.
+            let rect = crate::render::physical(
+                &tileception_core::Rect::new(left as f64, top as f64, width as f64, height as f64),
+                output.current_scale().fractional_scale(),
+            );
+            let asked =
+                Rectangle::<i32, Buffer>::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into());
+            asked.intersection(full).unwrap_or(full)
+        } else {
+            full
+        };
+        let frame = init.init(frame, FrameData { region, output });
         let size = region.size;
         frame.buffer(wl_shm::Format::Xrgb8888, size.w as u32, size.h as u32, size.w as u32 * 4);
         if frame.version() >= 3 {
@@ -360,8 +401,14 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Tileception {
         };
         // A stream of frames (portals, OBS) is sharing; one copy is a screenshot.
         let sharing = damage || matches!(target, CaptureTarget::Dmabuf { .. });
-        state.bar.capture = Some((std::time::Instant::now(), sharing));
-        state.pending_captures.push(PendingCapture { region: data.region, target });
+        if state.output_named(&data.output.name()).is_none() {
+            frame.failed();
+            return;
+        }
+        state.with_output(&data.output, |state| {
+            state.bar.capture = Some((std::time::Instant::now(), sharing));
+            state.pending_captures.push(PendingCapture { region: data.region, target });
+        });
         // With damage, the copy waits for the screen to change; without, it
         // is taken right away.
         if !damage {

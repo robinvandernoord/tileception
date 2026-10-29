@@ -93,7 +93,7 @@ impl Tileception {
         let moving = self.world.is_animating(now);
         let overview = self.world.in_overview();
         let screen = self.world.screen();
-        let focus = self.world.focus();
+        let focus = self.world.focus().filter(|_| self.is_active_output());
 
         if let Some(window_id) = self.fullscreen
             && let Some(window) = self.windows.get(&window_id)
@@ -230,27 +230,33 @@ impl Tileception {
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
         let drawn_windows = self.drawn_windows(now);
-        let focus = self.world.focus();
+        let focus = self.world.focus().filter(|_| self.is_active_output());
         let view = self.world.view(now);
-        let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
-        elements.extend(self.power_menu_elements(renderer));
+        let active = self.is_active_output();
+        let mut elements: Vec<OutputElement> = Vec::new();
+        if active {
+            elements.extend(self.osd_elements(renderer));
+            elements.extend(self.power_menu_elements(renderer));
+        }
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
-        elements.extend(self.tray_elements(renderer));
-        // The welcome screen is part of the desktop: notifications go over it.
-        if !self.launcher.home {
-            elements.extend(self.launcher_elements(renderer));
+        if active {
+            elements.extend(self.tray_elements(renderer));
+            // The welcome screen is part of the desktop: notifications go over it.
+            if !self.launcher.home {
+                elements.extend(self.launcher_elements(renderer));
+            }
+            elements.extend(self.notification_elements(renderer));
+            elements.extend(self.doctor_elements(renderer));
+            // Over the strip, which it can stand on.
+            elements.extend(self.duck_elements(renderer));
+            elements.extend(self.strip_elements(renderer));
+            if self.launcher.home {
+                elements.extend(self.launcher_elements(renderer));
+            }
+            elements.extend(self.selection_elements(renderer));
         }
-        elements.extend(self.notification_elements(renderer));
-        elements.extend(self.doctor_elements(renderer));
-        // Over the strip, which it can stand on.
-        elements.extend(self.duck_elements(renderer));
-        elements.extend(self.strip_elements(renderer));
-        if self.launcher.home {
-            elements.extend(self.launcher_elements(renderer));
-        }
-        elements.extend(self.selection_elements(renderer));
         elements.extend(self.bar_elements(renderer));
 
         // Then bars. A fullscreen window covers everything but the above.
@@ -268,7 +274,7 @@ impl Tileception {
         elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
         // X11 menus and tooltips, at the place they chose.
-        for overlay in self.x11_overlays.iter().rev() {
+        for overlay in self.x11_overlays.iter().rev().filter(|_| active) {
             let Some(surface) = overlay.wl_surface() else { continue };
             let loc = overlay.geometry().loc;
             let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);

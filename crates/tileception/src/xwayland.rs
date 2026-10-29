@@ -150,8 +150,8 @@ impl XwmHandler for Tileception {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        if self.x11_window_id(&window).is_some() {
-            self.apply_layout();
+        if let Some(output) = self.x11_window_id(&window).and_then(|window| self.output_for_window(window)) {
+            self.with_output(&output, |state| state.apply_layout());
             return;
         }
         let mut geo = window.geometry();
@@ -180,7 +180,10 @@ impl XwmHandler for Tileception {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window) {
+        if let Some(window_id) = self.x11_window_id(&window)
+            && let Some(output) = self.output_for_window(window_id)
+        {
+            self.activate_output(&output);
             self.world.focus_window(window_id, self.now());
             self.run(crate::input::Action::Maximize);
         }
@@ -208,12 +211,16 @@ impl XwmHandler for Tileception {
     }
 
     fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window) {
-            let now = self.now();
-            if self.world.restore(window_id, now) {
-                self.apply_layout();
-                self.persist_layout();
-            }
+        if let Some(window_id) = self.x11_window_id(&window)
+            && let Some(output) = self.output_for_window(window_id)
+        {
+            self.with_output(&output, |state| {
+                let now = state.now();
+                if state.world.restore(window_id, now) {
+                    state.apply_layout();
+                    state.persist_layout();
+                }
+            });
         }
     }
 

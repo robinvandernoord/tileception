@@ -179,9 +179,7 @@ impl Tileception {
     }
 
     fn inject_motion(&mut self, x_pos: f64, y_pos: f64, time: u32) {
-        let screen = self.output_rect();
-        let pos: Point<f64, Logical> =
-            (x_pos.clamp(screen.x, screen.right() - 1.0), y_pos.clamp(screen.y, screen.bottom() - 1.0)).into();
+        let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
         self.on_motion(pos, time);
     }
 

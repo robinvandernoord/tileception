@@ -22,7 +22,7 @@ pub enum LockState {
     /// `--greeter`: the login screen, which nothing unlocks.
     Greeter,
     Locked {
-        surface: Option<LockSurface>,
+        surfaces: std::collections::BTreeMap<String, LockSurface>,
     },
 }
 
@@ -36,7 +36,7 @@ impl SessionLockHandler for Tileception {
             return;
         }
         tracing::info!("session locked");
-        self.lock = LockState::Locked { surface: None };
+        self.lock = LockState::Locked { surfaces: Default::default() };
         self.launcher.open = false;
         self.power_menu = None;
         self.selection.anchor = None;
@@ -61,12 +61,13 @@ impl SessionLockHandler for Tileception {
         self.force_keyboard_focus_sync();
     }
 
-    fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
-        let rect = self.output_rect();
+    fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
+        let Some(output) = smithay::output::Output::from_resource(&wl_output) else { return };
+        let Some(rect) = self.with_output(&output, |state| state.output_rect()) else { return };
         surface.with_pending_state(|state| state.size = Some((rect.w as u32, rect.h as u32).into()));
         surface.send_configure();
-        if let LockState::Locked { surface: slot } = &mut self.lock {
-            *slot = Some(surface);
+        if let LockState::Locked { surfaces } = &mut self.lock {
+            surfaces.insert(output.name(), surface);
         }
         self.force_keyboard_focus_sync();
     }
@@ -97,14 +98,18 @@ impl Tileception {
 
     pub fn lock_surface(&self) -> Option<&WlSurface> {
         match &self.lock {
-            LockState::Locked { surface: Some(surface) } => Some(surface.wl_surface()),
+            LockState::Locked { surfaces } => {
+                self.output.as_ref().and_then(|output| surfaces.get(&output.name())).map(|surface| surface.wl_surface())
+            }
             _ => None,
         }
     }
 
     pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         match self.lock {
-            LockState::BuiltIn | LockState::Greeter => return self.greeter_elements(renderer),
+            LockState::BuiltIn | LockState::Greeter if self.is_active_output() => {
+                return self.greeter_elements(renderer);
+            }
             _ => {}
         }
         let Some(surface) = self.lock_surface() else { return Vec::new() };
@@ -120,7 +125,9 @@ impl Tileception {
 
     /// Keeps the lock surface the size of the output.
     pub fn resize_lock_surface(&self) {
-        if let LockState::Locked { surface: Some(surface) } = &self.lock {
+        if let LockState::Locked { surfaces } = &self.lock
+            && let Some(surface) = self.output.as_ref().and_then(|output| surfaces.get(&output.name()))
+        {
             let rect = self.output_rect();
             let size: Size<u32, Logical> = (rect.w as u32, rect.h as u32).into();
             surface.with_pending_state(|state| state.size = Some(size));

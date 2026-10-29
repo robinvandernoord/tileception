@@ -34,8 +34,7 @@ pub fn init(
     let _global = output.create_global::<Tileception>(&state.display_handle);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    state.output = Some(output.clone());
-    state.apply_output_scale();
+    state.add_output(output.clone());
 
     // Render elements are made in physical pixels, so the tracker works at
     // scale 1 whatever the output's scale.

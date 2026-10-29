@@ -14,6 +14,10 @@ pub enum Command {
     Spawn(String),
     /// Prints the layout tree.
     Tree,
+    /// Lists outputs, or targets one for focus/window movement.
+    Outputs,
+    FocusOutput(String),
+    MoveOutput(String),
     /// Drops the focused window at a screen point, as a mouse drag would.
     Drop(f64, f64),
     /// Saves what is on screen to a PNG file.
@@ -73,6 +77,9 @@ running. A reply starting with \"error\" exits with status 1.
 Inspecting:
   tree                      print the layout tree, with window ids, selection,
                             lock and display-sleep status
+  outputs                   list screens, positions, scales and the active screen
+  focus-output <name>       direct input and desktop bindings to this screen
+  move-output <name>        move the focused/selected windows to this screen
   battery                   print the charge and the border colour it gives
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
@@ -176,6 +183,15 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "outputs" if args.is_empty() => return Ok(Command::Outputs),
+        "focus-output" | "move-output" => {
+            let [name] = args.as_slice() else { return Err(format!("{verb} needs one output name")) };
+            return Ok(if verb == "focus-output" {
+                Command::FocusOutput((*name).into())
+            } else {
+                Command::MoveOutput((*name).into())
+            });
+        }
         "show-minimized" => return Ok(Command::ShowMinimized),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
@@ -331,6 +347,7 @@ impl Tileception {
                 command,
                 Command::Unlock
                     | Command::Tree
+                    | Command::Outputs
                     | Command::Screenshot(_)
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
@@ -344,6 +361,25 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::Outputs => return Ok(self.outputs_status()),
+            Command::FocusOutput(name) => {
+                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                self.activate_output(&output);
+                self.on_motion(self.pointer, (self.now() * 1000.0) as u32);
+            }
+            Command::MoveOutput(name) => {
+                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                let windows = if self.selection.windows.is_empty() {
+                    vec![self.world.focus().ok_or("nothing is focused")?]
+                } else {
+                    self.selection.windows.iter().copied().collect()
+                };
+                for window in windows {
+                    self.move_window_to_output(window, &output)?;
+                }
+                self.activate_output(&output);
+                self.force_keyboard_focus_sync();
+            }
             Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,

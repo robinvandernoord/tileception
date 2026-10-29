@@ -101,18 +101,18 @@ impl Tileception {
                 if self.output.is_none() {
                     return;
                 }
-                let screen = self.output_rect();
+                let screen = self.desktop_bounds();
                 let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
+                let origin = self.output.as_ref().map(|output| output.current_location().to_f64()).unwrap_or_default();
+                let pos = self.desktop_motion(pos + Point::from((screen.x, screen.y)) - origin);
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
             InputEvent::PointerMotion { event } => {
-                let screen = self.output_rect();
-                let mut pos = self.pointer + event.delta();
-                pos.x = pos.x.clamp(screen.x, screen.right() - 1.0);
-                pos.y = pos.y.clamp(screen.y, screen.bottom() - 1.0);
+                let pos = self.pointer + event.delta();
                 // A locked or confined pointer may not move; raw motion is reported either way.
                 if let Some(pos) = self.constrained_motion(event.delta(), event.delta_unaccel(), event.time(), pos) {
+                    let pos = self.desktop_motion(pos);
                     self.on_motion(pos, event.time_msec());
                     self.activate_constraint_under();
                 }
@@ -354,6 +354,11 @@ impl Tileception {
     }
 
     pub fn run(&mut self, action: Action) {
+        if let Action::Restore(Some(window)) = action
+            && let Some(output) = self.output_for_window(window)
+        {
+            self.activate_output(&output);
+        }
         if self.selection_action(action) {
             if action != Action::Close {
                 self.persist_layout();
@@ -659,7 +664,7 @@ impl Tileception {
             // A click picks a button; a click anywhere else closes the menu.
             if state == ButtonState::Pressed {
                 match self.power_action_at(self.pointer.x, self.pointer.y) {
-                    Some(index) => self.run_power_action(crate::power::PowerAction::ALL[index]),
+                    Some(index) => self.activate_power_item(index),
                     None => self.close_power_menu(),
                 }
             }

@@ -445,7 +445,7 @@ impl Tileception {
         }
         self.configure_touchpads();
         // Also lays everything out again.
-        self.apply_output_scale();
+        self.configure_outputs();
     }
 }
 

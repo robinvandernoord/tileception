@@ -110,16 +110,22 @@ impl CompositorHandler for Tileception {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        if let Some(output) = self.output_for_surface(surface)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| CompositorHandler::commit(state, surface));
+            return;
+        }
         on_commit_buffer_handler::<Self>(surface);
         // Shown in the next frame, not whenever the screen is next polled.
         self.schedule_render();
-        // There is one output, and everything shown is on it. Not before
-        // the surface has drawn: foot crashes on an enter before its
-        // first configure.
+        // Not before the surface has drawn: foot crashes on an enter before
+        // its first configure. The context belongs to the surface's output.
         if let Some(output) = &self.output
             && crate::scale::has_buffer(surface)
         {
             output.enter(surface);
+            with_states(surface, |states| crate::scale::send_scale_state(surface, states, self.scale));
         }
         if self.commit_layer(surface) {
             self.popups.commit(surface);
@@ -327,10 +333,17 @@ impl XdgShellHandler for Tileception {
     fn fullscreen_request(
         &mut self,
         surface: ToplevelSurface,
-        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        requested_output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
         match self.window_id(surface.wl_surface()) {
-            Some(window_id) => self.set_fullscreen(window_id, true),
+            Some(window_id) => {
+                if let Some(output) = requested_output.as_ref().and_then(smithay::output::Output::from_resource)
+                    && self.output_for_window(window_id).is_some()
+                {
+                    let _ = self.move_window_to_output(window_id, &output);
+                }
+                self.set_fullscreen(window_id, true);
+            }
             // Not placed yet: remember it for the first configure.
             None => surface.with_pending_state(|pending| {
                 pending
@@ -394,9 +407,15 @@ delegate_xdg_shell!(Tileception);
 
 impl Tileception {
     /// Keeps popups inside the screen, relative to their window's place on it.
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    fn unconstrain_popup(&mut self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
         let Some(window_id) = self.window_id(&root) else { return };
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.unconstrain_popup(popup));
+            return;
+        }
         let Some(placement) =
             self.world.placements(self.world.target_view()).into_iter().find(|candidate| candidate.window == window_id)
         else {

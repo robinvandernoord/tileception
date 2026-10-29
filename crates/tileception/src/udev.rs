@@ -1,8 +1,7 @@
 //! Runs Tileception as the session's compositor: DRM/KMS for output, libinput for
 //! input, libseat for device access and VT switching.
 //!
-//! One GPU and, for now, one output: the first connected monitor. Further
-//! monitors are lit by nothing until worlds per display land.
+//! Independent scanout devices per GPU, with one primary compositor renderer.
 
 use std::time::{Duration, Instant};
 
@@ -24,6 +23,10 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             ImportDma, ImportMemWl,
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+            },
             gles::GlesRenderer,
             utils::{Buffer, RendererSurfaceStateUserData},
         },
@@ -37,7 +40,7 @@ use smithay::{
     output::{Mode as WlMode, Output, PhysicalProperties},
     reexports::{
         calloop::{
-            Dispatcher, EventLoop, RegistrationToken,
+            Dispatcher, EventLoop, LoopHandle, RegistrationToken,
             timer::{TimeoutAction, Timer},
         },
         drm::{
@@ -82,23 +85,24 @@ pub struct Udev {
     pub session: LibSeatSession,
     pub renderer: GlesRenderer,
     pub cursor: Cursor,
-    node: DrmNode,
-    manager: OutputManager,
-    scanner: DrmScanner,
-    /// The monitor Tileception drives.
-    surface: Option<Lit>,
-    _drm_token: RegistrationToken,
+    gpus: Vec<Gpu>,
     render_pending: bool,
-    frame_pending: bool,
     /// The timer that looks again for changes while frames come out empty.
     poll: Option<RegistrationToken>,
     /// Empty frames in a row, for backing the poll off on a still screen.
     quiet: u32,
     /// Something asked for the frame being made, rather than the poll.
     asked: bool,
-    /// The client buffers the queued frame draws from, held until it is on
-    /// screen. See [`Tileception::frame_buffers`].
-    in_flight: Vec<Buffer>,
+}
+
+struct Gpu {
+    node: DrmNode,
+    manager: OutputManager,
+    scanner: DrmScanner,
+    surfaces: Vec<Lit>,
+    _drm_token: RegistrationToken,
+    /// Secondary GPUs upload completed primary-renderer frames for scanout.
+    renderer: Option<GlesRenderer>,
 }
 
 struct Lit {
@@ -106,6 +110,86 @@ struct Lit {
     output: Output,
     drm_output: Surface,
     global: GlobalId,
+    frame_pending: bool,
+    /// Client buffers held until scanout completes. See `frame_buffers`.
+    in_flight: Vec<Buffer>,
+    lock_queued: bool,
+    lock_shown: bool,
+    copy: Option<(Vec<u8>, MemoryRenderBuffer)>,
+}
+
+impl Lit {
+    fn copied_elements(
+        &mut self,
+        source: &mut GlesRenderer,
+        target: &mut GlesRenderer,
+        elements: Vec<crate::render::OutputElement>,
+        size: (i32, i32),
+        clear: [f32; 4],
+    ) -> Result<Vec<crate::render::OutputElement>, String> {
+        let pixels = crate::capture::read_frame(source, elements, size, clear)?;
+        if self.copy.as_ref().is_none_or(|(previous, _)| previous != &pixels) {
+            let buffer = MemoryRenderBuffer::from_slice(
+                &pixels,
+                Fourcc::Abgr8888,
+                size,
+                1,
+                smithay::utils::Transform::Normal,
+                None,
+            );
+            self.copy = Some((pixels, buffer));
+        }
+        let (_, buffer) = self.copy.as_ref().ok_or("missing secondary GPU frame")?;
+        let element = MemoryRenderBufferRenderElement::from_buffer(
+            target,
+            (0.0, 0.0),
+            buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(vec![crate::render::OutputElement::Memory(element)])
+    }
+}
+
+impl Gpu {
+    fn open(
+        session: &mut LibSeatSession,
+        path: &std::path::Path,
+        handle: &LoopHandle<'static, Tileception>,
+    ) -> Result<(Self, GlesRenderer, DrmDeviceFd), Box<dyn std::error::Error>> {
+        let node = DrmNode::from_path(path)?;
+        let node = node.node_with_type(NodeType::Primary).and_then(|result| result.ok()).unwrap_or(node);
+        let card = node.dev_path().unwrap_or_else(|| path.to_path_buf());
+        let opened = session.open(&card, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
+        let device_fd = DrmDeviceFd::new(DeviceFd::from(opened));
+        let (drm, notifier) = DrmDevice::new(device_fd.clone(), true)?;
+        let gbm = GbmDevice::new(device_fd.clone())?;
+        // SAFETY: Smithay owns this device; no other EGL display manages it.
+        #[allow(unsafe_code, reason = "Smithay requires opt-in for native EGL initialization")]
+        let egl = unsafe { EGLDisplay::new(gbm.clone())? };
+        let context = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
+        // SAFETY: This renderer and context stay on the compositor event-loop thread.
+        #[allow(unsafe_code, reason = "Smithay requires exclusive EGL context ownership")]
+        let renderer = unsafe { GlesRenderer::new(context)? };
+        let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
+        let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
+        let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(node));
+        let manager =
+            DrmOutputManager::new(drm, allocator, exporter, Some(gbm), COLOR_FORMATS.iter().copied(), render_formats);
+        let token = handle.insert_source(notifier, move |event, _, state| match event {
+            DrmEvent::VBlank(crtc) => state.on_vblank(node, crtc),
+            DrmEvent::Error(error) => tracing::error!("drm {node:?}: {error:?}"),
+        })?;
+        tracing::info!("opened GPU {}", card.display());
+        Ok((
+            Self { node, manager, scanner: DrmScanner::new(), surfaces: Vec::new(), _drm_token: token, renderer: None },
+            renderer,
+            device_fd,
+        ))
+    }
 }
 
 /// How long to wait for the seat before giving up.
@@ -146,23 +230,9 @@ pub fn init(
     let seat = session.seat();
 
     let gpu_path = primary_gpu(&seat)?.or_else(|| all_gpus(&seat).ok()?.into_iter().next()).ok_or("no GPU found")?;
-    let node = DrmNode::from_path(&gpu_path)?;
-    let primary = node.node_with_type(NodeType::Primary).and_then(|result| result.ok()).unwrap_or(node);
-    let card = primary.dev_path().unwrap_or(gpu_path);
-    tracing::info!("using GPU {}", card.display());
-
-    let opened = session.open(&card, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
-    let device_fd = DrmDeviceFd::new(DeviceFd::from(opened));
-    let (drm, drm_notifier) = DrmDevice::new(device_fd.clone(), true)?;
-    let gbm = GbmDevice::new(device_fd.clone())?;
-
-    // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
-    #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
-    let egl = unsafe { EGLDisplay::new(gbm.clone())? };
-    let context = EGLContext::new_with_priority(&egl, ContextPriority::High)?;
-    // SAFETY: The newly created context belongs exclusively to this event-loop thread.
-    #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
-    let renderer = unsafe { GlesRenderer::new(context)? };
+    let (gpu, renderer, device_fd) = Gpu::open(&mut session, &gpu_path, &event_loop.handle())?;
+    let primary = gpu.node;
+    tracing::info!("using primary renderer on {}", gpu_path.display());
     state.shm_state.update_formats(renderer.shm_formats());
 
     // Clients render into dmabufs; announce what the GPU can import.
@@ -178,32 +248,28 @@ pub fn init(
         tracing::info!("explicit sync enabled");
     }
 
-    let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
-    let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
-    let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(primary));
-    let manager =
-        DrmOutputManager::new(drm, allocator, exporter, Some(gbm), COLOR_FORMATS.iter().copied(), render_formats);
-
-    let drm_token = event_loop.handle().insert_source(drm_notifier, |event, _, state| match event {
-        DrmEvent::VBlank(crtc) => state.on_vblank(crtc),
-        DrmEvent::Error(err) => tracing::error!("drm: {err:?}"),
-    })?;
-
+    let mut gpus = vec![gpu];
+    for path in all_gpus(&seat)? {
+        if DrmNode::from_path(&path).is_ok_and(|node| node.dev_id() == primary.dev_id()) {
+            continue;
+        }
+        match Gpu::open(&mut session, &path, &event_loop.handle()) {
+            Ok((mut gpu, renderer, _)) => {
+                gpu.renderer = Some(renderer);
+                gpus.push(gpu);
+            }
+            Err(error) => tracing::warn!("could not open secondary GPU {}: {error}", path.display()),
+        }
+    }
     state.udev = Some(Box::new(Udev {
         session: session.clone(),
         renderer,
         cursor: Cursor::load(state.scale),
-        node: primary,
-        manager,
-        scanner: DrmScanner::new(),
-        surface: None,
-        _drm_token: drm_token,
+        gpus,
         render_pending: false,
-        frame_pending: false,
         poll: None,
         quiet: 0,
         asked: false,
-        in_flight: Vec::new(),
     }));
 
     // Input.
@@ -228,10 +294,14 @@ pub fn init(
             tracing::info!("session paused");
             libinput.suspend();
             if let Some(udev) = state.udev.as_mut() {
-                udev.manager.pause();
-                udev.frame_pending = false;
+                for gpu in &mut udev.gpus {
+                    gpu.manager.pause();
+                    for lit in &mut gpu.surfaces {
+                        lit.frame_pending = false;
+                        lit.in_flight.clear();
+                    }
+                }
                 udev.render_pending = false;
-                udev.in_flight.clear();
             }
         }
         SessionEvent::ActivateSession => {
@@ -240,26 +310,30 @@ pub fn init(
                 tracing::error!("libinput could not resume");
             }
             if let Some(udev) = state.udev.as_mut() {
-                udev.frame_pending = false;
                 udev.render_pending = false;
-                if let Err(err) = udev.manager.activate(false) {
-                    tracing::error!("drm could not resume: {err}");
-                }
-                if let Some(lit) = &udev.surface {
-                    lit.drm_output.with_compositor(|compositor| {
-                        // A pre-suspend page flip may never deliver its vblank. Drop
-                        // both Smithay's queued frames and the stale scanout state.
-                        if let Err(err) = compositor.clear() {
-                            tracing::error!("could not clear stale scanout: {err}");
-                        }
-                        compositor.reset_buffers();
-                        if let Err(err) = compositor.reset_state() {
-                            tracing::error!("could not reset resumed output: {err}");
-                        }
-                    });
+                for gpu in &mut udev.gpus {
+                    if let Err(err) = gpu.manager.activate(false) {
+                        tracing::error!("drm could not resume: {err}");
+                    }
+                    for lit in &mut gpu.surfaces {
+                        lit.frame_pending = false;
+                        lit.in_flight.clear();
+                        lit.drm_output.with_compositor(|compositor| {
+                            // A pre-suspend page flip may never deliver its vblank. Drop
+                            // both Smithay's queued frames and the stale scanout state.
+                            if let Err(err) = compositor.clear() {
+                                tracing::error!("could not clear stale scanout: {err}");
+                            }
+                            compositor.reset_buffers();
+                            if let Err(err) = compositor.reset_state() {
+                                tracing::error!("could not reset resumed output: {err}");
+                            }
+                        });
+                    }
                 }
             }
             state.idle_activity();
+            state.discover_gpus();
             state.schedule_render();
         }
     })?;
@@ -267,12 +341,9 @@ pub fn init(
     // Monitors coming and going.
     let udev_backend = UdevBackend::new(&seat)?;
     event_loop.handle().insert_source(udev_backend, |event, _, state| match event {
-        UdevEvent::Changed { device_id } | UdevEvent::Added { device_id, .. } => {
-            if state.udev.as_ref().is_some_and(|backend| backend.node.dev_id() == device_id) {
-                state.scan_connectors();
-            }
-        }
-        UdevEvent::Removed { .. } => {}
+        UdevEvent::Changed { .. } => state.scan_connectors(),
+        UdevEvent::Added { device_id, path } => state.add_gpu(device_id, &path),
+        UdevEvent::Removed { device_id } => state.remove_gpu(device_id),
     })?;
 
     state.scan_connectors();
@@ -280,62 +351,120 @@ pub fn init(
 }
 
 impl Tileception {
-    pub fn set_output_sleep(&mut self, asleep: bool) -> bool {
-        let Some(udev) = self.udev.as_mut() else { return self.headless.is_some() };
-        if !udev.session.is_active() {
-            return false;
-        }
-        let Some(lit) = &udev.surface else { return false };
-        if asleep {
-            if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
-                tracing::warn!("could not power down the display: {error}");
-                return false;
+    fn add_gpu(&mut self, device_id: libc::dev_t, path: &std::path::Path) {
+        let Some(mut udev) = self.udev.take() else { return };
+        if udev.session.is_active() && !udev.gpus.iter().any(|gpu| gpu.node.dev_id() == device_id) {
+            match Gpu::open(&mut udev.session, path, &self.loop_handle) {
+                Ok((mut gpu, renderer, _)) => {
+                    gpu.renderer = Some(renderer);
+                    udev.gpus.push(gpu);
+                }
+                Err(error) => tracing::warn!("could not open GPU {}: {error}", path.display()),
             }
-        } else {
-            lit.drm_output.reset_buffers();
         }
-        udev.frame_pending = false;
-        true
+        self.udev = Some(udev);
+        self.scan_connectors();
     }
 
-    fn scan_connectors(&mut self) {
-        let Some(mut udev) = self.udev.take() else { return };
-        let events = match udev.scanner.scan_connectors(udev.manager.device()) {
-            Ok(events) => events.into_iter().collect::<Vec<_>>(),
-            Err(err) => {
-                tracing::warn!("connector scan failed: {err}");
-                Vec::new()
+    fn discover_gpus(&mut self) {
+        let Some(udev) = &self.udev else { return };
+        let paths = match all_gpus(udev.session.seat()) {
+            Ok(paths) => paths,
+            Err(error) => {
+                tracing::warn!("GPU discovery failed: {error}");
+                return;
             }
         };
-        for event in events {
-            match event {
-                DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
-                    if udev.surface.is_none() {
-                        self.light(&mut udev, connector, crtc);
-                    } else {
-                        tracing::info!(
-                            "ignoring extra monitor {:?}-{}",
-                            connector.interface(),
-                            connector.interface_id()
-                        );
-                    }
-                }
-                DrmScanEvent::Disconnected { crtc: Some(crtc), .. }
-                    if udev.surface.as_ref().is_some_and(|lit_surface| lit_surface.crtc == crtc) =>
-                {
-                    if let Some(lit) = udev.surface.take() {
-                        self.display_handle.remove_global::<Tileception>(lit.global);
-                    }
-                    self.output = None;
-                }
-                _ => {}
+        for path in paths {
+            if let Ok(node) = DrmNode::from_path(&path) {
+                self.add_gpu(node.dev_id(), &path);
+            }
+        }
+    }
+
+    fn remove_gpu(&mut self, device_id: libc::dev_t) {
+        let Some(mut udev) = self.udev.take() else { return };
+        if let Some(index) = udev.gpus.iter().position(|gpu| gpu.node.dev_id() == device_id) {
+            let gpu = udev.gpus.remove(index);
+            for lit in gpu.surfaces {
+                self.remove_output(&lit.output);
+                self.display_handle.remove_global::<Tileception>(lit.global);
+            }
+            self.loop_handle.remove(gpu._drm_token);
+            if index == 0 {
+                tracing::error!("primary rendering GPU removed; ending the session");
+                self.loop_signal.stop();
             }
         }
         self.udev = Some(udev);
         self.schedule_render();
     }
 
-    fn light(&mut self, udev: &mut Udev, connector: connector::Info, crtc: crtc::Handle) {
+    pub fn set_output_sleep(&mut self, asleep: bool) -> bool {
+        let Some(udev) = self.udev.as_mut() else { return self.headless.is_some() };
+        if !udev.session.is_active() {
+            return false;
+        }
+        if udev.gpus.iter().all(|gpu| gpu.surfaces.is_empty()) {
+            return false;
+        }
+        let mut success = true;
+        for lit in udev.gpus.iter_mut().flat_map(|gpu| &mut gpu.surfaces) {
+            if asleep {
+                if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
+                    tracing::warn!("could not power down {}: {error}", lit.output.name());
+                    success = false;
+                }
+            } else {
+                lit.drm_output.reset_buffers();
+            }
+            lit.frame_pending = false;
+            lit.in_flight.clear();
+        }
+        success
+    }
+
+    fn scan_connectors(&mut self) {
+        let Some(mut udev) = self.udev.take() else { return };
+        for gpu in &mut udev.gpus {
+            let events = match gpu.scanner.scan_connectors(gpu.manager.device()) {
+                Ok(events) => events.into_iter().collect::<Vec<_>>(),
+                Err(err) => {
+                    tracing::warn!("connector scan failed: {err}");
+                    Vec::new()
+                }
+            };
+            for event in events {
+                match event {
+                    DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
+                        if !gpu.surfaces.iter().any(|lit| lit.crtc == crtc) {
+                            let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                            self.light(&mut gpu.manager, renderer, &mut gpu.surfaces, connector, crtc);
+                        }
+                    }
+                    DrmScanEvent::Disconnected { crtc: Some(crtc), .. } => {
+                        if let Some(index) = gpu.surfaces.iter().position(|lit| lit.crtc == crtc) {
+                            let lit = gpu.surfaces.remove(index);
+                            self.remove_output(&lit.output);
+                            self.display_handle.remove_global::<Tileception>(lit.global);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.udev = Some(udev);
+        self.schedule_render();
+    }
+
+    fn light(
+        &mut self,
+        manager: &mut OutputManager,
+        renderer: &mut GlesRenderer,
+        surfaces: &mut Vec<Lit>,
+        connector: connector::Info,
+        crtc: crtc::Handle,
+    ) {
         let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
         let Some(mode) = connector
             .modes()
@@ -357,11 +486,10 @@ impl Tileception {
                 model: "Unknown".into(),
             },
         );
-        let global = output.create_global::<Tileception>(&self.display_handle);
         output.set_preferred(wl_mode);
         output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
 
-        let mut planes = match udev.manager.device().planes(&crtc) {
+        let mut planes = match manager.device().planes(&crtc) {
             Ok(planes) => planes,
             Err(err) => {
                 tracing::warn!("no planes for {name}: {err}");
@@ -369,8 +497,7 @@ impl Tileception {
             }
         };
         // Overlay planes misbehave on NVIDIA.
-        let nvidia = udev
-            .manager
+        let nvidia = manager
             .device()
             .get_driver()
             .map(|driver| driver.name().to_string_lossy().to_lowercase().contains("nvidia"))
@@ -379,7 +506,7 @@ impl Tileception {
             planes.overlay.clear();
         }
 
-        let drm_output = match udev.manager.initialize_output::<_, crate::render::OutputElement>(
+        let drm_output = match manager.initialize_output::<_, crate::render::OutputElement>(
             crtc,
             mode,
             &[connector.handle()],
@@ -391,23 +518,30 @@ impl Tileception {
                 transform: smithay::utils::Transform::Normal,
             },
             Some(planes),
-            &mut udev.renderer,
+            renderer,
             &DrmOutputRenderElements::default(),
         ) {
             Ok(initialized) => initialized,
             Err(err) => {
                 tracing::error!("could not light {name}: {err}");
-                self.display_handle.remove_global::<Tileception>(global);
                 return;
             }
         };
         let size = wl_mode.size;
         tracing::info!("lit {name} at {}x{}@{:.2}", size.w, size.h, wl_mode.refresh as f64 / 1000.0);
-        self.output = Some(output.clone());
-        udev.surface = Some(Lit { crtc, output, drm_output, global });
-        self.apply_output_scale();
-        let screen = self.output_rect();
-        self.pointer = (screen.w / 2.0, screen.h / 2.0).into();
+        let global = output.create_global::<Tileception>(&self.display_handle);
+        self.add_output(output.clone());
+        surfaces.push(Lit {
+            crtc,
+            output,
+            drm_output,
+            global,
+            frame_pending: false,
+            in_flight: Vec::new(),
+            lock_queued: false,
+            lock_shown: false,
+            copy: None,
+        });
     }
 
     /// Asks for a frame soon, unless one is already on its way.
@@ -420,7 +554,7 @@ impl Tileception {
 
     fn request_render(&mut self) {
         let Some(udev) = self.udev.as_mut() else { return };
-        if udev.render_pending || udev.frame_pending {
+        if udev.render_pending || udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).all(|lit| lit.frame_pending) {
             return;
         }
         udev.render_pending = true;
@@ -445,7 +579,7 @@ impl Tileception {
                 buffers.push(buffer.clone());
             }
         };
-        for (_, window) in self.windows.iter().filter(|(window_id, _)| !self.world.is_minimized(**window_id)) {
+        for (_, window) in self.windows.iter().filter(|(window_id, _)| self.world.contains_window(**window_id)) {
             window.with_surfaces(&mut hold);
         }
         for layer in layer_map_for_output(output).layers() {
@@ -454,24 +588,32 @@ impl Tileception {
         buffers
     }
 
-    fn on_vblank(&mut self, _crtc: crtc::Handle) {
+    fn on_vblank(&mut self, node: DrmNode, crtc: crtc::Handle) {
         let Some(udev) = self.udev.as_mut() else { return };
-        udev.frame_pending = false;
+        let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { return };
+        let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { return };
+        lit.frame_pending = false;
         // The flip waited for the frame's GPU work, so clients may have
         // these buffers back.
-        udev.in_flight.clear();
-        if let Some(lit) = udev.surface.as_mut()
-            && let Err(err) = lit.drm_output.frame_submitted()
-        {
+        lit.in_flight.clear();
+        lit.lock_shown = lit.lock_queued;
+        if let Err(err) = lit.drm_output.frame_submitted() {
             tracing::warn!("frame submit: {err}");
         }
-        self.sleep_frame_shown();
+        // The sleep inhibitor must cover every output, not just the first
+        // monitor whose page flip completes.
+        let refresh = lit.output.current_mode().map_or(60_000, |mode| mode.refresh);
+        let locked_everywhere = udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).all(|lit| lit.lock_shown);
+        if locked_everywhere {
+            self.sleep_frame_shown();
+        }
         // The next frame is drawn just before it is due rather than right
         // away, so what clients commit in the meantime still makes it.
         // Asking for a frame before then waits for this one.
         let Some(udev) = self.udev.as_mut() else { return };
-        let refresh =
-            udev.surface.as_ref().and_then(|lit| lit.output.current_mode()).map_or(60_000, |mode| mode.refresh);
+        if udev.render_pending {
+            return;
+        }
         let period = Duration::from_secs_f64(1000.0 / f64::from(refresh.max(1_000)));
         udev.render_pending = true;
         let drawn = self.loop_handle.insert_source(
@@ -492,55 +634,82 @@ impl Tileception {
         if let Some(poll) = udev.poll.take() {
             self.loop_handle.remove(poll);
         }
-        if !udev.session.is_active() || udev.frame_pending || self.idle.off {
+        if !udev.session.is_active() || self.idle.off {
             self.udev = Some(udev);
             return;
         }
-        self.process_captures(&mut udev.renderer);
         let now = self.now();
         let mut queued = false;
-        if let Some(mut lit) = udev.surface.take() {
-            let mut elements = self.cursor_elements(&mut udev);
-            elements.extend(self.frame_elements(&mut udev.renderer, now));
-            let clear = self.clear_colour();
-            match lit.drm_output.render_frame(&mut udev.renderer, &elements, clear, FrameFlags::DEFAULT) {
-                Ok(result) if !result.is_empty => {
-                    // If KMS cannot wait on the render fence, finish GPU work
-                    // before scanout rather than displaying an unfinished frame.
-                    if result.needs_sync()
-                        && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
-                        && let Err(err) = element.sync.wait()
-                    {
-                        tracing::warn!("render sync: {err:?}");
-                    } else {
-                        match lit.drm_output.queue_frame(()) {
-                            Ok(()) => {
-                                queued = true;
-                                udev.in_flight = self.frame_buffers(&lit.output);
-                            }
-                            Err(err) => tracing::warn!("queue frame: {err}"),
-                        }
-                    }
+        let mut gpus = std::mem::take(&mut udev.gpus);
+        for gpu in &mut gpus {
+            for lit in &mut gpu.surfaces {
+                if lit.frame_pending {
+                    continue;
                 }
-                Ok(_) => {}
-                Err(err) => tracing::warn!("render: {err:?}"),
+                let output = lit.output.clone();
+                self.with_output(&output, |state| {
+                    state.update_bar();
+                    state.process_captures(&mut udev.renderer);
+                    let mut elements =
+                        if state.is_active_output() { state.cursor_elements(&mut udev) } else { Vec::new() };
+                    elements.extend(state.frame_elements(&mut udev.renderer, now));
+                    let clear = state.clear_colour();
+                    let elements = if let Some(renderer) = gpu.renderer.as_mut() {
+                        match lit.copied_elements(&mut udev.renderer, renderer, elements, state.output_pixels(), clear)
+                        {
+                            Ok(elements) => elements,
+                            Err(error) => {
+                                tracing::warn!("secondary GPU copy for {}: {error}", lit.output.name());
+                                return;
+                            }
+                        }
+                    } else {
+                        elements
+                    };
+                    let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                    match lit.drm_output.render_frame(renderer, &elements, clear, FrameFlags::DEFAULT) {
+                        Ok(result) if !result.is_empty => {
+                            // If KMS cannot wait on the render fence, finish GPU work
+                            // before scanout rather than displaying an unfinished frame.
+                            if result.needs_sync()
+                                && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
+                                && let Err(err) = element.sync.wait()
+                            {
+                                tracing::warn!("render sync: {err:?}");
+                            } else {
+                                match lit.drm_output.queue_frame(()) {
+                                    Ok(()) => {
+                                        queued = true;
+                                        lit.frame_pending = true;
+                                        lit.lock_queued = state.is_locked();
+                                        lit.in_flight = state.frame_buffers(&lit.output);
+                                    }
+                                    Err(err) => tracing::warn!("queue frame: {err}"),
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(err) => tracing::warn!("render: {err:?}"),
+                    }
+                    let elapsed = state.start.elapsed();
+                    // Minimized windows are hidden: no frames, so they need not draw.
+                    for (_, window) in
+                        state.windows.iter().filter(|(window_id, _)| state.world.contains_window(**window_id))
+                    {
+                        window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
+                    }
+                    state.send_layer_frames(elapsed);
+                });
             }
-            let elapsed = self.start.elapsed();
-            // Minimized windows are hidden: no frames, so they need not draw.
-            for (_, window) in self.windows.iter().filter(|(window_id, _)| !self.world.is_minimized(**window_id)) {
-                window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
-            }
-            udev.surface = Some(lit);
         }
-        self.send_layer_frames(self.start.elapsed());
-        udev.frame_pending = queued;
+        udev.gpus = gpus;
         let asked = std::mem::take(&mut udev.asked);
         udev.quiet = match (queued, asked) {
             (true, false) => 0,
             (true, true) => QUIET_FRAMES - ASKED_FRAMES,
             (false, _) => udev.quiet.saturating_add(1),
         };
-        if !queued {
+        if udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).any(|lit| !lit.frame_pending) {
             // Nothing changed on screen: look again in about a frame, and
             // less often once it has been still for a while. Input and
             // client commits ask for a frame themselves.

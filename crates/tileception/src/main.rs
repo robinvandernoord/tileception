@@ -41,6 +41,7 @@ mod media;
 mod minimized;
 mod notifications;
 mod osd;
+mod outputs;
 mod password;
 mod persistence;
 mod pointer_lock;

@@ -118,6 +118,15 @@ pub struct Bar {
     command: Option<(String, u32)>,
 }
 
+impl Bar {
+    /// Visual state belongs to an output; the external bar process belongs to
+    /// the session and must survive switching or temporarily rendering outputs.
+    pub fn exchange_output(&mut self, other: &mut Self) {
+        std::mem::swap(self, other);
+        std::mem::swap(&mut self.command, &mut other.command);
+    }
+}
+
 impl Default for Bar {
     fn default() -> Self {
         Bar {
@@ -333,6 +342,7 @@ impl Tileception {
         let out = self.output_rect();
         let distance = if self.bar_at_bottom() { out.bottom() - point.y } else { point.y - out.y };
         let reveal = mode == Mode::Hairline
+            && self.is_active_output()
             && !self.is_locked()
             && self.move_drag.is_none()
             && (distance <= EDGE

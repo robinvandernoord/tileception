@@ -113,6 +113,7 @@ pub struct Tileception {
     pub windows: HashMap<WindowId, Window>,
     next_window: u64,
     pub output: Option<Output>,
+    pub outputs: crate::outputs::Outputs,
     /// Physical pixels per logical pixel on the output (see `scale.rs`).
     pub scale: f64,
     pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
@@ -305,6 +306,7 @@ impl Tileception {
             pending_press: None,
             terminal,
             ipc_socket: None,
+            outputs: Default::default(),
             keyboard_focus: None,
             keyboard_dirty: false,
             layer_shell_state: WlrLayerShellState::new::<Self>(&display_handle),
@@ -471,6 +473,19 @@ impl Tileception {
     /// float, everything else docks. Wayland windows call this on their first
     /// commit, once they have said what they are.
     pub fn place_window(&mut self, window_id: WindowId) {
+        let parent_output = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.toplevel())
+            .and_then(|toplevel| toplevel.parent())
+            .and_then(|parent| self.window_id(&parent))
+            .and_then(|parent| self.output_for_window(parent));
+        if let Some(output) = parent_output
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.place_window(window_id));
+            return;
+        }
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
         let float = rule.float.unwrap_or_else(|| wants_float(window));
@@ -508,6 +523,12 @@ impl Tileception {
     }
 
     pub fn forget_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.forget_window(window_id));
+            return;
+        }
         self.selection.windows.remove(&window_id);
         if self.windows.remove(&window_id).is_none() {
             return;
@@ -560,7 +581,10 @@ impl Tileception {
             }
         }
         for (window_id, window) in &self.windows {
-            window.set_activated(Some(*window_id) == focus);
+            if !self.world.contains_window(*window_id) && !self.world.is_minimized(*window_id) {
+                continue;
+            }
+            window.set_activated(self.is_active_output() && Some(*window_id) == focus);
             // Minimized windows are told they are hidden, so they can stop drawing.
             let hidden = self.world.is_minimized(*window_id);
             if let Some(x11) = window.x11_surface().filter(|x11| x11.is_minimized() != hidden) {
@@ -585,6 +609,9 @@ impl Tileception {
     /// Points the keyboard at what should have it: a launcher that asked for
     /// it, otherwise the focused window.
     fn sync_keyboard_focus(&mut self) {
+        if !self.is_active_output() {
+            return;
+        }
         let focus = self.world.focus();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         // A closed surface can still hold the keyboard; take it back then.
@@ -594,7 +621,9 @@ impl Tileception {
         }
         self.keyboard_focus = focus;
         self.keyboard_dirty = false;
-        let target = if self.is_locked() {
+        let target = if self.output.is_none() {
+            None
+        } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
         } else if self.power_menu.is_some() {
             None
@@ -620,6 +649,12 @@ impl Tileception {
 
     /// Makes a window cover the whole output, or puts it back in its tile.
     pub fn set_fullscreen(&mut self, window_id: WindowId, enable: bool) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.set_fullscreen(window_id, enable));
+            return;
+        }
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
         if enable {
             if let Some(old) = self.fullscreen.filter(|old| *old != window_id) {
@@ -656,6 +691,12 @@ impl Tileception {
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
     pub fn minimize_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.minimize_window(window_id));
+            return;
+        }
         if self.fullscreen == Some(window_id) {
             self.set_fullscreen(window_id, false);
         }

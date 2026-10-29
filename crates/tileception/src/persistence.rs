@@ -40,7 +40,7 @@ impl Persistence {
 
 impl Tileception {
     pub fn restore_window_layout(&mut self, window: WindowId) {
-        if !self.config.file.general.restore_layout {
+        if !self.config.file.general.restore_layout || self.all_outputs().len() > 1 {
             return;
         }
         self.persistence.matched.retain(|_, live| self.windows.contains_key(live));
@@ -85,7 +85,7 @@ impl Tileception {
     }
 
     pub fn persist_layout(&mut self) {
-        if !self.config.file.general.restore_layout {
+        if !self.config.file.general.restore_layout || self.all_outputs().len() > 1 {
             return;
         }
         // Empty desktops and application teardown at logout must not erase the layout.

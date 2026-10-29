@@ -204,6 +204,12 @@ tray_max_icons = 3
 #
 # [outputs."eDP-1"]
 # scale = 1.5
+# position = [0, 0]             # top-left corner in logical pixels
+#
+# [outputs."DP-1"]
+# scale = 1
+# position = [1280, 0]          # right of a 1920-wide panel at scale 1.5
+# Without positions, screens form a row in connector-name order.
 #
 # [outputs."*"]
 # scale = 1

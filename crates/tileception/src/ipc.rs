@@ -70,6 +70,9 @@ pub fn describe(state: &Tileception) -> String {
         state.selection.windows.iter().map(|window_id| window_id.0).collect::<Vec<_>>()
     ));
     out.push_str(&format!("minimized {:?}\n", world.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
+    if let Some(output) = &state.output {
+        out.push_str(&format!("output {} pointer {:.1},{:.1}\n", output.name(), state.pointer.x, state.pointer.y));
+    }
     fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
         let world = &state.world;
         let tree = world.tree();
