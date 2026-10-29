@@ -2,6 +2,15 @@
 
 <!-- next-version-placeholder -->
 
+## v0.8.1 (2026-10-29)
+
+### Fixes
+* **setup:** unlock keyrings through greetd PAM
+* **greeter:** write greeter logs to a file
+
+### Documentation
+* **plan:** outline machine handoff
+
 ## v0.8.0 (2026-10-29)
 
 ### Features
