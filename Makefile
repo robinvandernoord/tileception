@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested deb deb-docker
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested deb deb-docker release
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -25,6 +25,7 @@ help:
 	@echo "make nested      run a development build in a window"
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
+	@echo "make release     release a new version with vommit"
 
 tools:
 	@if ! cargo plane setup codespace --help 2>/dev/null | grep -q -- '--yes'; then \
@@ -113,3 +114,6 @@ deb:
 
 deb-docker:
 	scripts/build-deb-docker.sh $(DEB_IMAGES)
+
+release:
+	vommit release
