@@ -20,6 +20,10 @@ dm_link=/etc/systemd/system/display-manager.service
 previous_dm_file=/etc/tileception/previous-display-manager
 greetd_config=/etc/greetd/config.toml
 greetd_backup=/etc/greetd/config.toml.before-tileception
+# greetd's PAM service with the keyring and KWallet unlocked by the login
+# password, for systems whose own greetd service leaves them locked.
+greetd_pam=/etc/pam.d/tileception-greetd
+greetd_pam_marker="# Written by tileception-setup"
 
 if [ "$(id -u)" -eq 0 ]; then
     as_root=""
@@ -38,6 +42,31 @@ current_dm() {
 greetd_vt() {
     vt=$(sed -n 's/^[[:space:]]*vt[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$greetd_config" 2>/dev/null | head -n 1)
     echo "${vt:-7}"
+}
+
+# The PAM service for logins through greetd: greetd's own, plus unlocking the
+# GNOME keyring or KWallet with the password just typed (each only when
+# installed; the leading "-" skips a missing module).
+greetd_pam_text() {
+    printf '%s\n' \
+        "#%PAM-1.0" \
+        "$greetd_pam_marker; greetd uses it through [general] service in" \
+        "# $greetd_config. Removed again when switching back." \
+        "@include greetd" \
+        "-auth     optional  pam_gnome_keyring.so" \
+        "-auth     optional  pam_kwallet5.so" \
+        "-session  optional  pam_gnome_keyring.so auto_start" \
+        "-session  optional  pam_kwallet5.so auto_start"
+}
+
+# Whether logins need greetd_pam: greetd's own service unlocks neither the
+# keyring nor KWallet (Ubuntu's does, Debian's does not), and this greetd can
+# use another service (0.10 and later).
+needs_greetd_pam() {
+    [ -e /etc/pam.d/greetd ] || return 1
+    grep -qsE "pam_(gnome_keyring|kwallet)" /etc/pam.d/greetd && return 1
+    version=$(dpkg-query -W -f='${Version}' greetd 2>/dev/null) || return 1
+    dpkg --compare-versions "$version" ge 0.10
 }
 
 # Whether greetd runs Tileception's greeter as the login screen.
@@ -108,11 +137,26 @@ enable_greeter() {
     if [ ! -e "$greetd_backup" ] && [ -e "$greetd_config" ] && ! grep -qs "tileception --greeter" "$greetd_config"; then
         $as_root cp -p "$greetd_config" "$greetd_backup"
     fi
+    general=""
+    if needs_greetd_pam; then
+        tmp_pam=$(mktemp)
+        greetd_pam_text > "$tmp_pam"
+        # A service someone changed is theirs: keep it.
+        if [ ! -e "$greetd_pam" ] || grep -qs "^$greetd_pam_marker" "$greetd_pam"; then
+            $as_root install -m 644 "$tmp_pam" "$greetd_pam"
+        fi
+        rm -f "$tmp_pam"
+        general="[general]
+service = \"tileception-greetd\"
+
+"
+        echo "Logging in unlocks the keyring (PAM service tileception-greetd)"
+    fi
     tmp_config=$(mktemp)
     printf '%s\n' \
         "# Written by tileception-setup; the previous config is" \
         "# $greetd_backup." \
-        "[terminal]" \
+        "$general[terminal]" \
         "vt = $(greetd_vt)" \
         "" \
         "[default_session]" \
@@ -161,6 +205,11 @@ restore_login_screen() {
         fi
     fi
     $as_root rm -f "$previous_dm_file"
+    # Unused once greetd's own config is back; kept if someone changed it.
+    if [ -e "$greetd_pam" ] && ! grep -qs "service *= *\"tileception-greetd\"" "$greetd_config" \
+        && [ "$(cat "$greetd_pam")" = "$(greetd_pam_text)" ]; then
+        $as_root rm -f "$greetd_pam"
+    fi
 }
 
 if [ -n "${TILECEPTION_SETUP_LIB:-}" ]; then
