@@ -104,6 +104,9 @@ pub enum Action {
     Restart,
     PowerOff,
     Firmware,
+    ConfirmFirmware,
+    More,
+    Back,
     Session(usize),
     Person(usize),
     /// One of the keymap's own layouts, by position.
@@ -117,6 +120,15 @@ pub struct Palette {
     query: String,
     selected: usize,
     opened: Option<Instant>,
+    page: PalettePage,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PalettePage {
+    #[default]
+    Main,
+    More,
+    ConfirmFirmware,
 }
 
 pub struct Greeter {
@@ -374,6 +386,14 @@ impl Greeter {
     /// The launcher's rows, filtered by what is typed. `media` is the state of
     /// the player media keys control, if any.
     fn actions(&self, media: Option<tileception_media::Status>) -> Vec<(Action, String)> {
+        let query = self.palette.as_ref().map(|palette| palette.query.to_lowercase()).unwrap_or_default();
+        match self.palette.as_ref().map(|palette| palette.page).unwrap_or_default() {
+            PalettePage::More => return vec![(Action::Firmware, "UEFI".into()), (Action::Back, "Back".into())],
+            PalettePage::ConfirmFirmware => {
+                return vec![(Action::Back, "Cancel".into()), (Action::ConfirmFirmware, "Restart into UEFI".into())];
+            }
+            PalettePage::Main => {}
+        }
         let mut list = Vec::new();
         if let Some(status) = media {
             let label = if status == tileception_media::Status::Playing { "Pause media" } else { "Play media" };
@@ -385,7 +405,10 @@ impl Greeter {
             (Action::PowerOff, "Shut down".to_string()),
         ]);
         if !self.locked() && std::path::Path::new("/sys/firmware/efi").exists() {
-            list.push((Action::Firmware, "Restart into firmware setup".to_string()));
+            list.push((Action::More, "More…".to_string()));
+            if !query.trim().is_empty() {
+                list.push((Action::Firmware, "Restart into UEFI".to_string()));
+            }
         }
         let current = self.session_of_selected();
         for (index, session) in self.sessions.iter().enumerate() {
@@ -401,7 +424,6 @@ impl Greeter {
         if !self.other() && !self.locked() {
             list.push((Action::Person(self.accounts.len()), "Log in as someone not listed".to_string()));
         }
-        let query = self.palette.as_ref().map(|palette| palette.query.to_lowercase()).unwrap_or_default();
         let active = self.active_layout();
         for (index, (layout, variant)) in self.layouts.iter().enumerate() {
             if self.keymap.is_some() || index != self.layout {
@@ -419,8 +441,13 @@ impl Greeter {
             }
         }
         // Every word typed, in any order.
-        list.retain(|(_, label)| {
-            let label = label.to_lowercase();
+        list.retain(|(action, label)| {
+            let aliases = match action {
+                Action::Firmware => "bios firmware setup reboot",
+                Action::PowerOff => "power off shutdown",
+                _ => "",
+            };
+            let label = format!("{} {aliases}", label.to_lowercase());
             query.split_whitespace().all(|word| label.contains(word))
         });
         list
@@ -795,7 +822,8 @@ impl Tileception {
         if greeter.busy() {
             return;
         }
-        greeter.palette = Some(Palette { query: "layout ".into(), selected: 0, opened: Some(Instant::now()) });
+        greeter.palette =
+            Some(Palette { query: "layout ".into(), selected: 0, opened: Some(Instant::now()), ..Default::default() });
     }
 
     /// Types with `picked` instead of the configured keymap, or with the
@@ -883,7 +911,15 @@ impl Tileception {
         let Some(palette) = greeter.palette.as_mut() else { return };
         let count = actions.len();
         match sym {
-            keysyms::KEY_Escape => greeter.palette = None,
+            keysyms::KEY_Escape => {
+                greeter.palette = match palette.page {
+                    PalettePage::Main => None,
+                    PalettePage::More => Some(Palette { opened: Some(Instant::now()), ..Default::default() }),
+                    PalettePage::ConfirmFirmware => {
+                        Some(Palette { page: PalettePage::More, opened: Some(Instant::now()), ..Default::default() })
+                    }
+                };
+            }
             keysyms::KEY_x | keysyms::KEY_X if logo => greeter.palette = None,
             keysyms::KEY_Down | keysyms::KEY_Tab => {
                 palette.selected = (palette.selected + 1).min(count.saturating_sub(1))
@@ -895,7 +931,6 @@ impl Tileception {
             }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
                 let chosen = actions.get(palette.selected).map(|(action, _)| *action);
-                greeter.palette = None;
                 if let Some(action) = chosen {
                     self.run_greeter_action(action);
                 }
@@ -914,7 +949,18 @@ impl Tileception {
 
     fn run_greeter_action(&mut self, action: Action) {
         let Some(greeter) = self.greeter.as_deref_mut() else { return };
+        let page = greeter.palette.take().map(|palette| palette.page).unwrap_or_default();
         let args: &[&str] = match action {
+            Action::More | Action::Firmware | Action::Back => {
+                let next = match action {
+                    Action::More => PalettePage::More,
+                    Action::Firmware => PalettePage::ConfirmFirmware,
+                    Action::Back if page == PalettePage::ConfirmFirmware => PalettePage::More,
+                    _ => PalettePage::Main,
+                };
+                greeter.palette = Some(Palette { page: next, opened: Some(Instant::now()), ..Default::default() });
+                return;
+            }
             Action::Media => {
                 self.media_request(tileception_media::Request::Player(tileception_media::PlayerCommand::PlayPause));
                 return;
@@ -922,7 +968,7 @@ impl Tileception {
             Action::Suspend => &["suspend"],
             Action::Restart => &["reboot"],
             Action::PowerOff => &["poweroff"],
-            Action::Firmware => &["reboot", "--firmware-setup"],
+            Action::ConfirmFirmware => &["reboot", "--firmware-setup"],
             Action::Session(session) => {
                 greeter.choose_session(session);
                 return;
@@ -1103,7 +1149,6 @@ impl Tileception {
             match hit {
                 Some(draw::Target::Action(index)) => {
                     let chosen = actions.get(index).map(|(action, _)| *action);
-                    greeter.palette = None;
                     if let Some(action) = chosen {
                         self.run_greeter_action(action);
                     }

@@ -957,7 +957,12 @@ impl Tileception {
             painter.text(&state.query, text, style)
         } else {
             painter.text(
-                if greeter.locked() { "Power and media" } else { "Power, sessions, people" },
+                match state.page {
+                    super::PalettePage::More => "More…",
+                    super::PalettePage::ConfirmFirmware => "Restart into UEFI settings?",
+                    super::PalettePage::Main if greeter.locked() => "Power and media",
+                    super::PalettePage::Main => "Power, sessions, people",
+                },
                 text,
                 Style { colour: theme.muted, ..style },
             );
@@ -988,7 +993,9 @@ impl Tileception {
             let icon = match action {
                 Action::Media => glyph::MUSIC,
                 Action::Suspend => glyph::MOON,
-                Action::Restart | Action::Firmware => glyph::RESTART,
+                Action::Restart | Action::Firmware | Action::ConfirmFirmware => glyph::RESTART,
+                Action::More => glyph::CHEVRON_RIGHT,
+                Action::Back => glyph::ARROW_LEFT,
                 Action::PowerOff => glyph::POWER,
                 Action::Session(_) => glyph::OVERVIEW,
                 Action::Person(_) => USER,

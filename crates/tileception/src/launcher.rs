@@ -130,6 +130,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
     builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),
     builtin("Restart", "reboot", glyph::RESTART, Does::Power(PowerAction::Restart)),
+    builtin("Restart into UEFI", "bios firmware setup reboot", glyph::RESTART, Does::Power(PowerAction::Uefi)),
     builtin("Power off", "shut down shutdown turn off", glyph::POWER, Does::Power(PowerAction::PowerOff)),
     builtin("Do not disturb", "dnd quiet silence notifications", glyph::BELL, Does::Line("do-not-disturb")),
     builtin("Notifications", "history messages", glyph::BELL, Does::Line("notifications")),
@@ -847,6 +848,9 @@ impl Tileception {
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
     fn fly_to_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id) {
+            self.activate_output(&output);
+        }
         let now = self.now();
         if let Some(full) = self.fullscreen
             && full != window_id
@@ -876,6 +880,7 @@ impl Tileception {
                 Err(error) => tracing::warn!("launcher command {line:?}: {error}"),
             },
             Does::Suspend => self.run_power_action(PowerAction::Suspend),
+            Does::Power(PowerAction::Uefi) => self.confirm_uefi_restart(),
             Does::Power(action) => {
                 self.shell_power_menu();
                 if let Some(menu) = self.power_menu.as_mut() {
