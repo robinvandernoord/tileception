@@ -176,6 +176,26 @@ to discard the capture, or press **Escape** during region selection to cancel.
 Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`.
 
+### Password manager auto-type
+
+KeePassXC 2.8 and newer can type usernames and passwords into other windows
+through the desktop portal. The first time a program wants to type, a
+notification asks whether to allow it: **Deny**, **Allow once** or **Always**.
+**Always** is remembered in `~/.local/state/tileception/typing.toml`; remove the
+program's line there to be asked again. Keys go to the
+window you are using, and nothing is typed while the screen is locked.
+
+For KeePassXC's global auto-type shortcut, open its settings, go to
+**Auto-Type** and click **Configure** next to the global shortcut. Tileception
+asks you to press the keys, such as Ctrl+Alt+A; Escape or **Skip** leaves the
+shortcut unset. The keys are remembered for that program, and clicking
+**Configure** again changes them. Keys Tileception already uses are refused.
+On Wayland, KeePassXC cannot see window titles, so the shortcut always opens its
+entry picker: search, press Enter, and it types into the window you came from.
+
+The portal reads Tileception's portal files when it starts. After installing or
+updating Tileception, log out and back in before trying auto-type.
+
 ### Sound, brightness and playback
 
 The standard volume, microphone mute, brightness and media keys work with the

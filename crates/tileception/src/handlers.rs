@@ -110,16 +110,25 @@ impl CompositorHandler for Tileception {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        if let Some(output) = self.output_for_surface(surface)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| CompositorHandler::commit(state, surface));
+            return;
+        }
         on_commit_buffer_handler::<Self>(surface);
         // Shown in the next frame, not whenever the screen is next polled.
         self.schedule_render();
-        // There is one output, and everything shown is on it. Not before
-        // the surface has drawn: foot crashes on an enter before its
-        // first configure.
+        // Not before the surface has drawn: foot crashes on an enter before
+        // its first configure. The context belongs to the surface's output.
         if let Some(output) = &self.output
             && crate::scale::has_buffer(surface)
         {
             output.enter(surface);
+            with_states(surface, |states| crate::scale::send_scale_state(surface, states, self.scale));
+        }
+        if self.drag_icon_commit(surface) {
+            return;
         }
         if self.commit_layer(surface) {
             self.popups.commit(surface);
@@ -213,8 +222,10 @@ impl SelectionHandler for Tileception {
 
     /// A Wayland client set the clipboard: offer it to X11 programs too.
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+        let mime_types = source.map(|offered| offered.mime_types());
+        self.selection_offered(ty, mime_types.clone());
         if let Some(xwm) = self.xwm.as_mut()
-            && let Err(err) = xwm.new_selection(ty, source.map(|offered| offered.mime_types()))
+            && let Err(err) = xwm.new_selection(ty, mime_types)
         {
             tracing::warn!("could not offer the selection to X11: {err:?}");
         }
@@ -229,6 +240,10 @@ impl SelectionHandler for Tileception {
         _seat: Seat<Self>,
         clip: &Option<crate::launcher::Clip>,
     ) {
+        if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+            self.handoff_fetch(&remote.clone(), mime_type, fd);
+            return;
+        }
         if let Some(clip) = clip {
             clip.send(fd);
             return;
@@ -255,8 +270,39 @@ impl DataDeviceHandler for Tileception {
     }
 }
 
-impl ClientDndGrabHandler for Tileception {}
-impl ServerDndGrabHandler for Tileception {}
+impl ClientDndGrabHandler for Tileception {
+    fn started(
+        &mut self,
+        source: Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.drag_started(source, icon);
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.drag_ended();
+    }
+}
+
+/// Tileception's own drags carry another machine's drag on here.
+impl ServerDndGrabHandler for Tileception {
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_dropped();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_finished();
+    }
+
+    fn send(&mut self, mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
+        self.handoff_drag_send(mime_type, fd);
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_finished();
+    }
+}
 
 delegate_data_device!(Tileception);
 
@@ -294,6 +340,13 @@ impl XdgShellHandler for Tileception {
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
+        if let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
+            && let Some(window) = self.window_id(&root).filter(|window| self.handoff.windows.away.contains_key(window))
+        {
+            let geometry = surface.with_pending_state(|state| state.geometry);
+            let room = self.away_room(window);
+            tracing::info!(?geometry, ?room, "handoff: a menu opens in window {} shown elsewhere", window.0);
+        }
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
@@ -327,10 +380,17 @@ impl XdgShellHandler for Tileception {
     fn fullscreen_request(
         &mut self,
         surface: ToplevelSurface,
-        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        requested_output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
         match self.window_id(surface.wl_surface()) {
-            Some(window_id) => self.set_fullscreen(window_id, true),
+            Some(window_id) => {
+                if let Some(output) = requested_output.as_ref().and_then(smithay::output::Output::from_resource)
+                    && self.output_for_window(window_id).is_some()
+                {
+                    let _ = self.move_window_to_output(window_id, &output);
+                }
+                self.set_fullscreen(window_id, true);
+            }
             // Not placed yet: remember it for the first configure.
             None => surface.with_pending_state(|pending| {
                 pending
@@ -365,12 +425,24 @@ impl XdgShellHandler for Tileception {
         if self.window_id(&root).is_none() {
             return;
         }
+        let away = self.window_id(&root).is_some_and(|window| self.handoff.windows.away.contains_key(&window));
         let root_focus = crate::focus::KeyboardFocus::Wayland(root);
-        let Ok(mut grab) = self.popups.grab_popup(root_focus, kind, &seat, serial) else { return };
+        let mut grab = match self.popups.grab_popup(root_focus, kind, &seat, serial) {
+            Ok(grab) => grab,
+            Err(error) => {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere refused its grab: {error:?}");
+                }
+                return;
+            }
+        };
         if let Some(keyboard) = seat.get_keyboard() {
             if keyboard.is_grabbed()
                 && !(keyboard.has_grab(serial) || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
             {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere closed: the keyboard is held");
+                }
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
@@ -382,8 +454,14 @@ impl XdgShellHandler for Tileception {
                 && !(pointer.has_grab(serial)
                     || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
             {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere closed: the pointer is held");
+                }
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
+            }
+            if away {
+                tracing::info!("handoff: a menu of a window shown elsewhere opened with its grab");
             }
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
@@ -394,9 +472,24 @@ delegate_xdg_shell!(Tileception);
 
 impl Tileception {
     /// Keeps popups inside the screen, relative to their window's place on it.
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    fn unconstrain_popup(&mut self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
         let Some(window_id) = self.window_id(&root) else { return };
+        // Shown on another machine: kept on the screen there.
+        if let Some(room) = self.away_room(window_id) {
+            let mut target = Rectangle::new((room.left, room.top).into(), (room.width, room.height).into());
+            target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+            popup.with_pending_state(|state| {
+                state.geometry = state.positioner.get_unconstrained_geometry(target);
+            });
+            return;
+        }
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.unconstrain_popup(popup));
+            return;
+        }
         let Some(placement) =
             self.world.placements(self.world.target_view()).into_iter().find(|candidate| candidate.window == window_id)
         else {

@@ -79,6 +79,8 @@ pub struct Tileception {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    /// Start the installed binary in this process once the loop stops.
+    pub restart: bool,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -113,6 +115,7 @@ pub struct Tileception {
     pub windows: HashMap<WindowId, Window>,
     next_window: u64,
     pub output: Option<Output>,
+    pub outputs: crate::outputs::Outputs,
     /// Physical pixels per logical pixel on the output (see `scale.rs`).
     pub scale: f64,
     pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
@@ -134,6 +137,8 @@ pub struct Tileception {
     pub gap_drag: Option<GapDrag>,
     pub move_drag: Option<MoveDrag>,
     pub resize_drag: Option<ResizeDrag>,
+    /// A program's drag and drop in progress here.
+    pub drag: Option<crate::drag::LocalDrag>,
     /// Scrolling not yet turned into wheel binding steps.
     pub wheel_accum: (f64, f64),
     /// The touchpad gesture in progress.
@@ -145,10 +150,13 @@ pub struct Tileception {
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
     pub tap_fired: Vec<crate::commands::Command>,
+    pub key_repeat: crate::key_repeat::KeyRepeat,
+    /// Set by a lock screen or greeter key to repeat while it is held.
+    pub greeter_repeat: Option<crate::key_repeat::Repeat>,
     pub pending_press: Option<PendingPress>,
     pub terminal: String,
     pub ipc_socket: Option<std::path::PathBuf>,
-    keyboard_focus: Option<WindowId>,
+    pub(crate) keyboard_focus: Option<WindowId>,
     keyboard_dirty: bool,
     pub layer_shell_state: WlrLayerShellState,
     /// A layer surface (launcher, lock screen) holding the keyboard.
@@ -161,6 +169,8 @@ pub struct Tileception {
     /// Set in `--greeter` mode.
     pub greeter: Option<Box<crate::greeter::Greeter>>,
     pub pending_captures: Vec<crate::capture::PendingCapture>,
+    /// The pointer image for captures that ask for it, loaded on first use.
+    pub capture_cursor: Option<crate::cursor::Cursor>,
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
@@ -177,6 +187,10 @@ pub struct Tileception {
     pub duck: crate::duck::Duck,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
+    /// Applications typing through the desktop portal (KeePassXC's auto-type).
+    pub typing: crate::remote_desktop::Typing,
+    /// Applications' global shortcuts through the desktop portal.
+    pub shortcuts: crate::global_shortcuts::Shortcuts,
     pub selection: crate::selection::Selection,
     /// The strip of minimized windows at the bottom edge.
     pub strip: crate::minimized::Strip,
@@ -187,6 +201,7 @@ pub struct Tileception {
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
     pub sleep: crate::sleep::Sleep,
+    pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
@@ -251,6 +266,7 @@ impl Tileception {
             socket_name,
             display_handle: display_handle.clone(),
             loop_signal: event_loop.get_signal(),
+            restart: false,
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
@@ -295,6 +311,7 @@ impl Tileception {
             nested,
             gap_drag: None,
             move_drag: None,
+            drag: None,
             resize_drag: None,
             wheel_accum: (0.0, 0.0),
             gesture: None,
@@ -302,9 +319,12 @@ impl Tileception {
             touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
+            key_repeat: Default::default(),
+            greeter_repeat: None,
             pending_press: None,
             terminal,
             ipc_socket: None,
+            outputs: Default::default(),
             keyboard_focus: None,
             keyboard_dirty: false,
             layer_shell_state: WlrLayerShellState::new::<Self>(&display_handle),
@@ -318,6 +338,7 @@ impl Tileception {
             builtin_locker: Default::default(),
             greeter: None,
             pending_captures: Vec::new(),
+            capture_cursor: None,
             theme,
             text: Default::default(),
             shapes: Default::default(),
@@ -334,6 +355,8 @@ impl Tileception {
             notification_bus: None,
             media_bus: None,
             appearance: None,
+            typing: Default::default(),
+            shortcuts: Default::default(),
             selection: Default::default(),
             strip: Default::default(),
             bar: Default::default(),
@@ -342,6 +365,7 @@ impl Tileception {
             idle: Default::default(),
             battery: Default::default(),
             sleep: Default::default(),
+            handoff: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
             headless: None,
@@ -444,7 +468,7 @@ impl Tileception {
             .map(|(window_id, _)| *window_id)
     }
 
-    fn next_id(&mut self) -> WindowId {
+    pub(crate) fn next_id(&mut self) -> WindowId {
         let window_id = WindowId(self.next_window);
         self.next_window += 1;
         window_id
@@ -471,6 +495,19 @@ impl Tileception {
     /// float, everything else docks. Wayland windows call this on their first
     /// commit, once they have said what they are.
     pub fn place_window(&mut self, window_id: WindowId) {
+        let parent_output = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.toplevel())
+            .and_then(|toplevel| toplevel.parent())
+            .and_then(|parent| self.window_id(&parent))
+            .and_then(|parent| self.output_for_window(parent));
+        if let Some(output) = parent_output
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.place_window(window_id));
+            return;
+        }
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
         let float = rule.float.unwrap_or_else(|| wants_float(window));
@@ -508,10 +545,17 @@ impl Tileception {
     }
 
     pub fn forget_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.forget_window(window_id));
+            return;
+        }
         self.selection.windows.remove(&window_id);
         if self.windows.remove(&window_id).is_none() {
             return;
         }
+        self.window_forgotten(window_id);
         if self.move_drag.is_some_and(|drag| drag.window == window_id) {
             self.move_drag = None;
         }
@@ -547,9 +591,20 @@ impl Tileception {
                 if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let Some(window) = self.windows.get(&placement.window) else { continue };
                 let size: Size<i32, Logical> =
                     (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                let Some(window) = self.windows.get(&placement.window) else {
+                    // Another machine's window: its owner sizes it, and keeps
+                    // its menus on this screen.
+                    let room = tileception_handoff::Room {
+                        left: (screen.x - placement.rect.x).round() as i32,
+                        top: (screen.y - placement.rect.y).round() as i32,
+                        width: screen.w.round() as i32,
+                        height: screen.h.round() as i32,
+                    };
+                    self.ask_remote_size(placement.window, size, room);
+                    continue;
+                };
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|pending| pending.size = Some(size));
                 } else if let Some(x11) = window.x11_surface() {
@@ -560,7 +615,10 @@ impl Tileception {
             }
         }
         for (window_id, window) in &self.windows {
-            window.set_activated(Some(*window_id) == focus);
+            if !self.world.contains_window(*window_id) && !self.world.is_minimized(*window_id) {
+                continue;
+            }
+            window.set_activated(self.is_active_output() && Some(*window_id) == focus);
             // Minimized windows are told they are hidden, so they can stop drawing.
             let hidden = self.world.is_minimized(*window_id);
             if let Some(x11) = window.x11_surface().filter(|x11| x11.is_minimized() != hidden) {
@@ -585,6 +643,9 @@ impl Tileception {
     /// Points the keyboard at what should have it: a launcher that asked for
     /// it, otherwise the focused window.
     fn sync_keyboard_focus(&mut self) {
+        if !self.is_active_output() {
+            return;
+        }
         let focus = self.world.focus();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         // A closed surface can still hold the keyboard; take it back then.
@@ -594,9 +655,17 @@ impl Tileception {
         }
         self.keyboard_focus = focus;
         self.keyboard_dirty = false;
-        let target = if self.is_locked() {
+        let mut remote = None;
+        let target = if self.output.is_none() {
+            None
+        } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
         } else if self.power_menu.is_some() {
+            None
+        } else if let Some(away) = self.away_keyboard_target() {
+            // One of this machine's windows, typed into from another machine.
+            Some(away)
+        } else if self.handoff.forwarding.is_some() {
             None
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
@@ -604,12 +673,15 @@ impl Tileception {
         } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
+            remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
             focus.and_then(|window_id| self.windows.get(&window_id)).and_then(focus_target)
         };
         if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
             let _ = xwm.raise_window(x11);
         }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        // Another machine's window takes keys through its owner.
+        self.set_remote_keyboard(remote);
     }
 
     /// Re-evaluates keyboard focus even if the focused window did not change.
@@ -620,6 +692,12 @@ impl Tileception {
 
     /// Makes a window cover the whole output, or puts it back in its tile.
     pub fn set_fullscreen(&mut self, window_id: WindowId, enable: bool) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.set_fullscreen(window_id, enable));
+            return;
+        }
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
         if enable {
             if let Some(old) = self.fullscreen.filter(|old| *old != window_id) {
@@ -656,6 +734,12 @@ impl Tileception {
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
     pub fn minimize_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.minimize_window(window_id));
+            return;
+        }
         if self.fullscreen == Some(window_id) {
             self.set_fullscreen(window_id, false);
         }
@@ -688,6 +772,9 @@ impl Tileception {
     }
 
     pub fn close_window(&self, window_id: WindowId) {
+        if self.close_remote(window_id) {
+            return;
+        }
         let Some(window) = self.windows.get(&window_id) else { return };
         if let Some(toplevel) = window.toplevel() {
             toplevel.send_close();
@@ -721,7 +808,7 @@ fn wants_float(window: &Window) -> bool {
 }
 
 /// Not before a window's first configure: foot crashes on an enter then.
-fn focus_target(window: &Window) -> Option<KeyboardFocus> {
+pub(crate) fn focus_target(window: &Window) -> Option<KeyboardFocus> {
     if let Some(toplevel) = window.toplevel() {
         toplevel.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(toplevel.wl_surface().clone()))
     } else {

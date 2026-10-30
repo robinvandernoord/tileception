@@ -63,6 +63,8 @@ wallpaper_fit = "fill"
 
 Colours accept `#rrggbb` or `#rrggbbaa`. `accent` and `accent_end` are the two
 ends of the accent gradient. Set them to the same colour for a solid accent.
+`guest` (violet by default) borders windows that come from another computer
+through handoff, brighter and glowing when they have the keyboard.
 
 Use an existing PNG, JPEG or WebP image for the wallpaper. It also appears on
 the built-in lock screen. `wallpaper_fit` accepts `fill`, `fit`, `stretch` or
@@ -171,8 +173,8 @@ autostart = ["swaync"]
 notifications = "swaync-client -t"
 ```
 
-Saving this stops Tileception's notification service. Log out and back in to
-start swaync through autostart. Super+N then opens swaync's interface.
+Saving this stops Tileception's notification service. Log out and back in (or
+run `tileception msg restart`) to start swaync through autostart. Super+N then opens swaync's interface.
 
 With `notifications = "none"`, Tileception's notification service is disabled,
 but Super+N still opens the built-in sound controls.
@@ -250,8 +252,8 @@ to specify a keyboard model. The example's repeat settings are the defaults:
 wait 400 milliseconds before repeating, then repeat 30 times per second.
 
 Repeat settings apply when you save. Changes to `layout`, `variant`, `options`
-or `model` currently require logging out of Tileception and back in, or
-restarting a nested instance.
+or `model` currently require `tileception msg restart` (which closes open
+windows), logging out and back in, or restarting a nested instance.
 
 ### Touchpad
 
