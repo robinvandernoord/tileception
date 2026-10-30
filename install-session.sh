@@ -8,7 +8,10 @@
 # tileception, and applied at the end. `make setup` asks the questions.
 #
 # Safe to run from inside a Tileception session: the running compositor keeps
-# going, and the new build starts at the next login.
+# going until the end, then is offered a restart into the new build in the
+# same session (open windows close). RESTART=yes or RESTART=no answers that
+# without asking; without a terminal and without RESTART it keeps going, and
+# the new build starts at the next login.
 set -e
 cd "$(dirname "$0")"
 
@@ -120,3 +123,25 @@ fi
 
 eval "set -- $flags"
 TILECEPTION_BIN="$bindir/tileception" resources/tileception-setup "$@"
+
+# A running session, reachable through its command socket, can start the new
+# build in place instead of waiting for the next login.
+if "$bindir/tileception" msg tree >/dev/null 2>&1; then
+    restart=${RESTART:-}
+    if [ -z "$restart" ] && [ -t 0 ] && [ -r /dev/tty ]; then
+        printf '\nRestart the running Tileception into the new build now? Open windows close. [Y/n] '
+        read -r answer </dev/tty || answer=n
+        case $answer in
+            ""|y|Y|yes|Yes) restart=yes ;;
+            *) restart=no ;;
+        esac
+    fi
+    case $restart in
+        yes|1|true)
+            if ! "$bindir/tileception" msg restart >/dev/null 2>&1; then
+                echo "The running Tileception is too old to restart itself: log out and back in once."
+            fi
+            ;;
+        *) echo "The running Tileception keeps going; the new build starts at the next login (or: tileception msg restart)." ;;
+    esac
+fi

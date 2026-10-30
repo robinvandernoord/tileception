@@ -192,6 +192,16 @@ keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
   package with tileception-setup and the site's /setup are published together.
 - [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
 
+#### Restarting in place
+
+Added 2026-10-30, not yet tried on hardware: `tileception msg restart` (also
+bindable as `restart`) stops the event loop and execs the installed binary
+with the same arguments, so the process id and with it the login session stay;
+the kernel closes screens, input devices and client connections. The new
+process retries opening the seat for three seconds while logind lets go of the
+old one. `make install` offers it at the end inside a session (`RESTART=yes|no`
+answers). Open windows close; restoring them is not planned.
+
 ### Later
 
 - [ ] Compare contents or hashes before exporting Doctor's bundled documentation

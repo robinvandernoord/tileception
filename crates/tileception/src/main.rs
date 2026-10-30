@@ -192,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("tileception {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            "--nested" | "--session" | "--headless" | "--greeter" => {}
+            "--nested" | "--session" | "--headless" | "--greeter" | RESTARTED => {}
             // A typo must not start a compositor.
             other => {
                 eprintln!("tileception: unknown argument {other:?}\n\n{USAGE}");
@@ -316,7 +316,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
+    if state.restart {
+        return Err(restart_in_place().into());
+    }
     Ok(())
+}
+
+/// Marks a compositor started by `restart`, which may have to wait for its
+/// predecessor's hold on the seat to be let go.
+pub const RESTARTED: &str = "--restarted";
+
+/// Replaces this process with the binary as installed now, with the same
+/// arguments. The process id stays, so the display manager and logind see
+/// the same session going on; the kernel closes the screens, input devices
+/// and every client's connection on the way. Returns only when that failed.
+fn restart_in_place() -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let mut args = std::env::args_os();
+    let program = args.next().unwrap_or_else(|| "tileception".into());
+    let args = args.filter(|argument| argument != RESTARTED);
+    tracing::info!("restarting as {}", program.to_string_lossy());
+    std::process::Command::new(program).arg(RESTARTED).args(args).exec()
 }
 
 /// The login screen: the compositor with no clients, the user's config or

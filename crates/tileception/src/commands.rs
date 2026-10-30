@@ -149,6 +149,8 @@ Shell:
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
+  restart                   start Tileception again as installed now, in the
+                            same session; open windows close
 
 Sound, light and media:
   volume up|down [n]        change the output volume by n percent (or the step)
@@ -291,6 +293,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "quit" => Action::Quit,
+        "restart" => Action::Restart,
         "terminal" => Action::Spawn,
         "close" => Action::Close,
         "overview" => Action::Overview,

@@ -222,11 +222,30 @@ fn wait_until_active(
     Ok(dispatcher.into_source_inner())
 }
 
+/// The seat, through logind or seatd. Right after `restart`, logind may not
+/// have noticed yet that the compositor before let go of it: try again for
+/// a few seconds then.
+fn open_seat() -> Result<(LibSeatSession, LibSeatSessionNotifier), String> {
+    let restarted = std::env::args().any(|argument| argument == crate::RESTARTED);
+    let mut tries = if restarted { 30 } else { 1 };
+    loop {
+        tries -= 1;
+        match LibSeatSession::new() {
+            Ok(opened) => return Ok(opened),
+            Err(err) if tries == 0 => return Err(format!("no seat session: {err}")),
+            Err(err) => {
+                tracing::debug!("seat not free yet: {err}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+}
+
 pub fn init(
     event_loop: &mut EventLoop<'static, Tileception>,
     state: &mut Tileception,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut session, notifier) = LibSeatSession::new().map_err(|err| format!("no seat session: {err}"))?;
+    let (mut session, notifier) = open_seat()?;
     let notifier = wait_until_active(&session, notifier)?;
     let seat = session.seat();
 

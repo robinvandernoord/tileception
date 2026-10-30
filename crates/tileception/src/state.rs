@@ -79,6 +79,8 @@ pub struct Tileception {
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    /// Start the installed binary in this process once the loop stops.
+    pub restart: bool,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -260,6 +262,7 @@ impl Tileception {
             socket_name,
             display_handle: display_handle.clone(),
             loop_signal: event_loop.get_signal(),
+            restart: false,
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,

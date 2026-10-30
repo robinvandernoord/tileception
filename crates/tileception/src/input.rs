@@ -34,6 +34,8 @@ const DRAG_PICTURE: f64 = 0.3;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     Quit,
+    /// Starts the compositor again, as installed now, in the same session.
+    Restart,
     Spawn,
     Close,
     Overview,
@@ -437,6 +439,7 @@ impl Tileception {
             action,
             Action::Close
                 | Action::Quit
+                | Action::Restart
                 | Action::Spawn
                 | Action::Vt(_)
                 | Action::Fullscreen
@@ -453,6 +456,10 @@ impl Tileception {
         tracing::debug!(?action, "action");
         match action {
             Action::Quit => self.loop_signal.stop(),
+            Action::Restart => {
+                self.restart = true;
+                self.loop_signal.stop();
+            }
             Action::Spawn => {
                 let terminal = self.terminal.clone();
                 let mut parts = terminal.split_whitespace();

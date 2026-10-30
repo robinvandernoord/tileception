@@ -16,7 +16,8 @@ help:
 	@echo "make fmt         format the workspace and independent crates"
 	@echo "make lint        clippy and formatting checks"
 	@echo "make install     check packages, build, install the session (config kept;"
-	@echo "                 SETUP_ARGS='--preset minimal' passes setup choices)"
+	@echo "                 SETUP_ARGS='--preset minimal' passes setup choices;"
+	@echo "                 offers to restart a running session, RESTART=yes|no answers)"
 	@echo "make setup       choose the parts of the desktop and the login screen"
 	@echo "make uninstall   remove the session (config and logs are kept)"
 	@echo "make install-greeter    make the Tileception greeter the login screen (from the next boot)"
@@ -85,7 +86,7 @@ lint: tools
 
 install: tools
 	@scripts/deps.sh check build runtime
-	./install-session.sh $(SETUP_ARGS)
+	RESTART=$(RESTART) ./install-session.sh $(SETUP_ARGS)
 
 setup:
 	resources/tileception-setup $(SETUP_ARGS)
