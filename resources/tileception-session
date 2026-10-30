@@ -46,5 +46,5 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/tileception"
 mkdir -p "$state"
 [ -f "$state/tileception.log" ] && mv -f "$state/tileception.log" "$state/tileception.log.old"
 
-export RUST_LOG="${RUST_LOG:-info,smithay=warn}"
+export RUST_LOG="${RUST_LOG:-warn,tileception=info,smithay=warn}"
 exec "$(dirname "$0")/tileception" --session >"$state/tileception.log" 2>&1

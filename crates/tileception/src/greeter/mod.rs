@@ -304,6 +304,11 @@ impl Greeter {
         self.user >= self.accounts.len()
     }
 
+    /// The field keys type into: the name of someone not listed, else the password.
+    fn typing_into(&mut self) -> &mut SecretField {
+        if self.other() && !self.named { &mut self.name } else { &mut self.field }
+    }
+
     /// How many tabs there are: everyone listed, and someone who is not;
     /// locked, only the signed-in person.
     fn people(&self) -> usize {
@@ -720,6 +725,9 @@ impl Tileception {
         if mods.ctrl {
             match sym {
                 keysyms::KEY_u | keysyms::KEY_U => greeter.field.clear(),
+                // Words are not shown in a password, so Ctrl+Backspace takes all of it.
+                keysyms::KEY_BackSpace if !greeter.busy() => greeter.typing_into().clear(),
+                keysyms::KEY_a | keysyms::KEY_A => greeter.typing_into().select_all(),
                 keysyms::KEY_space if greeter.layouts.len() > 1 && greeter.keymap.is_none() => {
                     self.next_keyboard_layout();
                 }
