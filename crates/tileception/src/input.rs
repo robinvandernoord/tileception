@@ -207,6 +207,20 @@ impl Tileception {
                 }
                 return FilterResult::Forward;
             }
+            // Applications' global shortcuts, and the question for their keys,
+            // which takes every key press but modifiers.
+            let trigger = crate::global_shortcuts::Trigger::new(Mods::from_state(mods), raw_sym);
+            let modifier = crate::config::modifier_of(raw_sym).is_some() || handle.modified_sym().is_modifier_key();
+            if state.asking_for_shortcut() && pressed && !modifier {
+                let held = Mods::from_state(mods);
+                let taken = builtin(held, sym, raw_sym, false).is_some()
+                    || state.config.lookup(held, raw_sym).or_else(|| state.config.lookup(held, sym)).is_some();
+                state.shortcut_keys_pressed(trigger, types(sym), taken);
+                return FilterResult::Intercept(Vec::new());
+            }
+            if state.portal_shortcut_key(keycode, trigger, pressed) {
+                return FilterResult::Intercept(Vec::new());
+            }
             if let Some(tap) = state.track_tap(pressed, raw_sym, Mods::from_state(mods)) {
                 // The release still goes to the client, so it does not
                 // think the modifier is stuck; the binding runs after.

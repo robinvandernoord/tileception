@@ -1,6 +1,6 @@
 # Tileception's own xdg-desktop-portal backend, served by the compositor while
-# it runs: light or dark and the accent colour for applications, and typing
-# for them (KeePassXC's auto-type).
+# it runs: light or dark and the accent colour for applications, typing for
+# them and their global shortcuts (KeePassXC's auto-type).
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.tileception
-Interfaces=org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.RemoteDesktop;
+Interfaces=org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.RemoteDesktop;org.freedesktop.impl.portal.GlobalShortcuts;

@@ -1552,7 +1552,7 @@ fn quality(query: &str, text: &str) -> Option<u8> {
 }
 
 /// "Super+O", "Ctrl+Alt+Delete", "Print".
-fn combo_label(mods: crate::config::Mods, key: u32) -> String {
+pub(crate) fn combo_label(mods: crate::config::Mods, key: u32) -> String {
     let mut parts = Vec::new();
     for (held, name) in [(mods.logo, "Super"), (mods.ctrl, "Ctrl"), (mods.alt, "Alt"), (mods.shift, "Shift")] {
         if held {

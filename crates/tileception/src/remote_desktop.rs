@@ -122,7 +122,7 @@ impl Shared {
 
 /// The unique bus name of whoever made a portal session, from its path:
 /// `/org/freedesktop/portal/desktop/session/1_42/token` belongs to `:1.42`.
-fn caller(session: &str) -> Option<String> {
+pub(crate) fn caller(session: &str) -> Option<String> {
     let mut parts = session.strip_prefix("/org/freedesktop/portal/desktop/session/")?.split('/');
     let sender = parts.next().filter(|sender| !sender.is_empty())?;
     parts.next()?;
@@ -130,7 +130,7 @@ fn caller(session: &str) -> Option<String> {
 }
 
 /// The executable of whoever made the session.
-async fn program_path(connection: &zbus::Connection, session: &str) -> Option<PathBuf> {
+pub(crate) async fn program_path(connection: &zbus::Connection, session: &str) -> Option<PathBuf> {
     let name = zbus::names::BusName::try_from(caller(session)?).ok()?;
     let pid = zbus::fdo::DBusProxy::new(connection).await.ok()?.get_connection_unix_process_id(name).await.ok()?;
     std::fs::read_link(format!("/proc/{pid}/exe")).ok()
@@ -415,19 +415,7 @@ impl Tileception {
             let _ = reply.try_send(Answer::Deny);
             return;
         }
-        let entry = (!program.app_id.is_empty())
-            .then(|| self.launcher.app_for_id(&program.app_id))
-            .flatten()
-            .or_else(|| program.path.as_deref().and_then(|path| self.launcher.app_for_program(path)));
-        let name = match &entry {
-            Some((name, _)) => name.clone(),
-            None if !program.app_id.is_empty() => program.app_id.clone(),
-            None => program
-                .path
-                .as_deref()
-                .and_then(|path| path.file_name())
-                .map_or_else(|| "An application".into(), |name| name.to_string_lossy().into_owned()),
-        };
+        let (name, entry) = self.program_name(program);
         let mut actions = vec![("deny".to_string(), "Deny".to_string()), ("allow".into(), "Allow once".into())];
         match persist {
             1 => actions.push(("remember".into(), "Until it quits".into())),
@@ -437,14 +425,30 @@ impl Tileception {
         let notification_id = self.ask_locally(
             &format!("{name} wants to type for you"),
             "It can send key presses to the window you are using, such as a password it fills in.",
-            entry.map(|(_, desktop_entry)| desktop_entry),
+            entry,
             actions,
         );
         self.typing.questions.insert(notification_id, Question { request, reply });
     }
 
-    /// The user answered with a button, or closed the question (None).
-    pub fn answer_question(&mut self, notification_id: u32, action: Option<&str>) {
+    /// What to call a program, and its desktop entry when it is installed.
+    pub fn program_name(&self, program: &Program) -> (String, Option<String>) {
+        let entry = (!program.app_id.is_empty())
+            .then(|| self.launcher.app_for_id(&program.app_id))
+            .flatten()
+            .or_else(|| program.path.as_deref().and_then(|path| self.launcher.app_for_program(path)));
+        match entry {
+            Some((name, desktop_entry)) => (name, Some(desktop_entry)),
+            None if !program.app_id.is_empty() => (program.app_id.clone(), None),
+            None => {
+                let file_name = program.path.as_deref().and_then(|path| path.file_name());
+                (file_name.map_or_else(|| "An application".into(), |name| name.to_string_lossy().into_owned()), None)
+            }
+        }
+    }
+
+    /// The user answered a typing question with a button, or closed it (None).
+    pub fn answer_typing(&mut self, notification_id: u32, action: Option<&str>) {
         if let Some(question) = self.typing.questions.remove(&notification_id) {
             let answer = match action {
                 Some("allow") => Answer::Allow,

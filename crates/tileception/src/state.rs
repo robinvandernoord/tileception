@@ -179,6 +179,8 @@ pub struct Tileception {
     pub appearance: Option<crate::appearance::AppearanceService>,
     /// Applications typing through the desktop portal (KeePassXC's auto-type).
     pub typing: crate::remote_desktop::Typing,
+    /// Applications' global shortcuts through the desktop portal.
+    pub shortcuts: crate::global_shortcuts::Shortcuts,
     pub selection: crate::selection::Selection,
     /// The strip of minimized windows at the bottom edge.
     pub strip: crate::minimized::Strip,
@@ -337,6 +339,7 @@ impl Tileception {
             media_bus: None,
             appearance: None,
             typing: Default::default(),
+            shortcuts: Default::default(),
             selection: Default::default(),
             strip: Default::default(),
             bar: Default::default(),

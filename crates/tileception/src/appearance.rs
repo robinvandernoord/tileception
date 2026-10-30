@@ -106,6 +106,11 @@ impl Settings {
 }
 
 impl AppearanceService {
+    /// The portal backend's bus connection, for signals of its other interfaces.
+    pub fn connection(&self) -> &zbus::blocking::Connection {
+        &self.connection
+    }
+
     fn start(bus: zbus::blocking::connection::Builder<'_>, theme: &Theme) -> zbus::Result<AppearanceService> {
         let current = Arc::new(Mutex::new(Appearance::from_theme(theme)));
         let connection = bus.name(NAME)?.serve_at(PATH, Settings(current.clone()))?.build()?;
@@ -129,12 +134,14 @@ impl AppearanceService {
 
 impl Tileception {
     /// Starts Tileception's portal backend on the session bus: the theme's
-    /// appearance, and typing for applications (`remote_desktop`). Done
+    /// appearance, typing for applications (`remote_desktop`) and their global
+    /// shortcuts (`global_shortcuts`). Done
     /// before the session environment is exported, so the portal finds it
     /// when it starts.
     pub fn start_portal(&mut self) {
         let service = zbus::blocking::connection::Builder::session()
             .and_then(|bus| self.serve_remote_desktop(bus))
+            .and_then(|bus| self.serve_global_shortcuts(bus))
             .and_then(|bus| AppearanceService::start(bus, &self.theme));
         match service {
             Ok(service) => self.appearance = Some(service),

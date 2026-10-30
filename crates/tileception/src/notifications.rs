@@ -165,7 +165,7 @@ impl Tileception {
 
     /// Asks something in a notification of Tileception's own, with a button
     /// per `(key, label)` in `actions`. It stays up until a button or its close
-    /// button is clicked, which goes to [`Tileception::answer_question`], or
+    /// button is clicked, which goes to the question's owner, or
     /// until [`Tileception::withdraw_question`]. Returns its id.
     pub fn ask_locally(
         &mut self,
@@ -412,7 +412,8 @@ impl Tileception {
                 };
                 if let Some(answer) = answer {
                     self.withdraw_question(notification.id);
-                    self.answer_question(notification.id, answer);
+                    self.answer_typing(notification.id, answer);
+                    self.answer_shortcut(notification.id);
                 }
                 return;
             }
