@@ -178,7 +178,13 @@ git pull --ff-only
 make install
 ```
 
-The running session keeps its current binary until you log out and back in.
+When run inside a Tileception session, `make install` then offers to restart
+the running compositor into the new build, in the same session: open windows
+close, but there is no need to log out. `make install RESTART=yes` (or `no`)
+answers without asking, and `tileception msg restart` does the same at any time,
+also after updating the package. Otherwise the running session keeps its current
+binary until you log out and back in. A session started before this feature
+existed cannot restart itself: log out once.
 
 To remove a source installation, log in to another desktop and run this from the
 repository root:

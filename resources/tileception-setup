@@ -246,6 +246,11 @@ Options:
                            "swaylock -f -i {wallpaper}"
   --media <part>           builtin or none
   --doctor <part>          builtin or none
+  --handoff <on|off>       share this mouse, keyboard and clipboard with other
+                           Tileception computers on the network
+  --handoff-passphrase <words>
+                           the passphrase they share (implies --handoff on);
+                           three random words are chosen when it is missing
   --user <name>            whose config to write (default: you, or SUDO_USER)
   --non-interactive        ask nothing; without a preset, your current
                            settings are kept
@@ -306,6 +311,8 @@ preset=""
 greeter=""
 user=""
 notification_daemon=""
+want_handoff=""
+handoff_passphrase=""
 for part in $parts bar_position; do
     eval "want_$part=''"
 done
@@ -333,6 +340,15 @@ while [ "$#" -gt 0 ]; do
             esac
             shift ;;
         --user) need "$@"; user=$2; shift ;;
+        --handoff)
+            need "$@"
+            case $2 in on | off) want_handoff=$2 ;; *) fail "--handoff is on or off, not $2" ;; esac
+            shift ;;
+        --handoff-passphrase)
+            need "$@"
+            handoff_passphrase=$2
+            want_handoff=${want_handoff:-on}
+            shift ;;
         --notification-daemon) need "$@"; notification_daemon=$2; shift ;;
         --bar-position)
             need "$@"
@@ -393,11 +409,13 @@ if [ -n "$user" ]; then
     fi
 fi
 
-# The tileception that reads and writes the config.
+# The tileception that reads and writes the config. Builds from before
+# `tileception config` ignore its arguments and start a nested compositor, so
+# look for its usage text instead of running them to find out.
 tileception_bin=""
 for candidate in "${TILECEPTION_BIN:-}" "$(command -v tileception 2>/dev/null || true)" \
     /usr/bin/tileception "${home:-/nonexistent}/.local/bin/tileception" /usr/local/bin/tileception; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    if [ -n "$candidate" ] && [ -x "$candidate" ] && grep -qa "Usage: tileception config" "$candidate"; then
         tileception_bin=$candidate
         break
     fi
@@ -421,6 +439,15 @@ current_of() {
 for part in $parts bar_position; do
     eval "now_$part=\$(current_of $part)"
 done
+
+# A setting as the config has it, or empty.
+config_value() {
+    if [ "$has_config" = 1 ] && [ -n "$tileception_bin" ]; then
+        "$tileception_bin" config --file "$config" get "$1" 2>/dev/null || true
+    fi
+}
+case $(config_value handoff.enabled) in true) now_handoff=on ;; *) now_handoff=off ;; esac
+now_passphrase=$(config_value handoff.passphrase)
 
 # ------------------------------------------------------------- questions
 
@@ -586,6 +613,41 @@ ask_doctor() {
     case $choice in 1) want_doctor=builtin ;; 2) want_doctor=none ;; esac
 }
 
+ask_handoff() {
+    [ -n "$want_handoff" ] && return
+    heading "Sharing with other computers"
+    say "  Handoff shares one mouse, keyboard and clipboard between Tileception"
+    say "  computers on your network: move the pointer past a screen edge to use the"
+    say "  computer there. They only connect when they know the same passphrase."
+    say "  It listens on TCP port 24850 and finds the others with mDNS (UDP 5353)."
+    case $now_handoff in on) default=1 ;; *) default=2 ;; esac
+    choose "$default" "On" "Off"
+    case $choice in 1) want_handoff=on ;; 2) want_handoff=off ;; esac
+    if [ "$want_handoff" = off ] || [ -n "$handoff_passphrase" ]; then
+        return
+    fi
+    say ""
+    suggestion=$now_passphrase
+    if [ -n "$suggestion" ]; then
+        say "  Your current passphrase stays unless you type another."
+    elif [ -n "$tileception_bin" ]; then
+        suggestion=$("$tileception_bin" config passphrase 2>/dev/null || true)
+        say "  Every computer that shares needs the same passphrase. Accept these random"
+        say "  words here and type them on the others, or type the passphrase another"
+        say "  computer already uses."
+    fi
+    if [ -z "$suggestion" ]; then
+        say "  Every computer that shares needs the same passphrase. Type the one another"
+        say "  computer uses, or leave it empty: three random words are chosen while"
+        say "  installing and shown at the end."
+    fi
+    ask_text "Passphrase" "$suggestion"
+    handoff_passphrase=$answer
+    if [ -n "$handoff_passphrase" ] && [ "${#handoff_passphrase}" -lt 12 ]; then
+        say "  That is short: several random words are much harder to guess."
+    fi
+}
+
 # Whether this system can switch its login screen to greetd.
 greeter_possible() {
     [ -d /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1 \
@@ -650,6 +712,7 @@ if [ "$interactive" = 1 ]; then
     if [ "$preset" = customize ] && [ -n "$config" ]; then
         ask_customize
         ask_doctor
+        ask_handoff
     fi
     if [ "$preset" != minimal ]; then
         ask_greeter
@@ -678,6 +741,8 @@ for part in $parts; do
     eval "want_$part=\$want"
 done
 want_bar_position=${want_bar_position:-$now_bar_position}
+given_handoff=$want_handoff
+want_handoff=${want_handoff:-$now_handoff}
 
 # --------------------------------------------------------------- summary
 
@@ -710,6 +775,19 @@ summary() {
         if [ "$want_doctor" = builtin ]; then
             say "    Doctor asks which agent to use when you first open it (Super+/)."
         fi
+        line="Sharing with other computers: $want_handoff"
+        if [ "$want_handoff" = on ]; then
+            phrase=${handoff_passphrase:-$now_passphrase}
+            if [ -n "$phrase" ]; then
+                line="$line, passphrase \"$phrase\""
+            else
+                line="$line, passphrase chosen while installing"
+            fi
+        fi
+        if [ "$want_handoff" != "$now_handoff" ] || { [ -n "$handoff_passphrase" ] && [ "$handoff_passphrase" != "$now_passphrase" ]; }; then
+            line="$line (changed)"
+        fi
+        say "    $line"
     else
         say "  Desktop settings: skipped (no user)."
     fi
@@ -753,6 +831,12 @@ if [ "$print_flags" = 1 ]; then
     if [ -n "$notification_daemon" ]; then
         flags="$flags --notification-daemon $(quote "$notification_daemon")"
     fi
+    if [ -n "$given_handoff" ]; then
+        flags="$flags --handoff $given_handoff"
+    fi
+    if [ -n "$handoff_passphrase" ]; then
+        flags="$flags --handoff-passphrase $(quote "$handoff_passphrase")"
+    fi
     printf '%s\n' "$flags"
     exit 0
 fi
@@ -783,6 +867,23 @@ if [ -n "$config" ]; then
         as_user "$tileception_bin" config --file "$config" add general.autostart "$notification_daemon"
         say "$notification_daemon starts with the session"
     fi
+    if [ "$want_handoff" = on ]; then
+        handoff_passphrase=${handoff_passphrase:-$now_passphrase}
+        if [ -z "$handoff_passphrase" ]; then
+            handoff_passphrase=$("$tileception_bin" config passphrase) || fail "could not choose a passphrase"
+        fi
+        if [ "$handoff_passphrase" != "$now_passphrase" ]; then
+            as_user "$tileception_bin" config --file "$config" set handoff.passphrase "$handoff_passphrase"
+            say "Set the handoff passphrase"
+        fi
+        if [ "$now_handoff" != on ]; then
+            as_user "$tileception_bin" config --file "$config" set handoff.enabled true
+            say "Turned handoff on"
+        fi
+    elif [ "$now_handoff" = on ]; then
+        as_user "$tileception_bin" config --file "$config" set handoff.enabled false
+        say "Turned handoff off"
+    fi
 fi
 
 case $greeter in
@@ -798,7 +899,12 @@ else
     say "Log out (or reboot), then choose Tileception on the login screen."
 fi
 say "Super opens the launcher, Super+T a terminal."
-say "To change these choices later, run tileception-setup again,"
+if [ -n "$config" ] && [ "$want_handoff" = on ]; then
+    say "Handoff passphrase: $handoff_passphrase"
+    say "On each other computer, run: tileception pair $handoff_passphrase"
+    say "tileception pair shows it again; Ctrl+Super+Escape brings input back."
+fi
+say "To change these choices later, run tileception setup again,"
 if [ -n "$config" ]; then
     say "or edit $config (a running session applies it on save)."
 fi
