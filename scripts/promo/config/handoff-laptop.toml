@@ -1,0 +1,16 @@
+# One of the two pretend computers in the handoff scene, both on this
+# machine. They meet on localhost only; nothing is announced on the network.
+[general]
+gap = 14
+welcome = false
+
+[theme]
+wallpaper = "@OUT@/art/wallpaper-laptop.png"
+
+[handoff]
+enabled = true
+passphrase = "promo rubber duck waddles"
+name = "laptop"
+port = 24870
+discovery = false
+peers = ["127.0.0.1:24871"]
