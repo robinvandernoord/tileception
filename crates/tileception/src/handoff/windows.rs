@@ -81,6 +81,19 @@ pub(crate) struct Windows {
     /// The notification about this machine's windows waiting on a machine
     /// that went away, per machine.
     notices: HashMap<PeerId, u32>,
+    /// Keys the keyboard here holds because another machine pressed them in
+    /// one of this machine's windows, by evdev code, with that machine. Let
+    /// go of when the window loses the keyboard there, comes home, or the
+    /// machine goes, so none can stay stuck (a stuck Super turns every
+    /// click into a window drag).
+    away_keys: std::collections::BTreeMap<u32, PeerId>,
+    /// The button another machine holds down in one of this machine's
+    /// windows, for a drag a program starts with it.
+    away_button: Option<u32>,
+    /// Keys sent to the owners of other machines' windows here, by evdev
+    /// code, with the window: their releases go there too, even when the
+    /// keyboard moved on in between.
+    keys_sent: std::collections::BTreeMap<u32, WindowId>,
 }
 
 pub(crate) struct Away {
@@ -223,7 +236,30 @@ impl Windows {
         self.remote.iter().find(|(_, remote)| remote.peer == peer && remote.window == window).map(|(local, _)| *local)
     }
 
-    fn away_id(&self, peer: PeerId, window: u64) -> Option<WindowId> {
+    /// Stops sending the pointer to the owner of the window a button of this
+    /// machine went down on, when that is `peer`'s: a drag its program
+    /// started is this machine's pointer's now. False when it was not.
+    pub(crate) fn let_go_of_pressed(&mut self, peer: PeerId) -> bool {
+        let from_peer =
+            self.pressed.is_some_and(|(window, _)| self.remote.get(&window).is_some_and(|remote| remote.peer == peer));
+        if from_peer {
+            self.pressed = None;
+        }
+        from_peer
+    }
+
+    /// The machine whose pointer is over one of this machine's windows with
+    /// a button down, and that button: a drag started now is that pointer's.
+    pub(crate) fn dragging_from_away(&self) -> Option<(PeerId, u32)> {
+        let away = self.away.get(&self.pointed?).filter(|away| away.stream.is_some())?;
+        Some((away.peer, self.away_button?))
+    }
+
+    pub(crate) fn forget_away_button(&mut self) {
+        self.away_button = None;
+    }
+
+    pub(crate) fn away_id(&self, peer: PeerId, window: u64) -> Option<WindowId> {
         let local = WindowId(window);
         self.away.get(&local).is_some_and(|away| away.peer == peer).then_some(local)
     }
@@ -315,9 +351,12 @@ impl Tileception {
                     Message::WindowPointer { across, down, .. } => self.away_pointer(local, across, down),
                     Message::WindowButton { button, pressed, .. } => self.away_button(button, pressed),
                     Message::WindowScroll { scroll, .. } => self.away_scroll(scroll),
-                    Message::WindowLeave { .. } => self.away_leave(),
+                    Message::WindowLeave { .. } => {
+                        self.drag_left_window(peer);
+                        self.away_leave();
+                    }
                     Message::WindowFocus { focused, .. } => self.away_focus(local, focused),
-                    Message::WindowKey { key, pressed, .. } => self.away_key(local, key, pressed),
+                    Message::WindowKey { key, pressed, .. } => self.away_key(peer, local, key, pressed),
                     _ => {}
                 }
             }
@@ -430,9 +469,8 @@ impl Tileception {
 
     /// Brings one of this machine's windows back from another machine.
     fn take_back(&mut self, window: WindowId, arriving: Option<Arriving>) {
-        if self.handoff.windows.away.remove(&window).is_none() {
-            return;
-        }
+        let Some(away) = self.handoff.windows.away.remove(&window) else { return };
+        self.release_away_keys(away.peer);
         let windows = &mut self.handoff.windows;
         if windows.away_keyboard == Some(window) {
             windows.away_keyboard = None;
@@ -799,6 +837,7 @@ impl Tileception {
         if windows.remote_keyboard == Some(window) {
             windows.remote_keyboard = None;
         }
+        windows.keys_sent.retain(|_, sent| *sent != window);
         if windows.arriving.is_some_and(|arriving| arriving.window == window) {
             windows.arriving = None;
         }
@@ -1028,12 +1067,26 @@ impl Tileception {
     /// Pointer motion here over another machine's window goes to its owner.
     /// True when it did.
     pub(crate) fn pointer_to_owner(&mut self, pos: Point<f64, Logical>, time: u32) -> bool {
-        let target = self.handoff.windows.pressed.map(|(window, _)| window).or_else(|| self.remote_under(pos));
+        // Carrying another machine's drag, the pointer is the drag's.
+        let carrying = self.handoff.drags.carrying();
+        let target = if carrying {
+            None
+        } else {
+            self.handoff.windows.pressed.map(|(window, _)| window).or_else(|| self.remote_under(pos))
+        };
         if self.handoff.windows.hovered != target {
             if let Some(left) = self.handoff.windows.hovered.take() {
                 self.send_to_owner(left, |window| Message::WindowLeave { window });
             }
             self.handoff.windows.hovered = target;
+        }
+        if !carrying {
+            // A program's drag here goes into the window under it, or out.
+            let over = target.and_then(|window| {
+                let remote = self.handoff.windows.remote.get(&window).filter(|remote| !remote.lost)?;
+                Some((window, remote.peer, remote.window))
+            });
+            self.drag_over_remote(over);
         }
         let Some(window) = target else { return false };
         if let Some((across, down)) = self.remote_point(window, pos) {
@@ -1050,6 +1103,10 @@ impl Tileception {
     /// A button over another machine's window goes to its owner, and so does
     /// its release wherever the pointer is by then. True when it did.
     pub(crate) fn button_to_owner(&mut self, button: u32, state: ButtonState) -> bool {
+        // Carrying another machine's drag, the button is the drag's.
+        if self.handoff.drags.carrying() {
+            return false;
+        }
         let pressed = state == ButtonState::Pressed;
         let windows = &mut self.handoff.windows;
         let target = match (windows.pressed, pressed) {
@@ -1092,9 +1149,18 @@ impl Tileception {
     /// A key that no binding took, for another machine's window when it has
     /// the keyboard here.
     pub(crate) fn key_to_owner(&mut self, code: Keycode, key_state: KeyState) {
-        let Some(window) = self.handoff.windows.remote_keyboard else { return };
         let key = code.raw().saturating_sub(XKB_OFFSET);
         let pressed = key_state == KeyState::Pressed;
+        let windows = &mut self.handoff.windows;
+        let window = if pressed {
+            let Some(window) = windows.remote_keyboard else { return };
+            windows.keys_sent.insert(key, window);
+            window
+        } else {
+            // The release goes where the press went.
+            let Some(window) = windows.keys_sent.remove(&key).or(windows.remote_keyboard) else { return };
+            window
+        };
         self.send_to_owner(window, |owned| Message::WindowKey { window: owned, key, pressed });
     }
 
@@ -1166,6 +1232,11 @@ impl Tileception {
     }
 
     fn away_button(&mut self, button: u32, pressed: bool) {
+        if pressed {
+            self.handoff.windows.away_button = Some(button);
+        } else if self.handoff.windows.away_button == Some(button) {
+            self.handoff.windows.away_button = None;
+        }
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let time = self.input_time();
@@ -1188,7 +1259,8 @@ impl Tileception {
     fn away_leave(&mut self) {
         self.handoff.windows.pointed = None;
         let time = self.input_time();
-        if self.handoff.forwarding.is_some() {
+        // A drag that went to that machine must not find something here.
+        if self.handoff.forwarding.is_some() || self.handoff.drags.holding_for_elsewhere() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             let location = pointer.current_location();
             pointer.motion(self, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
@@ -1199,6 +1271,9 @@ impl Tileception {
     }
 
     fn away_focus(&mut self, window: WindowId, focused: bool) {
+        if !focused && let Some(peer) = self.handoff.windows.away.get(&window).map(|away| away.peer) {
+            self.release_away_keys(peer);
+        }
         let windows = &mut self.handoff.windows;
         if focused {
             windows.away_keyboard = Some(window);
@@ -1229,7 +1304,7 @@ impl Tileception {
     /// A key for one of this machine's windows from where it is shown. When
     /// this machine's own keyboard pressed it, the keyboard here already
     /// knows (it was forwarded); then the window only needs telling.
-    fn away_key(&mut self, window: WindowId, key: u32, pressed: bool) {
+    fn away_key(&mut self, peer: PeerId, window: WindowId, key: u32, pressed: bool) {
         let target = self.windows.get(&window).and_then(crate::state::focus_target);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         if target.is_some() && keyboard.current_focus() != target {
@@ -1244,6 +1319,34 @@ impl Tileception {
             keyboard.input_forward(self, code, state, serial, time, true);
         } else {
             keyboard.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Forward);
+            if pressed {
+                self.handoff.windows.away_keys.insert(key, peer);
+            }
+        }
+        if !pressed {
+            self.handoff.windows.away_keys.remove(&key);
+        }
+    }
+
+    /// Lets go of the keys another machine pressed here through one of this
+    /// machine's windows.
+    pub(crate) fn release_away_keys(&mut self, peer: PeerId) {
+        let keys: Vec<u32> =
+            self.handoff.windows.away_keys.iter().filter(|(_, from)| **from == peer).map(|(key, _)| *key).collect();
+        if keys.is_empty() {
+            return;
+        }
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let time = self.input_time();
+        for key in keys {
+            self.handoff.windows.away_keys.remove(&key);
+            let code = Keycode::new(key + XKB_OFFSET);
+            // Not when this machine's own keyboard holds it too.
+            if self.handoff.held.holds_key(Source::Local, key) || !keyboard.pressed_keys().contains(&code) {
+                continue;
+            }
+            let serial = SERIAL_COUNTER.next_serial();
+            keyboard.input::<(), _>(self, code, KeyState::Released, serial, time, |_, _, _| FilterResult::Forward);
         }
     }
 

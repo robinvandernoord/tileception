@@ -322,10 +322,11 @@ impl Tileception {
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
-                // Another machine's window, drawn from its pictures.
+                // Another machine's window, drawn from its pictures, in a
+                // frame of the guest colour.
                 let focused = Some(drawn.window_id) == focus;
                 let floating = drawn.role == WindowRole::Floating;
-                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.frame(focused, !floating));
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.guest_frame(focused, !floating));
                 let shown = (drawn.content.w / drawn.scale.0, drawn.content.h / drawn.scale.1);
                 popups.extend(self.remote_popup_elements(renderer, drawn.window_id, &drawn.content, drawn.scale));
                 elements.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
@@ -417,6 +418,19 @@ impl Tileception {
             glow: accent.alpha(0.27),
             corner_mask: if mask_corners { theme.background } else { Colour::TRANSPARENT },
             ..Default::default()
+        }
+    }
+
+    /// The frame of another machine's window: always in the guest colour,
+    /// a little wider, glowing when it has the keyboard.
+    fn guest_frame(&self, focused: bool, mask_corners: bool) -> Shape {
+        let guest = self.theme.guest;
+        Shape {
+            border_width: 1.5,
+            border: if focused { guest } else { guest.alpha(0.55) },
+            glow_radius: if focused { self.theme.glow } else { 0.0 },
+            glow: guest.alpha(0.27),
+            ..self.frame(focused, mask_corners)
         }
     }
 

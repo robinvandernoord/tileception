@@ -511,7 +511,8 @@ impl Tileception {
             | Message::DragFiles { .. }
             | Message::DragFile { .. }
             | Message::DragLink { .. }
-            | Message::DragEnd { .. }) => self.drag_message(peer, message),
+            | Message::DragEnd { .. }
+            | Message::DragUpdate { .. }) => self.drag_message(peer, message),
             message => self.window_message(peer, message),
         }
     }

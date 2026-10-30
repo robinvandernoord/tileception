@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -221,12 +221,23 @@ pub enum Message {
         windows: Vec<Resumed>,
     },
     /// A program on the sender is dragging something (drag and drop), and
-    /// the drag comes along with the pointer: sent just before `Enter` or
-    /// `Return`. The sender's `button` holds it.
+    /// the receiver carries the drag on: sent just before `Enter` or
+    /// `Return` when it comes along with the pointer, or when a program in
+    /// one of the sender's windows shown on the receiver started it with
+    /// the receiver's pointer. The `button` holds it. With `into`, it is
+    /// over one of the receiver's own windows shown on the sender instead
+    /// (the receiver's number for it), moved there by `WindowPointer`, let
+    /// go of by `WindowButton` and taken back by `WindowLeave`.
     DragStart {
         drag: u64,
         mime_types: Vec<String>,
         button: u32,
+        preview: DragPreview,
+        into: Option<u64>,
+    },
+    /// What a drag carries became known after it started.
+    DragUpdate {
+        drag: u64,
         preview: DragPreview,
     },
     /// It was dropped on a program here, which wants it in this type:

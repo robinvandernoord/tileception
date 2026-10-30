@@ -169,6 +169,7 @@ impl Tileception {
     /// Sends new pictures of this machine's windows shown elsewhere. Called
     /// by the backend once per frame, with its renderer.
     pub fn process_streams(&mut self, renderer: &mut GlesRenderer) {
+        self.send_drag_preview();
         if self.handoff.windows.away.is_empty() {
             return;
         }

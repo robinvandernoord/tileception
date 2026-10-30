@@ -323,7 +323,11 @@ impl Tileception {
     }
 
     pub(crate) fn remote_button(&mut self, peer: PeerId, button: u32, pressed: bool) {
-        if !self.remote_input_allowed(peer) || !self.handoff.held.button(Source::Peer(peer), button, pressed) {
+        // A release always goes through, or the button would stay down.
+        if pressed && !self.remote_input_allowed(peer) {
+            return;
+        }
+        if !self.handoff.held.button(Source::Peer(peer), button, pressed) {
             return;
         }
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
@@ -333,7 +337,11 @@ impl Tileception {
     }
 
     pub(crate) fn remote_key(&mut self, peer: PeerId, key: u32, pressed: bool) {
-        if !self.remote_input_allowed(peer) || !self.handoff.held.key(Source::Peer(peer), key, pressed) {
+        // A release always goes through, or the key would stay down.
+        if pressed && !self.remote_input_allowed(peer) {
+            return;
+        }
+        if !self.handoff.held.key(Source::Peer(peer), key, pressed) {
             return;
         }
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
@@ -360,6 +368,7 @@ impl Tileception {
 
     /// Lets go of everything another machine still holds here.
     pub(crate) fn forget_input(&mut self, peer: PeerId) {
+        self.release_away_keys(peer);
         let released = self.handoff.held.release(Source::Peer(peer));
         let time = self.input_time();
         for key in released.keys {

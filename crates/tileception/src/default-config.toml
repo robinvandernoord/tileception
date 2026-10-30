@@ -60,6 +60,8 @@ autostart = []
 # danger = "#f0646a"
 # Cautions, such as volume boosted past 100%.
 # warning = "#f2b04c"
+# The border of windows from another computer (handoff).
+# guest = "#a78bfa"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.

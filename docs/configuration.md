@@ -63,6 +63,8 @@ wallpaper_fit = "fill"
 
 Colours accept `#rrggbb` or `#rrggbbaa`. `accent` and `accent_end` are the two
 ends of the accent gradient. Set them to the same colour for a solid accent.
+`guest` (violet by default) borders windows that come from another computer
+through handoff, brighter and glowing when they have the keyboard.
 
 Use an existing PNG, JPEG or WebP image for the wallpaper. It also appears on
 the built-in lock screen. `wallpaper_fit` accepts `fill`, `fit`, `stretch` or

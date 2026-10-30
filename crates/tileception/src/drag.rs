@@ -106,6 +106,8 @@ impl Tileception {
             describe(source, &mime_types, described.clone());
         }
         self.drag = Some(LocalDrag { source, mime_types, icon, icon_offset: Point::default(), described, card: None });
+        // Started by another machine's pointer in a window shown there.
+        self.drag_out_of_away();
         self.schedule_render();
     }
 

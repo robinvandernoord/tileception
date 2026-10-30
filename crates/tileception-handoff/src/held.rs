@@ -44,6 +44,10 @@ impl Held {
         self.buttons.iter().filter(|(_, holders)| holders.contains(&source)).map(|(button, _)| *button).collect()
     }
 
+    pub fn holds_key(&self, source: Source, key: u32) -> bool {
+        self.keys.get(&key).is_some_and(|holders| holders.contains(&source))
+    }
+
     /// Whether a source holds a button: it is dragging something.
     pub fn holds_button(&self, source: Source) -> bool {
         self.buttons.values().any(|holders| holders.contains(&source))
@@ -132,6 +136,17 @@ mod tests {
         assert!(held.key(Source::Local, KEY_A, true));
         assert!(held.key(Source::Local, KEY_A, false));
         assert!(!held.holds(Source::Local));
+    }
+
+    #[test]
+    fn keys_and_buttons_are_told_apart_per_source() {
+        let mut held = Held::default();
+        held.key(Source::Peer(1), SHIFT, true);
+        held.button(Source::Local, 0x110, true);
+        assert!(held.holds_key(Source::Peer(1), SHIFT));
+        assert!(!held.holds_key(Source::Local, SHIFT));
+        assert_eq!(held.buttons(Source::Local), vec![0x110]);
+        assert!(held.buttons(Source::Peer(1)).is_empty());
     }
 
     #[test]

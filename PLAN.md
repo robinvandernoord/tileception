@@ -304,8 +304,7 @@ Decisions:
 - [ ] Window handoff, later if needed: video-heavy windows need a real video
   codec rather than compressed tiles (choose between VA-API, openh264 or
   ffmpeg first). Popups stay where they opened when the window's place
-  there changes, as they do here. Drags started inside a streamed window
-  stay on its owner.
+  there changes, as they do here.
 - [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
   failures. The lock policy applies to input, clipboard transfers and
   streamed windows, including pictures already queued or on the way.
@@ -319,7 +318,10 @@ Decisions:
   (drops older than a week are cleared), and the program gets those
   copies; other entries pass as they are. Copy only, never move. Dragged
   back, it goes on at home. Locking, pausing or losing the connection ends
-  it. Drags from X11 programs do not cross.
+  it. Drags from X11 programs do not cross. Streamed windows take part: a
+  drag started in one is carried on by the machine whose pointer started
+  it, and a drag over one is carried on inside it by its owner, moved by
+  the pointer there and taken back when it leaves.
 - [ ] Define stable machine identities, key rotation/revocation, keyboard-layout
   ownership, edge mapping for unequal monitors and pointer-locked apps, and
   shortcut routing inside a streamed window. Decide initial support for
@@ -397,6 +399,17 @@ Review log:
   "windows are still on <machine>" notification stays until answered,
   with Bring back and Keep there, and closes itself once they are back:
   Tileception's own notifications can now have buttons running commands.
+- 2026-10-30: First test on two machines. Fixed a stuck Super: keys typed
+  into a streamed window were pressed on its owner's keyboard outside the
+  held-input bookkeeping, and a release was lost whenever a binding moved
+  the keyboard off the window in between (Super+Left), or on disconnect;
+  every click then dragged windows and keys ran bindings. Releases now go
+  where their press went, the owner lets go of such keys when the window
+  loses the keyboard, comes home, or the machine goes, and releases from
+  another machine always go through. Streamed windows get a frame in the
+  new `theme.guest` colour (violet). Drags into and out of streamed
+  windows, and the drag card updating once its preview is known
+  (protocol 6).
 
 ### Design ideas from LunariaOS
 

@@ -1,5 +1,11 @@
 //! Drag and drop across machines.
 //!
+//! The same goes for windows shown on another machine: a drag a program
+//! starts in one of this machine's windows shown elsewhere, with the pointer
+//! there, is carried on there; and a drag from there over one of this
+//! machine's windows is carried on here, inside that window, moved by the
+//! pointer there.
+//!
 //! A program's drag that reaches a shared edge goes along with the pointer.
 //! The program here keeps dragging, with nothing under it, while the other
 //! machine carries the drag on as its own, offering the same types and
@@ -26,6 +32,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
     wayland::selection::data_device::{SourceMetadata, start_dnd},
 };
+use tileception_core::WindowId;
 use tileception_handoff::{CHUNK, DragKind, DragPreview, Message, Messenger, PeerId, Source};
 
 use super::clipboard::{STALL, send_out};
@@ -53,6 +60,9 @@ pub(crate) struct Drags {
     next: u64,
     /// Files on their way here, by request.
     files: HashMap<u64, (PeerId, mpsc::Sender<Piece>)>,
+    /// The other machine's window here whose owner refused this machine's
+    /// drag; not asked again until the pointer leaves it.
+    refused: Option<WindowId>,
 }
 
 struct Outgoing {
@@ -61,6 +71,11 @@ struct Outgoing {
     button: u32,
     /// Whose button holds the drag here.
     holder: Source,
+    /// Over the other machine's window shown here (this machine's number
+    /// for it): the pointer stays here.
+    into: Option<WindowId>,
+    /// Whether the other machine knows what it carries.
+    preview_sent: bool,
 }
 
 struct Incoming {
@@ -73,6 +88,9 @@ struct Incoming {
     holder: Source,
     /// Dropped: it ends when the program it was dropped on is done with it.
     dropped: bool,
+    /// Inside this machine's window shown on the other machine, moved by
+    /// the pointer there.
+    into: Option<WindowId>,
 }
 
 /// Part of a drop of files arriving.
@@ -83,14 +101,27 @@ enum Piece {
 }
 
 impl Drags {
-    /// Whether this machine's drag is carried on elsewhere.
+    /// Whether this machine's drag went to another machine with the pointer.
     pub(crate) fn sent_away(&self) -> bool {
+        self.outgoing.as_ref().is_some_and(|outgoing| outgoing.into.is_none())
+    }
+
+    /// Whether a program here drags for another machine, which carries it.
+    pub(crate) fn holding_for_elsewhere(&self) -> bool {
         self.outgoing.is_some()
     }
 
-    /// The card of another machine's drag carried on here.
+    /// Whether another machine's drag is carried on here.
+    pub(crate) fn carrying(&self) -> bool {
+        self.incoming.is_some()
+    }
+
+    /// The card of another machine's drag carried on here, by the pointer.
     pub(crate) fn incoming_card(&self) -> Option<&Card> {
-        self.incoming.as_ref().filter(|incoming| !incoming.dropped).map(|incoming| &incoming.card)
+        self.incoming
+            .as_ref()
+            .filter(|incoming| !incoming.dropped && incoming.into.is_none())
+            .map(|incoming| &incoming.card)
     }
 
     /// Whether `request` is a drop of files arriving.
@@ -121,20 +152,44 @@ impl Drags {
 impl Tileception {
     pub(crate) fn drag_message(&mut self, peer: PeerId, message: Message) {
         match message {
-            Message::DragStart { drag, mime_types, button, preview } => {
-                if self.handoff.active_edge(peer).is_some() && !self.is_locked() {
-                    let mime_types =
-                        mime_types.into_iter().filter(|mime| !LOCAL_ONLY.contains(&mime.as_str())).collect();
-                    let card = Card::new(preview);
-                    self.handoff.drags.pending = Some(Incoming {
-                        peer,
-                        drag,
-                        button,
-                        mime_types,
-                        card,
-                        holder: Source::Peer(peer),
-                        dropped: false,
-                    });
+            Message::DragStart { drag, mime_types, button, preview, into } => {
+                if self.handoff.active_edge(peer).is_none() || self.is_locked() {
+                    self.handoff.send(peer, Message::DragEnd { drag });
+                    return;
+                }
+                let into_here = into.and_then(|window| self.handoff.windows.away_id(peer, window));
+                if into.is_some() && (into_here.is_none() || self.handoff.drags.incoming.is_some()) {
+                    self.handoff.send(peer, Message::DragEnd { drag });
+                    return;
+                }
+                let mime_types = mime_types.into_iter().filter(|mime| !LOCAL_ONLY.contains(&mime.as_str())).collect();
+                let card = Card::new(preview);
+                self.handoff.drags.pending = Some(Incoming {
+                    peer,
+                    drag,
+                    button,
+                    mime_types,
+                    card,
+                    holder: Source::Peer(peer),
+                    dropped: false,
+                    into: into_here,
+                });
+                if into_here.is_some() {
+                    // Into one of this machine's windows there: moved by
+                    // that machine's messages, not by its held input here.
+                    self.start_incoming_drag(peer, Source::Peer(peer), false);
+                } else if self.handoff.windows.let_go_of_pressed(peer) {
+                    // Started in one of that machine's windows here, with
+                    // this machine's own button: the drag is this pointer's.
+                    self.start_incoming_drag(peer, Source::Local, true);
+                }
+            }
+            Message::DragUpdate { drag, preview } => {
+                let drags = &mut self.handoff.drags;
+                for incoming in [drags.pending.as_mut(), drags.incoming.as_mut()].into_iter().flatten() {
+                    if incoming.peer == peer && incoming.drag == drag {
+                        incoming.card = Card::new(preview.clone());
+                    }
                 }
             }
             Message::DragFetch { request, drag, mime_type } => self.serve_drag(peer, request, drag, &mime_type),
@@ -153,7 +208,16 @@ impl Tileception {
                 }
                 let ours = self.handoff.drags.outgoing.as_ref().is_some_and(|out| out.peer == peer && out.drag == drag);
                 if ours {
-                    self.let_go_of_outgoing();
+                    let outgoing = self.handoff.drags.outgoing.as_ref().expect("checked above");
+                    let still_held = self.handoff.held.buttons(Source::Local).contains(&outgoing.button);
+                    if let Some(window) = outgoing.into.filter(|_| still_held) {
+                        // Refused, or dropped nowhere inside that window
+                        // with the button still down here: it goes on here.
+                        self.handoff.drags.outgoing = None;
+                        self.handoff.drags.refused = Some(window);
+                    } else {
+                        self.let_go_of_outgoing();
+                    }
                 }
             }
             _ => {}
@@ -181,9 +245,18 @@ impl Tileception {
         if !self.handoff.held.holds_button(source) || !self.may_carry_drag(peer, source) {
             return;
         }
-        let Some(drag) = self.drag.as_mut() else { return };
         let Some(button) = self.handoff.held.buttons(source).first().copied() else { return };
-        let preview = drag.preview().cloned().unwrap_or_else(|| DragPreview {
+        self.send_drag(peer, button, source, None);
+    }
+
+    /// Hands this machine's program's drag, held by `button` of `holder`, to
+    /// `peer`: with the pointer, or over `into` (that machine's window shown
+    /// here, and its number for it).
+    fn send_drag(&mut self, peer: PeerId, button: u32, holder: Source, into: Option<(WindowId, u64)>) -> bool {
+        let Some(drag) = self.drag.as_mut().filter(|drag| drag.source.is_some()) else { return false };
+        let known = drag.preview().cloned();
+        let preview_sent = known.is_some();
+        let preview = known.unwrap_or_else(|| DragPreview {
             label: "Dragging".into(),
             count: 1,
             kind: DragKind::Other,
@@ -193,16 +266,17 @@ impl Tileception {
         let drags = &mut self.handoff.drags;
         drags.next += 1;
         let id = drags.next;
-        let message = Message::DragStart { drag: id, mime_types, button, preview };
+        let message = Message::DragStart { drag: id, mime_types, button, preview, into: into.map(|(_, owned)| owned) };
         if !self.handoff.send(peer, message) {
-            return;
+            return false;
         }
         // Another machine's button would be let go of as its input goes;
         // this one lets go of it when the drag is over there.
-        if matches!(source, Source::Peer(_)) {
-            self.handoff.held.button(source, button, false);
+        if matches!(holder, Source::Peer(_)) {
+            self.handoff.held.button(holder, button, false);
         }
-        self.handoff.drags.outgoing = Some(Outgoing { peer, drag: id, button, holder: source });
+        let into = into.map(|(here, _)| here);
+        self.handoff.drags.outgoing = Some(Outgoing { peer, drag: id, button, holder, into, preview_sent });
         tracing::info!("handoff: a drag goes to {peer:016x}");
         // Nothing here is under it any more.
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -210,6 +284,64 @@ impl Tileception {
         let location = pointer.current_location();
         pointer.motion(self, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);
+        true
+    }
+
+    /// Tells the machine carrying this machine's drag what it carries, once
+    /// that is known. Called once a frame.
+    pub fn send_drag_preview(&mut self) {
+        let Some(outgoing) = self.handoff.drags.outgoing.as_ref().filter(|outgoing| !outgoing.preview_sent) else {
+            return;
+        };
+        let (peer, drag) = (outgoing.peer, outgoing.drag);
+        let Some(preview) = self.drag.as_mut().and_then(|local| local.preview().cloned()) else { return };
+        self.handoff.send(peer, Message::DragUpdate { drag, preview });
+        if let Some(outgoing) = self.handoff.drags.outgoing.as_mut() {
+            outgoing.preview_sent = true;
+        }
+    }
+
+    /// A program here started a drag with another machine's pointer, in one
+    /// of this machine's windows shown there: that machine carries it on.
+    pub(crate) fn drag_out_of_away(&mut self) {
+        let Some((peer, button)) = self.handoff.windows.dragging_from_away() else { return };
+        if self.handoff.active_edge(peer).is_some() && !self.is_locked() {
+            self.send_drag(peer, button, Source::Peer(peer), None);
+        }
+    }
+
+    /// The pointer here moved over `target` (another machine's window, or
+    /// nothing) while a program here drags: the drag goes into that window,
+    /// carried on by its owner, or comes back out of one.
+    pub(crate) fn drag_over_remote(&mut self, target: Option<(WindowId, PeerId, u64)>) {
+        let current = self.handoff.drags.outgoing.as_ref().and_then(|outgoing| outgoing.into);
+        if current.is_some() && current != target.map(|(window, ..)| window) {
+            // Out of it again: the owner there was told by WindowLeave.
+            self.handoff.drags.outgoing = None;
+        }
+        let drags = &mut self.handoff.drags;
+        if drags.refused.is_some() && drags.refused != target.map(|(window, ..)| window) {
+            drags.refused = None;
+        }
+        let Some((window, peer, owned)) = target else { return };
+        if self.handoff.drags.refused == Some(window) {
+            return;
+        }
+        let local = self.drag.as_ref().is_some_and(|drag| drag.source.is_some());
+        if !local || self.handoff.drags.outgoing.is_some() || self.handoff.drags.incoming.is_some() {
+            return;
+        }
+        let Some(button) = self.handoff.held.buttons(Source::Local).first().copied() else { return };
+        self.send_drag(peer, button, Source::Local, Some((window, owned)));
+    }
+
+    /// The pointer of the machine dragging into one of this machine's
+    /// windows left it: that machine takes the drag back.
+    pub(crate) fn drag_left_window(&mut self, peer: PeerId) {
+        if self.handoff.drags.incoming.as_ref().is_some_and(|incoming| incoming.peer == peer && incoming.into.is_some())
+        {
+            self.cancel_incoming_drag();
+        }
     }
 
     /// The pointer arrived from `peer`, its buttons now held by `source`:
@@ -223,11 +355,20 @@ impl Tileception {
             tracing::info!("handoff: a drag is back from {peer:016x}");
             return;
         }
+        self.start_incoming_drag(peer, source, true);
+    }
+
+    /// Carries on the drag from `peer` that arrived ahead, held by `source`
+    /// (and its button marked held here when `hold`).
+    fn start_incoming_drag(&mut self, peer: PeerId, source: Source, hold: bool) {
         let Some(mut incoming) = self.handoff.drags.pending.take_if(|pending| pending.peer == peer) else { return };
         incoming.holder = source;
-        self.handoff.held.button(source, incoming.button, true);
+        if hold {
+            self.handoff.held.button(source, incoming.button, true);
+        }
         let metadata = SourceMetadata { mime_types: incoming.mime_types.clone(), dnd_action: DndAction::Copy };
-        let start = GrabStartData { focus: None, button: incoming.button, location: self.pointer };
+        let location = self.seat.get_pointer().map_or(self.pointer, |pointer| pointer.current_location());
+        let start = GrabStartData { focus: None, button: incoming.button, location };
         tracing::info!("handoff: a drag from {peer:016x} goes on here");
         self.handoff.drags.incoming = Some(incoming);
         let (display, seat) = (self.display_handle.clone(), self.seat.clone());
@@ -255,6 +396,7 @@ impl Tileception {
     /// of it, over nothing.
     fn let_go_of_outgoing(&mut self) {
         let Some(outgoing) = self.handoff.drags.outgoing.take() else { return };
+        self.handoff.windows.forget_away_button();
         if outgoing.holder == Source::Local {
             self.handoff.held.button(Source::Local, outgoing.button, false);
         }
