@@ -33,3 +33,13 @@ curl                    # cover art that media players serve over the web
 [optional]
 playerctl               # media keys (play, pause, next, previous)
 wireplumber             # volume keys through wpctl
+
+# Only for `make video`, the promo video (scripts/promo); not in the default
+# groups. On Ubuntu, chromium is a snap: install it with snap instead.
+[video]
+wf-recorder             # records the headless demo screens
+ffmpeg                  # cuts and joins the video
+chromium                # the website in the demo, and renders the title cards
+kitty                   # the demo's terminals
+libnotify-bin           # notify-send, for the demo notification
+dbus-daemon             # a private session bus for each demo instance

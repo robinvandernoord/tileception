@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested deb deb-docker release
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -23,6 +23,8 @@ help:
 	@echo "make uninstall-greeter  switch back to the previous login screen and remove it"
 	@echo "make try-greeter        run the greeter on a spare console, login screen untouched"
 	@echo "make nested      run a development build in a window"
+	@echo "make video       record and edit the promo video (target/promo;"
+	@echo "                 MUSIC=track.mp3 adds music, SCENES='2 4' re-records some)"
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
 	@echo "make release     release a new version with vommit"
@@ -104,6 +106,14 @@ try-greeter: tools
 
 nested: tools
 	cargo plane run -p tileception -- --nested
+
+# The promo video: headless demo sessions recorded scene by scene, then cut
+# together. The duck scene asks a real agent (PROMO_AGENT, codex-acp by
+# default), so that agent must be signed in on this machine.
+video: build
+	@scripts/deps.sh install video
+	scripts/promo/record.sh $(SCENES)
+	MUSIC="$(MUSIC)" scripts/promo/edit.sh
 
 # Optimised, stripped packages in target/deb. deb-docker builds amd64 and
 # arm64 for each release; override with DEB_IMAGES="..." DEB_ARCHS="...".

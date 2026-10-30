@@ -105,6 +105,22 @@ nested instances. `tileception msg --help` lists the commands.
 
 See [Troubleshooting](troubleshooting.md) for logs and runtime diagnostics.
 
+## Promo video
+
+`make video` builds the compositor, installs the `video` packages from
+`deps/debian.txt` and records the promo video into
+`target/promo/tileception-promo.mp4`. Each scene in `scripts/promo/scenes`
+runs headless Tileceptions with their own config, state and D-Bus session,
+drives them with `tileception msg` and records them with wf-recorder.
+`scripts/promo/edit.sh` then adds title cards and captions from
+`scripts/promo/art/art.html`.
+
+The duck scene asks a real agent. By default this is `codex-acp`, which uses
+the Codex sign-in already on the machine; `PROMO_AGENT` chooses another ACP
+Registry agent. `SCENES='2 4'` records only those scenes again before editing,
+and `MUSIC=track.mp3` adds a soundtrack that fades out at the end. The handoff
+scene runs two instances paired over localhost, with mDNS discovery off.
+
 ## Packaging
 
 `make deb` builds packages for the current system into `target/deb`.
