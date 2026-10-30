@@ -1,4 +1,4 @@
-//! Volume, media keys and brightness: commands, key repeat and the state the
+//! Volume, media keys and brightness: commands and the state the
 //! on-screen display and the notification panel draw from. The work itself
 //! happens in `tileception-media`, off the compositor thread.
 
@@ -7,14 +7,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::reexports::calloop::{
-    RegistrationToken,
-    ping::make_ping,
-    timer::{TimeoutAction, Timer},
-};
+use smithay::reexports::calloop::{RegistrationToken, ping::make_ping};
 use tileception_media::{Change, Event, MediaService, PlayerCommand, Request, Snapshot, Target, Toggle};
 
-use crate::{Tileception, commands::Command};
+use crate::Tileception;
 
 /// The `[media]` section.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -115,8 +111,6 @@ pub struct Media {
     source: Option<RegistrationToken>,
     pub snapshot: Snapshot,
     pub osd: Option<Osd>,
-    /// The key being held and its repeat timer.
-    repeat: Option<(u32, RegistrationToken)>,
     /// The panel's list of programs is unfolded.
     pub apps_open: bool,
     /// The panel's list of devices to choose from is unfolded.
@@ -213,7 +207,7 @@ impl Tileception {
         if let Some(token) = self.media.source.take() {
             self.loop_handle.remove(token);
         }
-        self.stop_media_repeat();
+        self.stop_key_repeat();
         self.media.drag = None;
         self.media.service = None;
         self.media.events = None;
@@ -364,38 +358,6 @@ impl Tileception {
             None => out += "player: none\n",
         }
         out
-    }
-
-    /// Repeats a held volume or brightness key, at the keyboard's repeat rate.
-    pub fn start_media_repeat(&mut self, keycode: u32, commands: Vec<Command>) {
-        self.stop_media_repeat();
-        let keyboard_config = &self.config.file.keyboard;
-        let delay = Duration::from_millis(keyboard_config.repeat_delay.unwrap_or(400).max(1) as u64);
-        let interval = Duration::from_secs_f64(1.0 / f64::from(keyboard_config.repeat_rate.unwrap_or(30).max(1)));
-        let token = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
-            for command in &commands {
-                if let Err(error) = state.execute(command.clone()) {
-                    tracing::warn!("{error}");
-                }
-            }
-            TimeoutAction::ToDuration(interval)
-        });
-        match token {
-            Ok(token) => self.media.repeat = Some((keycode, token)),
-            Err(error) => tracing::warn!("could not repeat the key: {error}"),
-        }
-    }
-
-    pub fn stop_media_repeat(&mut self) {
-        if let Some((_, token)) = self.media.repeat.take() {
-            self.loop_handle.remove(token);
-        }
-    }
-
-    pub fn media_key_released(&mut self, keycode: u32) {
-        if self.media.repeat.is_some_and(|(held, _)| held == keycode) {
-            self.stop_media_repeat();
-        }
     }
 }
 

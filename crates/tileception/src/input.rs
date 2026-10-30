@@ -18,6 +18,7 @@ use tileception_core::{Axis as LayoutAxis, Dir, Node, Side, WindowId};
 use crate::{
     commands::Command,
     config::{Mods, TAP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT, WHEEL_UP},
+    key_repeat::Repeat,
     state::{GapDrag, MoveDrag, PendingPress, ResizeDrag, Tileception},
 };
 
@@ -170,9 +171,11 @@ impl Tileception {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = key_state == KeyState::Pressed;
         let keycode = code.raw();
+        let mut modifier = false;
         let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
             let sym = handle.modified_sym().raw();
             let raw_sym = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
+            modifier = crate::config::modifier_of(raw_sym).is_some();
             if state.is_locked() {
                 state.tap_armed = None;
                 state.tap_fired.clear();
@@ -196,13 +199,12 @@ impl Tileception {
                 }
                 // The built-in lock screen and the greeter are the same tiles.
                 if state.draws_lock_screen() {
-                    state.greeter_key(
-                        sym,
-                        Mods::from_state(mods),
-                        mods.caps_lock,
-                        mods.serialized.layout_effective,
-                        pressed,
-                    );
+                    let (held, caps_lock, layout) =
+                        (Mods::from_state(mods), mods.caps_lock, mods.serialized.layout_effective);
+                    state.greeter_key(sym, held, caps_lock, layout, pressed);
+                    if pressed && crate::key_repeat::edits(sym, held) {
+                        state.greeter_repeat = Some(Repeat::Greeter { sym, mods: held, caps_lock, layout });
+                    }
                     return FilterResult::Intercept(Vec::new());
                 }
                 return FilterResult::Forward;
@@ -308,16 +310,13 @@ impl Tileception {
         });
         let tapped = std::mem::take(&mut self.tap_fired);
         let commands = commands.unwrap_or_default();
+        let greeter_repeat = self.greeter_repeat.take();
         if !pressed {
-            self.media_key_released(keycode);
-        } else if !commands.is_empty()
-            && commands
-                .iter()
-                .all(|command| matches!(command, Command::Media(media_command) if media_command.repeats()))
-        {
-            self.start_media_repeat(keycode, commands.clone());
+            self.key_released(keycode, modifier);
+        } else if let Some(repeat) = greeter_repeat.or_else(|| Repeat::for_commands(&commands)) {
+            self.start_key_repeat(keycode, repeat);
         } else {
-            self.stop_media_repeat();
+            self.stop_key_repeat();
         }
         for command in commands.into_iter().chain(tapped) {
             if let Err(err) = self.execute(command) {

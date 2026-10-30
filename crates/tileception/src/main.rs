@@ -33,6 +33,7 @@ mod idle;
 mod inject;
 mod input;
 mod ipc;
+mod key_repeat;
 mod launcher;
 mod layers;
 mod lock;
