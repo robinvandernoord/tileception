@@ -9,6 +9,12 @@ group, and zoom back out to see the bigger picture.
 Written in Rust on [Smithay](https://smithay.github.io/), with Xwayland support
 for X11 applications.
 
+
+
+https://github.com/user-attachments/assets/c50f14f1-2a80-40f7-99ce-b32fb67fa9fa
+
+
+
 ![Four views of the same Tileception workspace, zooming from seven nested windows into a project preview, build log and review notes.](docs/assets/nested-workspace.png)
 
 *One workspace, four zoom levels. Captured in a nested session with fictional demo content.*
