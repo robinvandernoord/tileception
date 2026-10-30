@@ -291,17 +291,25 @@ Decisions:
   recognised: its stale waiting tiles are cleared and windows it no longer
   knows go home. Client-side resizing needs nothing: it is ignored for
   windows here too, and Super+right-drag resizes remote tiles.
-- [ ] Window handoff, still to do: drag and drop does not cross (see
-  Dragging files across); video-heavy windows need a real video codec
-  rather than compressed tiles (choose between VA-API, openh264 or ffmpeg
-  first); popups stay where they opened when the window's place there
-  changes, as they do here.
+- [ ] Window handoff, later if needed: video-heavy windows need a real video
+  codec rather than compressed tiles (choose between VA-API, openh264 or
+  ffmpeg first). Popups stay where they opened when the window's place
+  there changes, as they do here. Drags started inside a streamed window
+  stay on its owner.
 - [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
   failures. The lock policy applies to input, clipboard transfers and
   streamed windows, including pictures already queued or on the way.
 - [x] Discovery (mDNS and fixed `peers`), the edge card on both machines and
   mutual acceptance; the passphrase comes from the config.
-- [ ] Dragging files across.
+- [x] Drag and drop across (2026-10-30, not yet tried between instances): a
+  program's drag that reaches a shared edge goes along; the other machine
+  carries it on with Tileception as the source, offering the same types
+  (less the file transfer portal's), and fetches the data on a drop. Files
+  and folders are copied first into `~/.cache/tileception/handoff-drops`
+  (drops older than a week are cleared), and the program gets those
+  copies; other entries pass as they are. Copy only, never move. Dragged
+  back, it goes on at home. Locking, pausing or losing the connection ends
+  it. Drags from X11 programs do not cross.
 - [ ] Define stable machine identities, key rotation/revocation, keyboard-layout
   ownership, edge mapping for unequal monitors and pointer-locked apps, and
   shortcut routing inside a streamed window. Decide initial support for
@@ -355,6 +363,13 @@ Review log:
   the tile, which the owner unconstrains popups against; `WindowCursor`
   carries the program's pointer picture, sent only when it changes. Same
   limitation: unit tests only, no headless run in the container.
+- 2026-10-30: Drag and drop (protocol 5). Drags were invisible: the drag
+  handlers were empty, so programs' drag icons were never drawn. They are
+  now, and without one a card by the pointer shows a thumbnail of a
+  picture, or the first file's name or the start of the text, with a count
+  badge; the list of files or the text is read from the program in the
+  background as the drag starts. The same card shows on another machine
+  when the drag crosses. Unit tests only, no headless run in the container.
 
 ### Design ideas from LunariaOS
 

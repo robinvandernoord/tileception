@@ -10,6 +10,7 @@
 //! wait for it to link again.
 
 mod clipboard;
+mod drag;
 mod forward;
 pub mod pair;
 mod prompt;
@@ -144,6 +145,8 @@ pub struct Handoff {
     locked: bool,
     /// Windows shown on other machines, and theirs shown here.
     pub(crate) windows: windows::Windows,
+    /// Drag and drop across machines.
+    pub(crate) drags: drag::Drags,
     /// The last absolute pointer position, to turn absolute motion into steps.
     pub(crate) absolute: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 }
@@ -359,6 +362,7 @@ impl Tileception {
         for peer in peers {
             self.forget_input(peer);
             self.clipboard_peer_gone(peer);
+            self.drags_peer_gone(peer);
             self.windows_peer_gone(peer);
         }
         // Including windows still waiting for a machine that went away.
@@ -400,6 +404,7 @@ impl Tileception {
                 }
                 self.forget_input(peer);
                 self.clipboard_peer_gone(peer);
+                self.drags_peer_gone(peer);
                 self.windows_peer_lost(peer);
                 if !self.handoff.prompt.dismissed.contains(&peer) {
                     self.handoff.peers.remove(&peer);
@@ -470,8 +475,26 @@ impl Tileception {
             Message::Fetch { request, target, version, mime_type } => {
                 self.serve_fetch(peer, request, target, version, mime_type);
             }
-            Message::Data { request, bytes } => self.handoff.clipboard.data(request, bytes),
-            Message::DataEnd { request, failed } => self.handoff.clipboard.end(request, failed),
+            Message::Data { request, bytes } => {
+                if self.handoff.drags.receives(request) {
+                    self.handoff.drags.data(request, bytes);
+                } else {
+                    self.handoff.clipboard.data(request, bytes);
+                }
+            }
+            Message::DataEnd { request, failed } => {
+                if self.handoff.drags.receives(request) {
+                    self.handoff.drags.end(request, failed);
+                } else {
+                    self.handoff.clipboard.end(request, failed);
+                }
+            }
+            message @ (Message::DragStart { .. }
+            | Message::DragFetch { .. }
+            | Message::DragFiles { .. }
+            | Message::DragFile { .. }
+            | Message::DragLink { .. }
+            | Message::DragEnd { .. }) => self.drag_message(peer, message),
             message => self.window_message(peer, message),
         }
     }
@@ -492,6 +515,7 @@ impl Tileception {
         if self.handoff.forwarding == Some(peer) {
             self.stop_forwarding(forward::Back::Gone);
         }
+        self.drags_peer_gone(peer);
         self.forget_input(peer);
     }
 
@@ -508,6 +532,7 @@ impl Tileception {
         }
         let peers: Vec<PeerId> = self.handoff.peers.keys().copied().collect();
         for peer in peers {
+            self.drags_peer_gone(peer);
             self.forget_input(peer);
             if let Some(Peer { link: Link::Linked { paused, .. }, .. }) = self.handoff.peers.get_mut(&peer) {
                 *paused = Some(Pause::Ours);

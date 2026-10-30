@@ -32,7 +32,7 @@ use crate::{Tileception, launcher::Clip};
 /// The most one paste carries.
 const LIMIT: usize = 64 * 1024 * 1024;
 /// A transfer that stalls this long is given up.
-const STALL: Duration = Duration::from_secs(10);
+pub(crate) const STALL: Duration = Duration::from_secs(10);
 
 /// A selection offered by another machine, as this machine's programs see it.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +82,42 @@ impl Clipboard {
     pub(crate) fn fail_all(&mut self) {
         self.incoming.clear();
     }
+
+    /// A number for a request to another machine, unique among this one's.
+    pub(crate) fn next_request(&mut self) -> u64 {
+        self.request += 1;
+        self.request
+    }
+}
+
+/// Sends what `reader` gives to another machine as the answer to its
+/// `request`, from a thread of its own. False when that could not start.
+pub(crate) fn send_out(
+    messenger: tileception_handoff::Messenger,
+    peer: PeerId,
+    request: u64,
+    mut reader: impl Read + Send + 'static,
+) -> bool {
+    let started = std::thread::Builder::new().name("tileception-handoff-copy".into()).spawn(move || {
+        let mut total = 0;
+        let failed = loop {
+            let mut chunk = vec![0; CHUNK];
+            match reader.read(&mut chunk) {
+                Ok(0) => break false,
+                Ok(length) => {
+                    total += length;
+                    chunk.truncate(length);
+                    if total > LIMIT || !messenger.send(peer, Message::Data { request, bytes: chunk }) {
+                        break true;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break true,
+            }
+        };
+        messenger.send(peer, Message::DataEnd { request, failed });
+    });
+    started.is_ok()
 }
 
 fn selection_target(target: Target) -> SelectionTarget {
@@ -181,9 +217,13 @@ impl Tileception {
         if self.handoff.active_edge(clip.peer).is_none() || self.is_locked() {
             return;
         }
-        let clipboard = &mut self.handoff.clipboard;
-        clipboard.request += 1;
-        let request = clipboard.request;
+        let message = |request| Message::Fetch { request, target: clip.target, version: clip.version, mime_type };
+        self.receive_into(clip.peer, pipe, message);
+    }
+
+    /// Asks another machine for data, written to `pipe` as it arrives.
+    pub(crate) fn receive_into(&mut self, peer: PeerId, pipe: OwnedFd, message: impl FnOnce(u64) -> Message) {
+        let request = self.handoff.clipboard.next_request();
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
         let started = std::thread::Builder::new().name("tileception-handoff-paste".into()).spawn(move || {
             let mut file = std::fs::File::from(pipe);
@@ -198,9 +238,8 @@ impl Tileception {
         if started.is_err() {
             return;
         }
-        clipboard.incoming.insert(request, (clip.peer, sender));
-        let message = Message::Fetch { request, target: clip.target, version: clip.version, mime_type };
-        if !self.handoff.send(clip.peer, message) {
+        self.handoff.clipboard.incoming.insert(request, (peer, sender));
+        if !self.handoff.send(peer, message(request)) {
             self.handoff.clipboard.incoming.remove(&request);
         }
     }
@@ -221,27 +260,7 @@ impl Tileception {
             self.handoff.send(peer, Message::DataEnd { request, failed: true });
             return;
         };
-        let started = std::thread::Builder::new().name("tileception-handoff-copy".into()).spawn(move || {
-            let mut reader = reader;
-            let mut total = 0;
-            let failed = loop {
-                let mut chunk = vec![0; CHUNK];
-                match reader.read(&mut chunk) {
-                    Ok(0) => break false,
-                    Ok(length) => {
-                        total += length;
-                        chunk.truncate(length);
-                        if total > LIMIT || !messenger.send(peer, Message::Data { request, bytes: chunk }) {
-                            break true;
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => break true,
-                }
-            };
-            messenger.send(peer, Message::DataEnd { request, failed });
-        });
-        if started.is_err() {
+        if !send_out(messenger, peer, request, reader) {
             self.handoff.send(peer, Message::DataEnd { request, failed: true });
         }
     }

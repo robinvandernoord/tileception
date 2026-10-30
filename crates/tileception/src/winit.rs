@@ -55,7 +55,9 @@ pub fn init(
             state.process_streams(backend.renderer());
             {
                 let Ok((renderer, mut framebuffer)) = backend.bind() else { return };
-                let elements = state.frame_elements(renderer, now);
+                // The host draws the pointer; what it drags is drawn here.
+                let mut elements = state.drag_elements(renderer);
+                elements.extend(state.frame_elements(renderer, now));
                 let clear = state.clear_colour();
                 if let Err(err) = damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, clear) {
                     tracing::warn!("render failed: {err:?}");

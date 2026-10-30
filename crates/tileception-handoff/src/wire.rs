@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -220,6 +220,77 @@ pub enum Message {
     WindowsResumed {
         windows: Vec<Resumed>,
     },
+    /// A program on the sender is dragging something (drag and drop), and
+    /// the drag comes along with the pointer: sent just before `Enter` or
+    /// `Return`. The sender's `button` holds it.
+    DragStart {
+        drag: u64,
+        mime_types: Vec<String>,
+        button: u32,
+        preview: DragPreview,
+    },
+    /// It was dropped on a program here, which wants it in this type:
+    /// answered with `Data` and `DataEnd`, as a paste is.
+    DragFetch {
+        request: u64,
+        drag: u64,
+        mime_type: String,
+    },
+    /// It was dropped as files (`text/uri-list`), which have to be copied
+    /// over first: answered with a `DragFile` or `DragLink` per entry, each
+    /// file's contents in `Data` after its `DragFile`, then `DataEnd`.
+    DragFiles {
+        request: u64,
+        drag: u64,
+    },
+    /// A file (its `Data` follows) or folder, by its path within what was
+    /// dragged, parts separated by `/`.
+    DragFile {
+        request: u64,
+        path: String,
+        directory: bool,
+    },
+    /// An entry that is not a local file, such as a web address, as it is.
+    DragLink {
+        request: u64,
+        uri: String,
+    },
+    /// The drag is over where it went (dropped or not), or its program on
+    /// the sender gave it up.
+    DragEnd {
+        drag: u64,
+    },
+}
+
+/// What a drag carries, for showing by the pointer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct DragPreview {
+    /// The first item's name, or the start of the text.
+    pub label: String,
+    /// How many items: files, or 1.
+    pub count: u32,
+    /// What kind of thing it is.
+    pub kind: DragKind,
+    /// A small picture of the first item, packed with `pack_rgba`.
+    pub thumbnail: Option<Thumbnail>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DragKind {
+    Files,
+    Folder,
+    Text,
+    Image,
+    Link,
+    #[default]
+    Other,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 /// A screen's rectangle in logical pixels from a window's top left.

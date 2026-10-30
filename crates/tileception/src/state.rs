@@ -135,6 +135,8 @@ pub struct Tileception {
     pub gap_drag: Option<GapDrag>,
     pub move_drag: Option<MoveDrag>,
     pub resize_drag: Option<ResizeDrag>,
+    /// A program's drag and drop in progress here.
+    pub drag: Option<crate::drag::LocalDrag>,
     /// Scrolling not yet turned into wheel binding steps.
     pub wheel_accum: (f64, f64),
     /// The touchpad gesture in progress.
@@ -302,6 +304,7 @@ impl Tileception {
             nested,
             gap_drag: None,
             move_drag: None,
+            drag: None,
             resize_drag: None,
             wheel_accum: (0.0, 0.0),
             gesture: None,

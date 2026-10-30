@@ -23,6 +23,7 @@ mod controls;
 mod cursor;
 mod doctor;
 mod doctor_policy;
+mod drag;
 mod duck;
 mod focus;
 mod gestures;

@@ -493,14 +493,22 @@ impl Tileception {
         out
     }
 
-    /// The pointer, drawn by us when Tileception owns the screen: the client's own
-    /// cursor surface when it set one, otherwise the theme's arrow.
+    /// The pointer and what it drags, drawn by us when Tileception owns the
+    /// screen.
     pub fn cursor_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
-        use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
         // The pointer is on another machine.
         if self.handoff.forwarding.is_some() || self.handoff.away {
             return Vec::new();
         }
+        let mut elements = self.pointer_elements(renderer, cursor);
+        elements.extend(self.drag_elements(renderer));
+        elements
+    }
+
+    /// The pointer: the client's own cursor surface when it set one,
+    /// otherwise the theme's arrow.
+    fn pointer_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
+        use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
         if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
         }

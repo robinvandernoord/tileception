@@ -127,6 +127,9 @@ impl CompositorHandler for Tileception {
             output.enter(surface);
             with_states(surface, |states| crate::scale::send_scale_state(surface, states, self.scale));
         }
+        if self.drag_icon_commit(surface) {
+            return;
+        }
         if self.commit_layer(surface) {
             self.popups.commit(surface);
             return;
@@ -267,8 +270,39 @@ impl DataDeviceHandler for Tileception {
     }
 }
 
-impl ClientDndGrabHandler for Tileception {}
-impl ServerDndGrabHandler for Tileception {}
+impl ClientDndGrabHandler for Tileception {
+    fn started(
+        &mut self,
+        source: Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.drag_started(source, icon);
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.drag_ended();
+    }
+}
+
+/// Tileception's own drags carry another machine's drag on here.
+impl ServerDndGrabHandler for Tileception {
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_dropped();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_finished();
+    }
+
+    fn send(&mut self, mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
+        self.handoff_drag_send(mime_type, fd);
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.handoff_drag_finished();
+    }
+}
 
 delegate_data_device!(Tileception);
 

@@ -13,8 +13,9 @@ mod service;
 mod wire;
 
 pub use held::{Held, Released, Source};
-pub use picture::{Area, Canvas, Header, pack, pack_pointer, unpack_pointer};
+pub use picture::{Area, Canvas, Header, pack, pack_pointer, pack_thumbnail, unpack_pointer, unpack_rgba};
 pub use service::{DEFAULT_PORT, Event, Messenger, PeerId, Service, Settings, random_id};
 pub use wire::{
-    CHUNK, MAX_POPUPS, Message, PICTURE_BUDGET, Picture, PointerImage, Resumed, Room, Scroll, Target, Tile,
+    CHUNK, DragKind, DragPreview, MAX_POPUPS, Message, PICTURE_BUDGET, Picture, PointerImage, Resumed, Room, Scroll,
+    Target, Thumbnail, Tile,
 };

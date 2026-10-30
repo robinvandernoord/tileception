@@ -39,6 +39,11 @@ impl Held {
         change(&mut self.buttons, source, button, pressed)
     }
 
+    /// The buttons a source holds.
+    pub fn buttons(&self, source: Source) -> Vec<u32> {
+        self.buttons.iter().filter(|(_, holders)| holders.contains(&source)).map(|(button, _)| *button).collect()
+    }
+
     /// Whether a source holds a button: it is dragging something.
     pub fn holds_button(&self, source: Source) -> bool {
         self.buttons.values().any(|holders| holders.contains(&source))

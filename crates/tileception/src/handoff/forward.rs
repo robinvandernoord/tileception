@@ -155,8 +155,9 @@ impl Tileception {
             return false;
         }
         let Some(peer) = self.handoff.peer_at(&output.name(), side) else { return false };
-        // A drag stays on its machine, unless it drags a window.
-        if self.move_drag.is_none() && self.handoff.held.holds_button(source) {
+        // A drag stays on its machine, unless it drags a window or a
+        // program's data.
+        if self.move_drag.is_none() && self.handoff.held.holds_button(source) && !self.may_carry_drag(peer, source) {
             return false;
         }
         let crossing = match source {
@@ -188,6 +189,7 @@ impl Tileception {
         if !self.carry_window(peer, source) {
             return false;
         }
+        self.carry_drag(peer, source);
         match source {
             Source::Local => self.start_forwarding(peer, along),
             Source::Peer(from) => {
@@ -233,8 +235,9 @@ impl Tileception {
                 if let Some(edge) = self.handoff.active_edge(peer).cloned() {
                     self.place_at_edge(&edge, along);
                 }
-                // The button of a window dragged along is held here.
+                // The button of a window or data dragged along is held here.
                 self.pick_up_arriving(peer, Source::Local);
+                self.pick_up_drag(peer, Source::Local);
             }
             Back::Gone => {}
         }
@@ -293,8 +296,9 @@ impl Tileception {
             return;
         }
         self.handoff.away = false;
-        // A window dragged along is held by the button down there.
+        // A window or data dragged along is held by the button down there.
         self.pick_up_arriving(peer, Source::Peer(peer));
+        self.pick_up_drag(peer, Source::Peer(peer));
         let time = self.input_time();
         self.on_motion(self.pointer, time);
         self.schedule_render();

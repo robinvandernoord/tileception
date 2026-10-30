@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::wire::{MAX_POPUPS, PICTURE_BUDGET, Picture, PointerImage, Tile};
+use crate::wire::{MAX_POPUPS, PICTURE_BUDGET, Picture, PointerImage, Thumbnail, Tile};
 
 /// Tiles are at most this big, so a tile always fits a message even when it
 /// does not compress at all.
@@ -108,31 +108,49 @@ fn compress(pixels: &[u8], width: u32, tile: Area) -> Vec<u8> {
     lz4_flex::compress_prepend_size(&rows)
 }
 
-/// The largest pointer picture, in pixels on a side.
-const LARGEST_POINTER: u32 = 512;
+/// The largest small picture (a pointer or a thumbnail), in pixels on a side.
+const LARGEST_SMALL: u32 = 512;
 
-/// A pointer picture of RGBA rows, ready to send: the usual arrow instead
-/// when it is too big for one message.
-pub fn pack_pointer(width: u32, height: u32, hotspot: (u32, u32), scale: f64, pixels: &[u8]) -> PointerImage {
-    let fits = width > 0 && height > 0 && width <= LARGEST_POINTER && height <= LARGEST_POINTER;
+/// A small picture of RGBA rows compressed to fit in one message, or None
+/// when it does not.
+pub fn pack_rgba(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
+    let fits = width > 0 && height > 0 && width <= LARGEST_SMALL && height <= LARGEST_SMALL;
     if !fits || pixels.len() != width as usize * height as usize * 4 {
-        return PointerImage::Default;
+        return None;
     }
-    let pixels = lz4_flex::compress_prepend_size(pixels);
-    if pixels.len() > PICTURE_BUDGET {
-        return PointerImage::Default;
-    }
-    PointerImage::Picture { width, height, hotspot, scale, pixels }
+    Some(lz4_flex::compress_prepend_size(pixels)).filter(|packed| packed.len() <= PICTURE_BUDGET)
 }
 
-/// A received pointer picture's RGBA rows, when they make sense.
-pub fn unpack_pointer(width: u32, height: u32, scale: f64, pixels: &[u8]) -> Option<Vec<u8>> {
-    let fits = width > 0 && height > 0 && width <= LARGEST_POINTER && height <= LARGEST_POINTER;
-    if !fits || !scale.is_finite() || scale <= 0.0 || pixels.len() > PICTURE_BUDGET {
+/// A received small picture's RGBA rows, when they make sense.
+pub fn unpack_rgba(width: u32, height: u32, pixels: &[u8]) -> Option<Vec<u8>> {
+    let fits = width > 0 && height > 0 && width <= LARGEST_SMALL && height <= LARGEST_SMALL;
+    if !fits || pixels.len() > PICTURE_BUDGET {
         return None;
     }
     let pixels = lz4_flex::decompress_size_prepended(pixels).ok()?;
     (pixels.len() == width as usize * height as usize * 4).then_some(pixels)
+}
+
+/// A pointer picture of RGBA rows, ready to send: the usual arrow instead
+/// when it is too big for one message.
+pub fn pack_pointer(width: u32, height: u32, hotspot: (u32, u32), scale: f64, pixels: &[u8]) -> PointerImage {
+    match pack_rgba(width, height, pixels) {
+        Some(pixels) => PointerImage::Picture { width, height, hotspot, scale, pixels },
+        None => PointerImage::Default,
+    }
+}
+
+/// A received pointer picture's RGBA rows, when they make sense.
+pub fn unpack_pointer(width: u32, height: u32, scale: f64, pixels: &[u8]) -> Option<Vec<u8>> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    unpack_rgba(width, height, pixels)
+}
+
+/// A thumbnail of RGBA rows, ready to send, when it fits.
+pub fn pack_thumbnail(width: u32, height: u32, pixels: &[u8]) -> Option<Thumbnail> {
+    pack_rgba(width, height, pixels).map(|pixels| Thumbnail { width, height, pixels })
 }
 
 /// A picture put back together from its messages.
