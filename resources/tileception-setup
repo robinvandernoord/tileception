@@ -393,11 +393,13 @@ if [ -n "$user" ]; then
     fi
 fi
 
-# The tileception that reads and writes the config.
+# The tileception that reads and writes the config. Builds from before
+# `tileception config` ignore its arguments and start a nested compositor, so
+# look for its usage text instead of running them to find out.
 tileception_bin=""
 for candidate in "${TILECEPTION_BIN:-}" "$(command -v tileception 2>/dev/null || true)" \
     /usr/bin/tileception "${home:-/nonexistent}/.local/bin/tileception" /usr/local/bin/tileception; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    if [ -n "$candidate" ] && [ -x "$candidate" ] && grep -qa "Usage: tileception config" "$candidate"; then
         tileception_bin=$candidate
         break
     fi
