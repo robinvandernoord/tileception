@@ -128,14 +128,17 @@ impl AppearanceService {
 }
 
 impl Tileception {
-    /// Starts serving the theme's appearance on the session bus. Done before
-    /// the session environment is exported, so the portal finds it when it
-    /// starts.
-    pub fn start_appearance(&mut self) {
-        match zbus::blocking::connection::Builder::session().and_then(|bus| AppearanceService::start(bus, &self.theme))
-        {
+    /// Starts Tileception's portal backend on the session bus: the theme's
+    /// appearance, and typing for applications (`remote_desktop`). Done
+    /// before the session environment is exported, so the portal finds it
+    /// when it starts.
+    pub fn start_portal(&mut self) {
+        let service = zbus::blocking::connection::Builder::session()
+            .and_then(|bus| self.serve_remote_desktop(bus))
+            .and_then(|bus| AppearanceService::start(bus, &self.theme));
+        match service {
             Ok(service) => self.appearance = Some(service),
-            Err(err) => tracing::error!("could not serve the appearance settings: {err}"),
+            Err(err) => tracing::error!("could not serve the desktop portal backend: {err}"),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, mpsc},
     time::Instant,
 };
@@ -37,11 +37,16 @@ pub struct Notifications {
     thumbnails: RefCell<HashMap<u32, Option<Preview>>>,
     /// Shown by [`Tileception::notify_locally`] so far, for their ids.
     local: u32,
+    /// Ids of [`Tileception::ask_locally`]'s questions still waiting for an answer.
+    questions: HashSet<u32>,
 }
 
 /// The category of [`Tileception::notify_locally`]'s notifications: the only
 /// ones shown on a lock screen, which keeps everyone else's to itself.
 const LOCAL_CATEGORY: &str = "x-tileception.local";
+
+/// The category of questions waiting for an answer, which stay off a lock screen.
+const PROMPT_CATEGORY: &str = "x-tileception.prompt";
 
 /// How long a notification of Tileception's own stays up.
 const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -75,7 +80,8 @@ impl Tileception {
         }
         self.notifications.service = None;
         self.notifications.events = None;
-        self.notifications.active.clear();
+        let questions = &self.notifications.questions;
+        self.notifications.active.retain(|notification_id, _| questions.contains(notification_id));
         self.notifications.history.clear();
         self.schedule_render();
     }
@@ -139,31 +145,11 @@ impl Tileception {
     /// Shows a notification of Tileception's own without the service, such as
     /// the greeter's feedback. It goes away by itself and stays out of the history.
     pub fn notify_locally(&mut self, summary: &str, body: &str, urgency: Urgency) {
-        // Counting down from the top keeps clear of the service's ids.
-        self.notifications.local = self.notifications.local.wrapping_add(1);
-        let notification_id = u32::MAX - self.notifications.local;
-        let notification = Notification {
-            id: notification_id,
-            app_name: "Tileception".into(),
-            app_icon: None,
-            summary: summary.into(),
-            body: html_escape::encode_text(body).into_owned(),
-            actions: Vec::new(),
-            default_action: false,
-            urgency,
-            image: None,
-            desktop_entry: None,
-            category: Some(LOCAL_CATEGORY.into()),
-            resident: false,
-            transient: true,
-            suppress_sound: true,
-            x: None,
-            y: None,
-            sound_file: None,
-            created: std::time::SystemTime::now(),
-            expires: Some(Instant::now() + LOCAL_TIMEOUT),
-            show_popup: true,
-        };
+        let mut notification = self.local_notification(summary, body);
+        notification.urgency = urgency;
+        notification.category = Some(LOCAL_CATEGORY.into());
+        notification.expires = Some(Instant::now() + LOCAL_TIMEOUT);
+        let notification_id = notification.id;
         self.notifications.active.insert(notification_id, Arc::new(notification));
         let timer = smithay::reexports::calloop::timer::Timer::from_duration(LOCAL_TIMEOUT);
         let removed = self.loop_handle.insert_source(timer, move |_, _, state| {
@@ -175,6 +161,64 @@ impl Tileception {
             tracing::warn!("could not time a notification: {error}");
         }
         self.schedule_render();
+    }
+
+    /// Asks something in a notification of Tileception's own, with a button
+    /// per `(key, label)` in `actions`. It stays up until a button or its close
+    /// button is clicked, which goes to [`Tileception::answer_question`], or
+    /// until [`Tileception::withdraw_question`]. Returns its id.
+    pub fn ask_locally(
+        &mut self,
+        summary: &str,
+        body: &str,
+        desktop_entry: Option<String>,
+        actions: Vec<(String, String)>,
+    ) -> u32 {
+        let mut notification = self.local_notification(summary, body);
+        notification.desktop_entry = desktop_entry;
+        notification.actions = actions;
+        notification.category = Some(PROMPT_CATEGORY.into());
+        let notification_id = notification.id;
+        self.notifications.active.insert(notification_id, Arc::new(notification));
+        self.notifications.questions.insert(notification_id);
+        self.schedule_render();
+        notification_id
+    }
+
+    /// Takes away a question that no longer needs an answer.
+    pub fn withdraw_question(&mut self, notification_id: u32) {
+        if self.notifications.questions.remove(&notification_id) {
+            self.notifications.active.remove(&notification_id);
+            self.schedule_render();
+        }
+    }
+
+    /// A notification from Tileception itself, with the next local id.
+    fn local_notification(&mut self, summary: &str, body: &str) -> Notification {
+        // Counting down from the top keeps clear of the service's ids.
+        self.notifications.local = self.notifications.local.wrapping_add(1);
+        Notification {
+            id: u32::MAX - self.notifications.local,
+            app_name: "Tileception".into(),
+            app_icon: None,
+            summary: summary.into(),
+            body: html_escape::encode_text(body).into_owned(),
+            actions: Vec::new(),
+            default_action: false,
+            urgency: Urgency::Normal,
+            image: None,
+            desktop_entry: None,
+            category: None,
+            resident: false,
+            transient: true,
+            suppress_sound: true,
+            x: None,
+            y: None,
+            sound_file: None,
+            created: std::time::SystemTime::now(),
+            expires: None,
+            show_popup: true,
+        }
     }
 
     pub fn do_not_disturb(&self) -> bool {
@@ -360,6 +404,18 @@ impl Tileception {
                 continue;
             }
             let notification = &card.notification;
+            if self.notifications.questions.contains(&notification.id) {
+                let action = card.actions.iter().position(|button| button.contains(point));
+                let answer = match action.and_then(|index| notification.actions.get(index)) {
+                    Some((key, _)) => Some(Some(key.as_str())),
+                    None => card.close.contains(point).then_some(None),
+                };
+                if let Some(answer) = answer {
+                    self.withdraw_question(notification.id);
+                    self.answer_question(notification.id, answer);
+                }
+                return;
+            }
             if card.close.contains(point) {
                 if self.notifications.open {
                     self.notification_request(Request::RemoveFromHistory(notification.id));
@@ -539,8 +595,8 @@ impl Tileception {
         let theme = &self.theme;
         let notification = &card.notification;
         let rect = card.rect;
-        let critical = notification.urgency == Urgency::Critical
-            && notification.category.as_deref() != Some("x-tileception.prompt");
+        let critical =
+            notification.urgency == Urgency::Critical && notification.category.as_deref() != Some(PROMPT_CATEGORY);
         if card.popup {
             painter.popup(rect);
         } else {

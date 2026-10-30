@@ -177,6 +177,8 @@ pub struct Tileception {
     pub duck: crate::duck::Duck,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
+    /// Applications typing through the desktop portal (KeePassXC's auto-type).
+    pub typing: crate::remote_desktop::Typing,
     pub selection: crate::selection::Selection,
     /// The strip of minimized windows at the bottom edge.
     pub strip: crate::minimized::Strip,
@@ -334,6 +336,7 @@ impl Tileception {
             notification_bus: None,
             media_bus: None,
             appearance: None,
+            typing: Default::default(),
             selection: Default::default(),
             strip: Default::default(),
             bar: Default::default(),

@@ -271,6 +271,16 @@ impl Launcher {
         self.icon(icon, size)
     }
 
+    /// The name and desktop entry of the installed application with this app ID.
+    pub fn app_for_id(&self, app_id: &str) -> Option<(String, String)> {
+        self.index.get(&format!("{app_id}.desktop")).map(|app| (app.name.clone(), app.id.clone()))
+    }
+
+    /// The name and desktop entry of the installed application that runs `program`.
+    pub fn app_for_program(&self, program: &std::path::Path) -> Option<(String, String)> {
+        self.index.by_program(program).map(|app| (app.name.clone(), app.id.clone()))
+    }
+
     fn icon(&self, name: &str, size: u32) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
         let path = self.lookup.find(name, self.icons.pixels(size), 1)?;
         self.icons.image(&path, size)

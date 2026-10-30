@@ -2923,6 +2923,7 @@ dependencies = [
 name = "tileception"
 version = "0.8.1"
 dependencies = [
+ "async-channel",
  "cosmic-text",
  "html-escape",
  "image",

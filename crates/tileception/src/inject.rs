@@ -86,12 +86,12 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
 
 /// The key (and whether Shift is needed) that gives a keysym, in a keymap
 /// compiled like the seat's.
-struct Keys {
+pub(crate) struct Keys {
     keymap: xkb::Keymap,
 }
 
 impl Keys {
-    fn new(keyboard: &crate::config::Keyboard) -> Option<Keys> {
+    pub(crate) fn new(keyboard: &crate::config::Keyboard) -> Option<Keys> {
         let (model, layout, variant, options) = keyboard.names();
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap =
@@ -103,15 +103,21 @@ impl Keys {
     }
 
     fn find(&self, sym: xkb::Keysym) -> Option<(Keycode, bool)> {
+        self.locate(sym, 0, 2).map(|(code, level)| (code, level == 1))
+    }
+
+    /// The key that gives a keysym in `layout`, and the shift level it is on,
+    /// looking at the first `levels`: 1 is Shift, 2 AltGr, 3 both.
+    pub(crate) fn locate(&self, sym: xkb::Keysym, layout: u32, levels: u32) -> Option<(Keycode, u32)> {
         let (min, max) = (self.keymap.min_keycode().raw(), self.keymap.max_keycode().raw());
         // Unshifted first, so "a" is not typed as Shift+A.
-        for level in 0..2 {
+        for level in 0..levels {
             for raw in min..=max {
                 let code = Keycode::new(raw);
-                if level < self.keymap.num_levels_for_key(code, 0)
-                    && self.keymap.key_get_syms_by_level(code, 0, level).contains(&sym)
+                if level < self.keymap.num_levels_for_key(code, layout)
+                    && self.keymap.key_get_syms_by_level(code, layout, level).contains(&sym)
                 {
-                    return Some((code, level == 1));
+                    return Some((code, level));
                 }
             }
         }

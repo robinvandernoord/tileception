@@ -45,6 +45,7 @@ mod password;
 mod persistence;
 mod pointer_lock;
 mod power;
+mod remote_desktop;
 mod render;
 mod rules;
 mod scale;
@@ -225,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !nested && !headless {
         state.fade_in = render::FadeIn::Waiting;
         state.publish_greeter_card();
-        state.start_appearance();
+        state.start_portal();
         state.start_sleep_watch();
         export_session_environment(&state);
     }
