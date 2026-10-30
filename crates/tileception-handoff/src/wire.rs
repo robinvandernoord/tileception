@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -160,11 +160,18 @@ pub enum Message {
         window: u64,
         serial: u64,
     },
-    /// The size the window's place has, in logical pixels.
+    /// The size the window's place has, in logical pixels, and the screen
+    /// around it, which its menus should stay on.
     WindowSize {
         window: u64,
         width: u32,
         height: u32,
+        room: Room,
+    },
+    /// What the pointer looks like over the window, as its program set it.
+    WindowCursor {
+        window: u64,
+        image: PointerImage,
     },
     /// The pointer over the window, in logical pixels from its top left.
     WindowPointer {
@@ -212,6 +219,33 @@ pub enum Message {
     /// waiting here are gone.
     WindowsResumed {
         windows: Vec<Resumed>,
+    },
+}
+
+/// A screen's rectangle in logical pixels from a window's top left.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Room {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// What the pointer looks like.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum PointerImage {
+    /// The usual arrow.
+    Default,
+    Hidden,
+    /// A picture the program drew, RGBA rows compressed with LZ4, with the
+    /// point that is the pointer's position, in its pixels.
+    Picture {
+        width: u32,
+        height: u32,
+        hotspot: (u32, u32),
+        /// Pixels per logical pixel on the owner.
+        scale: f64,
+        pixels: Vec<u8>,
     },
 }
 

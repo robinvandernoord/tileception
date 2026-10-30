@@ -504,6 +504,12 @@ impl Tileception {
         if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
         }
+        // Over another machine's window: the pointer its program chose.
+        if !self.draws_lock_screen()
+            && let Some(elements) = self.remote_cursor_elements(renderer)
+        {
+            return elements;
+        }
         if let CursorImageStatus::Surface(surface) = &self.cursor_status
             && !surface.alive()
         {

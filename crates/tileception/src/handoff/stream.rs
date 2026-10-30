@@ -5,6 +5,10 @@
 //! thread that compresses it and queues it behind other traffic. The next
 //! picture waits until the other machine says this one arrived, so a slow
 //! network lowers the rate instead of piling pictures up.
+//!
+//! The pointer over such a window goes along too: when the other machine's
+//! pointer is over it and its program sets a pointer picture of its own,
+//! that picture is sent whenever it changes.
 
 use std::{
     sync::{
@@ -21,16 +25,21 @@ use smithay::{
         renderer::{
             Bind, Offscreen,
             damage::OutputDamageTracker,
-            element::{AsRenderElements, surface::WaylandSurfaceRenderElement},
+            element::{
+                AsRenderElements, Kind,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            },
             gles::{GlesRenderer, GlesTexture},
         },
     },
-    desktop::PopupManager,
-    desktop::Window,
-    utils::{Buffer, Logical, Rectangle, Scale, Size, Transform},
+    desktop::{PopupManager, Window, utils::bbox_from_surface_tree},
+    input::pointer::{CursorImageAttributes, CursorImageStatus},
+    reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
+    utils::{Buffer, IsAlive, Logical, Rectangle, Scale, Size, Transform},
+    wayland::compositor::with_states,
 };
 use tileception_core::WindowId;
-use tileception_handoff::{Area, Header, Message, Messenger, PeerId, pack};
+use tileception_handoff::{Area, Header, Message, Messenger, PeerId, PointerImage, pack, pack_pointer};
 
 use crate::{
     Tileception,
@@ -52,6 +61,30 @@ struct Captured {
 
 /// The largest picture sent, in pixels on a side.
 const LARGEST: i32 = 16384;
+
+/// What the pointer over one of this machine's windows shown elsewhere
+/// looked like when that machine was last told.
+#[derive(Default)]
+pub(crate) struct CursorCapture {
+    told: Option<(WindowId, Told)>,
+    texture: Option<GlesTexture>,
+    damage: Option<OutputDamageTracker>,
+    size: (i32, i32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Told {
+    Default,
+    Hidden,
+    /// The program's own pointer surface, sent again whenever it changes.
+    Surface(ObjectId),
+}
+
+impl CursorCapture {
+    fn forget(&mut self) {
+        *self = CursorCapture::default();
+    }
+}
 
 struct Job {
     /// Dropped, even halfway, once the stream's round moved past this one.
@@ -186,6 +219,7 @@ impl Tileception {
             }
             self.update_away_info(window);
         }
+        self.send_away_cursor(renderer);
         // Not on any screen here, so frame callbacks keep them drawing.
         let Some(output) = self.output.clone() else { return };
         let elapsed = self.start.elapsed();
@@ -198,6 +232,105 @@ impl Tileception {
             }
         }
     }
+}
+
+impl Tileception {
+    /// Tells the machine whose pointer is over one of this machine's
+    /// windows what its program wants the pointer to look like.
+    fn send_away_cursor(&mut self, renderer: &mut GlesRenderer) {
+        let windows = &self.handoff.windows;
+        let target = windows
+            .pointed
+            .and_then(|window| {
+                windows.away.get(&window).filter(|away| away.stream.is_some()).map(|away| (window, away.peer))
+            })
+            .filter(|(_, peer)| self.handoff.active_edge(*peer).is_some() && !self.is_locked());
+        let Some((window, peer)) = target else {
+            self.handoff.windows.cursor.forget();
+            return;
+        };
+        let scale = self.scale;
+        let status = self.cursor_status.clone();
+        let capture = &mut self.handoff.windows.cursor;
+        let (told, image) = match &status {
+            CursorImageStatus::Surface(surface) if surface.alive() => {
+                let told = Told::Surface(surface.id());
+                if capture.told.as_ref() != Some(&(window, told.clone())) {
+                    capture.forget();
+                }
+                match capture_pointer(renderer, capture, surface, scale) {
+                    Ok(Some(image)) => (told, image),
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::warn!("handoff: pointer of window {}: {error}", window.0);
+                        (told, PointerImage::Default)
+                    }
+                }
+            }
+            CursorImageStatus::Hidden => (Told::Hidden, PointerImage::Hidden),
+            _ => (Told::Default, PointerImage::Default),
+        };
+        if !matches!(told, Told::Surface(_)) {
+            if capture.told.as_ref() == Some(&(window, told.clone())) {
+                return;
+            }
+            capture.forget();
+        }
+        capture.told = Some((window, told));
+        self.handoff.send(peer, Message::WindowCursor { window: window.0, image });
+    }
+}
+
+/// Draws a pointer surface into the capture's texture, returning it when it
+/// changed since the last time.
+fn capture_pointer(
+    renderer: &mut GlesRenderer,
+    capture: &mut CursorCapture,
+    surface: &WlSurface,
+    scale: f64,
+) -> Result<Option<PointerImage>, String> {
+    let hotspot = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<std::sync::Mutex<CursorImageAttributes>>()
+            .and_then(|attributes| attributes.lock().ok().map(|attributes| attributes.hotspot))
+            .unwrap_or_default()
+    });
+    let bounds = bbox_from_surface_tree(surface, (0, 0));
+    if bounds.size.w <= 0 || bounds.size.h <= 0 {
+        return Ok(Some(PointerImage::Hidden));
+    }
+    let to_pixels = |logical: i32| (f64::from(logical) * scale).round() as i32;
+    let size = (to_pixels(bounds.size.w), to_pixels(bounds.size.h));
+    if capture.size != size || capture.texture.is_none() || capture.damage.is_none() {
+        let buffer_size: Size<i32, Buffer> = size.into();
+        capture.texture =
+            Some(renderer.create_buffer(Fourcc::Abgr8888, buffer_size).map_err(|error| error.to_string())?);
+        capture.damage = Some(OutputDamageTracker::new(size, 1.0, Transform::Normal));
+        capture.size = size;
+    }
+    let (Some(texture), Some(damage)) = (capture.texture.as_mut(), capture.damage.as_mut()) else { return Ok(None) };
+    let origin = physical_point((-f64::from(bounds.loc.x), -f64::from(bounds.loc.y)), scale);
+    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+        render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
+    let elements: Vec<OutputElement> = enlarged(surfaces, origin, scale).collect();
+    {
+        let mut target = renderer.bind(texture).map_err(|error| error.to_string())?;
+        let result = damage
+            .render_output(renderer, &mut target, 1, &elements, [0.0, 0.0, 0.0, 0.0])
+            .map_err(|error| format!("{error:?}"))?;
+        if result.damage.is_none_or(|damage| damage.is_empty()) {
+            return Ok(None);
+        }
+        result.sync.wait().map_err(|error| format!("{error:?}"))?;
+    }
+    let whole = Rectangle::<i32, Buffer>::new((0, 0).into(), size.into());
+    let pixels = read_region(renderer, texture, whole)?;
+    let hotspot = (
+        to_pixels(hotspot.x - bounds.loc.x).clamp(0, size.0) as u32,
+        to_pixels(hotspot.y - bounds.loc.y).clamp(0, size.1) as u32,
+    );
+    Ok(Some(pack_pointer(size.0 as u32, size.1 as u32, hotspot, scale, &pixels)))
 }
 
 /// Where a window and its popups go in its picture.

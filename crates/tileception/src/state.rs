@@ -582,8 +582,15 @@ impl Tileception {
                 let size: Size<i32, Logical> =
                     (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
                 let Some(window) = self.windows.get(&placement.window) else {
-                    // Another machine's window: its owner sizes it.
-                    self.ask_remote_size(placement.window, size);
+                    // Another machine's window: its owner sizes it, and keeps
+                    // its menus on this screen.
+                    let room = tileception_handoff::Room {
+                        left: (screen.x - placement.rect.x).round() as i32,
+                        top: (screen.y - placement.rect.y).round() as i32,
+                        width: screen.w.round() as i32,
+                        height: screen.h.round() as i32,
+                    };
+                    self.ask_remote_size(placement.window, size, room);
                     continue;
                 };
                 if let Some(toplevel) = window.toplevel() {

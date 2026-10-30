@@ -416,6 +416,15 @@ impl Tileception {
     fn unconstrain_popup(&mut self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else { return };
         let Some(window_id) = self.window_id(&root) else { return };
+        // Shown on another machine: kept on the screen there.
+        if let Some(room) = self.away_room(window_id) {
+            let mut target = Rectangle::new((room.left, room.top).into(), (room.width, room.height).into());
+            target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
+            popup.with_pending_state(|state| {
+                state.geometry = state.positioner.get_unconstrained_geometry(target);
+            });
+            return;
+        }
         if let Some(output) = self.output_for_window(window_id)
             && self.output.as_ref() != Some(&output)
         {

@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::wire::{MAX_POPUPS, PICTURE_BUDGET, Picture, Tile};
+use crate::wire::{MAX_POPUPS, PICTURE_BUDGET, Picture, PointerImage, Tile};
 
 /// Tiles are at most this big, so a tile always fits a message even when it
 /// does not compress at all.
@@ -106,6 +106,33 @@ fn compress(pixels: &[u8], width: u32, tile: Area) -> Vec<u8> {
         rows.extend_from_slice(pixels.get(start..start + row).unwrap_or(&[]));
     }
     lz4_flex::compress_prepend_size(&rows)
+}
+
+/// The largest pointer picture, in pixels on a side.
+const LARGEST_POINTER: u32 = 512;
+
+/// A pointer picture of RGBA rows, ready to send: the usual arrow instead
+/// when it is too big for one message.
+pub fn pack_pointer(width: u32, height: u32, hotspot: (u32, u32), scale: f64, pixels: &[u8]) -> PointerImage {
+    let fits = width > 0 && height > 0 && width <= LARGEST_POINTER && height <= LARGEST_POINTER;
+    if !fits || pixels.len() != width as usize * height as usize * 4 {
+        return PointerImage::Default;
+    }
+    let pixels = lz4_flex::compress_prepend_size(pixels);
+    if pixels.len() > PICTURE_BUDGET {
+        return PointerImage::Default;
+    }
+    PointerImage::Picture { width, height, hotspot, scale, pixels }
+}
+
+/// A received pointer picture's RGBA rows, when they make sense.
+pub fn unpack_pointer(width: u32, height: u32, scale: f64, pixels: &[u8]) -> Option<Vec<u8>> {
+    let fits = width > 0 && height > 0 && width <= LARGEST_POINTER && height <= LARGEST_POINTER;
+    if !fits || !scale.is_finite() || scale <= 0.0 || pixels.len() > PICTURE_BUDGET {
+        return None;
+    }
+    let pixels = lz4_flex::decompress_size_prepended(pixels).ok()?;
+    (pixels.len() == width as usize * height as usize * 4).then_some(pixels)
 }
 
 /// A picture put back together from its messages.
@@ -228,6 +255,19 @@ mod tests {
             let bytes = postcard::to_stdvec(&message).expect("encodes");
             assert!(bytes.len() + 64 <= 65535, "{} bytes", bytes.len());
         }
+    }
+
+    #[test]
+    fn pointers_come_back_the_same() {
+        let pixels = noise(32, 48, 7);
+        let PointerImage::Picture { width, height, scale, pixels: packed, .. } =
+            pack_pointer(32, 48, (3, 4), 2.0, &pixels)
+        else {
+            panic!("a small pointer is sent as a picture");
+        };
+        assert_eq!(unpack_pointer(width, height, scale, &packed), Some(pixels));
+        assert_eq!(pack_pointer(1024, 8, (0, 0), 1.0, &noise(1024, 8, 1)), PointerImage::Default);
+        assert_eq!(unpack_pointer(33, 48, 2.0, &packed), None);
     }
 
     #[test]

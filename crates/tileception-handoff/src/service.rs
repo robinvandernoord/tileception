@@ -50,6 +50,9 @@ pub struct Settings {
     pub peers: Vec<String>,
     /// Announce and look for machines with mDNS.
     pub discovery: bool,
+    /// This machine's id, kept between runs so others recognise it after a
+    /// restart; a fresh one when not given.
+    pub machine: Option<PeerId>,
 }
 
 #[derive(Debug)]
@@ -189,7 +192,7 @@ impl Service {
             .or_else(|_| TcpListener::bind(("0.0.0.0", settings.port)))?;
         let port = listener.local_addr()?.port();
         let shared = Arc::new(Shared {
-            machine: random_id(),
+            machine: settings.machine.unwrap_or_else(random_id),
             name: settings.name,
             passphrase: settings.passphrase,
             port,
@@ -565,8 +568,8 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> io::Result<()> {
     std::thread::Builder::new().name(name.into()).spawn(work).map(drop)
 }
 
-/// A fresh id per run: it only has to tell running machines apart.
-fn random_id() -> PeerId {
+/// A fresh id: it only has to tell machines apart.
+pub fn random_id() -> PeerId {
     let mut bytes = [0; 8];
     if getrandom::fill(&mut bytes).is_err() {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
@@ -602,6 +605,7 @@ mod tests {
             port: 0,
             peers,
             discovery: false,
+            machine: None,
         }
     }
 

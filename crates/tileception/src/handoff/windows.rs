@@ -35,7 +35,9 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size, Transform},
 };
 use tileception_core::{Placement, Rect, WindowId};
-use tileception_handoff::{Area, Canvas, Message, PeerId, Picture, Resumed, Scroll, Source};
+use tileception_handoff::{
+    Area, Canvas, Message, PeerId, Picture, PointerImage, Resumed, Room, Scroll, Source, unpack_pointer,
+};
 
 use super::stream::Stream;
 use crate::{
@@ -72,6 +74,10 @@ pub(crate) struct Windows {
     /// machine's own input stayed here. It keeps the keyboard until this
     /// machine's own keyboard or pointer is used.
     typing: Option<WindowId>,
+    /// This machine's window the pointer is over where it is shown.
+    pub(crate) pointed: Option<WindowId>,
+    /// What that machine was last told the pointer looks like over it.
+    pub(crate) cursor: super::stream::CursorCapture,
 }
 
 pub(crate) struct Away {
@@ -80,6 +86,8 @@ pub(crate) struct Away {
     pub(crate) stream: Option<Stream>,
     title: String,
     app_id: String,
+    /// The screen around it there, from its top left.
+    room: Option<Room>,
 }
 
 pub(crate) struct Remote {
@@ -99,8 +107,10 @@ pub(crate) struct Remote {
     buffer: Option<MemoryRenderBuffer>,
     /// The logical size it had when it came, until a picture says otherwise.
     shown: (u32, u32),
-    /// The size last asked of its owner.
-    asked: Option<(u32, u32)>,
+    /// The size last asked of its owner, with the screen around it.
+    asked: Option<((u32, u32), Room)>,
+    /// What the pointer looks like over it; the usual arrow when None.
+    cursor: Option<RemoteCursor>,
     /// The connection to its owner was lost; it waits for it to come back.
     lost: bool,
 }
@@ -125,6 +135,7 @@ impl Remote {
         self.buffer = None;
         self.popups.clear();
         self.asked = None;
+        self.cursor = None;
     }
 
     /// Keeps its current size for while it has no picture.
@@ -153,6 +164,34 @@ impl Remote {
                 (rect, *popup)
             })
             .collect()
+    }
+}
+
+/// What the pointer looks like over another machine's window.
+enum RemoteCursor {
+    Hidden,
+    Picture {
+        buffer: MemoryRenderBuffer,
+        size: (u32, u32),
+        hotspot: (u32, u32),
+        /// Pixels per logical pixel on the owner.
+        scale: f64,
+    },
+}
+
+impl RemoteCursor {
+    fn from_image(image: PointerImage) -> Option<RemoteCursor> {
+        match image {
+            PointerImage::Default => None,
+            PointerImage::Hidden => Some(RemoteCursor::Hidden),
+            PointerImage::Picture { width, height, hotspot, scale, pixels } => {
+                let pixels = unpack_pointer(width, height, scale, &pixels)?;
+                let size = (width as i32, height as i32);
+                let buffer =
+                    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, size, 1, Transform::Normal, None);
+                Some(RemoteCursor::Picture { buffer, size: (width, height), hotspot, scale })
+            }
+        }
     }
 }
 
@@ -228,6 +267,17 @@ impl Tileception {
                     self.move_remote(local);
                 }
             }
+            Message::WindowCursor { window, image } => {
+                if let Some(remote) = self
+                    .handoff
+                    .windows
+                    .remote_id(peer, window)
+                    .and_then(|local| self.handoff.windows.remote.get_mut(&local))
+                {
+                    remote.cursor = RemoteCursor::from_image(image);
+                    self.schedule_render();
+                }
+            }
             // As the owner.
             Message::WindowAck { window, serial } => {
                 if let Some(away) = self
@@ -256,7 +306,7 @@ impl Tileception {
             message => {
                 let Some(local) = self.away_input(peer, &message) else { return };
                 match message {
-                    Message::WindowSize { width, height, .. } => self.resize_away(local, width, height),
+                    Message::WindowSize { width, height, room, .. } => self.resize_away(local, width, height, room),
                     Message::WindowPointer { across, down, .. } => self.away_pointer(local, across, down),
                     Message::WindowButton { button, pressed, .. } => self.away_button(button, pressed),
                     Message::WindowScroll { scroll, .. } => self.away_scroll(scroll),
@@ -361,7 +411,7 @@ impl Tileception {
             return false;
         };
         tracing::info!(window = window.0, "handoff: window shown on {peer:016x}");
-        self.handoff.windows.away.insert(window, Away { peer, stream: Some(stream), title, app_id: app });
+        self.handoff.windows.away.insert(window, Away { peer, stream: Some(stream), title, app_id: app, room: None });
         self.selection.windows.remove(&window);
         let now = self.now();
         self.world.remove_window(window, now);
@@ -382,6 +432,9 @@ impl Tileception {
         }
         if windows.typing == Some(window) {
             windows.typing = None;
+        }
+        if windows.pointed == Some(window) {
+            windows.pointed = None;
         }
         if !self.windows.contains_key(&window) {
             return;
@@ -420,6 +473,9 @@ impl Tileception {
             }
             away.stream = None;
             stranded += 1;
+            if windows.pointed == Some(*window) {
+                windows.pointed = None;
+            }
             if windows.away_keyboard == Some(*window) {
                 windows.away_keyboard = None;
             }
@@ -564,6 +620,9 @@ impl Tileception {
         if windows.typing == Some(window) {
             windows.typing = None;
         }
+        if windows.pointed == Some(window) {
+            windows.pointed = None;
+        }
     }
 
     /// Another machine's window comes here, with the pointer dragging it.
@@ -600,6 +659,7 @@ impl Tileception {
             buffer: None,
             shown: (shown.0.clamp(1, 16384), shown.1.clamp(1, 16384)),
             asked: None,
+            cursor: None,
             lost: false,
         };
         self.handoff.windows.remote.insert(local, remote);
@@ -729,7 +789,7 @@ impl Tileception {
     }
 
     /// Asks the owner of another machine's window to fit the place it has.
-    pub(crate) fn ask_remote_size(&mut self, window: WindowId, size: Size<i32, Logical>) {
+    pub(crate) fn ask_remote_size(&mut self, window: WindowId, size: Size<i32, Logical>, room: Room) {
         let linked = self
             .handoff
             .windows
@@ -738,12 +798,12 @@ impl Tileception {
             .is_some_and(|remote| self.handoff.active_edge(remote.peer).is_some());
         let Some(remote) = self.handoff.windows.remote.get_mut(&window) else { return };
         let wanted = (size.w.max(1) as u32, size.h.max(1) as u32);
-        if remote.asked == Some(wanted) || !linked {
+        if remote.asked == Some((wanted, room)) || !linked {
             return;
         }
-        remote.asked = Some(wanted);
+        remote.asked = Some((wanted, room));
         let (peer, owned) = (remote.peer, remote.window);
-        self.handoff.send(peer, Message::WindowSize { window: owned, width: wanted.0, height: wanted.1 });
+        self.handoff.send(peer, Message::WindowSize { window: owned, width: wanted.0, height: wanted.1, room });
     }
 
     /// Closing another machine's window asks its owner to close it. One
@@ -860,6 +920,39 @@ impl Tileception {
                 .map(OutputElement::Memory)
             })
             .collect()
+    }
+
+    /// The pointer as the program of the other machine's window under it
+    /// set it, when it set one; None for the usual arrow.
+    pub(crate) fn remote_cursor_elements(&self, renderer: &mut GlesRenderer) -> Option<Vec<OutputElement>> {
+        let windows = &self.handoff.windows;
+        let window = windows.pressed.map(|(window, _)| window).or(windows.hovered)?;
+        let remote = windows.remote.get(&window).filter(|remote| !remote.lost)?;
+        self.handoff.active_edge(remote.peer)?;
+        match remote.cursor.as_ref()? {
+            RemoteCursor::Hidden => Some(Vec::new()),
+            RemoteCursor::Picture { buffer, size, hotspot, scale } => {
+                // From the owner's pixels to this screen's.
+                let ratio = self.scale / scale;
+                let position = (
+                    (self.pointer.x * self.scale - f64::from(hotspot.0) * ratio).round(),
+                    (self.pointer.y * self.scale - f64::from(hotspot.1) * ratio).round(),
+                );
+                let shown: Size<i32, Logical> =
+                    ((f64::from(size.0) * ratio).round() as i32, (f64::from(size.1) * ratio).round() as i32).into();
+                let element = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    position,
+                    buffer,
+                    None,
+                    None,
+                    Some(shown),
+                    Kind::Cursor,
+                )
+                .ok()?;
+                Some(vec![OutputElement::Memory(element)])
+            }
+        }
     }
 
     /// The other machine's window under a point, if it is on top there: its
@@ -994,12 +1087,21 @@ impl Tileception {
     /// This machine's own keyboard or pointer was used here: a window typed
     /// into from elsewhere lets go of the keyboard.
     pub(crate) fn used_here(&mut self) {
+        self.handoff.windows.pointed = None;
         if self.handoff.windows.typing.take().is_some() {
             self.force_keyboard_focus_sync();
         }
     }
 
-    fn resize_away(&mut self, window: WindowId, width: u32, height: u32) {
+    /// The screen around one of this machine's windows shown elsewhere.
+    pub(crate) fn away_room(&self, window: WindowId) -> Option<Room> {
+        self.handoff.windows.away.get(&window).and_then(|away| away.room)
+    }
+
+    fn resize_away(&mut self, window: WindowId, width: u32, height: u32, room: Room) {
+        if let Some(away) = self.handoff.windows.away.get_mut(&window) {
+            away.room = (room.width > 0 && room.height > 0).then_some(room);
+        }
         let Some(placed) = self.windows.get(&window) else { return };
         let size: Size<i32, Logical> = (width.clamp(1, 16384) as i32, height.clamp(1, 16384) as i32).into();
         if let Some(toplevel) = placed.toplevel() {
@@ -1014,6 +1116,7 @@ impl Tileception {
 
     fn away_pointer(&mut self, window: WindowId, across: f64, down: f64) {
         let Some(placed) = self.windows.get(&window).cloned() else { return };
+        self.handoff.windows.pointed = Some(window);
         let geometry = placed.geometry();
         let location: Point<f64, Logical> = geometry.loc.to_f64() + Point::from((across, down));
         let focus =
@@ -1045,6 +1148,7 @@ impl Tileception {
     }
 
     fn away_leave(&mut self) {
+        self.handoff.windows.pointed = None;
         let time = self.input_time();
         if self.handoff.forwarding.is_some() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -1161,6 +1265,7 @@ mod tests {
             buffer: None,
             shown: (10, 10),
             asked: None,
+            cursor: None,
             lost: false,
         }
     }

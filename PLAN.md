@@ -282,13 +282,20 @@ Decisions:
   other; linking again resumes it unless `handoff reclaim` took it home
   first, and closing the unavailable tile sends it home on the next link.
   Turning handoff off or dismissing still brings everything home at once.
-- [ ] Window handoff, still to do: the program's own cursor is not shown
-  over it (the plain arrow is); popups are positioned for the owner's idea
-  of the window, not kept on the other machine's screen; client-side
-  resizing and drag and drop do not cross; resuming needs the same running
-  instances (a restarted compositor gets a new machine id, so its windows
-  must be reclaimed); video-heavy windows need a real video codec rather
-  than compressed tiles.
+- [x] Window handoff, pointer and popup placement (2026-10-30, not yet tried
+  between instances): a pointer picture the program sets (or hides) is
+  shown over it there, as for windows here; the theme's arrow otherwise,
+  since named cursor shapes are not supported locally either. Popups are
+  kept on the screen where the window is shown. Each machine keeps its id
+  in the state directory (one per port), so a restarted machine is
+  recognised: its stale waiting tiles are cleared and windows it no longer
+  knows go home. Client-side resizing needs nothing: it is ignored for
+  windows here too, and Super+right-drag resizes remote tiles.
+- [ ] Window handoff, still to do: drag and drop does not cross (see
+  Dragging files across); video-heavy windows need a real video codec
+  rather than compressed tiles (choose between VA-API, openh264 or ffmpeg
+  first); popups stay where they opened when the window's place there
+  changes, as they do here.
 - [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
   failures. The lock policy applies to input, clipboard transfers and
   streamed windows, including pictures already queued or on the way.
@@ -343,6 +350,11 @@ Review log:
   small tiles cannot overflow one encrypted message. Unit-tested the
   layout of pictures and popups; the container had no GPU render node, so
   the headless two-instance run is still to do.
+- 2026-10-30: Program pointers and popup placement for streamed windows,
+  stable machine ids (protocol 4). `WindowSize` carries the screen around
+  the tile, which the owner unconstrains popups against; `WindowCursor`
+  carries the program's pointer picture, sent only when it changes. Same
+  limitation: unit tests only, no headless run in the container.
 
 ### Design ideas from LunariaOS
 

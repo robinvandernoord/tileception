@@ -266,6 +266,30 @@ pub fn suggest_passphrase() -> Result<String, String> {
     Ok(chosen.join(" "))
 }
 
+/// This machine's id, kept in the state directory so that other machines
+/// recognise it after a restart: windows waiting for it are then cleared up
+/// instead of waiting for good. One per port, as instances on one machine
+/// (when trying things out) each listen on their own.
+fn machine_id(port: u16) -> PeerId {
+    let path = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
+        .join(format!("tileception/handoff-machine-{port}"));
+    let kept = std::fs::read_to_string(&path).ok().and_then(|text| PeerId::from_str_radix(text.trim(), 16).ok());
+    if let Some(machine) = kept.filter(|machine| *machine != 0) {
+        return machine;
+    }
+    let machine = tileception_handoff::random_id();
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, format!("{machine:016x}\n")));
+    if let Err(error) = written {
+        tracing::warn!("handoff: cannot keep this machine's id in {}: {error}", path.display());
+    }
+    machine
+}
+
 /// What other machines call this one when the config does not say.
 fn host_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -307,6 +331,7 @@ impl Tileception {
             port: config.port,
             peers: config.peers,
             discovery: config.discovery,
+            machine: Some(machine_id(config.port)),
         };
         let started = Service::start(settings, move |event| {
             let _ = sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(event);
