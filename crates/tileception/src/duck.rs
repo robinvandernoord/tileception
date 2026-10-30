@@ -358,6 +358,12 @@ impl Tileception {
         (left_wall, right_wall, wander)
     }
 
+    /// Where the duck is now, when it is on screen: for `msg tree`, so a
+    /// script can click it.
+    pub fn duck_shown_rect(&self) -> Option<Rect> {
+        self.duck_shown().then(|| self.duck_rect())
+    }
+
     fn duck_rect(&self) -> Rect {
         let (duck_x, duck_y) = self.duck.pos;
         let scale = self.duck_scale();

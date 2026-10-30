@@ -165,6 +165,8 @@ pub struct Tileception {
     /// Set in `--greeter` mode.
     pub greeter: Option<Box<crate::greeter::Greeter>>,
     pub pending_captures: Vec<crate::capture::PendingCapture>,
+    /// The pointer image for captures that ask for it, loaded on first use.
+    pub capture_cursor: Option<crate::cursor::Cursor>,
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
@@ -326,6 +328,7 @@ impl Tileception {
             builtin_locker: Default::default(),
             greeter: None,
             pending_captures: Vec::new(),
+            capture_cursor: None,
             theme,
             text: Default::default(),
             shapes: Default::default(),

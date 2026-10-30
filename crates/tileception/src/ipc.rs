@@ -73,6 +73,9 @@ pub fn describe(state: &Tileception) -> String {
     if let Some(output) = &state.output {
         out.push_str(&format!("output {} pointer {:.1},{:.1}\n", output.name(), state.pointer.x, state.pointer.y));
     }
+    if let Some(duck) = state.duck_shown_rect() {
+        out.push_str(&format!("duck @ {:.0},{:.0} {:.0}x{:.0}\n", duck.x, duck.y, duck.w, duck.h));
+    }
     fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
         let world = &state.world;
         let tree = world.tree();

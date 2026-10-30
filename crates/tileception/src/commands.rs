@@ -167,6 +167,9 @@ Pretend input (headless or nested only):
   press [left|right|middle] hold a button down (drags), and let go with
   release [left|right|middle]
   key <combo>               press a key, such as Return or Super+slash
+  keydown <key>             hold a key down (keydown Alt, then press and
+                            motion: an Alt+drag)
+  keyup <key>               let a held key go
   type <text>               type text
   gesture <name>            such as Swipe3Left, Super+Pinch2In or TouchEdgeTop
   touch <x> <y> [x2 y2]     tap, or drag to the second point
@@ -255,7 +258,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "motion" | "click" | "press" | "release" | "key" | "type" | "gesture" | "touch" => {
+        "pointer" | "motion" | "click" | "press" | "release" | "key" | "keydown" | "keyup" | "type" | "gesture"
+        | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {

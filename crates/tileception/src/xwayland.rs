@@ -55,7 +55,9 @@ impl Tileception {
                         state.xwm = Some(window_manager);
                         state.xdisplay = Some(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
-                        if !state.nested {
+                        // Only a real session speaks for the user's D-Bus and
+                        // systemd; nested and headless ones would take it over.
+                        if state.session_services {
                             let _ = std::process::Command::new("dbus-update-activation-environment")
                                 .env("DISPLAY", format!(":{display_number}"))
                                 .args(["--systemd", "DISPLAY"])
