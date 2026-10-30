@@ -41,6 +41,9 @@ pub struct Notifications {
     thumbnails: RefCell<HashMap<u32, Option<Preview>>>,
     /// Shown by [`Tileception::notify_locally`] so far, for their ids.
     local: u32,
+    /// What the buttons of Tileception's own notifications do: a command,
+    /// or only closing it.
+    local_actions: HashMap<u32, Vec<Option<crate::commands::Command>>>,
 }
 
 /// The category of [`Tileception::notify_locally`]'s notifications: the only
@@ -162,16 +165,76 @@ impl Tileception {
     /// Shows a notification of Tileception's own without the service, such as
     /// the greeter's feedback. It goes away by itself and stays out of the history.
     pub fn notify_locally(&mut self, summary: &str, body: &str, urgency: Urgency) {
+        let notification_id = self.local_notification(summary, body, urgency, Vec::new());
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(LOCAL_TIMEOUT);
+        let removed = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.notifications.active.remove(&notification_id);
+            state.schedule_render();
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        });
+        if let Err(error) = removed {
+            tracing::warn!("could not time a notification: {error}");
+        }
+    }
+
+    /// A notification of Tileception's own with buttons, each running a
+    /// command (or only closing it). It stays until a button is pressed, it
+    /// is closed, or [`Tileception::close_local_notification`]. Returns its id.
+    pub fn notify_locally_with(
+        &mut self,
+        summary: &str,
+        body: &str,
+        urgency: Urgency,
+        buttons: Vec<(&str, Option<crate::commands::Command>)>,
+    ) -> u32 {
+        let labels = buttons.iter().enumerate().map(|(index, (label, _))| (index.to_string(), (*label).to_string()));
+        let notification_id = self.local_notification(summary, body, urgency, labels.collect());
+        let commands = buttons.into_iter().map(|(_, command)| command).collect();
+        self.notifications.local_actions.insert(notification_id, commands);
+        notification_id
+    }
+
+    pub fn close_local_notification(&mut self, notification_id: u32) {
+        self.notifications.local_actions.remove(&notification_id);
+        if self.notifications.active.remove(&notification_id).is_some() {
+            self.schedule_render();
+        }
+    }
+
+    /// A button of one of Tileception's own notifications was pressed.
+    fn local_action(&mut self, notification_id: u32, key: &str) {
+        let command = self
+            .notifications
+            .local_actions
+            .get_mut(&notification_id)
+            .and_then(|commands| key.parse::<usize>().ok().and_then(|index| commands.get_mut(index)))
+            .and_then(Option::take);
+        self.close_local_notification(notification_id);
+        if let Some(command) = command
+            && let Err(error) = self.execute(command)
+        {
+            self.notify_locally("That did not work", &error, Urgency::Normal);
+        }
+    }
+
+    fn local_notification(
+        &mut self,
+        summary: &str,
+        body: &str,
+        urgency: Urgency,
+        actions: Vec<(String, String)>,
+    ) -> u32 {
         // Counting down from the top keeps clear of the service's ids.
         self.notifications.local = self.notifications.local.wrapping_add(1);
         let notification_id = u32::MAX - self.notifications.local;
+        let lasts = actions.is_empty();
         let notification = Notification {
             id: notification_id,
             app_name: "Tileception".into(),
             app_icon: None,
             summary: summary.into(),
             body: html_escape::encode_text(body).into_owned(),
-            actions: Vec::new(),
+            actions,
             default_action: false,
             urgency,
             image: None,
@@ -184,21 +247,13 @@ impl Tileception {
             y: None,
             sound_file: None,
             created: std::time::SystemTime::now(),
-            expires: Some(Instant::now() + LOCAL_TIMEOUT),
+            expires: lasts.then(|| Instant::now() + LOCAL_TIMEOUT),
             show_popup: true,
         };
         self.notifications_appear();
         self.notifications.active.insert(notification_id, Arc::new(notification));
-        let timer = smithay::reexports::calloop::timer::Timer::from_duration(LOCAL_TIMEOUT);
-        let removed = self.loop_handle.insert_source(timer, move |_, _, state| {
-            state.notifications.active.remove(&notification_id);
-            state.schedule_render();
-            smithay::reexports::calloop::timer::TimeoutAction::Drop
-        });
-        if let Err(error) = removed {
-            tracing::warn!("could not time a notification: {error}");
-        }
         self.schedule_render();
+        notification_id
     }
 
     pub fn do_not_disturb(&self) -> bool {
@@ -384,6 +439,18 @@ impl Tileception {
                 continue;
             }
             let notification = &card.notification;
+            let local = notification.category.as_deref() == Some(LOCAL_CATEGORY);
+            if local {
+                // Tileception's own: the service knows nothing of it.
+                if card.close.contains(point) {
+                    self.close_local_notification(notification.id);
+                } else if let Some(index) = card.actions.iter().position(|button| button.contains(point))
+                    && let Some((key, _)) = notification.actions.get(index)
+                {
+                    self.local_action(notification.id, &key.clone());
+                }
+                return;
+            }
             if card.close.contains(point) {
                 if self.notifications.open {
                     self.notification_request(Request::RemoveFromHistory(notification.id));

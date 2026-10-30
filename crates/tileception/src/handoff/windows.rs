@@ -78,12 +78,17 @@ pub(crate) struct Windows {
     pub(crate) pointed: Option<WindowId>,
     /// What that machine was last told the pointer looks like over it.
     pub(crate) cursor: super::stream::CursorCapture,
+    /// The notification about this machine's windows waiting on a machine
+    /// that went away, per machine.
+    notices: HashMap<PeerId, u32>,
 }
 
 pub(crate) struct Away {
     pub(crate) peer: PeerId,
     /// None while the connection to `peer` is lost.
     pub(crate) stream: Option<Stream>,
+    /// What `peer` is called, also once it is gone.
+    machine: String,
     title: String,
     app_id: String,
     /// The screen around it there, from its top left.
@@ -411,7 +416,9 @@ impl Tileception {
             return false;
         };
         tracing::info!(window = window.0, "handoff: window shown on {peer:016x}");
-        self.handoff.windows.away.insert(window, Away { peer, stream: Some(stream), title, app_id: app, room: None });
+        let machine = self.handoff.peers.get(&peer).map(|entry| entry.name.clone()).unwrap_or_default();
+        let away = Away { peer, stream: Some(stream), machine, title, app_id: app, room: None };
+        self.handoff.windows.away.insert(window, away);
         self.selection.windows.remove(&window);
         let now = self.now();
         self.world.remove_window(window, now);
@@ -450,15 +457,39 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// `handoff reclaim`: every window shown elsewhere comes home.
-    pub(crate) fn reclaim_windows(&mut self) -> usize {
-        let away: Vec<(WindowId, PeerId)> =
-            self.handoff.windows.away.iter().map(|(window, away)| (*window, away.peer)).collect();
+    /// `handoff reclaim`: every window shown elsewhere comes home, or every
+    /// one shown on `machine` (by name, any case, or hex id).
+    pub(crate) fn reclaim_windows(&mut self, machine: Option<&str>) -> usize {
+        let on = |away: &Away| {
+            machine.is_none_or(|machine| {
+                away.machine.eq_ignore_ascii_case(machine) || format!("{:016x}", away.peer) == machine
+            })
+        };
+        let away: Vec<(WindowId, PeerId)> = self
+            .handoff
+            .windows
+            .away
+            .iter()
+            .filter(|(_, away)| on(away))
+            .map(|(window, away)| (*window, away.peer))
+            .collect();
         for (window, peer) in &away {
             self.handoff.send(*peer, Message::WindowGone { window: window.0 });
             self.take_back(*window, None);
         }
+        let peers: std::collections::BTreeSet<PeerId> = away.iter().map(|(_, peer)| *peer).collect();
+        for peer in peers {
+            self.settle_notice(peer);
+        }
         away.len()
+    }
+
+    /// Closes the notification about windows waiting on `peer` once none do.
+    fn settle_notice(&mut self, peer: PeerId) {
+        let waiting = self.handoff.windows.away.values().any(|away| away.peer == peer && away.stream.is_none());
+        if !waiting && let Some(notice) = self.handoff.windows.notices.remove(&peer) {
+            self.close_local_notification(notice);
+        }
     }
 
     /// The connection to a machine was lost. This machine's windows there
@@ -514,11 +545,16 @@ impl Tileception {
                 format!("{stranded} windows are still on {name}")
             };
             let body = format!(
-                "The connection to {name} was lost. Windows come back to {name} when it links again; \
-                 handoff reclaim brings them here now."
+                "The connection to {name} was lost. Bring them back here, or keep them there: they go \
+                 on there when {name} links again, and handoff reclaim brings them back later."
             );
             tracing::info!("handoff: {stranded} windows wait for {name}");
-            self.notify_locally(&summary, &body, tileception_notify::Urgency::Normal);
+            let reclaim = crate::handoff::HandoffCommand::Reclaim(Some(format!("{peer:016x}")));
+            let buttons = vec![("Bring back", Some(crate::commands::Command::Handoff(reclaim))), ("Keep there", None)];
+            let notice = self.notify_locally_with(&summary, &body, tileception_notify::Urgency::Normal, buttons);
+            if let Some(previous) = self.handoff.windows.notices.insert(peer, notice) {
+                self.close_local_notification(previous);
+            }
         }
         self.schedule_render();
     }
@@ -550,6 +586,7 @@ impl Tileception {
         // Always sent: it also tells the other machine which of this one's
         // windows it was waiting for are gone.
         self.handoff.send(peer, Message::WindowsResumed { windows: resumed });
+        self.settle_notice(peer);
     }
 
     /// The other machine's windows that go on here after a lost connection.
@@ -592,6 +629,7 @@ impl Tileception {
         for window in away {
             self.take_back(window, None);
         }
+        self.settle_notice(peer);
         let remote: Vec<WindowId> = self
             .handoff
             .windows
@@ -1235,7 +1273,8 @@ impl Tileception {
             .iter()
             .map(|(window, away)| {
                 let waiting = if away.stream.is_none() { " (waiting for it to link again)" } else { "" };
-                format!("window {} {:?} is on {}{waiting}", window.0, away.title, name(away.peer))
+                let machine = if away.machine.is_empty() { name(away.peer) } else { away.machine.clone() };
+                format!("window {} {:?} is on {machine}{waiting}", window.0, away.title)
             })
             .collect();
         lines.extend(self.handoff.windows.remote.iter().map(|(window, remote)| {

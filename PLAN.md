@@ -324,8 +324,18 @@ Decisions:
 
 Known behaviour (accepted for now, 2026-10-30):
 
-- Both machines need the same build: window handoff changed the protocol, so
-  older builds refuse the connection.
+- Both machines need the same protocol version. A machine that knows the
+  passphrase but speaks another version gets a notification on both sides
+  naming it and both versions (once per version per session, and it is
+  not counted as a failed passphrase guess); older builds than protocol 5
+  still only log it.
+- Possibly someday, if mismatched versions turn out to be common: each
+  machine lists its optional features (window streaming, drag and drop,
+  program pointers) in its hello, features only one side has are switched
+  off instead of refusing the connection, and unknown messages are skipped
+  instead of dropping it. Input and the clipboard stay the core that must
+  match. Not now: every feature would need a tested path for each
+  combination, and machines updating from the same APT repository match.
 - Each machine's keyboard follows that machine's own pointer. The desktop's
   keyboard types on the laptop only after the desktop's mouse crossed there;
   moving the pointer onto the laptop with the laptop's touchpad does not bring
@@ -370,6 +380,13 @@ Review log:
   badge; the list of files or the text is read from the program in the
   background as the drag starts. The same card shows on another machine
   when the drag crosses. Unit tests only, no headless run in the container.
+- 2026-10-30: Finding things again. `tileception pair` offers to show a
+  dismissed pairing card again (`handoff retry`) and to bring back windows
+  waiting on a machine that went away (`handoff reclaim [machine]`, now
+  per machine); without a terminal it prints those commands. The
+  "windows are still on <machine>" notification stays until answered,
+  with Bring back and Keep there, and closes itself once they are back:
+  Tileception's own notifications can now have buttons running commands.
 
 ### Design ideas from LunariaOS
 

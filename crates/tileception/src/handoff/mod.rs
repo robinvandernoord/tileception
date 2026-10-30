@@ -145,6 +145,8 @@ pub struct Handoff {
     locked: bool,
     /// Windows shown on other machines, and theirs shown here.
     pub(crate) windows: windows::Windows,
+    /// Machines that know the passphrase but run another protocol, by name.
+    incompatible: BTreeMap<String, u32>,
     /// Drag and drop across machines.
     pub(crate) drags: drag::Drags,
     /// The last absolute pointer position, to turn absolute motion into steps.
@@ -219,8 +221,8 @@ pub enum HandoffCommand {
     Resume,
     /// Brings this machine's input back from another machine.
     Home,
-    /// Brings this machine's windows back from other machines.
-    Reclaim,
+    /// Brings this machine's windows back from other machines, or from one.
+    Reclaim(Option<String>),
 }
 
 pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
@@ -240,7 +242,9 @@ pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
         ["retry"] => Ok(HandoffCommand::Retry),
         ["resume"] => Ok(HandoffCommand::Resume),
         ["home"] => Ok(HandoffCommand::Home),
-        ["reclaim"] => Ok(HandoffCommand::Reclaim),
+        ["reclaim"] => Ok(HandoffCommand::Reclaim(None)),
+        // A machine's name may have spaces.
+        ["reclaim", name @ ..] => Ok(HandoffCommand::Reclaim(Some(name.join(" ")))),
         _ => Err("handoff takes status, edge, dismiss, retry, resume, home or reclaim".into()),
     }
 }
@@ -366,7 +370,7 @@ impl Tileception {
             self.windows_peer_gone(peer);
         }
         // Including windows still waiting for a machine that went away.
-        self.reclaim_windows();
+        self.reclaim_windows(None);
         let waiting: Vec<PeerId> = self.handoff.windows.remote.values().map(|remote| remote.peer).collect();
         for peer in waiting {
             self.windows_peer_gone(peer);
@@ -388,7 +392,20 @@ impl Tileception {
 
     fn handoff_event(&mut self, event: Event) {
         match event {
+            Event::Incompatible { address, name, protocol } => {
+                if self.handoff.incompatible.insert(name.clone(), protocol) != Some(protocol) {
+                    let summary = format!("{name} runs a different Tileception");
+                    let body = format!(
+                        "It speaks handoff protocol {protocol} and this computer {}, so they cannot share. \
+                         Update both to the same version.",
+                        tileception_handoff::PROTOCOL
+                    );
+                    tracing::warn!("handoff: {name} at {address} speaks protocol {protocol}");
+                    self.notify_locally(&summary, &body, Urgency::Normal);
+                }
+            }
             Event::Connected { peer, name, .. } => {
+                self.handoff.incompatible.remove(&name);
                 // A new connection asks again, unless this user said no.
                 let entry =
                     self.handoff.peers.entry(peer).or_insert(Peer { name: name.clone(), link: Link::Dismissed });
@@ -625,9 +642,12 @@ impl Tileception {
                 }
                 self.stop_forwarding(forward::Back::Home);
             }
-            HandoffCommand::Reclaim => {
-                if self.reclaim_windows() == 0 {
-                    return Err("no window of this machine is on another".into());
+            HandoffCommand::Reclaim(machine) => {
+                if self.reclaim_windows(machine.as_deref()) == 0 {
+                    return Err(match machine {
+                        Some(machine) => format!("no window of this machine is on {machine}"),
+                        None => "no window of this machine is on another".into(),
+                    });
                 }
             }
         }
@@ -662,6 +682,12 @@ impl Tileception {
             };
             let input = if self.handoff.forwarding == Some(*peer) { ", has this machine's input" } else { "" };
             status.push_str(&format!("{} {peer:016x} {state}{input}\n", entry.name));
+        }
+        for (name, protocol) in &self.handoff.incompatible {
+            status.push_str(&format!(
+                "{name} runs a different Tileception (protocol {protocol}, this one {})\n",
+                tileception_handoff::PROTOCOL
+            ));
         }
         for line in self.windows_status() {
             status.push_str(&line);
@@ -721,6 +747,10 @@ mod tests {
         assert!(parse(&["edge", "eDP-1", "middle"]).is_err());
         assert_eq!(parse(&["dismiss", "laptop"]), Ok(HandoffCommand::Dismiss(Some("laptop".into()))));
         assert_eq!(parse(&["home"]), Ok(HandoffCommand::Home));
-        assert_eq!(parse(&["reclaim"]), Ok(HandoffCommand::Reclaim));
+        assert_eq!(parse(&["reclaim"]), Ok(HandoffCommand::Reclaim(None)));
+        assert_eq!(
+            parse(&["reclaim", "Robin's", "laptop"]),
+            Ok(HandoffCommand::Reclaim(Some("Robin's laptop".into())))
+        );
     }
 }

@@ -28,16 +28,20 @@ const MAGIC: &[u8] = b"tileception-handoff/1";
 #[derive(Debug)]
 pub enum Error {
     Socket(io::Error),
-    /// The other side is not Tileception, speaks another version, or knows a
-    /// different passphrase. Deliberately not told apart.
+    /// The other side is not Tileception or knows a different passphrase.
+    /// Deliberately not told apart.
     Refused,
+    /// The other side knows the passphrase but runs a version that speaks
+    /// another protocol. Only someone who knows the passphrase learns this.
+    Incompatible,
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Socket(error) => write!(formatter, "{error}"),
-            Error::Refused => formatter.write_str("handshake refused (different passphrase or version)"),
+            Error::Refused => formatter.write_str("handshake refused (different passphrase)"),
+            Error::Incompatible => formatter.write_str("a different Tileception version"),
         }
     }
 }

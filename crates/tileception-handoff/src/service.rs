@@ -70,9 +70,16 @@ pub enum Event {
     Disconnected {
         peer: PeerId,
     },
-    /// A handshake failed: a different passphrase or version, or a stranger.
+    /// A handshake failed: a different passphrase, or a stranger.
     Refused {
         address: SocketAddr,
+    },
+    /// A machine with the same passphrase runs a version that speaks
+    /// another protocol, so the two cannot share.
+    Incompatible {
+        address: SocketAddr,
+        name: String,
+        protocol: u32,
     },
 }
 
@@ -343,7 +350,10 @@ impl Shared {
     }
 
     fn failed(&self, address: SocketAddr, error: &secure::Error) {
-        if matches!(error, secure::Error::Refused) {
+        if matches!(error, secure::Error::Incompatible) {
+            // Not a guess at the passphrase: it was right.
+            tracing::warn!("handoff: {address} runs {error}");
+        } else if matches!(error, secure::Error::Refused) {
             lock(&self.failures).push_back(Instant::now());
             tracing::warn!("handoff: {address} {error}");
             (self.notify)(Event::Refused { address });
@@ -425,7 +435,8 @@ impl Shared {
             return Err(secure::Error::Refused);
         };
         if protocol != PROTOCOL {
-            return Err(secure::Error::Refused);
+            (self.notify)(Event::Incompatible { address, name, protocol });
+            return Err(secure::Error::Incompatible);
         }
         if peer == self.machine {
             return Ok(peer);

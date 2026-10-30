@@ -145,7 +145,7 @@ Shell:
   handoff retry             ask again about machines declined before
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
-  handoff reclaim           bring this machine's windows back from others
+  handoff reclaim [machine] bring this machine's windows back from others
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
