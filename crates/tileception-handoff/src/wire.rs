@@ -4,10 +4,13 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
+
+/// The most compressed tile bytes one picture message carries.
+pub const PICTURE_BUDGET: usize = 60 * 1024;
 
 /// Which selection a clipboard message is about.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +30,33 @@ pub struct Scroll {
     pub vertical: Option<f64>,
     pub horizontal_v120: Option<f64>,
     pub vertical_v120: Option<f64>,
+}
+
+/// A rectangle of a window's picture, its RGBA rows compressed with LZ4
+/// (the uncompressed size first).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Tile {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// Part of a new picture of a window shown on another machine: only what
+/// changed since the last one, spread over messages that fit the wire.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Picture {
+    pub window: u64,
+    pub serial: u64,
+    /// The whole picture, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Pixels per logical pixel on the owner.
+    pub scale: f64,
+    pub tiles: Vec<Tile>,
+    /// The picture is complete with this part.
+    pub last: bool,
 }
 
 /// Everything the compositor sends and receives. Pointer positions crossing
@@ -88,6 +118,84 @@ pub enum Message {
     Paused,
     /// Sharing goes on again after a pause.
     Resumed,
+    /// One of the sender's windows comes here, dragged by the pointer that
+    /// follows: held at `grab` (fractions of its size) with `button` down.
+    /// Windows are known by the number their owner gives them.
+    WindowShown {
+        window: u64,
+        title: String,
+        app_id: String,
+        width: u32,
+        height: u32,
+        grab: (f64, f64),
+        button: u32,
+    },
+    /// The window's title or app changed.
+    WindowInfo {
+        window: u64,
+        title: String,
+        app_id: String,
+    },
+    WindowPicture(Picture),
+    /// The window closed, or its owner took it back.
+    WindowGone {
+        window: u64,
+    },
+    /// The window's program asked to be moved (its title bar was dragged):
+    /// the pointer holding it there drags it.
+    WindowMove {
+        window: u64,
+    },
+    /// A picture arrived; the owner may send the next.
+    WindowAck {
+        window: u64,
+        serial: u64,
+    },
+    /// The size the window's place has, in logical pixels.
+    WindowSize {
+        window: u64,
+        width: u32,
+        height: u32,
+    },
+    /// The pointer over the window, in logical pixels from its top left.
+    WindowPointer {
+        window: u64,
+        across: f64,
+        down: f64,
+    },
+    WindowButton {
+        window: u64,
+        button: u32,
+        pressed: bool,
+    },
+    WindowScroll {
+        window: u64,
+        scroll: Scroll,
+    },
+    /// The pointer left the window.
+    WindowLeave {
+        window: u64,
+    },
+    /// Whether the window has the keyboard where it is shown.
+    WindowFocus {
+        window: u64,
+        focused: bool,
+    },
+    WindowKey {
+        window: u64,
+        key: u32,
+        pressed: bool,
+    },
+    /// Someone closed the window where it is shown.
+    WindowClose {
+        window: u64,
+    },
+    /// The window is dragged back to its owner, held as in `WindowShown`.
+    WindowBack {
+        window: u64,
+        grab: (f64, f64),
+        button: u32,
+    },
 }
 
 /// Messages of the connection itself, around the compositor's.
@@ -127,6 +235,22 @@ mod tests {
             let bytes = encode(&frame).expect("encodes");
             assert_eq!(decode(&bytes).expect("decodes"), frame);
         }
+    }
+
+    #[test]
+    fn a_full_picture_part_fits_one_noise_message() {
+        let tile = |pixels| Tile { left: u32::MAX, top: u32::MAX, width: u32::MAX, height: u32::MAX, pixels };
+        let picture = Picture {
+            window: u64::MAX,
+            serial: u64::MAX,
+            width: u32::MAX,
+            height: u32::MAX,
+            scale: 1.5,
+            tiles: vec![tile(vec![0xff; PICTURE_BUDGET / 2]), tile(vec![0xff; PICTURE_BUDGET / 2])],
+            last: true,
+        };
+        let bytes = encode(&Frame::App(Message::WindowPicture(picture))).expect("encodes");
+        assert!(bytes.len() + crate::secure::TAG <= crate::secure::MAX_MESSAGE);
     }
 
     #[test]

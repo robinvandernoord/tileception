@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 getrandom = "0.3"
+lz4_flex = "0.11"
 mdns-sd = "0.21"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }

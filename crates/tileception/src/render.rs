@@ -124,8 +124,7 @@ impl Tileception {
             if !placement.rect.intersects(&screen) || Some(placement.window) == dragged {
                 continue;
             }
-            let Some(window) = self.windows.get(&placement.window) else { continue };
-            let geo = window.geometry();
+            let Some(geo) = self.window_geometry(placement.window) else { continue };
             if geo.size.w <= 0 || geo.size.h <= 0 {
                 continue;
             }
@@ -322,6 +321,15 @@ impl Tileception {
         let above_windows = elements.len();
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
+            if self.handoff.windows.is_remote(drawn.window_id) {
+                // Another machine's window, drawn from its pictures.
+                let focused = Some(drawn.window_id) == focus;
+                let floating = drawn.role == WindowRole::Floating;
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.frame(focused, !floating));
+                let shown = (drawn.content.w / drawn.scale.0, drawn.content.h / drawn.scale.1);
+                elements.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
+                continue;
+            }
             let Some(window) = self.windows.get(&drawn.window_id) else { continue };
             let focused = Some(drawn.window_id) == focus && self.windows.len() > 1;
             let floating = drawn.role == WindowRole::Floating;
@@ -430,7 +438,12 @@ impl Tileception {
             let tab = Rect::new(inner.x + index as f64 * (tab_w + gap), inner.y, tab_w, inner.h);
             let active = index == strip.selected;
             let focused = active && Some(*win) == focus;
-            let title = self.windows.get(win).map(crate::state::window_title).unwrap_or_default();
+            let title = self
+                .windows
+                .get(win)
+                .map(crate::state::window_title)
+                .or_else(|| self.handoff.windows.remote_title(*win))
+                .unwrap_or_default();
             let text_colour = if active { theme.text } else { theme.muted };
             // App mark: a small rounded square, accent on the shown tab.
             let mark = 16.0;
@@ -454,8 +467,13 @@ impl Tileception {
             } else {
                 Shape::filled(theme.muted.alpha(0.5), 2.0)
             };
-            let icon =
-                self.windows.get(win).and_then(|window| self.launcher.app_icon(&crate::state::app_id(window), 16));
+            let app = self
+                .windows
+                .get(win)
+                .map(crate::state::app_id)
+                .or_else(|| self.handoff.windows.remote_app(*win))
+                .unwrap_or_default();
+            let icon = self.launcher.app_icon(&app, 16);
             if let Some(icon) = icon {
                 push_image(&mut out, renderer, &icon, (mark_rect.x, mark_rect.y), self.scale);
             } else {
@@ -541,6 +559,10 @@ impl Tileception {
         content: &Rect,
         alpha: f32,
     ) -> Vec<OutputElement> {
+        if let Some(geo) = self.window_geometry(window_id).filter(|_| self.handoff.windows.is_remote(window_id)) {
+            let shown = (f64::from(geo.size.w), f64::from(geo.size.h));
+            return self.remote_elements(renderer, window_id, content, shown, alpha);
+        }
         let Some(window) = self.windows.get(&window_id) else { return Vec::new() };
         let geo = window.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {

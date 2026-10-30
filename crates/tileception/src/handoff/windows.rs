@@ -1,0 +1,853 @@
+//! Windows on another machine.
+//!
+//! A window dragged past an edge shared with another machine goes with the
+//! pointer. Its program keeps running here, on its owner, which draws it off
+//! screen and sends pictures of what changed (see `stream.rs`). The other
+//! machine shows those in a tile of its own and sends back pointer and
+//! keyboard input and the size its tile has. Dragging the window back, the
+//! owner reclaiming it, or losing the connection brings it home; closing it
+//! there closes it.
+
+use std::collections::HashMap;
+
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        input::{AxisSource, ButtonState, KeyState},
+        renderer::{
+            element::{
+                Kind,
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+            },
+            gles::GlesRenderer,
+        },
+    },
+    desktop::WindowSurfaceType,
+    input::{
+        keyboard::{FilterResult, Keycode},
+        pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
+    },
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size, Transform},
+};
+use tileception_core::{Placement, Rect, WindowId};
+use tileception_handoff::{Canvas, Message, PeerId, Picture, Scroll, Source};
+
+use super::stream::Stream;
+use crate::{
+    Tileception,
+    focus::KeyboardFocus,
+    input::AxisInput,
+    render::{OutputElement, physical, physical_point, solid},
+    state::{app_id, window_title},
+};
+
+/// evdev key codes are xkb's less eight.
+const XKB_OFFSET: u32 = 8;
+/// The left mouse button's evdev code.
+const BTN_LEFT: u32 = 0x110;
+
+#[derive(Default)]
+pub(crate) struct Windows {
+    /// This machine's windows shown on another.
+    pub(crate) away: HashMap<WindowId, Away>,
+    /// Other machines' windows shown here.
+    pub(crate) remote: HashMap<WindowId, Remote>,
+    /// A window that came with a drag, picked up once the pointer arrives.
+    arriving: Option<Arriving>,
+    /// The other machine's window under the pointer here.
+    hovered: Option<WindowId>,
+    /// The other machine's window a button went down on, and how many are
+    /// down: it gets the pointer until the last comes up.
+    pressed: Option<(WindowId, u32)>,
+    /// The other machine's window that has the keyboard here.
+    remote_keyboard: Option<WindowId>,
+    /// This machine's window that has the keyboard where it is shown.
+    away_keyboard: Option<WindowId>,
+    /// This machine's window that another machine typed into while this
+    /// machine's own input stayed here. It keeps the keyboard until this
+    /// machine's own keyboard or pointer is used.
+    typing: Option<WindowId>,
+}
+
+pub(crate) struct Away {
+    pub(crate) peer: PeerId,
+    pub(crate) stream: Stream,
+    title: String,
+    app_id: String,
+}
+
+pub(crate) struct Remote {
+    pub(crate) peer: PeerId,
+    /// The owner's number for it.
+    window: u64,
+    pub(crate) title: String,
+    app_id: String,
+    canvas: Canvas,
+    /// Pixels per logical pixel on the owner.
+    scale: f64,
+    buffer: Option<MemoryRenderBuffer>,
+    /// The logical size it had when it came, until a picture says otherwise.
+    shown: (u32, u32),
+    /// The size last asked of its owner.
+    asked: Option<(u32, u32)>,
+}
+
+impl Remote {
+    /// Its size in logical pixels.
+    fn size(&self) -> Size<i32, Logical> {
+        if self.canvas.width == 0 || self.scale <= 0.0 {
+            return (self.shown.0 as i32, self.shown.1 as i32).into();
+        }
+        (
+            (f64::from(self.canvas.width) / self.scale).round() as i32,
+            (f64::from(self.canvas.height) / self.scale).round() as i32,
+        )
+            .into()
+    }
+}
+
+/// A window that came with a drag from `peer`, held at `grab` (fractions of
+/// its size) with `button` down there.
+#[derive(Debug, Clone, Copy)]
+struct Arriving {
+    peer: PeerId,
+    window: WindowId,
+    grab: (f64, f64),
+    button: u32,
+}
+
+impl Windows {
+    fn remote_id(&self, peer: PeerId, window: u64) -> Option<WindowId> {
+        self.remote.iter().find(|(_, remote)| remote.peer == peer && remote.window == window).map(|(local, _)| *local)
+    }
+
+    fn away_id(&self, peer: PeerId, window: u64) -> Option<WindowId> {
+        let local = WindowId(window);
+        self.away.get(&local).is_some_and(|away| away.peer == peer).then_some(local)
+    }
+
+    /// Whether a window is another machine's, shown here.
+    pub(crate) fn is_remote(&self, window: WindowId) -> bool {
+        self.remote.contains_key(&window)
+    }
+
+    pub(crate) fn remote_title(&self, window: WindowId) -> Option<String> {
+        self.remote.get(&window).map(|remote| remote.title.clone())
+    }
+
+    pub(crate) fn remote_app(&self, window: WindowId) -> Option<String> {
+        self.remote.get(&window).map(|remote| remote.app_id.clone())
+    }
+}
+
+impl Tileception {
+    pub(crate) fn window_message(&mut self, peer: PeerId, message: Message) {
+        match message {
+            // As the machine a window is shown on.
+            Message::WindowShown { window, title, app_id, width, height, grab, button } => {
+                self.window_shown(peer, window, (title, app_id), (width, height), grab, button);
+            }
+            Message::WindowInfo { window, title, app_id } => {
+                if let Some(remote) = self
+                    .handoff
+                    .windows
+                    .remote_id(peer, window)
+                    .and_then(|local| self.handoff.windows.remote.get_mut(&local))
+                {
+                    remote.title = title;
+                    remote.app_id = app_id;
+                    self.schedule_render();
+                }
+            }
+            Message::WindowPicture(picture) => self.window_picture(peer, &picture),
+            Message::WindowGone { window } => {
+                if let Some(local) = self.handoff.windows.remote_id(peer, window) {
+                    self.drop_remote(local);
+                }
+            }
+            Message::WindowMove { window } => {
+                if let Some(local) = self.handoff.windows.remote_id(peer, window) {
+                    self.move_remote(local);
+                }
+            }
+            // As the owner.
+            Message::WindowAck { window, serial } => {
+                if let Some(away) = self
+                    .handoff
+                    .windows
+                    .away_id(peer, window)
+                    .and_then(|local| self.handoff.windows.away.get_mut(&local))
+                {
+                    away.stream.acked(serial);
+                    self.schedule_render();
+                }
+            }
+            Message::WindowBack { window, grab, button } => {
+                if let Some(local) = self.handoff.windows.away_id(peer, window) {
+                    let arriving = (button != 0).then_some(Arriving { peer, window: local, grab, button });
+                    self.take_back(local, arriving);
+                }
+            }
+            Message::WindowClose { window } => {
+                if let Some(local) = self.handoff.windows.away_id(peer, window) {
+                    self.close_window(local);
+                }
+            }
+            message => {
+                let Some(local) = self.away_input(peer, &message) else { return };
+                match message {
+                    Message::WindowSize { width, height, .. } => self.resize_away(local, width, height),
+                    Message::WindowPointer { across, down, .. } => self.away_pointer(local, across, down),
+                    Message::WindowButton { button, pressed, .. } => self.away_button(button, pressed),
+                    Message::WindowScroll { scroll, .. } => self.away_scroll(scroll),
+                    Message::WindowLeave { .. } => self.away_leave(),
+                    Message::WindowFocus { focused, .. } => self.away_focus(local, focused),
+                    Message::WindowKey { key, pressed, .. } => self.away_key(local, key, pressed),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The window input from another machine is for, when it may be used.
+    fn away_input(&self, peer: PeerId, message: &Message) -> Option<WindowId> {
+        let window = match message {
+            Message::WindowSize { window, .. }
+            | Message::WindowPointer { window, .. }
+            | Message::WindowButton { window, .. }
+            | Message::WindowScroll { window, .. }
+            | Message::WindowLeave { window }
+            | Message::WindowFocus { window, .. }
+            | Message::WindowKey { window, .. } => *window,
+            _ => return None,
+        };
+        let local = self.handoff.windows.away_id(peer, window)?;
+        (self.handoff.active_edge(peer).is_some() && !self.is_locked() && self.windows.contains_key(&local))
+            .then_some(local)
+    }
+
+    /// Sends a message about another machine's window to its owner.
+    fn send_to_owner(&self, local: WindowId, message: impl FnOnce(u64) -> Message) -> bool {
+        let Some(remote) = self.handoff.windows.remote.get(&local) else { return false };
+        self.handoff.active_edge(remote.peer).is_some() && self.handoff.send(remote.peer, message(remote.window))
+    }
+
+    /// The window being dragged past an edge goes to the machine there, or
+    /// home if it came from there. False when it may not go.
+    pub(crate) fn carry_window(&mut self, peer: PeerId, source: Source) -> bool {
+        let Some(drag) = self.move_drag else { return true };
+        let window = drag.window;
+        if let Some(remote) = self.handoff.windows.remote.get(&window) {
+            // Another machine's window goes nowhere but home.
+            if remote.peer != peer {
+                return false;
+            }
+        } else if !self.windows.contains_key(&window) {
+            return false;
+        }
+        self.move_drag = None;
+        // The drag's button goes over with it: let go of it here.
+        let buttons = self.handoff.held.release_buttons(source);
+        let button = buttons.first().copied().unwrap_or(0);
+        self.release_buttons_here(&buttons);
+        if let Some(remote) = self.handoff.windows.remote.get(&window) {
+            let message = Message::WindowBack { window: remote.window, grab: drag.grab, button };
+            self.handoff.send(peer, message);
+            self.drop_remote(window);
+            return true;
+        }
+        self.send_window(peer, window, drag.grab, button)
+    }
+
+    /// Tells programs here that buttons went up.
+    fn release_buttons_here(&mut self, buttons: &[u32]) {
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let time = self.input_time();
+        for button in buttons {
+            let event = ButtonEvent {
+                button: *button,
+                state: ButtonState::Released,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            };
+            pointer.button(self, &event);
+        }
+        pointer.frame(self);
+    }
+
+    /// Shows one of this machine's windows on another.
+    fn send_window(&mut self, peer: PeerId, window: WindowId, grab: (f64, f64), button: u32) -> bool {
+        if self.fullscreen == Some(window) {
+            self.set_fullscreen(window, false);
+        }
+        let Some(placed) = self.windows.get(&window).cloned() else { return false };
+        let Some(messenger) = self.handoff.messenger() else { return false };
+        let geometry = placed.geometry();
+        let (title, app) = (window_title(&placed), app_id(&placed));
+        let message = Message::WindowShown {
+            window: window.0,
+            title: title.clone(),
+            app_id: app.clone(),
+            width: geometry.size.w.max(1) as u32,
+            height: geometry.size.h.max(1) as u32,
+            grab,
+            button,
+        };
+        if !self.handoff.send(peer, message) {
+            return false;
+        }
+        let Some(stream) = Stream::start(peer, window.0, messenger) else {
+            self.handoff.send(peer, Message::WindowGone { window: window.0 });
+            return false;
+        };
+        tracing::info!(window = window.0, "handoff: window shown on {peer:016x}");
+        self.handoff.windows.away.insert(window, Away { peer, stream, title, app_id: app });
+        self.selection.windows.remove(&window);
+        let now = self.now();
+        self.world.remove_window(window, now);
+        placed.set_activated(false);
+        self.apply_layout();
+        self.persist_layout();
+        true
+    }
+
+    /// Brings one of this machine's windows back from another machine.
+    fn take_back(&mut self, window: WindowId, arriving: Option<Arriving>) {
+        if self.handoff.windows.away.remove(&window).is_none() {
+            return;
+        }
+        let windows = &mut self.handoff.windows;
+        if windows.away_keyboard == Some(window) {
+            windows.away_keyboard = None;
+        }
+        if windows.typing == Some(window) {
+            windows.typing = None;
+        }
+        if !self.windows.contains_key(&window) {
+            return;
+        }
+        tracing::info!(window = window.0, "handoff: window back");
+        let now = self.now();
+        self.world.add_window(window, Placement::Dock, now);
+        self.world.focus_window(window, now);
+        self.handoff.windows.arriving = arriving;
+        self.apply_layout();
+        self.force_keyboard_focus_sync();
+        self.persist_layout();
+        self.schedule_render();
+    }
+
+    /// `handoff reclaim`: every window shown elsewhere comes home.
+    pub(crate) fn reclaim_windows(&mut self) -> usize {
+        let away: Vec<(WindowId, PeerId)> =
+            self.handoff.windows.away.iter().map(|(window, away)| (*window, away.peer)).collect();
+        for (window, peer) in &away {
+            self.handoff.send(*peer, Message::WindowGone { window: window.0 });
+            self.take_back(*window, None);
+        }
+        away.len()
+    }
+
+    /// A machine went away or stopped sharing: its windows here go, and this
+    /// machine's windows there come home.
+    pub(crate) fn windows_peer_gone(&mut self, peer: PeerId) {
+        let away: Vec<WindowId> =
+            self.handoff.windows.away.iter().filter(|(_, away)| away.peer == peer).map(|(window, _)| *window).collect();
+        for window in away {
+            self.take_back(window, None);
+        }
+        let remote: Vec<WindowId> = self
+            .handoff
+            .windows
+            .remote
+            .iter()
+            .filter(|(_, remote)| remote.peer == peer)
+            .map(|(window, _)| *window)
+            .collect();
+        for window in remote {
+            self.drop_remote(window);
+        }
+        if self.handoff.windows.arriving.is_some_and(|arriving| arriving.peer == peer) {
+            self.handoff.windows.arriving = None;
+        }
+    }
+
+    /// One of this machine's windows closed.
+    pub(crate) fn window_forgotten(&mut self, window: WindowId) {
+        if let Some(away) = self.handoff.windows.away.remove(&window) {
+            self.handoff.send(away.peer, Message::WindowGone { window: window.0 });
+        }
+        let windows = &mut self.handoff.windows;
+        if windows.away_keyboard == Some(window) {
+            windows.away_keyboard = None;
+        }
+        if windows.typing == Some(window) {
+            windows.typing = None;
+        }
+    }
+
+    /// Another machine's window comes here, with the pointer dragging it.
+    fn window_shown(
+        &mut self,
+        peer: PeerId,
+        window: u64,
+        (title, app_id): (String, String),
+        shown: (u32, u32),
+        grab: (f64, f64),
+        button: u32,
+    ) {
+        if self.handoff.active_edge(peer).is_none() || self.is_locked() {
+            // Not now: it goes straight back.
+            self.handoff.send(peer, Message::WindowBack { window, grab, button: 0 });
+            return;
+        }
+        if let Some(stale) = self.handoff.windows.remote_id(peer, window) {
+            self.drop_remote(stale);
+        }
+        let local = self.next_id();
+        tracing::info!(window = local.0, app = app_id, "handoff: window from {peer:016x}");
+        let remote = Remote {
+            peer,
+            window,
+            title,
+            app_id,
+            canvas: Canvas::default(),
+            scale: 1.0,
+            buffer: None,
+            shown: (shown.0.clamp(1, 16384), shown.1.clamp(1, 16384)),
+            asked: None,
+        };
+        self.handoff.windows.remote.insert(local, remote);
+        let now = self.now();
+        self.world.add_window(local, Placement::Dock, now);
+        self.world.focus_window(local, now);
+        self.handoff.windows.arriving = (button != 0).then_some(Arriving { peer, window: local, grab, button });
+        self.apply_layout();
+    }
+
+    /// Another machine's window asked to be moved: dragged here like a
+    /// window here whose title bar is dragged. Its owner's program saw the
+    /// press; it gets the release now, as the drag takes over.
+    fn move_remote(&mut self, window: WindowId) {
+        let Some((pressed, _)) = self.handoff.windows.pressed else { return };
+        if pressed != window || self.move_drag.is_some() || self.world.in_overview() {
+            return;
+        }
+        self.handoff.windows.pressed = None;
+        self.send_to_owner(window, |owned| Message::WindowButton { window: owned, button: BTN_LEFT, pressed: false });
+        let now = self.now();
+        self.world.focus_window(window, now);
+        self.apply_layout();
+        self.start_move_drag(window, self.pointer);
+    }
+
+    /// A program here asked to move its window, which is shown on another
+    /// machine: that machine drags it.
+    pub(crate) fn move_away(&mut self, window: WindowId) -> bool {
+        let Some(away) = self.handoff.windows.away.get(&window) else { return false };
+        self.handoff.send(away.peer, Message::WindowMove { window: window.0 });
+        true
+    }
+
+    /// The pointer arrived from `peer` (Enter, or the other machine handing
+    /// this one's own pointer back): a window that came with it is dragged
+    /// on. `source` is whoever holds the drag's button now.
+    pub(crate) fn pick_up_arriving(&mut self, peer: PeerId, source: Source) {
+        let Some(arriving) = self.handoff.windows.arriving.take() else { return };
+        if arriving.peer != peer || !self.world.contains_window(arriving.window) || self.move_drag.is_some() {
+            return;
+        }
+        self.handoff.held.button(source, arriving.button, true);
+        self.start_move_drag(arriving.window, self.pointer);
+        if let Some(drag) = self.move_drag.as_mut() {
+            drag.grab = arriving.grab;
+        }
+    }
+
+    fn window_picture(&mut self, peer: PeerId, picture: &Picture) {
+        let Some(local) = self.handoff.windows.remote_id(peer, picture.window) else { return };
+        let Some(remote) = self.handoff.windows.remote.get_mut(&local) else { return };
+        if !remote.canvas.paint(picture) {
+            tracing::warn!("handoff: a picture of window {local:?} does not fit; dropped");
+            return;
+        }
+        if !picture.last {
+            return;
+        }
+        let canvas = &remote.canvas;
+        let size = (canvas.width as i32, canvas.height as i32);
+        remote.buffer =
+            Some(MemoryRenderBuffer::from_slice(&canvas.pixels, Fourcc::Abgr8888, size, 1, Transform::Normal, None));
+        if picture.scale.is_finite() && picture.scale > 0.0 {
+            remote.scale = picture.scale;
+        }
+        self.handoff.send(peer, Message::WindowAck { window: picture.window, serial: picture.serial });
+        self.schedule_render();
+    }
+
+    /// Another machine's window stops being shown here.
+    fn drop_remote(&mut self, window: WindowId) {
+        if let Some(output) = self.output_for_window(window)
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| state.drop_remote(window));
+            return;
+        }
+        if self.handoff.windows.remote.remove(&window).is_none() {
+            return;
+        }
+        let windows = &mut self.handoff.windows;
+        if windows.hovered == Some(window) {
+            windows.hovered = None;
+        }
+        if windows.pressed.is_some_and(|(pressed, _)| pressed == window) {
+            windows.pressed = None;
+        }
+        if windows.remote_keyboard == Some(window) {
+            windows.remote_keyboard = None;
+        }
+        if windows.arriving.is_some_and(|arriving| arriving.window == window) {
+            windows.arriving = None;
+        }
+        if self.move_drag.is_some_and(|drag| drag.window == window) {
+            self.move_drag = None;
+        }
+        if self.resize_drag.is_some_and(|drag| drag.window == window) {
+            self.resize_drag = None;
+        }
+        self.selection.windows.remove(&window);
+        let now = self.now();
+        self.world.remove_window(window, now);
+        if self.keyboard_focus == Some(window) {
+            self.keyboard_focus = None;
+        }
+        self.apply_layout();
+        self.schedule_render();
+    }
+
+    /// The size and placement of a window, here or another machine's.
+    pub(crate) fn window_geometry(&self, window: WindowId) -> Option<Rectangle<i32, Logical>> {
+        if let Some(placed) = self.windows.get(&window) {
+            return Some(placed.geometry());
+        }
+        self.handoff.windows.remote.get(&window).map(|remote| Rectangle::new((0, 0).into(), remote.size()))
+    }
+
+    /// Asks the owner of another machine's window to fit the place it has.
+    pub(crate) fn ask_remote_size(&mut self, window: WindowId, size: Size<i32, Logical>) {
+        let linked = self
+            .handoff
+            .windows
+            .remote
+            .get(&window)
+            .is_some_and(|remote| self.handoff.active_edge(remote.peer).is_some());
+        let Some(remote) = self.handoff.windows.remote.get_mut(&window) else { return };
+        let wanted = (size.w.max(1) as u32, size.h.max(1) as u32);
+        if remote.asked == Some(wanted) || !linked {
+            return;
+        }
+        remote.asked = Some(wanted);
+        let (peer, owned) = (remote.peer, remote.window);
+        self.handoff.send(peer, Message::WindowSize { window: owned, width: wanted.0, height: wanted.1 });
+    }
+
+    /// Closing another machine's window asks its owner to close it.
+    pub(crate) fn close_remote(&self, window: WindowId) -> bool {
+        let Some(remote) = self.handoff.windows.remote.get(&window) else { return false };
+        self.handoff.send(remote.peer, Message::WindowClose { window: remote.window });
+        true
+    }
+
+    /// Another machine's window as drawn in its place: its picture, cut to
+    /// `content` when it is too big for it, or a plain tile before the first
+    /// picture or while sharing with its owner is paused.
+    pub(crate) fn remote_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        window: WindowId,
+        content: &Rect,
+        shown: (f64, f64),
+        alpha: f32,
+    ) -> Vec<OutputElement> {
+        let Some(remote) = self.handoff.windows.remote.get(&window) else { return Vec::new() };
+        let plain = || vec![solid(content, self.theme.surface.alpha(alpha).0, self.scale)];
+        let paused = self.handoff.active_edge(remote.peer).is_none();
+        let Some(buffer) = remote.buffer.as_ref().filter(|_| !paused) else { return plain() };
+        let area = physical(content, self.scale);
+        let location = physical_point((content.x, content.y), self.scale).to_f64();
+        // The part of the picture shown: all of it unless cut off.
+        let source =
+            Rectangle::<f64, Logical>::new((0.0, 0.0).into(), (shown.0 * remote.scale, shown.1 * remote.scale).into());
+        let size: Size<i32, Logical> = (area.size.w, area.size.h).into();
+        let alpha = (alpha < 1.0).then_some(alpha);
+        match MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            buffer,
+            alpha,
+            Some(source),
+            Some(size),
+            Kind::Unspecified,
+        ) {
+            Ok(element) => vec![OutputElement::Memory(element)],
+            Err(_) => plain(),
+        }
+    }
+
+    /// The other machine's window under a point, if it is on top there.
+    fn remote_under(&self, pos: Point<f64, Logical>) -> Option<WindowId> {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        if self.handoff.windows.remote.is_empty()
+            || self.layer_surface_under(pos, &[Layer::Overlay, Layer::Top]).is_some()
+        {
+            return None;
+        }
+        let point = tileception_core::Point::new(pos.x, pos.y);
+        let shown = self.drawn_windows(self.now()).into_iter().find(|drawn| drawn.content.contains(point))?;
+        self.handoff.windows.is_remote(shown.window_id).then_some(shown.window_id)
+    }
+
+    /// A point in another machine's window, in its logical pixels.
+    fn remote_point(&self, window: WindowId, pos: Point<f64, Logical>) -> Option<(f64, f64)> {
+        let drawn = self.drawn_windows(self.now()).into_iter().find(|drawn| drawn.window_id == window)?;
+        let (scale_x, scale_y) = drawn.scale;
+        (scale_x > 0.0 && scale_y > 0.0)
+            .then(|| ((pos.x - drawn.content.x) / scale_x, (pos.y - drawn.content.y) / scale_y))
+    }
+
+    /// Pointer motion here over another machine's window goes to its owner.
+    /// True when it did.
+    pub(crate) fn pointer_to_owner(&mut self, pos: Point<f64, Logical>, time: u32) -> bool {
+        let target = self.handoff.windows.pressed.map(|(window, _)| window).or_else(|| self.remote_under(pos));
+        if self.handoff.windows.hovered != target {
+            if let Some(left) = self.handoff.windows.hovered.take() {
+                self.send_to_owner(left, |window| Message::WindowLeave { window });
+            }
+            self.handoff.windows.hovered = target;
+        }
+        let Some(window) = target else { return false };
+        if let Some((across, down)) = self.remote_point(window, pos) {
+            self.send_to_owner(window, |owned| Message::WindowPointer { window: owned, across, down });
+        }
+        // Programs here lose the pointer; ours is the plain arrow.
+        self.cursor_status = CursorImageStatus::default_named();
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.frame(self);
+        true
+    }
+
+    /// A button over another machine's window goes to its owner, and so does
+    /// its release wherever the pointer is by then. True when it did.
+    pub(crate) fn button_to_owner(&mut self, button: u32, state: ButtonState) -> bool {
+        let pressed = state == ButtonState::Pressed;
+        let windows = &mut self.handoff.windows;
+        let target = match (windows.pressed, pressed) {
+            (Some((window, count)), true) => {
+                windows.pressed = Some((window, count + 1));
+                window
+            }
+            (Some((window, count)), false) => {
+                windows.pressed = (count > 1).then_some((window, count - 1));
+                window
+            }
+            (None, true) => {
+                let Some(window) = windows.hovered else { return false };
+                windows.pressed = Some((window, 1));
+                window
+            }
+            (None, false) => {
+                let Some(window) = windows.hovered else { return false };
+                window
+            }
+        };
+        self.send_to_owner(target, |window| Message::WindowButton { window, button, pressed });
+        true
+    }
+
+    /// Scrolling over another machine's window goes to its owner.
+    pub(crate) fn scroll_to_owner(&mut self, event: &AxisInput) -> bool {
+        let Some(window) = self.handoff.windows.hovered else { return false };
+        let scroll = Scroll {
+            finger: event.source == AxisSource::Finger,
+            horizontal: event.horizontal,
+            vertical: event.vertical,
+            horizontal_v120: event.horizontal_v120,
+            vertical_v120: event.vertical_v120,
+        };
+        self.send_to_owner(window, |owned| Message::WindowScroll { window: owned, scroll });
+        true
+    }
+
+    /// A key that no binding took, for another machine's window when it has
+    /// the keyboard here.
+    pub(crate) fn key_to_owner(&mut self, code: Keycode, key_state: KeyState) {
+        let Some(window) = self.handoff.windows.remote_keyboard else { return };
+        let key = code.raw().saturating_sub(XKB_OFFSET);
+        let pressed = key_state == KeyState::Pressed;
+        self.send_to_owner(window, |owned| Message::WindowKey { window: owned, key, pressed });
+    }
+
+    /// Keeps the owner of the window with the keyboard here informed.
+    pub(crate) fn set_remote_keyboard(&mut self, window: Option<WindowId>) {
+        let previous = self.handoff.windows.remote_keyboard;
+        if previous == window {
+            return;
+        }
+        self.handoff.windows.remote_keyboard = window;
+        if let Some(previous) = previous {
+            self.send_to_owner(previous, |owned| Message::WindowFocus { window: owned, focused: false });
+        }
+        if let Some(window) = window {
+            self.send_to_owner(window, |owned| Message::WindowFocus { window: owned, focused: true });
+        }
+    }
+
+    /// What has this machine's keyboard for another machine: one of this
+    /// machine's windows shown there, while it has the keyboard there and
+    /// this machine's own input goes there too, or it was just typed into.
+    pub(crate) fn away_keyboard_target(&self) -> Option<KeyboardFocus> {
+        let windows = &self.handoff.windows;
+        let window = windows.typing.or_else(|| windows.away_keyboard.filter(|_| self.handoff.forwarding.is_some()))?;
+        self.windows.get(&window).and_then(crate::state::focus_target)
+    }
+
+    /// This machine's own keyboard or pointer was used here: a window typed
+    /// into from elsewhere lets go of the keyboard.
+    pub(crate) fn used_here(&mut self) {
+        if self.handoff.windows.typing.take().is_some() {
+            self.force_keyboard_focus_sync();
+        }
+    }
+
+    fn resize_away(&mut self, window: WindowId, width: u32, height: u32) {
+        let Some(placed) = self.windows.get(&window) else { return };
+        let size: Size<i32, Logical> = (width.clamp(1, 16384) as i32, height.clamp(1, 16384) as i32).into();
+        if let Some(toplevel) = placed.toplevel() {
+            toplevel.with_pending_state(|pending| pending.size = Some(size));
+            if toplevel.is_initial_configure_sent() {
+                toplevel.send_pending_configure();
+            }
+        } else if let Some(x11) = placed.x11_surface() {
+            let _ = x11.configure(Rectangle::new((0, 0).into(), size));
+        }
+    }
+
+    fn away_pointer(&mut self, window: WindowId, across: f64, down: f64) {
+        let Some(placed) = self.windows.get(&window).cloned() else { return };
+        let geometry = placed.geometry();
+        let location: Point<f64, Logical> = geometry.loc.to_f64() + Point::from((across, down));
+        let focus =
+            placed.surface_under(location, WindowSurfaceType::ALL).map(|(surface, offset)| (surface, offset.to_f64()));
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let time = self.input_time();
+        pointer.motion(self, focus, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.frame(self);
+    }
+
+    fn away_button(&mut self, button: u32, pressed: bool) {
+        let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let time = self.input_time();
+        pointer.button(self, &ButtonEvent { button, state, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.frame(self);
+    }
+
+    fn away_scroll(&mut self, scroll: Scroll) {
+        let input = AxisInput {
+            source: if scroll.finger { AxisSource::Finger } else { AxisSource::Wheel },
+            time: self.input_time(),
+            horizontal: scroll.horizontal,
+            vertical: scroll.vertical,
+            horizontal_v120: scroll.horizontal_v120,
+            vertical_v120: scroll.vertical_v120,
+        };
+        self.deliver_axis(&input);
+    }
+
+    fn away_leave(&mut self) {
+        let time = self.input_time();
+        if self.handoff.forwarding.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            let location = pointer.current_location();
+            pointer.motion(self, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+        } else {
+            self.on_motion(self.pointer, time);
+        }
+    }
+
+    fn away_focus(&mut self, window: WindowId, focused: bool) {
+        let windows = &mut self.handoff.windows;
+        if focused {
+            windows.away_keyboard = Some(window);
+        } else if windows.away_keyboard == Some(window) {
+            windows.away_keyboard = None;
+        }
+        if let Some(placed) = self.windows.get(&window) {
+            placed.set_activated(focused);
+            if let Some(toplevel) = placed.toplevel()
+                && toplevel.is_initial_configure_sent()
+            {
+                toplevel.send_pending_configure();
+            }
+        }
+        self.force_keyboard_focus_sync();
+    }
+
+    /// A key for one of this machine's windows from where it is shown. When
+    /// this machine's own keyboard pressed it, the keyboard here already
+    /// knows (it was forwarded); then the window only needs telling.
+    fn away_key(&mut self, window: WindowId, key: u32, pressed: bool) {
+        let target = self.windows.get(&window).and_then(crate::state::focus_target);
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        if target.is_some() && keyboard.current_focus() != target {
+            self.handoff.windows.typing = Some(window);
+            self.force_keyboard_focus_sync();
+        }
+        let code = Keycode::new(key + XKB_OFFSET);
+        let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.input_time();
+        if keyboard.pressed_keys().contains(&code) == pressed {
+            keyboard.input_forward(self, code, state, serial, time, true);
+        } else {
+            keyboard.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Forward);
+        }
+    }
+
+    /// Keeps titles and apps of windows shown elsewhere up to date there.
+    pub(crate) fn update_away_info(&mut self, window: WindowId) {
+        let Some(placed) = self.windows.get(&window) else { return };
+        let (title, app) = (window_title(placed), app_id(placed));
+        let Some(away) = self.handoff.windows.away.get_mut(&window) else { return };
+        if away.title == title && away.app_id == app {
+            return;
+        }
+        away.title.clone_from(&title);
+        away.app_id.clone_from(&app);
+        let peer = away.peer;
+        self.handoff.send(peer, Message::WindowInfo { window: window.0, title, app_id: app });
+    }
+
+    /// Lines for `handoff` status about windows on other machines.
+    pub(crate) fn windows_status(&self) -> Vec<String> {
+        let name = |peer: PeerId| {
+            self.handoff.peers.get(&peer).map_or_else(|| format!("{peer:016x}"), |entry| entry.name.clone())
+        };
+        let mut lines: Vec<String> = self
+            .handoff
+            .windows
+            .away
+            .iter()
+            .map(|(window, away)| format!("window {} {:?} is on {}", window.0, away.title, name(away.peer)))
+            .collect();
+        lines.extend(
+            self.handoff.windows.remote.iter().map(|(window, remote)| {
+                format!("window {} {:?} is from {}", window.0, remote.title, name(remote.peer))
+            }),
+        );
+        lines.sort();
+        lines
+    }
+}

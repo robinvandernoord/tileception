@@ -23,6 +23,8 @@ pub enum Inject {
     Motion(f64, f64),
     /// Presses and lets go of a button, after moving there when given.
     Click { position: Option<(f64, f64)>, button: u32 },
+    /// Presses or lets go of a button, as a mouse does: held, it drags.
+    Button { button: u32, pressed: bool },
     /// A key combination such as `Super+slash` or `Return`.
     Key(String),
     /// Types text, with Shift where a character needs it.
@@ -47,6 +49,15 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
             [x_arg, y_arg] => Ok(Inject::Motion(number(x_arg)?, number(y_arg)?)),
             _ => Err("motion needs dx and dy".into()),
         },
+        "press" | "release" => {
+            let button = match args[..] {
+                [] | ["left"] => BTN_LEFT,
+                ["right"] => BTN_RIGHT,
+                ["middle"] => BTN_MIDDLE,
+                _ => return Err(format!("{verb} takes left, right or middle")),
+            };
+            Ok(Inject::Button { button, pressed: verb == "press" })
+        }
         "click" => {
             let (position, button) = match args[..] {
                 [] => (None, "left"),
@@ -148,6 +159,14 @@ impl Tileception {
                         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
                         self.on_button(button, state, time + u32::from(!pressed));
                     }
+                }
+            }
+            Inject::Button { button, pressed } => {
+                if !self.forward_message(tileception_handoff::Message::Button { button, pressed })
+                    && self.handoff.held.button(tileception_handoff::Source::Local, button, pressed)
+                {
+                    let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+                    self.on_button(button, state, time);
                 }
             }
             Inject::Key(combo) => {

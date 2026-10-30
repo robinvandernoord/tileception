@@ -87,7 +87,12 @@ pub fn describe(state: &Tileception) -> String {
                 let titles: Vec<String> = views
                     .iter()
                     .map(|window_id| {
-                        let app = state.windows.get(window_id).map(crate::state::app_id).unwrap_or_default();
+                        let app = state
+                            .windows
+                            .get(window_id)
+                            .map(crate::state::app_id)
+                            .or_else(|| state.handoff.windows.remote_app(*window_id))
+                            .unwrap_or_default();
                         format!("{}:{}", window_id.0, app)
                     })
                     .collect();

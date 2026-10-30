@@ -52,6 +52,7 @@ pub fn init(
             let damage = Rectangle::from_size(size);
             let now = state.now();
             state.process_captures(backend.renderer());
+            state.process_streams(backend.renderer());
             {
                 let Ok((renderer, mut framebuffer)) = backend.bind() else { return };
                 let elements = state.frame_elements(renderer, now);

@@ -12,7 +12,6 @@ use std::{
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -101,7 +100,70 @@ struct Link {
     /// Which machine dialled; decides which of two parallel links stays.
     dialler: PeerId,
     stream: TcpStream,
-    sender: mpsc::Sender<Frame>,
+    outbox: Arc<Outbox>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        self.outbox.close();
+    }
+}
+
+/// Frames waiting for a connection's writer. Bulk frames (window pictures)
+/// go only when nothing else waits, so input never queues behind them.
+#[derive(Default)]
+struct Outbox {
+    queues: Mutex<Queues>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Queues {
+    urgent: VecDeque<Frame>,
+    bulk: VecDeque<Frame>,
+    closed: bool,
+}
+
+impl Outbox {
+    fn push(&self, frame: Frame, bulk: bool) -> bool {
+        let mut queues = lock(&self.queues);
+        if queues.closed {
+            return false;
+        }
+        if bulk {
+            queues.bulk.push_back(frame);
+        } else {
+            queues.urgent.push_back(frame);
+        }
+        self.ready.notify_one();
+        true
+    }
+
+    fn close(&self) {
+        lock(&self.queues).closed = true;
+        self.ready.notify_all();
+    }
+
+    /// The next frame to write, a ping after `quiet` without one, or nothing
+    /// once the connection is done.
+    fn next(&self, quiet: Duration) -> Option<Frame> {
+        let mut queues = lock(&self.queues);
+        let since = Instant::now();
+        loop {
+            if queues.closed {
+                return None;
+            }
+            if let Some(frame) = queues.urgent.pop_front().or_else(|| queues.bulk.pop_front()) {
+                return Some(frame);
+            }
+            let left = quiet.saturating_sub(since.elapsed());
+            if left.is_zero() {
+                return Some(Frame::Ping);
+            }
+            queues =
+                self.ready.wait_timeout(queues, left).map_or_else(|error| error.into_inner().0, |(guard, _)| guard);
+        }
+    }
 }
 
 struct Candidate {
@@ -177,7 +239,7 @@ impl Service {
 
     /// Queues a message; false when that machine is not connected.
     pub fn send(&self, peer: PeerId, message: Message) -> bool {
-        self.shared.send(peer, message)
+        self.shared.send(peer, message, false)
     }
 
     /// A handle for sending from other threads.
@@ -192,7 +254,13 @@ pub struct Messenger(Arc<Shared>);
 
 impl Messenger {
     pub fn send(&self, peer: PeerId, message: Message) -> bool {
-        !self.0.stopping() && self.0.send(peer, message)
+        !self.0.stopping() && self.0.send(peer, message, false)
+    }
+
+    /// Queues a message behind everything else waiting, for large data such
+    /// as window pictures.
+    pub fn send_bulk(&self, peer: PeerId, message: Message) -> bool {
+        !self.0.stopping() && self.0.send(peer, message, true)
     }
 }
 
@@ -231,8 +299,9 @@ impl Candidate {
 }
 
 impl Shared {
-    fn send(&self, peer: PeerId, message: Message) -> bool {
-        lock(&self.links).get(&peer).is_some_and(|link| link.sender.send(Frame::App(message)).is_ok())
+    fn send(&self, peer: PeerId, message: Message, bulk: bool) -> bool {
+        let outbox = lock(&self.links).get(&peer).map(|link| link.outbox.clone());
+        outbox.is_some_and(|outbox| outbox.push(Frame::App(message), bulk))
     }
 
     fn stopping(&self) -> bool {
@@ -361,8 +430,8 @@ impl Shared {
         stream.set_read_timeout(Some(SILENCE))?;
         let dialler = if initiator { self.machine } else { peer };
         let serial = self.serials.fetch_add(1, Ordering::SeqCst);
-        let (sender, receiver) = mpsc::channel();
-        let link = Link { serial, dialler, stream: stream.try_clone()?, sender };
+        let outbox = Arc::new(Outbox::default());
+        let link = Link { serial, dialler, stream: stream.try_clone()?, outbox: outbox.clone() };
         // Whether this is news, and whether a connection it replaces died.
         let (fresh, died) = {
             let mut links = lock(&self.links);
@@ -390,7 +459,7 @@ impl Shared {
         let writer_stream = stream.try_clone()?;
         spawn("tileception-handoff-write", {
             let transport = transport.clone();
-            move || write_loop(writer_stream, &transport, &receiver)
+            move || write_loop(writer_stream, &transport, &outbox)
         })?;
         if died {
             tracing::info!("handoff: {name} reconnected");
@@ -480,19 +549,15 @@ impl Shared {
     }
 }
 
-fn write_loop(mut stream: TcpStream, transport: &Mutex<TransportState>, receiver: &mpsc::Receiver<Frame>) {
-    loop {
-        let frame = match receiver.recv_timeout(PING_EVERY) {
-            Ok(frame) => frame,
-            Err(mpsc::RecvTimeoutError::Timeout) => Frame::Ping,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
+fn write_loop(mut stream: TcpStream, transport: &Mutex<TransportState>, outbox: &Outbox) {
+    while let Some(frame) = outbox.next(PING_EVERY) {
         let written =
             secure::seal(&mut lock(transport), &frame).and_then(|sealed| secure::write_frame(&mut stream, &sealed));
         if written.is_err() {
             break;
         }
     }
+    outbox.close();
     let _ = stream.shutdown(Shutdown::Both);
 }
 
@@ -512,7 +577,23 @@ fn random_id() -> PeerId {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
+
+    #[test]
+    fn bulk_frames_wait_for_everything_else() {
+        let outbox = Outbox::default();
+        outbox.push(Frame::App(Message::WindowGone { window: 1 }), true);
+        outbox.push(Frame::App(Message::Leave), false);
+        let quiet = Duration::from_millis(10);
+        assert_eq!(outbox.next(quiet), Some(Frame::App(Message::Leave)));
+        assert_eq!(outbox.next(quiet), Some(Frame::App(Message::WindowGone { window: 1 })));
+        assert_eq!(outbox.next(quiet), Some(Frame::Ping));
+        outbox.close();
+        assert_eq!(outbox.next(quiet), None);
+        assert!(!outbox.push(Frame::Ping, false));
+    }
 
     fn settings(passphrase: &str, peers: Vec<String>) -> Settings {
         Settings {

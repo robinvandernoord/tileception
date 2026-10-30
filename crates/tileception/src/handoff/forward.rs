@@ -39,7 +39,7 @@ pub(crate) enum Back {
 }
 
 impl Tileception {
-    fn input_time(&self) -> u32 {
+    pub(crate) fn input_time(&self) -> u32 {
         (self.now() * 1000.0) as u32
     }
 
@@ -155,8 +155,16 @@ impl Tileception {
             return false;
         }
         let Some(peer) = self.handoff.peer_at(&output.name(), side) else { return false };
-        // A drag stays on its machine.
-        if self.handoff.held.holds_button(source) {
+        // A drag stays on its machine, unless it drags a window.
+        if self.move_drag.is_none() && self.handoff.held.holds_button(source) {
+            return false;
+        }
+        let crossing = match source {
+            Source::Local => self.handoff.forwarding.is_none(),
+            // Never passed on to a third machine.
+            Source::Peer(from) => from == peer,
+        };
+        if !crossing {
             return false;
         }
         let beyond = match side {
@@ -176,25 +184,21 @@ impl Tileception {
             Side::Top | Side::Bottom => (position.x - screen.x) / screen.w,
         }
         .clamp(0.0, 1.0);
+        // A dragged window goes along, ahead of the pointer.
+        if !self.carry_window(peer, source) {
+            return false;
+        }
         match source {
-            Source::Local => {
-                if self.handoff.forwarding.is_some() {
-                    return false;
-                }
-                self.start_forwarding(peer, along);
-                true
-            }
-            Source::Peer(from) if from == peer => {
+            Source::Local => self.start_forwarding(peer, along),
+            Source::Peer(from) => {
                 self.share_selections(from);
                 self.handoff.send(from, Message::Return { along });
                 self.forget_input(from);
                 self.handoff.away = true;
                 self.schedule_render();
-                true
             }
-            // Never passed on to a third machine.
-            Source::Peer(_) => false,
         }
+        true
     }
 
     fn start_forwarding(&mut self, peer: PeerId, along: f64) {
@@ -229,6 +233,8 @@ impl Tileception {
                 if let Some(edge) = self.handoff.active_edge(peer).cloned() {
                     self.place_at_edge(&edge, along);
                 }
+                // The button of a window dragged along is held here.
+                self.pick_up_arriving(peer, Source::Local);
             }
             Back::Gone => {}
         }
@@ -287,6 +293,8 @@ impl Tileception {
             return;
         }
         self.handoff.away = false;
+        // A window dragged along is held by the button down there.
+        self.pick_up_arriving(peer, Source::Peer(peer));
         let time = self.input_time();
         self.on_motion(self.pointer, time);
         self.schedule_render();

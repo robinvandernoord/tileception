@@ -113,6 +113,15 @@ impl Tileception {
         if self.forward_input(&event) {
             return;
         }
+        if matches!(
+            event,
+            InputEvent::Keyboard { .. }
+                | InputEvent::PointerMotionAbsolute { .. }
+                | InputEvent::PointerMotion { .. }
+                | InputEvent::PointerButton { .. }
+        ) {
+            self.used_here();
+        }
         if self.handoff.away
             && matches!(
                 event,
@@ -361,6 +370,9 @@ impl Tileception {
                 None => FilterResult::Forward,
             }
         });
+        if commands.is_none() {
+            self.key_to_owner(code, key_state);
+        }
         let tapped = std::mem::take(&mut self.tap_fired);
         let commands = commands.unwrap_or_default();
         if !pressed {
@@ -648,6 +660,9 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.pointer_to_owner(pos, time) {
+            return;
+        }
         let under = self.surface_under(pos);
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -656,6 +671,9 @@ impl Tileception {
 
     /// A client asked to be moved from its own title bar.
     pub fn begin_title_drag(&mut self, window: WindowId) {
+        if self.move_away(window) {
+            return;
+        }
         if self.move_drag.is_none() && !self.world.in_overview() {
             self.world.focus_window(window, self.now());
             self.apply_layout();
@@ -904,6 +922,9 @@ impl Tileception {
                 return;
             }
         }
+        if self.button_to_owner(button, state) {
+            return;
+        }
         pointer.button(self, &ButtonEvent { button, state, serial, time });
         pointer.frame(self);
     }
@@ -986,10 +1007,18 @@ impl Tileception {
             return;
         }
         self.tap_armed = None;
-        let source = event.source();
         if !self.is_locked() && self.wheel_binding(event) {
             return;
         }
+        if self.scroll_to_owner(event) {
+            return;
+        }
+        self.deliver_axis(event);
+    }
+
+    /// Scrolling for the program under the pointer.
+    pub(crate) fn deliver_axis(&mut self, event: &AxisInput) {
+        let source = event.source();
         let amount = |axis| event.amount(axis).unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
         let horizontal = amount(Axis::Horizontal);
         let vertical = amount(Axis::Vertical);

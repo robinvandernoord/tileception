@@ -1,4 +1,5 @@
-//! Handoff: one mouse, keyboard and clipboard across Tileception machines.
+//! Handoff: one mouse, keyboard, clipboard and windows across Tileception
+//! machines.
 //!
 //! Machines with the same `[handoff] passphrase` find each other and connect
 //! (see the tileception-handoff crate). Each user then drags a card naming
@@ -11,6 +12,8 @@ mod clipboard;
 mod forward;
 pub mod pair;
 mod prompt;
+mod stream;
+mod windows;
 
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -138,6 +141,8 @@ pub struct Handoff {
     pub(crate) clipboard: clipboard::Clipboard,
     /// Whether sharing has been paused for a lock that has not been resumed.
     locked: bool,
+    /// Windows shown on other machines, and theirs shown here.
+    pub(crate) windows: windows::Windows,
     /// The last absolute pointer position, to turn absolute motion into steps.
     pub(crate) absolute: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 }
@@ -210,6 +215,8 @@ pub enum HandoffCommand {
     Resume,
     /// Brings this machine's input back from another machine.
     Home,
+    /// Brings this machine's windows back from other machines.
+    Reclaim,
 }
 
 pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
@@ -229,7 +236,8 @@ pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
         ["retry"] => Ok(HandoffCommand::Retry),
         ["resume"] => Ok(HandoffCommand::Resume),
         ["home"] => Ok(HandoffCommand::Home),
-        _ => Err("handoff takes status, edge, dismiss, retry, resume or home".into()),
+        ["reclaim"] => Ok(HandoffCommand::Reclaim),
+        _ => Err("handoff takes status, edge, dismiss, retry, resume, home or reclaim".into()),
     }
 }
 
@@ -325,6 +333,7 @@ impl Tileception {
         for peer in peers {
             self.forget_input(peer);
             self.clipboard_peer_gone(peer);
+            self.windows_peer_gone(peer);
         }
         self.handoff.peers.clear();
         self.handoff.prompt = prompt::Prompt::default();
@@ -359,6 +368,7 @@ impl Tileception {
                 }
                 self.forget_input(peer);
                 self.clipboard_peer_gone(peer);
+                self.windows_peer_gone(peer);
                 if !self.handoff.prompt.dismissed.contains(&peer) {
                     self.handoff.peers.remove(&peer);
                 }
@@ -390,6 +400,7 @@ impl Tileception {
                 entry.link = Link::Dismissed;
                 self.handoff.prompt.dismissed.insert(peer);
                 self.unlink(peer);
+                self.windows_peer_gone(peer);
             }
             Message::Paused => {
                 if let Link::Linked { paused, .. } = &mut entry.link
@@ -428,6 +439,7 @@ impl Tileception {
             }
             Message::Data { request, bytes } => self.handoff.clipboard.data(request, bytes),
             Message::DataEnd { request, failed } => self.handoff.clipboard.end(request, failed),
+            message => self.window_message(peer, message),
         }
     }
 
@@ -522,6 +534,7 @@ impl Tileception {
         self.handoff.prompt.dismissed.insert(peer);
         self.handoff.send(peer, Message::Dismissed);
         self.unlink(peer);
+        self.windows_peer_gone(peer);
         self.schedule_render();
     }
 
@@ -551,6 +564,11 @@ impl Tileception {
                     return Err("input is already here".into());
                 }
                 self.stop_forwarding(forward::Back::Home);
+            }
+            HandoffCommand::Reclaim => {
+                if self.reclaim_windows() == 0 {
+                    return Err("no window of this machine is on another".into());
+                }
             }
         }
         Ok(String::new())
@@ -584,6 +602,10 @@ impl Tileception {
             };
             let input = if self.handoff.forwarding == Some(*peer) { ", has this machine's input" } else { "" };
             status.push_str(&format!("{} {peer:016x} {state}{input}\n", entry.name));
+        }
+        for line in self.windows_status() {
+            status.push_str(&line);
+            status.push('\n');
         }
         status
     }
@@ -639,5 +661,6 @@ mod tests {
         assert!(parse(&["edge", "eDP-1", "middle"]).is_err());
         assert_eq!(parse(&["dismiss", "laptop"]), Ok(HandoffCommand::Dismiss(Some("laptop".into()))));
         assert_eq!(parse(&["home"]), Ok(HandoffCommand::Home));
+        assert_eq!(parse(&["reclaim"]), Ok(HandoffCommand::Reclaim));
     }
 }

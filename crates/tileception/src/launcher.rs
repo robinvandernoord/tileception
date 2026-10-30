@@ -381,7 +381,13 @@ impl Tileception {
     /// Minimized windows and windows that never showed do not count: what
     /// matters is an empty layout.
     pub fn update_home(&mut self) {
-        if self.windows.keys().any(|window_id| self.world.contains_window(*window_id)) {
+        // Other machines' windows shown here count too.
+        if self
+            .windows
+            .keys()
+            .chain(self.handoff.windows.remote.keys())
+            .any(|window_id| self.world.contains_window(*window_id))
+        {
             self.launcher.home_dismissed = false;
             self.launcher.quiet_until = None;
             if self.launcher.home {

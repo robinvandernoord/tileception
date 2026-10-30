@@ -48,6 +48,12 @@ impl Held {
         self.keys.values().chain(self.buttons.values()).any(|holders| holders.contains(&source))
     }
 
+    /// Forgets the buttons a source holds (its drag went to another machine),
+    /// returning those nobody else holds.
+    pub fn release_buttons(&mut self, source: Source) -> Vec<u32> {
+        forget(&mut self.buttons, source)
+    }
+
     /// Forgets a source, returning what nobody else holds and so must be
     /// released for programs.
     pub fn release(&mut self, source: Source) -> Released {

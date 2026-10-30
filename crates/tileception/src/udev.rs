@@ -646,6 +646,7 @@ impl Tileception {
             self.udev = Some(udev);
             return;
         };
+        self.process_streams(&mut udev.renderer);
         for gpu in &mut gpus {
             for lit in &mut gpu.surfaces {
                 if lit.frame_pending {

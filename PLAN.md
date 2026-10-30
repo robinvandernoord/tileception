@@ -267,8 +267,19 @@ Decisions:
 - [x] Clipboard: every MIME type, clipboard and primary, offered on crossing
   with per-machine versions against echoes, 64 MB and 10 s stall limits, and
   cleared when the owner disappears.
-- [ ] Window handoff: send an already-open window to another machine and take
-  it back, including unavailable tiles, owner reclaim and reconnection.
+- [x] Window handoff, first version (2026-10-30): dragging a window (by
+  Super+drag or its title bar) past a shared edge takes it along; dragging
+  it back, `handoff reclaim` or a lost connection brings it home; closing it
+  there closes it. The owner draws it off screen and sends only what changed
+  (LZ4-compressed tiles, the next picture after the last arrived, queued
+  behind input). Input, focus and tile size travel back. Verified with
+  headless instances in both directions, with typing from either keyboard.
+- [ ] Window handoff, still to do: menus and popups past the window's own
+  rectangle are cut off; the program's own cursor is not shown over it (the
+  plain arrow is); client-side resizing and drag and drop do not cross;
+  disconnecting brings windows home at once instead of the decided
+  unavailable tile with resume on reconnection; video-heavy windows need a
+  real video codec rather than compressed tiles.
 - [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
   failures. The lock policy applies to input and clipboard transfers,
   including in-flight ones; streamed windows still to do.
@@ -286,6 +297,15 @@ Decisions:
   keyboard layouts that differ, lock and resume, suspend, Xwayland pastes.
 - [ ] Then prove one already-open streamed window with a popup, resizing,
   locking and disconnect recovery before broadening window support.
+
+Known behaviour (accepted for now, 2026-10-30):
+
+- Both machines need the same build: window handoff changed the protocol, so
+  older builds refuse the connection.
+- Each machine's keyboard follows that machine's own pointer. The desktop's
+  keyboard types on the laptop only after the desktop's mouse crossed there;
+  moving the pointer onto the laptop with the laptop's touchpad does not bring
+  the desktop's keyboard along.
 
 Review log:
 

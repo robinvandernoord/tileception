@@ -149,7 +149,7 @@ pub struct Tileception {
     pub pending_press: Option<PendingPress>,
     pub terminal: String,
     pub ipc_socket: Option<std::path::PathBuf>,
-    keyboard_focus: Option<WindowId>,
+    pub(crate) keyboard_focus: Option<WindowId>,
     keyboard_dirty: bool,
     pub layer_shell_state: WlrLayerShellState,
     /// A layer surface (launcher, lock screen) holding the keyboard.
@@ -448,7 +448,7 @@ impl Tileception {
             .map(|(window_id, _)| *window_id)
     }
 
-    fn next_id(&mut self) -> WindowId {
+    pub(crate) fn next_id(&mut self) -> WindowId {
         let window_id = WindowId(self.next_window);
         self.next_window += 1;
         window_id
@@ -535,6 +535,7 @@ impl Tileception {
         if self.windows.remove(&window_id).is_none() {
             return;
         }
+        self.window_forgotten(window_id);
         if self.move_drag.is_some_and(|drag| drag.window == window_id) {
             self.move_drag = None;
         }
@@ -570,9 +571,13 @@ impl Tileception {
                 if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let Some(window) = self.windows.get(&placement.window) else { continue };
                 let size: Size<i32, Logical> =
                     (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                let Some(window) = self.windows.get(&placement.window) else {
+                    // Another machine's window: its owner sizes it.
+                    self.ask_remote_size(placement.window, size);
+                    continue;
+                };
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|pending| pending.size = Some(size));
                 } else if let Some(x11) = window.x11_surface() {
@@ -623,11 +628,17 @@ impl Tileception {
         }
         self.keyboard_focus = focus;
         self.keyboard_dirty = false;
+        let mut remote = None;
         let target = if self.output.is_none() {
             None
         } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
-        } else if self.power_menu.is_some() || self.handoff.forwarding.is_some() {
+        } else if self.power_menu.is_some() {
+            None
+        } else if let Some(away) = self.away_keyboard_target() {
+            // One of this machine's windows, typed into from another machine.
+            Some(away)
+        } else if self.handoff.forwarding.is_some() {
             None
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
@@ -635,12 +646,15 @@ impl Tileception {
         } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
+            remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
             focus.and_then(|window_id| self.windows.get(&window_id)).and_then(focus_target)
         };
         if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
             let _ = xwm.raise_window(x11);
         }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
+        // Another machine's window takes keys through its owner.
+        self.set_remote_keyboard(remote);
     }
 
     /// Re-evaluates keyboard focus even if the focused window did not change.
@@ -731,6 +745,9 @@ impl Tileception {
     }
 
     pub fn close_window(&self, window_id: WindowId) {
+        if self.close_remote(window_id) {
+            return;
+        }
         let Some(window) = self.windows.get(&window_id) else { return };
         if let Some(toplevel) = window.toplevel() {
             toplevel.send_close();
@@ -764,7 +781,7 @@ fn wants_float(window: &Window) -> bool {
 }
 
 /// Not before a window's first configure: foot crashes on an enter then.
-fn focus_target(window: &Window) -> Option<KeyboardFocus> {
+pub(crate) fn focus_target(window: &Window) -> Option<KeyboardFocus> {
     if let Some(toplevel) = window.toplevel() {
         toplevel.is_initial_configure_sent().then(|| KeyboardFocus::Wayland(toplevel.wl_surface().clone()))
     } else {

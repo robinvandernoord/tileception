@@ -145,6 +145,7 @@ Shell:
   handoff retry             ask again about machines declined before
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
+  handoff reclaim           bring this machine's windows back from others
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
@@ -163,6 +164,8 @@ Pretend input (headless or nested only):
   motion <dx> <dy>          move it by this much, like a mouse (crosses to
                             machines linked with handoff)
   click [x y] [left|right|middle]
+  press [left|right|middle] hold a button down (drags), and let go with
+  release [left|right|middle]
   key <combo>               press a key, such as Return or Super+slash
   type <text>               type text
   gesture <name>            such as Swipe3Left, Super+Pinch2In or TouchEdgeTop
@@ -252,7 +255,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "motion" | "click" | "key" | "type" | "gesture" | "touch" => {
+        "pointer" | "motion" | "click" | "press" | "release" | "key" | "type" | "gesture" | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {
