@@ -111,6 +111,12 @@ impl Drags {
         self.outgoing.is_some()
     }
 
+    /// Whether a program here drags for `peer`, which carries it with its
+    /// pointer (not inside one of its windows shown here).
+    pub(crate) fn holding_for(&self, peer: PeerId) -> bool {
+        self.outgoing.as_ref().is_some_and(|outgoing| outgoing.peer == peer && outgoing.into.is_none())
+    }
+
     /// Whether another machine's drag is carried on here.
     pub(crate) fn carrying(&self) -> bool {
         self.incoming.is_some()
@@ -402,6 +408,11 @@ impl Tileception {
         }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let time = self.input_time();
+        // Over nothing, so letting go cancels it here instead of dropping
+        // it on a window here.
+        let location = pointer.current_location();
+        pointer.motion(self, None, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        tracing::info!("handoff: letting go of a drag carried on by {:016x}", outgoing.peer);
         let event = ButtonEvent {
             button: outgoing.button,
             state: ButtonState::Released,
@@ -439,11 +450,16 @@ impl Tileception {
 
     /// A program here wants what another machine's drag carries.
     pub fn handoff_drag_send(&mut self, mime_type: String, pipe: OwnedFd) {
-        let Some(incoming) = &self.handoff.drags.incoming else { return };
+        let Some(incoming) = &self.handoff.drags.incoming else {
+            tracing::warn!("handoff: a program wants {mime_type} of a drag that is over");
+            return;
+        };
         let (peer, drag) = (incoming.peer, incoming.drag);
         if self.handoff.active_edge(peer).is_none() || self.is_locked() {
+            tracing::warn!("handoff: a program wants {mime_type} of a drag while sharing is paused");
             return;
         }
+        tracing::info!("handoff: a program here wants {mime_type} of a drag from {peer:016x}");
         if mime_type == "text/uri-list" {
             self.receive_drag_files(peer, drag, pipe);
         } else {

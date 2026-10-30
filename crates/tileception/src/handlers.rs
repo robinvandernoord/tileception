@@ -340,6 +340,13 @@ impl XdgShellHandler for Tileception {
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
+        if let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
+            && let Some(window) = self.window_id(&root).filter(|window| self.handoff.windows.away.contains_key(window))
+        {
+            let geometry = surface.with_pending_state(|state| state.geometry);
+            let room = self.away_room(window);
+            tracing::info!(?geometry, ?room, "handoff: a menu opens in window {} shown elsewhere", window.0);
+        }
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
@@ -418,12 +425,24 @@ impl XdgShellHandler for Tileception {
         if self.window_id(&root).is_none() {
             return;
         }
+        let away = self.window_id(&root).is_some_and(|window| self.handoff.windows.away.contains_key(&window));
         let root_focus = crate::focus::KeyboardFocus::Wayland(root);
-        let Ok(mut grab) = self.popups.grab_popup(root_focus, kind, &seat, serial) else { return };
+        let mut grab = match self.popups.grab_popup(root_focus, kind, &seat, serial) {
+            Ok(grab) => grab,
+            Err(error) => {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere refused its grab: {error:?}");
+                }
+                return;
+            }
+        };
         if let Some(keyboard) = seat.get_keyboard() {
             if keyboard.is_grabbed()
                 && !(keyboard.has_grab(serial) || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
             {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere closed: the keyboard is held");
+                }
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
@@ -435,8 +454,14 @@ impl XdgShellHandler for Tileception {
                 && !(pointer.has_grab(serial)
                     || pointer.has_grab(grab.previous_serial().unwrap_or_else(|| grab.serial())))
             {
+                if away {
+                    tracing::info!("handoff: a menu of a window shown elsewhere closed: the pointer is held");
+                }
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
+            }
+            if away {
+                tracing::info!("handoff: a menu of a window shown elsewhere opened with its grab");
             }
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }

@@ -410,6 +410,15 @@ Review log:
   new `theme.guest` colour (violet). Drags into and out of streamed
   windows, and the drag card updating once its preview is known
   (protocol 6).
+- 2026-10-30: Second test. A file dragged out of a streamed window was
+  also dropped back into the owner's own file manager ("no such file or
+  directory" there): pointer input still on its way after the drag went
+  over aimed the owner's drag at its own window, which got the drop when
+  the owner let go. Such input is now ignored, and letting go happens over
+  nothing. Right-click menus in streamed windows do not show; not found
+  by reading, so the owner now logs each menu of a streamed window
+  (created with its position and room, grab taken or refused, closed for
+  lost keyboard focus) and the other machine logs how many it shows.
 
 ### Design ideas from LunariaOS
 

@@ -376,6 +376,13 @@ impl Tileception {
             _ => return None,
         };
         let local = self.handoff.windows.away_id(peer, window)?;
+        // A drag a program here started with that machine's pointer is
+        // carried on there now: pointer input still on its way would aim it
+        // at this machine's own windows.
+        let pointing = matches!(message, Message::WindowPointer { .. } | Message::WindowButton { .. });
+        if pointing && self.handoff.drags.holding_for(peer) {
+            return None;
+        }
         (self.handoff.active_edge(peer).is_some() && !self.is_locked() && self.windows.contains_key(&local))
             .then_some(local)
     }
@@ -805,7 +812,11 @@ impl Tileception {
         let canvas = &remote.canvas;
         let whole = Area { left: 0, top: 0, width: canvas.width, height: canvas.height };
         remote.body = if within(picture.body, canvas) { picture.body } else { whole };
-        remote.popups = picture.popups.iter().copied().filter(|popup| within(*popup, canvas)).collect();
+        let popups: Vec<Area> = picture.popups.iter().copied().filter(|popup| within(*popup, canvas)).collect();
+        if popups.len() != remote.popups.len() {
+            tracing::info!("handoff: window {} from {peer:016x} shows {} menus", local.0, popups.len());
+        }
+        remote.popups = popups;
         let size = (canvas.width as i32, canvas.height as i32);
         remote.buffer =
             Some(MemoryRenderBuffer::from_slice(&canvas.pixels, Fourcc::Abgr8888, size, 1, Transform::Normal, None));
@@ -1288,6 +1299,9 @@ impl Tileception {
                 let surface = toplevel.wl_surface();
                 let popups: Vec<_> =
                     smithay::desktop::PopupManager::popups_for_surface(surface).map(|(popup, _)| popup).collect();
+                if !popups.is_empty() {
+                    tracing::info!("handoff: closing the menus of window {}: it lost the keyboard there", window.0);
+                }
                 for popup in popups.iter().rev() {
                     let _ = smithay::desktop::PopupManager::dismiss_popup(surface, popup);
                 }
