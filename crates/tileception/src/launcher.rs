@@ -35,23 +35,26 @@ use crate::{
     ui::{Align, Icons, LocalTime, Painter, Style, ease_out, glyph},
 };
 
-/// Clipboard contents the compositor owns itself: launcher text, or a
-/// screenshot from `tileception msg copy-image`.
+/// Clipboard contents the compositor owns itself: launcher text, a
+/// screenshot from `tileception msg copy-image`, or what another machine
+/// offers (fetched when pasted).
 #[derive(Debug, Clone)]
 pub enum Clip {
     Text(String),
     Png(std::sync::Arc<[u8]>),
+    Remote(crate::handoff::RemoteClip),
 }
 
 impl Clip {
     pub fn text(&self) -> Option<&str> {
         match self {
             Clip::Text(text) => Some(text),
-            Clip::Png(_) => None,
+            Clip::Png(_) | Clip::Remote(_) => None,
         }
     }
 
-    /// Serves the contents without starting a Wayland client.
+    /// Serves the contents without starting a Wayland client. Another
+    /// machine's selection goes through `Tileception::handoff_fetch` instead.
     pub fn send(&self, pipe: std::os::fd::OwnedFd) {
         use std::io::Write;
         let clip = self.clone();
@@ -59,6 +62,7 @@ impl Clip {
             let bytes = match &clip {
                 Clip::Text(text) => text.as_bytes(),
                 Clip::Png(png) => png,
+                Clip::Remote(_) => return,
             };
             let _ = std::fs::File::from(pipe).write_all(bytes);
         });
@@ -130,6 +134,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
     builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),
     builtin("Restart", "reboot", glyph::RESTART, Does::Power(PowerAction::Restart)),
+    builtin("Restart into UEFI", "bios firmware setup reboot", glyph::RESTART, Does::Power(PowerAction::Uefi)),
     builtin("Power off", "shut down shutdown turn off", glyph::POWER, Does::Power(PowerAction::PowerOff)),
     builtin("Do not disturb", "dnd quiet silence notifications", glyph::BELL, Does::Line("do-not-disturb")),
     builtin("Notifications", "history messages", glyph::BELL, Does::Line("notifications")),
@@ -271,6 +276,16 @@ impl Launcher {
         self.icon(icon, size)
     }
 
+    /// The name and desktop entry of the installed application with this app ID.
+    pub fn app_for_id(&self, app_id: &str) -> Option<(String, String)> {
+        self.index.get(&format!("{app_id}.desktop")).map(|app| (app.name.clone(), app.id.clone()))
+    }
+
+    /// The name and desktop entry of the installed application that runs `program`.
+    pub fn app_for_program(&self, program: &std::path::Path) -> Option<(String, String)> {
+        self.index.by_program(program).map(|app| (app.name.clone(), app.id.clone()))
+    }
+
     fn icon(&self, name: &str, size: u32) -> Option<smithay::backend::renderer::element::memory::MemoryRenderBuffer> {
         let path = self.lookup.find(name, self.icons.pixels(size), 1)?;
         self.icons.image(&path, size)
@@ -302,6 +317,7 @@ impl Tileception {
         }
         let mime_types = vec!["image/png".to_string()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
+        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
@@ -314,6 +330,7 @@ impl Tileception {
     pub(crate) fn copy_text(&mut self, text: String) {
         let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
+        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
@@ -374,7 +391,13 @@ impl Tileception {
     /// Minimized windows and windows that never showed do not count: what
     /// matters is an empty layout.
     pub fn update_home(&mut self) {
-        if self.windows.keys().any(|window_id| self.world.contains_window(*window_id)) {
+        // Other machines' windows shown here count too.
+        if self
+            .windows
+            .keys()
+            .chain(self.handoff.windows.remote.keys())
+            .any(|window_id| self.world.contains_window(*window_id))
+        {
             self.launcher.home_dismissed = false;
             self.launcher.quiet_until = None;
             if self.launcher.home {
@@ -627,8 +650,9 @@ impl Tileception {
     /// field, or a picture into the doctor's next message.
     pub fn paste(&mut self, target: Paste) {
         use std::os::unix::net::UnixStream;
-        if let Some(clip) = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone()) {
-            self.insert_paste(target, clip);
+        let owned = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+        if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
+            self.insert_paste(target, clip.clone());
             return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
@@ -645,6 +669,16 @@ impl Tileception {
             Paste::Doctor => [&["image/png"][..], &text].concat(),
             Paste::Launcher(_) => text.to_vec(),
         };
+        if let Some(Clip::Remote(remote)) = owned {
+            let Some(wanted) =
+                mime_types.into_iter().find(|mime_type| remote.mime_types.iter().any(|offered| offered == mime_type))
+            else {
+                return;
+            };
+            self.handoff_fetch(&remote, wanted.into(), writer.into());
+            self.launcher_read_paste(reader, sender, target, wanted.starts_with("image/"));
+            return;
+        }
         let mut wanted = "";
         for mime_type in mime_types {
             wanted = mime_type;
@@ -847,6 +881,9 @@ impl Tileception {
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
     fn fly_to_window(&mut self, window_id: WindowId) {
+        if let Some(output) = self.output_for_window(window_id) {
+            self.activate_output(&output);
+        }
         let now = self.now();
         if let Some(full) = self.fullscreen
             && full != window_id
@@ -876,6 +913,7 @@ impl Tileception {
                 Err(error) => tracing::warn!("launcher command {line:?}: {error}"),
             },
             Does::Suspend => self.run_power_action(PowerAction::Suspend),
+            Does::Power(PowerAction::Uefi) => self.confirm_uefi_restart(),
             Does::Power(action) => {
                 self.shell_power_menu();
                 if let Some(menu) = self.power_menu.as_mut() {
@@ -1542,7 +1580,7 @@ fn quality(query: &str, text: &str) -> Option<u8> {
 }
 
 /// "Super+O", "Ctrl+Alt+Delete", "Print".
-fn combo_label(mods: crate::config::Mods, key: u32) -> String {
+pub(crate) fn combo_label(mods: crate::config::Mods, key: u32) -> String {
     let mut parts = Vec::new();
     for (held, name) in [(mods.logo, "Super"), (mods.ctrl, "Ctrl"), (mods.alt, "Alt"), (mods.shift, "Shift")] {
         if held {

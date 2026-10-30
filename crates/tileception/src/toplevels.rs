@@ -31,9 +31,10 @@ impl Tileception {
     /// appear, renamed ones update and closed ones go.
     pub fn update_toplevels(&mut self) {
         // Minimized windows are still open, so they stay listed.
-        let open = |window_id: WindowId| self.world.contains_window(window_id) || self.world.is_minimized(window_id);
+        let open: std::collections::HashSet<_> =
+            self.windows.keys().copied().filter(|window_id| self.output_for_window(*window_id).is_some()).collect();
         let gone: Vec<WindowId> =
-            self.toplevels.listed.keys().filter(|window_id| !open(**window_id)).copied().collect();
+            self.toplevels.listed.keys().filter(|window_id| !open.contains(window_id)).copied().collect();
         for window_id in gone {
             if let Some((handle, ..)) = self.toplevels.listed.remove(&window_id) {
                 self.toplevels.state.remove_toplevel(&handle);
@@ -41,7 +42,7 @@ impl Tileception {
         }
         for (window_id, window) in &self.windows {
             // Wayland windows count once they are placed, on their first commit.
-            if !open(*window_id) {
+            if !open.contains(window_id) {
                 continue;
             }
             let (title, app) = (window_title(window), app_id(window));

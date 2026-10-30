@@ -70,6 +70,12 @@ pub fn describe(state: &Tileception) -> String {
         state.selection.windows.iter().map(|window_id| window_id.0).collect::<Vec<_>>()
     ));
     out.push_str(&format!("minimized {:?}\n", world.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
+    if let Some(output) = &state.output {
+        out.push_str(&format!("output {} pointer {:.1},{:.1}\n", output.name(), state.pointer.x, state.pointer.y));
+    }
+    if let Some(duck) = state.duck_shown_rect() {
+        out.push_str(&format!("duck @ {:.0},{:.0} {:.0}x{:.0}\n", duck.x, duck.y, duck.w, duck.h));
+    }
     fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
         let world = &state.world;
         let tree = world.tree();
@@ -84,7 +90,12 @@ pub fn describe(state: &Tileception) -> String {
                 let titles: Vec<String> = views
                     .iter()
                     .map(|window_id| {
-                        let app = state.windows.get(window_id).map(crate::state::app_id).unwrap_or_default();
+                        let app = state
+                            .windows
+                            .get(window_id)
+                            .map(crate::state::app_id)
+                            .or_else(|| state.handoff.windows.remote_app(*window_id))
+                            .unwrap_or_default();
                         format!("{}:{}", window_id.0, app)
                     })
                     .collect();
@@ -120,6 +131,16 @@ fn only_socket() -> std::io::Result<PathBuf> {
 
 /// `tileception msg ...`: sends a command to the running compositor.
 pub fn client(args: &[String]) -> std::io::Result<()> {
+    let reply = request(args)?;
+    print!("{reply}");
+    if reply.starts_with("error") {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Sends one command to the running compositor and returns its reply.
+pub fn request(args: &[String]) -> std::io::Result<String> {
     let path = match std::env::var_os("TILECEPTION_SOCKET") {
         Some(socket) => PathBuf::from(socket),
         None => match std::env::var("WAYLAND_DISPLAY") {
@@ -133,9 +154,5 @@ pub fn client(args: &[String]) -> std::io::Result<()> {
     stream.write_all(format!("{}\n", args.join(" ")).as_bytes())?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
-    print!("{reply}");
-    if reply.starts_with("error") {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(reply)
 }

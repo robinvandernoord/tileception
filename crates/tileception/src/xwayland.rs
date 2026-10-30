@@ -55,7 +55,9 @@ impl Tileception {
                         state.xwm = Some(window_manager);
                         state.xdisplay = Some(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
-                        if !state.nested {
+                        // Only a real session speaks for the user's D-Bus and
+                        // systemd; nested and headless ones would take it over.
+                        if state.session_services {
                             let _ = std::process::Command::new("dbus-update-activation-environment")
                                 .env("DISPLAY", format!(":{display_number}"))
                                 .args(["--systemd", "DISPLAY"])
@@ -150,8 +152,8 @@ impl XwmHandler for Tileception {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        if self.x11_window_id(&window).is_some() {
-            self.apply_layout();
+        if let Some(output) = self.x11_window_id(&window).and_then(|window| self.output_for_window(window)) {
+            self.with_output(&output, |state| state.apply_layout());
             return;
         }
         let mut geo = window.geometry();
@@ -180,7 +182,10 @@ impl XwmHandler for Tileception {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window) {
+        if let Some(window_id) = self.x11_window_id(&window)
+            && let Some(output) = self.output_for_window(window_id)
+        {
+            self.activate_output(&output);
             self.world.focus_window(window_id, self.now());
             self.run(crate::input::Action::Maximize);
         }
@@ -208,12 +213,16 @@ impl XwmHandler for Tileception {
     }
 
     fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window) {
-            let now = self.now();
-            if self.world.restore(window_id, now) {
-                self.apply_layout();
-                self.persist_layout();
-            }
+        if let Some(window_id) = self.x11_window_id(&window)
+            && let Some(output) = self.output_for_window(window_id)
+        {
+            self.with_output(&output, |state| {
+                let now = state.now();
+                if state.world.restore(window_id, now) {
+                    state.apply_layout();
+                    state.persist_layout();
+                }
+            });
         }
     }
 
@@ -235,6 +244,10 @@ impl XwmHandler for Tileception {
         let result = match selection {
             SelectionTarget::Clipboard => {
                 let clip = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+                    self.handoff_fetch(&remote, mime_type, fd);
+                    return;
+                }
                 if let Some(clip) = clip {
                     clip.send(fd);
                     return;
@@ -242,6 +255,11 @@ impl XwmHandler for Tileception {
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
             SelectionTarget::Primary => {
+                let clip = current_primary_selection_userdata(&self.seat).and_then(|data| data.clone());
+                if let Some(crate::launcher::Clip::Remote(remote)) = clip {
+                    self.handoff_fetch(&remote, mime_type, fd);
+                    return;
+                }
                 request_primary_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
         };
@@ -251,6 +269,7 @@ impl XwmHandler for Tileception {
     }
 
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        self.selection_offered(selection, Some(mime_types.clone()));
         match selection {
             SelectionTarget::Clipboard => set_data_device_selection(&self.display_handle, &self.seat, mime_types, None),
             SelectionTarget::Primary => set_primary_selection(&self.display_handle, &self.seat, mime_types, None),
@@ -261,7 +280,8 @@ impl XwmHandler for Tileception {
         match selection {
             SelectionTarget::Clipboard => {
                 if current_data_device_selection_userdata(&self.seat).is_some_and(|data| data.is_none()) {
-                    clear_data_device_selection(&self.display_handle, &self.seat)
+                    clear_data_device_selection(&self.display_handle, &self.seat);
+                    self.selection_offered(selection, None);
                 }
             }
             SelectionTarget::Primary => {

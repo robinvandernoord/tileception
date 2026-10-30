@@ -42,12 +42,15 @@ pub enum CaptureTarget {
         frame: ZwlrScreencopyFrameV1,
         buffer: WlBuffer,
         damage: bool,
+        /// With the pointer drawn in (the client's `overlay_cursor`).
+        cursor: bool,
     },
     /// A screencopy into a GPU buffer of the whole output.
     Dmabuf {
         frame: ZwlrScreencopyFrameV1,
         dmabuf: Dmabuf,
         damage: bool,
+        cursor: bool,
     },
     /// The whole output without the rubber duck, for its question.
     Duck,
@@ -69,6 +72,8 @@ pub struct PendingCapture {
 /// What a screencopy frame was asked to capture.
 pub struct FrameData {
     region: Rectangle<i32, Buffer>,
+    output: smithay::output::Output,
+    cursor: bool,
 }
 
 pub fn init_screencopy(display_handle: &DisplayHandle) {
@@ -76,6 +81,16 @@ pub fn init_screencopy(display_handle: &DisplayHandle) {
 }
 
 impl Tileception {
+    pub fn fail_captures(&mut self) {
+        for capture in self.pending_captures.drain(..) {
+            match capture.target {
+                CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
+                CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
+                CaptureTarget::Duck => {}
+            }
+        }
+    }
+
     /// The whole output, in pixels.
     fn output_region(&self) -> Rectangle<i32, Buffer> {
         Rectangle::from_size(self.output_pixels().into())
@@ -107,6 +122,19 @@ impl Tileception {
         Scene { elements, size: self.output_pixels(), clear: self.clear_colour() }
     }
 
+    /// The scene with the pointer on top, for captures that asked for it.
+    fn scene_with_pointer(&mut self, renderer: &mut GlesRenderer) -> Scene {
+        if !self.is_active_output() {
+            return self.scene(renderer);
+        }
+        let mut cursor = self.capture_cursor.take().unwrap_or_else(|| crate::cursor::Cursor::load(self.scale));
+        let mut elements = self.cursor_elements(renderer, &mut cursor);
+        self.capture_cursor = Some(cursor);
+        let scene = self.scene(renderer);
+        elements.extend(scene.elements);
+        Scene { elements, ..scene }
+    }
+
     /// Takes the queued captures. Called by the backend once per frame, with
     /// its renderer.
     pub fn process_captures(&mut self, renderer: &mut GlesRenderer) {
@@ -130,8 +158,16 @@ impl Tileception {
             return;
         }
         let scene = self.scene(renderer);
+        let wants_pointer = pending.iter().any(|capture| {
+            matches!(
+                capture.target,
+                CaptureTarget::Screencopy { cursor: true, .. } | CaptureTarget::Dmabuf { cursor: true, .. }
+            )
+        });
+        let pointer_scene = if wants_pointer { Some(self.scene_with_pointer(renderer)) } else { None };
         // Rendered on first use, and shared by the captures read back from it.
         let mut texture = None;
+        let mut pointer_texture = None;
         for capture in pending {
             let region = capture.region;
             match capture.target {
@@ -145,13 +181,17 @@ impl Tileception {
                     }
                     Err(err) => tracing::warn!("capture failed: {err}"),
                 },
-                CaptureTarget::Screencopy { frame, buffer, damage } => {
-                    let copied = pixels(renderer, &mut texture, &scene, region)
-                        .and_then(|rgba| copy_into_shm(&buffer, region.size.w, region.size.h, &rgba));
+                CaptureTarget::Screencopy { frame, buffer, damage, cursor } => {
+                    let read = match (&pointer_scene, cursor) {
+                        (Some(with_pointer), true) => pixels(renderer, &mut pointer_texture, with_pointer, region),
+                        _ => pixels(renderer, &mut texture, &scene, region),
+                    };
+                    let copied = read.and_then(|rgba| copy_into_shm(&buffer, region.size.w, region.size.h, &rgba));
                     finish_frame(&frame, region.size, damage, copied);
                 }
-                CaptureTarget::Dmabuf { frame, mut dmabuf, damage } => {
-                    let rendered = render_scene(renderer, &mut dmabuf, &scene);
+                CaptureTarget::Dmabuf { frame, mut dmabuf, damage, cursor } => {
+                    let shown = if cursor { pointer_scene.as_ref().unwrap_or(&scene) } else { &scene };
+                    let rendered = render_scene(renderer, &mut dmabuf, shown);
                     finish_frame(&frame, region.size, damage, rendered);
                 }
                 CaptureTarget::Duck => {}
@@ -208,7 +248,7 @@ fn finish_frame(frame: &ZwlrScreencopyFrameV1, size: Size<i32, Buffer>, damage: 
 }
 
 /// Reads a region of a texture as RGBA rows, top to bottom.
-fn read_region(
+pub fn read_region(
     renderer: &mut GlesRenderer,
     texture: &GlesTexture,
     region: Rectangle<i32, Buffer>,
@@ -300,24 +340,45 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
         _dh: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
-        let full = state.output_region();
-        let (frame, region) = match request {
-            zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, .. } => (frame, full),
-            zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
-                frame, x: left, y: top, width, height, ..
-            } => {
-                // Asked for in logical pixels (slurp's), copied in physical ones.
-                let rect = crate::render::physical(
-                    &tileception_core::Rect::new(left as f64, top as f64, width as f64, height as f64),
-                    state.scale,
-                );
-                let asked =
-                    Rectangle::<i32, Buffer>::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into());
-                (frame, asked.intersection(full).unwrap_or(full))
+        let (frame, wl_output, overlay_cursor, requested) = match request {
+            zwlr_screencopy_manager_v1::Request::CaptureOutput { frame, overlay_cursor, output } => {
+                (frame, output, overlay_cursor, None)
             }
+            zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
+                frame,
+                overlay_cursor,
+                output,
+                x: left,
+                y: top,
+                width,
+                height,
+            } => (frame, output, overlay_cursor, Some((left, top, width, height))),
             _ => return,
         };
-        let frame = init.init(frame, FrameData { region });
+        let cursor = overlay_cursor != 0;
+        let Some(output) = smithay::output::Output::from_resource(&wl_output)
+            .filter(|output| state.output_named(&output.name()).is_some())
+        else {
+            // The resource still needs initializing before reporting failure.
+            let Some(output) = state.output.clone() else { return };
+            let frame = init.init(frame, FrameData { region: state.output_region(), output, cursor });
+            frame.failed();
+            return;
+        };
+        let full = state.with_output(&output, |state| state.output_region()).expect("connected output");
+        let region = if let Some((left, top, width, height)) = requested {
+            // Asked for in logical pixels (slurp's), copied in physical ones.
+            let rect = crate::render::physical(
+                &tileception_core::Rect::new(left as f64, top as f64, width as f64, height as f64),
+                output.current_scale().fractional_scale(),
+            );
+            let asked =
+                Rectangle::<i32, Buffer>::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into());
+            asked.intersection(full).unwrap_or(full)
+        } else {
+            full
+        };
+        let frame = init.init(frame, FrameData { region, output, cursor });
         let size = region.size;
         frame.buffer(wl_shm::Format::Xrgb8888, size.w as u32, size.h as u32, size.w as u32 * 4);
         if frame.version() >= 3 {
@@ -351,17 +412,27 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Tileception {
                 frame.failed();
                 return;
             }
-            CaptureTarget::Dmabuf { frame: frame.clone(), dmabuf: dmabuf.clone(), damage }
+            CaptureTarget::Dmabuf { frame: frame.clone(), dmabuf: dmabuf.clone(), damage, cursor: data.cursor }
         } else if with_buffer_contents(&buffer, |_, _, _| ()).is_ok() {
-            CaptureTarget::Screencopy { frame: frame.clone(), buffer, damage }
+            CaptureTarget::Screencopy { frame: frame.clone(), buffer, damage, cursor: data.cursor }
         } else {
             frame.failed();
             return;
         };
         // A stream of frames (portals, OBS) is sharing; one copy is a screenshot.
         let sharing = damage || matches!(target, CaptureTarget::Dmabuf { .. });
-        state.bar.capture = Some((std::time::Instant::now(), sharing));
-        state.pending_captures.push(PendingCapture { region: data.region, target });
+        if state.output_named(&data.output.name()).is_none() {
+            frame.failed();
+            return;
+        }
+        // Headless, nobody is watching to be warned; recordings stay clean.
+        let warn = state.headless.is_none();
+        state.with_output(&data.output, |state| {
+            if warn {
+                state.bar.capture = Some((std::time::Instant::now(), sharing));
+            }
+            state.pending_captures.push(PendingCapture { region: data.region, target });
+        });
         // With damage, the copy waits for the screen to change; without, it
         // is taken right away.
         if !damage {

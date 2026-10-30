@@ -60,6 +60,8 @@ autostart = []
 # danger = "#f0646a"
 # Cautions, such as volume boosted past 100%.
 # warning = "#f2b04c"
+# The border of windows from another computer (handoff).
+# guest = "#a78bfa"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -204,9 +206,32 @@ tray_max_icons = 3
 #
 # [outputs."eDP-1"]
 # scale = 1.5
+# position = [0, 0]             # top-left corner in logical pixels
+#
+# [outputs."DP-1"]
+# scale = 1
+# position = [1280, 0]          # right of a 1920-wide panel at scale 1.5
+# Without positions, screens form a row in connector-name order.
 #
 # [outputs."*"]
 # scale = 1
+
+# Handoff: share this mouse, keyboard and clipboard with other Tileception
+# machines on the network that know the same passphrase. When one appears,
+# drag its card to the edge of the screen where it stands; the pointer then
+# crosses there once its user has placed this machine too. Ctrl+Super+Escape
+# brings input back. Locking pauses sharing until you resume it on the card.
+# Pick several random words for the passphrase: guesses are slowed down, but
+# a short phrase can still be guessed. Nothing listens until this is enabled
+# with a passphrase. `tileception msg handoff` shows what is connected.
+#
+# [handoff]
+# enabled = true
+# passphrase = "several random words go here"
+# name = "laptop"               # what others see; the host name by default
+# port = 24850                  # TCP, on every machine
+# discovery = true              # find machines with mDNS
+# peers = ["192.168.1.20"]      # or fixed addresses (host or host:port)
 
 # Extra arguments for programs started from the launcher and the welcome
 # screen, by desktop file name (without .desktop; Snap and Flatpak entries
