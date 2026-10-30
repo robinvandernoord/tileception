@@ -2,18 +2,24 @@
 //! into tiles, compressed and packed into messages that fit one encrypted
 //! frame, and put back together on the other side.
 
-use crate::wire::{PICTURE_BUDGET, Picture, Tile};
+use serde::{Deserialize, Serialize};
+
+use crate::wire::{MAX_POPUPS, PICTURE_BUDGET, Picture, Tile};
 
 /// Tiles are at most this big, so a tile always fits a message even when it
 /// does not compress at all.
 const TILE_WIDTH: u32 = 128;
 const TILE_HEIGHT: u32 = 64;
 
+/// The most a tile adds to a message besides its pixels: four numbers and
+/// the pixels' length, each at most five bytes encoded.
+const TILE_OVERHEAD: usize = 25;
+
 /// The largest picture accepted, in pixels on a side.
 const LARGEST: u32 = 16384;
 
 /// A rectangle of a picture, in pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Area {
     pub left: u32,
     pub top: u32,
@@ -22,24 +28,30 @@ pub struct Area {
 }
 
 /// What a picture message is about besides its tiles.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Header {
     pub window: u64,
     pub serial: u64,
     pub width: u32,
     pub height: u32,
     pub scale: f64,
+    /// The window itself and its popups, in the picture.
+    pub body: Area,
+    pub popups: Vec<Area>,
 }
 
 /// The messages that carry the `changed` areas of an RGBA picture. There is
 /// always at least one, the last marked so; it may carry no tiles.
-pub fn pack(header: Header, pixels: &[u8], changed: &[Area]) -> Vec<Picture> {
+pub fn pack(header: &Header, pixels: &[u8], changed: &[Area]) -> Vec<Picture> {
+    let popups: Vec<Area> = header.popups.iter().take(MAX_POPUPS).copied().collect();
     let message = |tiles: Vec<Tile>, last| Picture {
         window: header.window,
         serial: header.serial,
         width: header.width,
         height: header.height,
         scale: header.scale,
+        body: header.body,
+        popups: popups.clone(),
         tiles,
         last,
     };
@@ -49,11 +61,12 @@ pub fn pack(header: Header, pixels: &[u8], changed: &[Area]) -> Vec<Picture> {
     for area in changed {
         for tile in cut(*area, header.width, header.height) {
             let compressed = compress(pixels, header.width, tile);
-            if size + compressed.len() > PICTURE_BUDGET && !tiles.is_empty() {
+            let cost = compressed.len() + TILE_OVERHEAD;
+            if size + cost > PICTURE_BUDGET && !tiles.is_empty() {
                 messages.push(message(std::mem::take(&mut tiles), false));
                 size = 0;
             }
-            size += compressed.len();
+            size += cost;
             tiles.push(Tile {
                 left: tile.left,
                 top: tile.top,
@@ -157,14 +170,22 @@ mod tests {
     }
 
     fn header(width: u32, height: u32) -> Header {
-        Header { window: 4, serial: 9, width, height, scale: 1.25 }
+        Header {
+            window: 4,
+            serial: 9,
+            width,
+            height,
+            scale: 1.25,
+            body: Area { left: 0, top: 0, width, height },
+            popups: Vec::new(),
+        }
     }
 
     #[test]
     fn a_whole_picture_comes_back_the_same() {
         let (width, height) = (300, 170);
         let pixels = noise(width, height, 3);
-        let messages = pack(header(width, height), &pixels, &[Area { left: 0, top: 0, width, height }]);
+        let messages = pack(&header(width, height), &pixels, &[Area { left: 0, top: 0, width, height }]);
         assert!(messages.len() > 1, "incompressible pixels need several messages");
         assert!(messages.iter().rev().skip(1).all(|message| !message.last));
         assert!(messages.last().is_some_and(|message| message.last));
@@ -180,7 +201,7 @@ mod tests {
         let (width, height) = (400, 300);
         let before = noise(width, height, 5);
         let mut canvas = Canvas::default();
-        for message in pack(header(width, height), &before, &[Area { left: 0, top: 0, width, height }]) {
+        for message in pack(&header(width, height), &before, &[Area { left: 0, top: 0, width, height }]) {
             canvas.paint(&message);
         }
         let mut after = before.clone();
@@ -191,7 +212,7 @@ mod tests {
                 after[start..start + 4].copy_from_slice(&[1, 2, 3, 4]);
             }
         }
-        let messages = pack(header(width, height), &after, &[changed]);
+        let messages = pack(&header(width, height), &after, &[changed]);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tiles.len(), 1, "clipped to the picture");
         assert!(canvas.paint(&messages[0]));
@@ -199,8 +220,19 @@ mod tests {
     }
 
     #[test]
+    fn many_small_tiles_still_fit_one_noise_message_each() {
+        let (width, height) = (4096, 4096);
+        let pixels = vec![0; width as usize * height as usize * 4];
+        let messages = pack(&header(width, height), &pixels, &[Area { left: 0, top: 0, width, height }]);
+        for message in messages {
+            let bytes = postcard::to_stdvec(&message).expect("encodes");
+            assert!(bytes.len() + 64 <= 65535, "{} bytes", bytes.len());
+        }
+    }
+
+    #[test]
     fn nothing_changed_still_ends_the_picture() {
-        let messages = pack(header(10, 10), &noise(10, 10, 1), &[]);
+        let messages = pack(&header(10, 10), &noise(10, 10, 1), &[]);
         assert_eq!(messages.len(), 1);
         assert!(messages[0].last && messages[0].tiles.is_empty());
     }
@@ -215,6 +247,8 @@ mod tests {
             width: 4,
             height: 4,
             scale: 1.0,
+            body: Area { left: 0, top: 0, width: 4, height: 4 },
+            popups: Vec::new(),
             tiles: vec![Tile { left: 3, top: 3, width: 2, height: 2, pixels }],
             last: true,
         };

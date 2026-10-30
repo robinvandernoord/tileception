@@ -274,15 +274,24 @@ Decisions:
   (LZ4-compressed tiles, the next picture after the last arrived, queued
   behind input). Input, focus and tile size travel back. Verified with
   headless instances in both directions, with typing from either keyboard.
-- [ ] Window handoff, still to do: menus and popups past the window's own
-  rectangle are cut off; the program's own cursor is not shown over it (the
-  plain arrow is); client-side resizing and drag and drop do not cross;
-  disconnecting brings windows home at once instead of the decided
-  unavailable tile with resume on reconnection; video-heavy windows need a
-  real video codec rather than compressed tiles.
+- [x] Window handoff, popups and lost connections (2026-10-30, not yet tried
+  between instances): menus and other popups reaching past the window come
+  along in its pictures and take input there; losing focus there closes
+  them. A lost connection leaves the window hidden on its owner (with a
+  notification) and an unavailable "Waiting for <machine>" tile on the
+  other; linking again resumes it unless `handoff reclaim` took it home
+  first, and closing the unavailable tile sends it home on the next link.
+  Turning handoff off or dismissing still brings everything home at once.
+- [ ] Window handoff, still to do: the program's own cursor is not shown
+  over it (the plain arrow is); popups are positioned for the owner's idea
+  of the window, not kept on the other machine's screen; client-side
+  resizing and drag and drop do not cross; resuming needs the same running
+  instances (a restarted compositor gets a new machine id, so its windows
+  must be reclaimed); video-heavy windows need a real video codec rather
+  than compressed tiles.
 - [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
-  failures. The lock policy applies to input and clipboard transfers,
-  including in-flight ones; streamed windows still to do.
+  failures. The lock policy applies to input, clipboard transfers and
+  streamed windows, including pictures already queued or on the way.
 - [x] Discovery (mDNS and fixed `peers`), the edge card on both machines and
   mutual acceptance; the passphrase comes from the config.
 - [ ] Dragging files across.
@@ -326,6 +335,14 @@ Review log:
   the other machine, Ctrl+Super+Escape, clipboard and primary both ways (a
   400 kB paste intact), disconnect while forwarding, dismiss and retry.
   Locking was not triggered in tests; the card has no timeout yet.
+- 2026-10-30: Popups, lock policy and disconnect recovery for streamed
+  windows (protocol 3): pictures cover the window plus its popups and say
+  where each is; pictures queued when sharing pauses are dropped on the
+  owner and ignored on arrival; `WindowsResumed` on every link resumes or
+  clears the windows that were waiting. Also fixed picture packing so many
+  small tiles cannot overflow one encrypted message. Unit-tested the
+  layout of pictures and popups; the container had no GPU render node, so
+  the headless two-instance run is still to do.
 
 ### Design ideas from LunariaOS
 

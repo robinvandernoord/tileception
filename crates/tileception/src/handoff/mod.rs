@@ -6,7 +6,8 @@
 //! the other machine to an edge of one of their screens; once both have,
 //! the pointer crosses at those edges. Nothing about the arrangement is
 //! saved: every new connection asks again. Locking pauses sharing until it
-//! is resumed by hand.
+//! is resumed by hand. Windows shown on a machine whose connection is lost
+//! wait for it to link again.
 
 mod clipboard;
 mod forward;
@@ -335,6 +336,12 @@ impl Tileception {
             self.clipboard_peer_gone(peer);
             self.windows_peer_gone(peer);
         }
+        // Including windows still waiting for a machine that went away.
+        self.reclaim_windows();
+        let waiting: Vec<PeerId> = self.handoff.windows.remote.values().map(|remote| remote.peer).collect();
+        for peer in waiting {
+            self.windows_peer_gone(peer);
+        }
         self.handoff.peers.clear();
         self.handoff.prompt = prompt::Prompt::default();
         self.handoff.service = None;
@@ -368,7 +375,7 @@ impl Tileception {
                 }
                 self.forget_input(peer);
                 self.clipboard_peer_gone(peer);
-                self.windows_peer_gone(peer);
+                self.windows_peer_lost(peer);
                 if !self.handoff.prompt.dismissed.contains(&peer) {
                     self.handoff.peers.remove(&peer);
                 }
@@ -409,6 +416,7 @@ impl Tileception {
                     *paused = Some(Pause::Theirs);
                 }
                 self.unlink(peer);
+                self.pause_streams(Some(peer));
             }
             Message::Resumed => {
                 if self.handoff.locked {
@@ -451,6 +459,7 @@ impl Tileception {
         let summary = format!("Sharing with {}", entry.name);
         tracing::info!("handoff: linked with {} at {} {}", entry.name, edge.output, edge.side.name());
         self.notify_locally(&summary, &body, Urgency::Normal);
+        self.resume_windows(peer);
     }
 
     /// Stops input from and to a machine, keeping the link itself.
@@ -481,6 +490,7 @@ impl Tileception {
             }
         }
         self.handoff.clipboard.fail_all();
+        self.pause_streams(None);
     }
 
     fn handoff_resume(&mut self) -> Result<(), String> {

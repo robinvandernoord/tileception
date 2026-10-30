@@ -4,9 +4,14 @@
 //! pointer. Its program keeps running here, on its owner, which draws it off
 //! screen and sends pictures of what changed (see `stream.rs`). The other
 //! machine shows those in a tile of its own and sends back pointer and
-//! keyboard input and the size its tile has. Dragging the window back, the
-//! owner reclaiming it, or losing the connection brings it home; closing it
-//! there closes it.
+//! keyboard input and the size its tile has. Its menus and other popups
+//! come along in the same pictures, drawn over whatever is next to it.
+//! Dragging the window back or the owner reclaiming it brings it home;
+//! closing it there closes it.
+//!
+//! When the connection is lost the window stays where it was: hidden on its
+//! owner, an unavailable tile on the other machine. Once the two link again
+//! it picks up where it was, unless its owner reclaimed it in the meantime.
 
 use std::collections::HashMap;
 
@@ -30,14 +35,14 @@ use smithay::{
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size, Transform},
 };
 use tileception_core::{Placement, Rect, WindowId};
-use tileception_handoff::{Canvas, Message, PeerId, Picture, Scroll, Source};
+use tileception_handoff::{Area, Canvas, Message, PeerId, Picture, Resumed, Scroll, Source};
 
 use super::stream::Stream;
 use crate::{
     Tileception,
     focus::KeyboardFocus,
     input::AxisInput,
-    render::{OutputElement, physical, physical_point, solid},
+    render::{OutputElement, physical, physical_point, push_image, solid},
     state::{app_id, window_title},
 };
 
@@ -71,7 +76,8 @@ pub(crate) struct Windows {
 
 pub(crate) struct Away {
     pub(crate) peer: PeerId,
-    pub(crate) stream: Stream,
+    /// None while the connection to `peer` is lost.
+    pub(crate) stream: Option<Stream>,
     title: String,
     app_id: String,
 }
@@ -82,28 +88,80 @@ pub(crate) struct Remote {
     window: u64,
     pub(crate) title: String,
     app_id: String,
+    /// What its owner is called, for when it cannot be reached.
+    owner: String,
     canvas: Canvas,
     /// Pixels per logical pixel on the owner.
     scale: f64,
+    /// Where the window itself and its popups are in the picture.
+    body: Area,
+    popups: Vec<Area>,
     buffer: Option<MemoryRenderBuffer>,
     /// The logical size it had when it came, until a picture says otherwise.
     shown: (u32, u32),
     /// The size last asked of its owner.
     asked: Option<(u32, u32)>,
+    /// The connection to its owner was lost; it waits for it to come back.
+    lost: bool,
 }
 
 impl Remote {
     /// Its size in logical pixels.
     fn size(&self) -> Size<i32, Logical> {
-        if self.canvas.width == 0 || self.scale <= 0.0 {
+        if self.buffer.is_none() || self.body.width == 0 || self.scale <= 0.0 {
             return (self.shown.0 as i32, self.shown.1 as i32).into();
         }
         (
-            (f64::from(self.canvas.width) / self.scale).round() as i32,
-            (f64::from(self.canvas.height) / self.scale).round() as i32,
+            (f64::from(self.body.width) / self.scale).round() as i32,
+            (f64::from(self.body.height) / self.scale).round() as i32,
         )
             .into()
     }
+
+    /// Forgets its picture: the next one is a whole one.
+    fn clear(&mut self) {
+        self.size_now();
+        self.canvas = Canvas::default();
+        self.buffer = None;
+        self.popups.clear();
+        self.asked = None;
+    }
+
+    /// Keeps its current size for while it has no picture.
+    fn size_now(&mut self) {
+        let size = self.size();
+        self.shown = (size.w.max(1) as u32, size.h.max(1) as u32);
+    }
+
+    /// Where its popups are drawn when the window itself is drawn at
+    /// `content`, `scale` times its size, and which part of the picture
+    /// each shows.
+    fn popup_rects(&self, content: &Rect, scale: (f64, f64)) -> Vec<(Rect, Area)> {
+        if self.scale <= 0.0 {
+            return Vec::new();
+        }
+        let logical = |pixels: u32, from: u32| (f64::from(pixels) - f64::from(from)) / self.scale;
+        self.popups
+            .iter()
+            .map(|popup| {
+                let rect = Rect::new(
+                    content.x + logical(popup.left, self.body.left) * scale.0,
+                    content.y + logical(popup.top, self.body.top) * scale.1,
+                    logical(popup.width, 0) * scale.0,
+                    logical(popup.height, 0) * scale.1,
+                );
+                (rect, *popup)
+            })
+            .collect()
+    }
+}
+
+/// An area of a canvas, when it lies within it.
+fn within(area: Area, canvas: &Canvas) -> bool {
+    area.width > 0
+        && area.height > 0
+        && area.left.checked_add(area.width).is_some_and(|right| right <= canvas.width)
+        && area.top.checked_add(area.height).is_some_and(|bottom| bottom <= canvas.height)
 }
 
 /// A window that came with a drag from `peer`, held at `grab` (fractions of
@@ -177,8 +235,9 @@ impl Tileception {
                     .windows
                     .away_id(peer, window)
                     .and_then(|local| self.handoff.windows.away.get_mut(&local))
+                    && let Some(stream) = away.stream.as_mut()
                 {
-                    away.stream.acked(serial);
+                    stream.acked(serial);
                     self.schedule_render();
                 }
             }
@@ -193,6 +252,7 @@ impl Tileception {
                     self.close_window(local);
                 }
             }
+            Message::WindowsResumed { windows } => self.windows_resumed(peer, windows),
             message => {
                 let Some(local) = self.away_input(peer, &message) else { return };
                 match message {
@@ -301,7 +361,7 @@ impl Tileception {
             return false;
         };
         tracing::info!(window = window.0, "handoff: window shown on {peer:016x}");
-        self.handoff.windows.away.insert(window, Away { peer, stream, title, app_id: app });
+        self.handoff.windows.away.insert(window, Away { peer, stream: Some(stream), title, app_id: app });
         self.selection.windows.remove(&window);
         let now = self.now();
         self.world.remove_window(window, now);
@@ -346,6 +406,126 @@ impl Tileception {
             self.take_back(*window, None);
         }
         away.len()
+    }
+
+    /// The connection to a machine was lost. This machine's windows there
+    /// stay hidden until it links again or they are reclaimed; its windows
+    /// here become unavailable tiles until then.
+    pub(crate) fn windows_peer_lost(&mut self, peer: PeerId) {
+        let windows = &mut self.handoff.windows;
+        let mut stranded = 0;
+        for (window, away) in &mut windows.away {
+            if away.peer != peer {
+                continue;
+            }
+            away.stream = None;
+            stranded += 1;
+            if windows.away_keyboard == Some(*window) {
+                windows.away_keyboard = None;
+            }
+            if windows.typing == Some(*window) {
+                windows.typing = None;
+            }
+        }
+        if windows.arriving.is_some_and(|arriving| arriving.peer == peer) {
+            windows.arriving = None;
+        }
+        let mut lost = Vec::new();
+        for (window, remote) in &mut windows.remote {
+            if remote.peer == peer {
+                remote.lost = true;
+                remote.clear();
+                lost.push(*window);
+            }
+        }
+        for window in lost {
+            if windows.hovered == Some(window) {
+                windows.hovered = None;
+            }
+            if windows.pressed.is_some_and(|(pressed, _)| pressed == window) {
+                windows.pressed = None;
+            }
+            if windows.remote_keyboard == Some(window) {
+                windows.remote_keyboard = None;
+            }
+        }
+        if stranded > 0 {
+            let name =
+                self.handoff.peers.get(&peer).map_or_else(|| "the other machine".into(), |entry| entry.name.clone());
+            let summary = if stranded == 1 {
+                format!("A window is still on {name}")
+            } else {
+                format!("{stranded} windows are still on {name}")
+            };
+            let body = format!(
+                "The connection to {name} was lost. Windows come back to {name} when it links again; \
+                 handoff reclaim brings them here now."
+            );
+            tracing::info!("handoff: {stranded} windows wait for {name}");
+            self.notify_locally(&summary, &body, tileception_notify::Urgency::Normal);
+        }
+        self.schedule_render();
+    }
+
+    /// The machines linked: windows shown on `peer` before the connection
+    /// was lost go on there.
+    pub(crate) fn resume_windows(&mut self, peer: PeerId) {
+        let Some(messenger) = self.handoff.messenger() else { return };
+        let mut resumed = Vec::new();
+        let mut failed = Vec::new();
+        for (window, away) in &mut self.handoff.windows.away {
+            if away.peer != peer || away.stream.is_some() {
+                continue;
+            }
+            match Stream::start(peer, window.0, messenger.clone()) {
+                Some(stream) => {
+                    away.stream = Some(stream);
+                    resumed.push(Resumed { window: window.0, title: away.title.clone(), app_id: away.app_id.clone() });
+                }
+                None => failed.push(*window),
+            }
+        }
+        for window in failed {
+            self.take_back(window, None);
+        }
+        if !resumed.is_empty() {
+            tracing::info!("handoff: {} windows resume on {peer:016x}", resumed.len());
+        }
+        // Always sent: it also tells the other machine which of this one's
+        // windows it was waiting for are gone.
+        self.handoff.send(peer, Message::WindowsResumed { windows: resumed });
+    }
+
+    /// The other machine's windows that go on here after a lost connection.
+    fn windows_resumed(&mut self, peer: PeerId, windows: Vec<Resumed>) {
+        let mut waiting: Vec<WindowId> = self
+            .handoff
+            .windows
+            .remote
+            .iter()
+            .filter(|(_, remote)| remote.peer == peer && remote.lost)
+            .map(|(window, _)| *window)
+            .collect();
+        for resumed in windows {
+            let Some(local) = self.handoff.windows.remote_id(peer, resumed.window) else {
+                // Closed here while it was away: it goes home.
+                self.handoff.send(peer, Message::WindowBack { window: resumed.window, grab: (0.5, 0.5), button: 0 });
+                continue;
+            };
+            waiting.retain(|window| *window != local);
+            if let Some(remote) = self.handoff.windows.remote.get_mut(&local) {
+                remote.lost = false;
+                remote.title = resumed.title;
+                remote.app_id = resumed.app_id;
+                remote.clear();
+            }
+        }
+        // Reclaimed by their owner in the meantime.
+        for window in waiting {
+            self.drop_remote(window);
+        }
+        self.apply_layout();
+        self.schedule_render();
     }
 
     /// A machine went away or stopped sharing: its windows here go, and this
@@ -406,16 +586,21 @@ impl Tileception {
         }
         let local = self.next_id();
         tracing::info!(window = local.0, app = app_id, "handoff: window from {peer:016x}");
+        let owner = self.handoff.peers.get(&peer).map(|entry| entry.name.clone()).unwrap_or_default();
         let remote = Remote {
             peer,
             window,
             title,
             app_id,
+            owner,
             canvas: Canvas::default(),
             scale: 1.0,
+            body: Area::default(),
+            popups: Vec::new(),
             buffer: None,
             shown: (shown.0.clamp(1, 16384), shown.1.clamp(1, 16384)),
             asked: None,
+            lost: false,
         };
         self.handoff.windows.remote.insert(local, remote);
         let now = self.now();
@@ -465,8 +650,15 @@ impl Tileception {
     }
 
     fn window_picture(&mut self, peer: PeerId, picture: &Picture) {
+        // Paused sharing takes no pictures, not even ones already on the way.
+        if self.handoff.active_edge(peer).is_none() || self.is_locked() {
+            return;
+        }
         let Some(local) = self.handoff.windows.remote_id(peer, picture.window) else { return };
         let Some(remote) = self.handoff.windows.remote.get_mut(&local) else { return };
+        if remote.lost {
+            return;
+        }
         if !remote.canvas.paint(picture) {
             tracing::warn!("handoff: a picture of window {local:?} does not fit; dropped");
             return;
@@ -475,6 +667,9 @@ impl Tileception {
             return;
         }
         let canvas = &remote.canvas;
+        let whole = Area { left: 0, top: 0, width: canvas.width, height: canvas.height };
+        remote.body = if within(picture.body, canvas) { picture.body } else { whole };
+        remote.popups = picture.popups.iter().copied().filter(|popup| within(*popup, canvas)).collect();
         let size = (canvas.width as i32, canvas.height as i32);
         remote.buffer =
             Some(MemoryRenderBuffer::from_slice(&canvas.pixels, Fourcc::Abgr8888, size, 1, Transform::Normal, None));
@@ -551,16 +746,23 @@ impl Tileception {
         self.handoff.send(peer, Message::WindowSize { window: owned, width: wanted.0, height: wanted.1 });
     }
 
-    /// Closing another machine's window asks its owner to close it.
+    /// Closing another machine's window asks its owner to close it. One
+    /// whose owner cannot be reached just goes; the owner takes it back
+    /// when they link again.
     pub(crate) fn close_remote(&self, window: WindowId) -> bool {
         let Some(remote) = self.handoff.windows.remote.get(&window) else { return false };
-        self.handoff.send(remote.peer, Message::WindowClose { window: remote.window });
+        if remote.lost {
+            self.loop_handle.insert_idle(move |state| state.drop_remote(window));
+        } else {
+            self.handoff.send(remote.peer, Message::WindowClose { window: remote.window });
+        }
         true
     }
 
     /// Another machine's window as drawn in its place: its picture, cut to
     /// `content` when it is too big for it, or a plain tile before the first
-    /// picture or while sharing with its owner is paused.
+    /// picture or while sharing with its owner is paused. One whose owner
+    /// cannot be reached says so.
     pub(crate) fn remote_elements(
         &self,
         renderer: &mut GlesRenderer,
@@ -571,13 +773,38 @@ impl Tileception {
     ) -> Vec<OutputElement> {
         let Some(remote) = self.handoff.windows.remote.get(&window) else { return Vec::new() };
         let plain = || vec![solid(content, self.theme.surface.alpha(alpha).0, self.scale)];
+        if remote.lost {
+            let mut elements = Vec::new();
+            let theme = &self.theme;
+            let owner = if remote.owner.is_empty() { "its machine" } else { remote.owner.as_str() };
+            let label = format!("Waiting for {owner}");
+            let image = self.text.borrow_mut().line(
+                &label,
+                &theme.font,
+                theme.font_size,
+                theme.muted,
+                content.w as f32 - 16.0,
+                false,
+            );
+            if let Some(image) = image.filter(|image| image.height < content.h) {
+                let position =
+                    (content.x + (content.w - image.width) / 2.0, content.y + (content.h - image.height) / 2.0);
+                push_image(&mut elements, renderer, &image.buffer, position, self.scale);
+            }
+            elements.extend(plain());
+            return elements;
+        }
         let paused = self.handoff.active_edge(remote.peer).is_none();
         let Some(buffer) = remote.buffer.as_ref().filter(|_| !paused) else { return plain() };
         let area = physical(content, self.scale);
         let location = physical_point((content.x, content.y), self.scale).to_f64();
-        // The part of the picture shown: all of it unless cut off.
-        let source =
-            Rectangle::<f64, Logical>::new((0.0, 0.0).into(), (shown.0 * remote.scale, shown.1 * remote.scale).into());
+        // The part of the picture shown: the window itself, unless cut off.
+        let body = remote.body;
+        let source = Rectangle::<f64, Logical>::new(
+            (f64::from(body.left), f64::from(body.top)).into(),
+            ((shown.0 * remote.scale).min(f64::from(body.width)), (shown.1 * remote.scale).min(f64::from(body.height)))
+                .into(),
+        );
         let size: Size<i32, Logical> = (area.size.w, area.size.h).into();
         let alpha = (alpha < 1.0).then_some(alpha);
         match MemoryRenderBufferRenderElement::from_buffer(
@@ -594,7 +821,49 @@ impl Tileception {
         }
     }
 
-    /// The other machine's window under a point, if it is on top there.
+    /// Another machine's window's menus and other popups, drawn above every
+    /// window wherever they reach.
+    pub(crate) fn remote_popup_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        window: WindowId,
+        content: &Rect,
+        scale: (f64, f64),
+    ) -> Vec<OutputElement> {
+        let Some(remote) = self.handoff.windows.remote.get(&window) else { return Vec::new() };
+        if remote.lost || self.handoff.active_edge(remote.peer).is_none() {
+            return Vec::new();
+        }
+        let Some(buffer) = remote.buffer.as_ref() else { return Vec::new() };
+        remote
+            .popup_rects(content, scale)
+            .into_iter()
+            .rev()
+            .filter_map(|(rect, popup)| {
+                let area = physical(&rect, self.scale);
+                let location = physical_point((rect.x, rect.y), self.scale).to_f64();
+                let source = Rectangle::<f64, Logical>::new(
+                    (f64::from(popup.left), f64::from(popup.top)).into(),
+                    (f64::from(popup.width), f64::from(popup.height)).into(),
+                );
+                let size: Size<i32, Logical> = (area.size.w, area.size.h).into();
+                MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    location,
+                    buffer,
+                    None,
+                    Some(source),
+                    Some(size),
+                    Kind::Unspecified,
+                )
+                .ok()
+                .map(OutputElement::Memory)
+            })
+            .collect()
+    }
+
+    /// The other machine's window under a point, if it is on top there: its
+    /// popups first, as they are drawn above every window.
     fn remote_under(&self, pos: Point<f64, Logical>) -> Option<WindowId> {
         use smithay::wayland::shell::wlr_layer::Layer;
         if self.handoff.windows.remote.is_empty()
@@ -603,8 +872,18 @@ impl Tileception {
             return None;
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
-        let shown = self.drawn_windows(self.now()).into_iter().find(|drawn| drawn.content.contains(point))?;
-        self.handoff.windows.is_remote(shown.window_id).then_some(shown.window_id)
+        let drawn = self.drawn_windows(self.now());
+        let in_popup = drawn.iter().find(|drawn| {
+            self.handoff.windows.remote.get(&drawn.window_id).is_some_and(|remote| {
+                !remote.lost
+                    && remote.popup_rects(&drawn.content, drawn.scale).iter().any(|(rect, _)| rect.contains(point))
+            })
+        });
+        if let Some(drawn) = in_popup {
+            return Some(drawn.window_id);
+        }
+        let shown = drawn.into_iter().find(|drawn| drawn.content.contains(point))?;
+        self.handoff.windows.remote.get(&shown.window_id).filter(|remote| !remote.lost).map(|_| shown.window_id)
     }
 
     /// A point in another machine's window, in its logical pixels.
@@ -786,6 +1065,16 @@ impl Tileception {
         }
         if let Some(placed) = self.windows.get(&window) {
             placed.set_activated(focused);
+            // Clicking anything else there closes the window's menus, as
+            // clicking outside them here would.
+            if !focused && let Some(toplevel) = placed.toplevel() {
+                let surface = toplevel.wl_surface();
+                let popups: Vec<_> =
+                    smithay::desktop::PopupManager::popups_for_surface(surface).map(|(popup, _)| popup).collect();
+                for popup in popups.iter().rev() {
+                    let _ = smithay::desktop::PopupManager::dismiss_popup(surface, popup);
+                }
+            }
             if let Some(toplevel) = placed.toplevel()
                 && toplevel.is_initial_configure_sent()
             {
@@ -840,14 +1129,60 @@ impl Tileception {
             .windows
             .away
             .iter()
-            .map(|(window, away)| format!("window {} {:?} is on {}", window.0, away.title, name(away.peer)))
+            .map(|(window, away)| {
+                let waiting = if away.stream.is_none() { " (waiting for it to link again)" } else { "" };
+                format!("window {} {:?} is on {}{waiting}", window.0, away.title, name(away.peer))
+            })
             .collect();
-        lines.extend(
-            self.handoff.windows.remote.iter().map(|(window, remote)| {
-                format!("window {} {:?} is from {}", window.0, remote.title, name(remote.peer))
-            }),
-        );
+        lines.extend(self.handoff.windows.remote.iter().map(|(window, remote)| {
+            let waiting = if remote.lost { " (unavailable)" } else { "" };
+            format!("window {} {:?} is from {}{waiting}", window.0, remote.title, remote.owner)
+        }));
         lines.sort();
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote(body: Area, popups: Vec<Area>, scale: f64) -> Remote {
+        Remote {
+            peer: 1,
+            window: 2,
+            title: String::new(),
+            app_id: String::new(),
+            owner: "laptop".into(),
+            canvas: Canvas::default(),
+            scale,
+            body,
+            popups,
+            buffer: None,
+            shown: (10, 10),
+            asked: None,
+            lost: false,
+        }
+    }
+
+    #[test]
+    fn popups_are_drawn_beside_the_window_as_zoomed() {
+        // A 2x picture: the window starts 100 pixels in, a menu at the left
+        // edge below it.
+        let body = Area { left: 100, top: 0, width: 800, height: 600 };
+        let menu = Area { left: 0, top: 560, width: 400, height: 200 };
+        let remote = remote(body, vec![menu], 2.0);
+        let content = Rect::new(1000.0, 200.0, 200.0, 150.0);
+        let rects = remote.popup_rects(&content, (0.5, 0.5));
+        assert_eq!(rects, vec![(Rect::new(975.0, 340.0, 100.0, 50.0), menu)]);
+    }
+
+    #[test]
+    fn areas_must_lie_within_the_canvas() {
+        let canvas = Canvas { width: 100, height: 50, pixels: Vec::new() };
+        assert!(within(Area { left: 0, top: 0, width: 100, height: 50 }, &canvas));
+        assert!(!within(Area { left: 1, top: 0, width: 100, height: 50 }, &canvas));
+        assert!(!within(Area { left: 0, top: 0, width: 0, height: 50 }, &canvas));
+        assert!(!within(Area { left: u32::MAX, top: 0, width: 2, height: 1 }, &canvas));
     }
 }

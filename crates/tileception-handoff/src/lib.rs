@@ -15,4 +15,4 @@ mod wire;
 pub use held::{Held, Released, Source};
 pub use picture::{Area, Canvas, Header, pack};
 pub use service::{DEFAULT_PORT, Event, Messenger, PeerId, Service, Settings};
-pub use wire::{CHUNK, Message, PICTURE_BUDGET, Picture, Scroll, Target, Tile};
+pub use wire::{CHUNK, MAX_POPUPS, Message, PICTURE_BUDGET, Picture, Resumed, Scroll, Target, Tile};

@@ -327,6 +327,7 @@ impl Tileception {
                 let floating = drawn.role == WindowRole::Floating;
                 push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.frame(focused, !floating));
                 let shown = (drawn.content.w / drawn.scale.0, drawn.content.h / drawn.scale.1);
+                popups.extend(self.remote_popup_elements(renderer, drawn.window_id, &drawn.content, drawn.scale));
                 elements.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
                 continue;
             }

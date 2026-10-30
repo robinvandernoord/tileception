@@ -2,15 +2,20 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::picture::Area;
+
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
 
 /// The most compressed tile bytes one picture message carries.
 pub const PICTURE_BUDGET: usize = 60 * 1024;
+
+/// The most popups a picture lists; any more are drawn but not told apart.
+pub const MAX_POPUPS: usize = 16;
 
 /// Which selection a clipboard message is about.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,6 +59,10 @@ pub struct Picture {
     pub height: u32,
     /// Pixels per logical pixel on the owner.
     pub scale: f64,
+    /// Where the window itself is in the picture. The rest is its menus
+    /// and other popups reaching past it, each listed in `popups`.
+    pub body: Area,
+    pub popups: Vec<Area>,
     pub tiles: Vec<Tile>,
     /// The picture is complete with this part.
     pub last: bool,
@@ -191,11 +200,27 @@ pub enum Message {
         window: u64,
     },
     /// The window is dragged back to its owner, held as in `WindowShown`.
+    /// Without a button, it simply goes home.
     WindowBack {
         window: u64,
         grab: (f64, f64),
         button: u32,
     },
+    /// Sent whenever the machines link: the sender's windows that were
+    /// shown here when the connection was lost and are still meant to be.
+    /// They pick up where they were; the sender's other windows still
+    /// waiting here are gone.
+    WindowsResumed {
+        windows: Vec<Resumed>,
+    },
+}
+
+/// A window shown on another machine before a connection was lost.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Resumed {
+    pub window: u64,
+    pub title: String,
+    pub app_id: String,
 }
 
 /// Messages of the connection itself, around the compositor's.
@@ -246,6 +271,8 @@ mod tests {
             width: u32::MAX,
             height: u32::MAX,
             scale: 1.5,
+            body: Area { left: u32::MAX, top: u32::MAX, width: u32::MAX, height: u32::MAX },
+            popups: vec![Area { left: u32::MAX, top: u32::MAX, width: u32::MAX, height: u32::MAX }; MAX_POPUPS],
             tiles: vec![tile(vec![0xff; PICTURE_BUDGET / 2]), tile(vec![0xff; PICTURE_BUDGET / 2])],
             last: true,
         };
