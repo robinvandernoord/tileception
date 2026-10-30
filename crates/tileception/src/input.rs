@@ -113,6 +113,20 @@ impl Tileception {
         if self.forward_input(&event) {
             return;
         }
+        if self.handoff.away
+            && matches!(
+                event,
+                InputEvent::PointerMotionAbsolute { .. }
+                    | InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerAxis { .. }
+                    | InputEvent::TouchDown { .. }
+            )
+        {
+            // This machine's own pointer is used here again.
+            self.handoff.away = false;
+            self.schedule_render();
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_key::<I>(event),
             InputEvent::PointerMotionAbsolute { event } => {

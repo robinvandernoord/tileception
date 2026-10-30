@@ -127,6 +127,11 @@ pub struct Handoff {
     pub(crate) peers: BTreeMap<PeerId, Peer>,
     /// Where this machine's own mouse and keyboard go instead of here.
     pub(crate) forwarding: Option<PeerId>,
+    /// The pointer here went back to the machine that was using it: hidden
+    /// until it is used here again, so only the machine with input shows one.
+    pub(crate) away: bool,
+    /// How far the pointer has pushed past a shared edge so far.
+    pub(crate) push: f64,
     /// Keys and buttons held, per machine they came from.
     pub(crate) held: Held,
     pub(crate) prompt: prompt::Prompt,
@@ -407,7 +412,10 @@ impl Tileception {
                     self.stop_forwarding(forward::Back::Return(along));
                 }
             }
-            Message::Leave => self.forget_input(peer),
+            Message::Leave => {
+                self.forget_input(peer);
+                self.handoff.away = true;
+            }
             Message::Motion { right, down } => self.remote_motion(peer, right, down),
             Message::Button { button, pressed } => self.remote_button(peer, button, pressed),
             Message::Scroll(scroll) => self.remote_scroll(peer, scroll),

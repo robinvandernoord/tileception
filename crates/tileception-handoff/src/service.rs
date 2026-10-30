@@ -363,23 +363,26 @@ impl Shared {
         let serial = self.serials.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel();
         let link = Link { serial, dialler, stream: stream.try_clone()?, sender };
-        let fresh = {
+        // Whether this is news, and whether a connection it replaces died.
+        let (fresh, died) = {
             let mut links = lock(&self.links);
             match links.get(&peer) {
-                Some(existing) if existing.dialler == self.machine.min(peer) => {
-                    // Keep the established one.
+                // The lower id's connection wins over the other one's. A new
+                // one from the same dialler means it saw the old one die.
+                Some(existing) if existing.dialler == self.machine.min(peer) && dialler != existing.dialler => {
                     drop(links);
                     let _ = stream.shutdown(Shutdown::Both);
                     return Ok(peer);
                 }
                 Some(existing) => {
+                    let died = existing.dialler == dialler;
                     let _ = existing.stream.shutdown(Shutdown::Both);
                     links.insert(peer, link);
-                    false
+                    (died, died)
                 }
                 None => {
                     links.insert(peer, link);
-                    true
+                    (true, false)
                 }
             }
         };
@@ -389,6 +392,10 @@ impl Shared {
             let transport = transport.clone();
             move || write_loop(writer_stream, &transport, &receiver)
         })?;
+        if died {
+            tracing::info!("handoff: {name} reconnected");
+            (self.notify)(Event::Disconnected { peer });
+        }
         if fresh {
             tracing::info!("handoff: connected to {name} at {address}");
             (self.notify)(Event::Connected { peer, name, address });

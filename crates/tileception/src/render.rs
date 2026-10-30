@@ -479,7 +479,7 @@ impl Tileception {
     pub fn cursor_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
         // The pointer is on another machine.
-        if self.handoff.forwarding.is_some() {
+        if self.handoff.forwarding.is_some() || self.handoff.away {
             return Vec::new();
         }
         if self.draws_lock_screen() {

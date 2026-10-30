@@ -24,6 +24,9 @@ use crate::{Tileception, input::AxisInput};
 
 /// evdev key codes are xkb's less eight.
 const XKB_OFFSET: u32 = 8;
+/// How far the pointer pushes past a shared edge before it crosses, so a
+/// small nudge right after arriving does not send input straight back.
+const RESIST: f64 = 8.0;
 
 /// How this machine's input comes back.
 pub(crate) enum Back {
@@ -136,6 +139,7 @@ impl Tileception {
         } else if position.y >= screen.bottom() {
             Side::Bottom
         } else {
+            self.handoff.push = 0.0;
             return false;
         };
         // Another screen of this machine there comes first.
@@ -155,6 +159,18 @@ impl Tileception {
         if self.handoff.held.holds_button(source) {
             return false;
         }
+        let beyond = match side {
+            Side::Left => screen.x - position.x,
+            Side::Right => position.x - screen.right(),
+            Side::Top => screen.y - position.y,
+            Side::Bottom => position.y - screen.bottom(),
+        };
+        // Short of it, the pointer stays at the edge.
+        self.handoff.push += beyond.max(1.0);
+        if self.handoff.push < RESIST {
+            return false;
+        }
+        self.handoff.push = 0.0;
         let along = match side {
             Side::Left | Side::Right => (position.y - screen.y) / screen.h,
             Side::Top | Side::Bottom => (position.x - screen.x) / screen.w,
@@ -172,6 +188,8 @@ impl Tileception {
                 self.share_selections(from);
                 self.handoff.send(from, Message::Return { along });
                 self.forget_input(from);
+                self.handoff.away = true;
+                self.schedule_render();
                 true
             }
             // Never passed on to a third machine.
@@ -182,13 +200,15 @@ impl Tileception {
     fn start_forwarding(&mut self, peer: PeerId, along: f64) {
         self.handoff.forwarding = Some(peer);
         self.handoff.absolute = None;
+        // Whatever that machine still holds here would never be let go.
+        self.forget_input(peer);
         // Offered before the pointer arrives, so pasting there works at once.
         self.share_selections(peer);
         if !self.handoff.send(peer, Message::Enter { along }) {
             self.handoff.forwarding = None;
             return;
         }
-        tracing::debug!("handoff: input goes to {peer:016x}");
+        tracing::info!("handoff: input goes to {peer:016x}");
         // Programs here lose the pointer and the keyboard until it is back.
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let time = self.input_time();
@@ -200,7 +220,7 @@ impl Tileception {
 
     pub(crate) fn stop_forwarding(&mut self, back: Back) {
         let Some(peer) = self.handoff.forwarding.take() else { return };
-        tracing::debug!("handoff: input is back from {peer:016x}");
+        tracing::info!("handoff: input is back from {peer:016x}");
         match back {
             Back::Home => {
                 self.handoff.send(peer, Message::Leave);
@@ -243,6 +263,16 @@ impl Tileception {
     }
 
     pub(crate) fn remote_enter(&mut self, peer: PeerId, along: f64) {
+        // The pointer is here now: this machine's own input stops going
+        // elsewhere, or the cursor and keyboard focus would stay hidden.
+        if let Some(target) = self.handoff.forwarding {
+            if target != peer {
+                self.handoff.send(target, Message::Leave);
+            }
+            self.handoff.forwarding = None;
+            tracing::info!("handoff: input is back from {target:016x}, {peer:016x} took the pointer");
+            self.force_keyboard_focus_sync();
+        }
         let edge = self.handoff.active_edge(peer).cloned();
         let placed = match edge {
             Some(edge) if !self.is_locked() => {
@@ -256,6 +286,7 @@ impl Tileception {
             self.handoff.send(peer, Message::Return { along });
             return;
         }
+        self.handoff.away = false;
         let time = self.input_time();
         self.on_motion(self.pointer, time);
         self.schedule_render();
