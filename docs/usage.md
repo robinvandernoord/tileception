@@ -180,8 +180,9 @@ usually `~/Pictures/Screenshots`.
 
 KeePassXC 2.8 and newer can type usernames and passwords into other windows
 through the desktop portal. The first time a program wants to type, a
-notification asks whether to allow it: **Deny**, **Allow once**, or, when the
-program asks to be remembered, **Until it quits** or **Always**. Keys go to the
+notification asks whether to allow it: **Deny**, **Allow once** or **Always**.
+**Always** is remembered in `~/.local/state/tileception/typing.toml`; remove the
+program's line there to be asked again. Keys go to the
 window you are using, and nothing is typed while the screen is locked.
 
 For KeePassXC's global auto-type shortcut, open its settings, go to

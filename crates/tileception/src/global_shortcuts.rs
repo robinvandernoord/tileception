@@ -279,15 +279,6 @@ fn kept_path() -> PathBuf {
     root.join("tileception/shortcuts.toml")
 }
 
-/// What keys are kept under: the app ID, or else the executable. None when
-/// neither is known, and the keys only last as long as the session.
-fn program_key(program: &Program) -> Option<String> {
-    if !program.app_id.is_empty() {
-        return Some(program.app_id.clone());
-    }
-    program.path.as_ref().and_then(|path| path.to_str()).map(str::to_owned)
-}
-
 struct Session {
     program: Option<String>,
     /// What to call the program, and its desktop entry for an icon.
@@ -397,7 +388,7 @@ impl Tileception {
     fn global_shortcuts_message(&mut self, message: Message) {
         match message {
             Message::Bind { session, program, shortcuts, reply } => {
-                let key = program_key(&program);
+                let key = program.key();
                 let (name, desktop_entry) = self.program_name(&program);
                 let shortcuts: Vec<Shortcut> = shortcuts
                     .into_iter()
@@ -417,7 +408,7 @@ impl Tileception {
                 let listed = match self.shortcuts.sessions.get(&session) {
                     Some(bound) => bound.shortcuts.clone(),
                     None => {
-                        let key = program_key(&program);
+                        let key = program.key();
                         let kept = self.shortcuts.kept().iter().filter(|kept| Some(&kept.program) == key.as_ref());
                         kept.map(|kept| Shortcut {
                             shortcut_id: kept.shortcut_id.clone(),
@@ -639,9 +630,6 @@ mod tests {
         let text = toml::to_string(&file).unwrap();
         let read: KeptFile = toml::from_str(&text).unwrap();
         assert_eq!(read.shortcut, file.shortcut);
-        assert_eq!(program_key(&Program { app_id: String::new(), path: None }), None);
-        let keepassxc = Program { app_id: String::new(), path: Some("/usr/bin/keepassxc".into()) };
-        assert_eq!(program_key(&keepassxc).as_deref(), Some("/usr/bin/keepassxc"));
     }
 
     #[test]

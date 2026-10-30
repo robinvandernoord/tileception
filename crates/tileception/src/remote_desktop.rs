@@ -51,6 +51,17 @@ pub struct Program {
     pub path: Option<PathBuf>,
 }
 
+impl Program {
+    /// What to remember the program by: its app ID, or else its executable.
+    /// None when neither is known.
+    pub fn key(&self) -> Option<String> {
+        if !self.app_id.is_empty() {
+            return Some(self.app_id.clone());
+        }
+        self.path.as_ref().and_then(|path| path.to_str()).map(str::to_owned)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Answer {
     Deny,
@@ -351,11 +362,57 @@ pub struct Typing {
     held: HashMap<String, Vec<(Key, Vec<Keycode>)>>,
     /// The keymap keysyms are looked up in, and the names it was compiled from.
     keys: Option<(KeymapNames, Keys)>,
+    /// Programs always allowed to type, by [`Program::key`]; read on first use.
+    always: Option<Vec<String>>,
 }
 
 struct Question {
     request: String,
+    /// What "Always" remembers, when the program can be recognised.
+    program: Option<String>,
     reply: async_channel::Sender<Answer>,
+}
+
+/// Programs always allowed to type, kept across sessions.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct AlwaysFile {
+    #[serde(default)]
+    always: Vec<String>,
+}
+
+fn always_path() -> PathBuf {
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+    root.join("tileception/typing.toml")
+}
+
+impl Typing {
+    fn always(&mut self) -> &mut Vec<String> {
+        self.always.get_or_insert_with(|| {
+            let text = std::fs::read_to_string(always_path()).unwrap_or_default();
+            toml::from_str::<AlwaysFile>(&text).map(|file| file.always).unwrap_or_default()
+        })
+    }
+
+    fn allow_always(&mut self, program: String) {
+        let always = self.always();
+        if always.contains(&program) {
+            return;
+        }
+        always.push(program);
+        let file = AlwaysFile { always: always.clone() };
+        let path = always_path();
+        let written = toml::to_string(&file).map_err(|err| err.to_string()).and_then(|text| {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+            }
+            std::fs::write(&path, text).map_err(|err| err.to_string())
+        });
+        if let Err(err) = written {
+            tracing::warn!("could not keep typing permission in {}: {err}", path.display());
+        }
+    }
 }
 
 /// The keys to hold for a keysym found on `level`: Shift for 1, AltGr for 2,
@@ -415,12 +472,19 @@ impl Tileception {
             let _ = reply.try_send(Answer::Deny);
             return;
         }
+        let key = program.key();
+        if let Some(key) = &key
+            && self.typing.always().contains(key)
+        {
+            let _ = reply.try_send(if persist > 0 { Answer::Remember } else { Answer::Allow });
+            return;
+        }
         let (name, entry) = self.program_name(program);
         let mut actions = vec![("deny".to_string(), "Deny".to_string()), ("allow".into(), "Allow once".into())];
-        match persist {
-            1 => actions.push(("remember".into(), "Until it quits".into())),
-            2 => actions.push(("remember".into(), "Always".into())),
-            _ => {}
+        if key.is_some() {
+            actions.push(("always".into(), "Always".into()));
+        } else if persist == 1 {
+            actions.push(("remember".into(), "Until it quits".into()));
         }
         let notification_id = self.ask_locally(
             &format!("{name} wants to type for you"),
@@ -428,7 +492,7 @@ impl Tileception {
             entry,
             actions,
         );
-        self.typing.questions.insert(notification_id, Question { request, reply });
+        self.typing.questions.insert(notification_id, Question { request, program: key, reply });
     }
 
     /// What to call a program, and its desktop entry when it is installed.
@@ -453,6 +517,12 @@ impl Tileception {
             let answer = match action {
                 Some("allow") => Answer::Allow,
                 Some("remember") => Answer::Remember,
+                Some("always") => {
+                    if let Some(program) = question.program {
+                        self.typing.allow_always(program);
+                    }
+                    Answer::Remember
+                }
                 _ => Answer::Deny,
             };
             let _ = question.reply.try_send(answer);
@@ -542,6 +612,17 @@ mod tests {
         assert_eq!(caller("/org/freedesktop/portal/desktop/session/1_42/token7").as_deref(), Some(":1.42"));
         assert_eq!(caller("/org/freedesktop/portal/desktop/session/1_42"), None);
         assert_eq!(caller("/org/freedesktop/portal/desktop/request/1_42/token7"), None);
+    }
+
+    #[test]
+    fn programs_are_known_by_app_id_or_path() {
+        let keepassxc = Program { app_id: String::new(), path: Some("/usr/bin/keepassxc".into()) };
+        assert_eq!(keepassxc.key().as_deref(), Some("/usr/bin/keepassxc"));
+        let flatpak = Program { app_id: "org.keepassxc.KeePassXC".into(), path: Some("/app/bin/keepassxc".into()) };
+        assert_eq!(flatpak.key().as_deref(), Some("org.keepassxc.KeePassXC"));
+        assert_eq!(Program { app_id: String::new(), path: None }.key(), None);
+        let file: AlwaysFile = toml::from_str("always = [\"/usr/bin/keepassxc\"]").unwrap();
+        assert_eq!(file.always, ["/usr/bin/keepassxc"]);
     }
 
     #[test]
