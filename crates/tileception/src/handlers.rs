@@ -147,6 +147,8 @@ impl CompositorHandler for Tileception {
                 let geo = window.geometry();
                 if unplaced {
                     self.place_window(window_id);
+                } else if self.child_drawn(window_id) {
+                    // Placed where its parent is shown, once it has drawn.
                 } else if self.world.float_needs_size(window_id) && geo.size.w > 0 && geo.size.h > 0 {
                     // A new floating window has drawn at the size it wants.
                     self.world.size_float(window_id, geo.size.w as f64, geo.size.h as f64);

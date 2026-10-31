@@ -497,6 +497,9 @@ impl Tileception {
     /// float, everything else docks. Wayland windows call this on their first
     /// commit, once they have said what they are.
     pub fn place_window(&mut self, window_id: WindowId) {
+        if self.send_child_away(window_id) {
+            return;
+        }
         let parent_output = self
             .windows
             .get(&window_id)
@@ -787,7 +790,7 @@ impl Tileception {
 }
 
 /// Dialogs and fixed-size windows float instead of tiling.
-fn wants_float(window: &Window) -> bool {
+pub(crate) fn wants_float(window: &Window) -> bool {
     if let Some(toplevel) = window.toplevel() {
         let (min, max) = with_states(toplevel.wl_surface(), |states| {
             let mut guard = states.cached_state.get::<SurfaceCachedState>();

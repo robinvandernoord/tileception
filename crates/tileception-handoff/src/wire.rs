@@ -136,7 +136,9 @@ pub enum Message {
     Resumed,
     /// One of the sender's windows comes here, dragged by the pointer that
     /// follows: held at `grab` (fractions of its size) with `button` down.
-    /// Windows are known by the number their owner gives them.
+    /// Without a button it just opens here: a dialog of one of the sender's
+    /// windows shown here. Windows are known by the number their owner gives
+    /// them.
     WindowShown {
         window: u64,
         title: String,
@@ -145,6 +147,8 @@ pub enum Message {
         height: u32,
         grab: (f64, f64),
         button: u32,
+        /// It floats, as a dialog does, instead of tiling.
+        float: bool,
     },
     /// The window's title or app changed.
     WindowInfo {

@@ -94,6 +94,9 @@ pub(crate) struct Windows {
     /// code, with the window: their releases go there too, even when the
     /// keyboard moved on in between.
     keys_sent: std::collections::BTreeMap<u32, WindowId>,
+    /// New dialogs of this machine's windows shown elsewhere, going there
+    /// once they have drawn and so know their size.
+    unsent_children: HashMap<WindowId, PeerId>,
 }
 
 pub(crate) struct Away {
@@ -287,8 +290,8 @@ impl Tileception {
     pub(crate) fn window_message(&mut self, peer: PeerId, message: Message) {
         match message {
             // As the machine a window is shown on.
-            Message::WindowShown { window, title, app_id, width, height, grab, button } => {
-                self.window_shown(peer, window, (title, app_id), (width, height), grab, button);
+            Message::WindowShown { window, title, app_id, width, height, grab, button, float } => {
+                self.window_shown(peer, window, (title, app_id), (width, height), (grab, button), float);
             }
             Message::WindowInfo { window, title, app_id } => {
                 if let Some(remote) = self
@@ -432,7 +435,7 @@ impl Tileception {
             self.drop_remote(window);
             return true;
         }
-        self.send_window(peer, window, drag.grab, button)
+        self.send_window(peer, window, drag.grab, button, false)
     }
 
     /// Tells programs here that buttons went up.
@@ -451,8 +454,59 @@ impl Tileception {
         pointer.frame(self);
     }
 
+    /// A new window here whose parent is shown on another machine opens
+    /// there, beside it. True when it went, or goes once it has drawn.
+    pub(crate) fn send_child_away(&mut self, window: WindowId) -> bool {
+        let Some(placed) = self.windows.get(&window).cloned() else { return false };
+        let parent = if let Some(toplevel) = placed.toplevel() {
+            toplevel.parent().and_then(|parent| self.window_id(&parent))
+        } else {
+            let transient_for = placed.x11_surface().and_then(|x11| x11.is_transient_for());
+            transient_for.and_then(|x11_id| {
+                self.windows
+                    .iter()
+                    .find(|(_, other)| other.x11_surface().is_some_and(|x11| x11.window_id() == x11_id))
+                    .map(|(window, _)| *window)
+            })
+        };
+        let away = parent.and_then(|parent| self.handoff.windows.away.get(&parent));
+        let Some(peer) = away.filter(|away| away.stream.is_some()).map(|away| away.peer) else { return false };
+        if self.handoff.active_edge(peer).is_none() || self.is_locked() {
+            return false;
+        }
+        if let Some(toplevel) = placed.toplevel()
+            && !toplevel.is_initial_configure_sent()
+        {
+            // Its size is its own choice, known once it draws.
+            toplevel.send_configure();
+            self.handoff.windows.unsent_children.insert(window, peer);
+            return true;
+        }
+        tracing::info!(window = window.0, "handoff: a dialog opens beside its parent on {peer:016x}");
+        self.send_window(peer, window, (0.5, 0.5), 0, true)
+    }
+
+    /// A dialog waiting to go to where its parent is shown drew: it goes, or
+    /// opens here when it no longer can. True when it was waiting.
+    pub(crate) fn child_drawn(&mut self, window: WindowId) -> bool {
+        let Some(&peer) = self.handoff.windows.unsent_children.get(&window) else { return false };
+        let drawn = self.windows.get(&window).is_some_and(|placed| {
+            let size = placed.geometry().size;
+            size.w > 0 && size.h > 0
+        });
+        if !drawn {
+            return true;
+        }
+        self.handoff.windows.unsent_children.remove(&window);
+        let parent_there = self.handoff.active_edge(peer).is_some() && !self.is_locked();
+        if !(parent_there && self.send_window(peer, window, (0.5, 0.5), 0, true)) {
+            self.place_window(window);
+        }
+        true
+    }
+
     /// Shows one of this machine's windows on another.
-    fn send_window(&mut self, peer: PeerId, window: WindowId, grab: (f64, f64), button: u32) -> bool {
+    fn send_window(&mut self, peer: PeerId, window: WindowId, grab: (f64, f64), button: u32, float: bool) -> bool {
         if self.fullscreen == Some(window) {
             self.set_fullscreen(window, false);
         }
@@ -468,6 +522,7 @@ impl Tileception {
             height: geometry.size.h.max(1) as u32,
             grab,
             button,
+            float,
         };
         if !self.handoff.send(peer, message) {
             return false;
@@ -507,8 +562,9 @@ impl Tileception {
             return;
         }
         tracing::info!(window = window.0, "handoff: window back");
+        let float = self.windows.get(&window).is_some_and(crate::state::wants_float);
         let now = self.now();
-        self.world.add_window(window, Placement::Dock, now);
+        self.world.add_window(window, if float { Placement::Float } else { Placement::Dock }, now);
         self.world.focus_window(window, now);
         self.handoff.windows.arriving = arriving;
         self.apply_layout();
@@ -708,6 +764,7 @@ impl Tileception {
 
     /// One of this machine's windows closed.
     pub(crate) fn window_forgotten(&mut self, window: WindowId) {
+        self.handoff.windows.unsent_children.remove(&window);
         if let Some(away) = self.handoff.windows.away.remove(&window) {
             self.handoff.send(away.peer, Message::WindowGone { window: window.0 });
         }
@@ -723,15 +780,16 @@ impl Tileception {
         }
     }
 
-    /// Another machine's window comes here, with the pointer dragging it.
+    /// Another machine's window comes here, with the pointer dragging it,
+    /// or opens here as a dialog of one of its windows here.
     fn window_shown(
         &mut self,
         peer: PeerId,
         window: u64,
         (title, app_id): (String, String),
         shown: (u32, u32),
-        grab: (f64, f64),
-        button: u32,
+        (grab, button): ((f64, f64), u32),
+        float: bool,
     ) {
         if self.handoff.active_edge(peer).is_none() || self.is_locked() {
             // Not now: it goes straight back.
@@ -760,9 +818,15 @@ impl Tileception {
             cursor: None,
             lost: false,
         };
+        let size = (f64::from(remote.shown.0), f64::from(remote.shown.1));
         self.handoff.windows.remote.insert(local, remote);
         let now = self.now();
-        self.world.add_window(local, Placement::Dock, now);
+        if float {
+            self.world.add_window(local, Placement::Float, now);
+            self.world.size_float(local, size.0, size.1);
+        } else {
+            self.world.add_window(local, Placement::Dock, now);
+        }
         self.world.focus_window(local, now);
         self.handoff.windows.arriving = (button != 0).then_some(Arriving { peer, window: local, grab, button });
         self.apply_layout();
