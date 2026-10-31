@@ -11,6 +11,7 @@
 
 mod clipboard;
 mod drag;
+mod files;
 mod forward;
 pub mod pair;
 mod prompt;
@@ -149,6 +150,8 @@ pub struct Handoff {
     incompatible: BTreeMap<String, u32>,
     /// Drag and drop across machines.
     pub(crate) drags: drag::Drags,
+    /// Dragged or copied files on their way here.
+    pub(crate) files: files::Files,
     /// The last absolute pointer position, to turn absolute motion into steps.
     pub(crate) absolute: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
 }
@@ -492,16 +495,17 @@ impl Tileception {
             Message::Fetch { request, target, version, mime_type } => {
                 self.serve_fetch(peer, request, target, version, mime_type);
             }
+            Message::FetchFiles { request, target, version } => self.serve_fetch_files(peer, request, target, version),
             Message::Data { request, bytes } => {
-                if self.handoff.drags.receives(request) {
-                    self.handoff.drags.data(request, bytes);
+                if self.handoff.files.receives(request) {
+                    self.handoff.files.data(request, bytes);
                 } else {
                     self.handoff.clipboard.data(request, bytes);
                 }
             }
             Message::DataEnd { request, failed } => {
-                if self.handoff.drags.receives(request) {
-                    self.handoff.drags.end(request, failed);
+                if self.handoff.files.receives(request) {
+                    self.handoff.files.end(request, failed);
                 } else {
                     self.handoff.clipboard.end(request, failed);
                 }

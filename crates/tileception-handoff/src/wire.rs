@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -113,6 +113,13 @@ pub enum Message {
         target: Target,
         version: u64,
         mime_type: String,
+    },
+    /// Asks for the files an offered selection names (it offers them as
+    /// `text/uri-list`), copied over: answered as `DragFiles` is.
+    FetchFiles {
+        request: u64,
+        target: Target,
+        version: u64,
     },
     Data {
         request: u64,
@@ -255,7 +262,7 @@ pub enum Message {
         drag: u64,
     },
     /// A file (its `Data` follows) or folder, by its path within what was
-    /// dragged, parts separated by `/`.
+    /// dragged or copied, parts separated by `/`.
     DragFile {
         request: u64,
         path: String,

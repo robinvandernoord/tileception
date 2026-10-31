@@ -11,19 +11,11 @@
 //! machine carries the drag on as its own, offering the same types and
 //! showing the same card by the pointer. Dropped there on a program that
 //! wants it, that machine fetches the data from here, as a paste does.
-//! Files are copied over first, into a folder of dropped files there
-//! (`~/.cache/tileception/handoff-drops`, cleared of drops older than a
-//! week), and the program gets those copies. Once the drag is over there,
-//! it is let go of here too; dragged back, it carries on here.
+//! Files are copied over first (see `files`), and the program gets those
+//! copies. Once the drag is over there, it is let go of here too; dragged
+//! back, it carries on here.
 
-use std::{
-    collections::HashMap,
-    io::{Read, Write},
-    os::{fd::OwnedFd, unix::net::UnixStream},
-    path::{Path, PathBuf},
-    sync::mpsc,
-    time::{Duration, SystemTime},
-};
+use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
 use smithay::{
     backend::input::ButtonState,
@@ -33,21 +25,13 @@ use smithay::{
     wayland::selection::data_device::{SourceMetadata, start_dnd},
 };
 use tileception_core::WindowId;
-use tileception_handoff::{CHUNK, DragKind, DragPreview, Message, Messenger, PeerId, Source};
+use tileception_handoff::{DragKind, DragPreview, Message, PeerId, Source};
 
-use super::clipboard::{STALL, send_out};
-use crate::{
-    Tileception,
-    drag::{Card, file_path, file_uri, parse_uri_list},
+use super::{
+    clipboard::{STALL, send_out},
+    files::{FileList, offered_types},
 };
-
-/// Types that only make sense on the machine they come from: keys to the
-/// file transfer portal there.
-const LOCAL_ONLY: [&str; 2] = ["application/vnd.portal.filetransfer", "application/vnd.portal.files"];
-/// Dropped files older than this are cleared away.
-const KEEP_DROPS: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// The most entries one drop of files copies.
-const MOST_ENTRIES: usize = 100_000;
+use crate::{Tileception, drag::Card};
 
 #[derive(Default)]
 pub(crate) struct Drags {
@@ -58,8 +42,6 @@ pub(crate) struct Drags {
     /// Another machine's drag, carried on here.
     incoming: Option<Incoming>,
     next: u64,
-    /// Files on their way here, by request.
-    files: HashMap<u64, (PeerId, mpsc::Sender<Piece>)>,
     /// The other machine's window here whose owner refused this machine's
     /// drag; not asked again until the pointer leaves it.
     refused: Option<WindowId>,
@@ -93,13 +75,6 @@ struct Incoming {
     into: Option<WindowId>,
 }
 
-/// Part of a drop of files arriving.
-enum Piece {
-    Entry { path: String, directory: bool },
-    Link(String),
-    Bytes(Vec<u8>),
-}
-
 impl Drags {
     /// Whether this machine's drag went to another machine with the pointer.
     pub(crate) fn sent_away(&self) -> bool {
@@ -129,30 +104,6 @@ impl Drags {
             .filter(|incoming| !incoming.dropped && incoming.into.is_none())
             .map(|incoming| &incoming.card)
     }
-
-    /// Whether `request` is a drop of files arriving.
-    pub(crate) fn receives(&self, request: u64) -> bool {
-        self.files.contains_key(&request)
-    }
-
-    pub(crate) fn data(&mut self, request: u64, bytes: Vec<u8>) {
-        self.piece(request, Piece::Bytes(bytes));
-    }
-
-    /// The last of a drop of files; dropping the sender finishes it.
-    pub(crate) fn end(&mut self, request: u64, failed: bool) {
-        if failed {
-            tracing::warn!("handoff: copying dropped files failed on the other machine");
-        }
-        self.files.remove(&request);
-    }
-
-    fn piece(&mut self, request: u64, piece: Piece) {
-        let delivered = self.files.get(&request).is_some_and(|(_, sender)| sender.send(piece).is_ok());
-        if !delivered {
-            self.files.remove(&request);
-        }
-    }
 }
 
 impl Tileception {
@@ -168,7 +119,7 @@ impl Tileception {
                     self.handoff.send(peer, Message::DragEnd { drag });
                     return;
                 }
-                let mime_types = mime_types.into_iter().filter(|mime| !LOCAL_ONLY.contains(&mime.as_str())).collect();
+                let mime_types = offered_types(mime_types);
                 let card = Card::new(preview);
                 self.handoff.drags.pending = Some(Incoming {
                     peer,
@@ -200,10 +151,8 @@ impl Tileception {
             }
             Message::DragFetch { request, drag, mime_type } => self.serve_drag(peer, request, drag, &mime_type),
             Message::DragFiles { request, drag } => self.serve_drag_files(peer, request, drag),
-            Message::DragFile { request, path, directory } => {
-                self.handoff.drags.piece(request, Piece::Entry { path, directory });
-            }
-            Message::DragLink { request, uri } => self.handoff.drags.piece(request, Piece::Link(uri)),
+            Message::DragFile { request, path, directory } => self.handoff.files.entry(request, path, directory),
+            Message::DragLink { request, uri } => self.handoff.files.link(request, uri),
             Message::DragEnd { drag } => {
                 let drags = &mut self.handoff.drags;
                 if drags.pending.as_ref().is_some_and(|pending| pending.peer == peer && pending.drag == drag) {
@@ -456,13 +405,14 @@ impl Tileception {
             return;
         };
         let (peer, drag) = (incoming.peer, incoming.drag);
+        let files = FileList::wanted(&mime_type, &incoming.mime_types);
         if self.handoff.active_edge(peer).is_none() || self.is_locked() {
             tracing::warn!("handoff: a program wants {mime_type} of a drag while sharing is paused");
             return;
         }
         tracing::info!("handoff: a program here wants {mime_type} of a drag from {peer:016x}");
-        if mime_type == "text/uri-list" {
-            self.receive_drag_files(peer, drag, pipe);
+        if let Some(list) = files {
+            self.receive_files_into(peer, pipe, list, |request| Message::DragFiles { request, drag });
         } else {
             self.receive_into(peer, pipe, |request| Message::DragFetch { request, drag, mime_type });
         }
@@ -474,7 +424,7 @@ impl Tileception {
         if drags.pending.as_ref().is_some_and(|pending| pending.peer == peer) {
             drags.pending = None;
         }
-        drags.files.retain(|_, (from, _)| *from != peer);
+        self.handoff.files.forget(peer);
         if drags.incoming.as_ref().is_some_and(|incoming| incoming.peer == peer) {
             self.cancel_incoming_drag();
         }
@@ -520,43 +470,8 @@ impl Tileception {
         let offered =
             self.drag.as_ref().is_some_and(|local| local.mime_types.iter().any(|mime| mime == "text/uri-list"));
         let source = self.outgoing_source(peer, drag).filter(|_| offered);
-        let reader = source.and_then(|source| ask_source(&source, "text/uri-list"));
-        let messenger = self.handoff.messenger();
-        let (Some(reader), Some(messenger)) = (reader, messenger) else {
-            self.handoff.send(peer, Message::DataEnd { request, failed: true });
-            return;
-        };
-        let started = std::thread::Builder::new().name("tileception-handoff-files".into()).spawn(move || {
-            let failed = send_files(&messenger, peer, request, reader).is_err();
-            messenger.send_bulk(peer, Message::DataEnd { request, failed });
-        });
-        if started.is_err() {
-            self.handoff.send(peer, Message::DataEnd { request, failed: true });
-        }
-    }
-
-    /// Copies another machine's dropped files here, then gives the program
-    /// they were dropped on the list of copies.
-    fn receive_drag_files(&mut self, peer: PeerId, drag: u64, pipe: OwnedFd) {
-        let request = self.handoff.clipboard.next_request();
-        let (sender, receiver) = mpsc::channel::<Piece>();
-        let started = std::thread::Builder::new().name("tileception-handoff-drop".into()).spawn(move || {
-            match receive_files(&drops_folder(), request, &receiver) {
-                Ok(uris) => {
-                    let mut list = uris.join("\r\n");
-                    list.push_str("\r\n");
-                    let _ = std::fs::File::from(pipe).write_all(list.as_bytes());
-                }
-                Err(error) => tracing::warn!("handoff: dropped files: {error}"),
-            }
-        });
-        if started.is_err() {
-            return;
-        }
-        self.handoff.drags.files.insert(request, (peer, sender));
-        if !self.handoff.send(peer, Message::DragFiles { request, drag }) {
-            self.handoff.drags.files.remove(&request);
-        }
+        let list = source.and_then(|source| ask_source(&source, "text/uri-list"));
+        self.serve_files(peer, request, list);
     }
 }
 
@@ -570,187 +485,4 @@ fn ask_source(
     reader.set_read_timeout(Some(STALL)).ok()?;
     source.send(mime_type.to_string(), std::os::fd::AsFd::as_fd(&writer));
     Some(reader)
-}
-
-/// Sends the files a `text/uri-list` names, folders with everything in
-/// them; other entries go as they are.
-fn send_files(messenger: &Messenger, peer: PeerId, request: u64, mut list: UnixStream) -> Result<(), String> {
-    let mut text = String::new();
-    list.read_to_string(&mut text).map_err(|error| format!("the list of files: {error}"))?;
-    let mut entries = 0;
-    for uri in parse_uri_list(&text) {
-        let Some(path) = file_path(&uri) else {
-            send(messenger, peer, Message::DragLink { request, uri })?;
-            continue;
-        };
-        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).ok_or("a file without a name")?;
-        send_entry(messenger, peer, request, &path, &name, &mut entries)?;
-    }
-    Ok(())
-}
-
-fn send(messenger: &Messenger, peer: PeerId, message: Message) -> Result<(), String> {
-    if messenger.send_bulk(peer, message) { Ok(()) } else { Err("the other machine went away".into()) }
-}
-
-/// One file, or a folder and what is in it. Links inside folders are left
-/// out, so nothing outside what was dragged goes along.
-fn send_entry(
-    messenger: &Messenger,
-    peer: PeerId,
-    request: u64,
-    path: &Path,
-    relative: &str,
-    entries: &mut usize,
-) -> Result<(), String> {
-    *entries += 1;
-    if *entries > MOST_ENTRIES {
-        return Err("too many files".into());
-    }
-    let metadata = std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    if metadata.is_dir() {
-        send(messenger, peer, Message::DragFile { request, path: relative.to_string(), directory: true })?;
-        let read = std::fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        for entry in read.flatten() {
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_symlink() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            send_entry(messenger, peer, request, &entry.path(), &format!("{relative}/{name}"), entries)?;
-        }
-        return Ok(());
-    }
-    if !metadata.is_file() {
-        return Ok(());
-    }
-    let mut file = std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    send(messenger, peer, Message::DragFile { request, path: relative.to_string(), directory: false })?;
-    loop {
-        let mut chunk = vec![0; CHUNK];
-        let length = file.read(&mut chunk).map_err(|error| format!("{}: {error}", path.display()))?;
-        if length == 0 {
-            return Ok(());
-        }
-        chunk.truncate(length);
-        send(messenger, peer, Message::Data { request, bytes: chunk })?;
-    }
-}
-
-/// Where dropped files from other machines go.
-fn drops_folder() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
-        .join("tileception/handoff-drops")
-}
-
-/// Writes the pieces of a drop of files into a folder of its own, returning
-/// the list for the program it was dropped on.
-fn receive_files(drops: &Path, request: u64, pieces: &mpsc::Receiver<Piece>) -> Result<Vec<String>, String> {
-    clear_old_drops(drops);
-    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let root = drops.join(format!("{stamp}-{request}"));
-    std::fs::create_dir_all(&root).map_err(|error| format!("{}: {error}", root.display()))?;
-    let mut uris = Vec::new();
-    let mut file: Option<std::fs::File> = None;
-    loop {
-        let piece = match pieces.recv_timeout(STALL) {
-            Ok(piece) => piece,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(uris),
-            Err(mpsc::RecvTimeoutError::Timeout) => return Err("the other machine stopped sending".into()),
-        };
-        match piece {
-            Piece::Entry { path, directory } => {
-                let relative = safe_relative(&path).ok_or_else(|| format!("refused a file called {path:?}"))?;
-                let target = root.join(&relative);
-                if relative.components().count() == 1 {
-                    uris.push(file_uri(&target));
-                }
-                file = None;
-                if directory {
-                    std::fs::create_dir_all(&target).map_err(|error| format!("{}: {error}", target.display()))?;
-                } else {
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-                    }
-                    let created =
-                        std::fs::File::create(&target).map_err(|error| format!("{}: {error}", target.display()))?;
-                    file = Some(created);
-                }
-            }
-            Piece::Link(uri) => {
-                file = None;
-                uris.push(uri);
-            }
-            Piece::Bytes(bytes) => {
-                if let Some(file) = file.as_mut() {
-                    file.write_all(&bytes).map_err(|error| error.to_string())?;
-                }
-            }
-        }
-    }
-}
-
-/// A path within a drop, when it stays within it: plain names only.
-fn safe_relative(path: &str) -> Option<PathBuf> {
-    let parts: Vec<&str> = path.split('/').collect();
-    let plain = |part: &&str| !part.is_empty() && *part != "." && *part != ".." && !part.contains('\0');
-    (parts.len() <= 64 && parts.iter().all(plain)).then(|| parts.iter().collect())
-}
-
-/// Removes drops older than a week.
-fn clear_old_drops(drops: &Path) {
-    let Ok(entries) = std::fs::read_dir(drops) else { return };
-    for entry in entries.flatten() {
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > KEEP_DROPS);
-        if old {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dropped_paths_stay_inside_the_drop() {
-        assert_eq!(safe_relative("photos/2026/a.png"), Some(PathBuf::from("photos/2026/a.png")));
-        assert_eq!(safe_relative("../etc/passwd"), None);
-        assert_eq!(safe_relative("photos/../../x"), None);
-        assert_eq!(safe_relative("/etc/passwd"), None);
-        assert_eq!(safe_relative("a//b"), None);
-        assert_eq!(safe_relative("./a"), None);
-        assert_eq!(safe_relative(""), None);
-    }
-
-    #[test]
-    fn a_drop_of_files_is_written_out_in_order() {
-        let cache = std::env::temp_dir().join(format!("tileception-drop-test-{}", std::process::id()));
-        let (sender, receiver) = mpsc::channel();
-        for piece in [
-            Piece::Entry { path: "notes".into(), directory: true },
-            Piece::Entry { path: "notes/a.txt".into(), directory: false },
-            Piece::Bytes(b"hello ".to_vec()),
-            Piece::Bytes(b"there".to_vec()),
-            Piece::Link("https://example.org/".into()),
-            Piece::Entry { path: "b c.txt".into(), directory: false },
-        ] {
-            sender.send(piece).expect("receiver is there");
-        }
-        drop(sender);
-        let uris = receive_files(&cache, 7, &receiver).expect("written");
-        assert_eq!(uris.len(), 3);
-        assert_eq!(uris[1], "https://example.org/");
-        let notes = file_path(&uris[0]).expect("a local file");
-        assert_eq!(std::fs::read_to_string(notes.join("a.txt")).expect("copied"), "hello there");
-        assert!(file_path(&uris[2]).expect("a local file").ends_with("b c.txt"));
-        let _ = std::fs::remove_dir_all(&cache);
-    }
 }

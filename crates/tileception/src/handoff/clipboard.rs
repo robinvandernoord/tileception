@@ -4,7 +4,7 @@
 //! for another machine, that machine is told what this one offers (only the
 //! types, and only when it changed since). The contents travel when someone
 //! pastes there. A selection that came from another machine is never offered
-//! back or passed on.
+//! back or passed on. Copied files are pasted as copies (see `files`).
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -27,6 +27,7 @@ use smithay::wayland::selection::{
 };
 use tileception_handoff::{CHUNK, Message, PeerId, Target};
 
+use super::files::{FileList, offered_types};
 use crate::{Tileception, launcher::Clip};
 
 /// The most one paste carries.
@@ -172,6 +173,7 @@ impl Tileception {
             }
             return;
         }
+        let mime_types = offered_types(mime_types);
         let clip = Some(Clip::Remote(RemoteClip { peer, target, version, mime_types: mime_types.clone() }));
         match selection {
             SelectionTarget::Clipboard => {
@@ -217,8 +219,14 @@ impl Tileception {
         if self.handoff.active_edge(clip.peer).is_none() || self.is_locked() {
             return;
         }
-        let message = |request| Message::Fetch { request, target: clip.target, version: clip.version, mime_type };
-        self.receive_into(clip.peer, pipe, message);
+        let (target, version) = (clip.target, clip.version);
+        if let Some(list) = FileList::wanted(&mime_type, &clip.mime_types) {
+            let message = |request| Message::FetchFiles { request, target, version };
+            self.receive_files_into(clip.peer, pipe, list, message);
+        } else {
+            let message = |request| Message::Fetch { request, target, version, mime_type };
+            self.receive_into(clip.peer, pipe, message);
+        }
     }
 
     /// Asks another machine for data, written to `pipe` as it arrives.
@@ -263,6 +271,21 @@ impl Tileception {
         if !send_out(messenger, peer, request, reader) {
             self.handoff.send(peer, Message::DataEnd { request, failed: true });
         }
+    }
+
+    /// Another machine pastes the files this one copied.
+    pub(crate) fn serve_fetch_files(&mut self, peer: PeerId, request: u64, target: Target, version: u64) {
+        let offered = matches!(
+            self.handoff.clipboard.owners.get(&target),
+            Some(Owner::Here { version: current, mime_types })
+                if *current == version && mime_types.iter().any(|mime| mime == "text/uri-list")
+        );
+        let list = if offered && self.handoff.active_edge(peer).is_some() && !self.is_locked() {
+            self.read_selection(selection_target(target), "text/uri-list".into())
+        } else {
+            None
+        };
+        self.serve_files(peer, request, list);
     }
 
     /// Asks whoever owns a selection here to write it out, returning the
