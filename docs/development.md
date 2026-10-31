@@ -199,9 +199,31 @@ Pushing the tag starts the [release workflow](../.github/workflows/release.yml):
 APT publishing and GitHub release creation run as separate jobs after the
 builds. Check that both succeed.
 
-The APT repository currently keeps only the latest version per platform
-(architecture and distribution). Older packages are replaced there; GitHub
-release assets provide the release history.
+The APT repository keeps the five newest versions of each package per
+distribution and architecture, so users can go back with
+`sudo apt install tileception=<version>`. GitHub release assets hold the full
+history.
+
+### Prereleases
+
+```sh
+vommit release --prerelease
+```
+
+This makes a release candidate: `Cargo.toml` gets `1.2.0-rc.1` and the tag is
+`v1.2.0rc1`. The release workflow accepts either tag spelling, versions the
+packages `1.2.0~rc.1-1~<distribution>` (`~` sorts before the `1.2.0-1`
+release), publishes them to the repository's `pre` component instead of
+`main` and marks the GitHub release as a prerelease. Users who only have
+`main` never see it. Testers opt in by adding `pre` to the components in
+`/etc/apt/sources.list.d/tileception.sources`:
+
+```
+Components: main pre
+```
+
+apt then installs whichever version is newest, so a tester on `1.2.0~rc.2`
+moves to `1.2.0` on the next upgrade, with no switch back needed.
 
 ### Internal crate versions
 
