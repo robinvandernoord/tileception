@@ -113,3 +113,14 @@ detection and cross-compilation use that environment's libraries and tools.
 
 CI installs cargo-plane with `make tools` and selects `cargo plane setup local`
 before running the same lint and test targets.
+
+## Trying changes before reporting them
+
+Building and unit tests do not show how input, focus, windows, menus or popups
+behave. Try such changes in headless instances, driven with `tileception msg`
+and checked with its screenshots, before saying they work. Changes to handoff
+need two headless instances linked over localhost, which stand in for two
+machines. [Development](docs/development.md) describes both setups. Always
+target your own instances with `TILECEPTION_SOCKET`: without it, `tileception
+msg` reaches the user's running desktop. Say plainly what was only built and
+what was tried.

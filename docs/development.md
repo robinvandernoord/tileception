@@ -103,6 +103,42 @@ with `tileception msg`, especially if your desktop is also running Tileception.
 The command interface supports screenshots and input injection in headless and
 nested instances. `tileception msg --help` lists the commands.
 
+Headless instances run Xwayland too, so X11 programs can be tried the same way.
+Start programs inside an instance with `tileception msg spawn <command line>`,
+drive them with `pointer`, `click`, `press`, `release`, `key` and `type`, and
+check the result with `screenshot <file.png>`.
+
+### Handoff between two instances
+
+Two headless instances on one machine can stand in for two computers sharing
+through handoff. Give each its own `XDG_CONFIG_HOME` and `XDG_STATE_HOME`, and a
+config that links it to the other over localhost only:
+
+```toml
+[handoff]
+enabled = true
+passphrase = "any phrase both share"
+name = "left"
+port = 24870
+discovery = false
+peers = ["127.0.0.1:24871"]
+```
+
+The other instance uses `name = "right"`, `port = 24871` and
+`peers = ["127.0.0.1:24870"]`. Once `tileception msg handoff` lists the other
+machine, place them side by side from both ends:
+
+```sh
+TILECEPTION_SOCKET=<left socket> tileception msg handoff edge right headless right
+TILECEPTION_SOCKET=<right socket> tileception msg handoff edge left headless left
+```
+
+The pointer then crosses at those edges, and windows, drags, the clipboard and
+menus can be tried between the two with injected input, taking screenshots of
+both. The handoff scene of the promo video (`scripts/promo/scenes/5-handoff.sh`,
+with helpers in `scripts/promo/lib.sh`) does all of this, including private
+session buses that keep the instances away from your own desktop.
+
 See [Troubleshooting](troubleshooting.md) for logs and runtime diagnostics.
 
 ## Promo video
