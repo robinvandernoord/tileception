@@ -12,7 +12,8 @@
 # on the oldest release you want to support (scripts/build-deb-docker.sh).
 #
 # Environment:
-#   DEB_VERSION     full package version (default: Cargo version + "-1")
+#   DEB_VERSION     full package version (default: scripts/deb-version.sh,
+#                   the Cargo version + "-1" with a prerelease's "-" as "~")
 #   DEB_MAINTAINER  Maintainer field (default: the last commit's author)
 #   DEB_OUT         where the packages go (default: target/deb)
 #   DEB_ARCH        Debian architecture to build for (default: this machine's).
@@ -53,8 +54,7 @@ if [ -z "$cargo_target" ] && ! scripts/deps.sh check build; then
 fi
 
 package=tileception
-cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
-version="${DEB_VERSION:-$cargo_version-1}"
+version=$(scripts/deb-version.sh)
 maintainer="${DEB_MAINTAINER:-$(git log -1 --format='%an <%ae>' 2>/dev/null || true)}"
 if [ -z "$maintainer" ]; then
     echo "build-deb: set DEB_MAINTAINER (no git history to take it from)" >&2

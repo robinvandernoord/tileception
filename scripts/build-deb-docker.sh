@@ -22,8 +22,7 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
-cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
-version="${DEB_VERSION:-$cargo_version-1}"
+version=$(scripts/deb-version.sh)
 maintainer="${DEB_MAINTAINER:-$(git log -1 --format='%an <%ae>')}"
 epoch="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 

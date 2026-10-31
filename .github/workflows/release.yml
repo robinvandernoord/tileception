@@ -3,7 +3,13 @@ name: Release
 # Pushing a tag vX.Y.Z (matching the version in Cargo.toml) builds the .deb
 # packages for every supported release and architecture, attaches them to a
 # GitHub release and publishes them, with the tileception-archive-keyring
-# package for each release, to the apt repository at APT_URL.
+# package for each release, to the main component of the apt repository at
+# APT_URL.
+#
+# A prerelease (`vommit release --prerelease`: Cargo.toml 1.2.0-rc.1, tag
+# v1.2.0rc1 or v1.2.0-rc.1) goes to the pre component instead, without the
+# keyring package, versioned 1.2.0~rc.1-1~<suite> so the 1.2.0 release
+# replaces it, and its GitHub release is marked as a prerelease.
 
 on:
   push:
@@ -19,15 +25,34 @@ concurrency:
 jobs:
   version:
     runs-on: ubuntu-latest
+    outputs:
+      deb: ${{ steps.version.outputs.deb }}
+      component: ${{ steps.version.outputs.component }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
+        id: version
         run: |
           cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
-          if [ "v$cargo_version" != "$GITHUB_REF_NAME" ]; then
+          # vommit tags a prerelease with its PEP 440 spelling (v1.2.0rc1)
+          # while Cargo.toml holds the SemVer one (1.2.0-rc.1); accept both.
+          pep440=$(echo "$cargo_version" | sed -E 's/-alpha\.?([0-9]+)$/a\1/; s/-beta\.?([0-9]+)$/b\1/; s/-rc\.?([0-9]+)$/rc\1/')
+          if [ "$GITHUB_REF_NAME" != "v$cargo_version" ] && [ "$GITHUB_REF_NAME" != "v$pep440" ]; then
             echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
             exit 1
           fi
+          case $cargo_version in
+            *-*) component=pre prerelease=true ;;
+            *) component=main prerelease=false ;;
+          esac
+          deb=$(scripts/deb-version.sh)
+          echo "$cargo_version: Debian version $deb, apt component $component"
+          {
+            echo "deb=$deb"
+            echo "component=$component"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
@@ -61,7 +86,7 @@ jobs:
           retention-days: 14
 
   publish:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     environment:
       name: apt
@@ -85,6 +110,8 @@ jobs:
           done
       - name: Build the keyring package
         # One architecture-independent package per suite, next to the others.
+        # Releases only: a prerelease's keyring would go stale in pre.
+        if: needs.version.outputs.component == 'main'
         run: |
           DEB_OUT=dist scripts/build-keyring-deb.sh $(ls dist)
           find dist -type f | sort
@@ -94,31 +121,35 @@ jobs:
           APT_SSH_PORT: ${{ vars.APT_SSH_PORT || '2222' }}
           APT_SSH_KEY: ${{ secrets.APT_SSH_KEY }}
           APT_SSH_KNOWN_HOSTS: ${{ secrets.APT_SSH_KNOWN_HOSTS }}
+          COMPONENT: ${{ needs.version.outputs.component }}
         run: |
           : "${APT_SSH_HOST:?set the APT_SSH_HOST secret}" "${APT_SSH_KEY:?set the APT_SSH_KEY secret}" "${APT_SSH_KNOWN_HOSTS:?set the APT_SSH_KNOWN_HOSTS secret}"
           install -d -m 700 ~/.ssh
           printf '%s\n' "$APT_SSH_KEY" > ~/.ssh/apt
           printf '%s\n' "$APT_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/apt ~/.ssh/known_hosts
-          tar -C dist -cf - . | ssh -i ~/.ssh/apt -p "$APT_SSH_PORT" -o BatchMode=yes publish@"$APT_SSH_HOST" publish
+          tar -C dist -cf - . | ssh -i ~/.ssh/apt -p "$APT_SSH_PORT" -o BatchMode=yes publish@"$APT_SSH_HOST" publish "$COMPONENT"
       - name: Smoke test
         env:
           APT_URL: ${{ vars.APT_URL || 'https://apt.tileception.space' }}
+          COMPONENT: ${{ needs.version.outputs.component }}
+          DEB_VERSION: ${{ needs.version.outputs.deb }}
         run: |
-          version=${GITHUB_REF_NAME#v}
+          packages=tileception
+          [ "$COMPONENT" != main ] || packages="$packages tileception-archive-keyring"
           curl -fsS -o /dev/null "$APT_URL/tileception.gpg"
           for suite in dist/*; do
             suite=${suite#dist/}
             curl -fsS -o /dev/null "$APT_URL/dists/$suite/InRelease"
             for arch in amd64 arm64; do
-              curl -fsS "$APT_URL/dists/$suite/main/binary-$arch/Packages" > Packages
-              for package in tileception tileception-archive-keyring; do
+              curl -fsS "$APT_URL/dists/$suite/$COMPONENT/binary-$arch/Packages" > Packages
+              for package in $packages; do
                 # pool/ redirects to the R2 bucket: the package must be there.
-                file=$(awk -v p="$package" -v v="$version-1~$suite" '
+                file=$(awk -v p="$package" -v v="$DEB_VERSION~$suite" '
                   $1 == "Package:" { name = $2 }
                   $1 == "Version:" { hit = (name == p && $2 == v) }
                   hit && $1 == "Filename:" { print $2; exit }' Packages)
-                [ -n "$file" ] || { echo "$suite/$arch does not list $package $version-1~$suite" >&2; exit 1; }
+                [ -n "$file" ] || { echo "$suite/$arch does not list $package $DEB_VERSION~$suite" >&2; exit 1; }
                 curl -fsSL -o /dev/null --head "$APT_URL/$file" \
                   || { echo "$APT_URL/$file does not download" >&2; exit 1; }
               done
@@ -126,7 +157,7 @@ jobs:
           done
 
   github-release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -138,6 +169,8 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag artifacts/*.deb
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag \
+            --prerelease="$PRERELEASE" artifacts/*.deb
