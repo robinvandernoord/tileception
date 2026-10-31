@@ -264,8 +264,12 @@ impl Tileception {
         }
         elements.extend(self.bar_elements(renderer));
 
-        // Then bars. A fullscreen window covers everything but the above.
+        // Then bars. A fullscreen window covers everything but the above
+        // and its own X11 menus.
         if self.fullscreen.is_some() {
+            if active {
+                elements.extend(self.x11_overlay_elements(renderer));
+            }
             for drawn in &drawn_windows {
                 if let Some(window) = self.windows.get(&drawn.window_id) {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
@@ -278,13 +282,8 @@ impl Tileception {
         }
         elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
-        // X11 menus and tooltips, at the place they chose.
-        for overlay in self.x11_overlays.iter().rev().filter(|_| active) {
-            let Some(surface) = overlay.wl_surface() else { continue };
-            let loc = overlay.geometry().loc;
-            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
-            let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
-            elements.extend(enlarged(surfaces, origin, self.scale));
+        if active {
+            elements.extend(self.x11_overlay_elements(renderer));
         }
 
         // Then the window being dragged, then where it would land.
@@ -618,6 +617,19 @@ impl Tileception {
                 CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
             })
             .collect()
+    }
+
+    /// X11 menus and tooltips, at the place they chose.
+    fn x11_overlay_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        let mut elements = Vec::new();
+        for overlay in self.x11_overlays.iter().rev() {
+            let Some(surface) = overlay.wl_surface() else { continue };
+            let loc = overlay.geometry().loc;
+            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
+            let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
+            elements.extend(enlarged(surfaces, origin, self.scale));
+        }
+        elements
     }
 }
 
