@@ -1,8 +1,10 @@
 //! The clipboard and the primary selection across machines.
 //!
 //! Nothing is announced when something is copied: when the pointer leaves
-//! for another machine, that machine is told what this one offers (only the
-//! types, and only when it changed since). The contents travel when someone
+//! for another machine, or input goes into one of its windows shown here,
+//! that machine is told what this one offers (only the types, and only when
+//! it changed since). Machines showing this machine's windows are told at
+//! once, as copying in one of them there is meant for pasting there. The contents travel when someone
 //! pastes there. A selection that came from another machine is never offered
 //! back or passed on. Copied files are pasted as copies (see `files`).
 
@@ -144,6 +146,13 @@ impl Tileception {
             target_of(selection),
             Owner::Here { version: clipboard.version, mime_types: mime_types.unwrap_or_default() },
         );
+        if !self.is_locked() {
+            for peer in self.handoff.windows.shown_on() {
+                if self.handoff.active_edge(peer).is_some() {
+                    self.share_selections(peer);
+                }
+            }
+        }
     }
 
     /// Tells a machine what this one offers, as input goes there.
@@ -220,6 +229,7 @@ impl Tileception {
             return;
         }
         let (target, version) = (clip.target, clip.version);
+        tracing::info!("handoff: a program here pastes {mime_type} from {:016x}", clip.peer);
         if let Some(list) = FileList::wanted(&mime_type, &clip.mime_types) {
             let message = |request| Message::FetchFiles { request, target, version };
             self.receive_files_into(clip.peer, pipe, list, message);

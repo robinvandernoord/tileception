@@ -259,6 +259,11 @@ impl Windows {
         self.away_button = None;
     }
 
+    /// The machines this machine's windows are shown on.
+    pub(crate) fn shown_on(&self) -> std::collections::BTreeSet<PeerId> {
+        self.away.values().filter(|away| away.stream.is_some()).map(|away| away.peer).collect()
+    }
+
     pub(crate) fn away_id(&self, peer: PeerId, window: u64) -> Option<WindowId> {
         let local = WindowId(window);
         self.away.get(&local).is_some_and(|away| away.peer == peer).then_some(local)
@@ -385,6 +390,16 @@ impl Tileception {
         }
         (self.handoff.active_edge(peer).is_some() && !self.is_locked() && self.windows.contains_key(&local))
             .then_some(local)
+    }
+
+    /// Offers what this machine copied to the owner of a window that is
+    /// about to be typed or clicked into, so pasting there works: input to
+    /// its windows never crosses an edge, where selections are offered too.
+    fn share_with_owner(&mut self, window: WindowId) {
+        let Some(peer) = self.handoff.windows.remote.get(&window).map(|remote| remote.peer) else { return };
+        if self.handoff.active_edge(peer).is_some() && !self.is_locked() {
+            self.share_selections(peer);
+        }
     }
 
     /// Sends a message about another machine's window to its owner.
@@ -1132,6 +1147,8 @@ impl Tileception {
             (None, true) => {
                 let Some(window) = windows.hovered else { return false };
                 windows.pressed = Some((window, 1));
+                // A middle click pastes the primary selection.
+                self.share_with_owner(window);
                 window
             }
             (None, false) => {
@@ -1166,6 +1183,7 @@ impl Tileception {
         let window = if pressed {
             let Some(window) = windows.remote_keyboard else { return };
             windows.keys_sent.insert(key, window);
+            self.share_with_owner(window);
             window
         } else {
             // The release goes where the press went.
