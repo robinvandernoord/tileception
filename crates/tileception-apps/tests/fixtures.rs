@@ -71,6 +71,20 @@ fn discovery_locales_visibility_and_override() {
 }
 
 #[test]
+fn finds_apps_by_program() {
+    let fixture = Fixture::new();
+    fixture.write("apps/keepassxc.desktop", "[Desktop Entry]\nType=Application\nName=KeePassXC\nExec=keepassxc %f\n");
+    fixture.write(
+        "apps/keepassxc-hidden.desktop",
+        "[Desktop Entry]\nType=Application\nName=Hidden\nExec=/usr/bin/keepassxc --lock\nNoDisplay=true\n",
+    );
+    let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
+    assert_eq!(index.by_program(Path::new("/usr/bin/keepassxc")).unwrap().name, "KeePassXC");
+    assert!(index.by_program(Path::new("/usr/bin/keepass")).is_none());
+    assert!(index.by_program(Path::new("/")).is_none());
+}
+
+#[test]
 fn desktop_actions() {
     let fixture = Fixture::new();
     fixture.write(

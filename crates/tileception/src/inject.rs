@@ -1,4 +1,4 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/type/gesture/touch`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/key/keydown/type/gesture/touch`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
 
@@ -18,10 +18,18 @@ const BTN_MIDDLE: u32 = 0x112;
 pub enum Inject {
     /// Moves the pointer.
     Pointer(f64, f64),
+    /// Moves the pointer by this much, as a mouse does: past a screen edge
+    /// linked to another machine, and on there.
+    Motion(f64, f64),
     /// Presses and lets go of a button, after moving there when given.
     Click { position: Option<(f64, f64)>, button: u32 },
+    /// Presses or lets go of a button, as a mouse does: held, it drags.
+    Button { button: u32, pressed: bool },
     /// A key combination such as `Super+slash` or `Return`.
     Key(String),
+    /// Holds a key down (`Alt`, `Super`, `a`) until it is let go, so a
+    /// script can Alt+drag.
+    HoldKey { key: String, pressed: bool },
     /// Types text, with Shift where a character needs it.
     Type(String),
     /// A whole touchpad gesture, such as `Swipe3Left` or `Super+Pinch2In`.
@@ -40,6 +48,19 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
             [x_arg, y_arg] => Ok(Inject::Pointer(number(x_arg)?, number(y_arg)?)),
             _ => Err("pointer needs x and y".into()),
         },
+        "motion" => match args[..] {
+            [x_arg, y_arg] => Ok(Inject::Motion(number(x_arg)?, number(y_arg)?)),
+            _ => Err("motion needs dx and dy".into()),
+        },
+        "press" | "release" => {
+            let button = match args[..] {
+                [] | ["left"] => BTN_LEFT,
+                ["right"] => BTN_RIGHT,
+                ["middle"] => BTN_MIDDLE,
+                _ => return Err(format!("{verb} takes left, right or middle")),
+            };
+            Ok(Inject::Button { button, pressed: verb == "press" })
+        }
         "click" => {
             let (position, button) = match args[..] {
                 [] => (None, "left"),
@@ -58,6 +79,10 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
         }
         "key" if !rest.trim().is_empty() => Ok(Inject::Key(rest.trim().to_string())),
         "key" => Err("key needs a key, such as Return or Super+slash".into()),
+        "keydown" | "keyup" => match args[..] {
+            [key] => Ok(Inject::HoldKey { key: key.to_string(), pressed: verb == "keydown" }),
+            _ => Err(format!("{verb} needs one key, such as Alt or Shift")),
+        },
         "type" => Ok(Inject::Type(rest.to_string())),
         "touch" => match args[..] {
             [x_arg, y_arg] => {
@@ -84,14 +109,31 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
     }
 }
 
+/// The left-hand key for a modifier's short name (`Super`, `Alt`), if it is one.
+fn modifier_key(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "super" | "logo" | "win" => Some("Super_L"),
+        "shift" => Some("Shift_L"),
+        "ctrl" | "control" => Some("Control_L"),
+        "alt" => Some("Alt_L"),
+        _ => None,
+    }
+}
+
+/// A key by its xkb name, ignoring case when the exact name is unknown.
+fn keysym(name: &str) -> xkb::Keysym {
+    let sym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+    if sym.raw() == 0 { xkb::keysym_from_name(name, xkb::KEYSYM_CASE_INSENSITIVE) } else { sym }
+}
+
 /// The key (and whether Shift is needed) that gives a keysym, in a keymap
 /// compiled like the seat's.
-struct Keys {
+pub(crate) struct Keys {
     keymap: xkb::Keymap,
 }
 
 impl Keys {
-    fn new(keyboard: &crate::config::Keyboard) -> Option<Keys> {
+    pub(crate) fn new(keyboard: &crate::config::Keyboard) -> Option<Keys> {
         let (model, layout, variant, options) = keyboard.names();
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap =
@@ -103,15 +145,21 @@ impl Keys {
     }
 
     fn find(&self, sym: xkb::Keysym) -> Option<(Keycode, bool)> {
+        self.locate(sym, 0, 2).map(|(code, level)| (code, level == 1))
+    }
+
+    /// The key that gives a keysym in `layout`, and the shift level it is on,
+    /// looking at the first `levels`: 1 is Shift, 2 AltGr, 3 both.
+    pub(crate) fn locate(&self, sym: xkb::Keysym, layout: u32, levels: u32) -> Option<(Keycode, u32)> {
         let (min, max) = (self.keymap.min_keycode().raw(), self.keymap.max_keycode().raw());
         // Unshifted first, so "a" is not typed as Shift+A.
-        for level in 0..2 {
+        for level in 0..levels {
             for raw in min..=max {
                 let code = Keycode::new(raw);
-                if level < self.keymap.num_levels_for_key(code, 0)
-                    && self.keymap.key_get_syms_by_level(code, 0, level).contains(&sym)
+                if level < self.keymap.num_levels_for_key(code, layout)
+                    && self.keymap.key_get_syms_by_level(code, layout, level).contains(&sym)
                 {
-                    return Some((code, level == 1));
+                    return Some((code, level));
                 }
             }
         }
@@ -127,12 +175,29 @@ impl Tileception {
         let time = (self.now() * 1000.0) as u32;
         match input {
             Inject::Pointer(x_pos, y_pos) => self.inject_motion(x_pos, y_pos, time),
+            Inject::Motion(right, down) => {
+                if !self.forward_message(tileception_handoff::Message::Motion { right, down }) {
+                    self.inject_motion(self.pointer.x + right, self.pointer.y + down, time);
+                }
+            }
             Inject::Click { position, button } => {
                 if let Some((x_pos, y_pos)) = position {
                     self.inject_motion(x_pos, y_pos, time);
                 }
-                self.on_button(button, ButtonState::Pressed, time);
-                self.on_button(button, ButtonState::Released, time + 1);
+                for pressed in [true, false] {
+                    if !self.forward_message(tileception_handoff::Message::Button { button, pressed }) {
+                        let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+                        self.on_button(button, state, time + u32::from(!pressed));
+                    }
+                }
+            }
+            Inject::Button { button, pressed } => {
+                if !self.forward_message(tileception_handoff::Message::Button { button, pressed })
+                    && self.handoff.held.button(tileception_handoff::Source::Local, button, pressed)
+                {
+                    let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+                    self.on_button(button, state, time);
+                }
             }
             Inject::Key(combo) => {
                 let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
@@ -140,24 +205,21 @@ impl Tileception {
                 let key = parts.pop().ok_or("empty key")?;
                 let mut held = Vec::new();
                 for modifier in parts {
-                    let name = match modifier.to_ascii_lowercase().as_str() {
-                        "super" | "logo" | "win" => "Super_L",
-                        "shift" => "Shift_L",
-                        "ctrl" | "control" => "Control_L",
-                        "alt" => "Alt_L",
-                        other => return Err(format!("unknown modifier {other:?}")),
-                    };
+                    let name = modifier_key(modifier).ok_or_else(|| format!("unknown modifier {modifier:?}"))?;
                     held.push(keys.find(xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS)).ok_or(name)?.0);
                 }
-                let mut sym = xkb::keysym_from_name(key, xkb::KEYSYM_NO_FLAGS);
-                if sym.raw() == 0 {
-                    sym = xkb::keysym_from_name(key, xkb::KEYSYM_CASE_INSENSITIVE);
-                }
-                let (code, shift) = keys.find(sym).ok_or_else(|| format!("no key gives {key:?}"))?;
+                let (code, shift) = keys.find(keysym(key)).ok_or_else(|| format!("no key gives {key:?}"))?;
                 if shift && held.is_empty() {
                     held.extend(keys.find(xkb::Keysym::Shift_L).map(|shift_key| shift_key.0));
                 }
                 self.tap(&held, code, time);
+            }
+            Inject::HoldKey { key, pressed } => {
+                let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
+                let name = modifier_key(&key).unwrap_or(&key);
+                let (code, _) = keys.find(keysym(name)).ok_or_else(|| format!("no key gives {key:?}"))?;
+                let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+                self.handle_key(code, state, time);
             }
             Inject::Type(text) => {
                 let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
@@ -179,9 +241,12 @@ impl Tileception {
     }
 
     fn inject_motion(&mut self, x_pos: f64, y_pos: f64, time: u32) {
-        let screen = self.output_rect();
-        let pos: Point<f64, Logical> =
-            (x_pos.clamp(screen.x, screen.right() - 1.0), y_pos.clamp(screen.y, screen.bottom() - 1.0)).into();
+        if self.handoff.forwarding.is_some()
+            || self.handoff_cross(tileception_handoff::Source::Local, (x_pos, y_pos).into())
+        {
+            return;
+        }
+        let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
         self.on_motion(pos, time);
     }
 
@@ -211,6 +276,9 @@ mod tests {
         assert_eq!(parse("type", "make gaps smaller"), Ok(Inject::Type("make gaps smaller".into())));
         assert!(parse("pointer", "1").is_err());
         assert!(parse("key", " ").is_err());
+        assert_eq!(parse("keydown", "Alt"), Ok(Inject::HoldKey { key: "Alt".into(), pressed: true }));
+        assert_eq!(parse("keyup", "Alt"), Ok(Inject::HoldKey { key: "Alt".into(), pressed: false }));
+        assert!(parse("keydown", "").is_err());
         let logo = crate::config::Mods { logo: true, ..Default::default() };
         assert_eq!(
             parse("gesture", "Super+Pinch2In"),

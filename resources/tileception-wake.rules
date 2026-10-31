@@ -1,0 +1,10 @@
+// Lets the person sitting at the computer start tileception-wake@<time>.service,
+// which only sets when the hardware clock wakes the computer up.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") == "start" &&
+        /^tileception-wake@[0-9]+\.service$/.test(action.lookup("unit") || "") &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

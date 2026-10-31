@@ -17,6 +17,7 @@ use smithay::{
         renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer},
     },
     input::keyboard::{keysyms, xkb},
+    output::Output,
     reexports::calloop::{RegistrationToken, channel},
     utils::Transform,
 };
@@ -31,7 +32,7 @@ use crate::{
     markdown::{self, Kind, Piece, Span},
     render::OutputElement,
     shapes::Shape,
-    text::{RichImage, RichStyle},
+    text::{RichImage, RichStyle, TextImage},
     text_input::TextInput,
     theme::Colour,
     ui::{Align, Painter, Style, ease_out, glyph},
@@ -204,6 +205,8 @@ struct Suggestion {
 
 pub struct Doctor {
     pub open: bool,
+    /// The screen the panel was opened on.
+    pub home: Option<Output>,
     /// Typing goes to the panel (rather than the focused window).
     pub focused: bool,
     opened: Instant,
@@ -257,6 +260,26 @@ pub struct Doctor {
     loads: Option<(channel::Sender<Loaded>, RegistrationToken)>,
     /// The code last copied from an answer, and when.
     copied: Option<(String, Instant)>,
+    /// Text selected in the conversation with the pointer.
+    selected: Option<Selected>,
+}
+
+/// A place in the conversation's text: a block, by its place in
+/// `doctor_content`, and a byte in the text drawn for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct TextAt {
+    block: usize,
+    offset: usize,
+}
+
+struct Selected {
+    anchor: TextAt,
+    head: TextAt,
+    /// The button is still down.
+    dragging: bool,
+    /// The texts at both ends when selected: when the conversation changes
+    /// under them, the selection goes.
+    ends: (Arc<str>, Arc<str>),
 }
 
 impl Default for Doctor {
@@ -265,6 +288,7 @@ impl Default for Doctor {
             std::fs::read_to_string(saved_path()).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
         Self {
             open: false,
+            home: None,
             focused: false,
             opened: Instant::now(),
             edited: Instant::now(),
@@ -298,6 +322,7 @@ impl Default for Doctor {
             pictures: Default::default(),
             loads: None,
             copied: None,
+            selected: None,
         }
     }
 }
@@ -493,6 +518,28 @@ struct Frame {
 
 /// A code block's copy button and, for shell, its run button, right to left
 /// in its top bar.
+/// The byte of `image`'s text nearest to (`x_pos`, `y_pos`) within it: before
+/// everything above it, after everything below.
+fn offset_at(image: &TextImage, x_pos: f64, y_pos: f64) -> usize {
+    let Some(first) = image.glyphs.first() else { return 0 };
+    if y_pos < first.top {
+        return 0;
+    }
+    let mut line =
+        image.glyphs.iter().filter(|glyph| y_pos >= glyph.top && y_pos < glyph.top + glyph.height).peekable();
+    if line.peek().is_none() {
+        return image.text.len();
+    }
+    let mut end = 0;
+    for glyph in line {
+        if x_pos < glyph.left + glyph.width / 2.0 {
+            return glyph.start;
+        }
+        end = glyph.end;
+    }
+    end
+}
+
 fn code_buttons(rect: Rect, run: bool) -> (Rect, Option<Rect>) {
     let top = rect.y + (CODE_BAR - CODE_BUTTON) / 2.0;
     let copy = Rect::new(rect.right() - 6.0 - CODE_BUTTON, top, CODE_BUTTON, CODE_BUTTON);
@@ -513,7 +560,8 @@ impl Tileception {
         }
         // Open is enough: after a click elsewhere took the keyboard, the same
         // key should still put the panel away. Clicking the panel focuses it.
-        if self.doctor.open {
+        // Open on another screen, it comes over to this one.
+        if self.doctor_here() {
             self.close_doctor();
         } else {
             self.open_doctor();
@@ -526,9 +574,10 @@ impl Tileception {
             tracing::info!("the doctor is switched off in [shell]");
             return;
         }
-        if !self.doctor.open {
+        if !self.doctor_here() {
             self.doctor.opened = Instant::now();
         }
+        self.doctor.home = self.outputs.active.clone();
         if self.launcher.open {
             self.close_launcher();
         }
@@ -1175,6 +1224,18 @@ impl Tileception {
     /// A key while the panel has the keyboard.
     pub fn doctor_key(&mut self, sym: u32, mods: Mods) {
         self.doctor.edited = Instant::now();
+        // Copies what is selected in the field (unless it is a key being
+        // entered), or else in the conversation.
+        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
+            let range = self.doctor.input.selection();
+            let field = (!range.is_empty() && self.doctor.secret.is_none())
+                .then(|| self.doctor.input.text.get(range).map(str::to_string))
+                .flatten();
+            if let Some(text) = field.or_else(|| self.doctor_selected_text()) {
+                self.copy_text(text);
+                return;
+            }
+        }
         let word = mods.ctrl || mods.alt;
         // A menu over the conversation takes the arrows, Enter and Esc.
         let rows = match &self.doctor.menu {
@@ -1299,8 +1360,17 @@ impl Tileception {
         };
     }
 
+    /// The panel is open on the output being drawn or handled.
+    pub fn doctor_here(&self) -> bool {
+        self.doctor.open
+            && match &self.doctor.home {
+                Some(home) => self.output.as_ref() == Some(home),
+                None => self.is_active_output(),
+            }
+    }
+
     pub fn doctor_contains(&self, point: Point) -> bool {
-        self.doctor.open && self.doctor_frame().panel.contains(point) && !self.overlay_under(point)
+        self.doctor_here() && self.doctor_frame().panel.contains(point) && !self.overlay_under(point)
     }
 
     /// A press anywhere: inside, the panel takes the keyboard and acts on
@@ -1310,7 +1380,7 @@ impl Tileception {
             return false;
         }
         let frame = self.doctor_frame();
-        if !frame.panel.contains(point) {
+        if !self.doctor_here() || !frame.panel.contains(point) {
             if self.doctor.focused {
                 self.doctor.focused = false;
                 self.force_keyboard_focus_sync();
@@ -1382,9 +1452,176 @@ impl Tileception {
             _ => None,
         });
         if let Some(hit) = hit {
+            self.doctor.selected = None;
             self.doctor_hit(hit);
+        } else {
+            self.doctor_select_from(point);
         }
         true
+    }
+
+    /// The text drawn for a block that has some, with where it is drawn.
+    fn block_text(&self, block: &Block) -> Option<(Point, TextImage)> {
+        match block {
+            Block::Rich { rect, spans, style, .. } => {
+                Some((Point::new(rect.x, rect.y), self.rich_image(spans, *style, rect.w)?.image))
+            }
+            Block::Code { rect, spans, style, .. } => Some((
+                Point::new(rect.x + 12.0, rect.y + CODE_BAR + 9.0),
+                self.rich_image(spans, *style, rect.w - 24.0)?.image,
+            )),
+            Block::Bubble { rect, text, .. } => self.placed_text(
+                text,
+                Rect::new(rect.x + 14.0, rect.y + 10.0, rect.w - 27.0, rect.h - 20.0),
+                self.body_style(),
+            ),
+            Block::Note { rect, text } => self.placed_text(text, *rect, self.note_style()),
+            _ => None,
+        }
+    }
+
+    /// Text as [`Painter::text`] draws it in `rect`.
+    fn placed_text(&self, text: &str, rect: Rect, style: Style) -> Option<(Point, TextImage)> {
+        let image = self.text.borrow_mut().styled(
+            text,
+            &self.theme.font,
+            style.size,
+            style.colour,
+            rect.w.max(1.0) as f32,
+            style.weight,
+            style.lines,
+        )?;
+        let left = match style.align {
+            Align::Left => rect.x,
+            Align::Centre => rect.x + (rect.w - image.width) / 2.0,
+        };
+        Some((Point::new(left, rect.y + (rect.h - image.height) / 2.0), image))
+    }
+
+    /// The text under or nearest to `point`, in the conversation on screen.
+    fn doctor_text_at(&self, point: Point) -> Option<TextAt> {
+        let texts: Vec<(usize, Point, TextImage)> = self
+            .doctor_blocks_indexed(self.doctor_frame().messages)
+            .into_iter()
+            .filter_map(|(block, drawn)| self.block_text(&drawn).map(|(origin, image)| (block, origin, image)))
+            .collect();
+        for (block, origin, image) in &texts {
+            if point.y < origin.y + image.height {
+                let offset = offset_at(image, point.x - origin.x, point.y - origin.y);
+                return Some(TextAt { block: *block, offset });
+            }
+        }
+        texts.last().map(|(block, _, image)| TextAt { block: *block, offset: image.text.len() })
+    }
+
+    fn doctor_select_from(&mut self, point: Point) {
+        let ends = self.doctor_text_at(point).filter(|_| self.doctor_frame().messages.contains(point));
+        self.doctor.selected = ends.and_then(|place| {
+            let text = self.content_text(place.block)?;
+            Some(Selected { anchor: place, head: place, dragging: true, ends: (text.clone(), text) })
+        });
+        self.schedule_render();
+    }
+
+    /// Pointer motion while selecting text. True when it took it.
+    pub fn doctor_drag(&mut self, point: Point) -> bool {
+        if !self.doctor_here() || !self.doctor.selected.as_ref().is_some_and(|selected| selected.dragging) {
+            return false;
+        }
+        if let Some(head) = self.doctor_text_at(point)
+            && let Some(text) = self.content_text(head.block)
+            && let Some(selected) = self.doctor.selected.as_mut()
+        {
+            selected.head = head;
+            selected.ends.1 = text;
+        }
+        self.schedule_render();
+        true
+    }
+
+    /// The button coming up after selecting text. True when it was selecting.
+    pub fn doctor_release(&mut self) -> bool {
+        let Some(selected) = self.doctor.selected.as_mut().filter(|selected| selected.dragging) else { return false };
+        selected.dragging = false;
+        if selected.anchor == selected.head {
+            self.doctor.selected = None;
+        }
+        true
+    }
+
+    /// The text of a block in the conversation, by its place in `doctor_content`.
+    fn content_text(&self, block: usize) -> Option<Arc<str>> {
+        let blocks = self.doctor_content(self.doctor_frame().messages);
+        Some(self.block_text(blocks.get(block)?)?.1.text)
+    }
+
+    /// The selection, start first, while the conversation under it is unchanged.
+    fn doctor_selection(&self) -> Option<(TextAt, TextAt)> {
+        let selected = self.doctor.selected.as_ref()?;
+        let unchanged = |place: TextAt, text: &Arc<str>| self.content_text(place.block).is_some_and(|now| now == *text);
+        if selected.anchor == selected.head
+            || !unchanged(selected.anchor, &selected.ends.0)
+            || !unchanged(selected.head, &selected.ends.1)
+        {
+            return None;
+        }
+        Some((selected.anchor.min(selected.head), selected.anchor.max(selected.head)))
+    }
+
+    /// The bytes of block `block`'s text that are selected.
+    fn selected_in(selection: Option<(TextAt, TextAt)>, block: usize, len: usize) -> Option<(usize, usize)> {
+        let (start, end) = selection?;
+        if block < start.block || block > end.block {
+            return None;
+        }
+        let from = if block == start.block { start.offset } else { 0 };
+        let until = if block == end.block { end.offset } else { len };
+        (from < until).then_some((from, until))
+    }
+
+    /// The selected text, a blank line between blocks.
+    fn doctor_selected_text(&self) -> Option<String> {
+        let selection = self.doctor_selection()?;
+        let blocks = self.doctor_content(self.doctor_frame().messages);
+        let pieces: Vec<String> = (selection.0.block..=selection.1.block)
+            .filter_map(|block| {
+                let (_, image) = self.block_text(blocks.get(block)?)?;
+                let (from, until) = Self::selected_in(Some(selection), block, image.text.len())?;
+                Some(image.text.get(from..until)?.to_string())
+            })
+            .collect();
+        (!pieces.is_empty()).then(|| pieces.join("\n\n"))
+    }
+
+    /// Shading behind the selected part of a block's text.
+    fn draw_selected(
+        &self,
+        painter: &mut Painter,
+        selection: Option<(usize, usize)>,
+        origin: Point,
+        image: &TextImage,
+    ) {
+        let Some((from, until)) = selection else { return };
+        let mut line: Option<Rect> = None;
+        let mut shade = |line: Option<Rect>| {
+            if let Some(rect) = line {
+                painter.fill(rect, self.theme.accent.alpha(0.3), 2.0);
+            }
+        };
+        for glyph in image.glyphs.iter().filter(|glyph| glyph.start < until && glyph.end > from) {
+            let rect = Rect::new(origin.x + glyph.left, origin.y + glyph.top, glyph.width, glyph.height);
+            line = match line {
+                Some(current) if current.y == rect.y => {
+                    let (left, right) = (current.x.min(rect.x), current.right().max(rect.right()));
+                    Some(Rect::new(left, current.y, right - left, current.h))
+                }
+                _ => {
+                    shade(line);
+                    Some(rect)
+                }
+            };
+        }
+        shade(line);
     }
 
     fn doctor_hit(&mut self, hit: Hit) {
@@ -2275,18 +2512,23 @@ impl Tileception {
     /// The middle, scrolled into place: the picker from the top, the
     /// conversation stuck to its newest message. Only whole blocks show.
     fn doctor_blocks(&self, area: Rect) -> Vec<Block> {
-        let mut blocks = self.doctor_content(area);
-        let height = blocks.iter().map(|block| block.rect().bottom()).fold(area.y, f64::max) - area.y;
+        self.doctor_blocks_indexed(area).into_iter().map(|(_, block)| block).collect()
+    }
+
+    /// [`Self::doctor_blocks`] with each block's place in `doctor_content`.
+    fn doctor_blocks_indexed(&self, area: Rect) -> Vec<(usize, Block)> {
+        let mut blocks: Vec<(usize, Block)> = self.doctor_content(area).into_iter().enumerate().collect();
+        let height = blocks.iter().map(|(_, block)| block.rect().bottom()).fold(area.y, f64::max) - area.y;
         let shift = match self.doctor.view {
             View::Picker => -self.doctor.scroll,
             // Taller than the panel: the newest message sits at the bottom.
             View::Conversation if !self.doctor.messages.is_empty() => (area.h - height).min(0.0) + self.doctor.scroll,
             View::Conversation => 0.0,
         };
-        for block in &mut blocks {
+        for (_, block) in &mut blocks {
             block.rect_mut().y += shift;
         }
-        blocks.retain(|block| {
+        blocks.retain(|(_, block)| {
             let rect = block.rect();
             rect.y >= area.y - 0.5 && rect.bottom() <= area.bottom() + 0.5
         });
@@ -2309,7 +2551,7 @@ impl Tileception {
     }
 
     pub fn doctor_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        if !self.doctor.open {
+        if !self.doctor_here() {
             return Vec::new();
         }
         let theme = &self.theme;
@@ -2354,8 +2596,10 @@ impl Tileception {
                 Style::new(theme.font_size * 1.1, theme.text).bold().align(Align::Centre),
             );
         }
-        for block in self.doctor_blocks(area) {
-            self.draw_block(&mut painter, &block, pointer);
+        let selection = self.doctor_selection();
+        for (index, block) in self.doctor_blocks_indexed(area) {
+            let selected = |len| Self::selected_in(selection, index, len);
+            self.draw_block(&mut painter, &block, pointer, selected);
         }
         self.draw_toolbar(&mut painter, &frame, pointer);
         // Pictures waiting to go with the next message; a click takes one off.
@@ -2540,8 +2784,21 @@ impl Tileception {
         }
     }
 
-    fn draw_block(&self, painter: &mut Painter, block: &Block, pointer: Point) {
+    /// `selected` gives the selected bytes of the block's text, from its length.
+    fn draw_block(
+        &self,
+        painter: &mut Painter,
+        block: &Block,
+        pointer: Point,
+        selected: impl Fn(usize) -> Option<(usize, usize)>,
+    ) {
         let theme = &self.theme;
+        // Over a block's fill, under its text.
+        let shade = |painter: &mut Painter| {
+            if let Some((origin, image)) = self.block_text(block) {
+                self.draw_selected(painter, selected(image.text.len()), origin, &image);
+            }
+        };
         match block {
             Block::Bubble { rect, text, user } => {
                 let shape = if *user {
@@ -2558,6 +2815,7 @@ impl Tileception {
                     }
                 };
                 painter.shape(*rect, shape);
+                shade(painter);
                 painter.text(
                     text,
                     Rect::new(rect.x + 14.0, rect.y + 10.0, rect.w - 27.0, rect.h - 20.0),
@@ -2565,6 +2823,7 @@ impl Tileception {
                 );
             }
             Block::Note { rect, text } => {
+                shade(painter);
                 painter.text(text, *rect, self.note_style());
             }
             Block::Tool { rect, title, status } => {
@@ -2718,6 +2977,7 @@ impl Tileception {
                             }
                         }
                     }
+                    shade(painter);
                     painter.image(&image.image.buffer, (rect.x, rect.y));
                 }
             }
@@ -2753,6 +3013,7 @@ impl Tileception {
                     };
                     painter.glyph(icon, button_rect, 14, colour);
                 }
+                shade(painter);
                 if let Some(image) = self.rich_image(spans, *style, rect.w - 24.0) {
                     painter.image(&image.image.buffer, (rect.x + 12.0, rect.y + CODE_BAR + 9.0));
                 }

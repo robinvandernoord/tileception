@@ -5,7 +5,8 @@
 #   scripts/deps.sh install [group...]   install what is missing, after asking
 #   scripts/deps.sh list [group...]      print the package names (for CI)
 #
-# Groups are build, runtime and optional; without any, all three.
+# Groups are build, runtime and optional; without any, all three. video
+# (the promo video's tools) is only checked when asked for.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -70,7 +71,7 @@ case "$mode" in
         esac
         ;;
     *)
-        echo "usage: scripts/deps.sh check|install|list [build|runtime|optional ...]" >&2
+        echo "usage: scripts/deps.sh check|install|list [build|runtime|optional|video ...]" >&2
         exit 2
         ;;
 esac

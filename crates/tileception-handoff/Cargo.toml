@@ -1,0 +1,20 @@
+[package]
+name = "tileception-handoff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sharing input and the clipboard between Tileception machines"
+
+[lints]
+workspace = true
+
+[dependencies]
+getrandom = "0.3"
+lz4_flex = "0.11"
+mdns-sd = "0.21"
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+serde = { version = "1", features = ["derive"] }
+snow = "0.10"
+spake2 = "0.4"
+tracing = "0.1"
+zeroize = "1"

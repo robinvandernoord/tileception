@@ -19,9 +19,10 @@ use smithay::{
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            texture::TextureRenderElement,
             utils::{CropRenderElement, RescaleRenderElement},
         },
-        gles::{GlesRenderer, element::PixelShaderElement},
+        gles::{GlesRenderer, GlesTexture, element::PixelShaderElement},
     },
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
@@ -29,10 +30,10 @@ use smithay::{
 use tileception_core::{Node, NodeId, Rect, WindowId, WindowRole};
 
 use crate::{
+    cursor::Cursor,
     shapes::{Shape, Shapes},
     state::Tileception,
     theme::Colour,
-    udev::Udev,
 };
 
 smithay::backend::renderer::element::render_elements! {
@@ -42,6 +43,7 @@ smithay::backend::renderer::element::render_elements! {
     Solid = SolidColorRenderElement,
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
+    Texture = TextureRenderElement<GlesTexture>,
 }
 
 /// How long a session takes to fade in from black, in seconds: it follows the
@@ -93,7 +95,7 @@ impl Tileception {
         let moving = self.world.is_animating(now);
         let overview = self.world.in_overview();
         let screen = self.world.screen();
-        let focus = self.world.focus();
+        let focus = self.world.focus().filter(|_| self.is_active_output());
 
         if let Some(window_id) = self.fullscreen
             && let Some(window) = self.windows.get(&window_id)
@@ -122,8 +124,7 @@ impl Tileception {
             if !placement.rect.intersects(&screen) || Some(placement.window) == dragged {
                 continue;
             }
-            let Some(window) = self.windows.get(&placement.window) else { continue };
-            let geo = window.geometry();
+            let Some(geo) = self.window_geometry(placement.window) else { continue };
             if geo.size.w <= 0 || geo.size.h <= 0 {
                 continue;
             }
@@ -230,31 +231,45 @@ impl Tileception {
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
         let drawn_windows = self.drawn_windows(now);
-        let focus = self.world.focus();
+        let focus = self.world.focus().filter(|_| self.is_active_output());
         let view = self.world.view(now);
-        let mut elements: Vec<OutputElement> = self.osd_elements(renderer);
-        elements.extend(self.power_menu_elements(renderer));
+        let active = self.is_active_output();
+        let mut elements: Vec<OutputElement> = Vec::new();
+        if active {
+            elements.extend(self.osd_elements(renderer));
+            elements.extend(self.power_menu_elements(renderer));
+            elements.extend(self.handoff_elements(renderer));
+        }
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
-        elements.extend(self.tray_elements(renderer));
-        // The welcome screen is part of the desktop: notifications go over it.
-        if !self.launcher.home {
-            elements.extend(self.launcher_elements(renderer));
+        if active {
+            elements.extend(self.tray_elements(renderer));
+            // The welcome screen is part of the desktop: notifications go over it.
+            if !self.launcher.home {
+                elements.extend(self.launcher_elements(renderer));
+            }
         }
+        // These stay on the screen they appeared on, whichever is active.
         elements.extend(self.notification_elements(renderer));
         elements.extend(self.doctor_elements(renderer));
         // Over the strip, which it can stand on.
         elements.extend(self.duck_elements(renderer));
-        elements.extend(self.strip_elements(renderer));
-        if self.launcher.home {
-            elements.extend(self.launcher_elements(renderer));
+        if active {
+            elements.extend(self.strip_elements(renderer));
+            if self.launcher.home {
+                elements.extend(self.launcher_elements(renderer));
+            }
+            elements.extend(self.selection_elements(renderer));
         }
-        elements.extend(self.selection_elements(renderer));
         elements.extend(self.bar_elements(renderer));
 
-        // Then bars. A fullscreen window covers everything but the above.
+        // Then bars. A fullscreen window covers everything but the above
+        // and its own X11 menus.
         if self.fullscreen.is_some() {
+            if active {
+                elements.extend(self.x11_overlay_elements(renderer));
+            }
             for drawn in &drawn_windows {
                 if let Some(window) = self.windows.get(&drawn.window_id) {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
@@ -267,13 +282,8 @@ impl Tileception {
         }
         elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
-        // X11 menus and tooltips, at the place they chose.
-        for overlay in self.x11_overlays.iter().rev() {
-            let Some(surface) = overlay.wl_surface() else { continue };
-            let loc = overlay.geometry().loc;
-            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
-            let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
-            elements.extend(enlarged(surfaces, origin, self.scale));
+        if active {
+            elements.extend(self.x11_overlay_elements(renderer));
         }
 
         // Then the window being dragged, then where it would land.
@@ -310,6 +320,17 @@ impl Tileception {
         let above_windows = elements.len();
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
+            if self.handoff.windows.is_remote(drawn.window_id) {
+                // Another machine's window, drawn from its pictures, in a
+                // frame of the guest colour.
+                let focused = Some(drawn.window_id) == focus;
+                let floating = drawn.role == WindowRole::Floating;
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.guest_frame(focused, !floating));
+                let shown = (drawn.content.w / drawn.scale.0, drawn.content.h / drawn.scale.1);
+                popups.extend(self.remote_popup_elements(renderer, drawn.window_id, &drawn.content, drawn.scale));
+                elements.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
+                continue;
+            }
             let Some(window) = self.windows.get(&drawn.window_id) else { continue };
             let focused = Some(drawn.window_id) == focus && self.windows.len() > 1;
             let floating = drawn.role == WindowRole::Floating;
@@ -399,6 +420,19 @@ impl Tileception {
         }
     }
 
+    /// The frame of another machine's window: always in the guest colour,
+    /// a little wider, glowing when it has the keyboard.
+    fn guest_frame(&self, focused: bool, mask_corners: bool) -> Shape {
+        let guest = self.theme.guest;
+        Shape {
+            border_width: 1.5,
+            border: if focused { guest } else { guest.alpha(0.55) },
+            glow_radius: if focused { self.theme.glow } else { 0.0 },
+            glow: guest.alpha(0.27),
+            ..self.frame(focused, mask_corners)
+        }
+    }
+
     fn tab_strip_elements(
         &self,
         renderer: &mut GlesRenderer,
@@ -418,7 +452,12 @@ impl Tileception {
             let tab = Rect::new(inner.x + index as f64 * (tab_w + gap), inner.y, tab_w, inner.h);
             let active = index == strip.selected;
             let focused = active && Some(*win) == focus;
-            let title = self.windows.get(win).map(crate::state::window_title).unwrap_or_default();
+            let title = self
+                .windows
+                .get(win)
+                .map(crate::state::window_title)
+                .or_else(|| self.handoff.windows.remote_title(*win))
+                .unwrap_or_default();
             let text_colour = if active { theme.text } else { theme.muted };
             // App mark: a small rounded square, accent on the shown tab.
             let mark = 16.0;
@@ -442,8 +481,13 @@ impl Tileception {
             } else {
                 Shape::filled(theme.muted.alpha(0.5), 2.0)
             };
-            let icon =
-                self.windows.get(win).and_then(|window| self.launcher.app_icon(&crate::state::app_id(window), 16));
+            let app = self
+                .windows
+                .get(win)
+                .map(crate::state::app_id)
+                .or_else(|| self.handoff.windows.remote_app(*win))
+                .unwrap_or_default();
+            let icon = self.launcher.app_icon(&app, 16);
             if let Some(icon) = icon {
                 push_image(&mut out, renderer, &icon, (mark_rect.x, mark_rect.y), self.scale);
             } else {
@@ -462,12 +506,30 @@ impl Tileception {
         out
     }
 
-    /// The pointer, drawn by us when Tileception owns the screen: the client's own
-    /// cursor surface when it set one, otherwise the theme's arrow.
-    pub fn cursor_elements(&mut self, udev: &mut Udev) -> Vec<OutputElement> {
+    /// The pointer and what it drags, drawn by us when Tileception owns the
+    /// screen.
+    pub fn cursor_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
+        // The pointer is on another machine.
+        if self.handoff.forwarding.is_some() || self.handoff.away {
+            return Vec::new();
+        }
+        let mut elements = self.pointer_elements(renderer, cursor);
+        elements.extend(self.drag_elements(renderer));
+        elements
+    }
+
+    /// The pointer: the client's own cursor surface when it set one,
+    /// otherwise the theme's arrow.
+    fn pointer_elements(&mut self, renderer: &mut GlesRenderer, cursor: &mut Cursor) -> Vec<OutputElement> {
         use smithay::input::pointer::{CursorImageAttributes, CursorImageStatus};
         if self.draws_lock_screen() {
             self.cursor_status = CursorImageStatus::default_named();
+        }
+        // Over another machine's window: the pointer its program chose.
+        if !self.draws_lock_screen()
+            && let Some(elements) = self.remote_cursor_elements(renderer)
+        {
+            return elements;
         }
         if let CursorImageStatus::Surface(surface) = &self.cursor_status
             && !surface.alive()
@@ -476,8 +538,8 @@ impl Tileception {
         }
         let pos = self.pointer;
         let scale = self.scale;
-        if udev.cursor.scale != scale {
-            udev.cursor = crate::cursor::Cursor::load(scale);
+        if cursor.scale != scale {
+            *cursor = Cursor::load(scale);
         }
         match &self.cursor_status {
             CursorImageStatus::Hidden => Vec::new(),
@@ -490,18 +552,17 @@ impl Tileception {
                         .unwrap_or_default()
                 });
                 let origin = physical_point((pos.x - hotspot.x as f64, pos.y - hotspot.y as f64), scale);
-                let surfaces =
-                    render_elements_from_surface_tree(&mut udev.renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
+                let surfaces = render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
                 enlarged(surfaces, origin, scale).collect()
             }
             CursorImageStatus::Named(_) => {
                 // The theme's image is loaded at the scale, its hotspot in its own pixels.
-                let hot = udev.cursor.hotspot;
+                let hot = cursor.hotspot;
                 let position = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
-                    &mut udev.renderer,
+                    renderer,
                     position,
-                    &udev.cursor.buffer,
+                    &cursor.buffer,
                     None,
                     None,
                     None,
@@ -526,6 +587,10 @@ impl Tileception {
         content: &Rect,
         alpha: f32,
     ) -> Vec<OutputElement> {
+        if let Some(geo) = self.window_geometry(window_id).filter(|_| self.handoff.windows.is_remote(window_id)) {
+            let shown = (f64::from(geo.size.w), f64::from(geo.size.h));
+            return self.remote_elements(renderer, window_id, content, shown, alpha);
+        }
         let Some(window) = self.windows.get(&window_id) else { return Vec::new() };
         let geo = window.geometry();
         if geo.size.w <= 0 || geo.size.h <= 0 {
@@ -552,6 +617,19 @@ impl Tileception {
                 CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
             })
             .collect()
+    }
+
+    /// X11 menus and tooltips, at the place they chose.
+    fn x11_overlay_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        let mut elements = Vec::new();
+        for overlay in self.x11_overlays.iter().rev() {
+            let Some(surface) = overlay.wl_surface() else { continue };
+            let loc = overlay.geometry().loc;
+            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
+            let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
+            elements.extend(enlarged(surfaces, origin, self.scale));
+        }
+        elements
     }
 }
 

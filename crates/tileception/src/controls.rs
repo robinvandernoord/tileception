@@ -541,7 +541,7 @@ impl Tileception {
 
     /// The controls as laid out in the open panel.
     pub fn panel_media_controls(&self) -> Option<Controls> {
-        self.notifications.open.then(|| self.panel_controls().controls)
+        (self.notifications.open && self.notifications_here()).then(|| self.panel_controls().controls)
     }
 }
 

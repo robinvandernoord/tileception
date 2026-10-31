@@ -94,6 +94,7 @@ impl Tileception {
         }
         self.greeter = Some(Box::new(screen));
         self.lock = LockState::BuiltIn;
+        self.handoff_lock_changed();
         // Locking can start from a key binding, while the keyboard is busy.
         self.loop_handle.insert_idle(|state| state.greeter_keyboard_layouts());
         self.power_menu = None;

@@ -27,6 +27,8 @@ use crate::Tileception;
 #[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
     pub scale: ScaleSetting,
+    /// Top-left corner in global logical pixels. Unset: automatic horizontal row.
+    pub position: Option<[i32; 2]>,
 }
 
 /// "auto", or a fixed scale.
@@ -206,7 +208,10 @@ impl Tileception {
     /// Every window, popup, layer and lock surface, after the scale changed.
     fn send_scale_everywhere(&self) {
         let mut roots: Vec<WlSurface> = Vec::new();
-        for window in self.windows.values() {
+        for (window_id, window) in &self.windows {
+            if self.output_for_window(*window_id) != self.output {
+                continue;
+            }
             if let Some(toplevel) = window.toplevel() {
                 roots.push(toplevel.wl_surface().clone());
                 roots.extend(

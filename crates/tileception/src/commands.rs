@@ -14,6 +14,10 @@ pub enum Command {
     Spawn(String),
     /// Prints the layout tree.
     Tree,
+    /// Lists outputs, or targets one for focus/window movement.
+    Outputs,
+    FocusOutput(String),
+    MoveOutput(String),
     /// Drops the focused window at a screen point, as a mouse drag would.
     Drop(f64, f64),
     /// Saves what is on screen to a PNG file.
@@ -58,6 +62,8 @@ pub enum Command {
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
+    /// Sharing with other machines.
+    Handoff(crate::handoff::HandoffCommand),
 }
 
 /// What `tileception msg --help` prints. Every verb here must parse (a test
@@ -73,6 +79,9 @@ running. A reply starting with \"error\" exits with status 1.
 Inspecting:
   tree                      print the layout tree, with window ids, selection,
                             lock and display-sleep status
+  outputs                   list screens, positions, scales and the active screen
+  focus-output <name>       direct input and desktop bindings to this screen
+  move-output <name>        move the focused/selected windows to this screen
   battery                   print the charge and the border colour it gives
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
@@ -128,9 +137,20 @@ Shell:
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
+  handoff                   machines sharing this mouse and keyboard
+  handoff edge [machine] <output> <side>
+                            place a machine at an edge (left, right, top,
+                            bottom), as dragging its card there does
+  handoff dismiss [machine] stop sharing with a machine, or decline it
+  handoff retry             ask again about machines declined before
+  handoff resume            share again after a lock paused it
+  handoff home              bring input back (also Ctrl+Super+Escape)
+  handoff reclaim [machine] bring this machine's windows back from others
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
+  restart                   start Tileception again as installed now, in the
+                            same session; open windows close
 
 Sound, light and media:
   volume up|down [n]        change the output volume by n percent (or the step)
@@ -143,8 +163,15 @@ Sound, light and media:
 
 Pretend input (headless or nested only):
   pointer <x> <y>           move the pointer
+  motion <dx> <dy>          move it by this much, like a mouse (crosses to
+                            machines linked with handoff)
   click [x y] [left|right|middle]
+  press [left|right|middle] hold a button down (drags), and let go with
+  release [left|right|middle]
   key <combo>               press a key, such as Return or Super+slash
+  keydown <key>             hold a key down (keydown Alt, then press and
+                            motion: an Alt+drag)
+  keyup <key>               let a held key go
   type <text>               type text
   gesture <name>            such as Swipe3Left, Super+Pinch2In or TouchEdgeTop
   touch <x> <y> [x2 y2]     tap, or drag to the second point
@@ -176,7 +203,17 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "outputs" if args.is_empty() => return Ok(Command::Outputs),
+        "focus-output" | "move-output" => {
+            let [name] = args.as_slice() else { return Err(format!("{verb} needs one output name")) };
+            return Ok(if verb == "focus-output" {
+                Command::FocusOutput((*name).into())
+            } else {
+                Command::MoveOutput((*name).into())
+            });
+        }
         "show-minimized" => return Ok(Command::ShowMinimized),
+        "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
@@ -223,7 +260,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "click" | "key" | "type" | "gesture" | "touch" => {
+        "pointer" | "motion" | "click" | "press" | "release" | "key" | "keydown" | "keyup" | "type" | "gesture"
+        | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {
@@ -255,6 +293,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "quit" => Action::Quit,
+        "restart" => Action::Restart,
         "terminal" => Action::Spawn,
         "close" => Action::Close,
         "overview" => Action::Overview,
@@ -331,11 +370,13 @@ impl Tileception {
                 command,
                 Command::Unlock
                     | Command::Tree
+                    | Command::Outputs
                     | Command::Screenshot(_)
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
                     | Command::Battery
+                    | Command::Handoff(crate::handoff::HandoffCommand::Status)
             )
         {
             return Err("session is locked".into());
@@ -344,6 +385,25 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::Outputs => return Ok(self.outputs_status()),
+            Command::FocusOutput(name) => {
+                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                self.activate_output(&output);
+                self.on_motion(self.pointer, (self.now() * 1000.0) as u32);
+            }
+            Command::MoveOutput(name) => {
+                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                let windows = if self.selection.windows.is_empty() {
+                    vec![self.world.focus().ok_or("nothing is focused")?]
+                } else {
+                    self.selection.windows.iter().copied().collect()
+                };
+                for window in windows {
+                    self.move_window_to_output(window, &output)?;
+                }
+                self.activate_output(&output);
+                self.force_keyboard_focus_sync();
+            }
             Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
@@ -364,6 +424,7 @@ impl Tileception {
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
+            Command::Handoff(command) => return self.handoff_command(command),
             Command::ColourScheme(scheme) => {
                 self.theme.colour_scheme = scheme;
                 self.update_appearance();
