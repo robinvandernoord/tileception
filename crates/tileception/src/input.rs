@@ -1138,8 +1138,8 @@ impl Tileception {
 
     fn window_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         for overlay in self.x11_overlays.iter().rev() {
-            let geo = overlay.geometry();
-            if !geo.to_f64().contains(pos) {
+            let geo = self.overlay_geometry(overlay);
+            if !geo.to_f64().contains(pos) || self.handoff.windows.overlay_is_away(overlay) {
                 continue;
             }
             if let Some(surface) = overlay.wl_surface() {

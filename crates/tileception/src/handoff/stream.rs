@@ -37,6 +37,7 @@ use smithay::{
     reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{Buffer, IsAlive, Logical, Rectangle, Scale, Size, Transform},
     wayland::compositor::with_states,
+    xwayland::X11Surface,
 };
 use tileception_core::WindowId;
 use tileception_handoff::{Area, Header, Message, Messenger, PeerId, PointerImage, pack, pack_pointer};
@@ -185,6 +186,21 @@ impl Tileception {
         let scale = self.scale;
         for window in windows {
             let Some(placed) = self.windows.get(&window).cloned() else { continue };
+            let overlays: Vec<(X11Surface, Rectangle<i32, Logical>)> = self
+                .handoff
+                .windows
+                .overlays_of(window)
+                .into_iter()
+                .map(|overlay| {
+                    let rect = self.overlay_geometry(&overlay);
+                    (overlay, rect)
+                })
+                .collect();
+            // A menu holds the pointer; a tooltip only shows.
+            let grab = overlays.iter().any(|(overlay, _)| {
+                use smithay::xwayland::xwm::WmWindowType;
+                !matches!(overlay.window_type(), Some(WmWindowType::Tooltip | WmWindowType::Notification))
+            });
             // None while the connection is lost.
             let Some(stream) = self.handoff.windows.away.get_mut(&window).and_then(|away| away.stream.as_mut()) else {
                 continue;
@@ -198,7 +214,7 @@ impl Tileception {
             if stream.waiting() {
                 continue;
             }
-            match capture(renderer, stream, &placed, scale) {
+            match capture(renderer, stream, &placed, &overlays, scale) {
                 Ok(Some(Captured { pixels, changed, body, popups })) => {
                     stream.serial += 1;
                     let header = Header {
@@ -209,6 +225,7 @@ impl Tileception {
                         scale,
                         body,
                         popups,
+                        grab,
                     };
                     let round = stream.round.load(Ordering::Acquire);
                     if stream.jobs.send(Job { round, header, pixels, changed }).is_ok() {
@@ -365,12 +382,14 @@ fn place(own: Rectangle<i32, Logical>, popups: &[Rectangle<i32, Logical>], scale
     Placed { bounds, size, body: area(&own), popups: popups.iter().map(area).collect() }
 }
 
-/// Draws a window and its popups into its stream's texture, returning its
-/// pixels and what changed, or nothing when nothing did.
+/// Draws a window and its popups (or, for an X11 window, its `overlays`:
+/// menus and tooltips) into its stream's texture, returning its pixels and
+/// what changed, or nothing when nothing did.
 fn capture(
     renderer: &mut GlesRenderer,
     stream: &mut Stream,
     window: &Window,
+    overlays: &[(X11Surface, Rectangle<i32, Logical>)],
     scale: f64,
 ) -> Result<Option<Captured>, String> {
     let geometry: Rectangle<i32, Logical> = window.geometry();
@@ -380,7 +399,7 @@ fn capture(
     // The window and its popups, from the window's own top left (without
     // shadows): popups may reach past it on any side.
     let own = Rectangle::<i32, Logical>::from_size(geometry.size);
-    let popups: Vec<Rectangle<i32, Logical>> = window
+    let mut popups: Vec<Rectangle<i32, Logical>> = window
         .toplevel()
         .map(|toplevel| {
             PopupManager::popups_for_surface(toplevel.wl_surface())
@@ -389,6 +408,17 @@ fn capture(
                 .collect()
         })
         .unwrap_or_default();
+    // X11 menus place themselves on the X screen, from the window's corner
+    // there.
+    let root = window.x11_surface().map_or_else(Default::default, |x11| x11.geometry().loc);
+    let overlays: Vec<(WlSurface, Rectangle<i32, Logical>)> = overlays
+        .iter()
+        .filter_map(|(overlay, rect)| {
+            let surface = overlay.wl_surface()?;
+            (rect.size.w > 0 && rect.size.h > 0).then(|| (surface, Rectangle::new(rect.loc - root, rect.size)))
+        })
+        .collect();
+    popups.extend(overlays.iter().map(|(_, rect)| *rect));
     let Placed { bounds, size, body, popups } = place(own, &popups, scale);
     if stream.size != size || stream.texture.is_none() || stream.damage.is_none() {
         let buffer_size: Size<i32, Buffer> = size.into();
@@ -402,9 +432,17 @@ fn capture(
     // texture's top left. Rendering a window includes its popups.
     let origin =
         physical_point((-f64::from(geometry.loc.x + bounds.loc.x), -f64::from(geometry.loc.y + bounds.loc.y)), scale);
+    // Topmost first: the last menu opened over the others, over the window.
+    let mut elements: Vec<OutputElement> = Vec::new();
+    for (surface, rect) in overlays.iter().rev() {
+        let corner =
+            physical_point((f64::from(rect.loc.x - bounds.loc.x), f64::from(rect.loc.y - bounds.loc.y)), scale);
+        let surfaces = render_elements_from_surface_tree(renderer, surface, corner, 1.0, 1.0, Kind::Unspecified);
+        elements.extend(enlarged(surfaces, corner, scale));
+    }
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-    let elements: Vec<OutputElement> = enlarged(surfaces, origin, scale).collect();
+    elements.extend(enlarged(surfaces, origin, scale));
     let changed = {
         let mut target = renderer.bind(texture).map_err(|error| error.to_string())?;
         let result = damage

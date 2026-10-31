@@ -38,6 +38,8 @@ pub struct Header {
     /// The window itself and its popups, in the picture.
     pub body: Area,
     pub popups: Vec<Area>,
+    /// One of its X11 menus is open and holds the pointer.
+    pub grab: bool,
 }
 
 /// The messages that carry the `changed` areas of an RGBA picture. There is
@@ -52,6 +54,7 @@ pub fn pack(header: &Header, pixels: &[u8], changed: &[Area]) -> Vec<Picture> {
         scale: header.scale,
         body: header.body,
         popups: popups.clone(),
+        grab: header.grab,
         tiles,
         last,
     };
@@ -223,6 +226,7 @@ mod tests {
             scale: 1.25,
             body: Area { left: 0, top: 0, width, height },
             popups: Vec::new(),
+            grab: false,
         }
     }
 
@@ -307,6 +311,7 @@ mod tests {
             scale: 1.0,
             body: Area { left: 0, top: 0, width: 4, height: 4 },
             popups: Vec::new(),
+            grab: false,
             tiles: vec![Tile { left: 3, top: 3, width: 2, height: 2, pixels }],
             last: true,
         };

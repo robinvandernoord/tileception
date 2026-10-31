@@ -173,6 +173,10 @@ impl Tileception {
             return Err("pretend input only works headless or nested".into());
         }
         let time = (self.now() * 1000.0) as u32;
+        // This machine's own input, as a device's would be when it stays here.
+        if self.handoff.forwarding.is_none() {
+            self.used_here();
+        }
         match input {
             Inject::Pointer(x_pos, y_pos) => self.inject_motion(x_pos, y_pos, time),
             Inject::Motion(right, down) => {

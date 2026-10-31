@@ -619,12 +619,16 @@ impl Tileception {
             .collect()
     }
 
-    /// X11 menus and tooltips, at the place they chose.
+    /// X11 menus and tooltips, at the place they chose. Those of windows
+    /// shown elsewhere are drawn there.
     fn x11_overlay_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         let mut elements = Vec::new();
         for overlay in self.x11_overlays.iter().rev() {
+            if self.handoff.windows.overlay_is_away(overlay) {
+                continue;
+            }
             let Some(surface) = overlay.wl_surface() else { continue };
-            let loc = overlay.geometry().loc;
+            let loc = self.overlay_geometry(overlay).loc;
             let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
             let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
             elements.extend(enlarged(surfaces, origin, self.scale));

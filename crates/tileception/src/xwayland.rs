@@ -88,6 +88,76 @@ impl Tileception {
         }
     }
 
+    /// Where an X11 menu or tooltip is. A window that becomes one only as it
+    /// is mapped (ImageMagick's menus do) keeps the geometry it was created
+    /// with in smithay, missing any move or resize before the map. What X
+    /// said at the map stands in until X reports a change.
+    pub(crate) fn overlay_geometry(&self, overlay: &X11Surface) -> Rectangle<i32, Logical> {
+        self.x11_overlay_geometry.get(&overlay.window_id()).copied().unwrap_or_else(|| overlay.geometry())
+    }
+
+    /// Our own connection to Xwayland, made when first needed, for asking:
+    /// X sends changes made through it to the window manager to decide, as
+    /// it does any client's. The window manager's is smithay's, and it lets
+    /// go of the server before calling us, so requests here cannot wait on
+    /// it.
+    fn x11_query(&mut self) -> Option<&x11rb::rust_connection::RustConnection> {
+        if self.x11_query.is_none()
+            && let Some(display) = self.xdisplay
+        {
+            match x11rb::rust_connection::RustConnection::connect(Some(&format!(":{display}"))) {
+                Ok((connection, _)) => self.x11_query = Some(connection),
+                Err(error) => tracing::warn!("could not connect to Xwayland: {error}"),
+            }
+        }
+        self.x11_query.as_ref()
+    }
+
+    /// Asks Xwayland where a just-mapped menu or tooltip is.
+    fn ask_overlay_geometry(&mut self, overlay: &X11Surface) {
+        use x11rb::protocol::xproto::ConnectionExt as _;
+        let Some(connection) = self.x11_query() else { return };
+        let reply = connection.get_geometry(overlay.window_id()).map(|cookie| cookie.reply());
+        match reply {
+            Ok(Ok(geometry)) => {
+                let rect = Rectangle::new(
+                    (i32::from(geometry.x), i32::from(geometry.y)).into(),
+                    (i32::from(geometry.width), i32::from(geometry.height)).into(),
+                );
+                if rect != overlay.geometry() {
+                    self.x11_overlay_geometry.insert(overlay.window_id(), rect);
+                }
+            }
+            // Gone already: nothing to place.
+            Ok(Err(_)) => {}
+            Err(error) => {
+                tracing::warn!("lost the connection asking Xwayland where its menus are: {error}");
+                self.x11_query = None;
+            }
+        }
+    }
+
+    /// Raises an X11 window over the others, with the menus and tooltips
+    /// open over it again, as they are drawn: the X server finds the window
+    /// a click is in by this stacking, and a menu under a window would take
+    /// a click in it for one beside it.
+    pub(crate) fn raise_x11(&mut self, window: &X11Surface) {
+        let Some(xwm) = self.xwm.as_mut() else { return };
+        let _ = xwm.raise_window(window);
+        for overlay in &self.x11_overlays {
+            let _ = xwm.raise_window(overlay);
+        }
+    }
+
+    /// Whether two X windows were made by the same X client, the program
+    /// behind them: the X server hands each client its own range of ids.
+    /// Unknown without our connection to ask how the ranges go.
+    pub(crate) fn same_x11_client(&self, one: u32, other: u32) -> Option<bool> {
+        use x11rb::connection::Connection as _;
+        let mask = self.x11_query.as_ref()?.setup().resource_id_mask;
+        Some(one & !mask == other & !mask)
+    }
+
     fn x11_window_id(&self, surface: &X11Surface) -> Option<tileception_core::WindowId> {
         self.windows.iter().find(|(_, window)| window.x11_surface() == Some(surface)).map(|(window_id, _)| *window_id)
     }
@@ -111,6 +181,9 @@ impl XwmHandler for Tileception {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(geo) = self.x11_refused_configure.remove(&window.window_id()) {
+            let _ = window.configure(geo);
+        }
         if let Err(err) = window.set_mapped(true) {
             tracing::warn!("could not map X11 window: {err}");
             return;
@@ -120,11 +193,15 @@ impl XwmHandler for Tileception {
 
     /// Menus and tooltips place themselves; they are drawn above everything.
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        self.ask_overlay_geometry(&window);
+        self.claim_overlay(&window);
         self.x11_overlays.push(window);
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         self.x11_overlays.retain(|overlay| overlay != &window);
+        self.x11_overlay_geometry.remove(&window.window_id());
+        self.handoff.windows.overlay_gone(&window);
         if let Some(window_id) = self.x11_window_id(&window) {
             self.forget_window(window_id);
         }
@@ -135,13 +212,17 @@ impl XwmHandler for Tileception {
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         self.x11_overlays.retain(|overlay| overlay != &window);
+        self.x11_overlay_geometry.remove(&window.window_id());
+        self.x11_refused_configure.remove(&window.window_id());
+        self.handoff.windows.overlay_gone(&window);
         if let Some(window_id) = self.x11_window_id(&window) {
             self.forget_window(window_id);
         }
     }
 
     /// Managed windows get the size of their tile whatever they ask for;
-    /// windows we do not manage yet get what they ask.
+    /// windows shown elsewhere keep the size given there; windows we do not
+    /// manage yet get what they ask.
     fn configure_request(
         &mut self,
         _xwm: XwmId,
@@ -152,11 +233,19 @@ impl XwmHandler for Tileception {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        if let Some(output) = self.x11_window_id(&window).and_then(|window| self.output_for_window(window)) {
-            self.with_output(&output, |state| state.apply_layout());
+        if let Some(window_id) = self.x11_window_id(&window)
+            && self.output_for_window(window_id).is_some()
+        {
+            self.apply_layout();
             return;
         }
-        let mut geo = window.geometry();
+        if let Some(window_id) = self.x11_window_id(&window)
+            && self.away_configure_request(window_id, w, h)
+        {
+            return;
+        }
+        // Building on what it asked before, if smithay refused that.
+        let mut geo = self.x11_refused_configure.get(&window.window_id()).copied().unwrap_or_else(|| window.geometry());
         if let Some(left) = x {
             geo.loc.x = left;
         }
@@ -169,16 +258,25 @@ impl XwmHandler for Tileception {
         if let Some(height) = h {
             geo.size.h = height as i32;
         }
-        let _ = window.configure(geo);
+        if let Err(smithay::xwayland::xwm::X11SurfaceError::UnsupportedForOverrideRedirect) = window.configure(geo) {
+            // Smithay only learns that a window stopped being a menu once it
+            // is mapped (ImageMagick reuses its menu window for dialogs), and
+            // refuses to place menus until then. It gets this when mapped.
+            self.x11_refused_configure.insert(window.window_id(), geo);
+        }
     }
 
+    /// Once a menu is one, smithay follows its changes itself.
     fn configure_notify(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        window: X11Surface,
         _geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
+        if window.is_override_redirect() {
+            self.x11_overlay_geometry.remove(&window.window_id());
+        }
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {

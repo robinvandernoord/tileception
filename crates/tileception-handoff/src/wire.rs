@@ -63,6 +63,10 @@ pub struct Picture {
     /// and other popups reaching past it, each listed in `popups`.
     pub body: Area,
     pub popups: Vec<Area>,
+    /// One of its X11 menus is open and holds the pointer: until it closes,
+    /// the pointer goes to the window wherever it is, so that a click beside
+    /// the menu closes it.
+    pub grab: bool,
     pub tiles: Vec<Tile>,
     /// The picture is complete with this part.
     pub last: bool,
@@ -400,6 +404,7 @@ mod tests {
             scale: 1.5,
             body: Area { left: u32::MAX, top: u32::MAX, width: u32::MAX, height: u32::MAX },
             popups: vec![Area { left: u32::MAX, top: u32::MAX, width: u32::MAX, height: u32::MAX }; MAX_POPUPS],
+            grab: true,
             tiles: vec![tile(vec![0xff; PICTURE_BUDGET / 2]), tile(vec![0xff; PICTURE_BUDGET / 2])],
             last: true,
         };

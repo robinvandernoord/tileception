@@ -103,6 +103,14 @@ pub struct Tileception {
     pub xdisplay: Option<u32>,
     /// X11 menus and tooltips, which place themselves, topmost last.
     pub x11_overlays: Vec<X11Surface>,
+    /// Where X11 menus really are, by X window, when smithay does not know
+    /// (see `Tileception::overlay_geometry`).
+    pub x11_overlay_geometry: std::collections::HashMap<u32, smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    /// A connection of our own to Xwayland, for asking where windows are.
+    pub x11_query: Option<x11rb::rust_connection::RustConnection>,
+    /// Where X11 windows asked to be before smithay would place them, by X
+    /// window, applied when they map.
+    pub x11_refused_configure: std::collections::HashMap<u32, smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub dmabuf: Option<(DmabufState, DmabufGlobal)>,
@@ -292,6 +300,9 @@ impl Tileception {
             xwm: None,
             xdisplay: None,
             x11_overlays: Vec::new(),
+            x11_overlay_geometry: std::collections::HashMap::new(),
+            x11_query: None,
+            x11_refused_configure: std::collections::HashMap::new(),
             popups: PopupManager::default(),
             seat,
             dmabuf: None,
@@ -681,8 +692,8 @@ impl Tileception {
             remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
             focus.and_then(|window_id| self.windows.get(&window_id)).and_then(focus_target)
         };
-        if let (Some(KeyboardFocus::X11(x11)), Some(xwm)) = (&target, self.xwm.as_mut()) {
-            let _ = xwm.raise_window(x11);
+        if let Some(KeyboardFocus::X11(x11)) = &target {
+            self.raise_x11(&x11.clone());
         }
         keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         // Another machine's window takes keys through its owner.

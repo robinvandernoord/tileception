@@ -39,6 +39,7 @@ cosmic-text = "0.19"
 resvg = "0.45"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 smithay-drm-extras = { version = "0.1", default-features = false }
+x11rb = { version = "0.13", default-features = false }
 
 [dependencies.smithay]
 version = "0.7"
