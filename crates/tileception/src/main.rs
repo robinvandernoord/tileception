@@ -55,6 +55,7 @@ mod remote_desktop;
 mod render;
 mod rules;
 mod scale;
+mod screensaver;
 mod selection;
 mod shapes;
 mod shell;
@@ -270,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.publish_greeter_card();
         state.start_portal();
         state.start_sleep_watch();
+        state.start_screensaver();
         export_session_environment(&state);
     }
     // TILECEPTION_POWER_SUPPLY points at a stand-in for /sys/class/power_supply,

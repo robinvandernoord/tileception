@@ -78,7 +78,8 @@ autostart = []
 
 [idle]
 # Seconds of inactivity; 0 disables the corresponding action.
-# Visible video players can inhibit both through the Wayland idle-inhibit protocol.
+# Visible video players can inhibit both through the Wayland idle-inhibit protocol;
+# X11 players and browsers through org.freedesktop.ScreenSaver, wherever they are.
 lock_after = 0
 off_after = 600
 # Lock the screen before the computer suspends or hibernates, however that

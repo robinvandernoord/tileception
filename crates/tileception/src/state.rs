@@ -187,6 +187,7 @@ pub struct Tileception {
     pub duck: crate::duck::Duck,
     /// Light or dark for applications, through the desktop portal.
     pub appearance: Option<crate::appearance::AppearanceService>,
+    pub screensaver: Option<crate::screensaver::ScreenSaverService>,
     /// Applications typing through the desktop portal (KeePassXC's auto-type).
     pub typing: crate::remote_desktop::Typing,
     /// Applications' global shortcuts through the desktop portal.
@@ -355,6 +356,7 @@ impl Tileception {
             notification_bus: None,
             media_bus: None,
             appearance: None,
+            screensaver: None,
             typing: Default::default(),
             shortcuts: Default::default(),
             selection: Default::default(),

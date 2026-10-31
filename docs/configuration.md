@@ -315,7 +315,9 @@ for example, to lock after five minutes.
 `off_after` turns off the display without suspending the computer. The first
 input after that, such as a key press, pointer movement or touch, only wakes the
 display and is not passed to applications. Visible applications using Wayland
-idle inhibition, such as video players, can pause both timers. These idle timers
+idle inhibition, such as video players, can pause both timers. So can
+applications that ask over D-Bus (`org.freedesktop.ScreenSaver`), such as VLC
+and other X11 players, whether or not their window is visible. These idle timers
 do not run in nested mode.
 
 Unless `shell.lock` is `"none"`, `lock_before_sleep` locks before suspend or
