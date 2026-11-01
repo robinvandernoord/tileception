@@ -799,6 +799,10 @@ impl Tileception {
         if let Some(away) = self.handoff.windows.away.remove(&window) {
             self.handoff.send(away.peer, Message::WindowGone { window: window.0 });
             self.drop_peer_screens();
+            // Keys typed into it from there would wait for releases that
+            // now have nowhere to go: Super held for Super-C would stay
+            // down, and typing here would turn into shortcuts.
+            self.release_away_keys(away.peer);
         }
         let windows = &mut self.handoff.windows;
         if windows.away_keyboard == Some(window) {
