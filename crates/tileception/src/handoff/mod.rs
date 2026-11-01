@@ -15,6 +15,7 @@ mod files;
 mod forward;
 pub mod pair;
 mod prompt;
+mod screens;
 mod stream;
 mod windows;
 
@@ -26,6 +27,7 @@ use tileception_handoff::{DEFAULT_PORT, Event, Held, Message, PeerId, Service, S
 use zeroize::Zeroizing;
 
 pub use clipboard::RemoteClip;
+pub(crate) use screens::PEER_SCREEN;
 
 use tileception_notify::Urgency;
 
@@ -517,6 +519,15 @@ impl Tileception {
             | Message::DragLink { .. }
             | Message::DragEnd { .. }
             | Message::DragUpdate { .. }) => self.drag_message(peer, message),
+            Message::ScreenSize { width, height } => {
+                let room = tileception_handoff::Room {
+                    left: 0,
+                    top: 0,
+                    width: width.min(16384) as i32,
+                    height: height.min(16384) as i32,
+                };
+                self.peer_screen(peer, room);
+            }
             message => self.window_message(peer, message),
         }
     }
@@ -529,6 +540,14 @@ impl Tileception {
         let summary = format!("Sharing with {}", entry.name);
         tracing::info!("handoff: linked with {} at {} {}", entry.name, edge.output, edge.side.name());
         self.notify_locally(&summary, &body, Urgency::Normal);
+        // Older X programs learn the X screen's size once, as they start:
+        // the stand-in for that machine's screen is there from linking on.
+        // The room windows have, below the bar, as `Room` measures it.
+        let screen = self.world.screen();
+        self.handoff.send(
+            peer,
+            Message::ScreenSize { width: screen.w.round().max(1.0) as u32, height: screen.h.round().max(1.0) as u32 },
+        );
         self.resume_windows(peer);
     }
 

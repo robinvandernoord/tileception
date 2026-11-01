@@ -3,8 +3,8 @@
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_output,
-    delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection,
+    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
@@ -325,7 +325,52 @@ impl smithay::wayland::selection::ext_data_control::DataControlHandler for Tilec
 smithay::delegate_ext_data_control!(Tileception);
 
 impl OutputHandler for Tileception {}
-delegate_output!(Tileception);
+
+// smithay's `delegate_output!`, but for wl_output globals: the stand-ins
+// for other machines' screens are for Xwayland alone (handoff::screens).
+smithay::reexports::wayland_server::delegate_global_dispatch!(Tileception: [
+    smithay::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1: ()
+] => smithay::wayland::output::OutputManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(Tileception: [
+    smithay::reexports::wayland_server::protocol::wl_output::WlOutput: smithay::wayland::output::OutputUserData
+] => smithay::wayland::output::OutputManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(Tileception: [
+    smithay::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_v1::ZxdgOutputV1: smithay::wayland::output::XdgOutputUserData
+] => smithay::wayland::output::OutputManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(Tileception: [
+    smithay::reexports::wayland_protocols::xdg::xdg_output::zv1::server::zxdg_output_manager_v1::ZxdgOutputManagerV1: ()
+] => smithay::wayland::output::OutputManagerState);
+
+impl
+    smithay::reexports::wayland_server::GlobalDispatch<
+        smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+        smithay::wayland::output::WlOutputData,
+    > for Tileception
+{
+    fn bind(
+        state: &mut Self,
+        handle: &smithay::reexports::wayland_server::DisplayHandle,
+        client: &Client,
+        resource: smithay::reexports::wayland_server::New<
+            smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+        >,
+        global_data: &smithay::wayland::output::WlOutputData,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        <smithay::wayland::output::OutputManagerState as smithay::reexports::wayland_server::GlobalDispatch<
+            smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+            smithay::wayland::output::WlOutputData,
+            Self,
+        >>::bind(state, handle, client, resource, global_data, data_init);
+    }
+
+    fn can_view(client: Client, global_data: &smithay::wayland::output::WlOutputData) -> bool {
+        // PROTOTYPE: smithay keeps the output in the global's data to
+        // itself, but prints its name.
+        let stand_in = format!("{global_data:?}").contains(crate::handoff::PEER_SCREEN);
+        !stand_in || client.get_data::<smithay::xwayland::XWaylandClientData>().is_some()
+    }
+}
 
 impl XdgShellHandler for Tileception {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {

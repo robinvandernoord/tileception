@@ -102,6 +102,9 @@ pub(crate) struct Windows {
     /// with their window: drawn into its picture there, not on a screen
     /// here.
     overlays: Vec<(X11Surface, WindowId)>,
+    /// Stand-ins for the screens of machines showing this machine's
+    /// windows.
+    pub(crate) screens: super::screens::PeerScreens,
 }
 
 pub(crate) struct Away {
@@ -571,6 +574,7 @@ impl Tileception {
     /// Brings one of this machine's windows back from another machine.
     fn take_back(&mut self, window: WindowId, arriving: Option<Arriving>) {
         let Some(away) = self.handoff.windows.away.remove(&window) else { return };
+        self.drop_peer_screens();
         self.release_away_keys(away.peer);
         let windows = &mut self.handoff.windows;
         // Its open menus are drawn here again.
@@ -794,6 +798,7 @@ impl Tileception {
         self.handoff.windows.overlays.retain(|(_, owner)| *owner != window);
         if let Some(away) = self.handoff.windows.away.remove(&window) {
             self.handoff.send(away.peer, Message::WindowGone { window: window.0 });
+            self.drop_peer_screens();
         }
         let windows = &mut self.handoff.windows;
         if windows.away_keyboard == Some(window) {
@@ -1390,71 +1395,50 @@ impl Tileception {
             if toplevel.is_initial_configure_sent() {
                 toplevel.send_pending_configure();
             }
-        } else if let Some(x11) = placed.x11_surface() {
-            // Where it is on that screen, so that X11 menus placed beside
-            // one of the program's windows land beside the right one there.
-            let place = if room.width > 0 && room.height > 0 { (-room.left, -room.top) } else { (0, 0) };
-            let _ = x11.configure(Rectangle::new(place.into(), size));
+        } else if let Some(x11) = placed.x11_surface().cloned() {
+            // Where it is on the stand-in for that screen, so that the X
+            // server sees the program's windows as that machine shows them.
+            let Some(peer) = self.handoff.windows.away.get(&window).map(|away| away.peer) else { return };
+            let place = if room.width > 0 && room.height > 0 {
+                self.peer_screen(peer, room) + Point::from((-room.left, -room.top))
+            } else {
+                x11.geometry().loc
+            };
+            let _ = x11.configure(Rectangle::new(place, size));
         }
     }
 
-    /// An X11 menu or tooltip just appeared. When its program's window is
-    /// shown elsewhere, with input from there, it goes along: drawn into
-    /// that window's picture there instead of on a screen here.
+    /// An X11 menu or tooltip just appeared. On the stand-in for another
+    /// machine's screen, it is that machine's to show: drawn into the
+    /// picture of one of its program's windows there, the highest in the X
+    /// stacking. Any would put it in the right place, as they all sit where
+    /// that machine shows them.
     pub(crate) fn claim_overlay(&mut self, overlay: &X11Surface) {
-        let windows = &self.handoff.windows;
-        let away_x11 = |window: &WindowId| {
-            let placed = self.windows.get(window)?;
-            let x11 = placed.x11_surface()?;
-            windows.away.get(window).filter(|away| away.stream.is_some())?;
-            Some(x11.clone())
-        };
+        let menu = self.overlay_geometry(overlay);
+        let Some(peer) = self.peer_screen_at(menu.loc) else { return };
         // Menus seldom say which process they are from; their X client says
         // which program.
-        let same_program = |x11: X11Surface| {
+        let same_program = |x11: &X11Surface| {
             self.same_x11_client(x11.window_id(), overlay.window_id())
                 .unwrap_or_else(|| x11.pid().is_some() && x11.pid() == overlay.pid())
         };
-        let menu = self.overlay_geometry(overlay);
-        let distance = |window: &WindowId| {
-            let rect = self.windows.get(window).and_then(|placed| placed.x11_surface()).map(|x11| x11.geometry());
-            rect.map_or(i32::MAX, |rect| gap(rect, menu))
-        };
-        // The program's windows shown elsewhere.
-        let mut shown: Vec<WindowId> =
-            windows.away.keys().copied().filter(|window| away_x11(window).is_some_and(same_program)).collect();
-        // The window input from there is in. One with the keyboard there
-        // only counts while this machine's own input is there too: in
-        // another window of the program here, the menu is for here.
-        let keyboard = windows.away_keyboard.filter(|_| self.handoff.forwarding.is_some());
-        let used =
-            [windows.pointed, windows.typing, keyboard].into_iter().flatten().find(|window| shown.contains(window));
-        // Nearest the menu first: programs place a menu beside the window it
-        // belongs to, which need not be the one the pointer is in
-        // (ImageMagick's right-click opens a menu of its command panel).
-        // Among windows it touches, the one in use, then the smallest.
-        let area = |window: &WindowId| {
-            let rect = self.windows.get(window).and_then(|placed| placed.x11_surface()).map(|x11| x11.geometry());
-            rect.map_or(i64::MAX, |rect| i64::from(rect.size.w) * i64::from(rect.size.h))
-        };
-        shown.sort_by_key(|window| (distance(window), Some(*window) != used, area(window), window.0));
-        let owner = match used {
-            // The nearest on the machine that input came from.
-            Some(used) => {
-                let peer = windows.away.get(&used).map(|away| away.peer);
-                shown.iter().copied().find(|window| windows.away.get(window).map(|away| away.peer) == peer)
-            }
-            // Without input from there (X can hold a click back while
-            // another program grabs the pointer), a program with all its
-            // windows elsewhere still has its menus there.
-            None => {
-                let here = self.windows.iter().any(|(window, placed)| {
-                    !windows.away.contains_key(window)
-                        && placed.x11_surface().is_some_and(|x11| same_program(x11.clone()))
-                });
-                shown.first().copied().filter(|_| !here)
-            }
-        };
+        let shown: Vec<(WindowId, u32)> = self
+            .handoff
+            .windows
+            .away
+            .iter()
+            .filter(|(_, away)| away.peer == peer && away.stream.is_some())
+            .filter_map(|(window, _)| {
+                let x11 = self.windows.get(window)?.x11_surface()?;
+                same_program(x11).then(|| (*window, x11.mapped_window_id().unwrap_or_else(|| x11.window_id())))
+            })
+            .collect();
+        if shown.is_empty() {
+            return;
+        }
+        let stacking = self.x11_stacking();
+        let height = |frame: u32| stacking.iter().position(|window| *window == frame);
+        let owner = shown.iter().max_by_key(|(window, frame)| (height(*frame), window.0)).map(|(window, _)| *window);
         if let Some(owner) = owner {
             self.handoff.windows.overlays.push((overlay.clone(), owner));
         }
@@ -1465,29 +1449,16 @@ impl Tileception {
         self.handoff.windows.pointed = Some(window);
         let geometry = placed.geometry();
         let location: Point<f64, Logical> = geometry.loc.to_f64() + Point::from((across, down));
-        // Its X11 menus first, as they are drawn over it.
-        let root = placed.x11_surface().map(|x11| x11.geometry().loc);
-        let in_overlay = root.and_then(|root| {
-            self.handoff.windows.overlays_of(window).into_iter().rev().find_map(|overlay| {
-                let rect = self.overlay_geometry(&overlay);
-                let loc = geometry.loc + rect.loc - root;
-                let surface = overlay.wl_surface()?;
-                Rectangle::new(loc, rect.size).to_f64().contains(location).then(|| (surface, loc.to_f64()))
-            })
-        });
-        let focus = in_overlay
-            .or_else(|| {
-                placed
-                    .surface_under(location, WindowSurfaceType::ALL)
-                    .map(|(surface, offset)| (surface, offset.to_f64()))
-            })
-            .or_else(|| {
-                // Beside the window while one of its X11 menus is open: the
-                // menu holds the pointer and closes on a click there.
-                let menu_open = !self.handoff.windows.overlays_of(window).is_empty();
-                let surface = placed.x11_surface().and_then(|x11| x11.wl_surface()).filter(|_| menu_open)?;
-                Some((surface, geometry.loc.to_f64()))
-            });
+        let focus = match placed.x11_surface() {
+            // The X server finds the window under the pointer itself, a menu
+            // or another of the program's windows, from where they are on
+            // the stand-in for that machine's screen: the pointer only has
+            // to be in the X server, at the right place.
+            Some(x11) => x11.wl_surface().map(|surface| (surface, geometry.loc.to_f64())),
+            None => placed
+                .surface_under(location, WindowSurfaceType::ALL)
+                .map(|(surface, offset)| (surface, offset.to_f64())),
+        };
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let before = pointer.current_focus();
         let time = self.input_time();
@@ -1503,7 +1474,7 @@ impl Tileception {
     /// window a click is in by stacking, and a program with a menu open
     /// takes a click in a window covered here for one beside the menu.
     /// Already on entering, as a click right after can reach the X server
-    /// before a raise does. Not in a menu.
+    /// before a raise does.
     fn raise_pointed(&mut self) {
         let Some(x11) =
             self.handoff.windows.pointed.and_then(|window| self.windows.get(&window)?.x11_surface().cloned())
@@ -1680,16 +1651,6 @@ impl Tileception {
     }
 }
 
-/// How far apart two rectangles are, in the larger of the two directions:
-/// 0 when they touch or overlap.
-fn gap(one: Rectangle<i32, Logical>, other: Rectangle<i32, Logical>) -> i32 {
-    let apart =
-        |start: i32, end: i32, other_start: i32, other_end: i32| (other_start - end).max(start - other_end).max(0);
-    let across = apart(one.loc.x, one.loc.x + one.size.w, other.loc.x, other.loc.x + other.size.w);
-    let down = apart(one.loc.y, one.loc.y + one.size.h, other.loc.y, other.loc.y + other.size.h);
-    across.max(down)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1712,19 +1673,6 @@ mod tests {
             lost: false,
             grab: false,
         }
-    }
-
-    #[test]
-    fn menus_go_to_the_nearest_window() {
-        let rect =
-            |left, top, width, height| Rectangle::<i32, Logical>::new((left, top).into(), (width, height).into());
-        let panel = rect(500, 200, 134, 410);
-        // ImageMagick's Edit menu, overlapping the panel's edge.
-        assert_eq!(gap(panel, rect(622, 322, 49, 118)), 0);
-        // Touching counts as beside.
-        assert_eq!(gap(panel, rect(634, 300, 50, 50)), 0);
-        assert_eq!(gap(panel, rect(700, 300, 50, 50)), 66);
-        assert_eq!(gap(panel, rect(0, 0, 100, 100)), 400);
     }
 
     #[test]

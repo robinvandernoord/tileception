@@ -137,6 +137,22 @@ impl Tileception {
         }
     }
 
+    /// The X server's top-level windows, the lowest first.
+    pub(crate) fn x11_stacking(&mut self) -> Vec<u32> {
+        use x11rb::{connection::Connection as _, protocol::xproto::ConnectionExt as _};
+        let Some(connection) = self.x11_query() else { return Vec::new() };
+        let Some(root) = connection.setup().roots.first().map(|screen| screen.root) else { return Vec::new() };
+        match connection.query_tree(root).map(|cookie| cookie.reply()) {
+            Ok(Ok(tree)) => tree.children,
+            Ok(Err(_)) => Vec::new(),
+            Err(error) => {
+                tracing::warn!("lost the connection asking Xwayland how its windows stack: {error}");
+                self.x11_query = None;
+                Vec::new()
+            }
+        }
+    }
+
     /// Raises an X11 window over the others, with the menus and tooltips
     /// open over it again, as they are drawn: the X server finds the window
     /// a click is in by this stacking, and a menu under a window would take

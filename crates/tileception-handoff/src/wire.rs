@@ -286,6 +286,13 @@ pub enum Message {
     DragEnd {
         drag: u64,
     },
+    /// The size of the room windows have on the sender's screen at the edge
+    /// it was linked at, in logical pixels: its stand-in on the receiver's X
+    /// screen gets it.
+    ScreenSize {
+        width: u32,
+        height: u32,
+    },
 }
 
 /// What a drag carries, for showing by the pointer.
