@@ -1475,16 +1475,14 @@ impl Tileception {
     /// takes a click in a window covered here for one beside the menu.
     /// Already on entering, as a click right after can reach the X server
     /// before a raise does.
-    fn raise_pointed(&mut self) {
-        let Some(x11) =
-            self.handoff.windows.pointed.and_then(|window| self.windows.get(&window)?.x11_surface().cloned())
-        else {
-            return;
-        };
+    fn raise_pointed(&mut self) -> Option<X11Surface> {
+        let x11 = self.handoff.windows.pointed.and_then(|window| self.windows.get(&window)?.x11_surface().cloned())?;
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        if x11.wl_surface().is_some_and(|surface| pointer.current_focus().as_ref() == Some(&surface)) {
-            self.raise_x11(&x11);
+        if !x11.wl_surface().is_some_and(|surface| pointer.current_focus().as_ref() == Some(&surface)) {
+            return None;
         }
+        self.raise_x11(&x11);
+        Some(x11)
     }
 
     fn away_button(&mut self, button: u32, pressed: bool) {
@@ -1493,8 +1491,20 @@ impl Tileception {
         } else if self.handoff.windows.away_button == Some(button) {
             self.handoff.windows.away_button = None;
         }
-        if pressed {
-            self.raise_pointed();
+        // The press goes to the X server through Xwayland, the raise
+        // through the window manager's connection, and either can arrive
+        // first: the press waits for the raise.
+        if pressed && let Some(x11) = self.raise_pointed() {
+            let others: Vec<u32> = self
+                .handoff
+                .windows
+                .away
+                .keys()
+                .filter_map(|window| self.windows.get(window)?.x11_surface())
+                .filter(|other| *other != &x11)
+                .map(|other| other.mapped_window_id().unwrap_or_else(|| other.window_id()))
+                .collect();
+            self.settle_x11_raise(x11.mapped_window_id().unwrap_or_else(|| x11.window_id()), &others);
         }
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };

@@ -153,6 +153,22 @@ impl Tileception {
         }
     }
 
+    /// Waits until the X server has `frame` over `others`, a few
+    /// milliseconds at most: a raise asked for through the window manager's
+    /// connection may not have reached it yet.
+    pub(crate) fn settle_x11_raise(&mut self, frame: u32, others: &[u32]) {
+        for _ in 0..10 {
+            let stacking = self.x11_stacking();
+            let height = |window: u32| stacking.iter().position(|stacked| *stacked == window);
+            let Some(top) = height(frame) else { return };
+            if others.iter().all(|other| height(*other).is_none_or(|other| other < top)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        tracing::debug!("the X server has not raised window {frame:#x} yet");
+    }
+
     /// Raises an X11 window over the others, with the menus and tooltips
     /// open over it again, as they are drawn: the X server finds the window
     /// a click is in by this stacking, and a menu under a window would take
