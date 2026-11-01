@@ -11,7 +11,11 @@ use std::{
     io::{Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -83,7 +87,15 @@ impl FileList {
 /// Copies of files on their way here, by request.
 #[derive(Default)]
 pub(crate) struct Files {
-    incoming: HashMap<u64, (PeerId, mpsc::Sender<Piece>)>,
+    incoming: HashMap<u64, Incoming>,
+}
+
+/// A copy of files arriving: where it comes from, the queue to the thread
+/// writing it, and whether the other machine said it is complete.
+struct Incoming {
+    peer: PeerId,
+    sender: mpsc::SyncSender<Piece>,
+    finished: Arc<AtomicBool>,
 }
 
 /// Part of a copy of files arriving.
@@ -111,22 +123,29 @@ impl Files {
         self.piece(request, Piece::Bytes(bytes));
     }
 
-    /// The last of a copy of files; dropping the sender finishes it.
+    /// The last of a copy of files. Its writer finishes once it has written
+    /// everything queued, and keeps the files only if this marked them
+    /// complete: the queue also closes on a disconnect or a stalled writer.
+    /// A flag rather than a last piece, which a full queue could not take.
     pub(crate) fn end(&mut self, request: u64, failed: bool) {
         if failed {
             tracing::warn!("handoff: copying files failed on the other machine");
         }
-        self.incoming.remove(&request);
+        if let Some(incoming) = self.incoming.remove(&request) {
+            incoming.finished.store(!failed, Ordering::Release);
+        }
     }
 
     /// The copies coming from a machine that went away stop.
     pub(crate) fn forget(&mut self, peer: PeerId) {
-        self.incoming.retain(|_, (from, _)| *from != peer);
+        self.incoming.retain(|_, incoming| incoming.peer != peer);
     }
 
     fn piece(&mut self, request: u64, piece: Piece) {
-        let delivered = self.incoming.get(&request).is_some_and(|(_, sender)| sender.send(piece).is_ok());
+        let delivered = self.incoming.get(&request).is_some_and(|incoming| incoming.sender.try_send(piece).is_ok());
         if !delivered {
+            // Never block the compositor on disk I/O. A stalled writer gets
+            // an interrupted transfer and removes its incomplete files.
             self.incoming.remove(&request);
         }
     }
@@ -160,19 +179,25 @@ impl Tileception {
         message: impl FnOnce(u64) -> Message,
     ) {
         let request = self.handoff.clipboard.next_request();
-        let (sender, receiver) = mpsc::channel::<Piece>();
+        let (sender, receiver) = mpsc::sync_channel::<Piece>(256);
+        let finished = Arc::new(AtomicBool::new(false));
+        let complete = finished.clone();
         let started = std::thread::Builder::new().name("tileception-handoff-drop".into()).spawn(move || {
-            match receive_files(&drops_folder(), request, &receiver) {
+            let drops = drops_folder();
+            match receive_files(&drops, request, &receiver, &complete) {
                 Ok(uris) => {
                     let _ = std::fs::File::from(pipe).write_all(list.write(&uris).as_bytes());
                 }
                 Err(error) => tracing::warn!("handoff: copied files: {error}"),
             }
+            // Deleting old directory trees can be slow. Do it after draining
+            // this transfer and replying, never while its bounded queue fills.
+            clear_old_drops(&drops);
         });
         if started.is_err() {
             return;
         }
-        self.handoff.files.incoming.insert(request, (peer, sender));
+        self.handoff.files.incoming.insert(request, Incoming { peer, sender, finished });
         if !self.handoff.send(peer, message(request)) {
             self.handoff.files.incoming.remove(&request);
         }
@@ -218,8 +243,9 @@ fn send_entry(
     if metadata.is_dir() {
         send(messenger, peer, Message::DragFile { request, path: relative.to_string(), directory: true })?;
         let read = std::fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        for entry in read.flatten() {
-            let Ok(kind) = entry.file_type() else { continue };
+        for entry in read {
+            let entry = entry.map_err(|error| format!("{}: {error}", path.display()))?;
+            let kind = entry.file_type().map_err(|error| format!("{}: {error}", entry.path().display()))?;
             if kind.is_symlink() {
                 continue;
             }
@@ -254,17 +280,32 @@ fn drops_folder() -> PathBuf {
 
 /// Writes the pieces of a copy of files into a folder of its own, returning
 /// the list for the program that wants them.
-fn receive_files(drops: &Path, request: u64, pieces: &mpsc::Receiver<Piece>) -> Result<Vec<String>, String> {
-    clear_old_drops(drops);
-    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
-    let root = drops.join(format!("{stamp}-{request}"));
-    std::fs::create_dir_all(&root).map_err(|error| format!("{}: {error}", root.display()))?;
+fn receive_files(
+    drops: &Path,
+    request: u64,
+    pieces: &mpsc::Receiver<Piece>,
+    finished: &AtomicBool,
+) -> Result<Vec<String>, String> {
+    let stamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let root = drops.join(format!("{stamp}-{}-{request}", std::process::id()));
+    std::fs::create_dir_all(drops).map_err(|error| format!("{}: {error}", drops.display()))?;
+    std::fs::create_dir(&root).map_err(|error| format!("{}: {error}", root.display()))?;
+    let result = receive_pieces(&root, pieces, finished);
+    if result.is_err() {
+        // receive_pieces has closed its current file before cleanup.
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    result
+}
+
+fn receive_pieces(root: &Path, pieces: &mpsc::Receiver<Piece>, finished: &AtomicBool) -> Result<Vec<String>, String> {
     let mut uris = Vec::new();
     let mut file: Option<std::fs::File> = None;
     loop {
         let piece = match pieces.recv_timeout(STALL) {
             Ok(piece) => piece,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(uris),
+            Err(mpsc::RecvTimeoutError::Disconnected) if finished.load(Ordering::Acquire) => return Ok(uris),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err("the transfer was interrupted".into()),
             Err(mpsc::RecvTimeoutError::Timeout) => return Err("the other machine stopped sending".into()),
         };
         match piece {
@@ -379,12 +420,42 @@ mod tests {
             sender.send(piece).expect("receiver is there");
         }
         drop(sender);
-        let uris = receive_files(&cache, 7, &receiver).expect("written");
+        let uris = receive_files(&cache, 7, &receiver, &AtomicBool::new(true)).expect("written");
         assert_eq!(uris.len(), 3);
         assert_eq!(uris[1], "https://example.org/");
         let notes = file_path(&uris[0]).expect("a local file");
         assert_eq!(std::fs::read_to_string(notes.join("a.txt")).expect("copied"), "hello there");
         assert!(file_path(&uris[2]).expect("a local file").ends_with("b c.txt"));
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn a_copy_ending_with_a_full_queue_is_kept() {
+        let cache = std::env::temp_dir().join(format!("tileception-full-drop-test-{}", std::process::id()));
+        let mut files = Files::default();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let finished = Arc::new(AtomicBool::new(false));
+        files.incoming.insert(9, Incoming { peer: 1, sender, finished: finished.clone() });
+        files.entry(9, "a.txt".into(), false);
+        files.data(9, b"all of it".to_vec());
+        files.end(9, false);
+        let uris = receive_files(&cache, 9, &receiver, &finished).expect("kept");
+        let copy = file_path(&uris[0]).expect("a local file");
+        assert_eq!(std::fs::read_to_string(copy).expect("copied"), "all of it");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn an_interrupted_copy_is_removed() {
+        let cache = std::env::temp_dir().join(format!("tileception-cut-drop-test-{}", std::process::id()));
+        let mut files = Files::default();
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let finished = Arc::new(AtomicBool::new(false));
+        files.incoming.insert(9, Incoming { peer: 1, sender, finished: finished.clone() });
+        files.entry(9, "a.txt".into(), false);
+        files.forget(1);
+        assert!(receive_files(&cache, 9, &receiver, &finished).is_err());
+        assert_eq!(std::fs::read_dir(&cache).expect("drops folder").count(), 0);
         let _ = std::fs::remove_dir_all(&cache);
     }
 }

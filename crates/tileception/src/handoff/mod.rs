@@ -326,7 +326,9 @@ impl Tileception {
         if passphrase.chars().count() < 12 {
             tracing::warn!("handoff: the passphrase is short; several random words are much harder to guess");
         }
-        let (sender, receiver) = channel::channel::<Event>();
+        // Network readers wait here when the compositor is busy, instead of
+        // accumulating decoded pictures and transfers without a bound.
+        let (sender, receiver) = channel::sync_channel::<Event>(128);
         let token = self.loop_handle.insert_source(receiver, |event, _, state| {
             if let channel::Event::Msg(event) = event {
                 state.handoff_event(event);
@@ -491,6 +493,14 @@ impl Tileception {
             Message::Button { button, pressed } => self.remote_button(peer, button, pressed),
             Message::Scroll(scroll) => self.remote_scroll(peer, scroll),
             Message::Key { key, pressed } => self.remote_key(peer, key, pressed),
+            Message::CarriedModifiers { keys } => {
+                for key in keys {
+                    self.remote_key(peer, key, true);
+                }
+                // Crossing while a modifier is held is not a fresh tap.
+                // Ordinary Key presses after arrival still arm tap bindings.
+                self.tap_armed = None;
+            }
             Message::Selection { target, version, mime_types } => {
                 self.remote_selection(peer, target, version, mime_types);
             }

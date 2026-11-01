@@ -12,7 +12,11 @@ use std::{
     collections::{BTreeMap, HashMap},
     io::{Read, Write},
     os::{fd::OwnedFd, unix::net::UnixStream},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -63,12 +67,47 @@ pub struct Clipboard {
     version: u64,
     request: u64,
     /// Pastes here waiting for another machine's data.
-    incoming: HashMap<u64, (PeerId, mpsc::Sender<Vec<u8>>)>,
+    incoming: HashMap<u64, IncomingPaste>,
+}
+
+/// At most LIMIT bytes can enter a paste, including bytes already written.
+/// Coalesce short wire reads so tiny pieces cannot create unbounded channel
+/// overhead. A slow application may buffer the entire permitted paste.
+struct IncomingPaste {
+    peer: PeerId,
+    sender: mpsc::Sender<Vec<u8>>,
+    received: Arc<AtomicUsize>,
+    pending: Vec<u8>,
+}
+
+impl IncomingPaste {
+    fn data(&mut self, mut bytes: &[u8]) -> bool {
+        let received = self.received.load(Ordering::Relaxed).saturating_add(bytes.len());
+        if received > LIMIT {
+            return false;
+        }
+        self.received.store(received, Ordering::Release);
+        while !bytes.is_empty() {
+            let length = bytes.len().min(CHUNK - self.pending.len());
+            self.pending.extend_from_slice(&bytes[..length]);
+            bytes = &bytes[length..];
+            if self.pending.len() == CHUNK && self.sender.send(std::mem::take(&mut self.pending)).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn finish(self) {
+        if !self.pending.is_empty() {
+            let _ = self.sender.send(self.pending);
+        }
+    }
 }
 
 impl Clipboard {
     pub(crate) fn data(&mut self, request: u64, bytes: Vec<u8>) {
-        let delivered = self.incoming.get(&request).is_some_and(|(_, sender)| sender.send(bytes).is_ok());
+        let delivered = self.incoming.get_mut(&request).is_some_and(|paste| paste.data(&bytes));
         if !delivered {
             self.incoming.remove(&request);
         }
@@ -79,7 +118,9 @@ impl Clipboard {
         if failed {
             tracing::debug!("handoff: paste {request} failed on the other machine");
         }
-        self.incoming.remove(&request);
+        if let Some(paste) = self.incoming.remove(&request) {
+            paste.finish();
+        }
     }
 
     pub(crate) fn fail_all(&mut self) {
@@ -110,7 +151,7 @@ pub(crate) fn send_out(
                 Ok(length) => {
                     total += length;
                     chunk.truncate(length);
-                    if total > LIMIT || !messenger.send(peer, Message::Data { request, bytes: chunk }) {
+                    if total > LIMIT || !messenger.send_bulk(peer, Message::Data { request, bytes: chunk }) {
                         break true;
                     }
                 }
@@ -118,7 +159,7 @@ pub(crate) fn send_out(
                 Err(_) => break true,
             }
         };
-        messenger.send(peer, Message::DataEnd { request, failed });
+        messenger.send_bulk(peer, Message::DataEnd { request, failed });
     });
     started.is_ok()
 }
@@ -220,7 +261,7 @@ impl Tileception {
         }
         let clipboard = &mut self.handoff.clipboard;
         clipboard.offered.retain(|(offered_to, _), _| *offered_to != peer);
-        clipboard.incoming.retain(|_, (from, _)| *from != peer);
+        clipboard.incoming.retain(|_, paste| paste.peer != peer);
     }
 
     /// A program here pastes what another machine offered.
@@ -242,21 +283,41 @@ impl Tileception {
     /// Asks another machine for data, written to `pipe` as it arrives.
     pub(crate) fn receive_into(&mut self, peer: PeerId, pipe: OwnedFd, message: impl FnOnce(u64) -> Message) {
         let request = self.handoff.clipboard.next_request();
+        // The byte limit and coalescing in IncomingPaste bound this channel
+        // to LIMIT / CHUNK full chunks plus one final short chunk.
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+        let received = Arc::new(AtomicUsize::new(0));
+        let progress = received.clone();
         let started = std::thread::Builder::new().name("tileception-handoff-paste".into()).spawn(move || {
             let mut file = std::fs::File::from(pipe);
             let mut written = 0;
-            while let Ok(bytes) = receiver.recv_timeout(STALL) {
+            let mut last_received = 0;
+            loop {
+                let bytes = match receiver.recv_timeout(STALL) {
+                    Ok(bytes) => bytes,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // Short wire reads may still be accumulating into a
+                        // chunk. They count as progress too.
+                        let now = progress.load(Ordering::Acquire);
+                        if now == last_received {
+                            break;
+                        }
+                        last_received = now;
+                        continue;
+                    }
+                };
                 written += bytes.len();
                 if written > LIMIT || file.write_all(&bytes).is_err() {
                     break;
                 }
+                last_received = progress.load(Ordering::Acquire);
             }
         });
         if started.is_err() {
             return;
         }
-        self.handoff.clipboard.incoming.insert(request, (peer, sender));
+        self.handoff.clipboard.incoming.insert(request, IncomingPaste { peer, sender, received, pending: Vec::new() });
         if !self.handoff.send(peer, message(request)) {
             self.handoff.clipboard.incoming.remove(&request);
         }

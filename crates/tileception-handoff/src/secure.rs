@@ -123,11 +123,16 @@ fn receive_handshake(stream: &mut impl Read, noise: &mut HandshakeState) -> Resu
 
 pub(crate) fn seal(transport: &mut TransportState, frame: &Frame) -> io::Result<Vec<u8>> {
     let plain = wire::encode(frame).map_err(io::Error::other)?;
+    seal_bytes(transport, &plain)
+}
+
+/// Seals a frame already encoded before entering the bounded outbox.
+pub(crate) fn seal_bytes(transport: &mut TransportState, plain: &[u8]) -> io::Result<Vec<u8>> {
     if plain.len() + TAG > MAX_MESSAGE {
         return Err(io::Error::other("message too large"));
     }
     let mut sealed = vec![0; plain.len() + TAG];
-    let length = transport.write_message(&plain, &mut sealed).map_err(io::Error::other)?;
+    let length = transport.write_message(plain, &mut sealed).map_err(io::Error::other)?;
     sealed.truncate(length);
     Ok(sealed)
 }

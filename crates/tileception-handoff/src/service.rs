@@ -119,56 +119,119 @@ impl Drop for Link {
     }
 }
 
-/// Frames waiting for a connection's writer. Bulk frames (window pictures)
-/// go only when nothing else waits, so input never queues behind them.
+/// Encoded frames waiting for a connection's writer. Control traffic has
+/// priority; pictures and transfers take turns below it. Only worker threads
+/// may wait for bulk queue space. A full control queue disconnects instead
+/// of blocking the compositor or silently losing a key release.
 #[derive(Default)]
 struct Outbox {
     queues: Mutex<Queues>,
     ready: Condvar,
+    space: Condvar,
 }
 
 #[derive(Default)]
 struct Queues {
-    urgent: VecDeque<Frame>,
-    bulk: VecDeque<Frame>,
+    urgent: Queue,
+    pictures: Queue,
+    transfers: Queue,
+    picture_next: bool,
     closed: bool,
+}
+
+const CONTROL_BYTES: usize = 256 * 1024;
+const BULK_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Default)]
+struct Queue {
+    frames: VecDeque<Box<[u8]>>,
+    bytes: usize,
+}
+
+impl Queue {
+    fn cost(frame: &[u8]) -> usize {
+        // Include a minimum charge for queue nodes and tiny messages.
+        frame.len().max(64)
+    }
+
+    fn push(&mut self, frame: Box<[u8]>) {
+        self.bytes += Self::cost(&frame);
+        self.frames.push_back(frame);
+    }
+
+    fn pop(&mut self) -> Option<Box<[u8]>> {
+        let frame = self.frames.pop_front()?;
+        self.bytes -= Self::cost(&frame);
+        Some(frame)
+    }
 }
 
 impl Outbox {
     fn push(&self, frame: Frame, bulk: bool) -> bool {
-        let mut queues = lock(&self.queues);
-        if queues.closed {
+        let picture = matches!(&frame, Frame::App(Message::WindowPicture(_)));
+        let Ok(bytes) = crate::wire::encode(&frame) else { return false };
+        drop(frame);
+        if bytes.len() + secure::TAG > secure::MAX_MESSAGE {
             return false;
         }
-        if bulk {
-            queues.bulk.push_back(frame);
-        } else {
-            queues.urgent.push_back(frame);
+        let bytes = bytes.into_boxed_slice();
+        let cost = Queue::cost(&bytes);
+        let mut queues = lock(&self.queues);
+        loop {
+            if queues.closed {
+                return false;
+            }
+            let queue = if !bulk {
+                &mut queues.urgent
+            } else if picture {
+                &mut queues.pictures
+            } else {
+                &mut queues.transfers
+            };
+            let limit = if bulk { BULK_BYTES } else { CONTROL_BYTES };
+            if queue.bytes + cost <= limit {
+                queue.push(bytes);
+                self.ready.notify_one();
+                return true;
+            }
+            if !bulk {
+                return false;
+            }
+            queues = self.space.wait(queues).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        self.ready.notify_one();
-        true
     }
 
     fn close(&self) {
         lock(&self.queues).closed = true;
         self.ready.notify_all();
+        self.space.notify_all();
     }
 
     /// The next frame to write, a ping after `quiet` without one, or nothing
     /// once the connection is done.
-    fn next(&self, quiet: Duration) -> Option<Frame> {
+    fn next(&self, quiet: Duration) -> Option<Box<[u8]>> {
         let mut queues = lock(&self.queues);
         let since = Instant::now();
         loop {
             if queues.closed {
                 return None;
             }
-            if let Some(frame) = queues.urgent.pop_front().or_else(|| queues.bulk.pop_front()) {
+            let frame = queues.urgent.pop().or_else(|| {
+                let frame = if queues.picture_next {
+                    queues.pictures.pop().or_else(|| queues.transfers.pop())
+                } else {
+                    queues.transfers.pop().or_else(|| queues.pictures.pop())
+                };
+                queues.picture_next = !queues.picture_next;
+                frame
+            });
+            if let Some(frame) = frame {
+                self.space.notify_all();
                 return Some(frame);
             }
             let left = quiet.saturating_sub(since.elapsed());
             if left.is_zero() {
-                return Some(Frame::Ping);
+                return crate::wire::encode(&Frame::Ping).ok().map(Vec::into_boxed_slice);
             }
             queues =
                 self.ready.wait_timeout(queues, left).map_or_else(|error| error.into_inner().0, |(guard, _)| guard);
@@ -176,6 +239,7 @@ impl Outbox {
     }
 }
 
+#[derive(Clone)]
 struct Candidate {
     /// From mDNS, or learnt from the first connection to a configured address.
     peer: Option<PeerId>,
@@ -247,7 +311,8 @@ impl Service {
         self.shared.port
     }
 
-    /// Queues a message; false when that machine is not connected.
+    /// Queues control traffic without waiting; false when disconnected or
+    /// overloaded (the connection is then shut down to release held input).
     pub fn send(&self, peer: PeerId, message: Message) -> bool {
         self.shared.send(peer, message, false)
     }
@@ -267,8 +332,9 @@ impl Messenger {
         !self.0.stopping() && self.0.send(peer, message, false)
     }
 
-    /// Queues a message behind everything else waiting, for large data such
-    /// as window pictures.
+    /// Queues bulk data, waiting for bounded queue space. Call only from a
+    /// worker thread, never the compositor. Pictures and transfers get
+    /// separate budgets and alternate when no control traffic is waiting.
     pub fn send_bulk(&self, peer: PeerId, message: Message) -> bool {
         !self.0.stopping() && self.0.send(peer, message, true)
     }
@@ -310,8 +376,17 @@ impl Candidate {
 
 impl Shared {
     fn send(&self, peer: PeerId, message: Message, bulk: bool) -> bool {
-        let outbox = lock(&self.links).get(&peer).map(|link| link.outbox.clone());
-        outbox.is_some_and(|outbox| outbox.push(Frame::App(message), bulk))
+        let link = lock(&self.links).get(&peer).map(|link| (link.serial, link.outbox.clone()));
+        let Some((serial, outbox)) = link else { return false };
+        if outbox.push(Frame::App(message), bulk) {
+            return true;
+        }
+        outbox.close();
+        // Never shut down a replacement connection after an old worker wakes.
+        if let Some(link) = lock(&self.links).get(&peer).filter(|link| link.serial == serial) {
+            let _ = link.stream.shutdown(Shutdown::Both);
+        }
+        false
     }
 
     fn stopping(&self) -> bool {
@@ -364,7 +439,7 @@ impl Shared {
 
     fn dial_loop(self: Arc<Self>) {
         while !self.stopping() {
-            let due: Vec<(String, Vec<SocketAddr>)> = {
+            let due: Vec<(String, Candidate)> = {
                 let links = lock(&self.links);
                 let now = Instant::now();
                 lock(&self.candidates)
@@ -376,10 +451,13 @@ impl Shared {
                         Some(peer) => candidate.configured || self.machine < peer,
                         None => true,
                     })
-                    .map(|(key, candidate)| (key.clone(), candidate.addresses()))
+                    .map(|(key, candidate)| (key.clone(), candidate.clone()))
                     .collect()
             };
-            for (key, addresses) in due {
+            for (key, candidate) in due {
+                // DNS may block for seconds. Neither the connections mutex
+                // used by compositor sends nor the candidates mutex is held.
+                let addresses = candidate.addresses();
                 let reached = self.dial(&addresses);
                 let mut candidates = lock(&self.candidates);
                 if let Some(candidate) = candidates.get_mut(&key) {
@@ -565,8 +643,10 @@ impl Shared {
 
 fn write_loop(mut stream: TcpStream, transport: &Mutex<TransportState>, outbox: &Outbox) {
     while let Some(frame) = outbox.next(PING_EVERY) {
-        let written =
-            secure::seal(&mut lock(transport), &frame).and_then(|sealed| secure::write_frame(&mut stream, &sealed));
+        // Socket writes can block. Release the cipher lock first so the
+        // reader can keep receiving input and acknowledgements meanwhile.
+        let sealed = secure::seal_bytes(&mut lock(transport), &frame);
+        let written = sealed.and_then(|sealed| secure::write_frame(&mut stream, &sealed));
         if written.is_err() {
             break;
         }
@@ -601,9 +681,10 @@ mod tests {
         outbox.push(Frame::App(Message::WindowGone { window: 1 }), true);
         outbox.push(Frame::App(Message::Leave), false);
         let quiet = Duration::from_millis(10);
-        assert_eq!(outbox.next(quiet), Some(Frame::App(Message::Leave)));
-        assert_eq!(outbox.next(quiet), Some(Frame::App(Message::WindowGone { window: 1 })));
-        assert_eq!(outbox.next(quiet), Some(Frame::Ping));
+        let next = || outbox.next(quiet).map(|bytes| crate::wire::decode(&bytes).expect("valid frame"));
+        assert_eq!(next(), Some(Frame::App(Message::Leave)));
+        assert_eq!(next(), Some(Frame::App(Message::WindowGone { window: 1 })));
+        assert_eq!(next(), Some(Frame::Ping));
         outbox.close();
         assert_eq!(outbox.next(quiet), None);
         assert!(!outbox.push(Frame::Ping, false));

@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -104,6 +104,11 @@ pub enum Message {
     Key {
         key: u32,
         pressed: bool,
+    },
+    /// Modifiers already held when the pointer crossed. These establish
+    /// keyboard state without arming modifier-only tap bindings.
+    CarriedModifiers {
+        keys: Vec<u32>,
     },
     /// What the sender offers to paste; no types means nothing.
     Selection {

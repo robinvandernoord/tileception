@@ -214,6 +214,31 @@ impl Tileception {
             self.handoff.forwarding = None;
             return;
         }
+        // Enter precedes these presses in the control queue. Only carry
+        // depressed modifiers from our own keyboard, not other peers' keys
+        // or lock keys (replaying Caps Lock would toggle it again).
+        let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let modifiers: Vec<Keycode> = keyboard.with_pressed_keysyms(|handles| {
+            handles
+                .into_iter()
+                .filter(|handle| {
+                    handle.raw_syms().iter().any(|sym| {
+                        crate::config::modifier_of(sym.raw()).is_some()
+                            || matches!(sym.raw(), keysyms::KEY_ISO_Level3_Shift | keysyms::KEY_ISO_Level5_Shift)
+                    })
+                })
+                .map(|handle| handle.raw_code())
+                .collect()
+        });
+        let keys = modifiers
+            .into_iter()
+            .map(|code| code.raw().saturating_sub(XKB_OFFSET))
+            .filter(|key| self.handoff.held.holds_key(Source::Local, *key))
+            .collect();
+        if !self.handoff.send(peer, Message::CarriedModifiers { keys }) {
+            self.stop_forwarding(Back::Gone);
+            return;
+        }
         tracing::info!("handoff: input goes to {peer:016x}");
         // Programs here lose the pointer and the keyboard until it is back.
         let pointer = self.seat.get_pointer().expect("seat has a pointer");

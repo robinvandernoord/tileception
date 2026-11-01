@@ -13,7 +13,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -103,7 +103,8 @@ pub(crate) struct Stream {
     serial: u64,
     /// When the last picture went, until it arrived.
     sent: Option<Instant>,
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::SyncSender<Job>,
+    busy: Arc<AtomicBool>,
     /// Goes up whenever sharing pauses, so pictures still queued then are
     /// not sent after all.
     round: Arc<AtomicU64>,
@@ -112,26 +113,34 @@ pub(crate) struct Stream {
 impl Stream {
     /// Starts the thread that sends a window's pictures to `peer`.
     pub(crate) fn start(peer: PeerId, window: u64, messenger: Messenger) -> Option<Stream> {
-        let (jobs, receiver) = mpsc::channel::<Job>();
+        let (jobs, receiver) = mpsc::sync_channel::<Job>(1);
         let round = Arc::new(AtomicU64::new(0));
         let current = round.clone();
+        let busy = Arc::new(AtomicBool::new(false));
+        let working = busy.clone();
         let started = std::thread::Builder::new().name("tileception-handoff-picture".into()).spawn(move || {
             while let Ok(job) = receiver.recv() {
+                if current.load(Ordering::Acquire) != job.round {
+                    working.store(false, Ordering::Release);
+                    continue;
+                }
                 for message in pack(&job.header, &job.pixels, &job.changed) {
                     if current.load(Ordering::Acquire) != job.round {
                         break;
                     }
                     if !messenger.send_bulk(peer, Message::WindowPicture(message)) {
+                        working.store(false, Ordering::Release);
                         return;
                     }
                 }
+                working.store(false, Ordering::Release);
             }
         });
         if let Err(error) = started {
             tracing::warn!("handoff: cannot send pictures of window {window}: {error}");
             return None;
         }
-        Some(Stream { texture: None, damage: None, size: (0, 0), serial: 0, sent: None, jobs, round })
+        Some(Stream { texture: None, damage: None, size: (0, 0), serial: 0, sent: None, jobs, busy, round })
     }
 
     pub(crate) fn acked(&mut self, serial: u64) {
@@ -150,7 +159,7 @@ impl Stream {
     }
 
     fn waiting(&self) -> bool {
-        self.sent.is_some_and(|since| since.elapsed() < ACK_WAIT)
+        self.busy.load(Ordering::Acquire) || self.sent.is_some_and(|since| since.elapsed() < ACK_WAIT)
     }
 }
 
@@ -228,7 +237,20 @@ impl Tileception {
                         grab,
                     };
                     let round = stream.round.load(Ordering::Acquire);
-                    if stream.jobs.send(Job { round, header, pixels, changed }).is_ok() {
+                    stream.busy.store(true, Ordering::Release);
+                    if stream.jobs.try_send(Job { round, header, pixels, changed }).is_ok() {
+                        stream.sent = Some(Instant::now());
+                    } else {
+                        // The worker is still sending an older picture. This
+                        // capture advanced damage tracking, so a dropped job
+                        // must be followed by a whole picture, never a delta.
+                        // Keep any picture already in flight intact. Only a
+                        // pause invalidates its round; congestion must not
+                        // prevent a slow whole picture from ever finishing.
+                        stream.texture = None;
+                        stream.damage = None;
+                        stream.size = (0, 0);
+                        stream.busy.store(false, Ordering::Release);
                         stream.sent = Some(Instant::now());
                     }
                 }
