@@ -141,10 +141,35 @@ pub(crate) fn caller(session: &str) -> Option<String> {
 }
 
 /// The executable of whoever made the session.
+///
+/// KeePassXC marks itself non-dumpable, which hides `/proc/<pid>/exe` even
+/// from the same user. Its command line stays readable, so the executable is
+/// then found from the command it was started as. A program can start itself
+/// under another name, so this identifies, it does not authenticate.
 pub(crate) async fn program_path(connection: &zbus::Connection, session: &str) -> Option<PathBuf> {
     let name = zbus::names::BusName::try_from(caller(session)?).ok()?;
     let pid = zbus::fdo::DBusProxy::new(connection).await.ok()?.get_connection_unix_process_id(name).await.ok()?;
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().or_else(|| {
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        command_path(&cmdline, std::env::var_os("PATH").as_deref())
+    })
+}
+
+/// The executable a command line was started as: its first word when that is
+/// an absolute path, or else the first file of that name on `search`.
+fn command_path(cmdline: &[u8], search: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let first = cmdline.split(|&byte| byte == 0).next().filter(|first| !first.is_empty())?;
+    let command = std::path::Path::new(std::ffi::OsStr::from_bytes(first));
+    let found = if command.is_absolute() {
+        Some(command.to_path_buf())
+    } else if command.components().count() == 1 {
+        std::env::split_paths(search?).map(|dir| dir.join(command)).find(|path| path.is_file())
+    } else {
+        // Relative to a working directory that is hidden too.
+        None
+    };
+    found.filter(|path| path.is_file()).map(|path| std::fs::canonicalize(&path).unwrap_or(path))
 }
 
 fn restore_data(path: &str) -> Option<OwnedValue> {
@@ -612,6 +637,24 @@ mod tests {
         assert_eq!(caller("/org/freedesktop/portal/desktop/session/1_42/token7").as_deref(), Some(":1.42"));
         assert_eq!(caller("/org/freedesktop/portal/desktop/session/1_42"), None);
         assert_eq!(caller("/org/freedesktop/portal/desktop/request/1_42/token7"), None);
+    }
+
+    #[test]
+    fn programs_are_found_from_their_command_line() {
+        let dir = std::env::temp_dir().join(format!("tileception-command-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("keepassxc");
+        std::fs::write(&program, "").unwrap();
+        let program = std::fs::canonicalize(&program).unwrap();
+        let search = std::env::join_paths(["/nonexistent".into(), dir.clone()]).unwrap();
+        assert_eq!(command_path(b"keepassxc\0--minimized\0", Some(&search)), Some(program.clone()));
+        let absolute = format!("{}\0", program.display());
+        assert_eq!(command_path(absolute.as_bytes(), None), Some(program));
+        assert_eq!(command_path(b"keepassxc\0", None), None);
+        assert_eq!(command_path(b"missing\0", Some(&search)), None);
+        assert_eq!(command_path(b"bin/keepassxc\0", Some(&search)), None);
+        assert_eq!(command_path(b"", Some(&search)), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
