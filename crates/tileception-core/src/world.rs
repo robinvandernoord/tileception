@@ -2115,4 +2115,30 @@ mod tests {
         assert_eq!(left.focus(), Some(WindowId(2)));
         assert_eq!(left.tree().windows_in(left.tree().root()).len(), 2);
     }
+
+    #[test]
+    fn taking_absorbed_windows_out_again_leaves_the_own_layout() {
+        // A screen's areas wait combined while no screen is there, then
+        // split up again: the first area keeps what it had.
+        let mut left = world();
+        left.add_window(WindowId(1), Placement::Dock, 0.0);
+        left.add_window(WindowId(2), Placement::Dock, 0.0);
+        left.add_window(WindowId(3), Placement::Dock, 0.0);
+        let before = format!("{:?}", left.tree().snapshot());
+        let mut right = world();
+        right.add_window(WindowId(4), Placement::Dock, 0.0);
+        right.add_window(WindowId(5), Placement::Dock, 0.0);
+        let theirs = right.snapshot();
+        left.absorb(right, (0.5, 0.5), 0.0);
+        for window in [WindowId(4), WindowId(5)] {
+            left.remove_window(window, 0.0);
+        }
+        left.tree().check_invariants();
+        assert_eq!(format!("{:?}", left.tree().snapshot()), before);
+
+        let mut again = world();
+        let remap = [WindowId(4), WindowId(5)].into_iter().map(|window| (window, window)).collect();
+        assert!(again.restore_layout(&theirs, &remap, 0.0));
+        assert_eq!(format!("{:?}", again.tree().snapshot()), format!("{:?}", theirs.root));
+    }
 }

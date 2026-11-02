@@ -46,7 +46,38 @@ Use another number for another slot. Saving to an occupied slot replaces its
 previous view. Saved slots also appear in the bar; click one to return to it.
 
 Saved views refer to windows in the running session. Recalling one also restores
-any minimized windows that belong to it.
+any minimized windows that belong to it. On a split screen, a slot holds the view
+of every area: recalling it restores each area that has a view saved there.
+
+## Minimap
+
+The minimap in the bar is a small outline of the whole layout, with the part on
+screen outlined. Hover it to open a larger map, or click it to keep the map open
+until you click it again, click elsewhere or press **Escape**. On the map:
+
+- Click a window to zoom to it.
+- Drag to pan to another part of the layout at the current zoom level.
+
+The line below the map says what letting go would show. On a split screen the
+map shows every area side by side, and choosing something in another area makes
+that area active. You can also open the map by typing **Minimap** in the
+launcher. [Configuration](configuration.md#desktop-components) shows how to hide
+it.
+
+## Split screens
+
+A wide screen can be [split into areas](configuration.md#splitting-a-wide-screen),
+each with its own layout. Shortcuts act on the active area, except Super+Scroll,
+which acts on the area under the pointer and makes it active. Click or touch
+another area to make it active; moving the pointer over it lets its windows
+scroll and show hover effects without taking the keyboard.
+
+- Drag the gap between two areas to change their widths. Resizing a window on
+  the side where its area meets the next one moves that gap too.
+- Alt-drag a window into another area to move it there.
+- **Super+M** zooms to the focused window within its area. **Super+F** covers
+  the whole monitor.
+- The overview and the minimized-window strip belong to the active area.
 
 ## Managing windows
 

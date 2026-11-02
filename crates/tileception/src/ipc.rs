@@ -9,7 +9,7 @@ use std::{
 };
 
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
-use tileception_core::{Node, NodeId};
+use tileception_core::{Node, NodeId, World};
 
 use crate::Tileception;
 
@@ -76,8 +76,7 @@ pub fn describe(state: &Tileception) -> String {
     if let Some(duck) = state.duck_shown_rect() {
         out.push_str(&format!("duck @ {:.0},{:.0} {:.0}x{:.0}\n", duck.x, duck.y, duck.w, duck.h));
     }
-    fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
-        let world = &state.world;
+    fn walk(state: &Tileception, world: &World, node_id: NodeId, depth: usize, out: &mut String) {
         let tree = world.tree();
         let pad = "  ".repeat(depth);
         let rect = world
@@ -108,10 +107,34 @@ pub fn describe(state: &Tileception) -> String {
         };
         out.push_str(&format!("{pad}{line}{rect}\n"));
         for child in tree.children(node_id) {
-            walk(state, *child, depth + 1, out);
+            walk(state, world, *child, depth + 1, out);
         }
     }
-    walk(state, tree.root(), 0, &mut out);
+    let area_name = |index: usize| {
+        let output = state.output.clone()?;
+        Some(state.area_name(&crate::outputs::AreaId { output, index }))
+    };
+    let areas = state.area_worlds();
+    if areas.len() > 1 {
+        // A split screen: the area in use first, as above, then the others.
+        out.push_str(&format!(
+            "area {} active {}\n",
+            area_name(state.area_index()).unwrap_or_default(),
+            state.is_active_output()
+        ));
+    }
+    walk(state, world, tree.root(), 0, &mut out);
+    for (index, other) in areas.into_iter().filter(|(index, _)| *index != state.area_index()) {
+        out.push_str(&format!(
+            "area {} framed {} overview {} focus {}\n",
+            area_name(index).unwrap_or_default(),
+            other.framed().0,
+            other.in_overview(),
+            other.focus().map(|window| window.0.to_string()).unwrap_or("none".into())
+        ));
+        out.push_str(&format!("minimized {:?}\n", other.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
+        walk(state, other, other.tree().root(), 0, &mut out);
+    }
     out
 }
 

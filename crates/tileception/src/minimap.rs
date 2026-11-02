@@ -165,7 +165,7 @@ impl Tileception {
         if minimap.pinned || minimap.press.is_some() {
             return;
         }
-        let card = self.minimap_card();
+        let card = self.minimap_card_for(chip);
         // The chip's column down to the card, so the pointer can get there.
         let bridge = chip.map(|chip| {
             let top = chip.y.min(card.y);
@@ -178,11 +178,16 @@ impl Tileception {
 
     /// The card at its full size, below the chip (above it for a bottom bar).
     fn minimap_card(&self) -> Rect {
+        self.minimap_card_for(self.bar_layout().and_then(|layout| layout.minimap))
+    }
+
+    /// `minimap_card` for a chip already placed, saving laying out the bar again.
+    fn minimap_card_for(&self, chip: Option<Rect>) -> Rect {
         let out = self.output_rect();
         let width = (out.w * 0.36).clamp(280.0, 640.0).min(out.w - 16.0).max(1.0);
         let map_h = (width - 2.0 * PAD) / self.minimap_aspect();
         let height = map_h + 2.0 * PAD + LABEL_H;
-        let chip_x = self.bar_layout().and_then(|layout| layout.minimap).map_or(out.x + 100.0, |chip| chip.x);
+        let chip_x = chip.map_or(out.x + 100.0, |chip| chip.x);
         let left = (chip_x - PAD).min(out.right() - width - 8.0).max(out.x + 8.0);
         let edge = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
         Rect::new(left, self.bar_popup_y(Rect::new(out.x, edge, out.w, BAR_H), height), width, height)
@@ -202,8 +207,9 @@ impl Tileception {
     /// on the chip it keeps a hovered card open or closes a kept one; outside
     /// the card it zooms the card closed.
     pub(crate) fn minimap_press(&mut self, point: Point) {
-        let card = self.minimap_card();
-        if self.bar_layout().and_then(|layout| layout.minimap).is_some_and(|chip| chip.contains(point)) {
+        let chip = self.bar_layout().and_then(|layout| layout.minimap);
+        let card = self.minimap_card_for(chip);
+        if chip.is_some_and(|chip| chip.contains(point)) {
             self.toggle_minimap();
         } else if !card.contains(point) {
             self.close_minimap();
@@ -214,10 +220,12 @@ impl Tileception {
 
     /// Letting go after a press on the map: flies there and closes the card.
     pub(crate) fn minimap_release(&mut self, point: Point) {
-        let Some((index, target)) = self.minimap_gesture(point).and_then(|gesture| match gesture {
-            Gesture::Click(index, node) | Gesture::Pan(index, node) => Some((index, node)),
-            Gesture::Hover(..) => None,
-        }) else {
+        let Some((index, target)) =
+            self.minimap_gesture(point, self.minimap_card()).and_then(|gesture| match gesture {
+                Gesture::Click(index, node) | Gesture::Pan(index, node) => Some((index, node)),
+                Gesture::Hover(..) => None,
+            })
+        else {
             self.bar.minimap.press = None;
             return;
         };
@@ -235,12 +243,12 @@ impl Tileception {
         self.close_minimap();
     }
 
-    /// What the pointer at `point` does on the open card.
-    fn minimap_gesture(&self, point: Point) -> Option<Gesture> {
+    /// What the pointer at `point` does on the open card, placed at `card`.
+    fn minimap_gesture(&self, point: Point, card: Rect) -> Option<Gesture> {
         if !self.bar.minimap.zoom.open {
             return None;
         }
-        let parts = self.minimap_parts(Self::minimap_area(self.minimap_card()), PART_GAP);
+        let parts = self.minimap_parts(Self::minimap_area(card), PART_GAP);
         // A press stays with the area it started in, also while dragging out of it.
         let anchor = self.bar.minimap.press.unwrap_or(point);
         let (index, world, rect) = parts.into_iter().find(|(_, _, rect)| rect.contains(anchor))?;
@@ -261,7 +269,7 @@ impl Tileception {
     /// The chip grown into the card, along the same curve the camera uses.
     pub(crate) fn draw_minimap_card(&self, painter: &mut Painter, chip: Rect, level: f64) {
         let theme = &self.theme;
-        let card = self.minimap_card();
+        let card = self.minimap_card_for(Some(chip));
         let rect = chip.zoom_lerp(&card, level);
         let (alpha, offset) = (painter.alpha, painter.offset);
         painter.popup(rect);
@@ -273,7 +281,7 @@ impl Tileception {
             let area = Self::minimap_area(card);
             painter.fill(area.inset(-2.0), theme.background, 4.0);
             let pointer = Point::new(self.pointer.x, self.pointer.y);
-            let gesture = self.minimap_gesture(pointer);
+            let gesture = self.minimap_gesture(pointer, card);
             self.draw_minimap(painter, area, true, gesture);
             let label = Rect::new(area.x + 2.0, area.bottom() + 4.0, area.w - 4.0, LABEL_H - 4.0);
             let style = Style::new(theme.font_size * 0.8, theme.muted);

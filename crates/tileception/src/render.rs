@@ -364,9 +364,9 @@ impl Tileception {
         let view = self.world.view(now);
         let strips = self.world.tab_strips(view);
         // Menus and tooltips go above every window and frame, even when they
-        // reach over a neighbour or past their own window's border.
+        // reach over a neighbour or past their own window's border (within
+        // the area, on a split screen).
         let mut elements: Vec<OutputElement> = Vec::new();
-        let above_windows = 0;
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
@@ -408,7 +408,7 @@ impl Tileception {
             }
         }
 
-        elements.splice(above_windows..above_windows, popups);
+        elements.splice(0..0, popups);
 
         for strip in &strips {
             elements.extend(self.tab_strip_elements(renderer, shapes.as_ref(), strip, focus));

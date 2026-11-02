@@ -89,8 +89,13 @@ impl Tileception {
         }
         self.idle.inhibitors.retain(|surface| surface.alive());
         // Every screen and area: a video next to the focused one still plays.
-        let now = self.now();
-        let visible = self.drawn_everywhere(now);
+        // Only worked out while a program asks, as that visits every area.
+        let visible = if self.idle.inhibitors.is_empty() || self.is_locked() {
+            Vec::new()
+        } else {
+            let now = self.now();
+            self.drawn_everywhere(now)
+        };
         let inhibited = !self.is_locked()
             && (self.idle.bus_inhibitors.any()
                 || self.idle.inhibitors.iter().any(|surface| {

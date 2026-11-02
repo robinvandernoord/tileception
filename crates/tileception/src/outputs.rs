@@ -28,12 +28,32 @@ pub struct Outputs {
     /// Dragging the gap between areas `.0` and `.0 + 1` of the active
     /// screen, last at horizontal position `.1`.
     pub boundary_drag: Option<(usize, f64)>,
+    /// The areas of the last screen, from when it went, so they come back
+    /// with it.
+    remembered: Option<Remembered>,
+}
+
+/// A split screen's areas while no screen is there: their windows wait in
+/// one world, and this says where each goes back.
+struct Remembered {
+    name: String,
+    active: usize,
+    areas: Vec<RememberedArea>,
+}
+
+struct RememberedArea {
+    layout: tileception_core::world::LayoutSnapshot,
+    minimized: Vec<WindowId>,
+    focus: Option<WindowId>,
 }
 
 /// The areas of one split screen.
 struct Areas {
     /// Each area's share of the width, left to right, adding up to 1.
     shares: Vec<f64>,
+    /// The shares `[outputs]` asks for. Dragging changes only `shares`, for
+    /// this session; a reload resets them only when this setting changes.
+    configured: Vec<f64>,
     /// The area input and bindings go to while this screen is active.
     active: usize,
     /// The area whose world is in use: in `Tileception` while this screen
@@ -44,8 +64,6 @@ struct Areas {
     parked: Vec<Option<Area>>,
     /// The room the areas share: the screen less what bars reserve.
     usable: Rect,
-    /// The widths changed by dragging since they were last saved.
-    resized: bool,
 }
 
 /// The narrowest an area may be dragged, as a share of the screen.
@@ -61,6 +79,34 @@ struct Area {
 pub struct AreaId {
     pub output: Output,
     pub index: usize,
+}
+
+/// `shares` with the boundary right of area `index` moved by `delta` (a
+/// share of the width), each of the two areas kept at least `MIN_SHARE`
+/// wide, or as wide as it is when narrower. `None` when nothing moves.
+fn moved_boundary(shares: &[f64], index: usize, delta: f64) -> Option<Vec<f64>> {
+    let (left, right) = (*shares.get(index)?, *shares.get(index + 1)?);
+    let pair = left + right;
+    // Areas configured narrower than the minimum keep their width as the floor.
+    let low = MIN_SHARE.min(left);
+    let high = (pair - MIN_SHARE.min(right)).max(low);
+    let moved = (left + delta).clamp(low, high);
+    if (moved - left).abs() < 1e-6 {
+        return None;
+    }
+    let mut shares = shares.to_vec();
+    shares[index] = moved;
+    shares[index + 1] = pair - moved;
+    Some(shares)
+}
+
+/// Area `index` of a split screen `out`, the whole height: its slice of the
+/// usable room, the outer areas reaching the screen's edges.
+fn area_room(out: Rect, areas: &Areas, index: usize) -> Rect {
+    let part = slice(areas.usable, &areas.shares, index);
+    let left = if index == 0 { out.x } else { part.x };
+    let right = if index + 1 >= areas.shares.len() { out.right() } else { part.right() };
+    Rect::new(left, out.y, (right - left).max(1.0), out.h)
 }
 
 /// Area `index` of `usable`, split by `shares`, on whole pixels.
@@ -203,6 +249,10 @@ impl Tileception {
     }
 
     fn split(&self) -> Option<&Areas> {
+        // Checked first: most setups split nothing, and naming the screen allocates.
+        if self.outputs.areas.is_empty() {
+            return None;
+        }
         self.outputs.areas.get(&self.output.as_ref()?.name())
     }
 
@@ -229,22 +279,22 @@ impl Tileception {
     /// Whether a window is in the layout of any area of the context screen,
     /// so it is on screen (or next to it) and draws.
     pub fn screen_shows(&self, window: WindowId) -> bool {
-        self.area_worlds().iter().any(|(_, world)| world.contains_window(window))
+        self.world.contains_window(window)
+            || self
+                .split()
+                .is_some_and(|areas| areas.parked.iter().flatten().any(|area| area.world.contains_window(window)))
     }
 
     /// Every world of every screen and area.
-    fn every_world(&self) -> Vec<&World> {
-        let mut worlds = vec![&self.world];
-        worlds.extend(self.outputs.parked.values().map(|desktop| &desktop.world));
-        worlds.extend(
-            self.outputs.areas.values().flat_map(|areas| areas.parked.iter().flatten().map(|area| &area.world)),
-        );
-        worlds
+    fn every_world(&self) -> impl Iterator<Item = &World> {
+        std::iter::once(&self.world)
+            .chain(self.outputs.parked.values().map(|desktop| &desktop.world))
+            .chain(self.outputs.areas.values().flat_map(|areas| areas.parked.iter().flatten().map(|area| &area.world)))
     }
 
     /// Whether a window is minimized, on whichever screen or area it is.
     pub fn minimized_anywhere(&self, window: WindowId) -> bool {
-        self.every_world().iter().any(|world| world.is_minimized(window))
+        self.every_world().any(|world| world.is_minimized(window))
     }
 
     /// Windows drawn on any screen or area, for what must notice a window
@@ -367,11 +417,7 @@ impl Tileception {
     }
 
     fn area_clip_of(&self, areas: &Areas, index: usize) -> Rect {
-        let out = self.output_rect();
-        let part = slice(areas.usable, &areas.shares, index);
-        let left = if index == 0 { out.x } else { part.x };
-        let right = if index + 1 >= areas.shares.len() { out.right() } else { part.right() };
-        Rect::new(left, out.y, (right - left).max(1.0), out.h)
+        area_room(self.output_rect(), areas, index)
     }
 
     /// The area of the context screen under a horizontal position.
@@ -468,21 +514,15 @@ impl Tileception {
 
     /// Moves the gap between areas `index` and `index + 1` of the context
     /// screen by `delta` pixels, keeping each at least `MIN_SHARE` wide.
-    /// Returns whether it moved; `save_area_widths` writes it down.
+    /// Returns whether it moved. The widths last until the session ends;
+    /// only `split` in `[outputs]` lasts longer.
     pub fn move_area_boundary(&mut self, index: usize, delta: f64) -> bool {
         let Some(name) = self.output.as_ref().map(Output::name) else { return false };
         let Some(areas) = self.outputs.areas.get_mut(&name) else { return false };
-        if index + 1 >= areas.shares.len() {
+        let Some(shares) = moved_boundary(&areas.shares, index, delta / areas.usable.w.max(1.0)) else {
             return false;
-        }
-        let pair = areas.shares[index] + areas.shares[index + 1];
-        let left = (areas.shares[index] + delta / areas.usable.w.max(1.0)).clamp(MIN_SHARE, pair - MIN_SHARE);
-        if (left - areas.shares[index]).abs() < 1e-6 {
-            return false;
-        }
-        areas.shares[index] = left;
-        areas.shares[index + 1] = pair - left;
-        areas.resized = true;
+        };
+        areas.shares = shares;
         let usable = areas.usable;
         self.set_area_screens(usable);
         self.schedule_render();
@@ -503,32 +543,23 @@ impl Tileception {
         if !alone {
             return;
         }
-        let moved = match (right, left) {
+        match (right, left) {
             (Some(index), _) => self.move_area_boundary(index, delta),
             (None, Some(index)) => self.move_area_boundary(index, -delta),
             (None, None) => false,
         };
-        if moved {
-            self.save_area_widths();
-        }
-    }
-
-    /// Writes dragged area widths to the config as `split = [...]`, so they
-    /// last; the reload that follows finds them unchanged.
-    pub fn save_area_widths(&mut self) {
-        let Some(name) = self.output.as_ref().map(Output::name) else { return };
-        let Some(areas) = self.outputs.areas.get_mut(&name) else { return };
-        if !std::mem::take(&mut areas.resized) {
-            return;
-        }
-        let shares: Vec<f64> = areas.shares.iter().map(|share| (share * 1000.0).round() / 1000.0).collect();
-        if let Err(error) = crate::config_edit::set_split(&crate::config::path(), &name, &shares) {
-            tracing::warn!("could not save the area widths of {name}: {error}");
-        }
     }
 
     /// Lays each area of the context screen out in its part of `usable`.
     pub fn set_area_screens(&mut self, usable: Rect) {
+        self.place_areas(usable, true);
+    }
+
+    /// Gives each area of the context screen its part of `usable`, laying
+    /// out those that changed when `layout` is set. Without it the caller
+    /// lays out once the final room is known (`lay_out_areas`), so windows
+    /// are not told a size they are about to lose.
+    pub fn place_areas(&mut self, usable: Rect, layout: bool) {
         let Some(name) = self.output.as_ref().map(Output::name) else { return };
         let Some(shares) = self.outputs.areas.get_mut(&name).map(|areas| {
             areas.usable = usable;
@@ -536,7 +567,9 @@ impl Tileception {
         }) else {
             if usable != self.world.screen() {
                 self.world.set_screen(usable);
-                self.apply_layout();
+                if layout {
+                    self.apply_layout();
+                }
             }
             return;
         };
@@ -545,9 +578,22 @@ impl Tileception {
             self.with_local_area(index, |state| {
                 if state.world.screen() != rect {
                     state.world.set_screen(rect);
-                    state.apply_layout();
+                    if layout {
+                        state.apply_layout();
+                    }
                 }
             });
+        }
+    }
+
+    /// Lays out every area of the context screen.
+    pub fn lay_out_areas(&mut self) {
+        if self.split().is_none() {
+            self.apply_layout();
+            return;
+        }
+        for index in 0..self.area_count() {
+            self.with_local_area(index, Self::apply_layout);
         }
     }
 
@@ -566,33 +612,54 @@ impl Tileception {
             .map_or_else(|| vec![1.0], crate::scale::SplitSetting::shares);
         let old = self.area_count();
         if old == shares.len() {
-            if let Some(areas) = self.outputs.areas.get_mut(&name) {
+            // Widths dragged this session stay, unless the setting changed.
+            if let Some(areas) = self.outputs.areas.get_mut(&name)
+                && areas.configured != shares
+            {
+                areas.configured = shares.clone();
                 areas.shares = shares;
             }
             return;
         }
         tracing::info!("{name} in {} areas", shares.len());
         if shares.len() > old {
-            let settings = self.config.world_settings();
-            let screen = self.world.screen();
-            let areas = self.outputs.areas.entry(name).or_insert_with(|| Areas {
-                shares: vec![1.0],
-                active: 0,
-                context: 0,
-                parked: vec![None],
-                usable: screen,
-                resized: false,
-            });
-            while areas.parked.len() < shares.len() {
-                let world = World::new(settings.clone(), screen);
-                areas.parked.push(Some(Area { world, selection: Default::default() }));
-            }
-            areas.shares = shares;
-            return;
+            self.add_areas(&name, shares);
+            self.restore_remembered_areas(&name);
+        } else {
+            self.combine_areas(shares);
         }
-        let keep = shares.len() - 1;
-        let (old_shares, active) =
-            self.split().map(|areas| (areas.shares.clone(), areas.active)).expect("a split screen has areas");
+    }
+
+    /// Splits the context screen further, the new areas empty.
+    fn add_areas(&mut self, name: &str, shares: Vec<f64>) {
+        let settings = self.config.world_settings();
+        let screen = self.world.screen();
+        let areas = self.outputs.areas.entry(name.to_string()).or_insert_with(|| Areas {
+            shares: vec![1.0],
+            configured: vec![1.0],
+            active: 0,
+            context: 0,
+            parked: vec![None],
+            usable: screen,
+        });
+        while areas.parked.len() < shares.len() {
+            let world = World::new(settings.clone(), screen);
+            areas.parked.push(Some(Area { world, selection: Default::default() }));
+        }
+        areas.configured = shares.clone();
+        areas.shares = shares;
+    }
+
+    /// Combines the context screen's areas into `shares.len()`: those that go
+    /// are taken in by the last one kept, their trees side by side from the
+    /// left, and its camera shows the result.
+    fn combine_areas(&mut self, shares: Vec<f64>) {
+        let Some(name) = self.output.as_ref().map(Output::name) else { return };
+        let Some((old_shares, active)) = self.split().map(|areas| (areas.shares.clone(), areas.active)) else {
+            return;
+        };
+        let old = old_shares.len();
+        let keep = shares.len().clamp(1, old) - 1;
         // The active area's focus keeps the keyboard.
         let focus = self.with_local_area(active, |state| state.world.focus()).flatten();
         self.exchange_area(keep);
@@ -611,17 +678,91 @@ impl Tileception {
         if let Some(window) = focus.filter(|window| self.world.contains_window(*window)) {
             self.world.focus_window(window, now);
         }
-        let areas = self.outputs.areas.get_mut(&name).expect("a split screen has areas");
-        areas.parked.truncate(shares.len());
+        let Some(areas) = self.outputs.areas.get_mut(&name) else { return };
+        areas.parked.truncate(keep + 1);
         areas.active = active.min(keep);
-        if shares.len() == 1 {
+        if keep == 0 {
             self.outputs.areas.remove(&name);
         } else {
+            areas.configured = shares.clone();
             areas.shares = shares;
             let active = areas.active;
             self.exchange_area(active);
         }
         self.selection.anchor = None;
+    }
+
+    /// Before the last screen goes: notes where each window of its areas
+    /// is, so `restore_remembered_areas` can put them back, then combines
+    /// the areas so every window stays reachable meanwhile.
+    fn remember_and_combine_areas(&mut self) {
+        let Some(name) = self.output.as_ref().map(Output::name) else { return };
+        let Some(active) = self.split().map(|areas| areas.active) else { return };
+        let areas = self
+            .area_worlds()
+            .into_iter()
+            .map(|(_, world)| RememberedArea {
+                layout: world.snapshot(),
+                minimized: world.minimized().collect(),
+                focus: world.focus(),
+            })
+            .collect();
+        self.outputs.remembered = Some(Remembered { name, active, areas });
+        self.combine_areas(vec![1.0]);
+    }
+
+    /// When the screen whose areas were remembered is split again into as
+    /// many areas, its windows go back to the areas they were in, in the
+    /// layout they had there. Windows opened meanwhile stay in the first.
+    fn restore_remembered_areas(&mut self, name: &str) {
+        let Some(remembered) = self.outputs.remembered.take_if(|remembered| remembered.name == name) else {
+            return;
+        };
+        if remembered.areas.len() != self.area_count() || self.area_index() != 0 {
+            return;
+        }
+        let now = self.now();
+        let mut moving = Vec::new();
+        for (index, saved) in remembered.areas.iter().enumerate().skip(1) {
+            let tiled: Vec<WindowId> = remembered_windows(&saved.layout.root)
+                .into_iter()
+                .filter(|window| self.world.contains_window(*window))
+                .collect();
+            let minimized: Vec<WindowId> =
+                saved.minimized.iter().copied().filter(|window| self.world.is_minimized(*window)).collect();
+            for window in tiled.iter().chain(&minimized) {
+                self.selection.windows.remove(window);
+                self.world.remove_window(*window, now);
+            }
+            moving.push((index, tiled, minimized));
+        }
+        for (index, tiled, minimized) in moving {
+            let saved = &remembered.areas[index];
+            self.with_local_area(index, |state| {
+                let remap = tiled.iter().map(|window| (*window, *window)).collect();
+                if !tiled.is_empty() && !state.world.restore_layout(&saved.layout, &remap, now) {
+                    for window in &tiled {
+                        state.world.add_window(*window, Placement::Dock, now);
+                    }
+                }
+                for window in &minimized {
+                    state.world.add_window(*window, Placement::Dock, now);
+                    state.world.minimize(*window, now);
+                }
+                if let Some(focus) = saved.focus.filter(|window| state.world.contains_window(*window)) {
+                    state.world.focus_window(focus, now);
+                }
+            });
+        }
+        if let Some(focus) = remembered.areas[0].focus.filter(|window| self.world.contains_window(*window)) {
+            self.world.focus_window(focus, now);
+        }
+        if let Some(areas) = self.outputs.areas.get_mut(name)
+            && remembered.active < areas.shares.len()
+        {
+            areas.active = remembered.active;
+            self.exchange_area(remembered.active);
+        }
     }
 
     /// Makes an area the one input goes to, activating its screen first.
@@ -736,19 +877,25 @@ impl Tileception {
 
     pub fn area_for_window(&self, window: WindowId) -> Option<AreaId> {
         let holds = |world: &World| world.contains_window(window) || world.is_minimized(window);
-        let in_parked_area = |name: &str| {
-            self.outputs.areas.get(name).and_then(|areas| {
-                areas.parked.iter().position(|area| area.as_ref().is_some_and(|area| holds(&area.world)))
-            })
-        };
-        let context = |name: &str| self.outputs.areas.get(name).map_or(0, |areas| areas.context);
-        let mut desktops: Vec<(&Output, &World)> = self.output.iter().map(|output| (output, &self.world)).collect();
-        desktops.extend(self.outputs.parked.values().map(|desktop| (&desktop.output, &desktop.world)));
-        desktops.into_iter().find_map(|(output, world)| {
-            let name = output.name();
-            let index = if holds(world) { Some(context(&name)) } else { in_parked_area(&name) };
-            index.map(|index| AreaId { output: output.clone(), index })
-        })
+        let desktops = self
+            .output
+            .iter()
+            .map(|output| (output, &self.world))
+            .chain(self.outputs.parked.values().map(|desktop| (&desktop.output, &desktop.world)));
+        for (output, world) in desktops {
+            let areas = (!self.outputs.areas.is_empty()).then(|| self.outputs.areas.get(&output.name())).flatten();
+            let index = if holds(world) {
+                Some(areas.map_or(0, |areas| areas.context))
+            } else {
+                areas.and_then(|areas| {
+                    areas.parked.iter().position(|area| area.as_ref().is_some_and(|area| holds(&area.world)))
+                })
+            };
+            if let Some(index) = index {
+                return Some(AreaId { output: output.clone(), index });
+            }
+        }
+        None
     }
 
     /// The area showing a surface: its window's or its popup's parent's, else
@@ -758,44 +905,35 @@ impl Tileception {
         while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
             root = parent;
         }
+        let in_use = |output: Output| {
+            let index = self.outputs.areas.get(&output.name()).map_or(0, |areas| areas.context);
+            AreaId { output, index }
+        };
+        if let crate::lock::LockState::Locked { surfaces } = &self.lock
+            && let Some((name, _)) = surfaces.iter().find(|(_, locked)| locked.wl_surface() == &root)
+        {
+            return self.output_named(name).map(in_use);
+        }
         if let Some(area) = self.window_id(&root).and_then(|window| self.area_for_window(window)) {
             return Some(area);
         }
         if let Some(popup) = self.popups.find_popup(&root)
             && let Ok(parent) = smithay::desktop::find_popup_root_surface(&popup)
-            && let Some(area) = self.window_id(&parent).and_then(|window| self.area_for_window(window))
         {
-            return Some(area);
+            return self.window_id(&parent).and_then(|window| self.area_for_window(window));
         }
-        self.output_for_surface(&root).map(|output| {
-            let index = self.outputs.areas.get(&output.name()).map_or(0, |areas| areas.context);
-            AreaId { output, index }
-        })
+        self.all_outputs()
+            .into_iter()
+            .find(|output| {
+                smithay::desktop::layer_map_for_output(output)
+                    .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
+                    .is_some()
+            })
+            .map(in_use)
     }
 
     pub fn output_for_surface(&self, surface: &WlSurface) -> Option<Output> {
-        let mut root = surface.clone();
-        while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
-            root = parent;
-        }
-        if let crate::lock::LockState::Locked { surfaces } = &self.lock
-            && let Some((name, _)) = surfaces.iter().find(|(_, locked)| locked.wl_surface() == &root)
-        {
-            return self.output_named(name);
-        }
-        if let Some(output) = self.window_id(&root).and_then(|window| self.output_for_window(window)) {
-            return Some(output);
-        }
-        if let Some(popup) = self.popups.find_popup(&root)
-            && let Ok(parent) = smithay::desktop::find_popup_root_surface(&popup)
-        {
-            return self.window_id(&parent).and_then(|window| self.output_for_window(window));
-        }
-        self.all_outputs().into_iter().find(|output| {
-            smithay::desktop::layer_map_for_output(output)
-                .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
-                .is_some()
-        })
+        self.area_for_surface(surface).map(|area| area.output)
     }
 
     /// Moves a window to a screen's active area, as `move_window_to_area`.
@@ -892,10 +1030,11 @@ impl Tileception {
         }
         let previous = self.outputs.active.clone();
         let Some(target) = self.all_outputs().into_iter().find(|candidate| candidate != output) else {
+            // The world in use stays; the other areas' windows come into
+            // it until the screen is back.
+            self.remember_and_combine_areas();
             self.output = None;
             self.outputs.active = None;
-            // The world in use stays; the other areas' windows come into it.
-            self.combine_areas_for_last_screen(output);
             self.move_drag = None;
             self.resize_drag = None;
             self.gap_drag = None;
@@ -1014,12 +1153,9 @@ impl Tileception {
                 let (mut width, height) = (mode.map_or(0, |mode| mode.size.w), mode.map_or(0, |mode| mode.size.h));
                 let mut left = position.x;
                 if let Some(areas) = self.outputs.areas.get(&output.name()) {
-                    let out = self.whole_output_rect(output);
-                    let part = slice(areas.usable, &areas.shares, area.index);
-                    let start = if area.index == 0 { out.x } else { part.x };
-                    let end = if area.index + 1 >= areas.shares.len() { out.right() } else { part.right() };
-                    left += start.round() as i32;
-                    width = ((end - start) * scale).round() as i32;
+                    let room = area_room(self.whole_output_rect(output), areas, area.index);
+                    left += room.x.round() as i32;
+                    width = (room.w * scale).round() as i32;
                 }
                 format!(
                     "{}{} {}x{} at {},{} scale {}\n",
@@ -1043,18 +1179,64 @@ impl Tileception {
             .transform_size(mode.size.to_f64().to_logical(output.current_scale().fractional_scale()));
         Rect::new(0.0, 0.0, size.w, size.h)
     }
+}
 
-    /// When the last screen goes, its other areas join the one in use, so
-    /// their windows are still there when a screen comes back.
-    fn combine_areas_for_last_screen(&mut self, output: &Output) {
-        let Some(mut areas) = self.outputs.areas.remove(&output.name()) else { return };
-        let now = self.now();
-        let mut combined = areas.shares.get(areas.context).copied().unwrap_or(1.0);
-        for (index, area) in areas.parked.iter_mut().enumerate() {
-            let Some(area) = area.take() else { continue };
-            let share = areas.shares.get(index).copied().unwrap_or(1.0);
-            self.world.absorb(area.world, (combined, share), now);
-            combined += share;
+/// Every window a layout snapshot holds, tiled or floating.
+fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId> {
+    use tileception_core::tree::LayoutNode;
+    match node {
+        LayoutNode::Tile { views, .. } => views.clone(),
+        LayoutNode::Desktop { floats, .. } => floats.clone(),
+        LayoutNode::Split { children, .. } => children.iter().flat_map(remembered_windows).collect(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slices_cover_the_room_on_whole_pixels() {
+        let usable = Rect::new(0.0, 30.0, 2560.0, 1410.0);
+        let shares = [1.0 / 3.0; 3];
+        let parts: Vec<Rect> = (0..3).map(|index| slice(usable, &shares, index)).collect();
+        assert_eq!(parts[0].x, 0.0);
+        assert_eq!(parts[2].right(), 2560.0);
+        for pair in parts.windows(2) {
+            assert_eq!(pair[0].right(), pair[1].x);
+            assert_eq!(pair[1].x.fract(), 0.0);
         }
+        assert!(parts.iter().all(|part| part.y == 30.0 && part.h == 1410.0));
+    }
+
+    #[test]
+    fn boundaries_move_within_the_minimum() {
+        let moved = moved_boundary(&[0.5, 0.5], 0, 0.1).unwrap();
+        assert!((moved[0] - 0.6).abs() < 1e-9 && (moved[1] - 0.4).abs() < 1e-9);
+        let moved = moved_boundary(&[0.5, 0.5], 0, 0.9).unwrap();
+        assert!((moved[1] - MIN_SHARE).abs() < 1e-9);
+        assert!(moved_boundary(&[0.5, 0.5], 1, 0.1).is_none());
+        assert!(moved_boundary(&[0.9, 0.1], 0, 0.1).is_none());
+        // Narrower than the minimum as configured: no panic, and no shrinking.
+        assert!(moved_boundary(&[0.05, 0.05, 0.9], 0, 0.02).is_none());
+        let moved = moved_boundary(&[0.05, 0.5, 0.45], 0, -0.1);
+        assert!(moved.is_none());
+        let moved = moved_boundary(&[0.05, 0.5, 0.45], 0, 0.1).unwrap();
+        assert!((moved[0] - 0.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remembered_windows_include_floats() {
+        use tileception_core::tree::LayoutNode;
+        let layout = LayoutNode::Split {
+            axis: tileception_core::Axis::Horizontal,
+            children: vec![
+                LayoutNode::Tile { views: vec![WindowId(1), WindowId(2)], selected: 0 },
+                LayoutNode::Desktop { floats: vec![WindowId(3)], shown: false },
+            ],
+            weights: vec![1.0, 1.0],
+        };
+        assert_eq!(remembered_windows(&layout), vec![WindowId(1), WindowId(2), WindowId(3)]);
     }
 }

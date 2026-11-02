@@ -210,8 +210,9 @@ answers). Open windows close; restoring them is not planned.
   swipe live instead of one step per gesture, and window management gestures.
 - Live blur and glass styles.
 - A settings window instead of editing the config file.
-- Top bar extras: a minimap (live outline of the tree with the camera's frame;
-  click to fly, drag to pan), calendar events from an .ics file or URL.
+- Top bar extras: calendar events from an .ics file or URL. (The minimap, a
+  live outline of the tree with the camera's frame, was built 2026-11-02 on
+  `feature/split-screen-and-minimap`: `minimap.rs`, `[shell] bar_minimap`.)
 - Splitting a wide screen into zoom areas: see below.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; crop or pad instead, as niri does. Only if it shows up
@@ -220,7 +221,7 @@ answers). Open windows close; restoring them is not planned.
 #### Splitting a wide screen
 
 Proposed 2026-11-02, decisions taken the same day; built the same day on
-`feature/split-screen` (`outputs.rs`, `World::absorb`) and tried in headless
+`feature/split-screen-and-minimap` (`outputs.rs`, `World::absorb`) and tried in headless
 instances, not yet on a real ultrawide. On an ultrawide monitor
 one camera is less intuitive than on a normal screen: framing one window
 either leaves it very wide or leaves most of the screen to its neighbours,
@@ -268,6 +269,13 @@ Details:
 - Removing the split (or lowering the number of areas) combines the areas'
   trees side by side into one, keeping each tree's layout, and the camera
   zooms fully out to show the result.
+- Dragging the gap between areas changes their widths for the session only;
+  they are not written to the config, and a reload keeps them unless `split`
+  itself changed (decided 2026-11-02: writing them made each drag reload the
+  whole config).
+- When the last screen goes, its areas are combined so their windows stay
+  reachable, and where each window was is remembered: when that screen comes
+  back with as many areas, each window returns to its area and layout.
 
 #### Handoff between machines
 

@@ -70,6 +70,8 @@ pub mod glyph {
     pub const GLOBE: &str =
         r#"<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>"#;
     pub const OVERVIEW: &str = r#"<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>"#;
+    /// The minimap: a split layout with the camera's frame on one part.
+    pub const MINIMAP: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 12h11"/><rect x="12.5" y="6.5" width="6" height="3" rx="0.5"/>"#;
     pub const CAMERA: &str = r#"<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>"#;
     pub const CONTRAST: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 3v18M12 7.5h5M12 12h6M12 16.5h5"/>"#;
     pub const WINDOW: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>"#;

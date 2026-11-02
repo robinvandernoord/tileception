@@ -86,29 +86,6 @@ pub fn set_value(file: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Sets `[outputs."<output>"] split` to these widths, keeping the rest.
-pub fn set_split(file: &Path, output: &str, shares: &[f64]) -> Result<(), String> {
-    let mut doc = read(file)?;
-    let outputs = doc.entry("outputs").or_insert_with(|| {
-        let mut outputs = toml_edit::Table::new();
-        outputs.set_implicit(true);
-        Item::Table(outputs)
-    });
-    let entry = outputs
-        .as_table_mut()
-        .ok_or("[outputs] is not a table")?
-        .entry(output)
-        .or_insert_with(|| Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| format!("[outputs.{output:?}] is not a table"))?;
-    let mut value = Value::Array(shares.iter().copied().collect());
-    if let Some(old) = entry.get("split").and_then(Item::as_value) {
-        *value.decor_mut() = old.decor().clone();
-    }
-    entry["split"] = Item::Value(value);
-    write(file, &doc)
-}
-
 /// The file as written, or the defaults when there is none yet.
 fn read(path: &Path) -> Result<DocumentMut, String> {
     let text = match std::fs::read_to_string(path) {
@@ -262,22 +239,6 @@ mod tests {
 
     fn doc(text: &str) -> DocumentMut {
         text.parse().unwrap()
-    }
-
-    #[test]
-    fn set_split_keeps_the_screen_entry_and_its_comments() {
-        let dir = std::env::temp_dir().join(format!("tileception-split-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("config.toml");
-        std::fs::write(&file, "[outputs.\"*\"]\nscale = 1\n\n[outputs.\"DP-2\"]\nsplit = 2 # wide\n").unwrap();
-        set_split(&file, "DP-2", &[0.62, 0.38]).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            "[outputs.\"*\"]\nscale = 1\n\n[outputs.\"DP-2\"]\nsplit = [0.62, 0.38] # wide\n"
-        );
-        set_split(&file, "HDMI-A-1", &[0.5, 0.5]).unwrap();
-        assert!(std::fs::read_to_string(&file).unwrap().contains("[outputs.HDMI-A-1]\nsplit = [0.5, 0.5]\n"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

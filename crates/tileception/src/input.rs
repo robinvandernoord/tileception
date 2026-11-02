@@ -859,11 +859,9 @@ impl Tileception {
                 return;
             }
             if self.outputs.boundary_drag.take().is_some() {
-                self.save_area_widths();
                 return;
             }
             if self.gap_drag.take().is_some() || self.resize_drag.take().is_some() {
-                self.save_area_widths();
                 self.persist_layout();
                 return;
             }

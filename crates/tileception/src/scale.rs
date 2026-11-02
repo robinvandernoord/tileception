@@ -205,12 +205,13 @@ impl Tileception {
             self.wallpaper_failed = None;
         }
         let screen = self.output_rect();
-        self.set_area_screens(screen);
+        // Laid out once, below, in the room the bars leave.
+        self.place_areas(screen, false);
         self.pointer.x = self.pointer.x.clamp(screen.x, screen.right() - 1.0);
         self.pointer.y = self.pointer.y.clamp(screen.y, screen.bottom() - 1.0);
         self.update_usable_area();
         self.resize_lock_surface();
-        self.apply_layout();
+        self.lay_out_areas();
         if changed {
             self.send_scale_everywhere();
         }

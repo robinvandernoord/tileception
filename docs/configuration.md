@@ -109,6 +109,36 @@ TILECEPTION_SCALE=2 tileception --nested
 
 This overrides the output settings for that instance.
 
+## Splitting a wide screen
+
+On an ultrawide monitor, one layout across the whole width can be awkward:
+zooming to one window leaves it very wide. Split the screen into side-by-side
+areas instead. Each area has its own windows, zoom, overview, minimized windows
+and selection, as if it were a screen of its own:
+
+```toml
+[outputs."DP-2"]
+split = 2
+```
+
+`split` takes a number of equal areas, from 1 to 8, or their relative widths,
+such as `split = [0.6, 0.4]` or `split = [2, 1]`. Use the connector name from
+`tileception msg outputs`; `"*"` cannot be split. Areas are named from the
+left, such as `DP-2.1` and `DP-2.2`, in `tileception msg outputs`,
+`focus-output` and `move-output`.
+
+Applications still see one screen, so screen sharing, screenshots and external
+lockers and bars cover the whole monitor. There is one built-in bar across it.
+
+Reducing the number of areas combines their windows side by side in the last
+area that remains, each keeping its layout. Setting `split = 1` or removing it
+puts everything back into one layout. Widths dragged by hand (see
+[Using Tileception](usage.md#split-screens)) last until Tileception restarts or
+`split` is changed; they are not written to the config.
+
+While any screen is split, `general.restore_layout` does not save or restore
+layouts.
+
 ## Desktop components
 
 Each `[shell]` entry uses `"builtin"` for Tileception's own component or `"none"`
@@ -139,6 +169,14 @@ This applies when you save the config. The minimized-window strip stays at the
 bottom, above the bar, and bar menus and previews open upwards. Use `"top"` to
 restore the default.
 External bars such as Waybar use their own position settings.
+
+The built-in bar shows a small minimap of the whole layout next to the back and
+forward buttons; [Using Tileception](usage.md#minimap) describes it. To hide it:
+
+```toml
+[shell]
+bar_minimap = false
+```
 
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
