@@ -144,6 +144,10 @@ impl Tileception {
         self.touch.fingers.insert(slot, Finger { start: pos, now: pos });
         let Some(mode) = self.touch.mode else {
             self.touch.first_down = time;
+            // Touching another area of a split screen activates it, as a click does.
+            if !self.is_locked() && self.power_menu.is_none() && !self.launcher.open {
+                self.activate_area_at(pos);
+            }
             match self.touch_edge(pos) {
                 Some(edge) => self.touch.mode = Some(Mode::Edge(slot, edge)),
                 None => self.touch_start(slot, pos, time),

@@ -219,9 +219,10 @@ tray_max_icons = 3
 # Without positions, screens form a row in connector-name order.
 #
 # A wide screen can be split into side-by-side areas, each with its own
-# windows, camera, saved views and Overview, as if they were screens of
-# their own (DP-2.1, DP-2.2 from the left in `tileception msg outputs`).
-# Clicking into an area makes it the active one, as focus follows clicks.
+# windows, camera and Overview, as if they were screens of their own
+# (DP-2.1, DP-2.2 from the left in `tileception msg outputs`). Clicking into
+# an area makes it the active one, as focus follows clicks. A saved view
+# holds every area's view, and the minimap shows all areas.
 # Programs still see one screen. Removing the split joins the areas'
 # layouts side by side.
 #

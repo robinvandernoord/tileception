@@ -599,7 +599,7 @@ impl Tileception {
                 buffers.push(buffer.clone());
             }
         };
-        for (_, window) in self.windows.iter().filter(|(window_id, _)| self.world.contains_window(**window_id)) {
+        for (_, window) in self.windows.iter().filter(|(window_id, _)| self.screen_shows(**window_id)) {
             window.with_surfaces(&mut hold);
         }
         for layer in layer_map_for_output(output).layers() {
@@ -729,9 +729,8 @@ impl Tileception {
                     }
                     let elapsed = state.start.elapsed();
                     // Minimized windows are hidden: no frames, so they need not draw.
-                    for (_, window) in
-                        state.windows.iter().filter(|(window_id, _)| state.world.contains_window(**window_id))
-                    {
+                    // Windows in every area of a split screen draw.
+                    for (_, window) in state.windows.iter().filter(|(window_id, _)| state.screen_shows(**window_id)) {
                         window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
                     }
                     state.send_layer_frames(elapsed);

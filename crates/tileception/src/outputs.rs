@@ -204,6 +204,89 @@ impl Tileception {
             && self.split().is_none_or(|areas| areas.parked.iter().flatten().all(|area| test(&area.world)))
     }
 
+    /// The world of every area of the context screen, left to right.
+    pub fn area_worlds(&self) -> Vec<(usize, &World)> {
+        let Some(areas) = self.split() else { return vec![(0, &self.world)] };
+        (0..areas.shares.len())
+            .filter_map(|index| {
+                if index == areas.context {
+                    Some((index, &self.world))
+                } else {
+                    areas.parked.get(index)?.as_ref().map(|area| (index, &area.world))
+                }
+            })
+            .collect()
+    }
+
+    /// Whether a window is in the layout of any area of the context screen,
+    /// so it is on screen (or next to it) and draws.
+    pub fn screen_shows(&self, window: WindowId) -> bool {
+        self.area_worlds().iter().any(|(_, world)| world.contains_window(window))
+    }
+
+    /// Every world of every screen and area.
+    fn every_world(&self) -> Vec<&World> {
+        let mut worlds = vec![&self.world];
+        worlds.extend(self.outputs.parked.values().map(|desktop| &desktop.world));
+        worlds.extend(
+            self.outputs.areas.values().flat_map(|areas| areas.parked.iter().flatten().map(|area| &area.world)),
+        );
+        worlds
+    }
+
+    /// Whether a window is minimized, on whichever screen or area it is.
+    pub fn minimized_anywhere(&self, window: WindowId) -> bool {
+        self.every_world().iter().any(|world| world.is_minimized(window))
+    }
+
+    /// Windows drawn on any screen or area, for what must notice a window
+    /// that shows but has no focus (idle inhibitors).
+    pub fn drawn_everywhere(&mut self, now: f64) -> Vec<crate::render::Drawn> {
+        let mut drawn = Vec::new();
+        for area in self.all_areas() {
+            let shown = self.with_area(&area, |state| {
+                let room = state.area_clip().unwrap_or_else(|| state.output_rect());
+                let mut shown = state.drawn_windows(now);
+                shown.retain(|drawn| drawn.content.intersects(&room));
+                shown
+            });
+            drawn.extend(shown.unwrap_or_default());
+        }
+        drawn
+    }
+
+    /// Saves a view in slot 1..=9 of every area of the context screen, so a
+    /// saved view is what the whole screen shows.
+    pub fn save_view_everywhere(&mut self, slot: usize) {
+        for index in 0..self.area_count() {
+            self.with_local_area(index, |state| state.world.save_view(slot));
+        }
+    }
+
+    /// Goes to slot 1..=9 in every area of the context screen that has it;
+    /// the others stay as they are. Returns whether any area had it.
+    pub fn recall_view_everywhere(&mut self, slot: usize) -> bool {
+        let mut recalled = false;
+        for index in 0..self.area_count() {
+            recalled |= self
+                .with_local_area(index, |state| {
+                    let now = state.now();
+                    let recalled = state.world.recall_view(slot, now);
+                    if recalled {
+                        state.apply_layout();
+                    }
+                    recalled
+                })
+                .unwrap_or(false);
+        }
+        recalled
+    }
+
+    /// Whether any area of the context screen has a view in slot 1..=9.
+    pub fn has_saved_view_anywhere(&self, slot: usize) -> bool {
+        self.area_worlds().iter().any(|(_, world)| world.has_saved_view(slot))
+    }
+
     /// How many areas the context screen has.
     pub fn area_count(&self) -> usize {
         self.split().map_or(1, |areas| areas.shares.len())
@@ -312,8 +395,18 @@ impl Tileception {
     /// Activates the area under the pointer, for a press in its room (not
     /// on the bar or the strip below it, which the areas share).
     pub fn activate_area_under_pointer(&mut self) {
-        let Some(index) = self.hovered_area() else { return };
-        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        self.activate_area_at(self.pointer);
+    }
+
+    /// Activates the area under a point of the context screen, for a press
+    /// or a touch in its room.
+    pub fn activate_area_at(&mut self, pos: Point<f64, Logical>) {
+        let Some(areas) = self.split() else { return };
+        let index = self.area_at(pos.x);
+        if index == areas.active || self.fullscreen.is_some() {
+            return;
+        }
+        let point = tileception_core::Point::new(pos.x, pos.y);
         // The minimap's card shows the active area, wherever it reaches.
         if !self.usable_rect().contains(point) || self.minimap_covers(point) {
             return;

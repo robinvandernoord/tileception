@@ -5,7 +5,7 @@
 //! now. Tiles are flat rectangles, not window pictures, so it
 //! stays readable at any size.
 
-use tileception_core::{Node, NodeId, Point, Rect};
+use tileception_core::{Node, NodeId, Point, Rect, World};
 
 use crate::{
     Tileception,
@@ -20,6 +20,9 @@ const PAD: f64 = 10.0;
 const LABEL_H: f64 = 26.0;
 /// Pixels the pointer moves before a press on the map becomes a drag.
 const DRAG: f64 = 4.0;
+/// Space between the areas of a split screen on the card, and on the chip.
+const PART_GAP: f64 = 6.0;
+const CHIP_PART_GAP: f64 = 2.0;
 
 #[derive(Default)]
 pub struct Minimap {
@@ -33,15 +36,23 @@ pub struct Minimap {
     rearm: bool,
 }
 
-/// What the pointer does on the open card.
+/// What the pointer does on the open card, in which area of the screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Gesture {
     /// Over a leaf, nothing pressed.
-    Hover(NodeId),
+    Hover(usize, NodeId),
     /// Pressed on a leaf, not moved yet: letting go flies there.
-    Click(NodeId),
+    Click(usize, NodeId),
     /// Dragged: letting go frames this space.
-    Pan(NodeId),
+    Pan(usize, NodeId),
+}
+
+impl Gesture {
+    fn area(self) -> usize {
+        match self {
+            Gesture::Hover(area, _) | Gesture::Click(area, _) | Gesture::Pan(area, _) => area,
+        }
+    }
 }
 
 /// A rectangle in layout units, placed on `area`, which shows the unit square.
@@ -66,10 +77,29 @@ fn dragged(start: Point, end: Point) -> bool {
 }
 
 impl Tileception {
-    /// The shape of the layout on screen: the unit square stretched to it.
+    /// The shape of the layout on screen: the unit square stretched to it,
+    /// or on a split screen all areas side by side.
     fn minimap_aspect(&self) -> f64 {
-        let screen = self.world.screen();
+        let screen = self.usable_rect();
         (screen.w / screen.h.max(1.0)).clamp(0.5, 4.0)
+    }
+
+    /// Each area's world and its part of `area`, left to right, as wide as
+    /// the area is on screen.
+    fn minimap_parts(&self, area: Rect, gap: f64) -> Vec<(usize, &World, Rect)> {
+        let worlds = self.area_worlds();
+        let total: f64 = worlds.iter().map(|(_, world)| world.screen().w.max(1.0)).sum();
+        let room = (area.w - gap * worlds.len().saturating_sub(1) as f64).max(1.0);
+        let mut left = area.x;
+        worlds
+            .into_iter()
+            .map(|(index, world)| {
+                let width = room * world.screen().w.max(1.0) / total;
+                let part = Rect::new(left, area.y, width, area.h);
+                left += width + gap;
+                (index, world, part)
+            })
+            .collect()
     }
 
     /// The chip's place in the bar from `left`, if the bar shows one.
@@ -184,14 +214,21 @@ impl Tileception {
 
     /// Letting go after a press on the map: flies there and closes the card.
     pub(crate) fn minimap_release(&mut self, point: Point) {
-        let Some(target) = self.minimap_gesture(point).and_then(|gesture| match gesture {
-            Gesture::Click(node) | Gesture::Pan(node) => Some(node),
-            Gesture::Hover(_) => None,
+        let Some((index, target)) = self.minimap_gesture(point).and_then(|gesture| match gesture {
+            Gesture::Click(index, node) | Gesture::Pan(index, node) => Some((index, node)),
+            Gesture::Hover(..) => None,
         }) else {
             self.bar.minimap.press = None;
             return;
         };
         self.bar.minimap.press = None;
+        // Another area of a split screen becomes the active one.
+        if index != self.area_index()
+            && let Some(output) = self.output.clone()
+            && !self.activate_area(&crate::outputs::AreaId { output, index })
+        {
+            return;
+        }
         let now = self.now();
         self.world.frame(target, now);
         self.apply_layout();
@@ -203,12 +240,15 @@ impl Tileception {
         if !self.bar.minimap.zoom.open {
             return None;
         }
-        let area = Self::minimap_area(self.minimap_card());
-        let unit = to_unit(area, point);
+        let parts = self.minimap_parts(Self::minimap_area(self.minimap_card()), PART_GAP);
+        // A press stays with the area it started in, also while dragging out of it.
+        let anchor = self.bar.minimap.press.unwrap_or(point);
+        let (index, world, rect) = parts.into_iter().find(|(_, _, rect)| rect.contains(anchor))?;
+        let unit = to_unit(rect, point);
         match self.bar.minimap.press {
-            Some(press) if dragged(press, point) => self.world.pan_target(unit).map(Gesture::Pan),
-            Some(_) => self.world.leaf_at_unit(unit).map(Gesture::Click),
-            None => area.contains(point).then(|| self.world.leaf_at_unit(unit)).flatten().map(Gesture::Hover),
+            Some(press) if dragged(press, point) => world.pan_target(unit).map(|node| Gesture::Pan(index, node)),
+            Some(_) => world.leaf_at_unit(unit).map(|node| Gesture::Click(index, node)),
+            None => world.leaf_at_unit(unit).map(|node| Gesture::Hover(index, node)),
         }
     }
 
@@ -244,7 +284,11 @@ impl Tileception {
 
     /// The line under the map: what letting go there would show.
     fn minimap_label(&self, gesture: Option<Gesture>) -> String {
-        let tree = self.world.tree();
+        let worlds = self.area_worlds();
+        let world = gesture
+            .and_then(|gesture| worlds.iter().find(|(index, _)| *index == gesture.area()))
+            .map_or(&self.world, |(_, world)| *world);
+        let tree = world.tree();
         let describe = |node: NodeId| -> String {
             let windows = tree.shown_windows_in(node);
             match windows.as_slice() {
@@ -259,24 +303,47 @@ impl Tileception {
             }
         };
         match gesture {
-            Some(Gesture::Pan(node)) => format!("Pan to: {}", describe(node)),
-            Some(Gesture::Hover(node) | Gesture::Click(node)) => describe(node),
+            Some(Gesture::Pan(_, node)) => format!("Pan to: {}", describe(node)),
+            Some(Gesture::Hover(_, node) | Gesture::Click(_, node)) => describe(node),
             None => {
-                let windows = tree.windows_in(tree.root()).len();
+                let windows: usize =
+                    worlds.iter().map(|(_, world)| world.tree().windows_in(world.tree().root()).len()).sum();
                 let plural = if windows == 1 { "" } else { "s" };
                 format!("{windows} window{plural} \u{b7} click one to fly there, drag to pan")
             }
         }
     }
 
-    /// The tree on `area`: tiles, the Desktop, floating windows over the
+    /// The tree on `area`, or on a split screen each area's tree in its
+    /// part. Only the active area shows its focus and a lit frame.
+    fn draw_minimap(&self, painter: &mut Painter, area: Rect, detail: bool, gesture: Option<Gesture>) {
+        let active = self.area_index();
+        let gap = if detail { PART_GAP } else { CHIP_PART_GAP };
+        for (index, world, part) in self.minimap_parts(area, gap) {
+            let gesture = gesture.filter(|gesture| gesture.area() == index);
+            if index != active {
+                painter.fill(part, self.theme.background, 2.0);
+            }
+            self.draw_world_map(painter, world, part, detail, gesture, index == active);
+        }
+    }
+
+    /// One tree on `area`: tiles, the Desktop, floating windows over the
     /// part on screen, and the camera's frame. `detail` adds app icons and
     /// hover marks for the card; the chip draws only the shapes.
-    fn draw_minimap(&self, painter: &mut Painter, area: Rect, detail: bool, gesture: Option<Gesture>) {
+    fn draw_world_map(
+        &self,
+        painter: &mut Painter,
+        world: &World,
+        area: Rect,
+        detail: bool,
+        gesture: Option<Gesture>,
+        active: bool,
+    ) {
         let theme = &self.theme;
-        let tree = self.world.tree();
-        let layout = self.world.layout();
-        let focus = self.world.focus();
+        let tree = world.tree();
+        let layout = world.layout();
+        let focus = world.focus().filter(|_| active);
         let gap = if detail { 2.0 } else { 1.0 };
         let radius = if detail { 3.0 } else { 1.0 };
         for leaf in tree.leaves(tree.root()) {
@@ -285,7 +352,8 @@ impl Tileception {
             match tree.node(leaf) {
                 Node::Tile { views, selected } => {
                     let focused = focus.is_some_and(|window| views.contains(&window));
-                    let hovered = matches!(gesture, Some(Gesture::Hover(node) | Gesture::Click(node)) if node == leaf);
+                    let hovered =
+                        matches!(gesture, Some(Gesture::Hover(_, node) | Gesture::Click(_, node)) if node == leaf);
                     let colour = match (focused, detail) {
                         (true, _) => theme.accent.alpha(if detail { 0.4 } else { 0.85 }),
                         (false, true) if hovered => theme.text.alpha(0.24),
@@ -321,10 +389,10 @@ impl Tileception {
         // Floating windows hang over whatever is on screen, so they are drawn
         // over the camera's part of the map.
         let now = self.now();
-        let view = self.world.view(now);
-        let xform = self.world.xform(view);
+        let view = world.view(now);
+        let xform = world.xform(view);
         for window_id in tree.floats() {
-            let Some(float) = self.world.float_rect(*window_id) else { continue };
+            let Some(float) = world.float_rect(*window_id) else { continue };
             let corner = xform.invert_point(Point::new(float.x, float.y));
             let far = xform.invert_point(Point::new(float.right(), float.bottom()));
             let unit = Rect::new(corner.x, corner.y, far.x - corner.x, far.y - corner.y);
@@ -335,7 +403,7 @@ impl Tileception {
             painter.shape(rect, Shape { border_width: 1.0, border, ..Shape::filled(fill, radius) });
         }
 
-        if let Some(Gesture::Pan(node)) = gesture
+        if let Some(Gesture::Pan(_, node)) = gesture
             && let Some(unit) = layout.rect(node)
         {
             painter.shape(
@@ -348,7 +416,10 @@ impl Tileception {
             );
         }
         if let Some(frame) = clip(to_area(area, view), area.inset(-1.0)) {
-            let shape = if detail {
+            let shape = if !active {
+                // Another area's camera: there, but not where input goes.
+                Shape { border_width: 1.0, border: theme.muted, radius, ..Default::default() }
+            } else if detail {
                 Shape {
                     border_width: 1.5,
                     border: theme.accent,

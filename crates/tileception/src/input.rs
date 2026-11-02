@@ -514,9 +514,10 @@ impl Tileception {
             }
             Action::NextTab => self.world.cycle_tab(1),
             Action::PrevTab => self.world.cycle_tab(-1),
-            Action::SaveView(slot) => self.world.save_view(slot),
+            // On a split screen, a saved view holds every area's view.
+            Action::SaveView(slot) => self.save_view_everywhere(slot),
             Action::RecallView(slot) => {
-                self.world.recall_view(slot, now);
+                self.recall_view_everywhere(slot);
             }
             Action::Vt(vt_number) => self.change_vt(vt_number),
             Action::Lock => {
@@ -1094,6 +1095,8 @@ impl Tileception {
         if ![WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT].into_iter().any(bound) {
             return false;
         }
+        // A binding acts where the pointer is, as a click there would.
+        self.activate_area_under_pointer();
         // Natural scrolling turns the touchpad around for content, not for
         // bindings: Super with two fingers up still steps in.
         let sign =

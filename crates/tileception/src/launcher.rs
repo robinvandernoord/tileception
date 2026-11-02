@@ -393,11 +393,7 @@ impl Tileception {
     /// matters is an empty layout.
     pub fn update_home(&mut self) {
         // Other machines' windows shown here count too.
-        if self
-            .windows
-            .keys()
-            .chain(self.handoff.windows.remote.keys())
-            .any(|window_id| self.world.contains_window(*window_id))
+        if self.windows.keys().chain(self.handoff.windows.remote.keys()).any(|window_id| self.screen_shows(*window_id))
         {
             self.launcher.home_dismissed = false;
             self.launcher.quiet_until = None;
@@ -507,7 +503,7 @@ impl Tileception {
         let mut windows: Vec<(u8, WindowId)> = self
             .windows
             .iter()
-            .filter(|(window_id, _)| self.world.contains_window(**window_id) || self.world.is_minimized(**window_id))
+            .filter(|(window_id, _)| self.area_for_window(**window_id).is_some())
             .filter_map(|(window_id, window)| {
                 let title = crate::state::window_title(window).to_lowercase();
                 let app = crate::state::app_id(window).to_lowercase();
@@ -1345,7 +1341,7 @@ impl Tileception {
                 let Some(window) = self.windows.get(window_id) else { return };
                 let app = crate::state::app_id(window);
                 self.draw_app_icon(painter, icon, &app, None, &app);
-                let state = if self.world.is_minimized(*window_id) { "Minimized window" } else { "Open window" };
+                let state = if self.minimized_anywhere(*window_id) { "Minimized window" } else { "Open window" };
                 let name = self
                     .launcher
                     .index

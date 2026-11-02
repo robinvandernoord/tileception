@@ -837,7 +837,7 @@ impl Tileception {
                 self.apply_layout();
             }
             Hit::Slot(slot) => {
-                if self.world.has_saved_view(slot) {
+                if self.has_saved_view_anywhere(slot) {
                     self.run(Action::RecallView(slot));
                 }
             }
@@ -1043,12 +1043,15 @@ impl Tileception {
         self.draw_crumbs(painter, layout, hit);
         self.draw_tray_slots(painter, &layout.tray);
 
-        let current = (!self.world.in_overview()).then(|| self.world.framed());
+        let worlds = self.area_worlds();
         for (slot, rect) in &layout.slots {
-            let node = self.world.saved_view_node(*slot);
-            let here = node.is_some() && node == current;
+            // Saved in any area; shown now when every area that has it is there.
+            let saved: Vec<_> =
+                worlds.iter().filter_map(|(_, world)| world.saved_view_node(*slot).map(|node| (world, node))).collect();
+            let here =
+                !saved.is_empty() && saved.iter().all(|(world, node)| !world.in_overview() && world.framed() == *node);
             let label = slot.to_string();
-            match node {
+            match saved.first() {
                 Some(_) => {
                     let lit = here || hit == Some(Hit::Slot(*slot));
                     painter.shape(
@@ -1282,45 +1285,66 @@ impl Tileception {
             .unwrap_or(0.0)
     }
 
-    /// What a saved view frames, drawn small beside its slot.
+    /// What a saved view frames, drawn small beside its slot: on a split
+    /// screen, each area's part side by side.
     fn draw_slot_preview(&self, painter: &mut Painter, layout: &Layout, slot_number: usize) {
-        let Some(node) = self.world.saved_view_node(slot_number) else { return };
-        let Some(unit) = self.world.layout().rect(node) else { return };
+        // Each area holding the view: its world, the node and its shape on screen.
+        let parts: Vec<_> = self
+            .area_worlds()
+            .into_iter()
+            .filter_map(|(_, world)| {
+                let node = world.saved_view_node(slot_number)?;
+                let unit = world.layout().rect(node)?;
+                let screen = world.screen();
+                Some((world, node, unit, (unit.w * screen.w) / (unit.h * screen.h).max(1.0)))
+            })
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
         let Some((_, slot)) = layout.slots.iter().find(|(number, _)| *number == slot_number) else { return };
-        // The space as it looks framed from the root, at most 260 by 180.
-        let screen = self.world.screen();
-        let aspect = (unit.w * screen.w) / (unit.h * screen.h).max(1.0);
-        let (preview_width, preview_height) =
-            if aspect >= 260.0 / 180.0 { (260.0, (260.0 / aspect).round()) } else { ((180.0 * aspect).round(), 180.0) };
+        // The spaces as they look framed from the root, side by side, at most
+        // 260 (or 400 for several areas) by 180.
+        const PART_GAP: f64 = 6.0;
+        let gaps = PART_GAP * (parts.len() - 1) as f64;
+        let max_width = if parts.len() > 1 { 400.0 } else { 260.0 };
+        let total_aspect: f64 = parts.iter().map(|part| part.3).sum();
+        let preview_height = (180.0_f64).min(((max_width - gaps) / total_aspect.max(0.01)).round()).max(1.0);
+        let preview_width = (total_aspect * preview_height + gaps).round();
         let left =
             (slot.x + slot.w / 2.0 - preview_width / 2.0).clamp(8.0, self.output_rect().right() - preview_width - 8.0);
         let height = preview_height + 16.0 + 24.0;
         let card = Rect::new(left, self.bar_popup_y(layout.bar, height), preview_width + 16.0, height);
         painter.popup(card);
-        let area = Rect::new(card.x + 8.0, card.y + 8.0, preview_width, preview_height);
-        painter.fill(area, self.theme.background, 4.0);
-        let tree = self.world.tree();
-        for leaf in tree.leaves(node) {
-            let Some(leaf_rect) = self.world.layout().rect(leaf) else { continue };
-            let Some(window) = tree.shown_windows_in(leaf).first().copied() else { continue };
-            let rect = Rect::new(
-                area.x + (leaf_rect.x - unit.x) / unit.w * area.w,
-                area.y + (leaf_rect.y - unit.y) / unit.h * area.h,
-                leaf_rect.w / unit.w * area.w,
-                leaf_rect.h / unit.h * area.h,
-            )
-            .inset(2.0);
-            painter.fill(rect, self.theme.surface, 3.0);
-            if let Some(fitted) = self.fit_into(window, rect) {
-                painter.window(window, fitted);
+        let mut x_pos = card.x + 8.0;
+        let mut windows = 0;
+        for (world, node, unit, aspect) in &parts {
+            let area = Rect::new(x_pos, card.y + 8.0, aspect * preview_height, preview_height);
+            x_pos = area.right() + PART_GAP;
+            painter.fill(area, self.theme.background, 4.0);
+            let tree = world.tree();
+            windows += tree.windows_in(*node).len();
+            for leaf in tree.leaves(*node) {
+                let Some(leaf_rect) = world.layout().rect(leaf) else { continue };
+                let Some(window) = tree.shown_windows_in(leaf).first().copied() else { continue };
+                let rect = Rect::new(
+                    area.x + (leaf_rect.x - unit.x) / unit.w * area.w,
+                    area.y + (leaf_rect.y - unit.y) / unit.h * area.h,
+                    leaf_rect.w / unit.w * area.w,
+                    leaf_rect.h / unit.h * area.h,
+                )
+                .inset(2.0);
+                painter.fill(rect, self.theme.surface, 3.0);
+                if let Some(fitted) = self.fit_into(window, rect) {
+                    painter.window(window, fitted);
+                }
             }
         }
-        let windows = tree.windows_in(node).len();
         let label = format!("View {slot_number} \u{b7} {windows} window{}", if windows == 1 { "" } else { "s" });
         let theme = &self.theme;
         painter.text(
             &label,
-            Rect::new(area.x, area.bottom() + 2.0, area.w, 22.0),
+            Rect::new(card.x + 8.0, card.y + 8.0 + preview_height + 2.0, preview_width, 22.0),
             Style::new(theme.font_size * 0.8, theme.muted),
         );
     }

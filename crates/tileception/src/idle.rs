@@ -88,7 +88,9 @@ impl Tileception {
             self.idle_activity();
         }
         self.idle.inhibitors.retain(|surface| surface.alive());
-        let visible = self.drawn_windows(self.now());
+        // Every screen and area: a video next to the focused one still plays.
+        let now = self.now();
+        let visible = self.drawn_everywhere(now);
         let inhibited = !self.is_locked()
             && (self.idle.bus_inhibitors.any()
                 || self.idle.inhibitors.iter().any(|surface| {
@@ -96,7 +98,7 @@ impl Tileception {
                     while let Some(parent) = get_parent(&root) {
                         root = parent;
                     }
-                    visible.iter().filter(|drawn| drawn.content.intersects(&self.output_rect())).any(|drawn| {
+                    visible.iter().any(|drawn| {
                         self.windows
                             .get(&drawn.window_id)
                             .and_then(|window| window.wl_surface())

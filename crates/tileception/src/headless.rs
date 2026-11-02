@@ -119,9 +119,7 @@ impl Tileception {
             self.with_output(output, |state| {
                 state.update_bar();
                 state.process_captures(&mut headless.renderer);
-                for (_, window) in
-                    state.windows.iter().filter(|(window_id, _)| state.world.contains_window(**window_id))
-                {
+                for (_, window) in state.windows.iter().filter(|(window_id, _)| state.screen_shows(**window_id)) {
                     window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
                 }
                 state.send_layer_frames(elapsed);
