@@ -160,8 +160,14 @@ impl Tileception {
         ))
     }
 
+    /// Where the strip may go: the screen, or the active area of a split one.
+    fn strip_room(&self) -> Rect {
+        let out = self.output_rect();
+        self.area_clip().map_or(out, |area| Rect { x: area.x, w: area.w, ..out })
+    }
+
     fn strip_capacity(&self) -> usize {
-        (((self.output_rect().w - 2.0 * (MARGIN + PAD) + PAD) / (MIN_CARD_W + PAD)).floor() as usize).max(1)
+        (((self.strip_room().w - 2.0 * (MARGIN + PAD) + PAD) / (MIN_CARD_W + PAD)).floor() as usize).max(1)
     }
 
     fn strip_overflows(&self) -> bool {
@@ -173,7 +179,7 @@ impl Tileception {
         if windows.is_empty() {
             return Vec::new();
         }
-        let out = self.output_rect();
+        let out = self.strip_room();
         let capacity = self.strip_capacity();
         let first = self.strip.first.min(windows.len().saturating_sub(capacity));
         let count = windows.len().min(capacity) as f64;

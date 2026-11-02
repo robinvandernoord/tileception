@@ -44,6 +44,18 @@ smithay::backend::renderer::element::render_elements! {
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
     Texture = TextureRenderElement<GlesTexture>,
+    Clipped = CropRenderElement<AreaElement>,
+}
+
+smithay::backend::renderer::element::render_elements! {
+    /// What an area of a split screen draws, before it is cut to the area.
+    pub AreaElement<=GlesRenderer>;
+    Live = RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    Scaled = CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    Solid = SolidColorRenderElement,
+    Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
+    Shape = PixelShaderElement,
+    Texture = TextureRenderElement<GlesTexture>,
 }
 
 /// How long a session takes to fade in from black, in seconds: it follows the
@@ -201,7 +213,8 @@ impl Tileception {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
-        let mut elements = self.render_elements(renderer, now);
+        let others = self.other_area_elements(renderer, now);
+        let mut elements = self.render_elements(renderer, now, others);
         if let Some(buffer) = wallpaper {
             let output_rect = self.output_rect();
             push_image(&mut elements, renderer, &buffer, (output_rect.x, output_rect.y), self.scale);
@@ -220,7 +233,28 @@ impl Tileception {
         elements
     }
 
-    pub fn render_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+    /// The windows of a split screen's other areas, each cut to its area,
+    /// for `render_elements`.
+    pub fn other_area_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        if self.is_locked() || self.fullscreen.is_some() {
+            return Vec::new();
+        }
+        let current = self.area_index();
+        let mut elements = Vec::new();
+        for index in (0..self.area_count()).filter(|index| *index != current) {
+            elements
+                .extend(self.with_local_area(index, |state| state.area_elements(renderer, now)).unwrap_or_default());
+        }
+        elements
+    }
+
+    /// The whole frame but the wallpaper; `others` are the other areas' windows.
+    pub fn render_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        now: f64,
+        others: Vec<OutputElement>,
+    ) -> Vec<OutputElement> {
         if self.is_locked() {
             // Only the locker (and the volume card); black where it has not drawn yet.
             let mut elements = self.osd_elements(renderer);
@@ -230,8 +264,6 @@ impl Tileception {
         }
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
-        let drawn_windows = self.drawn_windows(now);
-        let focus = self.world.focus().filter(|_| self.is_active_output());
         let view = self.world.view(now);
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
@@ -270,7 +302,7 @@ impl Tileception {
             if active {
                 elements.extend(self.x11_overlay_elements(renderer));
             }
-            for drawn in &drawn_windows {
+            for drawn in &self.drawn_windows(now) {
                 if let Some(window) = self.windows.get(&drawn.window_id) {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
@@ -314,10 +346,27 @@ impl Tileception {
             }
         }
 
+        elements.extend(self.area_elements(renderer, now));
+        elements.extend(others);
+
+        // Bottommost: desktop widgets and wallpaper.
+        elements.extend(self.layer_elements(renderer, &[Layer::Bottom, Layer::Background]));
+        elements
+    }
+
+    /// The context area's windows, tabs and tiles, topmost first: cut to the
+    /// area on a split screen, so its neighbours slide out under the next area.
+    fn area_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        let shapes = self.shapes(renderer);
+        let theme = &self.theme;
+        let drawn_windows = self.drawn_windows(now);
+        let focus = self.world.focus().filter(|_| self.is_active_output());
+        let view = self.world.view(now);
         let strips = self.world.tab_strips(view);
         // Menus and tooltips go above every window and frame, even when they
         // reach over a neighbour or past their own window's border.
-        let above_windows = elements.len();
+        let mut elements: Vec<OutputElement> = Vec::new();
+        let above_windows = 0;
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
@@ -380,9 +429,10 @@ impl Tileception {
             push_shape(&mut elements, shapes.as_ref(), &rect, Shape::filled(theme.surface, theme.radius));
         }
 
-        // Bottommost: desktop widgets and wallpaper.
-        elements.extend(self.layer_elements(renderer, &[Layer::Bottom, Layer::Background]));
-        elements
+        match self.area_clip() {
+            Some(clip) => clip_elements(elements, &clip, self.scale),
+            None => elements,
+        }
     }
 
     /// The compiled shape shader, made on first use with this renderer.
@@ -724,6 +774,26 @@ pub fn push_image(
 /// A point in logical pixels, in whole physical ones.
 pub fn physical_point(point: (f64, f64), scale: f64) -> Point<i32, Physical> {
     ((point.0 * scale).round() as i32, (point.1 * scale).round() as i32).into()
+}
+
+/// Elements cut to `rect` (logical pixels); those wholly outside it go.
+fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
+    let crop = physical(rect, scale);
+    elements
+        .into_iter()
+        .filter_map(|element| {
+            let inner = match element {
+                OutputElement::Live(element) => AreaElement::Live(element),
+                OutputElement::Scaled(element) => AreaElement::Scaled(element),
+                OutputElement::Solid(element) => AreaElement::Solid(element),
+                OutputElement::Memory(element) => AreaElement::Memory(element),
+                OutputElement::Shape(element) => AreaElement::Shape(element),
+                OutputElement::Texture(element) => AreaElement::Texture(element),
+                other => return Some(other),
+            };
+            CropRenderElement::from_element(inner, 1.0, crop).map(OutputElement::Clipped)
+        })
+        .collect()
 }
 
 /// A rectangle in logical pixels, in whole physical ones.

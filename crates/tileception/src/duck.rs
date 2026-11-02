@@ -336,7 +336,7 @@ impl Tileception {
     /// The ground under `x_pos`: the bottom of the usable screen, or the strip of
     /// minimized windows while it is out.
     fn duck_floor(&self, x_pos: f64) -> f64 {
-        let mut floor = self.world.screen().bottom() - 2.0;
+        let mut floor = self.usable_rect().bottom() - 2.0;
         if let Some(strip) = self.strip_now()
             && x_pos >= strip.x
             && x_pos <= strip.right()

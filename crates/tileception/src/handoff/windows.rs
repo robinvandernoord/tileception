@@ -946,10 +946,10 @@ impl Tileception {
 
     /// Another machine's window stops being shown here.
     fn drop_remote(&mut self, window: WindowId) {
-        if let Some(output) = self.output_for_window(window)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_window(window)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.drop_remote(window));
+            self.with_area(&area, |state| state.drop_remote(window));
             return;
         }
         if self.handoff.windows.remote.remove(&window).is_none() {

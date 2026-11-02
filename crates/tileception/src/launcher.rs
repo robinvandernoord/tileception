@@ -881,8 +881,8 @@ impl Tileception {
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
     fn fly_to_window(&mut self, window_id: WindowId) {
-        if let Some(output) = self.output_for_window(window_id) {
-            self.activate_output(&output);
+        if let Some(area) = self.area_for_window(window_id) {
+            self.activate_area(&area);
         }
         let now = self.now();
         if let Some(full) = self.fullscreen

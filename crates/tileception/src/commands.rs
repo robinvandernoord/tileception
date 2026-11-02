@@ -387,21 +387,21 @@ impl Tileception {
             Command::Tree => return Ok(crate::ipc::describe(self)),
             Command::Outputs => return Ok(self.outputs_status()),
             Command::FocusOutput(name) => {
-                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
-                self.activate_output(&output);
+                let area = self.area_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                self.activate_area(&area);
                 self.on_motion(self.pointer, (self.now() * 1000.0) as u32);
             }
             Command::MoveOutput(name) => {
-                let output = self.output_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
+                let area = self.area_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
                 let windows = if self.selection.windows.is_empty() {
                     vec![self.world.focus().ok_or("nothing is focused")?]
                 } else {
                     self.selection.windows.iter().copied().collect()
                 };
                 for window in windows {
-                    self.move_window_to_output(window, &output)?;
+                    self.move_window_to_area(window, &area, false)?;
                 }
-                self.activate_output(&output);
+                self.activate_area(&area);
                 self.force_keyboard_focus_sync();
             }
             Command::ShowMinimized => self.peek_minimized(),

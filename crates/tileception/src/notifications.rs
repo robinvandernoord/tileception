@@ -320,7 +320,7 @@ impl Tileception {
 
     /// The history panel, against the right edge.
     fn notification_panel(&self) -> Rect {
-        let screen = self.world.screen();
+        let screen = self.usable_rect();
         let width = screen.w.clamp(1.0, PANEL_W);
         Rect::new(screen.right() - width, screen.y, width, screen.h.max(1.0))
     }
@@ -344,7 +344,7 @@ impl Tileception {
     /// The cards on screen: popups in the bottom right corner, newest
     /// lowest, or the history in the panel, newest first.
     fn notification_cards(&self) -> Vec<Card> {
-        let screen = self.world.screen();
+        let screen = self.usable_rect();
         if self.notifications.open {
             let panel = self.notification_panel();
             let mut next_top = self.panel_controls().cards_top;

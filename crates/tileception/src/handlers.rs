@@ -110,10 +110,10 @@ impl CompositorHandler for Tileception {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        if let Some(output) = self.output_for_surface(surface)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_surface(surface)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| CompositorHandler::commit(state, surface));
+            self.with_area(&area, |state| CompositorHandler::commit(state, surface));
             return;
         }
         on_commit_buffer_handler::<Self>(surface);
@@ -531,10 +531,10 @@ impl Tileception {
             });
             return;
         }
-        if let Some(output) = self.output_for_window(window_id)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_window(window_id)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.unconstrain_popup(popup));
+            self.with_area(&area, |state| state.unconstrain_popup(popup));
             return;
         }
         let Some(placement) =

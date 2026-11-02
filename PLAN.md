@@ -219,7 +219,9 @@ answers). Open windows close; restoring them is not planned.
 
 #### Splitting a wide screen
 
-Proposed 2026-11-02, decisions taken the same day. On an ultrawide monitor
+Proposed 2026-11-02, decisions taken the same day; built the same day on
+`feature/split-screen` (`outputs.rs`, `World::absorb`) and tried in headless
+instances, not yet on a real ultrawide. On an ultrawide monitor
 one camera is less intuitive than on a normal screen: framing one window
 either leaves it very wide or leaves most of the screen to its neighbours,
 and Overview gets flat. Split one physical screen into two (or more)

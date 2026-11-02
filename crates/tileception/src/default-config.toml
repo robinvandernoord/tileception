@@ -214,6 +214,17 @@ tray_max_icons = 3
 # position = [1280, 0]          # right of a 1920-wide panel at scale 1.5
 # Without positions, screens form a row in connector-name order.
 #
+# A wide screen can be split into side-by-side areas, each with its own
+# windows, camera, saved views and Overview, as if they were screens of
+# their own (DP-2.1, DP-2.2 from the left in `tileception msg outputs`).
+# Clicking into an area makes it the active one, as focus follows clicks.
+# Programs still see one screen. Removing the split joins the areas'
+# layouts side by side.
+#
+# [outputs."DP-2"]
+# split = 2                     # two equal areas, or relative widths:
+#                               # split = [0.6, 0.4]
+#
 # [outputs."*"]
 # scale = 1
 

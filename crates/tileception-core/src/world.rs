@@ -1361,6 +1361,111 @@ impl World {
         let next = views[((*selected as isize + delta).rem_euclid(count)) as usize];
         self.set_focus(Some(next));
     }
+
+    /// Takes in another world's windows, its tree side by side to the right
+    /// of this one with the given shares, each keeping its layout. Floats
+    /// keep their screen positions, minimized windows stay minimized, and
+    /// empty saved view slots take the other world's views. The camera then
+    /// shows everything. Used when a screen's areas are combined.
+    pub fn absorb(&mut self, other: World, shares: (f64, f64), now: f64) {
+        let focus = self.focus;
+        let mut mru = self.mru.clone();
+        mru.retain(|window| !other.mru.contains(window));
+        mru.splice(0..0, other.mru.iter().copied());
+        let (theirs, their_floats) = without_desktop(other.tree.snapshot());
+        let mut root = self.tree.snapshot();
+        if !their_floats.is_empty() {
+            add_desktop_floats(&mut root, &their_floats);
+        }
+        if let Some(theirs) = theirs {
+            let shares = (shares.0.max(f64::EPSILON), shares.1.max(f64::EPSILON));
+            root = crate::tree::LayoutNode::Split {
+                axis: Axis::Horizontal,
+                children: vec![root, theirs],
+                weights: vec![shares.0, shares.1],
+            };
+        }
+        let mine = self.snapshot();
+        let theirs_snapshot = other.snapshot();
+        let snapshot = LayoutSnapshot {
+            root,
+            floats: mine.floats.iter().chain(&theirs_snapshot.floats).copied().collect(),
+            framed: Vec::new(),
+            saved: (0..self.saved.len())
+                .map(|index| {
+                    let own = mine.saved.get(index).filter(|windows| !windows.is_empty());
+                    own.or_else(|| theirs_snapshot.saved.get(index)).cloned().unwrap_or_default()
+                })
+                .collect(),
+        };
+        let remap: HashMap<WindowId, WindowId> = self
+            .tree
+            .windows_in(self.tree.root())
+            .into_iter()
+            .chain(other.tree.windows_in(other.tree.root()))
+            .map(|window| (window, window))
+            .collect();
+        if self.restore_layout(&snapshot, &remap, now) {
+            self.tree.share_removed_space = self.settings.share_removed_space;
+        } else {
+            // Not expected; the windows still come over, docked anew.
+            for window in other.tree.windows_in(other.tree.root()) {
+                let placement = if other.tree.is_floating(window) { Placement::Float } else { Placement::Dock };
+                self.add_window(window, placement, now);
+            }
+        }
+        self.last_float.extend(other.last_float);
+        self.minimized.extend(other.minimized);
+        self.mru = mru.into_iter().filter(|window| self.tree.leaf_of(*window).is_some()).collect();
+        self.set_focus(
+            focus.or_else(|| self.mru.last().copied()).filter(|window| self.tree.leaf_of(*window).is_some()),
+        );
+        self.framed = self.tree.root();
+        self.history = vec![self.framed];
+        self.history_index = 0;
+        self.overview = false;
+        self.retarget(now);
+    }
+}
+
+/// A snapshot without its Desktop node, and the floats that node held.
+fn without_desktop(node: crate::tree::LayoutNode) -> (Option<crate::tree::LayoutNode>, Vec<WindowId>) {
+    use crate::tree::LayoutNode;
+    match node {
+        LayoutNode::Desktop { floats, .. } => (None, floats),
+        LayoutNode::Tile { .. } => (Some(node), Vec::new()),
+        LayoutNode::Split { axis, children, weights } => {
+            let mut floats = Vec::new();
+            let mut kept = Vec::new();
+            let mut kept_weights = Vec::new();
+            for (child, weight) in children.into_iter().zip(weights) {
+                let (child, child_floats) = without_desktop(child);
+                floats.extend(child_floats);
+                if let Some(child) = child {
+                    kept.push(child);
+                    kept_weights.push(weight);
+                }
+            }
+            let node = match kept.len() {
+                0 => None,
+                1 => kept.pop(),
+                _ => Some(LayoutNode::Split { axis, children: kept, weights: kept_weights }),
+            };
+            (node, floats)
+        }
+    }
+}
+
+fn add_desktop_floats(node: &mut crate::tree::LayoutNode, extra: &[WindowId]) -> bool {
+    use crate::tree::LayoutNode;
+    match node {
+        LayoutNode::Desktop { floats, .. } => {
+            floats.extend_from_slice(extra);
+            true
+        }
+        LayoutNode::Tile { .. } => false,
+        LayoutNode::Split { children, .. } => children.iter_mut().any(|child| add_desktop_floats(child, extra)),
+    }
 }
 
 #[cfg(test)]
@@ -1905,5 +2010,63 @@ mod tests {
                 assert_eq!(all, (1..=count).map(WindowId).collect::<Vec<_>>());
             }
         }
+    }
+
+    #[test]
+    fn absorbing_puts_the_other_tree_beside_and_shows_everything() {
+        let mut left =
+            World::new(Settings { gap: 0.0, animation: 0.0, ..Settings::default() }, Rect::new(0.0, 0.0, 800.0, 900.0));
+        left.add_window(WindowId(1), Placement::Dock, 0.0);
+        left.add_window(WindowId(2), Placement::Dock, 0.0);
+        let mut right = World::new(
+            Settings { gap: 0.0, animation: 0.0, ..Settings::default() },
+            Rect::new(800.0, 0.0, 800.0, 900.0),
+        );
+        right.add_window(WindowId(3), Placement::Dock, 0.0);
+        right.add_window(WindowId(4), Placement::Float, 0.0);
+        right.set_float_rect(WindowId(4), Rect::new(900.0, 100.0, 300.0, 200.0));
+        right.add_window(WindowId(5), Placement::Dock, 0.0);
+        right.minimize(WindowId(5), 0.0);
+        right.save_view(2);
+        let (one, two) = (rect_of(&left, WindowId(1)), rect_of(&left, WindowId(2)));
+        left.set_screen(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        left.absorb(right, (0.5, 0.5), 0.0);
+        left.tree().check_invariants();
+        assert_eq!(left.framed(), left.tree().root());
+        assert_eq!(left.focus(), Some(WindowId(2)));
+        // Each side keeps its layout, in its own half.
+        assert!(rect_of(&left, WindowId(1)).approx_eq(&one, 1e-6));
+        assert!(rect_of(&left, WindowId(2)).approx_eq(&two, 1e-6));
+        assert!(rect_of(&left, WindowId(3)).approx_eq(&Rect::new(800.0, 0.0, 800.0, 900.0), 1e-6));
+        assert_eq!(left.float_rect(WindowId(4)), Some(Rect::new(900.0, 100.0, 300.0, 200.0)));
+        assert!(left.is_minimized(WindowId(5)));
+        assert!(left.has_saved_view(2));
+        assert!(left.restore(WindowId(5), 0.0));
+    }
+
+    #[test]
+    fn absorbing_an_empty_world_changes_nothing_but_the_view() {
+        let mut left = world();
+        left.add_window(WindowId(1), Placement::Dock, 0.0);
+        left.add_window(WindowId(2), Placement::Dock, 0.0);
+        left.focus_window(WindowId(1), 0.0);
+        left.maximize(0.0);
+        let before = left.tree().snapshot();
+        left.absorb(world(), (0.5, 0.5), 0.0);
+        assert_eq!(format!("{:?}", left.tree().snapshot()), format!("{before:?}"));
+        assert_eq!(left.framed(), left.tree().root());
+        assert_eq!(left.focus(), Some(WindowId(1)));
+    }
+
+    #[test]
+    fn absorbing_into_an_empty_world_takes_the_other_layout() {
+        let mut left = world();
+        let mut right = world();
+        right.add_window(WindowId(1), Placement::Dock, 0.0);
+        right.add_window(WindowId(2), Placement::Dock, 0.0);
+        left.absorb(right, (0.5, 0.5), 0.0);
+        left.tree().check_invariants();
+        assert_eq!(left.focus(), Some(WindowId(2)));
+        assert_eq!(left.tree().windows_in(left.tree().root()).len(), 2);
     }
 }

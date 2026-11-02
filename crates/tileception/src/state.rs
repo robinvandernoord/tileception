@@ -511,17 +511,17 @@ impl Tileception {
         if self.send_child_away(window_id) {
             return;
         }
-        let parent_output = self
+        let parent_area = self
             .windows
             .get(&window_id)
             .and_then(|window| window.toplevel())
             .and_then(|toplevel| toplevel.parent())
             .and_then(|parent| self.window_id(&parent))
-            .and_then(|parent| self.output_for_window(parent));
-        if let Some(output) = parent_output
-            && self.output.as_ref() != Some(&output)
+            .and_then(|parent| self.area_for_window(parent));
+        if let Some(area) = parent_area
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.place_window(window_id));
+            self.with_area(&area, |state| state.place_window(window_id));
             return;
         }
         let Some(window) = self.windows.get(&window_id) else { return };
@@ -561,10 +561,10 @@ impl Tileception {
     }
 
     pub fn forget_window(&mut self, window_id: WindowId) {
-        if let Some(output) = self.output_for_window(window_id)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_window(window_id)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.forget_window(window_id));
+            self.with_area(&area, |state| state.forget_window(window_id));
             return;
         }
         self.selection.windows.remove(&window_id);
@@ -708,10 +708,10 @@ impl Tileception {
 
     /// Makes a window cover the whole output, or puts it back in its tile.
     pub fn set_fullscreen(&mut self, window_id: WindowId, enable: bool) {
-        if let Some(output) = self.output_for_window(window_id)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_window(window_id)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.set_fullscreen(window_id, enable));
+            self.with_area(&area, |state| state.set_fullscreen(window_id, enable));
             return;
         }
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
@@ -750,10 +750,10 @@ impl Tileception {
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
     pub fn minimize_window(&mut self, window_id: WindowId) {
-        if let Some(output) = self.output_for_window(window_id)
-            && self.output.as_ref() != Some(&output)
+        if let Some(area) = self.area_for_window(window_id)
+            && self.context_area().as_ref() != Some(&area)
         {
-            self.with_output(&output, |state| state.minimize_window(window_id));
+            self.with_area(&area, |state| state.minimize_window(window_id));
             return;
         }
         if self.fullscreen == Some(window_id) {

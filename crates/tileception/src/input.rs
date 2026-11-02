@@ -437,9 +437,9 @@ impl Tileception {
 
     pub fn run(&mut self, action: Action) {
         if let Action::Restore(Some(window)) = action
-            && let Some(output) = self.output_for_window(window)
+            && let Some(area) = self.area_for_window(window)
         {
-            self.activate_output(&output);
+            self.activate_area(&area);
         }
         if self.selection_action(action) {
             if action != Action::Close {
@@ -683,7 +683,7 @@ impl Tileception {
         if self.pointer_to_owner(pos, time) {
             return;
         }
-        let under = self.surface_under(pos);
+        let under = self.surface_under_in_area(pos);
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);
@@ -742,6 +742,10 @@ impl Tileception {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
             return;
+        }
+        if state == ButtonState::Pressed && self.power_menu.is_none() && !self.launcher.open {
+            // Clicking into another area of a split screen makes it the active one.
+            self.activate_area_under_pointer();
         }
         let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if self.power_menu.is_none() && self.handoff_prompt_button(button, state == ButtonState::Pressed) {

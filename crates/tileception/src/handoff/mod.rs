@@ -553,7 +553,7 @@ impl Tileception {
         // Older X programs learn the X screen's size once, as they start:
         // the stand-in for that machine's screen is there from linking on.
         // The room windows have, below the bar, as `Room` measures it.
-        let screen = self.world.screen();
+        let screen = self.usable_rect();
         self.handoff.send(
             peer,
             Message::ScreenSize { width: screen.w.round().max(1.0) as u32, height: screen.h.round().max(1.0) as u32 },

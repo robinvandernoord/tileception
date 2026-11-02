@@ -115,7 +115,9 @@ impl Tileception {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
-        let mut elements = self.render_elements(renderer, self.now());
+        let now = self.now();
+        let others = self.other_area_elements(renderer, now);
+        let mut elements = self.render_elements(renderer, now, others);
         if let Some(buffer) = wallpaper {
             crate::render::push_image(&mut elements, renderer, &buffer, (0.0, 0.0), self.scale);
         }

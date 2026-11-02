@@ -321,10 +321,13 @@ impl Tileception {
     }
 
     /// One window framed on its own, where the bar would only take space.
+    /// On a split screen, in every area, so no area moves under the bar.
     fn single_framed(&self) -> bool {
-        let tree = self.world.tree();
-        let framed = self.world.framed();
-        !self.world.in_overview() && tree.is_leaf(framed) && !tree.shown_windows_in(framed).is_empty()
+        self.every_area(|world| {
+            let tree = world.tree();
+            let framed = world.framed();
+            !world.in_overview() && tree.is_leaf(framed) && !tree.shown_windows_in(framed).is_empty()
+        })
     }
 
     pub(crate) fn bar_at_bottom(&self) -> bool {
@@ -838,7 +841,7 @@ impl Tileception {
 
     /// The calendar card at its full size: centred under the bar.
     fn calendar_card(&self) -> Rect {
-        let screen = self.world.screen();
+        let screen = self.usable_rect();
         let width = CALENDAR_W.min(screen.w - 32.0).max(1.0);
         let height = CALENDAR_H.min(screen.h - 32.0).max(1.0);
         Rect::new(screen.x + (screen.w - width) / 2.0, screen.y + ((screen.h - height) * 0.3).max(16.0), width, height)
@@ -1272,7 +1275,7 @@ impl Tileception {
         let card = self.calendar_card();
         let rect = clock.zoom_lerp(&card, level);
         let (alpha, offset) = (painter.alpha, painter.offset);
-        painter.fill(self.world.screen(), Colour([0.0, 0.0, 0.0, 0.28 * level as f32]), 0.0);
+        painter.fill(self.usable_rect(), Colour([0.0, 0.0, 0.0, 0.28 * level as f32]), 0.0);
         painter.popup(rect);
         // The month fades in once the card is nearly there, and moves with it.
         painter.alpha = alpha * (((level - 0.85) / 0.15).clamp(0.0, 1.0) as f32);

@@ -313,9 +313,9 @@ impl XwmHandler for Tileception {
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(window_id) = self.x11_window_id(&window)
-            && let Some(output) = self.output_for_window(window_id)
+            && let Some(area) = self.area_for_window(window_id)
         {
-            self.activate_output(&output);
+            self.activate_area(&area);
             self.world.focus_window(window_id, self.now());
             self.run(crate::input::Action::Maximize);
         }
@@ -344,9 +344,9 @@ impl XwmHandler for Tileception {
 
     fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(window_id) = self.x11_window_id(&window)
-            && let Some(output) = self.output_for_window(window_id)
+            && let Some(area) = self.area_for_window(window_id)
         {
-            self.with_output(&output, |state| {
+            self.with_area(&area, |state| {
                 let now = state.now();
                 if state.world.restore(window_id, now) {
                     state.apply_layout();

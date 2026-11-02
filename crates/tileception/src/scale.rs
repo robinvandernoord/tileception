@@ -29,6 +29,34 @@ pub struct OutputConfig {
     pub scale: ScaleSetting,
     /// Top-left corner in global logical pixels. Unset: automatic horizontal row.
     pub position: Option<[i32; 2]>,
+    /// Side-by-side areas, each with its own tree and camera.
+    pub split: Option<SplitSetting>,
+}
+
+/// A number of equal areas, or their relative widths.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SplitSetting {
+    Count(u32),
+    Widths(Vec<f64>),
+}
+
+/// The most areas one screen can be split into.
+pub const MAX_AREAS: usize = 8;
+
+impl SplitSetting {
+    /// Each area's share of the width, left to right, adding up to 1.
+    pub fn shares(&self) -> Vec<f64> {
+        let widths = match self {
+            Self::Count(count) => vec![1.0; (*count as usize).clamp(1, MAX_AREAS)],
+            Self::Widths(widths) => widths.iter().copied().filter(|width| width.is_finite() && *width > 0.0).collect(),
+        };
+        let total: f64 = widths.iter().sum();
+        if widths.is_empty() || total <= 0.0 {
+            return vec![1.0];
+        }
+        widths.into_iter().take(MAX_AREAS).map(|width| width / total).collect()
+    }
 }
 
 /// "auto", or a fixed scale.
@@ -63,9 +91,27 @@ fn auto<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<(), D::Erro
 const MIN_SCALE: f64 = 0.5;
 const MAX_SCALE: f64 = 4.0;
 
-/// Checks `[outputs]`: scales must be numbers in range.
+/// Checks `[outputs]`: scales must be numbers in range, splits sensible.
 pub fn validate(outputs: &std::collections::BTreeMap<String, OutputConfig>) -> Result<(), String> {
     for (name, output) in outputs {
+        match &output.split {
+            Some(SplitSetting::Count(count)) if !(1..=MAX_AREAS as u32).contains(count) => {
+                return Err(format!("[outputs.{name:?}] split must be from 1 to {MAX_AREAS}, not {count}"));
+            }
+            Some(SplitSetting::Widths(widths))
+                if widths.is_empty()
+                    || widths.len() > MAX_AREAS
+                    || widths.iter().any(|width| !width.is_finite() || *width <= 0.0) =>
+            {
+                return Err(format!(
+                    "[outputs.{name:?}] split widths must be 1 to {MAX_AREAS} numbers above 0, not {widths:?}"
+                ));
+            }
+            _ => {}
+        }
+        if output.split.is_some() && name == "*" {
+            return Err("[outputs.\"*\"] cannot split; name the screen to split".into());
+        }
         if let ScaleSetting::Fixed(scale) = output.scale
             && !(MIN_SCALE..=MAX_SCALE).contains(&scale)
         {
@@ -159,7 +205,7 @@ impl Tileception {
             self.wallpaper_failed = None;
         }
         let screen = self.output_rect();
-        self.world.set_screen(screen);
+        self.set_area_screens(screen);
         self.pointer.x = self.pointer.x.clamp(screen.x, screen.right() - 1.0);
         self.pointer.y = self.pointer.y.clamp(screen.y, screen.bottom() - 1.0);
         self.update_usable_area();
@@ -268,6 +314,28 @@ delegate_viewporter!(Tileception);
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_parse_and_check() {
+        let parse = |text: &str| -> Result<(), String> {
+            let outputs: std::collections::BTreeMap<String, OutputConfig> =
+                toml::from_str(text).map_err(|err| err.to_string())?;
+            validate(&outputs)
+        };
+        let shares = |text: &str| {
+            let outputs: std::collections::BTreeMap<String, OutputConfig> = toml::from_str(text).unwrap();
+            outputs["DP-2"].split.as_ref().unwrap().shares()
+        };
+        assert_eq!(shares("[DP-2]\nsplit = 2"), vec![0.5, 0.5]);
+        assert_eq!(shares("[DP-2]\nsplit = [3, 1]"), vec![0.75, 0.25]);
+        assert_eq!(shares("[DP-2]\nsplit = [0.6, 0.4]"), vec![0.6, 0.4]);
+        assert!(parse("[DP-2]\nsplit = 0").is_err());
+        assert!(parse("[DP-2]\nsplit = 9").is_err());
+        assert!(parse("[DP-2]\nsplit = [0.5, 0]").is_err());
+        assert!(parse("[DP-2]\nsplit = []").is_err());
+        assert!(parse("[\"*\"]\nsplit = 2").is_err());
+        assert!(parse("[DP-2]\nsplit = 1").is_ok());
+    }
 
     #[test]
     fn guesses_from_size_and_resolution() {
