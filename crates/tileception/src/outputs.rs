@@ -25,6 +25,9 @@ pub struct Outputs {
     parked: BTreeMap<String, Desktop>,
     /// Split screens' areas, by connector name. Unsplit screens have none.
     areas: BTreeMap<String, Areas>,
+    /// Dragging the gap between areas `.0` and `.0 + 1` of the active
+    /// screen, last at horizontal position `.1`.
+    pub boundary_drag: Option<(usize, f64)>,
 }
 
 /// The areas of one split screen.
@@ -41,7 +44,12 @@ struct Areas {
     parked: Vec<Option<Area>>,
     /// The room the areas share: the screen less what bars reserve.
     usable: Rect,
+    /// The widths changed by dragging since they were last saved.
+    resized: bool,
 }
+
+/// The narrowest an area may be dragged, as a share of the screen.
+const MIN_SHARE: f64 = 0.1;
 
 struct Area {
     world: World,
@@ -392,27 +400,130 @@ impl Tileception {
         }
     }
 
+    /// Another machine's window under the pointer gets the pointer, looked
+    /// up in the area the pointer is over, as `surface_under_in_area` does.
+    pub fn pointer_to_owner_in_area(&mut self, pos: Point<f64, Logical>, time: u32) -> bool {
+        match self.hovered_area() {
+            Some(index) => self.with_local_area(index, |state| state.pointer_to_owner(pos, time)).unwrap_or(false),
+            None => self.pointer_to_owner(pos, time),
+        }
+    }
+
     /// Activates the area under the pointer, for a press in its room (not
-    /// on the bar or the strip below it, which the areas share).
-    pub fn activate_area_under_pointer(&mut self) {
-        self.activate_area_at(self.pointer);
+    /// on the bar or the strip below it, which the areas share). Returns
+    /// whether it switched areas.
+    pub fn activate_area_under_pointer(&mut self) -> bool {
+        self.activate_area_at(self.pointer)
     }
 
     /// Activates the area under a point of the context screen, for a press
-    /// or a touch in its room.
-    pub fn activate_area_at(&mut self, pos: Point<f64, Logical>) {
-        let Some(areas) = self.split() else { return };
+    /// or a touch in its room. Returns whether it switched areas.
+    pub fn activate_area_at(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(areas) = self.split() else { return false };
         let index = self.area_at(pos.x);
         if index == areas.active || self.fullscreen.is_some() {
-            return;
+            return false;
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
-        // The minimap's card shows the active area, wherever it reaches.
-        if !self.usable_rect().contains(point) || self.minimap_covers(point) {
+        // The minimap's card shows the active area, wherever it reaches; the
+        // gap between areas belongs to neither.
+        if !self.usable_rect().contains(point) || self.minimap_covers(point) || self.area_boundary_at(pos).is_some() {
+            return false;
+        }
+        let Some(output) = self.output.clone() else { return false };
+        self.activate_area(&AreaId { output, index })
+    }
+
+    /// The gap between two areas of the context screen under a point, as the
+    /// index of the area left of it.
+    pub fn area_boundary_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
+        let areas = self.split()?;
+        if self.fullscreen.is_some() || pos.y < areas.usable.y || pos.y >= areas.usable.bottom() {
+            return None;
+        }
+        let reach = self.world.settings.gap / 2.0 + 4.0;
+        (0..areas.shares.len() - 1).find(|index| {
+            let edge = slice(areas.usable, &areas.shares, index + 1).x;
+            (pos.x - edge).abs() <= reach
+        })
+    }
+
+    /// The gap between areas beside a tiled window of the context area, on
+    /// `side`, when nothing in its own tree is on that side: as the index of
+    /// the area left of the gap. Resizing the window there moves the gap.
+    pub fn area_boundary_beside(&self, window: WindowId, side: tileception_core::Side) -> Option<usize> {
+        let count = self.split()?.shares.len();
+        let tree = self.world.tree();
+        let tile = tree.tile_of(window).filter(|_| !tree.is_floating(window))?;
+        if tree.boundary(tile, side).is_some() {
+            return None;
+        }
+        let index = self.area_index();
+        match side {
+            tileception_core::Side::Left => index.checked_sub(1),
+            tileception_core::Side::Right => (index + 1 < count).then_some(index),
+            _ => None,
+        }
+    }
+
+    /// Moves the gap between areas `index` and `index + 1` of the context
+    /// screen by `delta` pixels, keeping each at least `MIN_SHARE` wide.
+    /// Returns whether it moved; `save_area_widths` writes it down.
+    pub fn move_area_boundary(&mut self, index: usize, delta: f64) -> bool {
+        let Some(name) = self.output.as_ref().map(Output::name) else { return false };
+        let Some(areas) = self.outputs.areas.get_mut(&name) else { return false };
+        if index + 1 >= areas.shares.len() {
+            return false;
+        }
+        let pair = areas.shares[index] + areas.shares[index + 1];
+        let left = (areas.shares[index] + delta / areas.usable.w.max(1.0)).clamp(MIN_SHARE, pair - MIN_SHARE);
+        if (left - areas.shares[index]).abs() < 1e-6 {
+            return false;
+        }
+        areas.shares[index] = left;
+        areas.shares[index + 1] = pair - left;
+        areas.resized = true;
+        let usable = areas.usable;
+        self.set_area_screens(usable);
+        self.schedule_render();
+        true
+    }
+
+    /// `resize` for a window with nothing beside it in its own tree: its area
+    /// grows into the next area, or the one before it at the right edge.
+    pub fn grow_area_of_focus(&mut self, delta: f64) {
+        let Some(window) = self.world.focus().filter(|_| delta != 0.0) else { return };
+        let right = self.area_boundary_beside(window, tileception_core::Side::Right);
+        let left = self.area_boundary_beside(window, tileception_core::Side::Left);
+        let tree = self.world.tree();
+        let alone = tree.tile_of(window).is_some_and(|tile| {
+            tree.boundary(tile, tileception_core::Side::Left).is_none()
+                && tree.boundary(tile, tileception_core::Side::Right).is_none()
+        });
+        if !alone {
             return;
         }
-        if let Some(output) = self.output.clone() {
-            self.activate_area(&AreaId { output, index });
+        let moved = match (right, left) {
+            (Some(index), _) => self.move_area_boundary(index, delta),
+            (None, Some(index)) => self.move_area_boundary(index, -delta),
+            (None, None) => false,
+        };
+        if moved {
+            self.save_area_widths();
+        }
+    }
+
+    /// Writes dragged area widths to the config as `split = [...]`, so they
+    /// last; the reload that follows finds them unchanged.
+    pub fn save_area_widths(&mut self) {
+        let Some(name) = self.output.as_ref().map(Output::name) else { return };
+        let Some(areas) = self.outputs.areas.get_mut(&name) else { return };
+        if !std::mem::take(&mut areas.resized) {
+            return;
+        }
+        let shares: Vec<f64> = areas.shares.iter().map(|share| (share * 1000.0).round() / 1000.0).collect();
+        if let Err(error) = crate::config_edit::set_split(&crate::config::path(), &name, &shares) {
+            tracing::warn!("could not save the area widths of {name}: {error}");
         }
     }
 
@@ -470,6 +581,7 @@ impl Tileception {
                 context: 0,
                 parked: vec![None],
                 usable: screen,
+                resized: false,
             });
             while areas.parked.len() < shares.len() {
                 let world = World::new(settings.clone(), screen);
@@ -519,6 +631,13 @@ impl Tileception {
         }
         if self.output.as_ref() != Some(&area.output) {
             return false;
+        }
+        // A fullscreen window covers every area: going to another one leaves it.
+        if let Some(full) = self.fullscreen
+            && self.area_for_window(full).is_some_and(|holder| holder != *area)
+            && self.split().is_some_and(|areas| areas.active != area.index && area.index < areas.shares.len())
+        {
+            self.set_fullscreen(full, false);
         }
         let Some(areas) = self.outputs.areas.get_mut(&area.output.name()) else { return area.index == 0 };
         if areas.active == area.index {

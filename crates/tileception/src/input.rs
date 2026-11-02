@@ -499,6 +499,7 @@ impl Tileception {
             Action::ToggleSplit => self.world.toggle_split(now),
             Action::Resize(width_delta, height_delta) => {
                 self.world.resize_focused(width_delta, height_delta, now);
+                self.grow_area_of_focus(width_delta);
             }
             Action::StepOut => self.world.step_out(now),
             Action::Neighbour(dir) => self.world.neighbour(dir, now),
@@ -636,6 +637,12 @@ impl Tileception {
             self.selection_motion(tileception_core::Point::new(pos.x, pos.y));
             return;
         }
+        if let Some((index, last)) = self.outputs.boundary_drag {
+            if self.move_area_boundary(index, pos.x - last) {
+                self.outputs.boundary_drag = Some((index, pos.x));
+            }
+            return;
+        }
         if let Some(mut drag) = self.gap_drag {
             let delta = if drag.horizontal { pos.x - drag.last.x } else { pos.y - drag.last.y };
             if self.world.resize_gap(drag.split, drag.index, delta, now) {
@@ -653,7 +660,12 @@ impl Tileception {
             }
         }
         if let Some(mut drag) = self.resize_drag {
-            let (delta_x, delta_y) = (pos.x - drag.last.x, pos.y - drag.last.y);
+            let (mut delta_x, delta_y) = (pos.x - drag.last.x, pos.y - drag.last.y);
+            // Against the gap between areas, the window moves that gap.
+            if let Some(index) = self.area_boundary_beside(drag.window, drag.side_x) {
+                self.move_area_boundary(index, delta_x);
+                delta_x = 0.0;
+            }
             self.world.resize_window(drag.window, drag.side_x, delta_x, drag.side_y, delta_y, now);
             drag.last = pos;
             self.resize_drag = Some(drag);
@@ -687,7 +699,7 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        if self.pointer_to_owner(pos, time) {
+        if self.pointer_to_owner_in_area(pos, time) {
             return;
         }
         let under = self.surface_under_in_area(pos);
@@ -751,8 +763,11 @@ impl Tileception {
             return;
         }
         if state == ButtonState::Pressed && self.power_menu.is_none() && !self.launcher.open {
-            // Clicking into another area of a split screen makes it the active one.
-            self.activate_area_under_pointer();
+            // Clicking into another area of a split screen makes it the active
+            // one; another machine's window there is looked up again in it.
+            if self.activate_area_under_pointer() {
+                self.pointer_to_owner(self.pointer, time);
+            }
         }
         let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if self.power_menu.is_none() && self.handoff_prompt_button(button, state == ButtonState::Pressed) {
@@ -843,7 +858,12 @@ impl Tileception {
                 }
                 return;
             }
+            if self.outputs.boundary_drag.take().is_some() {
+                self.save_area_widths();
+                return;
+            }
             if self.gap_drag.take().is_some() || self.resize_drag.take().is_some() {
+                self.save_area_widths();
                 self.persist_layout();
                 return;
             }
@@ -913,6 +933,11 @@ impl Tileception {
             }
             if !mods.shift {
                 self.selection.windows.clear();
+            }
+            // The gap between areas of a split screen moves like any other.
+            if let Some(index) = self.area_boundary_at(self.pointer) {
+                self.outputs.boundary_drag = Some((index, self.pointer.x));
+                return;
             }
             if overview {
                 // Dragging a window in Overview moves it; a click zooms in.
