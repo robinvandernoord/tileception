@@ -132,6 +132,7 @@ struct Programs {
 #[derive(Debug)]
 struct Cache {
     size: Size<i32, Physical>,
+    clear: [f32; 4],
     source: GlesTexture,
     tracker: OutputDamageTracker,
     rendered_once: bool,
@@ -316,7 +317,14 @@ impl Tileception {
         if frost.programs(renderer).is_none() {
             return;
         }
-        let blurred = match frost.update(renderer, &name, size, &elements[scene.min(elements.len())..], &placed) {
+        let blurred = match frost.update(
+            renderer,
+            &name,
+            size,
+            self.clear_colour(),
+            &elements[scene.min(elements.len())..],
+            &placed,
+        ) {
             Ok(generation) => generation,
             Err(error) => {
                 tracing::warn!("frost: {error}");
@@ -398,6 +406,7 @@ impl Frost {
         renderer: &mut GlesRenderer,
         name: &str,
         size: Size<i32, Physical>,
+        clear: [f32; 4],
         scene: &[OutputElement],
         placed: &[(usize, Region, Rectangle<i32, Physical>)],
     ) -> Result<u64, String> {
@@ -423,17 +432,18 @@ impl Frost {
         let one = Scale::from(1.0);
         let wanted: Vec<&OutputElement> =
             scene.iter().filter(|element| near.iter().any(|area| area.overlaps(element.geometry(one)))).collect();
-        let age = if cache.rendered_once { 1 } else { 0 };
+        let age = if cache.rendered_once && cache.clear == clear { 1 } else { 0 };
         let damage = {
             let mut target = renderer.bind(&mut cache.source).map_err(|error| error.to_string())?;
             let result = cache
                 .tracker
-                .render_output(renderer, &mut target, age, &wanted, Color32F::new(0.0, 0.0, 0.0, 1.0))
+                .render_output(renderer, &mut target, age, &wanted, clear)
                 .map_err(|error| format!("{error:?}"))?;
             result.damage.cloned().unwrap_or_default()
         };
         let changed = !cache.rendered_once || damage.iter().any(|rect| near.iter().any(|area| area.overlaps(*rect)));
         cache.rendered_once = true;
+        cache.clear = clear;
         if !changed {
             return Ok(cache.generation);
         }
@@ -473,6 +483,7 @@ fn new_cache(renderer: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<C
     }
     Ok(Cache {
         size,
+        clear: [0.0; 4],
         source,
         tracker: OutputDamageTracker::new(size, 1.0, Transform::Normal),
         rendered_once: false,

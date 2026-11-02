@@ -615,7 +615,8 @@ impl Tileception {
             }
             CursorImageStatus::Named(icon) => {
                 // The theme's image is loaded at the scale, its hotspot in its own pixels.
-                let ((buffer, hot), next) = cursor.shape(*icon);
+                let (frame, next) = cursor.shape(*icon);
+                let (buffer, hot) = (frame.buffer, frame.hotspot);
                 next_frame = next;
                 let position = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
@@ -639,7 +640,7 @@ impl Tileception {
 
     /// Asks for a frame when an animated pointer's next picture is due:
     /// nothing else may change on screen meanwhile.
-    fn wake_for_cursor(&mut self, wait: std::time::Duration) {
+    pub(crate) fn wake_for_cursor(&mut self, wait: std::time::Duration) {
         use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
         if self.cursor_wake_pending {
             return;
