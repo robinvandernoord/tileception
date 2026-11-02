@@ -234,8 +234,12 @@ Decisions:
   `wl_output`), so screencopy, screen sharing and external lockers see the
   whole screen. Tileception fits its own things to an area itself; layer-shell
   surfaces such as an external bar span the monitor.
-- One bar across the whole monitor. Its breadcrumb and saved views follow the
-  active area.
+- One bar across the whole monitor. Its breadcrumb follows the active area.
+- Saved views belong to the whole screen: saving stores every area's view in
+  the slot, recalling restores each area that has it. The minimap shows all
+  areas side by side; clicking into another area there activates it.
+- Hovering another area does not activate it; a click does, as focus follows
+  clicks (decided 2026-11-02 after trying it).
 - Super+F (`fullscreen`) covers the whole monitor. Super+M (`maximize`, zoom to
   the window) fills only its area, which follows from each area having its
   own camera.
