@@ -50,7 +50,7 @@ language as the bindings.
 
 ## Status
 
-Released up to v0.4.0 and running as Robin's session:
+Released up to v0.9.0 and running as Robin's session:
 
 - Nested tiling, gaps, floating windows, fullscreen, tab groups with named strips.
 - Camera: step in and out, Overview, neighbours, framing one window, history,
@@ -64,6 +64,11 @@ Released up to v0.4.0 and running as Robin's session:
 - Battery: charge in the bar, a focus border that follows it, low-battery
   alerts, hibernating when nearly empty and power profiles that follow the
   charger. Only with a battery; `[battery]` switches each part off.
+- Multiple screens: one tree and camera per output, across GPUs, with
+  windows moved by drag or command and rescued on unplug.
+- Handoff between machines: shared input, clipboard, drag and drop and
+  streamed windows (see Handoff between machines).
+- Login screen for greetd and the guided `tileception-setup`.
 - Tide theming, wallpaper, text rendering, HiDPI and fractional scaling.
 - Built-in shell: launcher (calculator, conversions, windows, commands, app
   actions, times, colours, characters, paths, `>` commands), welcome screen,
@@ -96,40 +101,34 @@ the keyboard only once its first configure is sent.)
 
 #### Multiple screens
 
-**In progress, 2026-10-29.** Build local multi-screen support before handoff;
-Robin has connected a second monitor through the Intel GPU and enabled it in
-BIOS. Multi-GPU scanout still needs hardware verification. Each output has
-its own tree, camera, saved views, minimized windows and fullscreen state.
-Bindings act on the active screen and its focused window. Handoff will use
-the same targeting semantics for its active machine and screen.
+Built 2026-10-29 and 2026-10-30, released in v0.9.0, in daily use on two monitors (`outputs.rs`, `udev.rs`,
+`mirror.rs`). Each output has its own tree, camera, saved views, minimized
+windows, fullscreen state, bar and wallpaper. Bindings act on the active
+screen and its focused window; handoff uses the same targeting for its
+active machine and screen.
 
-- [ ] Drive connected outputs across GPUs, with scanout and buffer lifetimes
-  tracked per device; retain the single-output nested backend. Secondary GPUs
-  use CPU frame copies from the primary renderer for driver compatibility.
-- [ ] Pointer crossing activates the destination screen; desktop shortcuts
-  target it. Add explicit output focus and window-transfer commands.
-- [ ] Move windows by command and compositor drag. On unplug, move windows
-  (including minimized windows) to a surviving screen; preserve clients when
-  the last screen disappears.
-- [ ] Per-output scale and logical positions in `[outputs]`, automatic horizontal
-  arrangement otherwise; route commits, popups, layers and capture to their owner.
-- [ ] Lock every output. The built-in lock UI follows the active screen; other
-  outputs remain black. External lockers can create one surface per output.
-- [ ] Verify using multiple headless outputs and existing checks, without adding
-  tests or driving the live session. Hardware hotplug, mixed refresh rates and
-  mixed scales still need verification with the second monitor.
-
-Log:
-
-- 2026-10-29: Prioritized local outputs before network handoff. Implementation
-  started with independent output contexts and active-screen input routing.
-- 2026-10-29: Added per-GPU discovery, connector scans, page-flip routing and
-  scanout, using frame copies for secondary GPUs. Build and Clippy pass;
-  physical NVIDIA/Intel output verification remains pending.
+- [x] Drive connected outputs across GPUs, with scanout and buffer lifetimes
+  tracked per device; the single-output nested backend stays. Secondary GPUs
+  show frames copied from the primary renderer.
+- [x] Pointer crossing activates the destination screen; desktop shortcuts
+  target it. `tileception msg outputs`, `focus-output <name>` and
+  `move-output <name>`.
+- [x] Move windows by command and by dragging one across a screen edge. On
+  unplug, windows (minimized ones too) move to a surviving screen, and
+  panels follow the active one; clients survive the last screen going.
+- [x] Per-output scale and logical `position` in `[outputs]`, a row in
+  connector-name order otherwise; commits, popups, layers and captures go to
+  their owner.
+- [x] Lock every output: external lockers get one surface per output, the
+  built-in lock screen follows the active screen and the others stay black.
+- [x] Several headless outputs (`TILECEPTION_HEADLESS_OUTPUTS`) for trying
+  it without hardware.
+- [x] Used daily on hardware: a second monitor through the Intel GPU next to
+  the NVIDIA one.
 
 #### Login screen
 
-On the `feature/greeter` branch, not merged or released. See
+Released in v0.8.0 (fixes in v0.8.1). See
 [docs/greeter.md](docs/greeter.md) and the design in
 [docs/design-greeter.html](docs/design-greeter.html).
 
@@ -213,9 +212,56 @@ answers). Open windows close; restoring them is not planned.
 - A settings window instead of editing the config file.
 - Top bar extras: a minimap (live outline of the tree with the camera's frame;
   click to fly, drag to pan), calendar events from an .ics file or URL.
+- Splitting a wide screen into zoom areas: see below.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; crop or pad instead, as niri does. Only if it shows up
   in practice.
+
+#### Splitting a wide screen
+
+Proposed 2026-11-02, decisions taken the same day. On an ultrawide monitor
+one camera is less intuitive than on a normal screen: framing one window
+either leaves it very wide or leaves most of the screen to its neighbours,
+and Overview gets flat. Split one physical screen into two (or more)
+side-by-side areas, each with its own tree, camera, saved views and
+Overview, with windows dragged or moved between them.
+
+Decisions:
+
+- Areas exist only inside Tileception. Programs keep seeing one monitor (one
+  `wl_output`), so screencopy, screen sharing and external lockers see the
+  whole screen. Tileception fits its own things to an area itself; layer-shell
+  surfaces such as an external bar span the monitor.
+- One bar across the whole monitor. Its breadcrumb and saved views follow the
+  active area.
+- Super+F (`fullscreen`) covers the whole monitor. Super+M (`maximize`, zoom to
+  the window) fills only its area, which follows from each area having its
+  own camera.
+- Turned on in the config only, per output, applied on save:
+
+```toml
+[outputs."DP-2"]
+split = 2              # two equal areas
+# split = [0.6, 0.4]   # or relative widths
+```
+
+Approach: the areas cannot be separate Smithay outputs, since programs must
+see one. Give each area its own `World` (and saved views, minimized windows
+and selection) under one output, so the multi-screen code's ideas carry over
+(pointer crossing activates an area, bindings target the active area,
+dragging across the boundary moves the window) without the `wl_output`
+side.
+
+Details:
+
+- The boundary between areas is just the normal gap, so the split reads as
+  the outermost level of tiling.
+- Areas are named by connector and number from the left: `DP-2.1`, `DP-2.2`,
+  in `tileception msg outputs`, `focus-output` and `move-output`.
+- New windows open in the active area.
+- Removing the split (or lowering the number of areas) combines the areas'
+  trees side by side into one, keeping each tree's layout, and the camera
+  zooms fully out to show the result.
 
 #### Handoff between machines
 
