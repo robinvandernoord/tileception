@@ -994,7 +994,7 @@ impl Tileception {
                 Shape { glow_radius: 16.0, glow: Colour([0.0, 0.0, 0.0, 0.4]), ..Default::default() },
             );
         }
-        painter.fill(bar, theme.surface, 0.0);
+        painter.frosted(bar, Shape::filled(theme.surface, 0.0));
         let border_y = if self.bar_at_bottom() { bar.y } else { bar.bottom() - 1.0 };
         painter.fill(Rect::new(bar.x, border_y, bar.w, 1.0), theme.border, 0.0);
         let hover_fill = |painter: &mut Painter, rect: Rect, hovered: bool| {

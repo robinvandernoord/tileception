@@ -79,6 +79,8 @@ pub struct ThemeFile {
     /// What applications are told to use: dark, light or default (their own
     /// choice).
     pub colour_scheme: String,
+    /// Tileception's own panels translucent, blurring what is behind them.
+    pub frost: bool,
 }
 
 impl Default for ThemeFile {
@@ -104,6 +106,7 @@ impl Default for ThemeFile {
             wallpaper: None,
             wallpaper_fit: "fill".into(),
             colour_scheme: "dark".into(),
+            frost: false,
         }
     }
 }
@@ -131,6 +134,7 @@ pub struct Theme {
     pub wallpaper: Option<std::path::PathBuf>,
     pub wallpaper_fit: crate::wallpaper::Scaling,
     pub colour_scheme: ColourScheme,
+    pub frost: bool,
 }
 
 /// Whether applications should use their light or dark styles.
@@ -176,6 +180,7 @@ impl Theme {
             wallpaper: file.wallpaper.as_deref().filter(|path| !path.is_empty()).map(crate::wallpaper::expand_home),
             wallpaper_fit: crate::wallpaper::Scaling::parse(&file.wallpaper_fit)?,
             colour_scheme: ColourScheme::parse(&file.colour_scheme)?,
+            frost: file.frost,
         })
     }
 }
@@ -184,6 +189,11 @@ impl Theme {
     /// Popups (launcher, notifications, menus) sit a step above tiles.
     pub fn popup(&self) -> Colour {
         self.surface.mix(self.surface_raised, 0.5)
+    }
+
+    /// A panel background: translucent when frosted.
+    pub fn panel(&self, colour: Colour) -> Colour {
+        if self.frost { colour.alpha(crate::frost::PANEL_OPACITY) } else { colour }
     }
 }
 
@@ -208,5 +218,16 @@ mod tests {
         assert!(Colour::parse("#12345").is_err());
         assert_eq!(Theme::default().colour_scheme, ColourScheme::Dark);
         assert!(ColourScheme::parse("dim").is_err());
+    }
+
+    #[test]
+    fn frost_makes_panels_translucent() {
+        let flat = Theme::default();
+        assert!(!flat.frost);
+        assert_eq!(flat.panel(flat.surface), flat.surface);
+        let file: ThemeFile = toml::from_str("frost = true").unwrap();
+        let frosted = Theme::from_file(&file).unwrap();
+        assert!(frosted.frost);
+        assert!(frosted.panel(frosted.surface).0[3] < 1.0);
     }
 }

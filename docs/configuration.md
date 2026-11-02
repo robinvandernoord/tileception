@@ -74,6 +74,11 @@ Set `theme.colour_scheme` to `"dark"` or `"light"` to tell applications which
 appearance you prefer, or `"default"` for no preference. The compositor's own
 colours are controlled by the other theme settings.
 
+Set `theme.frost = true` for frosted panels: the bar, launcher, notifications,
+power menu and cards turn translucent and blur what is behind them. Windows
+stay solid. Frost shows best over a colourful wallpaper. It costs a little GPU
+time when something changes behind a panel; a still screen costs nothing extra.
+
 ## Display scaling
 
 The default `"auto"` scale is chosen from the screen's physical size and

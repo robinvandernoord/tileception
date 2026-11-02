@@ -387,6 +387,27 @@ impl<'a> Painter<'a> {
         self.shape(rect, Shape::filled(colour, radius));
     }
 
+    /// A panel background: with frost on, translucent over a blur of what
+    /// is behind it.
+    pub fn frosted(&mut self, rect: Rect, shape: Shape) {
+        let theme = self.theme();
+        let shape = Shape { fill: (theme.panel(shape.fill.0), theme.panel(shape.fill.1)), ..shape };
+        let before = self.layers.len();
+        self.shape(rect, shape);
+        if theme.frost
+            && self.layers.len() > before
+            && let Some(element) = self.layers.last()
+        {
+            use smithay::backend::renderer::element::Element;
+            self.state.frost.borrow_mut().region(crate::frost::Region {
+                panel: element.id().clone(),
+                rect: self.shifted(rect),
+                radius: shape.radius,
+                alpha: self.alpha,
+            });
+        }
+    }
+
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
@@ -522,8 +543,10 @@ impl<'a> Painter<'a> {
     /// A popup surface: rounded, with a hairline border and a soft shadow.
     pub fn popup(&mut self, rect: Rect) {
         let theme = self.theme();
+        // Frosted, the shadow cannot be offset: it would show through.
+        let drop = if theme.frost { 0.0 } else { 6.0 };
         self.shape(
-            Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
+            Rect::new(rect.x, rect.y + drop, rect.w, rect.h),
             Shape {
                 radius: theme.popup_radius,
                 glow_radius: 28.0,
@@ -531,7 +554,7 @@ impl<'a> Painter<'a> {
                 ..Default::default()
             },
         );
-        self.shape(
+        self.frosted(
             rect,
             Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.popup(), theme.popup_radius) },
         );
@@ -542,7 +565,7 @@ impl<'a> Painter<'a> {
     pub fn edge_panel(&mut self, rect: Rect, left: bool) {
         let theme = self.theme();
         self.shape(rect, Shape { glow_radius: 28.0, glow: Colour([0.0, 0.0, 0.0, 0.42]), ..Default::default() });
-        self.fill(rect, theme.popup(), 0.0);
+        self.frosted(rect, Shape::filled(theme.popup(), 0.0));
         let edge = if left { rect.right() - 1.0 } else { rect.x };
         self.fill(Rect::new(edge, rect.y, 1.0, rect.h), theme.border, 0.0);
     }

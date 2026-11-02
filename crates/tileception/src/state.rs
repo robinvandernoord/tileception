@@ -116,6 +116,8 @@ pub struct Tileception {
     pub dmabuf: Option<(DmabufState, DmabufGlobal)>,
     pub syncobj_state: Option<DrmSyncobjState>,
     pub cursor_status: CursorImageStatus,
+    /// A frame is already asked for when the animated pointer's next picture is due.
+    pub cursor_wake_pending: bool,
     /// Set when running as the session's compositor.
     pub udev: Option<Box<crate::udev::Udev>>,
 
@@ -128,6 +130,7 @@ pub struct Tileception {
     pub scale: f64,
     pub fractional_scale_state: smithay::wayland::fractional_scale::FractionalScaleManagerState,
     pub viewporter_state: smithay::wayland::viewporter::ViewporterState,
+    pub cursor_shape_state: smithay::wayland::cursor_shape::CursorShapeManagerState,
     pub pointer: Point<f64, Logical>,
     pub config: Config,
     /// Running in a window of another desktop rather than as the session.
@@ -182,6 +185,8 @@ pub struct Tileception {
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
+    /// Blurred backdrops for frosted panels.
+    pub frost: std::cell::RefCell<crate::frost::Frost>,
     pub power_menu: Option<crate::power::PowerMenu>,
     pub launcher: crate::launcher::Launcher,
     /// Line icons for the compositor's own interface.
@@ -308,6 +313,7 @@ impl Tileception {
             dmabuf: None,
             syncobj_state: None,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_wake_pending: false,
             udev: None,
             world: World::new(settings, Rect::new(0.0, 0.0, 1280.0, 800.0)),
             windows: HashMap::new(),
@@ -318,6 +324,7 @@ impl Tileception {
                 &display_handle,
             ),
             viewporter_state: smithay::wayland::viewporter::ViewporterState::new::<Self>(&display_handle),
+            cursor_shape_state: smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&display_handle),
             pointer: (0.0, 0.0).into(),
             config,
             nested,
@@ -354,6 +361,7 @@ impl Tileception {
             theme,
             text: Default::default(),
             shapes: Default::default(),
+            frost: Default::default(),
             power_menu: None,
             launcher: Default::default(),
             glyphs: Default::default(),
