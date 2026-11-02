@@ -313,7 +313,9 @@ impl Tileception {
     /// on the bar or the strip below it, which the areas share).
     pub fn activate_area_under_pointer(&mut self) {
         let Some(index) = self.hovered_area() else { return };
-        if !self.usable_rect().contains(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        // The minimap's card shows the active area, wherever it reaches.
+        if !self.usable_rect().contains(point) || self.minimap_covers(point) {
             return;
         }
         if let Some(output) = self.output.clone() {
@@ -467,6 +469,7 @@ impl Tileception {
         self.close_launcher();
         self.power_menu = None;
         self.close_calendar();
+        self.close_minimap();
         self.close_tray();
         self.selection.anchor = None;
         self.resize_drag = None;

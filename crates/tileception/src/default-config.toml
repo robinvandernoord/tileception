@@ -179,6 +179,10 @@ bar = "builtin"
 # The built-in bar's edge: top or bottom. The minimized-window strip stays at
 # the bottom, above a bottom bar. External bars choose their own position.
 bar_position = "top"
+# A small outline of the whole tree in the built-in bar, with the part on
+# screen marked. Click it to open a larger map: click a window there to fly
+# to it, drag to pan at the current zoom level. Also the `minimap` command.
+bar_minimap = true
 # Maximum tray slots, including the overflow button. With more than this
 # many applications, the last slot becomes (…) and opens the remaining items.
 # Must be at least 1; changes apply on save.

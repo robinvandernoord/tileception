@@ -171,6 +171,7 @@ impl Tileception {
             Slot::More if button == crate::input::BTN_LEFT => {
                 let open = self.tray.open && self.tray.menu.is_none();
                 self.close_calendar();
+                self.close_minimap();
                 self.close_tray();
                 self.tray.open = !open;
             }
@@ -188,6 +189,7 @@ impl Tileception {
         let context = button == crate::input::BTN_RIGHT || (button == crate::input::BTN_LEFT && item.is_menu);
         if item.key.starts_with("debug:") {
             self.close_calendar();
+            self.close_minimap();
             self.tray.open = true;
             self.tray.offset = 0;
             self.tray.menu = Some(Menu {
@@ -216,6 +218,7 @@ impl Tileception {
             });
         } else if context && let Some(path) = item.menu {
             self.close_calendar();
+            self.close_minimap();
             self.tray.open = true;
             self.tray.offset = 0;
             self.tray.menu = Some(Menu {

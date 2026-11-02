@@ -42,6 +42,7 @@ mod layers;
 mod lock;
 mod markdown;
 mod media;
+mod minimap;
 mod minimized;
 mod mirror;
 mod notifications;
