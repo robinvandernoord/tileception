@@ -12,7 +12,7 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Name | Tileception (binary `tileception`); chosen for findability. |
 | Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
 | Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
-| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur. Reference in `docs/design.html`. |
+| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (Frost planned as a `[theme]` option). Reference in `docs/design.html`. |
 | Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock. |
 | Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
 | Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
@@ -31,6 +31,7 @@ crates/
   tileception-notify/  # org.freedesktop.Notifications service
   tileception-media/   # volume (PulseAudio protocol), MPRIS, backlight
   tileception-acp/     # ACP Registry, agent installs and the ACP client
+  tileception-handoff/ # handoff protocol: discovery, handshake, wire format
 resources/             # session launcher, login screen entry, power menu, portal config
 packaging/             # Debian packaging
 website/               # tileception.space and the /install script
@@ -50,7 +51,7 @@ language as the bindings.
 
 ## Status
 
-Released up to v0.9.0 and running as Robin's session:
+Released up to v0.10.0 and running as Robin's session:
 
 - Nested tiling, gaps, floating windows, fullscreen, tab groups with named strips.
 - Camera: step in and out, Overview, neighbours, framing one window, history,
@@ -60,21 +61,26 @@ Released up to v0.9.0 and running as Robin's session:
 - Session: DRM backend, Xwayland, layer-shell, session lock, screencopy and
   screen sharing, suspend (opt out with `general.suspend_enabled = false`),
   idle handling with video inhibition, locking before every sleep (logind
-  delay inhibitor).
+  delay inhibitor), restarting in place (`tileception msg restart`).
 - Battery: charge in the bar, a focus border that follows it, low-battery
   alerts, hibernating when nearly empty and power profiles that follow the
   charger. Only with a battery; `[battery]` switches each part off.
 - Multiple screens: one tree and camera per output, across GPUs, with
   windows moved by drag or command and rescued on unplug.
+- Split screens: one monitor divided into areas (`[outputs."<name>"] split`),
+  each with its own tree and camera; see
+  [docs/configuration.md](docs/configuration.md).
 - Handoff between machines: shared input, clipboard, drag and drop and
-  streamed windows (see Handoff between machines).
-- Login screen for greetd and the guided `tileception-setup`.
+  streamed windows (see Handoff between machines below).
+- Login screen for greetd ([docs/greeter.md](docs/greeter.md)) and the guided
+  `tileception-setup`.
 - Tide theming, wallpaper, text rendering, HiDPI and fractional scaling.
 - Built-in shell: launcher (calculator, conversions, windows, commands, app
   actions, times, colours, characters, paths, `>` commands), welcome screen,
-  top or bottom bar with breadcrumb and calendar, notifications with do not disturb,
-  power menu, lock screen, volume/media/brightness controls with audio device
-  switching, minimizing with the bottom strip. All swappable through `[shell]`.
+  top or bottom bar with breadcrumb, minimap and calendar, notifications with
+  do not disturb, power menu, lock screen, volume/media/brightness controls
+  with audio device switching, minimizing with the bottom strip. All
+  swappable through `[shell]`.
 - The doctor: an ACP agent panel (Super+/) with ask, config and yolo modes.
 - Touchpad: swipe and pinch bindings in `[binds]` (`Swipe3Left`,
   `Super+Pinch2In`), unbound gestures passed to programs (pointer-gestures),
@@ -84,7 +90,8 @@ Released up to v0.9.0 and running as Robin's session:
   (`TouchEdgeTop` and the rest), three-finger swipes and pinches taken back
   from programs, and a two-finger pinch in Overview.
 - Window rules, per-app launch arguments, ext-foreign-toplevel-list,
-  data-control, pointer constraints and relative pointer.
+  data-control, pointer constraints, relative pointer and cursor-shape-v1
+  (named pointer shapes drawn from Tileception's theme).
 - Config hot reload, IPC, headless backend with screenshots for testing.
 - Packaging: release CI for trixie, sid, noble and resolute (amd64 and arm64),
   signed APT repository, `tileception-archive-keyring`, `/install` script.
@@ -93,194 +100,76 @@ Released up to v0.9.0 and running as Robin's session:
 
 ### Known bugs
 
-None known. (Fixed 2026-10-17: a second foot opened beside a first crashed
-because it got keyboard focus before its first configure; a window now gets
-the keyboard only once its first configure is sent.)
-
-### Next
-
-#### Multiple screens
-
-Built 2026-10-29 and 2026-10-30, released in v0.9.0, in daily use on two monitors (`outputs.rs`, `udev.rs`,
-`mirror.rs`). Each output has its own tree, camera, saved views, minimized
-windows, fullscreen state, bar and wallpaper. Bindings act on the active
-screen and its focused window; handoff uses the same targeting for its
-active machine and screen.
-
-- [x] Drive connected outputs across GPUs, with scanout and buffer lifetimes
-  tracked per device; the single-output nested backend stays. Secondary GPUs
-  show frames copied from the primary renderer.
-- [x] Pointer crossing activates the destination screen; desktop shortcuts
-  target it. `tileception msg outputs`, `focus-output <name>` and
-  `move-output <name>`.
-- [x] Move windows by command and by dragging one across a screen edge. On
-  unplug, windows (minimized ones too) move to a surviving screen, and
-  panels follow the active one; clients survive the last screen going.
-- [x] Per-output scale and logical `position` in `[outputs]`, a row in
-  connector-name order otherwise; commits, popups, layers and captures go to
-  their owner.
-- [x] Lock every output: external lockers get one surface per output, the
-  built-in lock screen follows the active screen and the others stay black.
-- [x] Several headless outputs (`TILECEPTION_HEADLESS_OUTPUTS`) for trying
-  it without hardware.
-- [x] Used daily on hardware: a second monitor through the Intel GPU next to
-  the NVIDIA one.
-
-#### Login screen
-
-Released in v0.8.0 (fixes in v0.8.1). See
-[docs/greeter.md](docs/greeter.md) and the design in
-[docs/design-greeter.html](docs/design-greeter.html).
-
-- [x] `tileception --greeter` for greetd: people as tabs, the sessions (Wayland,
-  and X through `xsession_wrapper`), an action launcher (power, sessions, people),
-  wrong passwords and PAM messages as notifications, the last user and each
-  person's last session remembered, `/etc/tileception/greeter.toml`, the system
-  keymap.
-- [x] The built-in lock screen is the same tiles, checking the password with PAM,
-  with counts instead of notification text and media without titles.
-- [x] Login fade: the greeter fades out, the session's first frames fade in.
-- [x] Per-person looks: sessions put their accent in AccountsService (the
-  `org.tileception.Greeter` extension) and a copy of their wallpaper in
-  `/var/cache/tileception-greeter` (the greeter checks each file's owner);
-  `[greeter] share = false` takes them back.
-- [x] `make try-greeter` (a spare console), `make install-greeter` and
-  `make uninstall-greeter` (switching the display manager and back). The `.deb`
-  ships the config and the extension but does not switch.
-- [x] One setup for `.deb` and `/install` users, shared with the make targets:
-  `tileception-setup --greeter tileception|previous` (see Guided installation).
-- [ ] Not built yet: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, Ctrl+Space layout switching, more than one screen, reduced motion, an
-  accent taken from a shared wallpaper, and the full tile-to-window morph at login.
-
-#### Guided installation
-
-Decided 2026-10-18. Built 2026-10-29 as `tileception-setup` (POSIX sh, shipped in
-the `.deb` and `~/.local/bin`, a copy served as tileception.space/setup) plus
-`tileception config get|set|add`, which edits config.toml with toml_edit and
-keeps its comments. `/install` runs setup with `--print-flags` before
-downloading, then applies the flags at the end. `make install` asks nothing and
-keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
-
-- [x] Collect all setup answers early, after quick compatibility and existing-install
-  checks and before downloads, builds or system changes, with a summary to confirm.
-- [x] "How would you like to set up Tileception?": Recommended, Customize or
-  Minimal (no bar, notifications or Doctor; the launcher, Super+T and the lock
-  screen stay), plus Keep when a config exists.
-- [x] Customize: bar (and its edge), launcher, notifications, power menu, lock
-  screen as Built-in, Turned off or another program, saying which run for the
-  whole session and which on demand; media keys on or off. Another notification
-  daemon goes into `general.autostart`, with what Super+N runs asked separately.
-- [x] The greeter question for Recommended, Customize and Keep, defaulting to the
-  current login screen; Minimal skips it unless `--greeter` says. Removing the
-  package switches back (prerm). make install-greeter, uninstall-greeter and
-  try-greeter use the same functions.
-- [x] Doctor separately (`[shell] doctor = "builtin" | "none"`), explaining
-  agents, accounts and approvals; no agent is configured during setup.
-- [x] `--non-interactive`, `--preset`, `--greeter`, `--bar` and the other parts,
-  `--notification-daemon`, `--user`, `--yes`; `make install SETUP_ARGS=...`.
-- [x] Reinstall reads the desktop user's config (also under sudo, via
-  SUDO_USER or `--user`). Precedence: flags and answers, then the existing
-  config, then the preset; unattended without a preset keeps everything.
-- [x] Answers come from `/dev/tty`; without a terminal nothing is asked and the
-  current settings are kept.
-- [x] Reopen with `tileception-setup` (or `make setup`); finishes with how to
-  enter the session and change things later.
-- [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
-
-#### Restarting in place
-
-Added 2026-10-30: `tileception msg restart` (also
-bindable as `restart`) stops the event loop and execs the installed binary
-with the same arguments, so the process id and with it the login session stay;
-the kernel closes screens, input devices and client connections. The new
-process retries opening the seat for three seconds while logind lets go of the
-old one. `make install` offers it at the end inside a session (`RESTART=yes|no`
-answers). Open windows close; restoring them is not planned.
+- Right-click menus in streamed (handoff) windows do not show on the other
+  machine (found 2026-10-30). Not found by reading; the owner logs each menu
+  of a streamed window (position and room, grab taken or refused, closed for
+  lost keyboard focus) and the other machine logs how many it shows.
 
 ### Later
 
-- [ ] Compare contents or hashes before exporting Doctor's bundled documentation
-  and default config. Write only missing or changed files to avoid unnecessary
-  writes and preserve timestamps for unchanged files.
+- A settings window instead of editing the config file.
+- Frost: Tileception's own bar, launcher, notifications, power menu and cards
+  turn translucent and blur what is behind them; windows stay solid.
+  `[theme] frost = true`, flat Tide by default. Mockup in
+  `docs/design-glass.html` (decided 2026-11-02). Built 2026-11-02 on
+  `feature/frost` (`frost.rs`): what is under the panels is rendered
+  offscreen, only near a panel and only where it changed, and blurred with a
+  dual Kawase blur down to an eighth; panels do not blur one another. Not yet
+  the lock screen and greeter, and not tried on hardware.
+
+### Maybe someday
+
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
   swipe live instead of one step per gesture, and window management gestures.
-- Live blur and glass styles.
-- A settings window instead of editing the config file.
-- Top bar extras: calendar events from an .ics file or URL. (The minimap, a
-  live outline of the tree with the camera's frame, was built 2026-11-02 on
-  `feature/split-screen-and-minimap`: `minimap.rs`, `[shell] bar_minimap`.)
-- Splitting a wide screen into zoom areas: see below.
+- Top bar calendar events from an .ics file or URL.
+- Compare contents or hashes before exporting Doctor's bundled documentation
+  and default config, writing only missing or changed files.
+- Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; crop or pad instead, as niri does. Only if it shows up
   in practice.
+- Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
+  panels, Ctrl+Space layout switching, more than one screen, reduced motion,
+  an accent taken from a shared wallpaper, and the full tile-to-window morph
+  at login.
+- Handoff hardening: key rotation and revocation, keyboard-layout ownership,
+  edge mapping for unequal monitors and pointer-locked apps, shortcut routing
+  inside a streamed window, audio and owner-side portal dialogs.
+- Handoff video: video-heavy windows need a real video codec rather than
+  compressed tiles (choose between VA-API, openh264 or ffmpeg first). Popups
+  stay where they opened when the window's place there changes.
+- Handoff version tolerance, if mismatched versions turn out to be common:
+  each machine lists its optional features (window streaming, drag and drop,
+  program pointers) in its hello, features only one side has are switched
+  off instead of refusing the connection, and unknown messages are skipped
+  instead of dropping it. Input and the clipboard stay the core that must
+  match. Not now: every feature would need a tested path for each
+  combination, and machines updating from the same APT repository match.
 
-#### Splitting a wide screen
+### Not wanted
 
-Proposed 2026-11-02, decisions taken the same day; built the same day on
-`feature/split-screen-and-minimap` (`outputs.rs`, `World::absorb`). On an
-ultrawide monitor
-one camera is less intuitive than on a normal screen: framing one window
-either leaves it very wide or leaves most of the screen to its neighbours,
-and Overview gets flat. Split one physical screen into two (or more)
-side-by-side areas, each with its own tree, camera, saved views and
-Overview, with windows dragged or moved between them.
+- App-matched layout restoration across logins.
+- The wlr foreign-toplevel management protocol for external taskbars.
+- Window rules for saved views; views stay purely about the camera.
+- Bindings that repeat while held, pass through to the app or work while
+  locked (beyond the media keys); click-to-kill.
+- Input methods (text-input and input-method protocols).
+- A built-in clipboard history.
+- Restyling after LunariaOS (floating bar, pills, capsules and the like);
+  Tide's look stays (decided 2026-11-02).
+- Glass: translucent, blurred windows. Blur behind every window is redone
+  most frames while the camera moves; Frost covers what matters
+  (decided 2026-11-02).
 
-Decisions:
+## Handoff between machines
 
-- Areas exist only inside Tileception. Programs keep seeing one monitor (one
-  `wl_output`), so screencopy, screen sharing and external lockers see the
-  whole screen. Tileception fits its own things to an area itself; layer-shell
-  surfaces such as an external bar span the monitor.
-- One bar across the whole monitor. Its breadcrumb follows the active area.
-- Saved views belong to the whole screen: saving stores every area's view in
-  the slot, recalling restores each area that has it. The minimap shows all
-  areas side by side; clicking into another area there activates it.
-- Hovering another area does not activate it; a click does, as focus follows
-  clicks (decided 2026-11-02 after trying it).
-- Super+F (`fullscreen`) covers the whole monitor. Super+M (`maximize`, zoom to
-  the window) fills only its area, which follows from each area having its
-  own camera.
-- Turned on in the config only, per output, applied on save:
-
-```toml
-[outputs."DP-2"]
-split = 2              # two equal areas
-# split = [0.6, 0.4]   # or relative widths
-```
-
-Approach: the areas cannot be separate Smithay outputs, since programs must
-see one. Give each area its own `World` (and saved views, minimized windows
-and selection) under one output, so the multi-screen code's ideas carry over
-(pointer crossing activates an area, bindings target the active area,
-dragging across the boundary moves the window) without the `wl_output`
-side.
-
-Details:
-
-- The boundary between areas is just the normal gap, so the split reads as
-  the outermost level of tiling.
-- Areas are named by connector and number from the left: `DP-2.1`, `DP-2.2`,
-  in `tileception msg outputs`, `focus-output` and `move-output`.
-- New windows open in the active area.
-- Removing the split (or lowering the number of areas) combines the areas'
-  trees side by side into one, keeping each tree's layout, and the camera
-  zooms fully out to show the result.
-- Dragging the gap between areas changes their widths for the session only;
-  they are not written to the config, and a reload keeps them unless `split`
-  itself changed (decided 2026-11-02: writing them made each drag reload the
-  whole config).
-- When the last screen goes, its areas are combined so their windows stay
-  reachable, and where each window was is remembered: when that screen comes
-  back with as many areas, each window returns to its area and layout.
-
-#### Handoff between machines
-
-Proposed and decided 2026-10-29; milestone 1 built on `feature/handoff` the same
-day (see the review log). Several Tileception machines on
-the same network share one mouse and keyboard, a clipboard and windows, opt-in
-and only between machines that share a key (in the spirit of Barrier, Input
-Leap, lan-mouse and waypipe).
+Built 2026-10-29 to 2026-11-02 (`tileception-handoff` crate and the
+compositor's `handoff` module); the history is in git and the CHANGELOG.
+Several Tileception machines on the same network share one mouse and
+keyboard, a clipboard and windows, opt-in and only between machines that
+share a key (in the spirit of Barrier, Input Leap, lan-mouse and waypipe).
+[Development](docs/development.md) describes trying it with two headless
+instances.
 
 Decisions:
 
@@ -325,70 +214,6 @@ Decisions:
   window streaming and clipboard transfer between them. Unlocking does not
   automatically resume sharing; reactivation is explicit.
 
-- [x] Input: pointer and keyboard to the neighbouring machine and back, active
-  machine/screen binding targeting, and the fixed return-home shortcut
-  (Ctrl+Super+Escape). Release each source's held input on transfer,
-  disconnect, lock or suspend; forwarded input is never passed on. Drags do
-  not cross. Touchpad gestures are not forwarded; touching the local screen
-  brings input home.
-- [x] Clipboard: every MIME type, clipboard and primary, offered on crossing
-  with per-machine versions against echoes, 64 MB and 10 s stall limits, and
-  cleared when the owner disappears.
-- [x] Window handoff, first version (2026-10-30): dragging a window (by
-  Super+drag or its title bar) past a shared edge takes it along; dragging
-  it back, `handoff reclaim` or a lost connection brings it home; closing it
-  there closes it. The owner draws it off screen and sends only what changed
-  (LZ4-compressed tiles, the next picture after the last arrived, queued
-  behind input). Input, focus and tile size travel back. Verified with
-  headless instances in both directions, with typing from either keyboard.
-- [x] Window handoff, popups and lost connections (2026-10-30):
-  menus and other popups reaching past the window come
-  along in its pictures and take input there; losing focus there closes
-  them. A lost connection leaves the window hidden on its owner (with a
-  notification) and an unavailable "Waiting for <machine>" tile on the
-  other; linking again resumes it unless `handoff reclaim` took it home
-  first, and closing the unavailable tile sends it home on the next link.
-  Turning handoff off or dismissing still brings everything home at once.
-- [x] Window handoff, pointer and popup placement (2026-10-30):
-  a pointer picture the program sets (or hides) is
-  shown over it there, as for windows here; the theme's arrow otherwise,
-  since named cursor shapes are not supported locally either. Popups are
-  kept on the screen where the window is shown. Each machine keeps its id
-  in the state directory (one per port), so a restarted machine is
-  recognised: its stale waiting tiles are cleared and windows it no longer
-  knows go home. Client-side resizing needs nothing: it is ignored for
-  windows here too, and Super+right-drag resizes remote tiles.
-- [ ] Window handoff, later if needed: video-heavy windows need a real video
-  codec rather than compressed tiles (choose between VA-API, openh264 or
-  ffmpeg first). Popups stay where they opened when the window's place
-  there changes, as they do here.
-- [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
-  failures. The lock policy applies to input, clipboard transfers and
-  streamed windows, including pictures already queued or on the way.
-- [x] Discovery (mDNS and fixed `peers`), the edge card on both machines and
-  mutual acceptance; the passphrase comes from the config.
-- [x] Drag and drop across (2026-10-30): a
-  program's drag that reaches a shared edge goes along; the other machine
-  carries it on with Tileception as the source, offering the same types
-  (less the file transfer portal's), and fetches the data on a drop. Files
-  and folders are copied first into `~/.cache/tileception/handoff-drops`
-  (drops older than a week are cleared), and the program gets those
-  copies; other entries pass as they are. Copy only, never move. Dragged
-  back, it goes on at home. Locking, pausing or losing the connection ends
-  it. Drags from X11 programs do not cross. Streamed windows take part: a
-  drag started in one is carried on by the machine whose pointer started
-  it, and a drag over one is carried on inside it by its owner, moved by
-  the pointer there and taken back when it leaves.
-- [ ] Define stable machine identities, key rotation/revocation, keyboard-layout
-  ownership, edge mapping for unequal monitors and pointer-locked apps, and
-  shortcut routing inside a streamed window. Decide initial support for
-  popups/dialogs, Xwayland, audio and owner-side portal dialogs.
-- [x] First milestone after local multi-screen support: two machines with
-  authenticated discovery and mutually selected edges, input and text
-  clipboard. Verified with headless instances on one machine.
-- [ ] Prove one already-open streamed window with a popup, resizing,
-  locking and disconnect recovery before broadening window support.
-
 Known behaviour (accepted for now, 2026-10-30):
 
 - Both machines need the same protocol version. A machine that knows the
@@ -396,96 +221,10 @@ Known behaviour (accepted for now, 2026-10-30):
   naming it and both versions (once per version per session, and it is
   not counted as a failed passphrase guess); older builds than protocol 5
   still only log it.
-- Possibly someday, if mismatched versions turn out to be common: each
-  machine lists its optional features (window streaming, drag and drop,
-  program pointers) in its hello, features only one side has are switched
-  off instead of refusing the connection, and unknown messages are skipped
-  instead of dropping it. Input and the clipboard stay the core that must
-  match. Not now: every feature would need a tested path for each
-  combination, and machines updating from the same APT repository match.
 - Each machine's keyboard follows that machine's own pointer. The desktop's
   keyboard types on the laptop only after the desktop's mouse crossed there;
   moving the pointer onto the laptop with the laptop's touchpad does not bring
   the desktop's keyboard along.
-
-Review log:
-
-- 2026-10-29: Chose compositor-managed window streaming; confirmed active
-  machine/screen shortcut semantics shared with multi-monitor work, coexistence
-  of local and forwarded input, pausing sharing on lock with explicit
-  reactivation, and owner reclaim with guarded reconnection after disconnect.
-- 2026-10-29: Edge choices are independent, with no saved arrangements. Both
-  machines must choose through a popup before connecting; dismiss or timeout
-  cancels. Local multi-screen support comes first.
-- 2026-10-29: Built milestone 1: the `tileception-handoff` crate (service,
-  handshake, wire, held input) and the compositor's `handoff` module, with
-  `tileception msg handoff ...` and a `motion` pretend-input verb. Chose a
-  user passphrase with SPAKE2 over a generated key, and offering selections
-  on crossing over announcing every copy. Checked with two and more headless
-  instances: fixed addresses and mDNS, a wrong passphrase refused, dragging
-  the card, crossing on left/right and top/bottom edges, keys and bindings on
-  the other machine, Ctrl+Super+Escape, clipboard and primary both ways (a
-  400 kB paste intact), disconnect while forwarding, dismiss and retry.
-  Locking was not triggered in tests; the card has no timeout yet.
-- 2026-10-30: Popups, lock policy and disconnect recovery for streamed
-  windows (protocol 3): pictures cover the window plus its popups and say
-  where each is; pictures queued when sharing pauses are dropped on the
-  owner and ignored on arrival; `WindowsResumed` on every link resumes or
-  clears the windows that were waiting. Also fixed picture packing so many
-  small tiles cannot overflow one encrypted message. Unit-tested the
-  layout of pictures and popups; the container had no GPU render node, so
-  the headless two-instance run is still to do.
-- 2026-10-30: Program pointers and popup placement for streamed windows,
-  stable machine ids (protocol 4). `WindowSize` carries the screen around
-  the tile, which the owner unconstrains popups against; `WindowCursor`
-  carries the program's pointer picture, sent only when it changes. Same
-  limitation: unit tests only, no headless run in the container.
-- 2026-10-30: Drag and drop (protocol 5). Drags were invisible: the drag
-  handlers were empty, so programs' drag icons were never drawn. They are
-  now, and without one a card by the pointer shows a thumbnail of a
-  picture, or the first file's name or the start of the text, with a count
-  badge; the list of files or the text is read from the program in the
-  background as the drag starts. The same card shows on another machine
-  when the drag crosses. Unit tests only, no headless run in the container.
-- 2026-10-30: Finding things again. `tileception pair` offers to show a
-  dismissed pairing card again (`handoff retry`) and to bring back windows
-  waiting on a machine that went away (`handoff reclaim [machine]`, now
-  per machine); without a terminal it prints those commands. The
-  "windows are still on <machine>" notification stays until answered,
-  with Bring back and Keep there, and closes itself once they are back:
-  Tileception's own notifications can now have buttons running commands.
-- 2026-10-30: First test on two machines. Fixed a stuck Super: keys typed
-  into a streamed window were pressed on its owner's keyboard outside the
-  held-input bookkeeping, and a release was lost whenever a binding moved
-  the keyboard off the window in between (Super+Left), or on disconnect;
-  every click then dragged windows and keys ran bindings. Releases now go
-  where their press went, the owner lets go of such keys when the window
-  loses the keyboard, comes home, or the machine goes, and releases from
-  another machine always go through. Streamed windows get a frame in the
-  new `theme.guest` colour (violet). Drags into and out of streamed
-  windows, and the drag card updating once its preview is known
-  (protocol 6).
-- 2026-10-30: Second test. A file dragged out of a streamed window was
-  also dropped back into the owner's own file manager ("no such file or
-  directory" there): pointer input still on its way after the drag went
-  over aimed the owner's drag at its own window, which got the drop when
-  the owner let go. Such input is now ignored, and letting go happens over
-  nothing. Right-click menus in streamed windows do not show; not found
-  by reading, so the owner now logs each menu of a streamed window
-  (created with its position and room, grab taken or refused, closed for
-  lost keyboard focus) and the other machine logs how many it shows.
-
-### Not wanted
-
-- App-matched layout restoration across logins.
-- The wlr foreign-toplevel management protocol for external taskbars.
-- Window rules for saved views; views stay purely about the camera.
-- Bindings that repeat while held, pass through to the app or work while
-  locked (beyond the media keys); click-to-kill.
-- Input methods (text-input and input-method protocols).
-- A built-in clipboard history.
-- Restyling after LunariaOS (floating bar, pills, capsules and the like);
-  Tide's look stays (decided 2026-11-02).
 
 ## Testing approach
 
