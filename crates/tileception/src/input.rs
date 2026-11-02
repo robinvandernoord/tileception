@@ -73,6 +73,8 @@ pub enum Action {
     Launcher,
     Notifications,
     DoNotDisturb,
+    /// Open or close the bar's minimap of the whole tree.
+    Minimap,
     Group,
     /// Take the focused window out of the layout without closing it.
     Minimize,
@@ -367,7 +369,10 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
             }
-            if sym == keysyms::KEY_Escape && held == Mods::default() && state.close_calendar() {
+            if sym == keysyms::KEY_Escape
+                && held == Mods::default()
+                && (state.close_calendar() || state.close_minimap())
+            {
                 return FilterResult::Intercept(Vec::new());
             }
             if sym == keysyms::KEY_Escape
@@ -521,6 +526,7 @@ impl Tileception {
             Action::Launcher => self.shell_launcher(),
             Action::Notifications => self.shell_notifications(),
             Action::DoNotDisturb => self.toggle_dnd(),
+            Action::Minimap => self.toggle_minimap(),
             Action::Group => {}
             Action::Minimize => {
                 if let Some(window_id) = self.world.focus() {

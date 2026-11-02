@@ -121,6 +121,7 @@ Views:
   save <1-9>                save the current view in a slot
   go <1-9>                  go to a saved view
   desktop                   show or hide the Desktop tile
+  minimap                   open or close the map of the whole tree in the bar
 
 Shell:
   launcher                  open the launcher
@@ -337,6 +338,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "launcher" => Action::Launcher,
         "notifications" => Action::Notifications,
         "do-not-disturb" => Action::DoNotDisturb,
+        "minimap" => Action::Minimap,
         "group" => Action::Group,
         "minimize" => Action::Minimize,
         "restore" => match args.first() {

@@ -126,6 +126,7 @@ impl Tileception {
         self.close_launcher();
         self.power_menu = None;
         self.close_calendar();
+        self.close_minimap();
         self.close_tray();
         self.selection.anchor = None;
         self.resize_drag = None;

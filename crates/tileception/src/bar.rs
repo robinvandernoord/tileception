@@ -45,7 +45,7 @@ const CAPTURE_LINGER: Duration = Duration::from_millis(1500);
 const CRUMB_MIN: f64 = 220.0;
 const CRUMB_MAX: f64 = 420.0;
 const SLOT_W: f64 = 20.0;
-const ICON: u32 = 16;
+pub(crate) const ICON: u32 = 16;
 const CALENDAR_W: f64 = 392.0;
 const CALENDAR_H: f64 = 380.0;
 
@@ -139,6 +139,7 @@ pub struct Bar {
     /// When screencopy last took a frame, and whether it was for sharing.
     pub capture: Option<(Instant, bool)>,
     calendar: Calendar,
+    pub(crate) minimap: crate::minimap::Minimap,
     /// The process of an outside bar (`bar = "waybar"`).
     command: Option<(String, u32)>,
 }
@@ -164,6 +165,7 @@ impl Default for Bar {
             seen_error: 0,
             capture: None,
             calendar: Calendar::default(),
+            minimap: Default::default(),
             command: None,
         }
     }
@@ -188,23 +190,22 @@ impl Bar {
     }
 }
 
-/// The clock zoomed into a month.
-struct Calendar {
-    open: bool,
+/// A card that zooms out of a bar element and back into it.
+pub(crate) struct Zoom {
+    pub(crate) open: bool,
     changed: Instant,
     level_then: f64,
-    /// Months away from the current one.
-    offset: i32,
 }
 
-impl Default for Calendar {
+impl Default for Zoom {
     fn default() -> Self {
-        Calendar { open: false, changed: Instant::now(), level_then: 0.0, offset: 0 }
+        Zoom { open: false, changed: Instant::now(), level_then: 0.0 }
     }
 }
 
-impl Calendar {
-    fn level(&self, duration: f64) -> f64 {
+impl Zoom {
+    /// How far open, from 0 to 1, for a zoom taking `duration` seconds.
+    pub(crate) fn level(&self, duration: f64) -> f64 {
         let progress =
             if duration <= 0.0 { 1.0 } else { (self.changed.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0) };
         if self.open {
@@ -213,6 +214,25 @@ impl Calendar {
             self.level_then * (1.0 - progress)
         }
     }
+
+    /// Starts zooming open or closed. Returns whether that changed anything.
+    pub(crate) fn set(&mut self, open: bool, duration: f64) -> bool {
+        if open == self.open {
+            return false;
+        }
+        self.level_then = self.level(duration);
+        self.open = open;
+        self.changed = Instant::now();
+        true
+    }
+}
+
+/// The clock zoomed into a month.
+#[derive(Default)]
+struct Calendar {
+    zoom: Zoom,
+    /// Months away from the current one.
+    offset: i32,
 }
 
 /// How the bar shows right now.
@@ -234,6 +254,7 @@ enum Hit {
     Doctor,
     Back,
     Forward,
+    Minimap,
     Crumb(NodeId),
     Slot(usize),
     Media,
@@ -288,12 +309,14 @@ struct Chip {
     rect: Rect,
 }
 
-struct Layout {
+pub(crate) struct Layout {
     bar: Rect,
     launcher: Rect,
     doctor: Rect,
     back: Rect,
     forward: Rect,
+    /// The minimap chip, unless `[shell] bar_minimap` is off.
+    pub(crate) minimap: Option<Rect>,
     crumbs: Vec<Crumb>,
     slots: Vec<(usize, Rect)>,
     chips: Vec<Chip>,
@@ -318,6 +341,11 @@ impl Tileception {
             return Mode::Covered;
         }
         if self.single_framed() { Mode::Hairline } else { Mode::Full }
+    }
+
+    /// Whether the built-in bar is on screen or can slide out.
+    pub(crate) fn bar_shows(&self) -> bool {
+        matches!(self.bar_mode(), Mode::Full | Mode::Hairline)
     }
 
     /// One window framed on its own, where the bar would only take space.
@@ -374,14 +402,32 @@ impl Tileception {
                 || (self.bar.revealed && distance <= BAR_H + SLACK)
                 || self.bar.pressed
                 || self.tray.open
-                || self.bar.calendar.open);
+                || self.bar.calendar.zoom.open
+                || self.bar.minimap.zoom.open);
         self.bar.set_revealed(reveal);
-        if mode != Mode::Full && mode != Mode::Hairline && self.bar.calendar.open {
+        if mode != Mode::Full && mode != Mode::Hairline && self.bar.calendar.zoom.open {
             self.close_calendar();
+        }
+        if (!matches!(mode, Mode::Full | Mode::Hairline) || !self.shell().bar_minimap || self.is_locked())
+            && self.bar.minimap.zoom.open
+        {
+            self.close_minimap();
         }
         if !matches!(mode, Mode::Full | Mode::Hairline) || self.is_locked() {
             self.close_tray();
         }
+        let blocked = self.tray.open
+            || self.bar.calendar.zoom.open
+            || self.is_locked()
+            || !self.is_active_output()
+            || self.launcher.open
+            || self.power_menu.is_some()
+            || self.move_drag.is_some()
+            || self.gap_drag.is_some()
+            || self.resize_drag.is_some()
+            || self.selection.anchor.is_some()
+            || self.pending_press.is_some();
+        self.update_minimap_hover(blocked);
     }
 
     /// How far the bar is in, from 0 (hairline or hidden) to 1.
@@ -394,7 +440,7 @@ impl Tileception {
     }
 
     /// The bar's place while it shows, also when it is sliding.
-    fn bar_rect(&self) -> Option<Rect> {
+    pub(crate) fn bar_rect(&self) -> Option<Rect> {
         let level = self.bar_level();
         if level <= 0.01 {
             return None;
@@ -501,7 +547,7 @@ impl Tileception {
         content + slot + 14.0
     }
 
-    fn bar_layout(&self) -> Option<Layout> {
+    pub(crate) fn bar_layout(&self) -> Option<Layout> {
         let bar = self.bar_rect()?;
         let style = self.bar_style();
         let top = bar.y + 2.0;
@@ -513,7 +559,11 @@ impl Tileception {
         cursor_x = launcher.right() + 4.0;
         let back = Rect::new(cursor_x, top, 22.0, height);
         let forward = Rect::new(back.right(), top, 22.0, height);
-        let left = forward.right() + 8.0;
+        let mut left = forward.right() + 8.0;
+        let minimap = self.minimap_chip(left, top, height);
+        if let Some(chip) = minimap {
+            left = chip.right() + 6.0;
+        }
 
         // The right side, from the edge inwards.
         let mut right = bar.right() - 6.0;
@@ -570,6 +620,7 @@ impl Tileception {
             doctor,
             back,
             forward,
+            minimap,
             crumbs,
             slots,
             chips,
@@ -656,6 +707,9 @@ impl Tileception {
         if layout.battery.as_ref().is_some_and(|(rect, _)| rect.contains(point)) {
             return Some(Hit::Battery);
         }
+        if layout.minimap.is_some_and(|rect| rect.contains(point)) {
+            return Some(Hit::Minimap);
+        }
         if let Some(crumb) = layout.crumbs.iter().find(|crumb| crumb.rect.contains(point))
             && let Some(node) = crumb.node
         {
@@ -679,7 +733,10 @@ impl Tileception {
         if self.overlay_under(point) {
             return false;
         }
-        self.tray.open || self.bar.calendar.open || self.bar_rect().is_some_and(|rect| rect.contains(point))
+        self.tray.open
+            || self.bar.calendar.zoom.open
+            || self.bar.minimap.zoom.open
+            || self.bar_rect().is_some_and(|rect| rect.contains(point))
     }
 
     /// Pointer motion over the bar. Returns whether the bar took it.
@@ -704,6 +761,9 @@ impl Tileception {
     pub fn bar_button(&mut self, button: u32, pressed: bool) -> bool {
         let point = Point::new(self.pointer.x, self.pointer.y);
         if !pressed {
+            if button == crate::input::BTN_LEFT {
+                self.minimap_release(point);
+            }
             return std::mem::take(&mut self.bar.pressed);
         }
         if self.overlay_under(point) {
@@ -722,7 +782,14 @@ impl Tileception {
                 return true;
             }
         }
-        if self.bar.calendar.open {
+        if self.bar.minimap.zoom.open {
+            self.bar.pressed = true;
+            if button == crate::input::BTN_LEFT {
+                self.minimap_press(point);
+            }
+            return true;
+        }
+        if self.bar.calendar.zoom.open {
             self.bar.pressed = true;
             if button == crate::input::BTN_LEFT {
                 match self.calendar_hit(point) {
@@ -760,6 +827,7 @@ impl Tileception {
             },
             Hit::Back => self.run(Action::Back),
             Hit::Forward => self.run(Action::Forward),
+            Hit::Minimap => self.toggle_minimap(),
             Hit::Crumb(node) => {
                 let now = self.now();
                 self.world.frame(node, now);
@@ -802,7 +870,7 @@ impl Tileception {
         while self.bar.scroll.abs() >= 1.0 {
             let down = self.bar.scroll > 0.0;
             self.bar.scroll -= self.bar.scroll.signum();
-            if self.bar.calendar.open {
+            if self.bar.calendar.zoom.open {
                 self.bar.calendar.offset += if down { 1 } else { -1 };
             } else {
                 self.run(if down { Action::StepOut } else { Action::StepIn });
@@ -813,27 +881,17 @@ impl Tileception {
 
     pub fn open_calendar(&mut self) {
         self.close_tray();
-        let calendar = &mut self.bar.calendar;
-        if !calendar.open {
-            let duration = self.world.settings.animation;
-            calendar.level_then = calendar.level(duration);
-            calendar.open = true;
-            calendar.changed = Instant::now();
-            calendar.offset = 0;
+        self.close_minimap();
+        let duration = self.world.settings.animation;
+        if self.bar.calendar.zoom.set(true, duration) {
+            self.bar.calendar.offset = 0;
         }
     }
 
     /// Zooms the calendar back into the clock. Returns whether it was open.
     pub fn close_calendar(&mut self) -> bool {
         let duration = self.world.settings.animation;
-        let calendar = &mut self.bar.calendar;
-        if !calendar.open {
-            return false;
-        }
-        calendar.level_then = calendar.level(duration);
-        calendar.open = false;
-        calendar.changed = Instant::now();
-        true
+        self.bar.calendar.zoom.set(false, duration)
     }
 
     /// The calendar card at its full size: centred under the bar.
@@ -885,7 +943,7 @@ impl Tileception {
             self.draw_bar(&mut painter, layout, mode);
         }
         let duration = self.world.settings.animation;
-        let level = ease_out(self.bar.calendar.level(duration));
+        let level = ease_out(self.bar.calendar.zoom.level(duration));
         if level > 0.001 {
             let clock = layout.as_ref().map(|placed| placed.clock).unwrap_or_else(|| {
                 let out = self.output_rect();
@@ -893,6 +951,15 @@ impl Tileception {
                 Rect::new(out.right() - 120.0, top, 110.0, BAR_H)
             });
             self.draw_calendar(&mut painter, clock, level);
+        }
+        let level = ease_out(self.bar.minimap.zoom.level(duration));
+        if level > 0.001 {
+            let chip = layout.as_ref().and_then(|placed| placed.minimap).unwrap_or_else(|| {
+                let out = self.output_rect();
+                let top = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+                Rect::new(out.x + 100.0, top, 40.0, BAR_H)
+            });
+            self.draw_minimap_card(&mut painter, chip, level);
         }
         painter.finish()
     }
@@ -966,6 +1033,10 @@ impl Tileception {
             painter.glyph(glyph_, rect, ICON, if enabled { theme.text.alpha(0.86) } else { theme.muted.alpha(0.5) });
         }
 
+        if let Some(chip) = layout.minimap {
+            hover_fill(painter, chip, self.bar.minimap.zoom.open || hit == Some(Hit::Minimap));
+            self.draw_minimap_chip(painter, chip);
+        }
         self.draw_crumbs(painter, layout, hit);
         self.draw_tray_slots(painter, &layout.tray);
 
@@ -1027,7 +1098,7 @@ impl Tileception {
             painter.text(&chip.label, text, Style::new(theme.font_size * 0.8, theme.text.alpha(0.9)));
         }
 
-        let calendar = self.bar.calendar.open;
+        let calendar = self.bar.calendar.zoom.open;
         hover_fill(painter, layout.clock, calendar || hit == Some(Hit::Clock));
         painter.text(&layout.clock_text, layout.clock, style.bold().colour(theme.text).align(Align::Centre));
 
@@ -1162,7 +1233,7 @@ impl Tileception {
     }
 
     /// An app's icon, or its initial in an accent square.
-    fn app_mark(&self, painter: &mut Painter, app: &str, origin: (f64, f64)) {
+    pub(crate) fn app_mark(&self, painter: &mut Painter, app: &str, origin: (f64, f64)) {
         let theme = &self.theme;
         if let Some(icon) = self.launcher.app_icon(app, ICON) {
             painter.image(&icon, origin);

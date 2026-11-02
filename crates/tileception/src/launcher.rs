@@ -130,6 +130,7 @@ const fn builtin(name: &'static str, words: &'static str, glyph: &'static str, d
 /// Tileception's own commands, found by typing their name.
 const COMMANDS: &[Builtin] = &[
     builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
+    builtin("Minimap", "map tree where camera outline", glyph::OVERVIEW, Does::Line("minimap")),
     builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
     builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
     builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),

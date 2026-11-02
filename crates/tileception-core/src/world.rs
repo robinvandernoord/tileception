@@ -667,6 +667,26 @@ impl World {
             .find(|leaf| self.layout.rect(*leaf).is_some_and(|rect| rect.contains(world)))
     }
 
+    /// The leaf at a point in layout units, as a minimap of the whole tree
+    /// sees it.
+    pub fn leaf_at_unit(&self, point: Point) -> Option<NodeId> {
+        self.tree
+            .leaves(self.tree.root())
+            .into_iter()
+            .find(|leaf| self.layout.rect(*leaf).is_some_and(|rect| rect.contains(point)))
+    }
+
+    /// Where panning the camera to a point in layout units goes: the space
+    /// holding it at the depth framed now, or its leaf where the tree is
+    /// shallower there.
+    pub fn pan_target(&self, point: Point) -> Option<NodeId> {
+        let leaf = self.leaf_at_unit(point)?;
+        let mut path = self.tree.ancestors(leaf);
+        path.reverse();
+        let depth = self.tree.depth(self.framed);
+        Some(path.get(depth).copied().unwrap_or(leaf))
+    }
+
     // ----- edits -----
 
     fn relayout(&mut self) {
@@ -1412,6 +1432,32 @@ mod tests {
         assert_eq!(world.framed(), col);
         world.step_out(0.0);
         assert_eq!(world.framed(), root);
+    }
+
+    #[test]
+    fn panning_keeps_the_framed_depth() {
+        let mut world = world();
+        world.add_window(WindowId(1), Placement::Dock, 0.0);
+        world.add_window(WindowId(2), Placement::Dock, 0.0);
+        world.add_window(WindowId(3), Placement::Dock, 0.0);
+        let root = world.tree().root();
+        let first_tile = world.tree().tile_of(WindowId(1)).unwrap();
+        let second_tile = world.tree().tile_of(WindowId(2)).unwrap();
+        let third_tile = world.tree().tile_of(WindowId(3)).unwrap();
+        let column = world.tree().parent(third_tile).unwrap();
+        let (left, top_right) = (Point::new(0.25, 0.5), Point::new(0.75, 0.25));
+        assert_eq!(world.leaf_at_unit(top_right), Some(second_tile));
+        assert_eq!(world.leaf_at_unit(Point::new(1.5, 0.5)), None);
+        assert_eq!(world.pan_target(Point::new(2.0, 2.0)), None);
+
+        assert_eq!(world.pan_target(left), Some(root));
+        world.frame(third_tile, 0.0);
+        assert_eq!(world.pan_target(top_right), Some(second_tile));
+        // The left half is a window one level up: it is framed on its own.
+        assert_eq!(world.pan_target(left), Some(first_tile));
+        world.frame(column, 0.0);
+        assert_eq!(world.pan_target(Point::new(0.75, 0.9)), Some(column));
+        assert_eq!(world.pan_target(left), Some(first_tile));
     }
 
     #[test]
