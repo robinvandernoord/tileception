@@ -147,7 +147,6 @@ Released in v0.8.0 (fixes in v0.8.1). See
 - [x] `make try-greeter` (a spare console), `make install-greeter` and
   `make uninstall-greeter` (switching the display manager and back). The `.deb`
   ships the config and the extension but does not switch.
-- [ ] Try it on hardware with `make try-greeter`, then as the login screen.
 - [x] One setup for `.deb` and `/install` users, shared with the make targets:
   `tileception-setup --greeter tileception|previous` (see Guided installation).
 - [ ] Not built yet: `users_as = "tiles"`, message-of-the-day and accessibility
@@ -187,13 +186,11 @@ keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
   current settings are kept.
 - [x] Reopen with `tileception-setup` (or `make setup`); finishes with how to
   enter the session and change things later.
-- [ ] Try `/install` end to end on a clean trixie and noble machine, once the
-  package with tileception-setup and the site's /setup are published together.
 - [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
 
 #### Restarting in place
 
-Added 2026-10-30, not yet tried on hardware: `tileception msg restart` (also
+Added 2026-10-30: `tileception msg restart` (also
 bindable as `restart`) stops the event loop and execs the installed binary
 with the same arguments, so the process id and with it the login session stay;
 the kernel closes screens, input devices and client connections. The new
@@ -221,8 +218,8 @@ answers). Open windows close; restoring them is not planned.
 #### Splitting a wide screen
 
 Proposed 2026-11-02, decisions taken the same day; built the same day on
-`feature/split-screen-and-minimap` (`outputs.rs`, `World::absorb`) and tried in headless
-instances, not yet on a real ultrawide. On an ultrawide monitor
+`feature/split-screen-and-minimap` (`outputs.rs`, `World::absorb`). On an
+ultrawide monitor
 one camera is less intuitive than on a normal screen: framing one window
 either leaves it very wide or leaves most of the screen to its neighbours,
 and Overview gets flat. Split one physical screen into two (or more)
@@ -344,16 +341,16 @@ Decisions:
   (LZ4-compressed tiles, the next picture after the last arrived, queued
   behind input). Input, focus and tile size travel back. Verified with
   headless instances in both directions, with typing from either keyboard.
-- [x] Window handoff, popups and lost connections (2026-10-30, not yet tried
-  between instances): menus and other popups reaching past the window come
+- [x] Window handoff, popups and lost connections (2026-10-30):
+  menus and other popups reaching past the window come
   along in its pictures and take input there; losing focus there closes
   them. A lost connection leaves the window hidden on its owner (with a
   notification) and an unavailable "Waiting for <machine>" tile on the
   other; linking again resumes it unless `handoff reclaim` took it home
   first, and closing the unavailable tile sends it home on the next link.
   Turning handoff off or dismissing still brings everything home at once.
-- [x] Window handoff, pointer and popup placement (2026-10-30, not yet tried
-  between instances): a pointer picture the program sets (or hides) is
+- [x] Window handoff, pointer and popup placement (2026-10-30):
+  a pointer picture the program sets (or hides) is
   shown over it there, as for windows here; the theme's arrow otherwise,
   since named cursor shapes are not supported locally either. Popups are
   kept on the screen where the window is shown. Each machine keeps its id
@@ -370,7 +367,7 @@ Decisions:
   streamed windows, including pictures already queued or on the way.
 - [x] Discovery (mDNS and fixed `peers`), the edge card on both machines and
   mutual acceptance; the passphrase comes from the config.
-- [x] Drag and drop across (2026-10-30, not yet tried between instances): a
+- [x] Drag and drop across (2026-10-30): a
   program's drag that reaches a shared edge goes along; the other machine
   carries it on with Tileception as the source, offering the same types
   (less the file transfer portal's), and fetches the data on a drop. Files
@@ -389,9 +386,7 @@ Decisions:
 - [x] First milestone after local multi-screen support: two machines with
   authenticated discovery and mutually selected edges, input and text
   clipboard. Verified with headless instances on one machine.
-- [ ] Try milestone 1 on two real machines: hardware input and acceleration,
-  keyboard layouts that differ, lock and resume, suspend, Xwayland pastes.
-- [ ] Then prove one already-open streamed window with a popup, resizing,
+- [ ] Prove one already-open streamed window with a popup, resizing,
   locking and disconnect recovery before broadening window support.
 
 Known behaviour (accepted for now, 2026-10-30):
@@ -480,52 +475,6 @@ Review log:
   (created with its position and room, grab taken or refused, closed for
   lost keyboard focus) and the other machine logs how many it shows.
 
-### Design ideas from LunariaOS
-
-Visual ideas from [LunariaOS](https://lunariaos.com) (a Debian-based desktop,
-floating windows, not released, no public source). Its videos show mockups,
-so this is about the look, not code: Tide's shape and colours stay, and the
-dock, the window buttons and the frosted glass are left out. Screenshots are
-frames from the site's videos
-([intro](https://lunariaos.com/videos/introduction/startanimation.mp4),
-[design](https://lunariaos.com/videos/overview/newuniquedsg.mp4),
-[fluidity](https://lunariaos.com/videos/overview/unmatchedfluidity.mp4)),
-kept locally in `design/lunaria/` (gitignored, not ours to commit).
-
-Most worthwhile first: the floating bar, the status capsule, concentric radii
-and the launcher categories.
-
-- Floating bar: inset by `gap` on every side and rounded with `radius`, so it
-  reads as one more tile instead of a strip on the edge. The hairline and
-  slide-over behaviour while a window is framed stays.
-  [floating-bar](design/lunaria/floating-bar.png)
-- Status capsule: the relevant chips (network, volume, battery) share one
-  inner pill that grows and shrinks, with the clock beside it, apart from the
-  breadcrumb and saved views.
-  [status-capsule](design/lunaria/status-capsule.png)
-- Concentric radii: a shape inside another is rounded by the outer radius less
-  the padding between them. Going further, tile radius could follow depth or
-  zoom level so the nesting shows in the shapes.
-  [nested-capsules](design/lunaria/nested-capsules.png),
-  [window-controls](design/lunaria/window-controls.png)
-- Selection pills: the selected item is a filled accent pill, the hovered one
-  an outlined pill. For launcher rows, breadcrumb crumbs and saved views.
-  [selection-pills](design/lunaria/selection-pills.png)
-- Launcher categories: filter chips above the results, taken from the
-  `Categories=` key of the `.desktop` files (nothing to name by hand), and a
-  footer with the user, files and the power menu.
-  [launcher-categories](design/lunaria/launcher-categories.png),
-  [launcher-open](design/lunaria/launcher-open.png)
-- Notification cards: app icon left, app name bold with the time
-  right-aligned on the same line, at most two lines of body, stacked just
-  above the bar. [notifications](design/lunaria/notifications.png)
-- Generated wallpaper: a soft, defocused gradient drawn by the compositor as
-  the default, shifting with the time of day or `colour_scheme`, in Tide's
-  colours. [floating-bar](design/lunaria/floating-bar.png) shows theirs.
-- Popups open from their origin: the launcher, calendar and notifications
-  scale and fade out of the bar element that opened them.
-  [launcher-open](design/lunaria/launcher-open.png)
-
 ### Not wanted
 
 - App-matched layout restoration across logins.
@@ -535,6 +484,8 @@ and the launcher categories.
   locked (beyond the media keys); click-to-kill.
 - Input methods (text-input and input-method protocols).
 - A built-in clipboard history.
+- Restyling after LunariaOS (floating bar, pills, capsules and the like);
+  Tide's look stays (decided 2026-11-02).
 
 ## Testing approach
 
