@@ -2,6 +2,18 @@
 
 <!-- next-version-placeholder -->
 
+## v0.10.0 (2026-11-02)
+
+### Features
+* **outputs:** split screens into independent areas
+* **outputs:** resize and persist split screen areas
+* **split-screen:** extend saved views and minimap across areas
+* **minimap:** add interactive layout map
+
+### Documentation
+* **split-screen:** document saved views across areas
+* **plan:** update release status and outline screen splitting
+
 ## v0.9.0 (2026-11-02)
 
 ### Features
