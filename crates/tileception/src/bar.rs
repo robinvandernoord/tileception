@@ -101,11 +101,21 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorWatch {
         }
         let mut message = Message(String::new());
         event.record(&mut message);
+        if from_gl_driver(event.metadata().target(), &message.0) {
+            return;
+        }
         if let Ok(mut last) = LAST_ERROR.lock() {
             let seq = last.as_ref().map_or(1, |(seq, _)| seq + 1);
             *last = Some((seq, message.0.chars().take(400).collect()));
         }
     }
+}
+
+/// Whether an error is the GL driver talking through smithay's renderer
+/// (`[GL] ...` from its debug callback or a shader log). Those stay in the
+/// log, but the doctor can do nothing about them, so the bar stays calm.
+fn from_gl_driver(target: &str, message: &str) -> bool {
+    target.starts_with("smithay::backend::renderer::gles") && message.starts_with("[GL]")
 }
 
 /// An error not yet asked about: its number and text.
@@ -1445,6 +1455,14 @@ fn iso_week(days: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gl_driver_errors_stay_off_the_bar() {
+        assert!(from_gl_driver("smithay::backend::renderer::gles", "[GL] GL_INVALID_OPERATION in glDrawArrays"));
+        assert!(from_gl_driver("smithay::backend::renderer::gles::shaders", "[GL] 0:12: syntax error"));
+        assert!(!from_gl_driver("smithay::backend::renderer::gles", "Failed to create EGL context"));
+        assert!(!from_gl_driver("tileception::config", "[GL] not really"));
+    }
 
     #[test]
     fn calendar_arithmetic() {
