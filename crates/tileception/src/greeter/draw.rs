@@ -556,11 +556,16 @@ impl Tileception {
 
         let inner = Rect::new(field.x + 16.0, field.y, submit.x - field.x - 24.0, field.h);
         let caret_on = focused && !busy && greeter.typed_at.elapsed().as_millis() % 1000 < 600;
+        let selection = accent.0.alpha(0.35);
         let since = self.start.elapsed().as_secs_f64();
         if naming {
             let style = Style::new(theme.font_size * 1.1, theme.text);
             if typed_name.is_empty() {
                 painter.text("Username", inner, Style { colour: theme.muted, ..style });
+            }
+            if greeter.name.is_selected() {
+                let (width, _) = painter.measure(typed_name, inner.w, style);
+                painter.fill(Rect::new(inner.x - 2.0, field.y + 12.0, width + 4.0, field.h - 24.0), selection, 4.0);
             }
             let (width, _) = painter.text(typed_name, inner, style);
             if caret_on {
@@ -579,14 +584,23 @@ impl Tileception {
                 painter.text(&placeholder, inner, Style::new(theme.font_size * 1.1, theme.muted));
             }
             let visible = matches!(greeter.auth, Auth::Asking { prompt: super::greetd::Prompt::Visible, .. });
+            let selected = greeter.field.is_selected() && !busy;
             if visible && !busy {
                 // A question whose answer may be shown, such as a one-time code.
-                let (width, _) =
-                    painter.text(greeter.field.as_str(), inner, Style::new(theme.font_size * 1.1, theme.text));
+                let style = Style::new(theme.font_size * 1.1, theme.text);
+                if selected {
+                    let (width, _) = painter.measure(greeter.field.as_str(), inner.w, style);
+                    painter.fill(Rect::new(inner.x - 2.0, field.y + 12.0, width + 4.0, field.h - 24.0), selection, 4.0);
+                }
+                let (width, _) = painter.text(greeter.field.as_str(), inner, style);
                 if caret_on {
                     painter.fill(Rect::new(inner.x + width + 1.0, field.y + 14.0, 2.0, field.h - 28.0), accent.0, 1.0);
                 }
             } else {
+                if selected {
+                    let width = shown as f64 * pitch + 4.0;
+                    painter.fill(Rect::new(inner.x, field.y + 12.0, width, field.h - 24.0), selection, 4.0);
+                }
                 for index in 0..shown {
                     let alpha =
                         if busy { 0.3 + 0.7 * (0.5 + 0.5 * (since * 7.0 - index as f64 * 0.7).sin()) } else { 1.0 };
@@ -957,7 +971,12 @@ impl Tileception {
             painter.text(&state.query, text, style)
         } else {
             painter.text(
-                if greeter.locked() { "Power and media" } else { "Power, sessions, people" },
+                match state.page {
+                    super::PalettePage::More => "More…",
+                    super::PalettePage::ConfirmFirmware => "Restart into UEFI settings?",
+                    super::PalettePage::Main if greeter.locked() => "Power and media",
+                    super::PalettePage::Main => "Power, sessions, people",
+                },
                 text,
                 Style { colour: theme.muted, ..style },
             );
@@ -988,7 +1007,9 @@ impl Tileception {
             let icon = match action {
                 Action::Media => glyph::MUSIC,
                 Action::Suspend => glyph::MOON,
-                Action::Restart | Action::Firmware => glyph::RESTART,
+                Action::Restart | Action::Firmware | Action::ConfirmFirmware => glyph::RESTART,
+                Action::More => glyph::CHEVRON_RIGHT,
+                Action::Back => glyph::ARROW_LEFT,
                 Action::PowerOff => glyph::POWER,
                 Action::Session(_) => glyph::OVERVIEW,
                 Action::Person(_) => USER,

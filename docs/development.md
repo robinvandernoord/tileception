@@ -103,7 +103,59 @@ with `tileception msg`, especially if your desktop is also running Tileception.
 The command interface supports screenshots and input injection in headless and
 nested instances. `tileception msg --help` lists the commands.
 
+Headless instances run Xwayland too, so X11 programs can be tried the same way.
+Start programs inside an instance with `tileception msg spawn <command line>`,
+drive them with `pointer`, `click`, `press`, `release`, `key` and `type`, and
+check the result with `screenshot <file.png>`.
+
+### Handoff between two instances
+
+Two headless instances on one machine can stand in for two computers sharing
+through handoff. Give each its own `XDG_CONFIG_HOME` and `XDG_STATE_HOME`, and a
+config that links it to the other over localhost only:
+
+```toml
+[handoff]
+enabled = true
+passphrase = "any phrase both share"
+name = "left"
+port = 24870
+discovery = false
+peers = ["127.0.0.1:24871"]
+```
+
+The other instance uses `name = "right"`, `port = 24871` and
+`peers = ["127.0.0.1:24870"]`. Once `tileception msg handoff` lists the other
+machine, place them side by side from both ends:
+
+```sh
+TILECEPTION_SOCKET=<left socket> tileception msg handoff edge right headless right
+TILECEPTION_SOCKET=<right socket> tileception msg handoff edge left headless left
+```
+
+The pointer then crosses at those edges, and windows, drags, the clipboard and
+menus can be tried between the two with injected input, taking screenshots of
+both. The handoff scene of the promo video (`scripts/promo/scenes/5-handoff.sh`,
+with helpers in `scripts/promo/lib.sh`) does all of this, including private
+session buses that keep the instances away from your own desktop.
+
 See [Troubleshooting](troubleshooting.md) for logs and runtime diagnostics.
+
+## Promo video
+
+`make video` builds the compositor, installs the `video` packages from
+`deps/debian.txt` and records the promo video into
+`target/promo/tileception-promo.mp4`. Each scene in `scripts/promo/scenes`
+runs headless Tileceptions with their own config, state and D-Bus session,
+drives them with `tileception msg` and records them with wf-recorder.
+`scripts/promo/edit.sh` then adds title cards and captions from
+`scripts/promo/art/art.html`.
+
+The duck scene asks a real agent. By default this is `codex-acp`, which uses
+the Codex sign-in already on the machine; `PROMO_AGENT` chooses another ACP
+Registry agent. `SCENES='2 4'` records only those scenes again before editing,
+and `MUSIC=track.mp3` adds a soundtrack that fades out at the end. The handoff
+scene runs two instances paired over localhost, with mDNS discovery off.
 
 ## Packaging
 
@@ -199,9 +251,31 @@ Pushing the tag starts the [release workflow](../.github/workflows/release.yml):
 APT publishing and GitHub release creation run as separate jobs after the
 builds. Check that both succeed.
 
-The APT repository currently keeps only the latest version per platform
-(architecture and distribution). Older packages are replaced there; GitHub
-release assets provide the release history.
+The APT repository keeps the five newest versions of each package per
+distribution and architecture, so users can go back with
+`sudo apt install tileception=<version>`. GitHub release assets hold the full
+history.
+
+### Prereleases
+
+```sh
+vommit release --prerelease
+```
+
+This makes a release candidate: `Cargo.toml` gets `1.2.0-rc.1` and the tag is
+`v1.2.0rc1`. The release workflow accepts either tag spelling, versions the
+packages `1.2.0~rc.1-1~<distribution>` (`~` sorts before the `1.2.0-1`
+release), publishes them to the repository's `pre` component instead of
+`main` and marks the GitHub release as a prerelease. Users who only have
+`main` never see it. Testers opt in by adding `pre` to the components in
+`/etc/apt/sources.list.d/tileception.sources`:
+
+```
+Components: main pre
+```
+
+apt then installs whichever version is newest, so a tester on `1.2.0~rc.2`
+moves to `1.2.0` on the next upgrade, with no switch back needed.
 
 ### Internal crate versions
 

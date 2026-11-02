@@ -94,8 +94,38 @@ the keyboard only once its first configure is sent.)
 
 ### Next
 
-- More monitors: a layout per screen, moving windows between them. Comes first
-  once Robin can test it on a second screen.
+#### Multiple screens
+
+**In progress, 2026-10-29.** Build local multi-screen support before handoff;
+Robin has connected a second monitor through the Intel GPU and enabled it in
+BIOS. Multi-GPU scanout still needs hardware verification. Each output has
+its own tree, camera, saved views, minimized windows and fullscreen state.
+Bindings act on the active screen and its focused window. Handoff will use
+the same targeting semantics for its active machine and screen.
+
+- [ ] Drive connected outputs across GPUs, with scanout and buffer lifetimes
+  tracked per device; retain the single-output nested backend. Secondary GPUs
+  use CPU frame copies from the primary renderer for driver compatibility.
+- [ ] Pointer crossing activates the destination screen; desktop shortcuts
+  target it. Add explicit output focus and window-transfer commands.
+- [ ] Move windows by command and compositor drag. On unplug, move windows
+  (including minimized windows) to a surviving screen; preserve clients when
+  the last screen disappears.
+- [ ] Per-output scale and logical positions in `[outputs]`, automatic horizontal
+  arrangement otherwise; route commits, popups, layers and capture to their owner.
+- [ ] Lock every output. The built-in lock UI follows the active screen; other
+  outputs remain black. External lockers can create one surface per output.
+- [ ] Verify using multiple headless outputs and existing checks, without adding
+  tests or driving the live session. Hardware hotplug, mixed refresh rates and
+  mixed scales still need verification with the second monitor.
+
+Log:
+
+- 2026-10-29: Prioritized local outputs before network handoff. Implementation
+  started with independent output contexts and active-screen input routing.
+- 2026-10-29: Added per-GPU discovery, connector scans, page-flip routing and
+  scanout, using frame copies for secondary GPUs. Build and Clippy pass;
+  physical NVIDIA/Intel output verification remains pending.
 
 #### Login screen
 
@@ -162,6 +192,16 @@ keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
   package with tileception-setup and the site's /setup are published together.
 - [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
 
+#### Restarting in place
+
+Added 2026-10-30, not yet tried on hardware: `tileception msg restart` (also
+bindable as `restart`) stops the event loop and execs the installed binary
+with the same arguments, so the process id and with it the login session stay;
+the kernel closes screens, input devices and client connections. The new
+process retries opening the seat for three seconds while logind lets go of the
+old one. `make install` offers it at the end inside a session (`RESTART=yes|no`
+answers). Open windows close; restoring them is not planned.
+
 ### Later
 
 - [ ] Compare contents or hashes before exporting Doctor's bundled documentation
@@ -179,7 +219,8 @@ keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
 
 #### Handoff between machines
 
-Proposed and decided 2026-10-29, not scheduled. Several Tileception machines on
+Proposed and decided 2026-10-29; milestone 1 built on `feature/handoff` the same
+day (see the review log). Several Tileception machines on
 the same network share one mouse and keyboard, a clipboard and windows, opt-in
 and only between machines that share a key (in the spirit of Barrier, Input
 Leap, lan-mouse and waypipe).
@@ -188,28 +229,196 @@ Decisions:
 
 - Tileception to Tileception only, with our own protocol; no Deskflow, Input
   Leap or lan-mouse compatibility.
-- Pairing by a shared key in each machine's config.toml. Nothing listens
-  unless handoff is turned on and a key is set.
+- Pairing by a passphrase in each machine's config.toml (`[handoff]`), chosen
+  by the user. SPAKE2 turns it into a strong key, so a recorded exchange gives
+  nothing to guess against offline; failed handshakes are rate-limited. That
+  key is the pre-shared key of a Noise NNpsk0 handshake. Nothing listens
+  unless handoff is turned on and a passphrase is set.
 - Discovery through mDNS on the LAN, with optional fixed addresses in the
   config for networks that block it.
 - The pointer crosses at screen edges, onto the machine arranged on that side.
-- The clipboard is shared lazily: a copy announces its MIME types, and the
-  content goes over only when it is pasted on the other machine.
-- Windows move by streaming: the app keeps running on its own machine and its
-  surface is forwarded to the other, as waypipe does.
+- On authenticated discovery, both machines show a dismissible popup naming the
+  other machine. Each user drags it to any edge of a particular screen; edges
+  are independent and need not be opposite. Connect only after both choose.
+  Dismissal or timeout on either side cancels the attempt. Do not persist the
+  arrangement; each new connection repeats this flow. Suppress repeated prompts
+  after cancellation until an explicit retry.
+- Desktop bindings act on the active machine, not necessarily the machine with
+  the physical keyboard. Within it, they target the active screen and focused
+  window, exactly as with multiple local monitors. A fixed return-home shortcut
+  is always intercepted by the machine supplying input.
+- Local and forwarded input are both accepted; neither requires an exclusive
+  controller mode. Normal use assumes only one is active at a time. Track each
+  source's held keys and buttons so disconnecting one cannot leave them stuck
+  or release another source's input.
+- The clipboard and the primary selection are shared lazily, and nothing is
+  announced on copy: when the pointer leaves for another machine, that machine
+  learns the MIME types on offer (only when they changed), and the content
+  goes over only when it is pasted there. A selection from another machine is
+  never offered back or passed on.
+- Window handoff uses compositor-managed streaming: an already-open app stays
+  connected to its owning Tileception compositor, which renders its window for
+  an interactive tile on the destination. Input and resize requests travel back
+  to the owner. This does not require launching apps through a Wayland proxy.
+- On disconnect, the app survives on its owner and the destination shows an
+  unavailable tile. The owner can reclaim the window immediately; reconnection
+  resumes it only if it has not been reclaimed. There is only one active window
+  destination at a time. A sleeping owner makes the window unavailable.
+- Locking either participant returns forwarded input home and pauses input,
+  window streaming and clipboard transfer between them. Unlocking does not
+  automatically resume sharing; reactivation is explicit.
 
-- [ ] Input: pointer and keyboard to the neighbouring machine and back. While
-  remote, local bindings stay local except a fixed way back.
-- [ ] Clipboard: text first, then images and other MIME types. Primary
-  selection to decide.
-- [ ] Window handoff: send a window to another machine and take it back; what
-  happens when the network drops or the owning machine sleeps to decide.
-- [ ] Security: encrypted and authenticated with keys derived from the shared
-  key; input is never forwarded into a locked machine, and locking either side
-  returns input home.
-- [ ] Still open: how machines are arranged (which edge leads where), where
-  the key comes from (generated by `tileception config` or setup), and
-  dragging files across.
+- [x] Input: pointer and keyboard to the neighbouring machine and back, active
+  machine/screen binding targeting, and the fixed return-home shortcut
+  (Ctrl+Super+Escape). Release each source's held input on transfer,
+  disconnect, lock or suspend; forwarded input is never passed on. Drags do
+  not cross. Touchpad gestures are not forwarded; touching the local screen
+  brings input home.
+- [x] Clipboard: every MIME type, clipboard and primary, offered on crossing
+  with per-machine versions against echoes, 64 MB and 10 s stall limits, and
+  cleared when the owner disappears.
+- [x] Window handoff, first version (2026-10-30): dragging a window (by
+  Super+drag or its title bar) past a shared edge takes it along; dragging
+  it back, `handoff reclaim` or a lost connection brings it home; closing it
+  there closes it. The owner draws it off screen and sends only what changed
+  (LZ4-compressed tiles, the next picture after the last arrived, queued
+  behind input). Input, focus and tile size travel back. Verified with
+  headless instances in both directions, with typing from either keyboard.
+- [x] Window handoff, popups and lost connections (2026-10-30, not yet tried
+  between instances): menus and other popups reaching past the window come
+  along in its pictures and take input there; losing focus there closes
+  them. A lost connection leaves the window hidden on its owner (with a
+  notification) and an unavailable "Waiting for <machine>" tile on the
+  other; linking again resumes it unless `handoff reclaim` took it home
+  first, and closing the unavailable tile sends it home on the next link.
+  Turning handoff off or dismissing still brings everything home at once.
+- [x] Window handoff, pointer and popup placement (2026-10-30, not yet tried
+  between instances): a pointer picture the program sets (or hides) is
+  shown over it there, as for windows here; the theme's arrow otherwise,
+  since named cursor shapes are not supported locally either. Popups are
+  kept on the screen where the window is shown. Each machine keeps its id
+  in the state directory (one per port), so a restarted machine is
+  recognised: its stale waiting tiles are cleared and windows it no longer
+  knows go home. Client-side resizing needs nothing: it is ignored for
+  windows here too, and Super+right-drag resizes remote tiles.
+- [ ] Window handoff, later if needed: video-heavy windows need a real video
+  codec rather than compressed tiles (choose between VA-API, openh264 or
+  ffmpeg first). Popups stay where they opened when the window's place
+  there changes, as they do here.
+- [x] Security: SPAKE2 plus Noise NNpsk0 (ChaCha20-Poly1305), rate-limited
+  failures. The lock policy applies to input, clipboard transfers and
+  streamed windows, including pictures already queued or on the way.
+- [x] Discovery (mDNS and fixed `peers`), the edge card on both machines and
+  mutual acceptance; the passphrase comes from the config.
+- [x] Drag and drop across (2026-10-30, not yet tried between instances): a
+  program's drag that reaches a shared edge goes along; the other machine
+  carries it on with Tileception as the source, offering the same types
+  (less the file transfer portal's), and fetches the data on a drop. Files
+  and folders are copied first into `~/.cache/tileception/handoff-drops`
+  (drops older than a week are cleared), and the program gets those
+  copies; other entries pass as they are. Copy only, never move. Dragged
+  back, it goes on at home. Locking, pausing or losing the connection ends
+  it. Drags from X11 programs do not cross. Streamed windows take part: a
+  drag started in one is carried on by the machine whose pointer started
+  it, and a drag over one is carried on inside it by its owner, moved by
+  the pointer there and taken back when it leaves.
+- [ ] Define stable machine identities, key rotation/revocation, keyboard-layout
+  ownership, edge mapping for unequal monitors and pointer-locked apps, and
+  shortcut routing inside a streamed window. Decide initial support for
+  popups/dialogs, Xwayland, audio and owner-side portal dialogs.
+- [x] First milestone after local multi-screen support: two machines with
+  authenticated discovery and mutually selected edges, input and text
+  clipboard. Verified with headless instances on one machine.
+- [ ] Try milestone 1 on two real machines: hardware input and acceleration,
+  keyboard layouts that differ, lock and resume, suspend, Xwayland pastes.
+- [ ] Then prove one already-open streamed window with a popup, resizing,
+  locking and disconnect recovery before broadening window support.
+
+Known behaviour (accepted for now, 2026-10-30):
+
+- Both machines need the same protocol version. A machine that knows the
+  passphrase but speaks another version gets a notification on both sides
+  naming it and both versions (once per version per session, and it is
+  not counted as a failed passphrase guess); older builds than protocol 5
+  still only log it.
+- Possibly someday, if mismatched versions turn out to be common: each
+  machine lists its optional features (window streaming, drag and drop,
+  program pointers) in its hello, features only one side has are switched
+  off instead of refusing the connection, and unknown messages are skipped
+  instead of dropping it. Input and the clipboard stay the core that must
+  match. Not now: every feature would need a tested path for each
+  combination, and machines updating from the same APT repository match.
+- Each machine's keyboard follows that machine's own pointer. The desktop's
+  keyboard types on the laptop only after the desktop's mouse crossed there;
+  moving the pointer onto the laptop with the laptop's touchpad does not bring
+  the desktop's keyboard along.
+
+Review log:
+
+- 2026-10-29: Chose compositor-managed window streaming; confirmed active
+  machine/screen shortcut semantics shared with multi-monitor work, coexistence
+  of local and forwarded input, pausing sharing on lock with explicit
+  reactivation, and owner reclaim with guarded reconnection after disconnect.
+- 2026-10-29: Edge choices are independent, with no saved arrangements. Both
+  machines must choose through a popup before connecting; dismiss or timeout
+  cancels. Local multi-screen support comes first.
+- 2026-10-29: Built milestone 1: the `tileception-handoff` crate (service,
+  handshake, wire, held input) and the compositor's `handoff` module, with
+  `tileception msg handoff ...` and a `motion` pretend-input verb. Chose a
+  user passphrase with SPAKE2 over a generated key, and offering selections
+  on crossing over announcing every copy. Checked with two and more headless
+  instances: fixed addresses and mDNS, a wrong passphrase refused, dragging
+  the card, crossing on left/right and top/bottom edges, keys and bindings on
+  the other machine, Ctrl+Super+Escape, clipboard and primary both ways (a
+  400 kB paste intact), disconnect while forwarding, dismiss and retry.
+  Locking was not triggered in tests; the card has no timeout yet.
+- 2026-10-30: Popups, lock policy and disconnect recovery for streamed
+  windows (protocol 3): pictures cover the window plus its popups and say
+  where each is; pictures queued when sharing pauses are dropped on the
+  owner and ignored on arrival; `WindowsResumed` on every link resumes or
+  clears the windows that were waiting. Also fixed picture packing so many
+  small tiles cannot overflow one encrypted message. Unit-tested the
+  layout of pictures and popups; the container had no GPU render node, so
+  the headless two-instance run is still to do.
+- 2026-10-30: Program pointers and popup placement for streamed windows,
+  stable machine ids (protocol 4). `WindowSize` carries the screen around
+  the tile, which the owner unconstrains popups against; `WindowCursor`
+  carries the program's pointer picture, sent only when it changes. Same
+  limitation: unit tests only, no headless run in the container.
+- 2026-10-30: Drag and drop (protocol 5). Drags were invisible: the drag
+  handlers were empty, so programs' drag icons were never drawn. They are
+  now, and without one a card by the pointer shows a thumbnail of a
+  picture, or the first file's name or the start of the text, with a count
+  badge; the list of files or the text is read from the program in the
+  background as the drag starts. The same card shows on another machine
+  when the drag crosses. Unit tests only, no headless run in the container.
+- 2026-10-30: Finding things again. `tileception pair` offers to show a
+  dismissed pairing card again (`handoff retry`) and to bring back windows
+  waiting on a machine that went away (`handoff reclaim [machine]`, now
+  per machine); without a terminal it prints those commands. The
+  "windows are still on <machine>" notification stays until answered,
+  with Bring back and Keep there, and closes itself once they are back:
+  Tileception's own notifications can now have buttons running commands.
+- 2026-10-30: First test on two machines. Fixed a stuck Super: keys typed
+  into a streamed window were pressed on its owner's keyboard outside the
+  held-input bookkeeping, and a release was lost whenever a binding moved
+  the keyboard off the window in between (Super+Left), or on disconnect;
+  every click then dragged windows and keys ran bindings. Releases now go
+  where their press went, the owner lets go of such keys when the window
+  loses the keyboard, comes home, or the machine goes, and releases from
+  another machine always go through. Streamed windows get a frame in the
+  new `theme.guest` colour (violet). Drags into and out of streamed
+  windows, and the drag card updating once its preview is known
+  (protocol 6).
+- 2026-10-30: Second test. A file dragged out of a streamed window was
+  also dropped back into the owner's own file manager ("no such file or
+  directory" there): pointer input still on its way after the drag went
+  over aimed the owner's drag at its own window, which got the drop when
+  the owner let go. Such input is now ignored, and letting go happens over
+  nothing. Right-click menus in streamed windows do not show; not found
+  by reading, so the owner now logs each menu of a streamed window
+  (created with its position and room, grab taken or refused, closed for
+  lost keyboard focus) and the other machine logs how many it shows.
 
 ### Design ideas from LunariaOS
 

@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use smithay::{
     backend::input::{ButtonState, TouchSlot},
     input::{
@@ -37,6 +38,22 @@ const PINCH_IN: f64 = 0.7;
 const PINCH_OUT: f64 = 1.4;
 /// Fingers landing within this many milliseconds of the first form one gesture.
 const TOGETHER_MS: u32 = 400;
+
+/// Explicit device-name to connector mapping; no display matching heuristics.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TouchscreenConfig {
+    pub output: String,
+}
+
+pub fn validate(touchscreens: &std::collections::BTreeMap<String, TouchscreenConfig>) -> Result<(), String> {
+    for (name, touchscreen) in touchscreens {
+        if name.trim().is_empty() || touchscreen.output.trim().is_empty() {
+            return Err("[touchscreens] device names and output names must not be empty".into());
+        }
+    }
+    Ok(())
+}
 
 /// What the fingers on the screen are doing.
 #[derive(Debug, Default)]

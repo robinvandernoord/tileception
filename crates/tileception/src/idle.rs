@@ -1,4 +1,5 @@
-//! Idle locking and DRM power saving, respecting visible idle-inhibiting surfaces.
+//! Idle locking and DRM power saving, respecting visible idle-inhibiting surfaces
+//! and applications that hold idle off over D-Bus (`screensaver`).
 
 use std::time::{Duration, Instant};
 
@@ -39,11 +40,19 @@ pub struct Idle {
     lock_requested: bool,
     pub off: bool,
     inhibitors: Vec<WlSurface>,
+    /// Applications holding idle off over D-Bus, wherever their windows are.
+    pub bus_inhibitors: crate::screensaver::Inhibitors,
 }
 
 impl Default for Idle {
     fn default() -> Self {
-        Self { last_activity: Instant::now(), lock_requested: false, off: false, inhibitors: Vec::new() }
+        Self {
+            last_activity: Instant::now(),
+            lock_requested: false,
+            off: false,
+            inhibitors: Vec::new(),
+            bus_inhibitors: crate::screensaver::Inhibitors::default(),
+        }
     }
 }
 
@@ -75,21 +84,25 @@ impl Tileception {
         if self.nested || self.headless.is_some() && std::env::var_os("TILECEPTION_IDLE_HEADLESS").is_none() {
             return;
         }
+        if self.idle.bus_inhibitors.take_poke() {
+            self.idle_activity();
+        }
         self.idle.inhibitors.retain(|surface| surface.alive());
         let visible = self.drawn_windows(self.now());
         let inhibited = !self.is_locked()
-            && self.idle.inhibitors.iter().any(|surface| {
-                let mut root = surface.clone();
-                while let Some(parent) = get_parent(&root) {
-                    root = parent;
-                }
-                visible.iter().filter(|drawn| drawn.content.intersects(&self.output_rect())).any(|drawn| {
-                    self.windows
-                        .get(&drawn.window_id)
-                        .and_then(|window| window.wl_surface())
-                        .is_some_and(|surface| *surface == root)
-                })
-            });
+            && (self.idle.bus_inhibitors.any()
+                || self.idle.inhibitors.iter().any(|surface| {
+                    let mut root = surface.clone();
+                    while let Some(parent) = get_parent(&root) {
+                        root = parent;
+                    }
+                    visible.iter().filter(|drawn| drawn.content.intersects(&self.output_rect())).any(|drawn| {
+                        self.windows
+                            .get(&drawn.window_id)
+                            .and_then(|window| window.wl_surface())
+                            .is_some_and(|surface| *surface == root)
+                    })
+                }));
         if inhibited {
             self.idle.last_activity = Instant::now();
             self.idle.lock_requested = false;

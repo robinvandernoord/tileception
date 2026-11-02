@@ -19,6 +19,8 @@ tileception-apps = { path = "../tileception-apps" }
 tileception-notify = { path = "../tileception-notify" }
 tileception-media = { path = "../tileception-media" }
 tileception-acp = { path = "../tileception-acp" }
+tileception-handoff = { path = "../tileception-handoff" }
+getrandom = "0.3"
 serde_json = "1"
 html-escape = "0.2"
 libc = "0.2"
@@ -30,12 +32,14 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 toml_edit = "0.25"
 zbus = "5"
+async-channel = "2"
 png = "0.18"
 pulldown-cmark = { version = "0.13", default-features = false }
 cosmic-text = "0.19"
 resvg = "0.45"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 smithay-drm-extras = { version = "0.1", default-features = false }
+x11rb = { version = "0.13", default-features = false }
 
 [dependencies.smithay]
 version = "0.7"

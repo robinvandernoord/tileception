@@ -64,6 +64,8 @@ pub struct ThemeFile {
     pub danger: String,
     /// Cautions, such as volume boosted past 100%.
     pub warning: String,
+    /// The border of windows from another computer (handoff).
+    pub guest: String,
     pub radius: f32,
     pub popup_radius: f32,
     /// How far the focus glow reaches, in pixels; 0 turns it off.
@@ -93,6 +95,7 @@ impl Default for ThemeFile {
             on_accent: "#0d1117".into(),
             danger: "#f0646a".into(),
             warning: "#f2b04c".into(),
+            guest: "#a78bfa".into(),
             radius: 6.0,
             popup_radius: 10.0,
             glow: 18.0,
@@ -119,6 +122,7 @@ pub struct Theme {
     pub on_accent: Colour,
     pub danger: Colour,
     pub warning: Colour,
+    pub guest: Colour,
     pub radius: f32,
     pub popup_radius: f32,
     pub glow: f32,
@@ -163,6 +167,7 @@ impl Theme {
             on_accent: Colour::parse(&file.on_accent)?,
             danger: Colour::parse(&file.danger)?,
             warning: Colour::parse(&file.warning)?,
+            guest: Colour::parse(&file.guest)?,
             radius: file.radius.max(0.0),
             popup_radius: file.popup_radius.max(0.0),
             glow: file.glow.max(0.0),

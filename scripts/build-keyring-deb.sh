@@ -30,8 +30,7 @@ command -v dpkg-deb >/dev/null 2>&1 || { echo "build-keyring-deb: dpkg-deb is mi
 
 package=tileception-archive-keyring
 key=packaging/tileception-archive-keyring.gpg
-cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
-base_version="${DEB_VERSION:-$cargo_version-1}"
+base_version=$(scripts/deb-version.sh)
 maintainer="${DEB_MAINTAINER:-$(git log -1 --format='%an <%ae>' 2>/dev/null || true)}"
 if [ -z "$maintainer" ]; then
     echo "build-keyring-deb: set DEB_MAINTAINER (no git history to take it from)" >&2

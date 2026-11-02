@@ -395,6 +395,17 @@ impl World {
         self.floats.get(&win).map(|float| float.rect)
     }
 
+    /// Floating geometry, including a minimized window's saved position. Used
+    /// when transferring a window between independent output layouts.
+    pub fn floating_geometry(&self, win: WindowId) -> Option<Rect> {
+        self.float_rect(win).or_else(|| {
+            self.minimized
+                .iter()
+                .find(|minimized| minimized.window == win)
+                .and_then(|minimized| if let Home::Float(rect) = minimized.home { Some(rect) } else { None })
+        })
+    }
+
     /// Whether a floating window still waits for the client to pick a size.
     pub fn float_needs_size(&self, win: WindowId) -> bool {
         self.floats.get(&win).is_some_and(|float| !float.sized)

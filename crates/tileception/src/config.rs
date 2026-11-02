@@ -30,6 +30,8 @@ pub struct ConfigFile {
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub touchpad: crate::gestures::TouchpadConfig,
+    /// Exact touchscreen device names mapped to output connector names.
+    pub touchscreens: BTreeMap<String, crate::touch::TouchscreenConfig>,
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
@@ -40,6 +42,8 @@ pub struct ConfigFile {
     pub rules: Vec<crate::rules::WindowRule>,
     /// Per screen, by connector name ("*" for any).
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
+    /// Sharing the mouse, keyboard and clipboard with other machines.
+    pub handoff: crate::handoff::HandoffConfig,
     /// Extra arguments for programs the launcher starts, by desktop file name.
     pub launch_args: BTreeMap<String, Vec<String>>,
     pub binds: Option<BTreeMap<String, BindValue>>,
@@ -237,6 +241,7 @@ impl Config {
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
         file.touchpad.validate()?;
+        crate::touch::validate(&file.touchscreens)?;
         let battery = file.battery.colours(&theme)?;
         Ok(Config { file, binds, drag_mod, theme, battery })
     }
@@ -419,6 +424,9 @@ impl Tileception {
     }
 
     pub fn apply_config(&mut self, config: Config) {
+        if self.config.file.touchscreens != config.file.touchscreens {
+            self.touch_cancel((self.now() * 1000.0) as u32);
+        }
         let republish = self.theme != config.theme || self.config.file.greeter != config.file.greeter;
         self.world.settings = config.world_settings();
         if let Some(keyboard) = self.seat.get_keyboard() {
@@ -438,14 +446,15 @@ impl Tileception {
             self.wallpaper = None;
             self.wallpaper_failed = None;
         }
-        let old_shell = std::mem::replace(&mut self.config, config).file.shell;
-        self.apply_shell(&old_shell);
+        let old = std::mem::replace(&mut self.config, config).file;
+        self.apply_shell(&old.shell);
+        self.apply_handoff_config(&old.handoff);
         if republish {
             self.publish_greeter_card();
         }
         self.configure_touchpads();
         // Also lays everything out again.
-        self.apply_output_scale();
+        self.configure_outputs();
     }
 }
 
