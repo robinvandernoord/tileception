@@ -11,7 +11,7 @@ use crate::{
     Tileception,
     bar::{BAR_H, Zoom},
     shapes::Shape,
-    ui::{Painter, Style, ease_out},
+    ui::{Painter, Style},
 };
 
 /// Padding around the map inside the card.
@@ -274,7 +274,7 @@ impl Tileception {
         let (alpha, offset) = (painter.alpha, painter.offset);
         painter.popup(rect);
         // The map fades in once the card is nearly there, and moves with it.
-        painter.alpha = alpha * (ease_out(((level - 0.7) / 0.3).clamp(0.0, 1.0)) as f32);
+        painter.alpha = alpha * crate::bar::card_contents(level);
         let (from, target) = (card.center(), rect.center());
         painter.offset = (offset.0 + target.x - from.x, offset.1 + target.y - from.y);
         if painter.alpha > 0.0 {

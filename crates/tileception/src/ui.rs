@@ -240,6 +240,7 @@ pub struct LocalTime {
     pub year: i32,
     pub hour: i32,
     pub minute: i32,
+    pub second: i32,
     pub weekday: usize,
     pub day: i32,
     pub month: usize,
@@ -262,6 +263,8 @@ impl LocalTime {
             year: calendar.tm_year + 1900,
             hour: calendar.tm_hour,
             minute: calendar.tm_min,
+            // 60 is a leap second.
+            second: calendar.tm_sec.clamp(0, 59),
             weekday: calendar.tm_wday.clamp(0, 6) as usize,
             day: calendar.tm_mday,
             month: calendar.tm_mon.clamp(0, 11) as usize,
@@ -270,6 +273,11 @@ impl LocalTime {
 
     pub fn clock(&self) -> String {
         format!("{:02}:{:02}", self.hour, self.minute)
+    }
+
+    /// The clock with seconds: "20:42:07".
+    pub fn clock_seconds(&self) -> String {
+        format!("{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 
     /// "Thursday 15 October"
