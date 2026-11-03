@@ -3152,6 +3152,9 @@ fn doctor_context(mode: &str) -> String {
          - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`. \
          `tileception msg help` lists every command; features that are switched on and off rather than \
          configured, such as the rubber duck (`duck`), are only there.\n\
+         - Smart home devices (lights, plugs, air conditioners): `tileception msg home` lists them with their \
+         names and state; `tileception msg home on|off|toggle <name>`, `home brightness <name> <percent>`, \
+         `home target <name> <degrees>`, `home mode <name> cool|heat|dry|fan|auto` control them.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\

@@ -122,7 +122,7 @@ pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scop
 /// Compositor commands the agent may run unasked in config mode: ones that
 /// look or adjust, not `spawn`, `exec`, `doctor` (its own mode), pretend
 /// input, `screenshot` (writes anywhere), `quit` or `unlock`.
-const SAFE_VERBS: [&str; 6] = ["tree", "reload", "volume", "mic", "brightness", "media"];
+const SAFE_VERBS: [&str; 7] = ["tree", "reload", "volume", "mic", "brightness", "media", "home"];
 
 /// `tileception msg <safe verb> ...` and nothing chained onto it.
 fn tileception_command(command: &str) -> bool {
