@@ -33,6 +33,7 @@ mod greeter;
 mod handlers;
 mod handoff;
 mod headless;
+mod home;
 mod idle;
 mod inject;
 mod input;
@@ -179,6 +180,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("tileception setup: {error}");
         std::process::exit(1);
     }
+    if argv.first().map(String::as_str) == Some("home") {
+        if let Err(err) = home::run(&argv[1..]) {
+            eprintln!("tileception home: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if argv.first().map(String::as_str) == Some("config") {
         if let Err(err) = config_edit::run(&argv[1..]) {
             eprintln!("tileception config: {err}");
@@ -297,6 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
     state.apply_tray();
+    state.apply_home();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {

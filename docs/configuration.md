@@ -407,6 +407,41 @@ selection to other tools.
 These battery actions are inactive on computers without a battery. Run
 `tileception msg battery` to inspect the charge and current border colour.
 
+## Smart home
+
+The notification panel can show Tuya lights, plugs and air conditioners (sold
+under many brands and used with the Smart Life or Tuya app). They are controlled
+on your local network, so they respond quickly and keep working without internet.
+
+Controlling a device locally needs its local key, which only Tuya's cloud hands
+out. Fetch the keys once with a free project on the
+[Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
+your app account's data center, and link your app account under **Devices**,
+**Link App Account**. Then run:
+
+```sh
+tileception home import
+```
+
+It asks for the project's Access ID, data center and Access Secret, and saves
+your devices with their homes, rooms and local keys to
+`~/.config/tileception/home-devices.json`, readable by you only. Run it again
+after adding devices in the app. Battery sensors only report to the cloud; the
+import offers to read those every 10 minutes, which keeps the Access Secret in
+the same file.
+
+Then switch the panel block on:
+
+```toml
+[home]
+enabled = true
+```
+
+If your account has several homes, the panel shows the one whose devices answer
+on the network you are on. `devices` points to a different device file; see the
+[default config](../crates/tileception/src/default-config.toml).
+`tileception home status` lists the imported devices and whether they answer.
+
 ## Doctor
 
 Doctor's agent, model and permission mode are managed in its panel, separately

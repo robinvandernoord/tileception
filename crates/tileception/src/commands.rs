@@ -36,6 +36,8 @@ pub enum Command {
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
     Media(crate::media::Control),
+    /// The smart home devices in the notification panel.
+    Home(crate::home::HomeCommand),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
     /// Lists tray entries; debug entries can be added or replaced by count.
@@ -162,6 +164,18 @@ Sound, light and media:
   brightness up|down|set .. the screen's backlight
   media <what>              play-pause, play, pause, next, previous or stop
 
+Smart home ([home] in config.toml):
+  home                      list the devices with their state
+  home on|off|toggle <name> switch a light, plug or air conditioner
+  home brightness <name> <n>  dim a light to n percent
+  home colour <name> <n>    colour temperature, 0 (warm) to 100 (cool)
+  home target <name> <deg>  an air conditioner's target temperature
+  home mode <name> <mode>   auto, cool, heat, dry or fan
+  home fan <name> <speed>   auto, quiet, low, mid, high or strong
+  home all-off              switch off every light and plug
+  home select <name>        show a light's sliders in the panel
+  home fold|unfold|rooms|all  the panel block's folding and view
+
 Pretend input (headless or nested only):
   pointer <x> <y>           move the pointer
   motion <dx> <dy>          move it by this much, like a mouse (crosses to
@@ -245,6 +259,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return Ok(Command::Select(ids));
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
+        "home" => return crate::home::parse(rest).map(Command::Home),
         "doctor" => {
             // Whole words only: "doctor user" is not "doctor use r".
             let (sub, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
@@ -412,6 +427,7 @@ impl Tileception {
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
+            Command::Home(command) => return self.home_command(command),
             Command::Battery => return Ok(self.battery_status()),
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),

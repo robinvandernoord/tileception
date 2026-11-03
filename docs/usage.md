@@ -178,8 +178,9 @@ open the selected result. Use the arrow keys to choose another result and
 The launcher also handles calculations, unit conversions, file paths and URLs.
 Prefix a shell command with `>` to run it and see its output.
 
-**Super+N** opens notification history and sound controls. Use the panel's
-**Do not disturb** control to silence ordinary notification popups.
+**Super+N** opens notification history and sound controls, and your smart home
+devices once [set up](#smart-home). Use the panel's **Do not disturb** control
+to silence ordinary notification popups.
 
 In nested mode, notifications and media controls are handled by your host
 desktop by default.
@@ -239,6 +240,24 @@ built-in controls. These alternatives are available without dedicated keys:
 | Super+Ctrl+Space               | Play or pause media      |
 | Super+Ctrl+Left / Right        | Previous / next track    |
 | Super+Ctrl+Page Up / Page Down | Raise / lower brightness |
+
+### Smart home
+
+With [smart home devices](configuration.md#smart-home) set up, the notification
+panel has a **Home** block. An air conditioner shows its room temperature, a
+target you change with **-** and **+**, and its mode and fan speed. Below it are
+the lights and plugs by room, each with a switch. Click a light to show its
+brightness and colour sliders. **All** lists everything in one list instead,
+with what is on first, and **All off** switches off every light and plug.
+
+The block folds to one line while nothing is on and unfolds when something
+turns on; click its title to fold or unfold it yourself. Devices that are
+switched off at the wall show as unreachable at the bottom of their room.
+
+`tileception msg home` lists the devices, and commands such as
+`tileception msg home toggle Couch` or `tileception msg home brightness Couch 40`
+control them from scripts and key bindings; `tileception msg --help` lists them
+all.
 
 ## Gestures
 

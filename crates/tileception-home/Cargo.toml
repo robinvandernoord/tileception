@@ -1,0 +1,22 @@
+[package]
+name = "tileception-home"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local control of Tuya smart home devices for Tileception"
+
+[lints]
+workspace = true
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+crc32fast = "1"
+getrandom = "0.3"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tracing = "0.1"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+zeroize = "1"
