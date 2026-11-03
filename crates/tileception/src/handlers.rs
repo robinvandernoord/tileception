@@ -192,6 +192,11 @@ impl ShmHandler for Tileception {
 delegate_compositor!(Tileception);
 delegate_shm!(Tileception);
 
+/// Programs name a pointer shape (cursor-shape-v1) and Tileception draws it
+/// from its own theme; tablets have no pointer images of their own here.
+impl smithay::wayland::tablet_manager::TabletSeatHandler for Tileception {}
+smithay::delegate_cursor_shape!(Tileception);
+
 impl SeatHandler for Tileception {
     type KeyboardFocus = crate::focus::KeyboardFocus;
     type PointerFocus = WlSurface;

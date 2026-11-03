@@ -45,6 +45,7 @@ smithay::backend::renderer::element::render_elements! {
     Shape = PixelShaderElement,
     Texture = TextureRenderElement<GlesTexture>,
     Clipped = CropRenderElement<AreaElement>,
+    Backdrop = crate::frost::Backdrop,
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -213,12 +214,14 @@ impl Tileception {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
+        self.frost.borrow_mut().begin();
         let others = self.other_area_elements(renderer, now);
-        let mut elements = self.render_elements(renderer, now, others);
+        let (mut elements, scene) = self.render_elements(renderer, now, others);
         if let Some(buffer) = wallpaper {
             let output_rect = self.output_rect();
             push_image(&mut elements, renderer, &buffer, (output_rect.x, output_rect.y), self.scale);
         }
+        self.add_frost(renderer, &mut elements, scene);
         if self.fade_in == FadeIn::Waiting {
             self.fade_in = FadeIn::Since(std::time::Instant::now());
         }
@@ -248,19 +251,22 @@ impl Tileception {
         elements
     }
 
-    /// The whole frame but the wallpaper; `others` are the other areas' windows.
+    /// The whole frame but the wallpaper; `others` are the other areas'
+    /// windows. Also returns where the scene under Tileception's panels (the
+    /// windows, layers and wallpaper) starts, for frost.
     pub fn render_elements(
         &self,
         renderer: &mut GlesRenderer,
         now: f64,
         others: Vec<OutputElement>,
-    ) -> Vec<OutputElement> {
+    ) -> (Vec<OutputElement>, usize) {
         if self.is_locked() {
             // Only the locker (and the volume card); black where it has not drawn yet.
             let mut elements = self.osd_elements(renderer);
             elements.extend(self.lock_elements(renderer));
+            let scene = elements.len();
             elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0], self.scale));
-            return elements;
+            return (elements, scene);
         }
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
@@ -295,6 +301,7 @@ impl Tileception {
             elements.extend(self.selection_elements(renderer));
         }
         elements.extend(self.bar_elements(renderer));
+        let scene = elements.len();
 
         // Then bars. A fullscreen window covers everything but the above
         // and its own X11 menus.
@@ -310,7 +317,7 @@ impl Tileception {
                     elements.extend(enlarged(surfaces, origin, self.scale));
                 }
             }
-            return elements;
+            return (elements, scene);
         }
         elements.extend(self.layer_elements(renderer, &[Layer::Top]));
 
@@ -351,7 +358,7 @@ impl Tileception {
 
         // Bottommost: desktop widgets and wallpaper.
         elements.extend(self.layer_elements(renderer, &[Layer::Bottom, Layer::Background]));
-        elements
+        (elements, scene)
     }
 
     /// The context area's windows, tabs and tiles, topmost first: cut to the
@@ -591,7 +598,8 @@ impl Tileception {
         if cursor.scale != scale {
             *cursor = Cursor::load(scale);
         }
-        match &self.cursor_status {
+        let mut next_frame = None;
+        let elements = match &self.cursor_status {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
                 let hotspot = smithay::wayland::compositor::with_states(surface, |states| {
@@ -605,14 +613,16 @@ impl Tileception {
                 let surfaces = render_elements_from_surface_tree(renderer, surface, origin, 1.0, 1.0, Kind::Cursor);
                 enlarged(surfaces, origin, scale).collect()
             }
-            CursorImageStatus::Named(_) => {
+            CursorImageStatus::Named(icon) => {
                 // The theme's image is loaded at the scale, its hotspot in its own pixels.
-                let hot = cursor.hotspot;
+                let (frame, next) = cursor.shape(*icon);
+                let (buffer, hot) = (frame.buffer, frame.hotspot);
+                next_frame = next;
                 let position = ((pos.x * scale).round() - hot.x as f64, (pos.y * scale).round() - hot.y as f64);
                 MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
                     position,
-                    &cursor.buffer,
+                    &buffer,
                     None,
                     None,
                     None,
@@ -621,6 +631,28 @@ impl Tileception {
                 .map(|element| vec![OutputElement::Memory(element)])
                 .unwrap_or_default()
             }
+        };
+        if let Some(wait) = next_frame {
+            self.wake_for_cursor(wait);
+        }
+        elements
+    }
+
+    /// Asks for a frame when an animated pointer's next picture is due:
+    /// nothing else may change on screen meanwhile.
+    pub(crate) fn wake_for_cursor(&mut self, wait: std::time::Duration) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        if self.cursor_wake_pending {
+            return;
+        }
+        self.cursor_wake_pending = true;
+        let inserted = self.loop_handle.insert_source(Timer::from_duration(wait), |_, _, state| {
+            state.cursor_wake_pending = false;
+            state.schedule_render();
+            TimeoutAction::Drop
+        });
+        if inserted.is_err() {
+            self.cursor_wake_pending = false;
         }
     }
 

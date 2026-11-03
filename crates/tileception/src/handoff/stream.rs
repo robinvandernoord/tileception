@@ -8,9 +8,11 @@
 //!
 //! The pointer over such a window goes along too: when the other machine's
 //! pointer is over it and its program sets a pointer picture of its own,
-//! that picture is sent whenever it changes.
+//! that picture is sent whenever it changes. A shape it asks for by name is
+//! sent from this machine's cursor theme, frame by frame when it is animated.
 
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -33,7 +35,7 @@ use smithay::{
         },
     },
     desktop::{PopupManager, Window, utils::bbox_from_surface_tree},
-    input::pointer::{CursorImageAttributes, CursorImageStatus},
+    input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
     reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{Buffer, IsAlive, Logical, Rectangle, Scale, Size, Transform},
     wayland::compositor::with_states,
@@ -71,19 +73,30 @@ pub(crate) struct CursorCapture {
     texture: Option<GlesTexture>,
     damage: Option<OutputDamageTracker>,
     size: (i32, i32),
+    /// The theme, for shapes programs ask for by name.
+    named: Option<crate::cursor::Cursor>,
+    /// Each named shape's frames packed once, so an animation going round
+    /// packs nothing new.
+    packed: HashMap<(CursorIcon, usize), PointerImage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Told {
     Default,
     Hidden,
+    /// The theme frame and scale last sent for a named shape.
+    Named(CursorIcon, usize, f64),
     /// The program's own pointer surface, sent again whenever it changes.
     Surface(ObjectId),
 }
 
 impl CursorCapture {
     fn forget(&mut self) {
+        let named = self.named.take();
+        let packed = std::mem::take(&mut self.packed);
         *self = CursorCapture::default();
+        self.named = named;
+        self.packed = packed;
     }
 }
 
@@ -293,6 +306,32 @@ impl Tileception {
         let status = self.cursor_status.clone();
         let capture = &mut self.handoff.windows.cursor;
         let (told, image) = match &status {
+            CursorImageStatus::Named(icon) => {
+                if capture.named.as_ref().is_none_or(|cursor| cursor.scale != scale) {
+                    capture.named = Some(crate::cursor::Cursor::load(scale));
+                    capture.packed.clear();
+                }
+                let Some(cursor) = capture.named.as_mut() else { return };
+                let (frame, next) = cursor.shape(*icon);
+                let told = Told::Named(*icon, frame.index, scale);
+                let unchanged = capture.told.as_ref() == Some(&(window, told.clone()));
+                // The theme's pixels are at hand: packed once per frame, no GPU.
+                let image = (!unchanged).then(|| {
+                    capture
+                        .packed
+                        .entry((*icon, frame.index))
+                        .or_insert_with(|| {
+                            let hotspot = (frame.hotspot.x.max(0) as u32, frame.hotspot.y.max(0) as u32);
+                            pack_pointer(frame.width, frame.height, hotspot, scale, &frame.pixels)
+                        })
+                        .clone()
+                });
+                if let Some(wait) = next {
+                    self.wake_for_cursor(wait);
+                }
+                let Some(image) = image else { return };
+                (told, image)
+            }
             CursorImageStatus::Surface(surface) if surface.alive() => {
                 let told = Told::Surface(surface.id());
                 if capture.told.as_ref() != Some(&(window, told.clone())) {
@@ -310,6 +349,7 @@ impl Tileception {
             CursorImageStatus::Hidden => (Told::Hidden, PointerImage::Hidden),
             _ => (Told::Default, PointerImage::Default),
         };
+        let capture = &mut self.handoff.windows.cursor;
         if !matches!(told, Told::Surface(_)) {
             if capture.told.as_ref() == Some(&(window, told.clone())) {
                 return;

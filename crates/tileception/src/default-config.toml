@@ -76,6 +76,9 @@ autostart = []
 # What applications are told through the desktop portal: dark, light, or
 # default (each application's own choice).
 # colour_scheme = "dark"
+# Frost: the bar, launcher, notifications, menus and cards turn translucent
+# and blur what is behind them. Windows stay solid.
+# frost = false
 
 [idle]
 # Seconds of inactivity; 0 disables the corresponding action.

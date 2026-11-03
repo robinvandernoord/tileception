@@ -431,7 +431,8 @@ impl Tileception {
         let mut painter = Painter::new(self, renderer);
         let shown = ease_out(menu.opened.elapsed().as_secs_f64() / 0.16);
         painter.alpha = shown as f32;
-        painter.fill(screen, Colour([0.0, 0.0, 0.0, 0.62]), 0.0);
+        // Frosted, the scrim is lighter: the blur already sets the menu apart.
+        painter.frosted(screen, Shape::filled(Colour([0.0, 0.0, 0.0, 0.62]), 0.0));
         painter.offset = (0.0, (1.0 - shown) * 10.0);
 
         if menu.page != Page::Main {
@@ -484,7 +485,11 @@ impl Tileception {
                         radius: theme.radius,
                         border_width: 1.0,
                         border: if active { theme.accent } else { theme.border },
-                        fill: if active { (theme.accent, theme.accent_end) } else { (theme.popup(), theme.popup()) },
+                        fill: if active {
+                            (theme.accent, theme.accent_end)
+                        } else {
+                            (theme.panel(theme.popup()), theme.panel(theme.popup()))
+                        },
                         ..Default::default()
                     },
                 );
@@ -527,7 +532,11 @@ impl Tileception {
                     radius: theme.radius,
                     border_width: 1.0,
                     border: if active { theme.accent.alpha(0.7) } else { theme.border },
-                    fill: if active { (theme.accent, theme.accent_end) } else { (theme.popup(), theme.popup()) },
+                    fill: if active {
+                        (theme.accent, theme.accent_end)
+                    } else {
+                        (theme.panel(theme.popup()), theme.panel(theme.popup()))
+                    },
                     glow_radius: if active { theme.glow * 0.5 } else { 0.0 },
                     glow: theme.accent.alpha(0.16),
                     ..Default::default()

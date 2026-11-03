@@ -26,6 +26,7 @@ mod doctor_policy;
 mod drag;
 mod duck;
 mod focus;
+mod frost;
 mod gestures;
 mod global_shortcuts;
 mod greeter;

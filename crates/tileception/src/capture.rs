@@ -116,11 +116,13 @@ impl Tileception {
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let now = self.now();
+        self.frost.borrow_mut().begin();
         let others = self.other_area_elements(renderer, now);
-        let mut elements = self.render_elements(renderer, now, others);
+        let (mut elements, under) = self.render_elements(renderer, now, others);
         if let Some(buffer) = wallpaper {
             crate::render::push_image(&mut elements, renderer, &buffer, (0.0, 0.0), self.scale);
         }
+        self.add_frost(renderer, &mut elements, under);
         Scene { elements, size: self.output_pixels(), clear: self.clear_colour() }
     }
 

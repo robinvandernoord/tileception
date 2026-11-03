@@ -8,9 +8,10 @@ if [ -z "$SSH_AUTH_SOCK" ] && command -v ssh-agent >/dev/null 2>&1; then
     exec ssh-agent "$0" "$@"
 fi
 
-# Cursor theme from the desktop settings, when there are any.
+# Cursor theme from the desktop settings, when there are any. GNOME's first:
+# GTK applications read that one, so every window shows the same pointer.
 if [ -z "${XCURSOR_THEME}" ] && command -v gsettings >/dev/null 2>&1; then
-    for schema in org.cinnamon.desktop.interface org.gnome.desktop.interface; do
+    for schema in org.gnome.desktop.interface org.cinnamon.desktop.interface; do
         theme=$(gsettings get "$schema" cursor-theme 2>/dev/null | tr -d "'")
         size=$(gsettings get "$schema" cursor-size 2>/dev/null)
         if [ -n "$theme" ]; then
