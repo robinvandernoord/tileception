@@ -51,18 +51,15 @@ language as the bindings.
 
 ## Roadmap
 
-### Known bugs
+### Next
 
-- Right-click menus in streamed (handoff) windows do not show on the other
-  machine (found 2026-10-30). Not found by reading; the owner logs each menu
-  of a streamed window (position and room, grab taken or refused, closed for
-  lost keyboard focus) and the other machine logs how many it shows.
+- Frost on the lock screen and the login screen, so `[theme] frost = true`
+  covers every panel Tileception draws. Part of `feature/frost`; finish it
+  before that branch merges.
 
 ### Later
 
 - A settings window instead of editing the config file.
-- Frost on the lock screen and the login screen (`[theme] frost = true`
-  covers the bar, launcher, notifications, power menu and cards).
 
 ### Maybe someday
 
