@@ -1,5 +1,5 @@
 //! One device's connection, on its own thread: connect, negotiate a
-//! session on 3.5, ask for the state, then keep the connection open with
+//! session on 3.4 or 3.5, ask for the state, then keep the connection open with
 //! heartbeats and pass on what the device reports. A change is shown at
 //! once and confirmed by the device's report; without one it is asked
 //! for again.
@@ -48,7 +48,7 @@ impl Link {
         let stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).map_err(|err| err.to_string())?;
         let _ = stream.set_nodelay(true);
         let mut link = Link { stream, codec: Codec::new(version, Side::Client, key), buffer: Vec::new() };
-        if version == Version::V35 {
+        if matches!(version, Version::V34 | Version::V35) {
             let (nonce, start) = link.codec.session_start();
             link.write(&start)?;
             let deadline = Instant::now() + CONNECT_TIMEOUT;
@@ -114,42 +114,43 @@ pub(crate) struct Payloads<'a> {
 
 impl Payloads<'_> {
     pub(crate) fn query(&self, model_ids: &[String]) -> (u32, Vec<u8>) {
-        let device_id = self.device_id;
+        let device = self.device_id;
+        let time = now_secs().to_string();
         match self.version {
-            Version::V35 => (command::QUERY_NEW, b"{}".to_vec()),
+            Version::V34 | Version::V35 => (command::QUERY_NEW, b"{}".to_vec()),
             Version::V33 if self.device22 => {
                 let dps: Map<String, Value> = model_ids.iter().map(|point| (point.clone(), Value::Null)).collect();
-                let body = json!({"devId": device_id, "uid": device_id, "t": now_secs().to_string(), "dps": dps});
+                let body = json!({"devId": device, "uid": device, "t": time, "dps": dps});
                 (command::CONTROL_NEW, body.to_string().into_bytes())
             }
             Version::V33 => {
-                let body =
-                    json!({"gwId": device_id, "devId": device_id, "uid": device_id, "t": now_secs().to_string()});
+                let body = json!({"gwId": device, "devId": device, "uid": device, "t": time});
                 (command::QUERY, body.to_string().into_bytes())
             }
         }
     }
 
     pub(crate) fn control(&self, dps: &Map<String, Value>) -> (u32, Vec<u8>) {
-        let device_id = self.device_id;
+        let device = self.device_id;
         match self.version {
-            Version::V35 => {
+            Version::V34 | Version::V35 => {
                 let body = json!({"protocol": 5, "t": now_secs(), "data": {"dps": dps}});
                 (command::CONTROL_NEW, body.to_string().into_bytes())
             }
             Version::V33 => {
-                let body = json!({"devId": device_id, "uid": device_id, "t": now_secs().to_string(), "dps": dps});
+                let body = json!({"devId": device, "uid": device, "t": now_secs().to_string(), "dps": dps});
                 (command::CONTROL, body.to_string().into_bytes())
             }
         }
     }
 
     pub(crate) fn heartbeat(&self) -> (u32, Vec<u8>) {
-        (command::HEARTBEAT, json!({"gwId": self.device_id, "devId": self.device_id}).to_string().into_bytes())
+        let device = self.device_id;
+        (command::HEARTBEAT, json!({"gwId": device, "devId": device}).to_string().into_bytes())
     }
 }
 
-/// The data points in a status payload: `{"dps": ...}`, or on 3.5
+/// The data points in a status payload: `{"dps": ...}`, or on 3.4 and 3.5
 /// `{"data": {"dps": ...}}`.
 pub(crate) fn reported_dps(payload: &[u8]) -> Option<Map<String, Value>> {
     let value: Value = serde_json::from_slice(payload).ok()?;
@@ -159,6 +160,7 @@ pub(crate) fn reported_dps(payload: &[u8]) -> Option<Map<String, Value>> {
 
 /// What a worker needs to find its device.
 pub(crate) struct Target {
+    /// The device as imported: its id, model and data point mapping.
     pub entry: DeviceEntry,
     pub model: Model,
     pub key: [u8; 16],
@@ -181,7 +183,8 @@ fn run(target: Target, shared: Shared, requests: mpsc::Receiver<Change>, stop: A
     let mut failures = 0u32;
     let mut down_since: Option<SystemTime> = None;
     let mut flags = Flags { device22: target.entry.device_id.len() == 22, answered: false };
-    // With no version known, alternate guesses until one answers.
+    // With no version known, cycle the guesses until one answers.
+    let guesses = [Version::V33, Version::V35, Version::V34];
     let mut guess = 0usize;
     while !stop.load(Ordering::Relaxed) {
         let Some((host, version)) = shared.address(&target.entry) else {
@@ -196,8 +199,9 @@ fn run(target: Target, shared: Shared, requests: mpsc::Receiver<Change>, stop: A
             continue;
         };
         let version = version.unwrap_or_else(|| {
+            let version = guesses[guess % guesses.len()];
             guess += 1;
-            if guess % 2 == 1 { Version::V33 } else { Version::V35 }
+            version
         });
         let port = target.entry.port.unwrap_or(PORT);
         let address = SocketAddr::new(host, port);

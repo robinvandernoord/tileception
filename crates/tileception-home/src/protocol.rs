@@ -1,11 +1,13 @@
-//! The Tuya LAN protocol, versions 3.3 and 3.5: framing, encryption and the
-//! 3.5 session key handshake, for both ends of a connection (the simulated
-//! device in [`crate::sim`] uses the device's end).
+//! The Tuya LAN protocol, versions 3.3, 3.4 and 3.5: framing, encryption and
+//! the 3.4 and 3.5 session key handshakes, for both ends of a connection
+//! (the simulated device in [`crate::sim`] uses the device's end).
 //!
-//! 3.3 frames start with `0x000055AA`, carry an AES-128-ECB payload under the
-//! device's local key and end in a CRC32. 3.5 frames start with `0x00006699`
-//! and are AES-128-GCM under a session key that both ends derive from two
-//! nonces at the start of every connection.
+//! 3.3 frames start with `0x000055AA`, carry an AES-128-ECB payload under
+//! the local key and end in CRC32. 3.4 uses the same prefix and `0x0000AA55`
+//! suffix, but authenticates frames with HMAC-SHA256 and negotiates an ECB
+//! session key. Its version header is inside the encryption. 3.5 frames start
+//! with `0x00006699` and are AES-128-GCM under a session key that both ends
+//! derive from two nonces at the start of every connection.
 
 use aes::{
     Aes128,
@@ -45,6 +47,8 @@ pub const UDP_KEY: [u8; 16] = [108, 30, 200, 226, 187, 155, 181, 154, 181, 11, 1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     V33,
+    /// HMAC-SHA256 framing and AES-128-ECB with a negotiated session key.
+    V34,
     V35,
 }
 
@@ -52,6 +56,7 @@ impl Version {
     pub fn parse(text: &str) -> Option<Version> {
         match text.trim() {
             "3.3" => Some(Version::V33),
+            "3.4" => Some(Version::V34),
             "3.5" => Some(Version::V35),
             _ => None,
         }
@@ -60,6 +65,7 @@ impl Version {
     pub fn as_str(self) -> &'static str {
         match self {
             Version::V33 => "3.3",
+            Version::V34 => "3.4",
             Version::V35 => "3.5",
         }
     }
@@ -118,7 +124,7 @@ pub struct Codec {
     version: Version,
     side: Side,
     local_key: [u8; 16],
-    /// The local key, or on 3.5 the session key once negotiated.
+    /// The local key, or on 3.4 and 3.5 the session key once negotiated.
     key: [u8; 16],
     seq: u32,
 }
@@ -170,6 +176,30 @@ impl Codec {
                 }
                 frame_55aa(seq, command, &body)
             }
+            Version::V34 => {
+                let mut plain = Vec::new();
+                let mut body = Vec::new();
+                if let Some(code) = retcode {
+                    body.extend_from_slice(&code.to_be_bytes());
+                }
+                // Device acknowledgements have only the clear return code.
+                if !payload.is_empty() || self.side == Side::Client {
+                    if let Some(header) = header {
+                        plain.extend_from_slice(&header);
+                    }
+                    plain.extend_from_slice(payload);
+                    body.extend_from_slice(&ecb_encrypt(&self.key, &plain));
+                }
+                let mut out = Vec::new();
+                out.extend_from_slice(&PREFIX_55AA.to_be_bytes());
+                out.extend_from_slice(&seq.to_be_bytes());
+                out.extend_from_slice(&command.to_be_bytes());
+                out.extend_from_slice(&((body.len() + 36) as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out.extend_from_slice(&hmac(&self.key, &out));
+                out.extend_from_slice(&SUFFIX_55AA.to_be_bytes());
+                out
+            }
             Version::V35 => {
                 let mut plain = Vec::new();
                 if let Some(code) = retcode {
@@ -190,7 +220,7 @@ impl Codec {
         decode_frame(buffer, &self.key, self.side, self.version)
     }
 
-    /// The client's first handshake message on 3.5, and the nonce to keep.
+    /// The client's first handshake message on 3.4 or 3.5, and the nonce to keep.
     pub fn session_start(&mut self) -> ([u8; 16], Vec<u8>) {
         let mut nonce = [0; 16];
         random(&mut nonce);
@@ -211,7 +241,7 @@ impl Codec {
             return Err(Error::Handshake);
         }
         let message = self.encode(command::SESSION_FINISH, &hmac(&self.local_key, &remote_nonce));
-        Ok((message, session_key(&self.local_key, local_nonce, &remote_nonce)))
+        Ok((message, self.session_key(local_nonce, &remote_nonce)))
     }
 
     /// The device's reply to a client's handshake start, and its own nonce.
@@ -233,7 +263,21 @@ impl Codec {
         if !hmac_verify(&self.local_key, remote_nonce, finish) {
             return Err(Error::Handshake);
         }
-        Ok(session_key(&self.local_key, local_nonce, remote_nonce))
+        Ok(self.session_key(local_nonce, remote_nonce))
+    }
+
+    fn session_key(&self, local_nonce: &[u8; 16], remote_nonce: &[u8; 16]) -> [u8; 16] {
+        if self.version == Version::V34 {
+            let mut mixed = [0; 16];
+            for (index, byte) in mixed.iter_mut().enumerate() {
+                *byte = local_nonce[index] ^ remote_nonce[index];
+            }
+            let cipher = Aes128::new(GenericArray::from_slice(&self.local_key));
+            cipher.encrypt_block(GenericArray::from_mut_slice(&mut mixed));
+            mixed
+        } else {
+            session_key(&self.local_key, local_nonce, remote_nonce)
+        }
     }
 }
 
@@ -305,31 +349,50 @@ pub fn decode_frame(
                 return Ok(None);
             }
             let len = be32(&buffer[12..]) as usize;
-            if !(8..=MAX_LEN).contains(&len) {
+            let trailer = if version == Version::V34 { 36 } else { 8 };
+            if !(trailer..=MAX_LEN).contains(&len) {
                 return Err(Error::Malformed("length"));
             }
             let total = 16 + len;
             if buffer.len() < total {
                 return Ok(None);
             }
-            if crc32fast::hash(&buffer[..total - 8]) != be32(&buffer[total - 8..]) {
+            if be32(&buffer[total - 4..]) != SUFFIX_55AA {
+                return Err(Error::Malformed("suffix"));
+            }
+            let end = total - trailer;
+            let valid = if version == Version::V34 {
+                hmac_verify(key, &buffer[..end], &buffer[end..total - 4])
+            } else {
+                crc32fast::hash(&buffer[..end]) == be32(&buffer[end..])
+            };
+            if !valid {
                 return Err(Error::Integrity);
             }
-            let mut body = &buffer[16..total - 8];
+            let mut body = &buffer[16..end];
             let mut retcode = None;
             // A return code comes before any version header; an encrypted
             // payload alone is a whole number of blocks.
-            if side == Side::Client && !body.starts_with(b"3.") && body.len() >= 4 {
+            if side == Side::Client && version == Version::V34 {
+                if body.len() < 4 {
+                    return Err(Error::Malformed("missing return code"));
+                }
+                retcode = Some(be32(body));
+                body = &body[4..];
+            } else if side == Side::Client && !body.starts_with(b"3.") && body.len() >= 4 {
                 let rest = &body[4..];
                 if rest.is_empty() || rest.len().is_multiple_of(16) || rest.starts_with(b"3.") {
                     retcode = Some(be32(body));
                     body = rest;
                 }
             }
-            if body.starts_with(b"3.") && body.len() >= 15 {
+            if version != Version::V34 && body.starts_with(b"3.") && body.len() >= 15 {
                 body = &body[15..];
             }
-            let payload = if body.is_empty() { Vec::new() } else { ecb_decrypt(key, body)? };
+            let mut payload = if body.is_empty() { Vec::new() } else { ecb_decrypt(key, body)? };
+            if version == Version::V34 && payload.starts_with(b"3.4") && payload.len() >= 15 {
+                payload.drain(..15);
+            }
             let frame = Frame { seq: be32(&buffer[4..]), command: be32(&buffer[8..]), retcode, payload };
             Ok(Some((frame, total)))
         }
@@ -471,6 +534,11 @@ mod tests {
     #[test]
     fn frames_roundtrip_on_3_3() {
         roundtrip(Version::V33);
+    }
+
+    #[test]
+    fn frames_roundtrip_on_3_4() {
+        roundtrip(Version::V34);
     }
 
     #[test]

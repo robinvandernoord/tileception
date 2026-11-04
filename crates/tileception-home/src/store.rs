@@ -68,7 +68,8 @@ pub struct DeviceEntry {
     /// Only for simulated devices: Tuya devices listen on 6668.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// "3.3" or "3.5"; announcements fill it in when missing.
+    /// "3.3", "3.4" or "3.5"; announcements fill it in when missing.
+    /// 3.4 negotiates a session key for AES-128-ECB and HMAC-SHA256 framing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// A device behind a gateway: the gateway's id and this device's node id.

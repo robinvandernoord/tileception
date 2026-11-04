@@ -52,7 +52,12 @@ impl SimDevice {
         let dps = Arc::new(Mutex::new(dps));
         let clients: Clients = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
-        let shared = (device_id.to_string(), dps.clone(), clients.clone(), stop.clone());
+        let shared = Context {
+            device_id: device_id.to_string(),
+            dps: dps.clone(),
+            clients: clients.clone(),
+            stop: stop.clone(),
+        };
         let thread = std::thread::Builder::new()
             .name(format!("sim-{device_id}"))
             .spawn(move || accept(&listener, key, version, &shared))?;
@@ -80,17 +85,23 @@ impl Drop for SimDevice {
     }
 }
 
-type Context = (String, Arc<Mutex<Map<String, Value>>>, Clients, Arc<AtomicBool>);
+#[derive(Clone)]
+struct Context {
+    device_id: String,
+    dps: Arc<Mutex<Map<String, Value>>>,
+    clients: Clients,
+    stop: Arc<AtomicBool>,
+}
 
 fn accept(listener: &TcpListener, key: [u8; 16], version: Version, context: &Context) {
-    let stop = &context.3;
+    let stop = &context.stop;
     let mut connections = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
                 let context = context.clone();
                 if let Ok(thread) = std::thread::Builder::new()
-                    .name(format!("sim-{}-conn", context.0))
+                    .name(format!("sim-{}-conn", context.device_id))
                     .spawn(move || serve(stream, key, version, &context))
                 {
                     connections.push(thread);
@@ -106,15 +117,19 @@ fn accept(listener: &TcpListener, key: [u8; 16], version: Version, context: &Con
 }
 
 fn serve(mut stream: TcpStream, key: [u8; 16], version: Version, context: &Context) {
-    let (device_id, dps, clients, stop) = context;
+    let Context { device_id, dps, clients, stop } = context;
     let (pushes, pushed) = mpsc::channel();
     lock(clients).push(pushes);
     let mut codec = Codec::new(version, Side::Device, key);
     let mut nonces: Option<([u8; 16], [u8; 16])> = None;
+    let mut ready = version != Version::V34;
     let mut buffer = Vec::new();
     let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
     while !stop.load(Ordering::Relaxed) {
         while let Ok(changed) = pushed.try_recv() {
+            if !ready {
+                continue;
+            }
             let body = status_body(device_id, version, &changed);
             if stream.write_all(&codec.encode(command::STATUS, &body)).is_err() {
                 return;
@@ -135,9 +150,15 @@ fn serve(mut stream: TcpStream, key: [u8; 16], version: Version, context: &Conte
                 Err(_) => return,
             };
             buffer.drain(..used);
+            if !ready && !matches!(frame.command, command::SESSION_START | command::SESSION_FINISH) {
+                return;
+            }
             let mut replies = Vec::new();
             match frame.command {
-                command::SESSION_START if version == Version::V35 => {
+                command::SESSION_START if matches!(version, Version::V34 | Version::V35) => {
+                    if version == Version::V34 && frame.payload.len() != 16 {
+                        return;
+                    }
                     let (remote, reply) = codec.session_reply(frame.seq, &frame.payload);
                     let mut local = [0; 16];
                     if frame.payload.len() == 16 {
@@ -150,6 +171,7 @@ fn serve(mut stream: TcpStream, key: [u8; 16], version: Version, context: &Conte
                     let Some((local, remote)) = nonces.take() else { return };
                     let Ok(session) = codec.session_accept(&local, &remote, &frame.payload) else { return };
                     codec.set_session_key(session);
+                    ready = true;
                 }
                 command::QUERY | command::QUERY_NEW => {
                     let body = status_body(device_id, version, &lock(dps));
@@ -185,7 +207,7 @@ fn serve(mut stream: TcpStream, key: [u8; 16], version: Version, context: &Conte
 fn status_body(device_id: &str, version: Version, dps: &Map<String, Value>) -> Vec<u8> {
     let body = match version {
         Version::V33 => json!({"devId": device_id, "dps": dps, "t": 0}),
-        Version::V35 => json!({"protocol": 4, "t": 0, "data": {"devId": device_id, "dps": dps}}),
+        Version::V34 | Version::V35 => json!({"protocol": 4, "t": 0, "data": {"devId": device_id, "dps": dps}}),
     };
     body.to_string().into_bytes()
 }
@@ -207,8 +229,9 @@ fn object(value: Value) -> Map<String, Value> {
 }
 
 /// A small household like a real one: spots and bulbs on 3.3, an air
-/// conditioner on 3.5, a battery sensor that only reports to the cloud and
-/// a lamp that is switched off at the wall.
+/// conditioner on 3.5, a plug on 3.4, a battery sensor that only reports
+/// to the cloud and a lamp that is
+/// switched off at the wall.
 /// Name, room, category, version, data points and their mapping.
 type Spec = (
     &'static str,
@@ -244,6 +267,12 @@ pub fn household() -> std::io::Result<Household> {
         ("1", "va_temperature", "Integer", json!({"min": -200, "max": 600, "scale": 1, "step": 1})),
         ("2", "va_humidity", "Integer", json!({"min": 0, "max": 100, "scale": 0, "step": 1})),
     ]);
+    let plug = || {
+        mapping(&[
+            ("1", "switch", "Boolean", Value::Null),
+            ("20", "cur_power", "Integer", json!({"min": 0, "max": 50000, "scale": 1, "step": 1})),
+        ])
+    };
     let lit = |switched: bool, bright: i64, temp: i64| {
         object(json!({"20": switched, "21": "white", "22": bright, "23": temp}))
     };
@@ -260,6 +289,7 @@ pub fn household() -> std::io::Result<Household> {
         ),
         ("Desk lamp", "Office", "dj", Version::V33, lit(true, 400, 500), light()),
         ("Bedside lamp", "Bedroom", "dj", Version::V33, lit(false, 300, 0), light()),
+        ("Heater plug", "Office", "cz", Version::V34, object(json!({"1": true, "20": 1250})), plug()),
     ];
     let mut devices = Vec::new();
     let mut file = DeviceFile { source: "simulated".into(), devices: Vec::new(), cloud: None };
