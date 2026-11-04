@@ -252,7 +252,7 @@ impl HomeService {
                 } else if key.is_none() {
                     Reach::Unsupported("no local key".into())
                 } else if entry.host.is_none() && model.kind == Kind::Sensor {
-                    if file.cloud.is_some() {
+                    if file.cloud.as_ref().is_some_and(|access| access.poll_sensors) {
                         polled.push(cloud::Polled {
                             slot,
                             device_id: entry.device_id.clone(),
@@ -304,7 +304,7 @@ impl HomeService {
             }
         }
         let discovery = options.discovery.then(|| discovery::Listener::start(shared.clone(), stop.clone()));
-        let poller = match (&file.cloud, polled.is_empty()) {
+        let poller = match (file.cloud.as_ref().filter(|access| access.poll_sensors), polled.is_empty()) {
             (Some(access), false) => cloud::start_polling(access.clone(), polled, shared.clone(), stop.clone()),
             _ => None,
         };

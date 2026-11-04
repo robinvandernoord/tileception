@@ -1,6 +1,6 @@
-//! The one-time import from Tuya's cloud: devices with their names, rooms,
-//! local keys and data point mappings. Only `tileception home import` calls
-//! it; controlling devices afterwards never touches the cloud.
+//! Imports and startup inventory refreshes from Tuya's cloud: devices with
+//! their names, rooms, local keys and data point mappings. Device controls
+//! use the LAN; cloud-only sensors are polled separately.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -43,6 +43,14 @@ struct Client {
 }
 
 impl Client {
+    fn optional_get(&self, path: &str, required: bool) -> Result<Option<Value>, String> {
+        match self.get(path) {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if required => Err(err),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Signs and sends a GET; `path` includes its query, keys sorted.
     fn get(&self, path: &str) -> Result<Value, String> {
         let time = std::time::SystemTime::now()
@@ -108,6 +116,35 @@ fn text(value: &Value, key: &str) -> Option<String> {
 /// Fetches every device linked to the project. `progress` hears what is
 /// happening, for the command line.
 pub fn import(credentials: Credentials, progress: &mut dyn FnMut(&str)) -> Result<DeviceFile, String> {
+    fetch(credentials, progress, false)
+}
+
+/// Refreshes the inventory using credentials already retained by the user.
+/// Every request must succeed before replacing the cache. LAN addresses and
+/// protocol versions survive the cloud import, which does not supply them.
+pub fn refresh(cached: &DeviceFile) -> Result<DeviceFile, String> {
+    let access = cached.cloud.as_ref().ok_or("no saved Tuya credentials")?;
+    let credentials = Credentials {
+        client_id: access.client_id.clone(),
+        secret: Zeroizing::new(access.secret.clone()),
+        region: access.region.clone(),
+    };
+    let mut refreshed = fetch(credentials, &mut |_| {}, true)?;
+    refreshed.cloud = cached.cloud.clone();
+    for device in &mut refreshed.devices {
+        if let Some(previous) = cached.devices.iter().find(|old| old.device_id == device.device_id) {
+            device.host = previous.host.clone();
+            device.version = previous.version.clone();
+            // Some listing endpoints omit keys even on successful requests.
+            if device.key.is_empty() {
+                device.key = previous.key.clone();
+            }
+        }
+    }
+    Ok(refreshed)
+}
+
+fn fetch(credentials: Credentials, progress: &mut dyn FnMut(&str), strict: bool) -> Result<DeviceFile, String> {
     progress("Signing in to Tuya...");
     let client = Client::sign_in(credentials)?;
 
@@ -144,7 +181,7 @@ pub fn import(credentials: Credentials, progress: &mut dyn FnMut(&str)) -> Resul
                     "/v1.3/iot-03/devices?last_row_key={key}&page_size=75&source_id={uid}&source_type=tuyaUser"
                 );
             }
-            let Ok(page) = client.get(&path) else { break };
+            let Some(page) = client.optional_get(&path, strict)? else { break };
             for device in page.get("list").and_then(Value::as_array).into_iter().flatten() {
                 if let Some(device_id) = text(device, "id") {
                     details.insert(device_id, device.clone());
@@ -163,12 +200,12 @@ pub fn import(credentials: Credentials, progress: &mut dyn FnMut(&str)) -> Resul
     let homes: std::collections::BTreeSet<String> =
         listed.iter().filter_map(|device| text(device, "owner_id")).collect();
     for home in homes {
-        if let Ok(found) = client.get(&format!("/v1.0/homes/{home}"))
+        if let Some(found) = client.optional_get(&format!("/v1.0/homes/{home}"), strict)?
             && let Some(name) = text(&found, "name")
         {
             home_names.insert(home.clone(), name);
         }
-        let Ok(list) = client.get(&format!("/v1.0/homes/{home}/rooms")) else {
+        let Some(list) = client.optional_get(&format!("/v1.0/homes/{home}/rooms"), strict)? else {
             progress("Rooms are not available (is Smart Home Basic Service subscribed?); devices stay in one list.");
             break;
         };
@@ -177,7 +214,9 @@ pub fn import(credentials: Credentials, progress: &mut dyn FnMut(&str)) -> Resul
                 continue;
             };
             let room_id = room_id.trim_matches('"').to_string();
-            if let Ok(Value::Array(devices)) = client.get(&format!("/v1.0/homes/{home}/rooms/{room_id}/devices")) {
+            if let Some(Value::Array(devices)) =
+                client.optional_get(&format!("/v1.0/homes/{home}/rooms/{room_id}/devices"), strict)?
+            {
                 for device in devices {
                     if let Some(device_id) = text(&device, "id") {
                         rooms.insert(device_id, name.clone());
@@ -198,7 +237,7 @@ pub fn import(credentials: Credentials, progress: &mut dyn FnMut(&str)) -> Resul
             Some(mapping) => mapping.clone(),
             None => {
                 let mapping = client
-                    .get(&format!("/v1.1/devices/{device_id}/specifications"))
+                    .optional_get(&format!("/v1.1/devices/{device_id}/specifications"), strict)?
                     .map(|spec| specification(&spec))
                     .unwrap_or_default();
                 if !product.is_empty() {

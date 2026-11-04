@@ -69,6 +69,10 @@ language as the bindings.
 - Smart home settings window integration: import devices, configure cloud
   sensors and switch `[home] enabled` from the settings window. Deferred to a
   future update; not a blocker for merging `feature/smart-home`.
+- Smart home inventory refresh: add a manual refresh action in the future
+  settings screen. Startup refresh is implemented in the background, with
+  credential retention chosen during import independently of cloud-sensor
+  polling. Cached data stays usable during refresh and if a request fails.
 - Smart home history: support temperature, humidity or both, including
   standalone sensors. Let users choose which readings to show through the
   future settings panel, according to what each device reports.

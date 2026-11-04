@@ -20,18 +20,27 @@ pub struct DeviceFile {
     pub source: String,
     #[serde(default)]
     pub devices: Vec<DeviceEntry>,
-    /// Kept only when chosen at import, to read devices that only report
-    /// to the cloud (battery sensors).
+    /// Credentials retained at import for startup inventory refresh,
+    /// cloud-only sensor readings, or both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud: Option<CloudAccess>,
 }
 
-/// The Tuya project's credentials, for reading cloud-only devices.
+/// The Tuya project's credentials and the independent uses allowed at import.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CloudAccess {
     pub client_id: String,
     pub region: String,
     pub secret: String,
+    /// Older files retained credentials for sensor polling.
+    #[serde(default = "enabled")]
+    pub poll_sensors: bool,
+    #[serde(default = "enabled")]
+    pub startup_refresh: bool,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 impl std::fmt::Debug for CloudAccess {

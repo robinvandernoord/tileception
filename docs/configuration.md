@@ -429,12 +429,22 @@ tileception home import
 
 It asks for the project's Access ID, data center and Access Secret, and saves
 your devices with their homes, rooms and local keys to
-`~/.config/tileception/home-devices.json`, readable by you only. Run it again
-after adding devices in the app. Battery sensors only report to the cloud; the
+`~/.config/tileception/home-devices.json`, readable by you only. Battery sensors
+only report to the cloud; the
 import offers to read those every 10 minutes, which keeps the Access Secret in
 the same file. (`--client-id`, `--region` and `--secret-file` make the import
 unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
 without asking.)
+
+The import separately asks whether to refresh devices, names, homes and rooms
+at compositor startup. This also needs the saved Access Secret, but works
+with cloud-sensor polling switched off. Use `--startup-refresh` or
+`--no-startup-refresh` to choose without asking. Startup refresh runs in the
+background while smart home is enabled; cached devices remain usable during
+refresh and if any request fails. Existing imports with saved credentials
+also refresh at startup and keep their sensor polling enabled. Re-run the
+import to change either choice, or to update devices manually when startup
+refresh is off. A manual refresh action in the settings screen is planned.
 
 Then switch the panel block on:
 

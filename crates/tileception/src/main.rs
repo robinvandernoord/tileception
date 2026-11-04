@@ -306,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.apply_tray();
     state.apply_home();
+    state.refresh_home_at_startup();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {

@@ -10,11 +10,15 @@
 
 use std::{
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
-use smithay::reexports::calloop::{RegistrationToken, ping::make_ping};
+use smithay::reexports::calloop::{RegistrationToken, channel, ping::make_ping};
 use tileception_core::{Point, Rect};
 use tileception_home::{Change, Device, HomeService, Kind, Options, Reach, Request, Snapshot, store};
 
@@ -55,6 +59,7 @@ pub enum Dial {
 pub struct Home {
     service: Option<HomeService>,
     source: Option<RegistrationToken>,
+    refresh: Option<(RegistrationToken, Arc<AtomicBool>)>,
     pub snapshot: Snapshot,
     /// Why there is nothing to show, while enabled.
     problem: Option<Problem>,
@@ -245,7 +250,80 @@ impl Tileception {
         }
     }
 
+    /// Refreshes the saved inventory once at startup while cached controls run.
+    pub fn refresh_home_at_startup(&mut self) {
+        if self.home.service.is_none() {
+            return;
+        }
+        let Some(path) = self.config.file.home.path() else { return };
+        let cached = match store::load(&path) {
+            Ok(file) if file.source == "tuya" => file,
+            _ => return,
+        };
+        if cached.cloud.is_none() {
+            tracing::info!("home: skipping startup refresh: no saved Tuya credentials; keeping cached devices");
+            return;
+        }
+        if !cached.cloud.as_ref().is_some_and(|access| access.startup_refresh) {
+            return;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = channel::channel::<Result<bool, String>>();
+        let token = match self.loop_handle.insert_source(receiver, |event, _, state| {
+            if let channel::Event::Msg(result) = event {
+                if let Some((token, cancelled)) = state.home.refresh.take() {
+                    cancelled.store(true, Ordering::Relaxed);
+                    state.loop_handle.remove(token);
+                }
+                match result {
+                    Ok(true) => {
+                        tracing::info!("home: refreshed devices, homes and rooms at startup");
+                        state.apply_home();
+                    }
+                    Ok(false) => {}
+                    Err(err) => tracing::warn!("home: startup refresh failed; keeping cached devices: {err}"),
+                }
+            }
+        }) {
+            Ok(token) => token,
+            Err(err) => {
+                tracing::warn!("home: could not wait for startup refresh: {err}");
+                return;
+            }
+        };
+        self.home.refresh = Some((token, cancelled.clone()));
+        let started = std::thread::Builder::new().name("home-refresh".into()).spawn(move || {
+            let result = (|| {
+                let refreshed = tileception_home::cloud::refresh(&cached)?;
+                if cancelled.load(Ordering::Relaxed) || refreshed == cached {
+                    return Ok(false);
+                }
+                // Do not overwrite a manual import made during the request.
+                if store::load(&path)? != cached {
+                    return Err("the device file changed during refresh".into());
+                }
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(false);
+                }
+                store::save(&path, &refreshed)?;
+                Ok(true)
+            })();
+            let _ = sender.send(result);
+        });
+        if let Err(err) = started {
+            if let Some((token, cancelled)) = self.home.refresh.take() {
+                cancelled.store(true, Ordering::Relaxed);
+                self.loop_handle.remove(token);
+            }
+            tracing::warn!("home: could not start startup refresh: {err}");
+        }
+    }
+
     pub fn stop_home(&mut self) {
+        if let Some((token, cancelled)) = self.home.refresh.take() {
+            cancelled.store(true, Ordering::Relaxed);
+            self.loop_handle.remove(token);
+        }
         if let Some(token) = self.home.source.take() {
             self.loop_handle.remove(token);
         }
@@ -1414,6 +1492,7 @@ Usage: tileception home <command>
               LAN only. Asks for the project's Access ID, data center and
               Access Secret. Options: --client-id ID, --region eu|we|us|ue|in|cn|sg,
               --secret-file PATH, --cloud-sensors / --no-cloud-sensors,
+              --startup-refresh / --no-startup-refresh,
               --file PATH
   status      connect to the imported devices for a few seconds and list them
               (--file PATH)
@@ -1435,6 +1514,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             match () {
                 _ if has("--cloud-sensors") => Some(true),
                 _ if has("--no-cloud-sensors") => Some(false),
+                _ => None,
+            },
+            match () {
+                _ if has("--startup-refresh") => Some(true),
+                _ if has("--no-startup-refresh") => Some(false),
                 _ => None,
             },
         ),
@@ -1526,6 +1610,7 @@ fn import(
     region: Option<String>,
     secret_file: Option<String>,
     cloud_sensors: Option<bool>,
+    startup_refresh: Option<bool>,
 ) -> Result<(), String> {
     println!("Importing devices from the Tuya IoT Platform (iot.tuya.com, Cloud > Development > your project).");
     let client_id = match client_id {
@@ -1581,7 +1666,7 @@ fn import(
         })
         .map(|device| device.name.clone())
         .collect();
-    let keep_secret = if cloud_only.is_empty() {
+    let poll_sensors = if cloud_only.is_empty() {
         false
     } else {
         match cloud_sensors {
@@ -1599,8 +1684,21 @@ fn import(
             }
         }
     };
-    if keep_secret {
-        imported.cloud = Some(store::CloudAccess { client_id, region, secret: secret.to_string() });
+    let startup_refresh = match startup_refresh {
+        Some(choice) => choice,
+        None => {
+            if !poll_sensors {
+                println!(
+                    "\nRefreshing devices, homes and rooms at startup needs the Access Secret stored in {} (readable by you only).",
+                    file.display()
+                );
+            }
+            matches!(ask("Refresh devices, homes and rooms at startup? [y/N] ")?.to_lowercase().as_str(), "y" | "yes")
+        }
+    };
+    if poll_sensors || startup_refresh {
+        imported.cloud =
+            Some(store::CloudAccess { client_id, region, secret: secret.to_string(), poll_sensors, startup_refresh });
     }
     store::save(file, &imported)?;
 
@@ -1610,7 +1708,7 @@ fn import(
         let found = match (&device.host, &device.version) {
             (Some(host), Some(version)) => format!("on this network at {host}, protocol {version}"),
             (Some(host), None) => format!("last seen at {host}"),
-            _ if cloud_only.contains(&device.name) && keep_secret => "read from the cloud".to_string(),
+            _ if cloud_only.contains(&device.name) && poll_sensors => "read from the cloud".to_string(),
             _ => "not heard on this network (off, or elsewhere)".to_string(),
         };
         println!("  {}  [{}]  {found}", device.name, if place.is_empty() { "-".into() } else { place });
