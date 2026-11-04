@@ -295,12 +295,13 @@ impl Tileception {
         elements.extend(self.duck_elements(renderer));
         if active {
             elements.extend(self.strip_elements(renderer));
-            if self.launcher.home {
-                elements.extend(self.launcher_elements(renderer));
-            }
             elements.extend(self.selection_elements(renderer));
         }
         elements.extend(self.bar_elements(renderer));
+        // Under the bar, so the calendar and the map open over it.
+        if active && self.launcher.home {
+            elements.extend(self.launcher_elements(renderer));
+        }
         let scene = elements.len();
 
         // Then bars. A fullscreen window covers everything but the above

@@ -44,6 +44,8 @@ pub struct ConfigFile {
     pub outputs: BTreeMap<String, crate::scale::OutputConfig>,
     /// Sharing the mouse, keyboard and clipboard with other machines.
     pub handoff: crate::handoff::HandoffConfig,
+    /// Tuya smart home devices in the notification panel.
+    pub home: crate::home::HomeConfig,
     /// Extra arguments for programs the launcher starts, by desktop file name.
     pub launch_args: BTreeMap<String, Vec<String>>,
     pub binds: Option<BTreeMap<String, BindValue>>,
@@ -449,6 +451,9 @@ impl Tileception {
         let old = std::mem::replace(&mut self.config, config).file;
         self.apply_shell(&old.shell);
         self.apply_handoff_config(&old.handoff);
+        if old.home != self.config.file.home {
+            self.apply_home();
+        }
         if republish {
             self.publish_greeter_card();
         }

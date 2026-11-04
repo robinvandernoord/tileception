@@ -56,10 +56,31 @@ language as the bindings.
 - Frost on the lock screen and the login screen, so `[theme] frost = true`
   covers every panel Tileception draws. Part of `feature/frost`; finish it
   before that branch merges.
+- Doctor is missing commands for things the panels can do: asked to clear
+  notifications, it found no `tileception msg` command for it and pointed at
+  the panel's Clear all button instead. Add `msg` commands for the panel
+  actions (clear notifications, Do not disturb, and the like), and pass
+  `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
+  socket first.
 
 ### Later
 
 - A settings window instead of editing the config file.
+- Smart home settings window integration: import devices, configure cloud
+  sensors and switch `[home] enabled` from the settings window. Deferred to a
+  future update; not a blocker for merging `feature/smart-home`.
+- Smart home inventory refresh: add a manual refresh action in the future
+  settings screen. Startup refresh is implemented in the background, with
+  credential retention chosen during import independently of cloud-sensor
+  polling. Cached data stays usable during refresh and if a request fails.
+- Smart home history: support temperature, humidity or both, including
+  standalone sensors. Let users choose which readings to show through the
+  future settings panel, according to what each device reports.
+- Smart home gateway support (Zigbee and Bluetooth sub-devices). Deferred
+  until a compatible Tuya gateway is available for real-device validation;
+  not a blocker for merging `feature/smart-home`. These devices currently
+  show as unavailable. Sub-devices need to be addressed by `cid` = node id
+  over one shared gateway connection, with reports routed by `cid`.
 
 ### Maybe someday
 

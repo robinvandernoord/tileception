@@ -47,6 +47,8 @@ const CRUMB_MAX: f64 = 420.0;
 const SLOT_W: f64 = 20.0;
 pub(crate) const ICON: u32 = 16;
 const CALENDAR_W: f64 = 392.0;
+/// The notification count's badge on the bell.
+const BADGE_H: f64 = 14.0;
 const CALENDAR_H: f64 = 380.0;
 
 const BACK: &str = r#"<path d="M15 6l-6 6 6 6"/>"#;
@@ -571,8 +573,11 @@ impl Tileception {
         // The right side, from the edge inwards.
         let mut right = bar.right() - 6.0;
         let count = self.notification_status().map_or(0, |(unread, _)| unread);
-        let badge = if count > 0 { 6.0 + self.bar_measure(&count.to_string(), style.bold(), 40.0) } else { 0.0 };
-        let notifications = Rect::new(right - 28.0 - badge, top, 28.0 + badge, height);
+        // The badge sits on the bell; only a count wider than the bell's
+        // corner widens the button.
+        let badge = if count > 0 { self.badge_width(&count.to_string()) } else { 0.0 };
+        let notifications =
+            Rect::new(right - 28.0 - (badge - 16.0).max(0.0), top, 28.0 + (badge - 16.0).max(0.0), height);
         right = notifications.x - 4.0;
         let now = LocalTime::now();
         let clock_text = now.as_ref().map(|time| format!("{}  {}", short_date(time), time.clock())).unwrap_or_default();
@@ -897,12 +902,30 @@ impl Tileception {
         self.bar.calendar.zoom.set(false, duration)
     }
 
-    /// The calendar card at its full size: centred under the bar.
+    /// The calendar card at its full size, below the clock (above it for a
+    /// bottom bar).
     fn calendar_card(&self) -> Rect {
-        let screen = self.usable_rect();
-        let width = CALENDAR_W.min(screen.w - 32.0).max(1.0);
-        let height = CALENDAR_H.min(screen.h - 32.0).max(1.0);
-        Rect::new(screen.x + (screen.w - width) / 2.0, screen.y + ((screen.h - height) * 0.3).max(16.0), width, height)
+        self.calendar_card_for(self.calendar_clock(self.bar_layout().as_ref()))
+    }
+
+    /// Where the clock is, or would be while the bar is hidden.
+    fn calendar_clock(&self, layout: Option<&Layout>) -> Rect {
+        layout.map(|placed| placed.clock).unwrap_or_else(|| {
+            let out = self.output_rect();
+            let top = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+            Rect::new(out.right() - 120.0, top, 110.0, BAR_H)
+        })
+    }
+
+    /// `calendar_card` for a clock already placed: centred on it, and kept
+    /// on the screen.
+    fn calendar_card_for(&self, clock: Rect) -> Rect {
+        let out = self.output_rect();
+        let width = CALENDAR_W.min(out.w - 16.0).max(1.0);
+        let height = CALENDAR_H.min(out.h - BAR_H - 16.0).max(1.0);
+        let left = (clock.center().x - width / 2.0).min(out.right() - width - 8.0).max(out.x + 8.0);
+        let edge = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+        Rect::new(left, self.bar_popup_y(Rect::new(out.x, edge, out.w, BAR_H), height), width, height)
     }
 
     fn calendar_parts(&self, card: Rect) -> (Rect, Rect, Rect) {
@@ -948,11 +971,7 @@ impl Tileception {
         let duration = self.world.settings.animation;
         let level = ease_out(self.bar.calendar.zoom.level(duration));
         if level > 0.001 {
-            let clock = layout.as_ref().map(|placed| placed.clock).unwrap_or_else(|| {
-                let out = self.output_rect();
-                let top = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
-                Rect::new(out.right() - 120.0, top, 110.0, BAR_H)
-            });
+            let clock = self.calendar_clock(layout.as_ref());
             self.draw_calendar(&mut painter, clock, level);
         }
         let level = ease_out(self.bar.minimap.zoom.level(duration));
@@ -1113,21 +1132,29 @@ impl Tileception {
             self.draw_battery(painter, *rect, label, reading);
         }
 
-        hover_fill(painter, layout.notifications, self.notifications.open || hit == Some(Hit::Notifications));
+        let bell_lit = self.notifications.open || hit == Some(Hit::Notifications);
+        hover_fill(painter, layout.notifications, bell_lit);
         let dnd = self.notification_status().is_some_and(|(_, dnd)| dnd);
         let bell = Rect::new(layout.notifications.x + 2.0, layout.notifications.y, 24.0, layout.notifications.h);
         painter.glyph(glyph::BELL, bell, ICON, if dnd { theme.muted } else { theme.text.alpha(0.86) });
         if let Some((count, _)) = self.notification_status().filter(|(unread, _)| *unread > 0) {
             let label = count.to_string();
-            let width = layout.notifications.right() - bell.right() - 2.0;
-            let badge =
-                Rect::new(bell.right() - 4.0, layout.notifications.y + 4.0, width + 2.0, layout.notifications.h - 8.0);
-            painter.fill(badge, if dnd { theme.muted.alpha(0.4) } else { theme.accent }, badge.h as f32 / 2.0);
-            painter.text(
-                &label,
-                badge,
-                Style::new(theme.font_size * 0.72, theme.on_accent).bold().align(Align::Centre),
-            );
+            let width = self.badge_width(&label);
+            // Over the bell's top right corner, pulled back in for wide counts.
+            let left = (bell.x + 13.0).min(layout.notifications.right() + 2.0 - width);
+            let badge = Rect::new(left, bell.y + 1.0, width, BADGE_H);
+            // A ring in the bar's colour keeps the badge apart from the bell.
+            // Frosted, the bar is see-through and a solid ring would show.
+            if !theme.frost {
+                let behind = if bell_lit { theme.surface_raised } else { theme.surface };
+                painter.fill(badge.inset(-1.5), behind, (BADGE_H / 2.0 + 1.5) as f32);
+            }
+            let fill = if dnd { (theme.muted, theme.muted) } else { (theme.accent, theme.accent_end) };
+            painter.shape(badge, Shape { fill, ..Shape::filled(Colour::TRANSPARENT, (BADGE_H / 2.0) as f32) });
+            let ink = if dnd { theme.surface } else { theme.on_accent };
+            // Digits have no descenders: centring the line box leaves them high.
+            let line = Rect::new(badge.x, badge.y + 1.0, badge.w, badge.h);
+            painter.text(&label, line, badge_style(theme, ink).align(Align::Centre));
         }
 
         // Tooltips and previews open towards the layout.
@@ -1276,6 +1303,12 @@ impl Tileception {
         painter.text(body, Rect::new(left + 12.0, top + 30.0, width - 24.0, body_h), body_style);
     }
 
+    /// How wide the bell's badge is for `label`: round for one digit, a
+    /// pill for more.
+    fn badge_width(&self, label: &str) -> f64 {
+        (self.bar_measure(label, badge_style(&self.theme, self.theme.on_accent), 40.0) + 7.0).max(BADGE_H)
+    }
+
     fn bar_measure_height(&self, text: &str, style: Style, max: f64) -> f64 {
         let theme = &self.theme;
         self.text
@@ -1367,13 +1400,12 @@ impl Tileception {
     /// The clock grown into a month, along the same curve the camera uses.
     fn draw_calendar(&self, painter: &mut Painter, clock: Rect, level: f64) {
         let theme = &self.theme;
-        let card = self.calendar_card();
+        let card = self.calendar_card_for(clock);
         let rect = clock.zoom_lerp(&card, level);
         let (alpha, offset) = (painter.alpha, painter.offset);
-        painter.fill(self.usable_rect(), Colour([0.0, 0.0, 0.0, 0.28 * level as f32]), 0.0);
         painter.popup(rect);
         // The month fades in once the card is nearly there, and moves with it.
-        painter.alpha = alpha * (((level - 0.85) / 0.15).clamp(0.0, 1.0) as f32);
+        painter.alpha = alpha * card_contents(level);
         let (from, target) = (card.center(), rect.center());
         painter.offset = (offset.0 + target.x - from.x, offset.1 + target.y - from.y);
         if painter.alpha <= 0.0 {
@@ -1385,7 +1417,7 @@ impl Tileception {
         let over = self.calendar_hit(pointer);
 
         painter.text(
-            &now.clock(),
+            &now.clock_seconds(),
             Rect::new(card.x + 20.0, card.y + 14.0, card.w - 40.0, 46.0),
             Style::new(theme.font_size * 2.6, theme.text).weight(300),
         );
@@ -1510,6 +1542,17 @@ fn short_date(now: &LocalTime) -> String {
 fn add_months(year: i32, month: i32, delta: i32) -> (i32, i32) {
     let index = year * 12 + (month - 1) + delta;
     (index.div_euclid(12), index.rem_euclid(12) + 1)
+}
+
+/// How visible a bar card's contents are while the card zooms out of the bar
+/// to `level`: they fade in over the last stretch, the same for every card.
+pub(crate) fn card_contents(level: f64) -> f32 {
+    ease_out(((level - 0.7) / 0.3).clamp(0.0, 1.0)) as f32
+}
+
+/// The notification count's lettering on the bell's badge.
+fn badge_style(theme: &crate::theme::Theme, colour: Colour) -> Style {
+    Style::new(theme.font_size * 0.66, colour).bold()
 }
 
 /// Days since 1970-01-01 for a date in the proleptic Gregorian calendar.
