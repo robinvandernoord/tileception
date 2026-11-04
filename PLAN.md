@@ -62,17 +62,18 @@ language as the bindings.
   actions (clear notifications, Do not disturb, and the like), and pass
   `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
   socket first.
-- Smart home (`feature/smart-home`), still missing before that branch merges:
-  - Settings window integration: set up the smart home (import, cloud sensors,
-    `[home] enabled`) from the settings window instead of the command line.
-  - Devices behind a gateway (Zigbee and Bluetooth sub-devices) show as
-    unavailable until they can be tried on a real gateway. Sub-devices need
-    to be addressed by `cid` = node id over one shared gateway connection, with reports routed
-    by `cid`.
 
 ### Later
 
 - A settings window instead of editing the config file.
+- Smart home settings window integration: import devices, configure cloud
+  sensors and switch `[home] enabled` from the settings window. Deferred to a
+  future update; not a blocker for merging `feature/smart-home`.
+- Smart home gateway support (Zigbee and Bluetooth sub-devices). Deferred
+  until a compatible Tuya gateway is available for real-device validation;
+  not a blocker for merging `feature/smart-home`. These devices currently
+  show as unavailable. Sub-devices need to be addressed by `cid` = node id
+  over one shared gateway connection, with reports routed by `cid`.
 
 ### Maybe someday
 

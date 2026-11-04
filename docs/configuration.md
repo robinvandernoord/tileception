@@ -413,6 +413,10 @@ The notification panel can show Tuya lights, plugs and air conditioners (sold
 under many brands and used with the Smart Life or Tuya app). They are controlled
 on your local network, so they respond quickly and keep working without internet.
 
+Devices behind a gateway, including Zigbee and Bluetooth sub-devices, are not
+supported yet and show as unavailable. Gateway support is deferred to a future
+update.
+
 Controlling a device locally needs its local key, which only Tuya's cloud hands
 out. Fetch the keys once with a free project on the
 [Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
