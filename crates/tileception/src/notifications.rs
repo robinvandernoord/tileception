@@ -330,12 +330,15 @@ impl Tileception {
         let panel = self.notification_panel();
         let controls = self.controls_layout(panel.x + 12.0, panel.y + 58.0, panel.w - 24.0);
         let below = if controls.rect.h > 0.0 { controls.rect.bottom() + 10.0 } else { panel.y + 58.0 };
+        let home = self.home_layout(panel.x + 12.0, below, panel.w - 24.0);
+        let below = if home.rect.h > 0.0 { home.rect.bottom() + 10.0 } else { below };
         // Without the built-in service there is no Do not disturb to switch.
         let dnd_h = if self.builtin_notifications() { 48.0 } else { 0.0 };
         let dnd = Rect::new(panel.x + 12.0, below, panel.w - 24.0, dnd_h);
         PanelControls {
             clear: Rect::new(panel.right() - 16.0 - 96.0, panel.y + 14.0, 96.0, 32.0),
             controls,
+            home,
             dnd,
             cards_top: dnd.bottom() + 18.0,
         }
@@ -473,6 +476,10 @@ impl Tileception {
             if self.controls_press(&controls.controls, point) {
                 return;
             }
+            if self.home_press(&controls.home, point) {
+                self.schedule_render();
+                return;
+            }
         }
         for card in self.notification_cards() {
             if !card.rect.contains(point) {
@@ -576,6 +583,7 @@ impl Tileception {
             }
 
             self.draw_controls(&mut painter, &controls.controls, pointer);
+            self.draw_home(&mut painter, &controls.home, pointer);
 
             if self.builtin_notifications() {
                 // Do not disturb, as a row with a switch.
@@ -633,7 +641,8 @@ impl Tileception {
             }
             painter.fill(Rect::new(panel.x + 12.0, controls.cards_top - 10.0, panel.w - 24.0, 1.0), theme.border, 0.0);
 
-            if self.notifications.history.is_empty() {
+            // The empty state needs room; the smart home block can take it.
+            if self.notifications.history.is_empty() && panel.bottom() - controls.cards_top > 240.0 {
                 let mid = (controls.cards_top + panel.bottom()) / 2.0 - 40.0;
                 painter.fill(
                     Rect::new(panel.x + panel.w / 2.0 - 32.0, mid - 32.0, 64.0, 64.0),
@@ -845,6 +854,8 @@ pub struct PanelControls {
     clear: Rect,
     /// Sound, brightness and playback, under the title.
     pub controls: crate::controls::Controls,
+    /// The smart home block, under the controls.
+    pub home: crate::home::HomeBlock,
     dnd: Rect,
     cards_top: f64,
 }

@@ -407,6 +407,63 @@ selection to other tools.
 These battery actions are inactive on computers without a battery. Run
 `tileception msg battery` to inspect the charge and current border colour.
 
+## Smart home
+
+The notification panel can show Tuya lights, plugs and air conditioners (sold
+under many brands and used with the Smart Life or Tuya app). They are controlled
+on your local network, so they respond quickly and keep working without internet.
+
+Devices behind a gateway, including Zigbee and Bluetooth sub-devices, are not
+supported yet and show as unavailable. Gateway support is deferred to a future
+update.
+
+Controlling a device locally needs its local key, which only Tuya's cloud hands
+out. Fetch the keys once with a free project on the
+[Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
+your app account's data center, and link your app account under **Devices**,
+**Link App Account**. Then run:
+
+```sh
+tileception home import
+```
+
+It asks for the project's Access ID, data center and Access Secret, and saves
+your devices with their homes, rooms and local keys to
+`~/.config/tileception/home-devices.json`, readable by you only. Battery sensors
+only report to the cloud; the
+import offers to read those every 10 minutes, which keeps the Access Secret in
+the same file. (`--client-id`, `--region` and `--secret-file` make the import
+unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
+without asking.)
+
+The import separately asks whether to refresh devices, names, homes and rooms
+at compositor startup. This also needs the saved Access Secret, but works
+with cloud-sensor polling switched off. Use `--startup-refresh` or
+`--no-startup-refresh` to choose without asking. Startup refresh runs in the
+background while smart home is enabled; cached devices remain usable during
+refresh and if any request fails. Existing imports with saved credentials
+also refresh at startup and keep their sensor polling enabled. Re-run the
+import to change either choice, or to update devices manually when startup
+refresh is off. A manual refresh action in the settings screen is planned.
+
+Then switch the panel block on:
+
+```toml
+[home]
+enabled = true
+```
+
+`tileception msg home enable` writes `enabled = true`.
+
+If your account has several homes, the panel shows the one whose devices answer
+on the network you are on. `devices` points to a different device file; see the
+[default config](../crates/tileception/src/default-config.toml).
+`tileception home status` lists the imported devices and whether they answer,
+and `tileception msg home why <name>` explains why one is unreachable and what
+to check. The climate widget draws a trend line of the last six hours of room
+temperature and target under itself, sampled locally and kept in
+`~/.local/state/tileception/home-history.json`.
+
 ## Doctor
 
 Doctor's agent, model and permission mode are managed in its panel, separately

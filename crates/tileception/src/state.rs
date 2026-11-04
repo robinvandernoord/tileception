@@ -194,6 +194,7 @@ pub struct Tileception {
     pub notifications: crate::notifications::Notifications,
     /// Volume, media players and brightness.
     pub media: crate::media::Media,
+    pub home: crate::home::Home,
     /// The panel for asking an agent about the setup.
     pub doctor: crate::doctor::Doctor,
     /// The rubber duck on the bottom of the screen.
@@ -367,6 +368,7 @@ impl Tileception {
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
+            home: Default::default(),
             doctor: Default::default(),
             duck: Default::default(),
             session_services: false,

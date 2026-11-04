@@ -122,15 +122,31 @@ pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scop
 /// Compositor commands the agent may run unasked in config mode: ones that
 /// look or adjust, not `spawn`, `exec`, `doctor` (its own mode), pretend
 /// input, `screenshot` (writes anywhere), `quit` or `unlock`.
-const SAFE_VERBS: [&str; 6] = ["tree", "reload", "volume", "mic", "brightness", "media"];
+const SAFE_VERBS: [&str; 7] = ["tree", "reload", "volume", "mic", "brightness", "media", "home"];
 
-/// `tileception msg <safe verb> ...` and nothing chained onto it.
+/// `tileception msg <safe verb> ...` and nothing chained onto it, plus the
+/// read-only `tileception home status` and `tileception config set
+/// home.enabled ...`, which only read state or touch Tileception's own
+/// settings.
 fn tileception_command(command: &str) -> bool {
-    let Some(tail) = command.trim().strip_prefix("tileception msg ") else { return false };
-    if tail.contains(['|', ';', '&', '`', '$', '>', '<', '\n', '\r']) {
+    let command = command.trim();
+    if command.contains(['|', ';', '&', '`', '$', '>', '<', '\n', '\r']) {
         return false;
     }
-    tail.split_whitespace().next().is_some_and(|verb| SAFE_VERBS.contains(&verb))
+    if let Some(tail) = command.strip_prefix("tileception msg ") {
+        return tail.split_whitespace().next().is_some_and(|verb| SAFE_VERBS.contains(&verb));
+    }
+    if command == "tileception home status" {
+        return true;
+    }
+    if let Some(tail) = command.strip_prefix("tileception config set ") {
+        let mut parts = tail.split_whitespace();
+        return matches!(
+            (parts.next(), parts.next(), parts.next(), parts.next()),
+            (Some("home.enabled"), Some("true" | "false"), None, None)
+        );
+    }
+    false
 }
 
 /// Reading goes ahead inside Tileception's places, and anywhere in yolo mode.
@@ -325,6 +341,22 @@ mod tests {
         let chained = action("execute", &[], Some("tileception msg tree; rm -rf ~"));
         assert_eq!(auto_choice(Mode::Config, &chained, &choices(), &places), None);
         for risky in ["tileception msg spawn rm -rf ~", "tileception msg doctor mode yolo", "tileception msg type hi"] {
+            assert_eq!(auto_choice(Mode::Config, &action("execute", &[], Some(risky)), &choices(), &places), None);
+        }
+        // The smart home's read-only and own-setting commands go ahead too.
+        for fine in [
+            "tileception home status",
+            "tileception config set home.enabled true",
+            "tileception config set home.enabled false",
+        ] {
+            assert!(auto_choice(Mode::Config, &action("execute", &[], Some(fine)), &choices(), &places).is_some());
+        }
+        for risky in [
+            "tileception home import",
+            "tileception home status; rm -rf ~",
+            "tileception config set shell.bar waybar",
+            "tileception config set home.enabled yes",
+        ] {
             assert_eq!(auto_choice(Mode::Config, &action("execute", &[], Some(risky)), &choices(), &places), None);
         }
         let log = action("read", &["/home/r/.local/state/tileception/tileception.log"], None);

@@ -127,6 +127,14 @@ max_volume = 150
 osd = true
 osd_timeout_ms = 1500
 
+[home]
+# Tuya lights, plugs and air conditioners in the notification panel (Super+N),
+# controlled on the local network. Run `tileception home import` once to fetch
+# your devices, rooms and local keys from the Tuya IoT Platform.
+enabled = false
+# Where `tileception home import` saved them (this is the default).
+# devices = "~/.config/tileception/home-devices.json"
+
 [battery]
 # Only on computers with a battery; desktops are left alone. The bar shows
 # the charge either way (hover it for the time left).

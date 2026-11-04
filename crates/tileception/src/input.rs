@@ -608,6 +608,10 @@ impl Tileception {
             self.controls_drag(pos.x);
             return;
         }
+        if self.home.drag.is_some() {
+            self.home_drag(pos.x);
+            return;
+        }
         if self.duck_motion(point) || self.doctor_drag(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -746,7 +750,7 @@ impl Tileception {
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
         // A held slider lets go wherever the button comes up.
-        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
         }
         if self.draws_lock_screen() {
@@ -800,7 +804,7 @@ impl Tileception {
         }
         let now = self.now();
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if state == ButtonState::Released && button == BTN_LEFT && self.controls_release() {
+        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
         }
         // A held duck lets go wherever the button comes up.
