@@ -166,6 +166,7 @@ Sound, light and media:
 
 Smart home ([home] in config.toml):
   home                      list the devices with their state
+  home why <name>           why a device is unreachable, and what to check
   home on|off|toggle <name> switch a light, plug or air conditioner
   home brightness <name> <n>  dim a light to n percent
   home colour <name> <n>    colour temperature, 0 (warm) to 100 (cool)
@@ -175,6 +176,7 @@ Smart home ([home] in config.toml):
   home all-off              switch off every light and plug
   home select <name>        show a light's sliders in the panel
   home fold|unfold|rooms|all  the panel block's folding and view
+  home enable|disable       switch the [home] block on or off in config.toml
 
 Pretend input (headless or nested only):
   pointer <x> <y>           move the pointer

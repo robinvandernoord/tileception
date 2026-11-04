@@ -245,7 +245,8 @@ built-in controls. These alternatives are available without dedicated keys:
 
 With [smart home devices](configuration.md#smart-home) set up, the notification
 panel has a **Home** block. An air conditioner shows its room temperature, a
-target you change with **-** and **+**, and its mode and fan speed. Below it are
+target you change with **-** and **+**, its mode and fan speed, and a trend
+line of the last six hours of temperature and target underneath. Below it are
 the lights and plugs by room, each with a switch. Click a light to show its
 brightness and colour sliders. **All** lists everything in one list instead,
 with what is on first, and **All off** switches off every light and plug.
@@ -254,7 +255,8 @@ The block folds to one line while nothing is on and unfolds when something
 turns on; click its title to fold or unfold it yourself. Devices that are
 switched off at the wall show as unreachable at the bottom of their room.
 
-`tileception msg home` lists the devices, and commands such as
+`tileception msg home` lists the devices, `tileception msg home why <name>`
+explains why one is unreachable, and commands such as
 `tileception msg home toggle Couch` or `tileception msg home brightness Couch 40`
 control them from scripts and key bindings; `tileception msg --help` lists them
 all.

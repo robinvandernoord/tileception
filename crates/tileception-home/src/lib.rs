@@ -10,6 +10,7 @@
 pub mod cloud;
 mod device;
 pub mod discovery;
+pub mod history;
 pub mod model;
 pub mod protocol;
 pub mod sim;
@@ -18,6 +19,7 @@ pub mod store;
 use std::{
     collections::HashMap,
     net::IpAddr,
+    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -25,6 +27,7 @@ use std::{
     time::SystemTime,
 };
 
+use history::Sample;
 use model::Model;
 pub use model::{Change, Kind, State};
 use protocol::Version;
@@ -68,6 +71,9 @@ pub struct Device {
     pub target_range: Option<(f64, f64, f64)>,
     pub modes: Vec<String>,
     pub fan_speeds: Vec<String>,
+    /// The last six hours of temperature and target, for the climate
+    /// widget's trend line. Only climate devices are sampled.
+    pub history: Vec<Sample>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -99,6 +105,10 @@ struct Inner {
 pub(crate) struct Shared {
     inner: Arc<Mutex<Inner>>,
     wake: Arc<dyn Fn() + Send + Sync>,
+    /// Where the sampled history is kept; `None` keeps it in memory only.
+    history_path: Option<PathBuf>,
+    /// Serializes snapshots and atomic file replacement across worker threads.
+    history_save: Arc<Mutex<()>>,
 }
 
 impl Shared {
@@ -149,12 +159,47 @@ impl Shared {
     }
 
     /// Takes data points into a device's state; `sent` marks them pending
-    /// until the device confirms.
+    /// until the device confirms. Climate devices are sampled for the
+    /// history here, at most every [`history::SAMPLE`] and on target
+    /// changes.
     pub(crate) fn apply(&self, slot: usize, model: &Model, dps: &Map<String, Value>, sent: bool) {
-        self.changed(slot, |device| {
+        let now = SystemTime::now();
+        let (differs, sampled) = {
+            let mut inner = self.lock();
+            let Some(device) = inner.snapshot.devices.get_mut(slot) else { return };
+            let before = device.clone();
             device.state.update(model, dps);
             device.pending = sent;
-        });
+            let sampled = if model.kind == Kind::Climate {
+                history::push(&mut device.history, device.state.temperature, device.state.target, now)
+            } else {
+                false
+            };
+            (*device != before, sampled)
+        };
+        if sampled {
+            self.save_history();
+        }
+        if differs {
+            (self.wake)();
+        }
+    }
+
+    /// Writes the sampled history, when there is a file for it.
+    fn save_history(&self) {
+        let Some(path) = &self.history_path else { return };
+        let _save = self.history_save.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map: HashMap<String, Vec<Sample>> = self
+            .lock()
+            .snapshot
+            .devices
+            .iter()
+            .filter(|device| !device.history.is_empty())
+            .map(|device| (device.device_id.clone(), device.history.clone()))
+            .collect();
+        if let Err(err) = history::save(path, &map) {
+            tracing::info!("home: saving the history: {err}");
+        }
     }
 
     pub(crate) fn state(&self, slot: usize) -> State {
@@ -181,11 +226,19 @@ pub struct Options {
     /// Listen for the devices' announcements on the LAN, to follow address
     /// changes. Off for simulated devices and tests.
     pub discovery: bool,
+    /// Where the sampled climate history is kept; `None` keeps it in memory
+    /// only, as in tests and `tileception home status`.
+    pub history: Option<PathBuf>,
 }
 
 impl HomeService {
     pub fn start(file: &DeviceFile, options: Options, wake: impl Fn() + Send + Sync + 'static) -> HomeService {
-        let shared = Shared { inner: Arc::default(), wake: Arc::new(wake) };
+        let shared = Shared {
+            inner: Arc::default(),
+            wake: Arc::new(wake),
+            history_path: options.history.clone(),
+            history_save: Arc::default(),
+        };
         let stop = Arc::new(AtomicBool::new(false));
         let mut targets = Vec::new();
         let mut polled = Vec::new();
@@ -237,7 +290,17 @@ impl HomeService {
                     modes: model.mode.as_ref().map(|(_, modes)| modes.clone()).unwrap_or_default(),
                     fan_speeds: model.fan.as_ref().map(|(_, speeds)| speeds.clone()).unwrap_or_default(),
                     home: entry.home.clone(),
+                    history: Vec::new(),
                 });
+            }
+            // What earlier runs sampled, still inside the six-hour window.
+            if let Some(path) = &options.history {
+                let loaded = history::load(path);
+                for device in inner.snapshot.devices.iter_mut().filter(|device| device.kind == Kind::Climate) {
+                    if let Some(samples) = loaded.get(&device.device_id) {
+                        device.history = samples.clone();
+                    }
+                }
             }
         }
         let discovery = options.discovery.then(|| discovery::Listener::start(shared.clone(), stop.clone()));

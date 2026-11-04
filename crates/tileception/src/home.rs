@@ -57,7 +57,7 @@ pub struct Home {
     source: Option<RegistrationToken>,
     pub snapshot: Snapshot,
     /// Why there is nothing to show, while enabled.
-    problem: Option<String>,
+    problem: Option<Problem>,
     /// Folded or unfolded by hand, and how many devices were on then.
     fold: Option<(bool, usize)>,
     /// The light whose sliders show.
@@ -73,6 +73,30 @@ pub struct Home {
     pub drag: Option<(String, Dial, Instant, u32)>,
 }
 
+/// Why the block has nothing to show while `[home]` is enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Problem {
+    /// No config directory for the device file.
+    NoConfigDir,
+    /// No device file yet: nothing was imported.
+    NoDevices,
+    /// The device file exists but could not be read.
+    Unreadable,
+    /// The service did not start.
+    Service,
+}
+
+impl Problem {
+    fn text(self) -> &'static str {
+        match self {
+            Problem::NoConfigDir => "No config directory for the device file",
+            Problem::NoDevices => "No devices yet: run `tileception home import` in a terminal",
+            Problem::Unreadable => "The device file could not be read",
+            Problem::Service => "The smart home service did not start",
+        }
+    }
+}
+
 const ROW: f64 = 40.0;
 const SLIDER: f64 = 28.0;
 const HEADING: f64 = 24.0;
@@ -80,6 +104,8 @@ const HEADER: f64 = 32.0;
 const CLIMATE: f64 = 64.0;
 const CHOICES: f64 = 28.0;
 const FOOTER: f64 = 28.0;
+/// The trend line under the climate widget.
+const TREND: f64 = 30.0;
 const SEND_INTERVAL: f64 = 1.0 / 8.0;
 
 pub struct LightRow {
@@ -105,6 +131,8 @@ pub struct ClimateBlock {
     pub switch: Rect,
     pub modes: Vec<(Rect, String)>,
     pub fans: Vec<(Rect, String)>,
+    /// The trend line under the widget, when there is a history to draw.
+    pub trend: Option<Rect>,
 }
 
 /// The block's layout, worked out afresh each frame.
@@ -176,24 +204,25 @@ impl Tileception {
             return;
         }
         let Some(path) = config.path() else {
-            self.home.problem = Some("No config directory for the device file".into());
+            self.home.problem = Some(Problem::NoConfigDir);
             return;
         };
         let file = match store::load(&path) {
             Ok(file) => file,
             Err(_) if !path.exists() => {
-                self.home.problem = Some("No devices yet: run tileception home import in a terminal".into());
+                self.home.problem = Some(Problem::NoDevices);
                 return;
             }
             Err(err) => {
                 tracing::warn!("home: {err}");
-                self.home.problem = Some("The device file could not be read".into());
+                self.home.problem = Some(Problem::Unreadable);
                 return;
             }
         };
         let result = (|| {
             let (ping, source) = make_ping().map_err(|err| err.to_string())?;
-            let options = Options { discovery: file.source != "simulated" };
+            let options =
+                Options { discovery: file.source != "simulated", history: tileception_home::history::default_path() };
             let service = HomeService::start(&file, options, move || ping.ping());
             let token = self
                 .loop_handle
@@ -211,7 +240,7 @@ impl Tileception {
             }
             Err(err) => {
                 tracing::error!("could not start the smart home service: {err}");
-                self.home.problem = Some("The smart home service did not start".into());
+                self.home.problem = Some(Problem::Service);
             }
         }
     }
@@ -295,8 +324,8 @@ impl Tileception {
         let mut cursor = top + 4.0;
         block.header = Rect::new(left, cursor, width, HEADER);
         cursor += HEADER;
-        if let Some(problem) = &self.home.problem {
-            block.notice = Some((Rect::new(inner.x, cursor, inner.w, 24.0), problem.clone()));
+        if let Some(problem) = self.home.problem {
+            block.notice = Some((Rect::new(inner.x, cursor, inner.w, 24.0), problem.text().into()));
             cursor += 30.0;
             block.rect = Rect::new(left, top, width, cursor - top);
             return block;
@@ -343,6 +372,12 @@ impl Tileception {
             };
             let modes = choices(&mut inside, &climate.modes);
             let fans = choices(&mut inside, &climate.fan_speeds);
+            // The trend line waits for a history to draw.
+            let trend = (climate.history.len() >= 2).then(|| {
+                let rect = Rect::new(inner.x + 8.0, inside, inner.w - 16.0, TREND);
+                inside += TREND + 2.0;
+                rect
+            });
             let rect = Rect::new(inner.x, rect_top, inner.w, inside + 4.0 - rect_top);
             cursor = rect.bottom() + 6.0;
             block.climate = Some(ClimateBlock {
@@ -354,6 +389,7 @@ impl Tileception {
                 switch,
                 modes,
                 fans,
+                trend,
             });
         }
 
@@ -640,8 +676,8 @@ impl Tileception {
                 painter.text(label, rect, Style::new(theme.font_size * 0.82, colour).align(Align::Centre));
             }
         }
-        if let Some((rect, notice)) = &block.notice {
-            painter.text(notice, *rect, Style::new(theme.font_size * 0.9, theme.muted));
+        if let Some((rect, text)) = &block.notice {
+            painter.text(text, *rect, Style::new(theme.font_size * 0.9, theme.muted));
             return;
         }
         if let Some(climate) = &block.climate {
@@ -899,6 +935,87 @@ impl Tileception {
                 );
             }
         }
+        if let Some(trend) = &climate.trend {
+            self.draw_trend(painter, *trend, device);
+        }
+    }
+
+    /// The last six hours of the climate device's temperature and target, as
+    /// two lines: the target dashed, the temperature solid.
+    fn draw_trend(&self, painter: &mut Painter, rect: Rect, device: &Device) {
+        use tileception_home::history::WINDOW;
+        let theme = &self.theme;
+        let now = std::time::SystemTime::now();
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for sample in &device.history {
+            for value in [sample.temperature, sample.target].into_iter().flatten() {
+                min = min.min(value);
+                max = max.max(value);
+            }
+        }
+        if !min.is_finite() || !max.is_finite() {
+            return;
+        }
+        if max - min < 1.0 {
+            let middle = (min + max) / 2.0;
+            min = middle - 0.5;
+            max = middle + 0.5;
+        }
+        let span = WINDOW.as_secs_f64();
+        // Newest at the right, oldest six hours back at the left.
+        let point = |when: std::time::SystemTime, value: f64| {
+            let age = now.duration_since(when).map_or(span, |age| age.as_secs_f64()).min(span);
+            let pos_x = rect.right() - age / span * rect.w;
+            let pos_y = rect.bottom() - 2.0 - (value - min) / (max - min) * (rect.h - 4.0);
+            (pos_x.clamp(rect.x, rect.right()), pos_y.clamp(rect.y, rect.bottom()))
+        };
+        // Hold each reading until the next sample, then join vertically.
+        let mut line = |values: &[(f64, f64)], colour: crate::theme::Colour, thickness: f64, dashed: bool| {
+            for (index, &(left, value)) in values.iter().enumerate() {
+                let next = values.get(index + 1).copied();
+                let right = next.map_or(rect.right(), |(next_x, _)| next_x);
+                if dashed {
+                    // Anchor the dash phase to the chart, independent of samples.
+                    let mut dash = rect.x + ((left - rect.x) / 8.0).floor() * 8.0;
+                    while dash < right {
+                        let start = dash.max(left);
+                        let end = (dash + 4.0).min(right);
+                        if end > start {
+                            painter.fill(
+                                Rect::new(start, value - thickness / 2.0, end - start, thickness),
+                                colour,
+                                0.0,
+                            );
+                        }
+                        dash += 8.0;
+                    }
+                } else if right > left {
+                    painter.fill(Rect::new(left, value - thickness / 2.0, right - left, thickness), colour, 0.0);
+                }
+                if let Some((next_x, next_value)) = next {
+                    painter.fill(
+                        Rect::new(
+                            next_x - thickness / 2.0,
+                            value.min(next_value) - thickness / 2.0,
+                            thickness,
+                            (next_value - value).abs() + thickness,
+                        ),
+                        colour,
+                        0.0,
+                    );
+                }
+            }
+        };
+        let target: Vec<(f64, f64)> =
+            device.history.iter().filter_map(|sample| sample.target.map(|value| point(sample.when, value))).collect();
+        let temperature: Vec<(f64, f64)> = device
+            .history
+            .iter()
+            .filter_map(|sample| sample.temperature.map(|value| point(sample.when, value)))
+            .collect();
+        line(&target, theme.muted.alpha(0.9), 1.0, true);
+        line(&temperature, theme.accent, 2.0, false);
     }
 
     fn draw_device_row(&self, painter: &mut Painter, row: &LightRow, device: &Device, pointer: Point) {
@@ -965,14 +1082,20 @@ impl Tileception {
 
     /// `tileception msg home ...`.
     pub fn home_command(&mut self, command: HomeCommand) -> Result<String, String> {
-        if !self.config.file.home.enabled {
-            return Err("the smart home block is switched off: set enabled = true under [home]".into());
-        }
-        if let Some(problem) = &self.home.problem {
-            return Err(problem.clone());
+        // Switching the block on or off works whatever the current state is.
+        if !matches!(command, HomeCommand::Enable(_)) {
+            if !self.config.file.home.enabled {
+                return Err("the smart home block is switched off: set enabled = true under [home], \
+                     or run `tileception msg home enable`"
+                    .into());
+            }
+            if let Some(problem) = self.home.problem {
+                return Err(problem.text().into());
+            }
         }
         match command {
             HomeCommand::Status => return Ok(self.home_status()),
+            HomeCommand::Why(name) => return self.home_why(&name),
             HomeCommand::Fold(folded) => self.home.fold = Some((folded, self.home_lit())),
             HomeCommand::View(all) => self.home.all = all,
             HomeCommand::AllOff => {
@@ -995,9 +1118,54 @@ impl Tileception {
                 };
                 self.home_send(device_id, change);
             }
+            HomeCommand::Enable(wanted) => {
+                let value = if wanted { "true" } else { "false" };
+                let path = crate::config::path();
+                crate::config_edit::set_value(&path, "home.enabled", value)
+                    .map_err(|err| format!("could not set home.enabled in {}: {err}", path.display()))?;
+                // The config watcher reloads the file and applies the change.
+                return Ok(format!("home.enabled = {value} in {}", path.display()));
+            }
         }
         self.schedule_render();
         Ok(String::new())
+    }
+
+    /// Why a device is not answering, and what to check.
+    fn home_why(&self, name: &str) -> Result<String, String> {
+        let device_id = self.find_device(name)?;
+        let device = self
+            .home
+            .snapshot
+            .devices
+            .iter()
+            .find(|device| device.device_id == device_id)
+            .ok_or_else(|| format!("no device called {name:?}"))?;
+        Ok(match &device.reach {
+            Reach::Online => format!("{} is online ({}).", device.name, device_detail(device)),
+            Reach::Connecting => format!("{} is still connecting; give it a moment.", device.name),
+            Reach::Unreachable { since, why } => format!(
+                "{} has been unreachable for {} ({why}). Check that it is powered on and on this network; its \
+                 address is followed from the announcements it broadcasts. A checksum or handshake error means \
+                 the stored local key is wrong: run `tileception home import` again to fetch fresh keys.",
+                device.name,
+                ago(*since)
+            ),
+            Reach::Cloud { updated: Some(when) } => {
+                format!("{} only reports to the cloud; last read {} ago.", device.name, ago(*when))
+            }
+            Reach::Cloud { updated: None } => {
+                format!("{} only reports to the cloud; it has not been read yet.", device.name)
+            }
+            Reach::Unsupported(why) => {
+                let fix = if why.contains("gateway") {
+                    "Devices behind a gateway are not supported yet"
+                } else {
+                    "Re-run `tileception home import` to fetch its local key"
+                };
+                format!("{} is not available locally: {why}. {fix}.", device.name)
+            }
+        })
     }
 
     fn find_device(&self, name: &str) -> Result<String, String> {
@@ -1151,12 +1319,16 @@ pub enum Wanted {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HomeCommand {
     Status,
+    /// Why a device is unreachable, and what to check.
+    Why(String),
     Set(String, Wanted),
     Select(String),
     Fold(bool),
     /// `true` for one list, `false` for rooms.
     View(bool),
     AllOff,
+    /// Writes `enabled` under `[home]` in config.toml.
+    Enable(bool),
 }
 
 /// Parses what follows `home`. Device names may have spaces; a value comes
@@ -1182,6 +1354,7 @@ pub fn parse(rest: &str) -> Result<HomeCommand, String> {
     };
     Ok(match sub {
         "" | "status" => HomeCommand::Status,
+        "why" => HomeCommand::Why(named()?),
         "toggle" => HomeCommand::Set(named()?, Wanted::Toggle),
         "on" => HomeCommand::Set(named()?, Wanted::Change(Change::Switch(true))),
         "off" => HomeCommand::Set(named()?, Wanted::Change(Change::Switch(false))),
@@ -1227,6 +1400,8 @@ pub fn parse(rest: &str) -> Result<HomeCommand, String> {
         "unfold" => HomeCommand::Fold(false),
         "rooms" => HomeCommand::View(false),
         "all" => HomeCommand::View(true),
+        "enable" => HomeCommand::Enable(true),
+        "disable" => HomeCommand::Enable(false),
         other => return Err(format!("unknown home command {other:?}")),
     })
 }
@@ -1446,7 +1621,7 @@ fn import(
 
 fn status(file: &std::path::Path) -> Result<(), String> {
     let devices = store::load(file)?;
-    let options = Options { discovery: devices.source != "simulated" };
+    let options = Options { discovery: devices.source != "simulated", history: None };
     let service = HomeService::start(&devices, options, || {});
     let until = Instant::now() + Duration::from_secs(12);
     while Instant::now() < until {
@@ -1487,6 +1662,9 @@ mod tests {
     #[test]
     fn parses_home_commands() {
         assert_eq!(parse(""), Ok(HomeCommand::Status));
+        assert_eq!(parse("why Hallway spot"), Ok(HomeCommand::Why("Hallway spot".into())));
+        assert_eq!(parse("enable"), Ok(HomeCommand::Enable(true)));
+        assert_eq!(parse("disable"), Ok(HomeCommand::Enable(false)));
         assert_eq!(parse("toggle Couch 2"), Ok(HomeCommand::Set("Couch 2".into(), Wanted::Toggle)));
         assert_eq!(
             parse("brightness Couch 2 40%"),

@@ -428,7 +428,9 @@ your devices with their homes, rooms and local keys to
 `~/.config/tileception/home-devices.json`, readable by you only. Run it again
 after adding devices in the app. Battery sensors only report to the cloud; the
 import offers to read those every 10 minutes, which keeps the Access Secret in
-the same file.
+the same file. (`--client-id`, `--region` and `--secret-file` make the import
+unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
+without asking.)
 
 Then switch the panel block on:
 
@@ -437,10 +439,16 @@ Then switch the panel block on:
 enabled = true
 ```
 
+`tileception msg home enable` writes `enabled = true`.
+
 If your account has several homes, the panel shows the one whose devices answer
 on the network you are on. `devices` points to a different device file; see the
 [default config](../crates/tileception/src/default-config.toml).
-`tileception home status` lists the imported devices and whether they answer.
+`tileception home status` lists the imported devices and whether they answer,
+and `tileception msg home why <name>` explains why one is unreachable and what
+to check. The climate widget draws a trend line of the last six hours of room
+temperature and target under itself, sampled locally and kept in
+`~/.local/state/tileception/home-history.json`.
 
 ## Doctor
 

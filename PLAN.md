@@ -63,15 +63,12 @@ language as the bindings.
   `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
   socket first.
 - Smart home (`feature/smart-home`), still missing before that branch merges:
-  - The heating trend line under the climate widget (the last 6 hours of
-    temperature and target), paused until there is a history to draw: Tuya's
-    cloud device logs, or sampling locally.
-  - Doctor integration: Doctor can explain why a device is unreachable, run or
-    repeat `tileception home import`, and switch `[home]` on.
-  - Settings panel integration: set up the smart home (import, cloud sensors,
+  - Settings window integration: set up the smart home (import, cloud sensors,
     `[home] enabled`) from the settings window instead of the command line.
-  - Devices behind a gateway (Zigbee and Bluetooth sub-devices) and protocol
-    3.4; both show as unavailable now.
+  - Devices behind a gateway (Zigbee and Bluetooth sub-devices) show as
+    unavailable until they can be tried on a real gateway. Sub-devices need
+    to be addressed by `cid` = node id over one shared gateway connection, with reports routed
+    by `cid`.
 
 ### Later
 

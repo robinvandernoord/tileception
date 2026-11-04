@@ -3152,9 +3152,17 @@ fn doctor_context(mode: &str) -> String {
          - `tileception msg <command>` runs a compositor command, for example `tree` (the layout) or `volume`. \
          `tileception msg help` lists every command; features that are switched on and off rather than \
          configured, such as the rubber duck (`duck`), are only there.\n\
-         - Smart home devices (lights, plugs, air conditioners): `tileception msg home` lists them with their \
-         names and state; `tileception msg home on|off|toggle <name>`, `home brightness <name> <percent>`, \
-         `home target <name> <degrees>`, `home mode <name> cool|heat|dry|fan|auto` control them.\n\
+         - Smart home devices (Tuya lights, plugs, air conditioners, sensors): `tileception msg home` lists them \
+         with their state, and `tileception msg home why <name>` explains why one is unreachable and what to check. \
+         `tileception msg home on|off|toggle <name>`, `home brightness <name> <percent>`, `home target <name> <degrees>`, \
+         `home mode <name> cool|heat|dry|fan|auto` control them; `tileception home status` connects for a few seconds \
+         and lists what answers. The panel's Home block is switched on with `[home] enabled = true` in the config, \
+         `tileception config set home.enabled true` or `tileception msg home enable`. To set up devices or fetch their \
+         local keys again, the user runs `tileception home import` in a terminal: it asks for the Tuya IoT Platform \
+         project's Access ID, data center and Access Secret (`--client-id`, `--region`, `--secret-file` make it \
+         unattended; `--cloud-sensors`/`--no-cloud-sensors` choose whether battery sensors are read from the cloud \
+         every 10 minutes). Devices behind a Zigbee or Bluetooth gateway are not \
+         supported yet and show as unavailable.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\
