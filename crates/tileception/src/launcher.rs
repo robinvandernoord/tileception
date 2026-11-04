@@ -81,6 +81,7 @@ struct StoredUsage {
 pub enum Paste {
     Launcher(u64),
     Doctor,
+    Settings(u64),
 }
 
 /// One row of results.
@@ -129,6 +130,12 @@ const fn builtin(name: &'static str, words: &'static str, glyph: &'static str, d
 
 /// Tileception's own commands, found by typing their name.
 const COMMANDS: &[Builtin] = &[
+    builtin(
+        "Settings",
+        "preferences configuration appearance keyboard touchpad power",
+        glyph::CONTRAST,
+        Does::Line("settings"),
+    ),
     builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
     builtin("Minimap", "map tree where camera outline", glyph::MINIMAP, Does::Line("minimap")),
     builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
@@ -368,6 +375,9 @@ impl Tileception {
                 self.launcher_insert_paste(&text);
             }
             (Paste::Doctor, Clip::Text(text)) if self.doctor.open => self.doctor_insert_paste(&text),
+            (Paste::Settings(epoch), Clip::Text(text)) if self.settings.open => {
+                self.settings_insert_paste(epoch, &text)
+            }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             _ => return,
         }
@@ -414,12 +424,14 @@ impl Tileception {
             && !self.is_locked()
             && self.power_menu.is_none()
             && !self.doctor.open
+            && !self.settings.open
         {
             self.open_launcher(true);
         }
     }
 
     fn open_launcher(&mut self, home: bool) {
+        self.settings.open = false;
         if self.launcher.index.changed_since_scan() {
             self.launcher.index.refresh();
         }
@@ -664,7 +676,7 @@ impl Tileception {
         // offers its address as text.
         let mime_types = match target {
             Paste::Doctor => [&["image/png"][..], &text].concat(),
-            Paste::Launcher(_) => text.to_vec(),
+            Paste::Launcher(_) | Paste::Settings(_) => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
@@ -830,8 +842,9 @@ impl Tileception {
                 self.close_launcher();
                 // The terminal stays open on a shell afterwards, to read the output.
                 let script = format!("{line}; exec \"${{SHELL:-sh}}\"");
-                let command = format!("{} -e sh -c {}", self.terminal, shell_quote(&script));
-                self.spawn("sh", &["-c".into(), command]);
+                if let Err(error) = self.run_in_terminal(&script) {
+                    tracing::warn!("{error}");
+                }
             }
             Entry::Run(line) => self.start_run(line),
             Entry::Ask(question) => {
@@ -1734,11 +1747,6 @@ fn clean_output(text: &str) -> String {
         }
     }
     out
-}
-
-/// A string as one shell word.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// See [`Launcher::question`].

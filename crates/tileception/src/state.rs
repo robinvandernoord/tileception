@@ -189,6 +189,7 @@ pub struct Tileception {
     pub frost: std::cell::RefCell<crate::frost::Frost>,
     pub power_menu: Option<crate::power::PowerMenu>,
     pub launcher: crate::launcher::Launcher,
+    pub settings: crate::settings::Settings,
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
@@ -365,6 +366,7 @@ impl Tileception {
             frost: Default::default(),
             power_menu: None,
             launcher: Default::default(),
+            settings: Default::default(),
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
@@ -426,6 +428,22 @@ impl Tileception {
     /// Seconds since start, the clock the layout engine runs on.
     pub fn now(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
+    }
+
+    /// Run a shell line in the configured terminal, keeping quoted arguments.
+    pub(crate) fn run_in_terminal(&self, line: &str) -> Result<(), String> {
+        if self.terminal.trim().is_empty() {
+            return Err("No terminal configured".into());
+        }
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+        let line_arg = quote(line);
+        let one_arg = quote(&format!("sh -c {}", line_arg));
+        let command = format!(
+            "set -- {}; case \"${{1##*/}}\" in lxterminal|xfce4-terminal) exec \"$@\" --command {} ;; gnome-terminal) exec \"$@\" -- sh -c {} ;; *) exec \"$@\" -e sh -c {} ;; esac",
+            self.terminal, one_arg, line_arg, line_arg
+        );
+        self.spawn("sh", &["-c".into(), command]);
+        Ok(())
     }
 
     pub fn spawn(&self, cmd: &str, args: &[String]) {
@@ -696,7 +714,11 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
+        } else if self.settings.open
+            || self.launcher.open
+            || (self.doctor.open && self.doctor.focused)
+            || self.duck.typing()
+        {
             None
         } else {
             remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));

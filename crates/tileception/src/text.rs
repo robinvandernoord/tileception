@@ -233,7 +233,7 @@ impl Text {
         let size = key.size_tenths as f32 / 10.0 * scale;
         let max_width = key.max_width as f32 * scale;
         let metrics = Metrics::new(size, (size * 1.4).ceil());
-        let family = if key.mono { Family::Monospace } else { Family::Name(&key.font) };
+        let family = if key.mono || key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) };
         let base = Attrs::new().family(family).weight(Weight(key.weight));
         let [accent_red, accent_green, accent_blue, accent_alpha] = key.accent;
         let accent = Color::rgba(accent_red, accent_green, accent_blue, accent_alpha);
@@ -462,7 +462,12 @@ impl Text {
         let (size, width, x_pos) = (size * self.scale, width * self.scale, x_pos * self.scale);
         let mut buffer = Buffer::new(fonts, Metrics::new(size, (size * 1.3).ceil()));
         buffer.set_wrap(Wrap::None);
-        buffer.set_text(text, &Attrs::new().family(Family::Name(font)), Shaping::Advanced, None);
+        buffer.set_text(
+            text,
+            &Attrs::new().family(if font == "monospace" { Family::Monospace } else { Family::Name(font) }),
+            Shaping::Advanced,
+            None,
+        );
         buffer.shape_until_scroll(fonts, false);
         let cursor_x =
             buffer.cursor_position(&cosmic_text::Cursor::new(0, cursor)).map(|position| position.0).unwrap_or(0.0);
@@ -478,7 +483,9 @@ impl Text {
         // The widest the image may be, in physical pixels.
         let max_width = (key.max_width as f32 * scale).floor() as i32;
         let metrics = Metrics::new(size, (size * 1.3).ceil());
-        let attrs = Attrs::new().family(Family::Name(&key.font)).weight(Weight(key.weight));
+        let attrs = Attrs::new()
+            .family(if key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) })
+            .weight(Weight(key.weight));
 
         // Measure; if too wide (or too many lines), drop characters until it fits with "...".
         let mut shown = key.text.clone();

@@ -302,9 +302,12 @@ impl Tileception {
             let mut held = Mods::from_state(mods);
             // Unmodified, so Super+Shift+1 is "1" and not "!".
             let raw = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
-            if let Some(command) =
-                builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
-            {
+            if let Some(command) = builtin(
+                held,
+                sym,
+                raw,
+                state.world.in_overview() && !state.settings.open && !state.launcher.open && state.power_menu.is_none(),
+            ) {
                 return FilterResult::Intercept(vec![command]);
             }
             if state.power_menu.is_some() {
@@ -313,6 +316,21 @@ impl Tileception {
             }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
+            if panels && state.settings.open {
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::SettingsKey(sym, Mods::from_state(mods))]);
+            }
             if panels && sym == keysyms::KEY_Escape && held == Mods::default() && state.close_tray() {
                 return FilterResult::Intercept(Vec::new());
             }
@@ -583,6 +601,13 @@ impl Tileception {
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
+        if !self.is_locked() && self.settings.open && self.power_menu.is_none() {
+            self.settings_motion(point);
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
             self.launcher_motion(point);
             return;
@@ -764,6 +789,14 @@ impl Tileception {
         if self.is_locked() {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
+            return;
+        }
+        if self.settings.open && self.power_menu.is_none() {
+            if state == ButtonState::Pressed && button == BTN_LEFT {
+                self.settings_click(tileception_core::Point::new(self.pointer.x, self.pointer.y));
+            } else if state == ButtonState::Released && button == BTN_LEFT {
+                self.settings_release();
+            }
             return;
         }
         if state == ButtonState::Pressed && self.power_menu.is_none() && !self.launcher.open {
@@ -1008,7 +1041,7 @@ impl Tileception {
             self.bar_scroll(notches);
             return;
         }
-        if !self.is_locked() && self.power_menu.is_none() {
+        if !self.is_locked() && self.power_menu.is_none() && !self.settings.open {
             let notches = event
                 .amount_v120(Axis::Vertical)
                 .or_else(|| event.amount_v120(Axis::Horizontal))
@@ -1020,6 +1053,21 @@ impl Tileception {
             if self.strip_scroll(notches) {
                 return;
             }
+        }
+        if self.settings.open && !self.is_locked() && self.power_menu.is_none() {
+            let amount = if event.source() == AxisSource::Wheel {
+                event
+                    .amount_v120(Axis::Vertical)
+                    .map(|amount| amount / 120. * 54.)
+                    .or_else(|| event.amount(Axis::Vertical))
+            } else {
+                event.amount(Axis::Vertical)
+            }
+            .unwrap_or(0.);
+            if amount != 0. {
+                self.settings_scroll(amount);
+            }
+            return;
         }
         if self.launcher.open
             && !self.is_locked()

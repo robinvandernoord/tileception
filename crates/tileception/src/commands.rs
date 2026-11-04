@@ -32,6 +32,8 @@ pub enum Command {
     PowerMenuKey(u32),
     /// Process launcher input after Smithay releases its keyboard lock.
     LauncherKey(u32, crate::config::Mods),
+    Settings,
+    SettingsKey(u32, crate::config::Mods),
     /// Replaces the window selection with these ids (empty clears it).
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
@@ -127,6 +129,7 @@ Views:
 
 Shell:
   launcher                  open the launcher
+  settings                  open or close Settings (drafts are kept)
   notifications             open the notification list
   do-not-disturb            toggle do not disturb
   lock                      lock the screen (see lock_command)
@@ -262,6 +265,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "home" => return crate::home::parse(rest).map(Command::Home),
+        "settings" if rest.is_empty() => return Ok(Command::Settings),
         "doctor" => {
             // Whole words only: "doctor user" is not "doctor use r".
             let (sub, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
@@ -444,6 +448,8 @@ impl Tileception {
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
+            Command::Settings => self.toggle_settings(),
+            Command::SettingsKey(sym, mods) => self.settings_key(sym, mods),
             Command::Handoff(command) => return self.handoff_command(command),
             Command::ColourScheme(scheme) => {
                 self.theme.colour_scheme = scheme;

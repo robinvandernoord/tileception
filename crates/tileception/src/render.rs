@@ -282,6 +282,9 @@ impl Tileception {
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
         if active {
+            elements.extend(self.settings_elements(renderer));
+        }
+        if active {
             elements.extend(self.tray_elements(renderer));
             // The welcome screen is part of the desktop: notifications go over it.
             if !self.launcher.home {
@@ -810,7 +813,7 @@ pub fn physical_point(point: (f64, f64), scale: f64) -> Point<i32, Physical> {
 }
 
 /// Elements cut to `rect` (logical pixels); those wholly outside it go.
-fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
+pub(crate) fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
     let crop = physical(rect, scale);
     elements
         .into_iter()

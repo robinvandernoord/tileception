@@ -38,6 +38,8 @@ impl SessionLockHandler for Tileception {
         tracing::info!("session locked");
         self.lock = LockState::Locked { surfaces: Default::default() };
         self.launcher.open = false;
+        self.settings.open = false;
+        self.settings_release();
         self.power_menu = None;
         self.selection.anchor = None;
         self.pending_press = None;

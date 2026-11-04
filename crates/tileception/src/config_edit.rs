@@ -86,6 +86,163 @@ pub fn set_value(file: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply a panel draft in one validated write. Read the latest file so edits
+/// to unrelated settings are preserved; refuse conflicting changes.
+pub fn apply_draft(changes: &[(&str, Option<toml::Value>, Option<toml::Value>)]) -> Result<(), String> {
+    let path = crate::config::path();
+    let mut doc = read(&path)?;
+    let current = crate::config::Config::parse(&doc.to_string())?;
+    let values = toml::Table::try_from(&current.file).map_err(|error| error.to_string())?;
+    for (key, before, after) in changes {
+        if !key.contains('.') {
+            let actual = values.get(*key).cloned();
+            if &actual != before && &actual != after {
+                return Err(format!("{key} changed outside Settings. Discard to reload it."));
+            }
+            replace_root(&mut doc, key, after.as_ref())?;
+            continue;
+        }
+        let (section, name) = split(key)?;
+        let actual = values.get(section).and_then(|value| value.get(name)).cloned();
+        if &actual != before && &actual != after {
+            return Err(format!("{key} changed outside Settings. Discard and reopen to load it."));
+        }
+        let Some(after) = after else {
+            table(&mut doc, section)?.remove(name);
+            continue;
+        };
+        let mut value: Value = after.to_string().parse().map_err(|error| format!("{key}: {error}"))?;
+        if let Some(old) = lookup(&doc, section, name) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        table(&mut doc, section)?[name] = Item::Value(value);
+    }
+    write(&path, &doc)
+}
+
+/// The editable source, with its comments and section syntax intact.
+pub fn panel_text() -> Result<String, String> {
+    Ok(read(&crate::config::path())?.to_string())
+}
+
+/// Extract source items, preserving their comments and explicit values.
+pub fn section_text(base: &str, key: &str) -> Result<String, String> {
+    let doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
+    let mut excerpt = DocumentMut::new();
+    if let Some((section, name)) = key.split_once('.') {
+        if let Some(item) = doc.get(section).and_then(|item| item.get(name)) {
+            table(&mut excerpt, section)?[name] = item.clone();
+        } else {
+            let defaults =
+                toml::Table::try_from(crate::config::ConfigFile::default()).map_err(|error| error.to_string())?;
+            if let Some(value) = defaults.get(section).and_then(|section| section.get(name)) {
+                let example = toml::Table::from_iter([(
+                    section.into(),
+                    toml::Value::Table(toml::Table::from_iter([(name.into(), value.clone())])),
+                )]);
+                return toml::to_string_pretty(&example).map_err(|error| error.to_string());
+            }
+        }
+    } else if let Some(item) = doc.get(key) {
+        excerpt[key] = item.clone();
+    } else if key == "rules" {
+        return Ok("# Add [[rules]] entries here.\n".into());
+    } else {
+        let section = table(&mut excerpt, key)?;
+        if key == "binds" {
+            section.decor_mut().set_prefix("# Custom overrides only. Use \"none\" to disable a built-in binding.\n");
+        }
+    }
+    Ok(excerpt.to_string())
+}
+
+/// Splice the edited source item back, without rebuilding it from defaults.
+pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, String> {
+    let mut doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
+    let mut edited: DocumentMut = text.parse().map_err(|error| format!("{error}"))?;
+    let trailing = edited.trailing().as_str().unwrap_or("").to_string();
+    if let Some((section, name)) = key.split_once('.') {
+        let item = edited.get_mut(section).and_then(Item::as_table_mut).and_then(|table| table.remove(name));
+        if edited.get(section).and_then(Item::as_table).is_some_and(toml_edit::Table::is_empty) {
+            edited.remove(section);
+        }
+        if !edited.is_empty() {
+            return Err(format!("Edit only {key} here; use the full-file editor for other settings."));
+        }
+        if let Some(item) = item {
+            table(&mut doc, section)?[name] = item;
+        } else {
+            table(&mut doc, section)?.remove(name);
+        }
+    } else {
+        let item = edited.remove(key);
+        if !edited.is_empty() {
+            return Err(format!("Edit only {key} here; use the full-file editor for other settings."));
+        }
+        if let Some(item) = item {
+            doc[key] = item;
+        } else {
+            doc.remove(key);
+        }
+    }
+    if !trailing.trim().is_empty() {
+        let previous = doc.trailing().as_str().unwrap_or("");
+        doc.set_trailing(format!("{previous}\n{trailing}"));
+    }
+    crate::config::Config::parse(&doc.to_string())?;
+    Ok(doc.to_string())
+}
+
+fn replace_root(doc: &mut DocumentMut, key: &str, value: Option<&toml::Value>) -> Result<(), String> {
+    if let Some(value) = value {
+        let table = toml::Table::from_iter([(key.to_string(), value.clone())]);
+        let mut replacement: DocumentMut =
+            toml::to_string(&table).map_err(|error| error.to_string())?.parse().map_err(|error| format!("{error}"))?;
+        doc[key] = replacement.remove(key).ok_or("missing serialized setting")?;
+    } else {
+        doc.remove(key);
+    }
+    Ok(())
+}
+
+/// Overlay controls on an editor draft, without writing to disk.
+pub fn draft_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result<String, String> {
+    let mut doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
+    for (key, value) in changes {
+        if let Some((section, name)) = key.split_once('.') {
+            if let Some(value) = value {
+                let mut replacement: DocumentMut =
+                    toml::to_string(&toml::Table::from_iter([(name.to_string(), value.clone())]))
+                        .map_err(|error| error.to_string())?
+                        .parse()
+                        .map_err(|error| format!("{error}"))?;
+                let mut item = replacement.remove(name).ok_or("missing serialized setting")?;
+                if let (Some(old), Some(new)) = (lookup(&doc, section, name), item.as_value_mut()) {
+                    *new.decor_mut() = old.decor().clone();
+                }
+                table(&mut doc, section)?[name] = item;
+            } else {
+                table(&mut doc, section)?.remove(name);
+            }
+        } else {
+            replace_root(&mut doc, key, value.as_ref())?;
+        }
+    }
+    crate::config::Config::parse(&doc.to_string())?;
+    Ok(doc.to_string())
+}
+
+/// Full-document edits refuse concurrent changes rather than overwriting them.
+pub fn apply_document(before: &str, after: &str) -> Result<(), String> {
+    let path = crate::config::path();
+    let current = read(&path)?.to_string();
+    if current != before && current != after {
+        return Err("config.toml changed outside Settings. Discard to reload it.".into());
+    }
+    let doc = after.parse().map_err(|error| format!("{error}"))?;
+    write(&path, &doc)
+}
+
 /// The file as written, or the defaults when there is none yet.
 fn read(path: &Path) -> Result<DocumentMut, String> {
     let text = match std::fs::read_to_string(path) {

@@ -40,7 +40,7 @@ pub struct HomeConfig {
 }
 
 impl HomeConfig {
-    fn path(&self) -> Option<PathBuf> {
+    pub(crate) fn path(&self) -> Option<PathBuf> {
         match &self.devices {
             Some(path) => Some(crate::wallpaper::expand_home(path)),
             None => store::default_path(),
@@ -201,6 +201,60 @@ fn degrees(value: f64) -> String {
 }
 
 impl Tileception {
+    pub(crate) fn settings_home_update_addresses(&self, file: &mut store::DeviceFile) {
+        let Some(service) = &self.home.service else { return };
+        for (device_id, host, version) in service.discovered() {
+            if let Some(device) = file.devices.iter_mut().find(|device| device.device_id == device_id) {
+                device.host = Some(host.to_string());
+                if let Some(version) = version {
+                    device.version = Some(version.as_str().into());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn settings_home_status(&self) -> String {
+        if let Some(problem) = self.home.problem {
+            problem.text().into()
+        } else if self.home.service.is_some() {
+            format!("Connected: {} devices", self.home.snapshot.devices.len())
+        } else {
+            "Disconnected".into()
+        }
+    }
+
+    pub(crate) fn settings_home_cloud_label(&self, sensors: bool) -> String {
+        let enabled = self
+            .config
+            .file
+            .home
+            .path()
+            .and_then(|path| store::load(&path).ok())
+            .and_then(|file| file.cloud)
+            .is_some_and(|cloud| if sensors { cloud.poll_sensors } else { cloud.startup_refresh });
+        format!("{}: {}", if sensors { "Cloud sensors" } else { "Startup refresh" }, if enabled { "on" } else { "off" })
+    }
+
+    pub(crate) fn settings_home_cloud(&mut self, sensors: bool) -> Result<(), String> {
+        let path = self.config.file.home.path().ok_or("No config directory")?;
+        let mut file = store::load(&path)?;
+        let access = file.cloud.as_mut().ok_or("Import devices with saved cloud access first")?;
+        if sensors {
+            access.poll_sensors = !access.poll_sensors;
+        } else {
+            access.startup_refresh = !access.startup_refresh;
+        }
+        store::save(&path, &file)?;
+        if self.home.service.is_some() {
+            self.apply_home();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn settings_home_connected(&self) -> bool {
+        self.home.service.is_some()
+    }
+
     /// Starts, restarts or stops the service to match `[home]`.
     pub fn apply_home(&mut self) {
         self.stop_home();
@@ -1604,6 +1658,38 @@ fn ask_hidden(question: &str) -> Result<zeroize::Zeroizing<String>, String> {
     result.map(|()| answer)
 }
 
+/// Fetch inventory and merge discovered or cached LAN addresses. Callers
+/// decide whether to retain credentials and when to save the result.
+pub(crate) fn import_devices(
+    file: &std::path::Path,
+    credentials: tileception_home::cloud::Credentials,
+    scan: bool,
+    progress: &mut dyn FnMut(&str),
+) -> Result<tileception_home::store::DeviceFile, String> {
+    let mut imported = tileception_home::cloud::import(credentials, progress)?;
+    let heard = if scan {
+        progress("Looking for devices on this network (15 seconds)...");
+        tileception_home::discovery::scan(Duration::from_secs(15))
+    } else {
+        progress("Using discovery from the running connection...");
+        Vec::new()
+    };
+    let previous = store::load(file).ok();
+    for device in &mut imported.devices {
+        let found = heard.iter().find(|(device_id, ..)| *device_id == device.device_id);
+        let earlier =
+            previous.as_ref().and_then(|old| old.devices.iter().find(|old| old.device_id == device.device_id));
+        if let Some((_, host, version)) = found {
+            device.host = Some(host.to_string());
+            device.version = version.map(|version| version.as_str().to_string());
+        } else if let Some(earlier) = earlier {
+            device.host = earlier.host.clone();
+            device.version = earlier.version.clone();
+        }
+    }
+    Ok(imported)
+}
+
 fn import(
     file: &std::path::Path,
     client_id: Option<String>,
@@ -1641,23 +1727,7 @@ fn import(
         secret: secret.clone(),
         region: region.clone(),
     };
-    let mut imported = tileception_home::cloud::import(credentials, &mut |line| println!("{line}"))?;
-
-    println!("Listening for the devices on this network (15 seconds)...");
-    let heard = tileception_home::discovery::scan(Duration::from_secs(15));
-    let previous = store::load(file).ok();
-    for device in &mut imported.devices {
-        let found = heard.iter().find(|(device_id, ..)| *device_id == device.device_id);
-        let earlier =
-            previous.as_ref().and_then(|old| old.devices.iter().find(|old| old.device_id == device.device_id));
-        if let Some((_, host, version)) = found {
-            device.host = Some(host.to_string());
-            device.version = version.map(|version| version.as_str().to_string());
-        } else if let Some(earlier) = earlier {
-            device.host = earlier.host.clone();
-            device.version = earlier.version.clone();
-        }
-    }
+    let mut imported = import_devices(file, credentials, true, &mut |line| println!("{line}"))?;
     let cloud_only: Vec<String> = imported
         .devices
         .iter()

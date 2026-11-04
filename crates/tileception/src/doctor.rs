@@ -574,6 +574,7 @@ impl Tileception {
             tracing::info!("the doctor is switched off in [shell]");
             return;
         }
+        self.settings.open = false;
         if !self.doctor_here() {
             self.doctor.opened = Instant::now();
         }
@@ -1186,8 +1187,9 @@ impl Tileception {
 
     /// Runs `line` with `sh` in a new terminal window.
     fn open_terminal(&self, line: &str) {
-        let terminal = format!("{} -e sh -c {}", self.terminal, shell_quote(line));
-        self.spawn("sh", &["-c".into(), terminal]);
+        if let Err(error) = self.run_in_terminal(line) {
+            tracing::warn!("{error}");
+        }
     }
 
     /// Runs a command from an answer in a terminal, so `sudo` can ask for the

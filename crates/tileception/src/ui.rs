@@ -388,6 +388,15 @@ impl<'a> Painter<'a> {
         self.layers
     }
 
+    /// Clip a scrolling block, including its text and icons, to a viewport.
+    pub fn clipped(&mut self, rect: Rect, draw: impl FnOnce(&mut Painter<'_>)) {
+        let start = self.layers.len();
+        draw(self);
+        let elements = self.layers.split_off(start);
+        let clipped = crate::render::clip_elements(elements, &self.shifted(rect), self.state.scale);
+        self.layers.extend(clipped);
+    }
+
     fn shifted(&self, rect: Rect) -> Rect {
         Rect::new(rect.x + self.offset.0, rect.y + self.offset.1, rect.w, rect.h)
     }
@@ -479,10 +488,13 @@ impl<'a> Painter<'a> {
     /// Text inside `rect`, centred vertically and aligned horizontally.
     /// Returns its size, also when nothing could be drawn.
     pub fn text(&mut self, label: &str, rect: Rect, style: Style) -> (f64, f64) {
-        let theme = self.theme();
+        self.text_font(label, rect, style, &self.state.theme.font)
+    }
+
+    pub fn text_font(&mut self, label: &str, rect: Rect, style: Style, font: &str) -> (f64, f64) {
         let image = self.state.text.borrow_mut().styled(
             label,
-            &theme.font,
+            font,
             style.size,
             style.colour,
             rect.w.max(1.0) as f32,
@@ -501,11 +513,14 @@ impl<'a> Painter<'a> {
 
     /// The size text would take, without drawing it.
     pub fn measure(&self, label: &str, max_width: f64, style: Style) -> (f64, f64) {
-        let theme = self.theme();
+        self.measure_font(label, max_width, style, &self.state.theme.font)
+    }
+
+    pub fn measure_font(&self, label: &str, max_width: f64, style: Style, font: &str) -> (f64, f64) {
         self.state
             .text
             .borrow_mut()
-            .styled(label, &theme.font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
+            .styled(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
             .map(|rendered| (rendered.width, rendered.height))
             .unwrap_or((0.0, 0.0))
     }
