@@ -69,6 +69,9 @@ language as the bindings.
 - Smart home settings window integration: import devices, configure cloud
   sensors and switch `[home] enabled` from the settings window. Deferred to a
   future update; not a blocker for merging `feature/smart-home`.
+- Smart home history: support temperature, humidity or both, including
+  standalone sensors. Let users choose which readings to show through the
+  future settings panel, according to what each device reports.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices). Deferred
   until a compatible Tuya gateway is available for real-device validation;
   not a blocker for merging `feature/smart-home`. These devices currently
