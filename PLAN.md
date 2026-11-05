@@ -12,7 +12,7 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Name | Tileception (binary `tileception`); chosen for findability. |
 | Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
 | Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
-| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur. Reference in `docs/design.html`. |
+| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
 | Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock. |
 | Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
 | Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
@@ -31,6 +31,7 @@ crates/
   tileception-notify/  # org.freedesktop.Notifications service
   tileception-media/   # volume (PulseAudio protocol), MPRIS, backlight
   tileception-acp/     # ACP Registry, agent installs and the ACP client
+  tileception-handoff/ # handoff protocol: discovery, handshake, wire format
 resources/             # session launcher, login screen entry, power menu, portal config
 packaging/             # Debian packaging
 website/               # tileception.space and the /install script
@@ -48,214 +49,68 @@ a configure policy that resizes windows to where the camera is heading; and an
 IPC socket per session (`tileception msg <command>`) using the same command
 language as the bindings.
 
-## Status
-
-Released up to v0.4.0 and running as Robin's session:
-
-- Nested tiling, gaps, floating windows, fullscreen, tab groups with named strips.
-- Camera: step in and out, Overview, neighbours, framing one window, history,
-  saved views 1 to 9.
-- Rearranging: drags with drop previews, keyboard moves, divider and gap
-  resizing, multi-window selection with group close, float, tab and move.
-- Session: DRM backend, Xwayland, layer-shell, session lock, screencopy and
-  screen sharing, suspend (opt out with `general.suspend_enabled = false`),
-  idle handling with video inhibition, locking before every sleep (logind
-  delay inhibitor).
-- Battery: charge in the bar, a focus border that follows it, low-battery
-  alerts, hibernating when nearly empty and power profiles that follow the
-  charger. Only with a battery; `[battery]` switches each part off.
-- Tide theming, wallpaper, text rendering, HiDPI and fractional scaling.
-- Built-in shell: launcher (calculator, conversions, windows, commands, app
-  actions, times, colours, characters, paths, `>` commands), welcome screen,
-  top or bottom bar with breadcrumb and calendar, notifications with do not disturb,
-  power menu, lock screen, volume/media/brightness controls with audio device
-  switching, minimizing with the bottom strip. All swappable through `[shell]`.
-- The doctor: an ACP agent panel (Super+/) with ask, config and yolo modes.
-- Touchpad: swipe and pinch bindings in `[binds]` (`Swipe3Left`,
-  `Super+Pinch2In`), unbound gestures passed to programs (pointer-gestures),
-  `[touchpad]` for tap, natural scrolling, typing, speed and click method.
-- Touchscreen: touches on windows go to programs (wl_touch); on
-  Tileception's own interface a finger acts as the left button. Edge swipes
-  (`TouchEdgeTop` and the rest), three-finger swipes and pinches taken back
-  from programs, and a two-finger pinch in Overview.
-- Window rules, per-app launch arguments, ext-foreign-toplevel-list,
-  data-control, pointer constraints and relative pointer.
-- Config hot reload, IPC, headless backend with screenshots for testing.
-- Packaging: release CI for trixie, sid, noble and resolute (amd64 and arm64),
-  signed APT repository, `tileception-archive-keyring`, `/install` script.
-
 ## Roadmap
-
-### Known bugs
-
-None known. (Fixed 2026-10-17: a second foot opened beside a first crashed
-because it got keyboard focus before its first configure; a window now gets
-the keyboard only once its first configure is sent.)
 
 ### Next
 
-- More monitors: a layout per screen, moving windows between them. Comes first
-  once Robin can test it on a second screen.
-
-#### Login screen
-
-On the `feature/greeter` branch, not merged or released. See
-[docs/greeter.md](docs/greeter.md) and the design in
-[docs/design-greeter.html](docs/design-greeter.html).
-
-- [x] `tileception --greeter` for greetd: people as tabs, the sessions (Wayland,
-  and X through `xsession_wrapper`), an action launcher (power, sessions, people),
-  wrong passwords and PAM messages as notifications, the last user and each
-  person's last session remembered, `/etc/tileception/greeter.toml`, the system
-  keymap.
-- [x] The built-in lock screen is the same tiles, checking the password with PAM,
-  with counts instead of notification text and media without titles.
-- [x] Login fade: the greeter fades out, the session's first frames fade in.
-- [x] Per-person looks: sessions put their accent in AccountsService (the
-  `org.tileception.Greeter` extension) and a copy of their wallpaper in
-  `/var/cache/tileception-greeter` (the greeter checks each file's owner);
-  `[greeter] share = false` takes them back.
-- [x] `make try-greeter` (a spare console), `make install-greeter` and
-  `make uninstall-greeter` (switching the display manager and back). The `.deb`
-  ships the config and the extension but does not switch.
-- [ ] Try it on hardware with `make try-greeter`, then as the login screen.
-- [x] One setup for `.deb` and `/install` users, shared with the make targets:
-  `tileception-setup --greeter tileception|previous` (see Guided installation).
-- [ ] Not built yet: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, Ctrl+Space layout switching, more than one screen, reduced motion, an
-  accent taken from a shared wallpaper, and the full tile-to-window morph at login.
-
-#### Guided installation
-
-Decided 2026-10-18. Built 2026-10-29 as `tileception-setup` (POSIX sh, shipped in
-the `.deb` and `~/.local/bin`, a copy served as tileception.space/setup) plus
-`tileception config get|set|add`, which edits config.toml with toml_edit and
-keeps its comments. `/install` runs setup with `--print-flags` before
-downloading, then applies the flags at the end. `make install` asks nothing and
-keeps the config (`SETUP_ARGS` passes choices); `make setup` asks.
-
-- [x] Collect all setup answers early, after quick compatibility and existing-install
-  checks and before downloads, builds or system changes, with a summary to confirm.
-- [x] "How would you like to set up Tileception?": Recommended, Customize or
-  Minimal (no bar, notifications or Doctor; the launcher, Super+T and the lock
-  screen stay), plus Keep when a config exists.
-- [x] Customize: bar (and its edge), launcher, notifications, power menu, lock
-  screen as Built-in, Turned off or another program, saying which run for the
-  whole session and which on demand; media keys on or off. Another notification
-  daemon goes into `general.autostart`, with what Super+N runs asked separately.
-- [x] The greeter question for Recommended, Customize and Keep, defaulting to the
-  current login screen; Minimal skips it unless `--greeter` says. Removing the
-  package switches back (prerm). make install-greeter, uninstall-greeter and
-  try-greeter use the same functions.
-- [x] Doctor separately (`[shell] doctor = "builtin" | "none"`), explaining
-  agents, accounts and approvals; no agent is configured during setup.
-- [x] `--non-interactive`, `--preset`, `--greeter`, `--bar` and the other parts,
-  `--notification-daemon`, `--user`, `--yes`; `make install SETUP_ARGS=...`.
-- [x] Reinstall reads the desktop user's config (also under sudo, via
-  SUDO_USER or `--user`). Precedence: flags and answers, then the existing
-  config, then the preset; unattended without a preset keeps everything.
-- [x] Answers come from `/dev/tty`; without a terminal nothing is asked and the
-  current settings are kept.
-- [x] Reopen with `tileception-setup` (or `make setup`); finishes with how to
-  enter the session and change things later.
-- [ ] Try `/install` end to end on a clean trixie and noble machine, once the
-  package with tileception-setup and the site's /setup are published together.
-- [ ] Pick a Doctor agent during setup, if that turns out to be wanted.
+- Frost on the lock screen and the login screen, so `[theme] frost = true`
+  covers every panel Tileception draws. Part of `feature/frost`; finish it
+  before that branch merges.
+- Doctor is missing commands for things the panels can do: asked to clear
+  notifications, it found no `tileception msg` command for it and pointed at
+  the panel's Clear all button instead. Add `msg` commands for the panel
+  actions (clear notifications, Do not disturb, and the like), and pass
+  `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
+  socket first.
 
 ### Later
 
-- [ ] Compare contents or hashes before exporting Doctor's bundled documentation
-  and default config. Write only missing or changed files to avoid unnecessary
-  writes and preserve timestamps for unchanged files.
+- A settings window instead of editing the config file.
+- Smart home settings window integration: import devices, configure cloud
+  sensors and switch `[home] enabled` from the settings window. Deferred to a
+  future update; not a blocker for merging `feature/smart-home`.
+- Smart home inventory refresh: add a manual refresh action in the future
+  settings screen. Startup refresh is implemented in the background, with
+  credential retention chosen during import independently of cloud-sensor
+  polling. Cached data stays usable during refresh and if a request fails.
+- Smart home history: support temperature, humidity or both, including
+  standalone sensors. Let users choose which readings to show through the
+  future settings panel, according to what each device reports.
+- Smart home gateway support (Zigbee and Bluetooth sub-devices). Deferred
+  until a compatible Tuya gateway is available for real-device validation;
+  not a blocker for merging `feature/smart-home`. These devices currently
+  show as unavailable. Sub-devices need to be addressed by `cid` = node id
+  over one shared gateway connection, with reports routed by `cid`.
+
+### Maybe someday
+
 - Touchpad gestures that follow the fingers: the camera tracking a pinch or
   swipe live instead of one step per gesture, and window management gestures.
-- Live blur and glass styles.
-- A settings window instead of editing the config file.
-- Top bar extras: a minimap (live outline of the tree with the camera's frame;
-  click to fly, drag to pan), calendar events from an .ics file or URL.
+- Top bar calendar events from an .ics file or URL.
+- Compare contents or hashes before exporting Doctor's bundled documentation
+  and default config, writing only missing or changed files.
+- Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; crop or pad instead, as niri does. Only if it shows up
   in practice.
-
-#### Handoff between machines
-
-Proposed and decided 2026-10-29, not scheduled. Several Tileception machines on
-the same network share one mouse and keyboard, a clipboard and windows, opt-in
-and only between machines that share a key (in the spirit of Barrier, Input
-Leap, lan-mouse and waypipe).
-
-Decisions:
-
-- Tileception to Tileception only, with our own protocol; no Deskflow, Input
-  Leap or lan-mouse compatibility.
-- Pairing by a shared key in each machine's config.toml. Nothing listens
-  unless handoff is turned on and a key is set.
-- Discovery through mDNS on the LAN, with optional fixed addresses in the
-  config for networks that block it.
-- The pointer crosses at screen edges, onto the machine arranged on that side.
-- The clipboard is shared lazily: a copy announces its MIME types, and the
-  content goes over only when it is pasted on the other machine.
-- Windows move by streaming: the app keeps running on its own machine and its
-  surface is forwarded to the other, as waypipe does.
-
-- [ ] Input: pointer and keyboard to the neighbouring machine and back. While
-  remote, local bindings stay local except a fixed way back.
-- [ ] Clipboard: text first, then images and other MIME types. Primary
-  selection to decide.
-- [ ] Window handoff: send a window to another machine and take it back; what
-  happens when the network drops or the owning machine sleeps to decide.
-- [ ] Security: encrypted and authenticated with keys derived from the shared
-  key; input is never forwarded into a locked machine, and locking either side
-  returns input home.
-- [ ] Still open: how machines are arranged (which edge leads where), where
-  the key comes from (generated by `tileception config` or setup), and
-  dragging files across.
-
-### Design ideas from LunariaOS
-
-Visual ideas from [LunariaOS](https://lunariaos.com) (a Debian-based desktop,
-floating windows, not released, no public source). Its videos show mockups,
-so this is about the look, not code: Tide's shape and colours stay, and the
-dock, the window buttons and the frosted glass are left out. Screenshots are
-frames from the site's videos
-([intro](https://lunariaos.com/videos/introduction/startanimation.mp4),
-[design](https://lunariaos.com/videos/overview/newuniquedsg.mp4),
-[fluidity](https://lunariaos.com/videos/overview/unmatchedfluidity.mp4)),
-kept locally in `design/lunaria/` (gitignored, not ours to commit).
-
-Most worthwhile first: the floating bar, the status capsule, concentric radii
-and the launcher categories.
-
-- Floating bar: inset by `gap` on every side and rounded with `radius`, so it
-  reads as one more tile instead of a strip on the edge. The hairline and
-  slide-over behaviour while a window is framed stays.
-  [floating-bar](design/lunaria/floating-bar.png)
-- Status capsule: the relevant chips (network, volume, battery) share one
-  inner pill that grows and shrinks, with the clock beside it, apart from the
-  breadcrumb and saved views.
-  [status-capsule](design/lunaria/status-capsule.png)
-- Concentric radii: a shape inside another is rounded by the outer radius less
-  the padding between them. Going further, tile radius could follow depth or
-  zoom level so the nesting shows in the shapes.
-  [nested-capsules](design/lunaria/nested-capsules.png),
-  [window-controls](design/lunaria/window-controls.png)
-- Selection pills: the selected item is a filled accent pill, the hovered one
-  an outlined pill. For launcher rows, breadcrumb crumbs and saved views.
-  [selection-pills](design/lunaria/selection-pills.png)
-- Launcher categories: filter chips above the results, taken from the
-  `Categories=` key of the `.desktop` files (nothing to name by hand), and a
-  footer with the user, files and the power menu.
-  [launcher-categories](design/lunaria/launcher-categories.png),
-  [launcher-open](design/lunaria/launcher-open.png)
-- Notification cards: app icon left, app name bold with the time
-  right-aligned on the same line, at most two lines of body, stacked just
-  above the bar. [notifications](design/lunaria/notifications.png)
-- Generated wallpaper: a soft, defocused gradient drawn by the compositor as
-  the default, shifting with the time of day or `colour_scheme`, in Tide's
-  colours. [floating-bar](design/lunaria/floating-bar.png) shows theirs.
-- Popups open from their origin: the launcher, calendar and notifications
-  scale and fade out of the bar element that opened them.
-  [launcher-open](design/lunaria/launcher-open.png)
+- Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
+  panels, Ctrl+Space layout switching, more than one screen, reduced motion,
+  an accent taken from a shared wallpaper, and the full tile-to-window morph
+  at login.
+- Handoff hardening: key rotation and revocation, keyboard-layout ownership,
+  edge mapping for unequal monitors and pointer-locked apps, shortcut routing
+  inside a streamed window, audio and owner-side portal dialogs. Each machine's
+  keyboard follows only that machine's own pointer.
+- Handoff video: video-heavy windows need a real video codec rather than
+  compressed tiles (choose between VA-API, openh264 or ffmpeg first). Popups
+  stay where they opened when the window's place there changes.
+- Handoff version tolerance, if mismatched versions turn out to be common:
+  each machine lists its optional features (window streaming, drag and drop,
+  program pointers) in its hello, features only one side has are switched
+  off instead of refusing the connection, and unknown messages are skipped
+  instead of dropping it. Input and the clipboard stay the core that must
+  match. Not now: every feature would need a tested path for each
+  combination, and machines updating from the same APT repository match.
 
 ### Not wanted
 
@@ -266,6 +121,11 @@ and the launcher categories.
   locked (beyond the media keys); click-to-kill.
 - Input methods (text-input and input-method protocols).
 - A built-in clipboard history.
+- Restyling after LunariaOS (floating bar, pills, capsules and the like);
+  Tide's look stays (decided 2026-11-02).
+- Glass: translucent, blurred windows. Blur behind every window is redone
+  most frames while the camera moves; Frost covers what matters
+  (decided 2026-11-02).
 
 ## Testing approach
 

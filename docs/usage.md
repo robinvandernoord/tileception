@@ -46,7 +46,38 @@ Use another number for another slot. Saving to an occupied slot replaces its
 previous view. Saved slots also appear in the bar; click one to return to it.
 
 Saved views refer to windows in the running session. Recalling one also restores
-any minimized windows that belong to it.
+any minimized windows that belong to it. On a split screen, a slot holds the view
+of every area: recalling it restores each area that has a view saved there.
+
+## Minimap
+
+The minimap in the bar is a small outline of the whole layout, with the part on
+screen outlined. Hover it to open a larger map, or click it to keep the map open
+until you click it again, click elsewhere or press **Escape**. On the map:
+
+- Click a window to zoom to it.
+- Drag to pan to another part of the layout at the current zoom level.
+
+The line below the map says what letting go would show. On a split screen the
+map shows every area side by side, and choosing something in another area makes
+that area active. You can also open the map by typing **Minimap** in the
+launcher. [Configuration](configuration.md#desktop-components) shows how to hide
+it.
+
+## Split screens
+
+A wide screen can be [split into areas](configuration.md#splitting-a-wide-screen),
+each with its own layout. Shortcuts act on the active area, except Super+Scroll,
+which acts on the area under the pointer and makes it active. Click or touch
+another area to make it active; moving the pointer over it lets its windows
+scroll and show hover effects without taking the keyboard.
+
+- Drag the gap between two areas to change their widths. Resizing a window on
+  the side where its area meets the next one moves that gap too.
+- Alt-drag a window into another area to move it there.
+- **Super+M** zooms to the focused window within its area. **Super+F** covers
+  the whole monitor.
+- The overview and the minimized-window strip belong to the active area.
 
 ## Managing windows
 
@@ -147,8 +178,9 @@ open the selected result. Use the arrow keys to choose another result and
 The launcher also handles calculations, unit conversions, file paths and URLs.
 Prefix a shell command with `>` to run it and see its output.
 
-**Super+N** opens notification history and sound controls. Use the panel's
-**Do not disturb** control to silence ordinary notification popups.
+**Super+N** opens notification history and sound controls, and your smart home
+devices once [set up](#smart-home). Use the panel's **Do not disturb** control
+to silence ordinary notification popups.
 
 In nested mode, notifications and media controls are handled by your host
 desktop by default.
@@ -176,6 +208,26 @@ to discard the capture, or press **Escape** during region selection to cancel.
 Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`.
 
+### Password manager auto-type
+
+KeePassXC 2.8 and newer can type usernames and passwords into other windows
+through the desktop portal. The first time a program wants to type, a
+notification asks whether to allow it: **Deny**, **Allow once** or **Always**.
+**Always** is remembered in `~/.local/state/tileception/typing.toml`; remove the
+program's line there to be asked again. Keys go to the
+window you are using, and nothing is typed while the screen is locked.
+
+For KeePassXC's global auto-type shortcut, open its settings, go to
+**Auto-Type** and click **Configure** next to the global shortcut. Tileception
+asks you to press the keys, such as Ctrl+Alt+A; Escape or **Skip** leaves the
+shortcut unset. The keys are remembered for that program, and clicking
+**Configure** again changes them. Keys Tileception already uses are refused.
+On Wayland, KeePassXC cannot see window titles, so the shortcut always opens its
+entry picker: search, press Enter, and it types into the window you came from.
+
+The portal reads Tileception's portal files when it starts. After installing or
+updating Tileception, log out and back in before trying auto-type.
+
 ### Sound, brightness and playback
 
 The standard volume, microphone mute, brightness and media keys work with the
@@ -188,6 +240,26 @@ built-in controls. These alternatives are available without dedicated keys:
 | Super+Ctrl+Space               | Play or pause media      |
 | Super+Ctrl+Left / Right        | Previous / next track    |
 | Super+Ctrl+Page Up / Page Down | Raise / lower brightness |
+
+### Smart home
+
+With [smart home devices](configuration.md#smart-home) set up, the notification
+panel has a **Home** block. An air conditioner shows its room temperature, a
+target you change with **-** and **+**, its mode and fan speed, and a trend
+line of the last six hours of temperature and target underneath. Below it are
+the lights and plugs by room, each with a switch. Click a light to show its
+brightness and colour sliders. **All** lists everything in one list instead,
+with what is on first, and **All off** switches off every light and plug.
+
+The block folds to one line while nothing is on and unfolds when something
+turns on; click its title to fold or unfold it yourself. Devices that are
+switched off at the wall show as unreachable at the bottom of their room.
+
+`tileception msg home` lists the devices, `tileception msg home why <name>`
+explains why one is unreachable, and commands such as
+`tileception msg home toggle Couch` or `tileception msg home brightness Couch 40`
+control them from scripts and key bindings; `tileception msg --help` lists them
+all.
 
 ## Gestures
 

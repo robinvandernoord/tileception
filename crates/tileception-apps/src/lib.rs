@@ -107,6 +107,19 @@ impl AppIndex {
         self.apps.get(id)
     }
 
+    /// The application whose entry runs `program`, compared by file name so
+    /// `/usr/bin/keepassxc` finds `Exec=keepassxc`. Shown entries come first.
+    pub fn by_program(&self, program: &Path) -> Option<&App> {
+        let name = program.file_name()?;
+        let runs = |app: &&App| app.args.first().and_then(|first| Path::new(first).file_name()) == Some(name);
+        let mut found = self.apps.values().filter(runs);
+        let first = found.next()?;
+        if !first.hidden {
+            return Some(first);
+        }
+        found.find(|app| !app.hidden).or(Some(first))
+    }
+
     pub fn refresh(&mut self) {
         self.apps.clear();
         self.normalized.clear();

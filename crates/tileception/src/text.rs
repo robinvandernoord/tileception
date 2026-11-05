@@ -1,7 +1,7 @@
 //! Text for the compositor's own interface (tab titles, menus), rasterised
 //! with cosmic-text into images that are cached and drawn as textures.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use cosmic_text::{
     Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, UnderlineStyle, Weight, Wrap,
@@ -44,6 +44,50 @@ pub struct TextImage {
     pub buffer: MemoryRenderBuffer,
     pub width: f64,
     pub height: f64,
+    /// The text as drawn, shortened or not.
+    pub text: Arc<str>,
+    /// Where each character is, for selecting text.
+    pub glyphs: Arc<[GlyphBox]>,
+}
+
+/// A drawn character: its place in the image in logical pixels (the whole
+/// line's height), and its bytes in [`TextImage::text`].
+#[derive(Debug, Clone, Copy)]
+pub struct GlyphBox {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The text `buffer` holds and where its characters were laid out, scrolled
+/// left by `scroll` physical pixels.
+fn glyph_boxes(buffer: &Buffer, scale: f32, scroll: f32) -> (Arc<str>, Arc<[GlyphBox]>) {
+    let mut text = String::new();
+    let mut starts = Vec::with_capacity(buffer.lines.len());
+    for line in &buffer.lines {
+        starts.push(text.len());
+        text.push_str(line.text());
+        text.push_str(line.ending().as_str());
+    }
+    let scale = f64::from(scale);
+    let glyphs = buffer
+        .layout_runs()
+        .flat_map(|run| {
+            let base = starts.get(run.line_i).copied().unwrap_or(0);
+            run.glyphs.iter().map(move |glyph| GlyphBox {
+                left: f64::from(glyph.x - scroll) / scale,
+                top: f64::from(run.line_top) / scale,
+                width: f64::from(glyph.w) / scale,
+                height: f64::from(run.line_height) / scale,
+                start: base + glyph.start,
+                end: base + glyph.end,
+            })
+        })
+        .collect();
+    (text.into(), glyphs)
 }
 
 /// How to draw styled spans with [`Text::rich`].
@@ -316,6 +360,7 @@ impl Text {
             .into_iter()
             .filter_map(|(rect, span)| Some((rect.map(|coord| coord / scale), span.link.clone()?)))
             .collect();
+        let (text, glyphs) = glyph_boxes(&buffer, scale, 0.0);
         let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Abgr8888,
@@ -325,7 +370,7 @@ impl Text {
             None,
         );
         let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
-        Some(RichImage { image: TextImage { buffer, width, height }, links })
+        Some(RichImage { image: TextImage { buffer, width, height, text, glyphs }, links })
     }
 
     /// One line of text, shortened with "..." to fit `max_width` pixels.
@@ -545,6 +590,7 @@ impl Text {
                 }
             }
         }
+        let (text, glyphs) = glyph_boxes(&buffer, scale, scroll);
         let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Abgr8888,
@@ -554,6 +600,6 @@ impl Text {
             None,
         );
         let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
-        Some(TextImage { buffer, width, height })
+        Some(TextImage { buffer, width, height, text, glyphs })
     }
 }

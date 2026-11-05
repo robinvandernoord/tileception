@@ -106,6 +106,11 @@ impl Settings {
 }
 
 impl AppearanceService {
+    /// The portal backend's bus connection, for signals of its other interfaces.
+    pub fn connection(&self) -> &zbus::blocking::Connection {
+        &self.connection
+    }
+
     fn start(bus: zbus::blocking::connection::Builder<'_>, theme: &Theme) -> zbus::Result<AppearanceService> {
         let current = Arc::new(Mutex::new(Appearance::from_theme(theme)));
         let connection = bus.name(NAME)?.serve_at(PATH, Settings(current.clone()))?.build()?;
@@ -128,14 +133,19 @@ impl AppearanceService {
 }
 
 impl Tileception {
-    /// Starts serving the theme's appearance on the session bus. Done before
-    /// the session environment is exported, so the portal finds it when it
-    /// starts.
-    pub fn start_appearance(&mut self) {
-        match zbus::blocking::connection::Builder::session().and_then(|bus| AppearanceService::start(bus, &self.theme))
-        {
+    /// Starts Tileception's portal backend on the session bus: the theme's
+    /// appearance, typing for applications (`remote_desktop`) and their global
+    /// shortcuts (`global_shortcuts`). Done
+    /// before the session environment is exported, so the portal finds it
+    /// when it starts.
+    pub fn start_portal(&mut self) {
+        let service = zbus::blocking::connection::Builder::session()
+            .and_then(|bus| self.serve_remote_desktop(bus))
+            .and_then(|bus| self.serve_global_shortcuts(bus))
+            .and_then(|bus| AppearanceService::start(bus, &self.theme));
+        match service {
             Ok(service) => self.appearance = Some(service),
-            Err(err) => tracing::error!("could not serve the appearance settings: {err}"),
+            Err(err) => tracing::error!("could not serve the desktop portal backend: {err}"),
         }
     }
 

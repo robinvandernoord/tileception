@@ -21,6 +21,8 @@ Commands:
   add <section.key> <value>   add a string to a list, such as general.autostart,
                               unless it is there already
   path                        print the config file's path
+  passphrase                  print three random words to use as the
+                              [handoff] passphrase (nothing is written)
 
 Options:
   --file <path>   edit this file instead of $XDG_CONFIG_HOME/tileception/config.toml
@@ -29,6 +31,7 @@ Examples:
   tileception config get shell.bar
   tileception config set shell.bar waybar
   tileception config add general.autostart swaync
+  tileception config set handoff.passphrase \"$(tileception config passphrase)\"
 ";
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -49,6 +52,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("{}", file.display());
             Ok(())
         }
+        [cmd] if cmd == "passphrase" => {
+            println!("{}", crate::handoff::suggest_passphrase()?);
+            Ok(())
+        }
         [cmd, key] if cmd == "get" => {
             println!("{}", get(&read(&file)?, key)?);
             Ok(())
@@ -63,6 +70,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         _ => Err(format!("unknown arguments {args:?}; see tileception config --help")),
     }
+}
+
+/// One setting's value in effect, for other commands.
+pub fn get_value(file: &Path, key: &str) -> Result<String, String> {
+    get(&read(file)?, key)
+}
+
+/// Sets one setting, for other commands; the file is checked before writing.
+pub fn set_value(file: &Path, key: &str, value: &str) -> Result<(), String> {
+    let mut doc = read(file)?;
+    if set(&mut doc, key, value)? || !file.exists() {
+        write(file, &doc)?;
+    }
+    Ok(())
 }
 
 /// The file as written, or the defaults when there is none yet.

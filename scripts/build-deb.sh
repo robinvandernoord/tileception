@@ -12,7 +12,8 @@
 # on the oldest release you want to support (scripts/build-deb-docker.sh).
 #
 # Environment:
-#   DEB_VERSION     full package version (default: Cargo version + "-1")
+#   DEB_VERSION     full package version (default: scripts/deb-version.sh,
+#                   the Cargo version + "-1" with a prerelease's "-" as "~")
 #   DEB_MAINTAINER  Maintainer field (default: the last commit's author)
 #   DEB_OUT         where the packages go (default: target/deb)
 #   DEB_ARCH        Debian architecture to build for (default: this machine's).
@@ -53,8 +54,7 @@ if [ -z "$cargo_target" ] && ! scripts/deps.sh check build; then
 fi
 
 package=tileception
-cargo_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
-version="${DEB_VERSION:-$cargo_version-1}"
+version=$(scripts/deb-version.sh)
 maintainer="${DEB_MAINTAINER:-$(git log -1 --format='%an <%ae>' 2>/dev/null || true)}"
 if [ -z "$maintainer" ]; then
     echo "build-deb: set DEB_MAINTAINER (no git history to take it from)" >&2
@@ -103,6 +103,10 @@ install -D -m 644 resources/tileception.portal \
     "$root/usr/share/xdg-desktop-portal/portals/tileception.portal"
 install -D -m 644 crates/tileception-auth/pam/tileception "$root/etc/pam.d/tileception"
 install -D -m 644 resources/greeter.toml "$root/etc/tileception/greeter.toml"
+# Suspending until a set time: the unit sets the wake-up alarm, polkit lets
+# the person at the computer start it.
+install -D -m 644 "resources/tileception-wake@.service" "$root/usr/lib/systemd/system/tileception-wake@.service"
+install -D -m 644 resources/tileception-wake.rules "$root/usr/share/polkit-1/rules.d/40-tileception-wake.rules"
 install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
 mkdir -p "$root/usr/share/accountsservice/interfaces"
 ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
@@ -194,6 +198,9 @@ if [ "$1" = configure ]; then
     fi
     install -d -m 1733 /var/cache/tileception-greeter
     systemctl try-restart accounts-daemon.service >/dev/null 2>&1 || true
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
 fi
 EOF
 cat > "$root/DEBIAN/postrm" <<'EOF'
@@ -204,6 +211,9 @@ if [ "$1" = remove ] || [ "$1" = purge ]; then
 fi
 if [ "$1" = purge ]; then
     rm -rf /var/lib/tileception-greeter /var/cache/tileception-greeter
+fi
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 EOF
 # Without the package greetd could not start the login screen any more, so

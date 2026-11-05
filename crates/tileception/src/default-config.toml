@@ -33,6 +33,7 @@ autostart = []
 # Unset: the built-in password lock screen with your wallpaper.
 # lock_command = "swaylock -f -i {wallpaper}"
 # Experimental app-matched layout persistence is disabled unless opted into.
+# It does nothing with several screens or while a screen is split.
 # restore_layout = false
 # Suspend is enabled by default. Set false to disable the power-menu action.
 # suspend_enabled = true
@@ -60,6 +61,8 @@ autostart = []
 # danger = "#f0646a"
 # Cautions, such as volume boosted past 100%.
 # warning = "#f2b04c"
+# The border of windows from another computer (handoff).
+# guest = "#a78bfa"
 # radius = 6
 # popup_radius = 10
 # How far the focus glow reaches, in pixels; 0 turns it off.
@@ -73,10 +76,14 @@ autostart = []
 # What applications are told through the desktop portal: dark, light, or
 # default (each application's own choice).
 # colour_scheme = "dark"
+# Frost: the bar, launcher, notifications, menus and cards turn translucent
+# and blur what is behind them. Windows stay solid.
+# frost = false
 
 [idle]
 # Seconds of inactivity; 0 disables the corresponding action.
-# Visible video players can inhibit both through the Wayland idle-inhibit protocol.
+# Visible video players can inhibit both through the Wayland idle-inhibit protocol;
+# X11 players and browsers through org.freedesktop.ScreenSaver, wherever they are.
 lock_after = 0
 off_after = 600
 # Lock the screen before the computer suspends or hibernates, however that
@@ -119,6 +126,14 @@ max_volume = 150
 # A small card at the bottom of the screen when a level or playback changes.
 osd = true
 osd_timeout_ms = 1500
+
+[home]
+# Tuya lights, plugs and air conditioners in the notification panel (Super+N),
+# controlled on the local network. Run `tileception home import` once to fetch
+# your devices, rooms and local keys from the Tuya IoT Platform.
+enabled = false
+# Where `tileception home import` saved them (this is the default).
+# devices = "~/.config/tileception/home-devices.json"
 
 [battery]
 # Only on computers with a battery; desktops are left alone. The bar shows
@@ -176,6 +191,10 @@ bar = "builtin"
 # The built-in bar's edge: top or bottom. The minimized-window strip stays at
 # the bottom, above a bottom bar. External bars choose their own position.
 bar_position = "top"
+# A small outline of the whole tree in the built-in bar, with the part on
+# screen marked. Click it to open a larger map: click a window there to fly
+# to it, drag to pan at the current zoom level. Also the `minimap` command.
+bar_minimap = true
 # Maximum tray slots, including the overflow button. With more than this
 # many applications, the last slot becomes (…) and opens the remaining items.
 # Must be at least 1; changes apply on save.
@@ -204,9 +223,45 @@ tray_max_icons = 3
 #
 # [outputs."eDP-1"]
 # scale = 1.5
+# position = [0, 0]             # top-left corner in logical pixels
+#
+# [outputs."DP-1"]
+# scale = 1
+# position = [1280, 0]          # right of a 1920-wide panel at scale 1.5
+# Without positions, screens form a row in connector-name order.
+#
+# A wide screen can be split into side-by-side areas, each with its own
+# windows, camera and Overview, as if they were screens of their own
+# (DP-2.1, DP-2.2 from the left in `tileception msg outputs`). Clicking into
+# an area makes it the active one, as focus follows clicks. A saved view
+# holds every area's view, and the minimap shows all areas.
+# Programs still see one screen. Removing the split joins the areas'
+# layouts side by side. Dragging the gap between areas changes their widths
+# until Tileception restarts; only `split` lasts.
+#
+# [outputs."DP-2"]
+# split = 2                     # two equal areas, or relative widths:
+#                               # split = [0.6, 0.4]
 #
 # [outputs."*"]
 # scale = 1
+
+# Handoff: share this mouse, keyboard and clipboard with other Tileception
+# machines on the network that know the same passphrase. When one appears,
+# drag its card to the edge of the screen where it stands; the pointer then
+# crosses there once its user has placed this machine too. Ctrl+Super+Escape
+# brings input back. Locking pauses sharing until you resume it on the card.
+# Pick several random words for the passphrase: guesses are slowed down, but
+# a short phrase can still be guessed. Nothing listens until this is enabled
+# with a passphrase. `tileception msg handoff` shows what is connected.
+#
+# [handoff]
+# enabled = true
+# passphrase = "several random words go here"
+# name = "laptop"               # what others see; the host name by default
+# port = 24850                  # TCP, on every machine
+# discovery = true              # find machines with mDNS
+# peers = ["192.168.1.20"]      # or fixed addresses (host or host:port)
 
 # Extra arguments for programs started from the launcher and the welcome
 # screen, by desktop file name (without .desktop; Snap and Flatpak entries

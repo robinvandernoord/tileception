@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/tileception-core", "crates/tileception-media", "crates/tileception-acp", "crates/tileception"]
+members = ["crates/tileception-core", "crates/tileception-handoff", "crates/tileception-media", "crates/tileception-acp", "crates/tileception-home", "crates/tileception"]
 exclude = ["crates/tileception-apps", "crates/tileception-auth", "crates/tileception-notify"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.10.0"
 edition = "2024"
 license = "MIT"
 

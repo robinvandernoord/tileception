@@ -9,7 +9,7 @@ use std::{
 };
 
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
-use tileception_core::{Node, NodeId};
+use tileception_core::{Node, NodeId, World};
 
 use crate::Tileception;
 
@@ -70,8 +70,13 @@ pub fn describe(state: &Tileception) -> String {
         state.selection.windows.iter().map(|window_id| window_id.0).collect::<Vec<_>>()
     ));
     out.push_str(&format!("minimized {:?}\n", world.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
-    fn walk(state: &Tileception, node_id: NodeId, depth: usize, out: &mut String) {
-        let world = &state.world;
+    if let Some(output) = &state.output {
+        out.push_str(&format!("output {} pointer {:.1},{:.1}\n", output.name(), state.pointer.x, state.pointer.y));
+    }
+    if let Some(duck) = state.duck_shown_rect() {
+        out.push_str(&format!("duck @ {:.0},{:.0} {:.0}x{:.0}\n", duck.x, duck.y, duck.w, duck.h));
+    }
+    fn walk(state: &Tileception, world: &World, node_id: NodeId, depth: usize, out: &mut String) {
         let tree = world.tree();
         let pad = "  ".repeat(depth);
         let rect = world
@@ -84,7 +89,12 @@ pub fn describe(state: &Tileception) -> String {
                 let titles: Vec<String> = views
                     .iter()
                     .map(|window_id| {
-                        let app = state.windows.get(window_id).map(crate::state::app_id).unwrap_or_default();
+                        let app = state
+                            .windows
+                            .get(window_id)
+                            .map(crate::state::app_id)
+                            .or_else(|| state.handoff.windows.remote_app(*window_id))
+                            .unwrap_or_default();
                         format!("{}:{}", window_id.0, app)
                     })
                     .collect();
@@ -97,10 +107,34 @@ pub fn describe(state: &Tileception) -> String {
         };
         out.push_str(&format!("{pad}{line}{rect}\n"));
         for child in tree.children(node_id) {
-            walk(state, *child, depth + 1, out);
+            walk(state, world, *child, depth + 1, out);
         }
     }
-    walk(state, tree.root(), 0, &mut out);
+    let area_name = |index: usize| {
+        let output = state.output.clone()?;
+        Some(state.area_name(&crate::outputs::AreaId { output, index }))
+    };
+    let areas = state.area_worlds();
+    if areas.len() > 1 {
+        // A split screen: the area in use first, as above, then the others.
+        out.push_str(&format!(
+            "area {} active {}\n",
+            area_name(state.area_index()).unwrap_or_default(),
+            state.is_active_output()
+        ));
+    }
+    walk(state, world, tree.root(), 0, &mut out);
+    for (index, other) in areas.into_iter().filter(|(index, _)| *index != state.area_index()) {
+        out.push_str(&format!(
+            "area {} framed {} overview {} focus {}\n",
+            area_name(index).unwrap_or_default(),
+            other.framed().0,
+            other.in_overview(),
+            other.focus().map(|window| window.0.to_string()).unwrap_or("none".into())
+        ));
+        out.push_str(&format!("minimized {:?}\n", other.minimized().map(|window_id| window_id.0).collect::<Vec<_>>()));
+        walk(state, other, other.tree().root(), 0, &mut out);
+    }
     out
 }
 
@@ -120,6 +154,16 @@ fn only_socket() -> std::io::Result<PathBuf> {
 
 /// `tileception msg ...`: sends a command to the running compositor.
 pub fn client(args: &[String]) -> std::io::Result<()> {
+    let reply = request(args)?;
+    print!("{reply}");
+    if reply.starts_with("error") {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Sends one command to the running compositor and returns its reply.
+pub fn request(args: &[String]) -> std::io::Result<String> {
     let path = match std::env::var_os("TILECEPTION_SOCKET") {
         Some(socket) => PathBuf::from(socket),
         None => match std::env::var("WAYLAND_DISPLAY") {
@@ -133,9 +177,5 @@ pub fn client(args: &[String]) -> std::io::Result<()> {
     stream.write_all(format!("{}\n", args.join(" ")).as_bytes())?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
-    print!("{reply}");
-    if reply.starts_with("error") {
-        std::process::exit(1);
-    }
-    Ok(())
+    Ok(reply)
 }

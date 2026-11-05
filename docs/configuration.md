@@ -63,6 +63,8 @@ wallpaper_fit = "fill"
 
 Colours accept `#rrggbb` or `#rrggbbaa`. `accent` and `accent_end` are the two
 ends of the accent gradient. Set them to the same colour for a solid accent.
+`guest` (violet by default) borders windows that come from another computer
+through handoff, brighter and glowing when they have the keyboard.
 
 Use an existing PNG, JPEG or WebP image for the wallpaper. It also appears on
 the built-in lock screen. `wallpaper_fit` accepts `fill`, `fit`, `stretch` or
@@ -71,6 +73,11 @@ the built-in lock screen. `wallpaper_fit` accepts `fill`, `fit`, `stretch` or
 Set `theme.colour_scheme` to `"dark"` or `"light"` to tell applications which
 appearance you prefer, or `"default"` for no preference. The compositor's own
 colours are controlled by the other theme settings.
+
+Set `theme.frost = true` for frosted panels: the bar, launcher, notifications,
+power menu and cards turn translucent and blur what is behind them. Windows
+stay solid. Frost shows best over a colourful wallpaper. It costs a little GPU
+time when something changes behind a panel; a still screen costs nothing extra.
 
 ## Display scaling
 
@@ -107,6 +114,36 @@ TILECEPTION_SCALE=2 tileception --nested
 
 This overrides the output settings for that instance.
 
+## Splitting a wide screen
+
+On an ultrawide monitor, one layout across the whole width can be awkward:
+zooming to one window leaves it very wide. Split the screen into side-by-side
+areas instead. Each area has its own windows, zoom, overview, minimized windows
+and selection, as if it were a screen of its own:
+
+```toml
+[outputs."DP-2"]
+split = 2
+```
+
+`split` takes a number of equal areas, from 1 to 8, or their relative widths,
+such as `split = [0.6, 0.4]` or `split = [2, 1]`. Use the connector name from
+`tileception msg outputs`; `"*"` cannot be split. Areas are named from the
+left, such as `DP-2.1` and `DP-2.2`, in `tileception msg outputs`,
+`focus-output` and `move-output`.
+
+Applications still see one screen, so screen sharing, screenshots and external
+lockers and bars cover the whole monitor. There is one built-in bar across it.
+
+Reducing the number of areas combines their windows side by side in the last
+area that remains, each keeping its layout. Setting `split = 1` or removing it
+puts everything back into one layout. Widths dragged by hand (see
+[Using Tileception](usage.md#split-screens)) last until Tileception restarts or
+`split` is changed; they are not written to the config.
+
+While any screen is split, `general.restore_layout` does not save or restore
+layouts.
+
 ## Desktop components
 
 Each `[shell]` entry uses `"builtin"` for Tileception's own component or `"none"`
@@ -137,6 +174,14 @@ This applies when you save the config. The minimized-window strip stays at the
 bottom, above the bar, and bar menus and previews open upwards. Use `"top"` to
 restore the default.
 External bars such as Waybar use their own position settings.
+
+The built-in bar shows a small minimap of the whole layout next to the back and
+forward buttons; [Using Tileception](usage.md#minimap) describes it. To hide it:
+
+```toml
+[shell]
+bar_minimap = false
+```
 
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
@@ -171,8 +216,8 @@ autostart = ["swaync"]
 notifications = "swaync-client -t"
 ```
 
-Saving this stops Tileception's notification service. Log out and back in to
-start swaync through autostart. Super+N then opens swaync's interface.
+Saving this stops Tileception's notification service. Log out and back in (or
+run `tileception msg restart`) to start swaync through autostart. Super+N then opens swaync's interface.
 
 With `notifications = "none"`, Tileception's notification service is disabled,
 but Super+N still opens the built-in sound controls.
@@ -250,8 +295,8 @@ to specify a keyboard model. The example's repeat settings are the defaults:
 wait 400 milliseconds before repeating, then repeat 30 times per second.
 
 Repeat settings apply when you save. Changes to `layout`, `variant`, `options`
-or `model` currently require logging out of Tileception and back in, or
-restarting a nested instance.
+or `model` currently require `tileception msg restart` (which closes open
+windows), logging out and back in, or restarting a nested instance.
 
 ### Touchpad
 
@@ -313,7 +358,9 @@ for example, to lock after five minutes.
 `off_after` turns off the display without suspending the computer. The first
 input after that, such as a key press, pointer movement or touch, only wakes the
 display and is not passed to applications. Visible applications using Wayland
-idle inhibition, such as video players, can pause both timers. These idle timers
+idle inhibition, such as video players, can pause both timers. So can
+applications that ask over D-Bus (`org.freedesktop.ScreenSaver`), such as VLC
+and other X11 players, whether or not their window is visible. These idle timers
 do not run in nested mode.
 
 Unless `shell.lock` is `"none"`, `lock_before_sleep` locks before suspend or
@@ -359,6 +406,63 @@ selection to other tools.
 
 These battery actions are inactive on computers without a battery. Run
 `tileception msg battery` to inspect the charge and current border colour.
+
+## Smart home
+
+The notification panel can show Tuya lights, plugs and air conditioners (sold
+under many brands and used with the Smart Life or Tuya app). They are controlled
+on your local network, so they respond quickly and keep working without internet.
+
+Devices behind a gateway, including Zigbee and Bluetooth sub-devices, are not
+supported yet and show as unavailable. Gateway support is deferred to a future
+update.
+
+Controlling a device locally needs its local key, which only Tuya's cloud hands
+out. Fetch the keys once with a free project on the
+[Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
+your app account's data center, and link your app account under **Devices**,
+**Link App Account**. Then run:
+
+```sh
+tileception home import
+```
+
+It asks for the project's Access ID, data center and Access Secret, and saves
+your devices with their homes, rooms and local keys to
+`~/.config/tileception/home-devices.json`, readable by you only. Battery sensors
+only report to the cloud; the
+import offers to read those every 10 minutes, which keeps the Access Secret in
+the same file. (`--client-id`, `--region` and `--secret-file` make the import
+unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
+without asking.)
+
+The import separately asks whether to refresh devices, names, homes and rooms
+at compositor startup. This also needs the saved Access Secret, but works
+with cloud-sensor polling switched off. Use `--startup-refresh` or
+`--no-startup-refresh` to choose without asking. Startup refresh runs in the
+background while smart home is enabled; cached devices remain usable during
+refresh and if any request fails. Existing imports with saved credentials
+also refresh at startup and keep their sensor polling enabled. Re-run the
+import to change either choice, or to update devices manually when startup
+refresh is off. A manual refresh action in the settings screen is planned.
+
+Then switch the panel block on:
+
+```toml
+[home]
+enabled = true
+```
+
+`tileception msg home enable` writes `enabled = true`.
+
+If your account has several homes, the panel shows the one whose devices answer
+on the network you are on. `devices` points to a different device file; see the
+[default config](../crates/tileception/src/default-config.toml).
+`tileception home status` lists the imported devices and whether they answer,
+and `tileception msg home why <name>` explains why one is unreachable and what
+to check. The climate widget draws a trend line of the last six hours of room
+temperature and target under itself, sampled locally and kept in
+`~/.local/state/tileception/home-history.json`.
 
 ## Doctor
 

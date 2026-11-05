@@ -1,0 +1,11 @@
+# Sets the hardware clock to wake the computer at %i (seconds since 1970),
+# for Tileception's "Suspend until" in the power menu. It only sets the
+# alarm; the session suspends afterwards. tileception-wake.rules lets the
+# person at the computer start it without a password.
+[Unit]
+Description=Wake the computer at a set time (Tileception)
+Documentation=https://github.com/robinvandernoord/tileception
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rtcwake --mode no --time %i

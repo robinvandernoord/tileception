@@ -2,6 +2,37 @@
 
 <!-- next-version-placeholder -->
 
+## v0.10.0 (2026-11-02)
+
+### Features
+* **outputs:** split screens into independent areas
+* **outputs:** resize and persist split screen areas
+* **split-screen:** extend saved views and minimap across areas
+* **minimap:** add interactive layout map
+
+### Documentation
+* **split-screen:** document saved views across areas
+* **plan:** update release status and outline screen splitting
+
+## v0.9.0 (2026-11-02)
+
+### Features
+* **handoff:** improve cross-machine window handling with multi-output support, Xwayland screen stand-ins, X11 overlays, remote dialogs, and clipboard file transfers
+* **handoff:** improve input forwarding, keyboard state synchronization, and selection sharing across machines
+* **release:** publish Debian prereleases to the `pre` component
+* **screensaver:** honor D-Bus idle inhibitors
+* **power:** add scheduled wake support
+* **portal:** support KeePassXC auto-type
+
+### Fixes
+* **bar:** suppress GL driver errors in error notifications
+* **remote-desktop:** resolve non-dumpable session executables
+* **render:** display X11 overlays over fullscreen windows
+
+### Documentation
+* **handoff:** document headless handoff testing
+* **README:** add promotional video
+
 ## v0.8.1 (2026-10-29)
 
 ### Fixes

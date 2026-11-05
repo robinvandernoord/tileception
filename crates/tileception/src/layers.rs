@@ -52,6 +52,12 @@ impl WlrLayerShellHandler for Tileception {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        if let Some(output) = self.output_for_surface(surface.wl_surface())
+            && self.output.as_ref() != Some(&output)
+        {
+            self.with_output(&output, |state| WlrLayerShellHandler::layer_destroyed(state, surface));
+            return;
+        }
         let Some(output) = self.output.clone() else { return };
         let mut map = layer_map_for_output(&output);
         let layer = map.layers().find(|layer| layer.layer_surface() == &surface).cloned();
@@ -115,9 +121,9 @@ impl Tileception {
         };
         let usable = Rect::new(zone.loc.x as f64, zone.loc.y as f64, zone.size.w as f64, zone.size.h as f64);
         let usable = self.bar_reserve(usable);
-        if usable.w > 0.0 && usable.h > 0.0 && usable != self.world.screen() {
-            self.world.set_screen(usable);
-            self.apply_layout();
+        if usable.w > 0.0 && usable.h > 0.0 {
+            // Split screens give each area its part.
+            self.set_area_screens(usable);
         }
     }
 
@@ -175,14 +181,18 @@ impl Tileception {
         // back the next cursor image until the previous one's frame callback,
         // so without it X11 cursors stay frozen until something else redraws.
         let cursor = match &self.cursor_status {
-            smithay::input::pointer::CursorImageStatus::Surface(surface) => Some(surface.clone()),
+            smithay::input::pointer::CursorImageStatus::Surface(surface) if self.is_active_output() => {
+                Some(surface.clone())
+            }
             _ => None,
         };
         let extra = self
             .lock_surface()
             .cloned()
             .into_iter()
-            .chain(self.x11_overlays.iter().filter_map(|overlay| overlay.wl_surface()))
+            .chain(
+                self.x11_overlays.iter().filter(|_| self.is_active_output()).filter_map(|overlay| overlay.wl_surface()),
+            )
             .chain(cursor);
         for surface in extra {
             smithay::desktop::utils::send_frames_surface_tree(

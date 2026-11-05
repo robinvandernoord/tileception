@@ -23,12 +23,17 @@ mod controls;
 mod cursor;
 mod doctor;
 mod doctor_policy;
+mod drag;
 mod duck;
 mod focus;
+mod frost;
 mod gestures;
+mod global_shortcuts;
 mod greeter;
 mod handlers;
+mod handoff;
 mod headless;
+mod home;
 mod idle;
 mod inject;
 mod input;
@@ -39,16 +44,21 @@ mod layers;
 mod lock;
 mod markdown;
 mod media;
+mod minimap;
 mod minimized;
+mod mirror;
 mod notifications;
 mod osd;
+mod outputs;
 mod password;
 mod persistence;
 mod pointer_lock;
 mod power;
+mod remote_desktop;
 mod render;
 mod rules;
 mod scale;
+mod screensaver;
 mod selection;
 mod shapes;
 mod shell;
@@ -64,6 +74,7 @@ mod tray_bus;
 mod udev;
 #[allow(clippy::min_ident_chars, reason = "ui is the established name for the interface drawing module")]
 mod ui;
+mod wake;
 mod wallpaper;
 mod winit;
 mod xwayland;
@@ -80,10 +91,15 @@ Usage:
   tileception msg <command> [args...]
   tileception msg --help
   tileception config get|set|add <section.key> [value]
+  tileception setup [options]
+  tileception pair [<passphrase words...> | --new | --off | --show]
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
-(`tileception config --help`).
+(`tileception config --help`). `setup` chooses the desktop's parts and the
+login screen again (`tileception setup --help`). `pair` shows or sets the
+passphrase that lets other computers share this mouse and keyboard
+(`tileception pair --help`).
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -125,6 +141,23 @@ Environment:
   TILECEPTION_GREETER_SESSIONS Wayland session directories, for tests
 ";
 
+/// `tileception setup` runs tileception-setup, a shell script so that the
+/// installer can ask its questions before Tileception is installed. Only
+/// returns when it could not be started.
+fn run_setup(args: &[String]) -> String {
+    use std::os::unix::process::CommandExt;
+    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("tileception-setup")));
+    let home = std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/bin/tileception-setup"));
+    let script = beside
+        .into_iter()
+        .chain(home)
+        .chain(["/usr/bin/tileception-setup".into(), "/usr/local/bin/tileception-setup".into()])
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| "tileception-setup".into());
+    let error = std::process::Command::new(&script).args(args).exec();
+    format!("cannot run {}: {error}", script.display())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("msg") {
@@ -132,6 +165,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match argv.get(1).map(String::as_str) {
             None | Some("-h" | "--help" | "help") => print!("{}", commands::HELP),
             _ => ipc::client(&argv[1..])?,
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("pair") {
+        if let Err(err) = handoff::pair::run(&argv[1..]) {
+            eprintln!("tileception pair: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("setup") {
+        let error = run_setup(&argv[1..]);
+        eprintln!("tileception setup: {error}");
+        std::process::exit(1);
+    }
+    if argv.first().map(String::as_str) == Some("home") {
+        if let Err(err) = home::run(&argv[1..]) {
+            eprintln!("tileception home: {err}");
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -153,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("tileception {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            "--nested" | "--session" | "--headless" | "--greeter" => {}
+            "--nested" | "--session" | "--headless" | "--greeter" | RESTARTED => {}
             // A typo must not start a compositor.
             other => {
                 eprintln!("tileception: unknown argument {other:?}\n\n{USAGE}");
@@ -222,12 +274,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket.display()
     );
 
+    state.start_handoff();
     state.session_services = !nested && !headless;
     if !nested && !headless {
         state.fade_in = render::FadeIn::Waiting;
         state.publish_greeter_card();
-        state.start_appearance();
+        state.start_portal();
         state.start_sleep_watch();
+        state.start_screensaver();
         export_session_environment(&state);
     }
     // TILECEPTION_POWER_SUPPLY points at a stand-in for /sys/class/power_supply,
@@ -251,6 +305,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
     state.apply_tray();
+    state.apply_home();
+    state.refresh_home_at_startup();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {
@@ -276,7 +332,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
+    if state.restart {
+        return Err(restart_in_place().into());
+    }
     Ok(())
+}
+
+/// Marks a compositor started by `restart`, which may have to wait for its
+/// predecessor's hold on the seat to be let go.
+pub const RESTARTED: &str = "--restarted";
+
+/// Replaces this process with the binary as installed now, with the same
+/// arguments. The process id stays, so the display manager and logind see
+/// the same session going on; the kernel closes the screens, input devices
+/// and every client's connection on the way. Returns only when that failed.
+fn restart_in_place() -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    let mut args = std::env::args_os();
+    let program = args.next().unwrap_or_else(|| "tileception".into());
+    let args = args.filter(|argument| argument != RESTARTED);
+    tracing::info!("restarting as {}", program.to_string_lossy());
+    std::process::Command::new(program).arg(RESTARTED).args(args).exec()
 }
 
 /// The login screen: the compositor with no clients, the user's config or

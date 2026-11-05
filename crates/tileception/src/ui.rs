@@ -26,6 +26,17 @@ use crate::{
 
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).
 pub mod glyph {
+    pub const HOME: &str = r#"<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>"#;
+    pub const BULB: &str = r#"<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>"#;
+    pub const PLUG: &str = r#"<path d="M9 3v5M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v4"/>"#;
+    pub const FLAME: &str = r#"<path d="M12 3s5 4.5 5 9.5A5 5 0 0 1 7 12.5C7 10 9 9 9 9s0 2.5 2 3c0-3.5 1-6.5 1-9z"/>"#;
+    pub const SNOWFLAKE: &str = r#"<path d="M12 2v20M4 7l16 10M20 7L4 17"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2"/>"#;
+    pub const DROP: &str = r#"<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>"#;
+    pub const THERMOMETER: &str = r#"<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 11v6"/>"#;
+    pub const FAN: &str = r#"<circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7 2 0 3 2 2 4-1 2-4 3-6 3zM14 12c4 0 7 1 7 4 0 2-2 3-4 2-2-1-3-4-3-6zM12 14c0 4-1 7-4 7-2 0-3-2-2-4 1-2 4-3 6-3zM10 12c-4 0-7-1-7-4 0-2 2-3 4-2 2 1 3 4 3 6z"/>"#;
+    pub const WIFI_OFF: &str = r#"<path d="M2 9a15 15 0 0 1 6-3.4M22 9a15 15 0 0 0-9-3.9M5 12.5a10 10 0 0 1 4-2.3M8.5 16a5 5 0 0 1 7 0M3 3l18 18"/>"#;
+    pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
+    pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
     pub const LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
     pub const LOG_OUT: &str = r#"<path d="M16 17l5-5-5-5M21 12H9M12 21H5V3h7"/>"#;
     pub const KEYBOARD: &str = r#"<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>"#;
@@ -70,6 +81,8 @@ pub mod glyph {
     pub const GLOBE: &str =
         r#"<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>"#;
     pub const OVERVIEW: &str = r#"<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>"#;
+    /// The minimap: a split layout with the camera's frame on one part.
+    pub const MINIMAP: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 12h11"/><rect x="12.5" y="6.5" width="6" height="3" rx="0.5"/>"#;
     pub const CAMERA: &str = r#"<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>"#;
     pub const CONTRAST: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 3v18M12 7.5h5M12 12h6M12 16.5h5"/>"#;
     pub const WINDOW: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>"#;
@@ -238,6 +251,7 @@ pub struct LocalTime {
     pub year: i32,
     pub hour: i32,
     pub minute: i32,
+    pub second: i32,
     pub weekday: usize,
     pub day: i32,
     pub month: usize,
@@ -260,6 +274,8 @@ impl LocalTime {
             year: calendar.tm_year + 1900,
             hour: calendar.tm_hour,
             minute: calendar.tm_min,
+            // 60 is a leap second.
+            second: calendar.tm_sec.clamp(0, 59),
             weekday: calendar.tm_wday.clamp(0, 6) as usize,
             day: calendar.tm_mday,
             month: calendar.tm_mon.clamp(0, 11) as usize,
@@ -268,6 +284,11 @@ impl LocalTime {
 
     pub fn clock(&self) -> String {
         format!("{:02}:{:02}", self.hour, self.minute)
+    }
+
+    /// The clock with seconds: "20:42:07".
+    pub fn clock_seconds(&self) -> String {
+        format!("{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 
     /// "Thursday 15 October"
@@ -383,6 +404,27 @@ impl<'a> Painter<'a> {
 
     pub fn fill(&mut self, rect: Rect, colour: Colour, radius: f32) {
         self.shape(rect, Shape::filled(colour, radius));
+    }
+
+    /// A panel background: with frost on, translucent over a blur of what
+    /// is behind it.
+    pub fn frosted(&mut self, rect: Rect, shape: Shape) {
+        let theme = self.theme();
+        let shape = Shape { fill: (theme.panel(shape.fill.0), theme.panel(shape.fill.1)), ..shape };
+        let before = self.layers.len();
+        self.shape(rect, shape);
+        if theme.frost
+            && self.layers.len() > before
+            && let Some(element) = self.layers.last()
+        {
+            use smithay::backend::renderer::element::Element;
+            self.state.frost.borrow_mut().region(crate::frost::Region {
+                panel: element.id().clone(),
+                rect: self.shifted(rect),
+                radius: shape.radius,
+                alpha: self.alpha,
+            });
+        }
     }
 
     /// An image rasterised at the output's scale, at its own size; or a
@@ -520,8 +562,10 @@ impl<'a> Painter<'a> {
     /// A popup surface: rounded, with a hairline border and a soft shadow.
     pub fn popup(&mut self, rect: Rect) {
         let theme = self.theme();
+        // Frosted, the shadow cannot be offset: it would show through.
+        let drop = if theme.frost { 0.0 } else { 6.0 };
         self.shape(
-            Rect::new(rect.x, rect.y + 6.0, rect.w, rect.h),
+            Rect::new(rect.x, rect.y + drop, rect.w, rect.h),
             Shape {
                 radius: theme.popup_radius,
                 glow_radius: 28.0,
@@ -529,7 +573,7 @@ impl<'a> Painter<'a> {
                 ..Default::default()
             },
         );
-        self.shape(
+        self.frosted(
             rect,
             Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.popup(), theme.popup_radius) },
         );
@@ -540,7 +584,7 @@ impl<'a> Painter<'a> {
     pub fn edge_panel(&mut self, rect: Rect, left: bool) {
         let theme = self.theme();
         self.shape(rect, Shape { glow_radius: 28.0, glow: Colour([0.0, 0.0, 0.0, 0.42]), ..Default::default() });
-        self.fill(rect, theme.popup(), 0.0);
+        self.frosted(rect, Shape::filled(theme.popup(), 0.0));
         let edge = if left { rect.right() - 1.0 } else { rect.x };
         self.fill(Rect::new(edge, rect.y, 1.0, rect.h), theme.border, 0.0);
     }

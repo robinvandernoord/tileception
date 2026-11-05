@@ -30,6 +30,12 @@ if [ -e "$portal" ]; then
     sudo rm -f "$portal"
     echo "Removed $portal"
 fi
+wake_unit=/etc/systemd/system/tileception-wake@.service
+if [ -e "$wake_unit" ]; then
+    sudo rm -f "$wake_unit" /etc/polkit-1/rules.d/40-tileception-wake.rules
+    sudo systemctl daemon-reload
+    echo "Removed the wake-up alarm unit and its polkit rule"
+fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"
 for f in "$bindir/tileception" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$portals"; do
