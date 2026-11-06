@@ -69,6 +69,8 @@ pub enum Command {
     DoctorKey(u32, crate::config::Mods),
     /// Lets the rubber duck out, or puts it away.
     Duck,
+    /// Opens a pre-filled GitHub issue in the browser, with this title.
+    Feedback(String),
     /// A key pressed while the duck's question has the keyboard (not available as text).
     DuckKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
@@ -155,6 +157,8 @@ Shell:
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
+  feedback [title]          open a new GitHub issue for feedback or a feature
+                            request in the browser (needs a GitHub account)
   handoff                   machines sharing this mouse and keyboard
   handoff edge [machine] <output> <side>
                             place a machine at an edge (left, right, top,
@@ -335,6 +339,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
+        "feedback" => return Ok(Command::Feedback(rest.to_string())),
         "quit" => Action::Quit,
         "restart" => Action::Restart,
         "terminal" => Action::Spawn,
@@ -471,6 +476,7 @@ impl Tileception {
             Command::Inject(input) => self.inject(input)?,
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::Duck => self.toggle_duck(),
+            Command::Feedback(title) => self.send_feedback(&title),
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
@@ -545,6 +551,8 @@ mod tests {
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
         assert_eq!(parse("duck"), Ok(Command::Duck));
+        assert_eq!(parse("feedback"), Ok(Command::Feedback(String::new())));
+        assert_eq!(parse("feedback zoom is slow"), Ok(Command::Feedback("zoom is slow".into())));
         assert!(parse("duck duck goose").is_err());
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());
