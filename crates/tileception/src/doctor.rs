@@ -253,8 +253,11 @@ pub struct Doctor {
     /// The remembered model per agent; put back on every new session.
     models: std::collections::BTreeMap<String, String>,
     restore_model: bool,
-    /// The agent's own mode from before Yolo gave it full access, to put back.
+    /// The mode change already requested, until the next explicit switch.
     agent_mode: Option<String>,
+    options_ready: bool,
+    restate_mode: bool,
+    mode_env_warning: Option<String>,
     /// Pictures pasted for the next message.
     attachments: Vec<Attachment>,
     /// The agent takes pictures in a prompt; unknown until it has started.
@@ -324,6 +327,9 @@ impl Default for Doctor {
             models: saved.models,
             restore_model: false,
             agent_mode: None,
+            options_ready: false,
+            restate_mode: true,
+            mode_env_warning: None,
             attachments: Vec::new(),
             takes_images: None,
             waiting: None,
@@ -690,7 +696,7 @@ impl Tileception {
         // The documented defaults, for the agent to read.
         let defaults = state_dir().join("default-config.toml");
         if let Err(error) =
-            std::fs::create_dir_all(state_dir()).and_then(|_| std::fs::write(&defaults, crate::config::DEFAULT))
+            std::fs::create_dir_all(state_dir()).and_then(|_| write_if_changed(&defaults, crate::config::DEFAULT))
         {
             tracing::warn!("{}: {error}", defaults.display());
         }
@@ -703,16 +709,26 @@ impl Tileception {
         }
         let context = doctor_context(self.doctor.mode.label());
         self.doctor.options.clear();
+        self.doctor.options_ready = false;
+        self.doctor.agent_mode = None;
+        self.doctor.restate_mode = true;
+        self.doctor.mode_env_warning = None;
         self.doctor.commands.clear();
         self.doctor.menu = None;
         self.doctor.restore_model = true;
         self.doctor.takes_images = None;
         // Its commands reach this session, without looking for the socket.
-        let env: tileception_acp::Env = self
+        let mut env: tileception_acp::Env = self
             .ipc_socket
             .iter()
             .map(|socket| ("TILECEPTION_SOCKET".to_string(), socket.to_string_lossy().into_owned()))
             .collect();
+        if self.doctor.agent.as_deref() == Some("opencode") {
+            match opencode_env(self.doctor.mode) {
+                Ok(permissions) => env.extend(permissions),
+                Err(error) => self.doctor.mode_env_warning = Some(error),
+            }
+        }
         self.doctor.session = Some(match (test_agent, agent) {
             (Some(line), _) => {
                 let mut words = line.split_whitespace().map(str::to_string);
@@ -818,8 +834,9 @@ impl Tileception {
         self.doctor.view = View::Conversation;
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
+        self.doctor.approved.clear();
         // How pictures go depends on the agent, which may not have said yet.
-        if starting || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
+        if starting || !self.doctor.options_ready || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
             self.doctor.waiting = Some((prompt, attachments));
         } else {
             self.prompt_doctor(prompt, attachments);
@@ -829,6 +846,13 @@ impl Tileception {
 
     fn prompt_doctor(&mut self, text: String, attachments: Vec<Attachment>) {
         let Some(session) = &self.doctor.session else { return };
+        if std::mem::take(&mut self.doctor.restate_mode) {
+            session.send(Request::Context(format!(
+                "Tileception permission mode: {}. {}. This applies to this message and supersedes earlier mode instructions.",
+                self.doctor.mode.short(),
+                self.doctor.mode.description()
+            )));
+        }
         let (text, images) = if self.doctor.takes_images == Some(true) {
             let images = attachments
                 .into_iter()
@@ -965,6 +989,11 @@ impl Tileception {
             }
             Event::Status(status) => {
                 match &status {
+                    Status::Starting(_) => {
+                        doctor.options_ready = false;
+                        doctor.agent_mode = None;
+                        doctor.restate_mode = true;
+                    }
                     Status::Failed(error) => {
                         doctor.messages.push(Message::Note(error.clone()));
                         doctor.waiting = None;
@@ -1031,6 +1060,7 @@ impl Tileception {
             Event::Terminal(program) => self.run_login_terminal(&program),
             Event::Options(options) => {
                 doctor.options = options;
+                doctor.options_ready = true;
                 // The model chosen before, for a new session too.
                 let wanted = doctor.agent.as_ref().and_then(|agent| doctor.models.get(agent));
                 let model = doctor.options.iter().find(|option| option.is_model());
@@ -1042,11 +1072,19 @@ impl Tileception {
                     session.send(Request::SetOption { id: model.option_id.clone(), value: wanted.clone() });
                 }
                 self.sync_agent_mode();
+                if (self.doctor.takes_images.is_some()
+                    || self.doctor.waiting.as_ref().is_some_and(|(_, attachments)| attachments.is_empty()))
+                    && let Some((text, attachments)) = self.doctor.waiting.take()
+                {
+                    self.prompt_doctor(text, attachments);
+                }
             }
             Event::Commands(commands) => doctor.commands = commands,
             Event::Images(takes) => {
                 doctor.takes_images = Some(takes);
-                if let Some((text, attachments)) = doctor.waiting.take() {
+                if doctor.options_ready
+                    && let Some((text, attachments)) = doctor.waiting.take()
+                {
                     self.prompt_doctor(text, attachments);
                 }
             }
@@ -1184,29 +1222,58 @@ impl Tileception {
     }
 
     pub fn set_doctor_mode(&mut self, mode: Mode) {
+        if self.doctor.mode == mode {
+            // Selecting the same mode retries an agent's rejected setting.
+            self.doctor.agent_mode = None;
+            self.sync_agent_mode();
+            self.schedule_render();
+            return;
+        }
         self.doctor.mode = mode;
+        self.doctor.restate_mode = true;
+        self.doctor.agent_mode = None;
+        self.doctor.approved.clear();
         self.save_doctor();
-        self.sync_agent_mode();
+        if self.doctor.agent.as_deref() == Some("opencode") && self.doctor.session.is_some() {
+            self.doctor_hit(Hit::Stop);
+            self.doctor.busy = false;
+            self.doctor.options_ready = false;
+            self.doctor.options.clear();
+            self.doctor.takes_images = None;
+            self.doctor.restore_model = true;
+            let env = match opencode_env(mode) {
+                Ok(env) => {
+                    self.doctor.mode_env_warning = None;
+                    env
+                }
+                Err(error) => {
+                    self.doctor.mode_env_warning = Some(error);
+                    Default::default()
+                }
+            };
+            if let Some(session) = &self.doctor.session {
+                session.send(Request::RestartEnv(env));
+            }
+            self.doctor.messages.push(Message::Note(
+                "OpenCode restarted for the new permission mode; a new conversation starts with your next message."
+                    .into(),
+            ));
+        } else {
+            self.sync_agent_mode();
+        }
         self.schedule_render();
     }
 
-    /// Yolo also lifts the agent's own sandbox and approvals, where it has a
-    /// mode for that: Codex otherwise cannot reach `tileception msg`. Leaving
-    /// Yolo puts the agent's mode back as it was.
+    /// Select a verified agent mode for every Tileception permission mode.
     fn sync_agent_mode(&mut self) {
         let doctor = &mut self.doctor;
-        let Some(option) = doctor.options.iter().find(|option| option.category.as_deref() == Some("mode")) else {
-            return;
-        };
-        let Some(full) = option.values.iter().find(|value| FULL_ACCESS.contains(&value.value.as_str())) else { return };
-        if option.current != full.value {
-            doctor.agent_mode = Some(option.current.clone());
-        }
-        let wanted = if doctor.mode == Mode::Yolo { Some(&full.value) } else { doctor.agent_mode.as_ref() };
-        if let Some(wanted) = wanted.filter(|target| **target != option.current)
+        let Some((option, wanted)) = doctor_mode_target(doctor) else { return };
+        if wanted != option.current
+            && doctor.agent_mode.as_deref() != Some(wanted)
             && let Some(session) = &doctor.session
         {
-            session.send(Request::SetOption { id: option.option_id.clone(), value: wanted.clone() });
+            session.send(Request::SetOption { id: option.option_id.clone(), value: wanted.into() });
+            doctor.agent_mode = Some(wanted.into());
         }
     }
 
@@ -2033,6 +2100,9 @@ impl Tileception {
         if let Some(session) = &self.doctor.session {
             session.send(Request::NewSession);
             self.doctor.restore_model = true;
+            self.doctor.options_ready = false;
+            self.doctor.agent_mode = None;
+            self.doctor.restate_mode = true;
         }
     }
 
@@ -2862,7 +2932,10 @@ impl Tileception {
         let hints = frame.hints;
         painter.fill(Rect::new(hints.x + 1.0, hints.y, hints.w - 2.0, 1.0), theme.border, 0.0);
         // Over the mode switch, what the mode means instead of keys.
-        if let Some(index) = frame.modes.iter().position(|rect| rect.contains(pointer)) {
+        if let Some(warning) = doctor_mode_warning(&self.doctor) {
+            let text = Rect::new(hints.x + 16.0, hints.y, hints.w - 32.0, hints.h);
+            painter.text(warning, text, Style::new(theme.font_size * 0.9, theme.warning).lines(1));
+        } else if let Some(index) = frame.modes.iter().position(|rect| rect.contains(pointer)) {
             let text = Rect::new(hints.x + 16.0, hints.y, hints.w - 32.0, hints.h);
             painter.text(Mode::ALL[index].description(), text, Style::new(theme.font_size * 0.9, theme.muted));
         } else {
@@ -3332,10 +3405,11 @@ fn export_doctor_docs() -> std::io::Result<()> {
     std::fs::create_dir_all(&docs)?;
     let readme = include_str!("../../../README.md")
         .replace("(crates/tileception/src/default-config.toml)", "(default-config.toml)");
-    std::fs::write(root.join("README.md"), readme)?;
+    write_if_changed(&root.join("README.md"), &readme)?;
     for (name, content) in [
         ("usage.md", include_str!("../../../docs/usage.md")),
         ("configuration.md", include_str!("../../../docs/configuration.md")),
+        ("launcher-plugins.md", include_str!("../../../docs/launcher-plugins.md")),
         ("installation.md", include_str!("../../../docs/installation.md")),
         ("greeter.md", include_str!("../../../docs/greeter.md")),
         ("doctor.md", include_str!("../../../docs/doctor.md")),
@@ -3344,9 +3418,19 @@ fn export_doctor_docs() -> std::io::Result<()> {
         ("index.md", include_str!("../../../docs/index.md")),
     ] {
         let content = content.replace("(../crates/tileception/src/default-config.toml)", "(../default-config.toml)");
-        std::fs::write(docs.join(name), content)?;
+        write_if_changed(&docs.join(name), &content)?;
     }
     Ok(())
+}
+
+/// Keep exported guides' timestamps stable when the bundled contents match.
+fn write_if_changed(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    match std::fs::read(path) {
+        Ok(previous) if previous == content.as_bytes() => Ok(()),
+        Ok(_) => std::fs::write(path, content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::write(path, content),
+        Err(error) => Err(error),
+    }
 }
 
 fn doctor_scope() -> Scope {
@@ -3364,8 +3448,77 @@ fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>)
     Ok(serde_json::json!({ "content": doctor_policy::read_lines(&text, line, limit) }))
 }
 
-/// Agents' own modes without a sandbox or approvals (Codex, Claude), for Yolo.
-const FULL_ACCESS: [&str; 2] = ["agent-full-access", "bypassPermissions"];
+fn opencode_permission(mode: Mode) -> &'static str {
+    if mode == Mode::Yolo { r#"{"edit":"allow","bash":"allow"}"# } else { r#"{"edit":"ask","bash":"ask"}"# }
+}
+
+/// V1 reads OPENCODE_PERMISSION; V2 migrates the same keys from inline config.
+/// Merge only this child process's rules without changing the user's files.
+fn opencode_env(mode: Mode) -> Result<tileception_acp::Env, String> {
+    let inherited = std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|_| "{}".into());
+    let mut content: serde_json::Value = serde_json::from_str(&inherited)
+        .map_err(|_| "Cannot apply OpenCode permissions: inline config is not valid JSON".to_string())?;
+    let object = content
+        .as_object_mut()
+        .ok_or_else(|| "Cannot apply OpenCode permissions: inline config is not an object".to_string())?;
+    let mut permission = match object.remove("permission") {
+        Some(serde_json::Value::Object(value)) => value,
+        Some(serde_json::Value::String(value)) => serde_json::Map::from_iter([("*".into(), value.into())]),
+        None => serde_json::Map::new(),
+        Some(_) => return Err("Cannot apply OpenCode permissions: invalid inline permission rules".into()),
+    };
+    let effect = if mode == Mode::Yolo { "allow" } else { "ask" };
+    for action in ["edit", "bash"] {
+        // Reinsert at the end for OpenCode's last-match-wins permission order.
+        permission.remove(action);
+        permission.insert(action.into(), effect.into());
+    }
+    object.insert("permission".into(), permission.into());
+    if let Some(native) = object.get_mut("permissions") {
+        let rules = native
+            .as_array_mut()
+            .ok_or_else(|| "Cannot apply OpenCode permissions: invalid native permission rules".to_string())?;
+        for action in ["edit", "shell"] {
+            rules.push(serde_json::json!({ "action": action, "resource": "*", "effect": effect }));
+        }
+    }
+    Ok(std::collections::BTreeMap::from([
+        ("OPENCODE_PERMISSION".into(), opencode_permission(mode).into()),
+        ("OPENCODE_CONFIG_CONTENT".into(), content.to_string()),
+    ]))
+}
+
+/// Only use known permission ids actually advertised by this agent.
+fn doctor_mode_target(doctor: &Doctor) -> Option<(&SessionOption, &str)> {
+    let agent = doctor.agent.as_deref()?;
+    let candidates: &[&str] = if agent.contains("codex") {
+        if doctor.mode == Mode::Yolo { &["agent-full-access", "full-access"] } else { &["read-only"] }
+    } else if agent.contains("claude") {
+        if doctor.mode == Mode::Yolo { &["bypassPermissions"] } else { &["default"] }
+    } else {
+        return None;
+    };
+    let option = doctor.options.iter().find(|option| option.category.as_deref() == Some("mode"))?;
+    let value = candidates.iter().find_map(|candidate| option.values.iter().find(|value| value.value == *candidate))?;
+    Some((option, &value.value))
+}
+
+fn doctor_mode_warning(doctor: &Doctor) -> Option<&str> {
+    if let Some(warning) = &doctor.mode_env_warning {
+        return Some(warning);
+    }
+    if !doctor.options_ready || doctor.agent.as_deref() == Some("opencode") {
+        return None;
+    }
+    match doctor_mode_target(doctor) {
+        Some((option, target)) if option.current != target => Some("Agent permission mode is not confirmed yet"),
+        Some(_) => None,
+        None if doctor.mode == Mode::Yolo => {
+            Some("Agent offers no known full-access mode; its restrictions may remain")
+        }
+        None => Some("Agent offers no known ask-first mode; its own tools may act without asking"),
+    }
+}
 
 /// Sent with the first question, so the agent knows what it is helping with.
 fn doctor_context(mode: &str) -> String {

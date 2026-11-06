@@ -24,6 +24,8 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
 /// The id given to an agent's model list from before session options.
 const LEGACY_MODEL: &str = "model";
+/// The id given to the mode list from before session options.
+const LEGACY_MODE: &str = "mode";
 
 enum Msg {
     User(Request),
@@ -149,6 +151,9 @@ struct Worker {
     context_text: Option<String>,
     /// The agent lists its models the old way (`session/set_model`).
     legacy_model: bool,
+    legacy_mode: bool,
+    failed_settings: std::collections::HashSet<String>,
+    required_mode: Option<(String, String)>,
     options: Vec<SessionOption>,
     next_id: u64,
     pending: HashMap<u64, Pending>,
@@ -190,6 +195,9 @@ impl Worker {
             login_env: Default::default(),
             sender: None,
             legacy_model: false,
+            legacy_mode: false,
+            failed_settings: Default::default(),
+            required_mode: None,
             options: Vec::new(),
             next_id: 1,
             pending: HashMap::new(),
@@ -258,6 +266,9 @@ impl Worker {
         self.generation += 1;
         self.pending.clear();
         self.asking.clear();
+        self.failed_settings.clear();
+        self.required_mode = None;
+        self.queued = None;
         self.session = None;
         self.spawn(&program)?;
         self.initialize()
@@ -376,6 +387,27 @@ impl Worker {
     }
 
     fn prompt(&mut self, text: String, images: Vec<Image>) -> Result<(), String> {
+        // A prompt must use the acknowledged settings, especially permissions.
+        if self.pending.values().any(|pending| matches!(pending, Pending::SetOption { .. })) {
+            self.queued = Some((text, images));
+            return Ok(());
+        }
+        if !self.failed_settings.is_empty() {
+            (self.emit)(Event::Note(
+                "Message not sent: retry the rejected session setting or restart the agent.".into(),
+            ));
+            (self.emit)(Event::TurnEnded("error".into()));
+            return Ok(());
+        }
+        if let Some((mode_id, wanted)) = &self.required_mode
+            && !self.options.iter().any(|option| option.option_id == *mode_id && option.current == *wanted)
+        {
+            (self.emit)(Event::Note(
+                "Message not sent: the agent's permission mode changed or was not confirmed.".into(),
+            ));
+            (self.emit)(Event::TurnEnded("error".into()));
+            return Ok(());
+        }
         let Some(session) = self.session.clone() else {
             self.queued = Some((text, images));
             return Ok(());
@@ -394,8 +426,16 @@ impl Worker {
 
     fn user(&mut self, request: Request) -> Result<(), String> {
         match request {
+            Request::Context(text) => {
+                let context = self.context.get_or_insert_with(String::new);
+                if !context.is_empty() {
+                    context.push_str("\n\n");
+                }
+                context.push_str(&text);
+            }
             Request::Prompt { text, images } => self.prompt(text, images)?,
             Request::Cancel => {
+                self.queued = None;
                 if let Some(session) = self.session.clone() {
                     self.notify("session/cancel", json!({ "sessionId": session }))?;
                 }
@@ -435,6 +475,10 @@ impl Worker {
                 }
             }
             Request::Retry => self.restart()?,
+            Request::RestartEnv(env) => {
+                self.session_env.extend(env);
+                self.restart()?;
+            }
             Request::NewSession => {
                 if let Some(session) = self.session.take() {
                     self.notify("session/cancel", json!({ "sessionId": session }))?;
@@ -450,9 +494,18 @@ impl Worker {
                     (self.emit)(Event::Note("The agent is not ready yet.".into()));
                     return Ok(());
                 };
+                if self
+                    .options
+                    .iter()
+                    .any(|option| option.option_id == option_id && option.category.as_deref() == Some("mode"))
+                {
+                    self.required_mode = Some((option_id.clone(), value.clone()));
+                }
                 let pending = Pending::SetOption { id: option_id.clone(), value: value.clone() };
                 if self.legacy_model && option_id == LEGACY_MODEL {
                     self.request("session/set_model", json!({ "sessionId": session, "modelId": value }), pending)?;
+                } else if self.legacy_mode && option_id == LEGACY_MODE {
+                    self.request("session/set_mode", json!({ "sessionId": session, "modeId": value }), pending)?;
                 } else {
                     let params = json!({ "sessionId": session, "configId": option_id, "value": value });
                     self.request("session/set_config_option", params, pending)?;
@@ -517,6 +570,13 @@ impl Worker {
                 self.status(Status::Ready);
                 let (options, legacy) = session_options(&result);
                 self.legacy_model = legacy;
+                self.legacy_mode = result.get("modes").is_some()
+                    && !result.get("configOptions").and_then(Value::as_array).is_some_and(|options| {
+                        options.iter().any(|option| option.get("category").and_then(Value::as_str) == Some("mode"))
+                    });
+                self.options.clear();
+                self.failed_settings.clear();
+                self.required_mode = None;
                 self.set_options(options);
                 if let Some((text, images)) = self.queued.take() {
                     self.prompt(text, images)?;
@@ -530,11 +590,21 @@ impl Worker {
                 Ok(())
             }
             Pending::SetOption { id: option_id, value } => {
+                self.failed_settings.remove(&option_id);
                 // Options come back whole; the old way, only the change.
                 if result.get("configOptions").is_some() {
                     self.set_options(session_options(&result).0);
                 } else {
                     self.options_changed(&option_id, &value);
+                }
+                if !self.options.iter().any(|option| option.option_id == option_id && option.current == value) {
+                    self.failed_settings.insert(option_id);
+                    (self.emit)(Event::Note(
+                        "The agent did not confirm the requested setting; message withheld.".into(),
+                    ));
+                }
+                if let Some((text, images)) = self.queued.take() {
+                    self.prompt(text, images)?;
                 }
                 Ok(())
             }
@@ -550,7 +620,16 @@ impl Worker {
         self.set_options(options);
     }
 
-    fn set_options(&mut self, options: Vec<SessionOption>) {
+    fn set_options(&mut self, mut options: Vec<SessionOption>) {
+        // A modern config update need not repeat the separate legacy lists.
+        for previous in &self.options {
+            if ((self.legacy_mode && previous.option_id == LEGACY_MODE)
+                || (self.legacy_model && previous.option_id == LEGACY_MODEL))
+                && !options.iter().any(|option| option.option_id == previous.option_id)
+            {
+                options.push(previous.clone());
+            }
+        }
         self.options.clone_from(&options);
         (self.emit)(Event::Options(options));
     }
@@ -595,8 +674,13 @@ impl Worker {
                 (self.emit)(Event::TurnEnded("error".into()));
                 Ok(())
             }
-            Pending::SetOption { .. } => {
+            Pending::SetOption { id: option_id, .. } => {
+                self.failed_settings.insert(option_id);
                 (self.emit)(Event::Note(format!("The agent kept its setting: {text}")));
+                if self.queued.take().is_some() {
+                    (self.emit)(Event::Note("Message not sent because the agent rejected a session setting.".into()));
+                    (self.emit)(Event::TurnEnded("error".into()));
+                }
                 Ok(())
             }
             _ => Err(format!("{}: {text}", self.name)),
@@ -662,6 +746,12 @@ impl Worker {
             "current_model_update" if self.legacy_model => {
                 if let Some(model) = update.get("currentModelId").and_then(Value::as_str) {
                     self.options_changed(LEGACY_MODEL, model);
+                }
+                return;
+            }
+            "current_mode_update" if self.legacy_mode => {
+                if let Some(mode) = update.get("currentModeId").and_then(Value::as_str) {
+                    self.options_changed(LEGACY_MODE, mode);
                 }
                 return;
             }
@@ -849,6 +939,36 @@ fn env_vars(method: &Value) -> Vec<EnvVar> {
 /// The session's settings from `session/new` or an update: `configOptions`
 /// (selects only), or else the older `models`. Says which it was.
 fn session_options(result: &Value) -> (Vec<SessionOption>, bool) {
+    let (mut options, legacy_model) = model_and_config_options(result);
+    if !options.iter().any(|option| option.category.as_deref() == Some("mode"))
+        && let Some(modes) = result.get("modes")
+    {
+        let values = modes
+            .get("availableModes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|mode| {
+                let value = mode.get("id")?.as_str()?.to_string();
+                Some(OptionValue {
+                    name: mode.get("name").and_then(Value::as_str).unwrap_or(&value).to_string(),
+                    description: mode.get("description").and_then(Value::as_str).map(str::to_string),
+                    value,
+                })
+            })
+            .collect();
+        options.push(SessionOption {
+            option_id: LEGACY_MODE.into(),
+            name: "Mode".into(),
+            category: Some("mode".into()),
+            current: modes.get("currentModeId").and_then(Value::as_str).unwrap_or_default().into(),
+            values,
+        });
+    }
+    (options, legacy_model)
+}
+
+fn model_and_config_options(result: &Value) -> (Vec<SessionOption>, bool) {
     let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
     if let Some(options) = result.get("configOptions").and_then(Value::as_array) {
         let options = options
