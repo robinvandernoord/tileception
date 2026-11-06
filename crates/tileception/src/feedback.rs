@@ -179,7 +179,7 @@ impl Tileception {
             Action::Review | Action::Edit => {
                 if let Some(feedback) = &mut self.feedback {
                     feedback.review = action == Action::Review;
-                    feedback.selected = if feedback.review { Action::Edit } else { Action::Message };
+                    feedback.selected = if feedback.review { Action::Open } else { Action::Message };
                     feedback.scroll = 0;
                     feedback.selecting = None;
                 }
@@ -244,23 +244,28 @@ impl Tileception {
         let top = panel.y + if tight { 44.0 } else { 80.0 };
         let bottom = panel.bottom() - if tight { 40.0 } else { 48.0 };
         let button_h = if tight { 28.0 } else { 36.0 };
-        let details = Rect::new(left, bottom - 36.0, inner, 28.0);
+        let details = Rect::new(left, bottom - 40.0, inner, 28.0);
         let title = Rect::new(left, top + 16.0, inner, 28.0);
-        let message = Rect::new(left, title.bottom() + 20.0, inner, (details.y - title.bottom() - 28.0).max(1.0));
+        let message = Rect::new(left, title.bottom() + 30.0, inner, (details.y - title.bottom() - 42.0).max(1.0));
         let review = self.feedback.as_ref().is_some_and(|feedback| feedback.review);
-        let mut controls = if review {
-            vec![(Action::Edit, Rect::new(panel.right() - 88.0, panel.y + 12.0, 72.0, 28.0))]
+        let mut controls = if review { Vec::new() } else { vec![(Action::Title, title), (Action::Message, message)] };
+        controls.push((Action::Details, details));
+        // Buttons sit together on the right, the step forward last, and
+        // shrink alike when the screen is narrow.
+        let buttons: &[(Action, f64)] = if review {
+            &[(Action::Cancel, 96.0), (Action::Edit, 96.0), (Action::Open, 148.0)]
         } else {
-            vec![(Action::Title, title), (Action::Message, message)]
+            &[(Action::Cancel, 96.0), (Action::Review, 148.0)]
         };
-        controls.extend([
-            (Action::Details, details),
-            (Action::Cancel, Rect::new(left, bottom, inner * 0.36, button_h)),
-            (
-                if review { Action::Open } else { Action::Review },
-                Rect::new(left + inner * 0.36 + 8.0, bottom, inner * 0.64 - 8.0, button_h),
-            ),
-        ]);
+        let gap = 8.0;
+        let gaps = gap * (buttons.len() - 1) as f64;
+        let natural: f64 = buttons.iter().map(|(_, width)| width).sum();
+        let shrink = ((inner - gaps) / natural).min(1.0);
+        let mut button_x = panel.right() - 16.0 - natural * shrink - gaps;
+        for (action, width) in buttons {
+            controls.push((*action, Rect::new(button_x, bottom, width * shrink, button_h)));
+            button_x += width * shrink + gap;
+        }
         Layout {
             panel,
             title,
@@ -283,54 +288,17 @@ impl Tileception {
         })
     }
 
-    /// The preview is literal text, including blank lines. Check each chunk
-    /// against the renderer too, since Unicode glyphs can span multiple cells.
+    /// The preview is literal text, including blank lines.
     fn feedback_lines(&self, width: f64) -> Vec<String> {
         let Some(feedback) = &self.feedback else { return Vec::new() };
         let preview = format!("Title:\n{}\n\nBody:\n{}", feedback.title.text, feedback.body());
         self.feedback_text_rows(&preview, width).into_iter().map(|range| preview[range].to_string()).collect()
     }
 
+    /// Rows of the message field and the preview, wrapped between words to
+    /// the width the text is drawn in.
     fn feedback_text_rows(&self, text: &str, width: f64) -> Vec<Range<usize>> {
-        let size = self.theme.font_size;
-        let cell = self
-            .text
-            .borrow_mut()
-            .styled("M", "monospace", size, self.theme.text, 100., 400, 0)
-            .map_or(f64::from(size), |image| image.width.max(1.0));
-        let columns = ((width - 16.0) / cell).floor().max(1.0) as usize;
-        let mut start = 0;
-        text.split('\n')
-            .flat_map(|line| {
-                let positions: Vec<_> = line.char_indices().map(|(offset, _)| offset).chain([line.len()]).collect();
-                let rows = if line.is_empty() {
-                    std::iter::once(start..start).collect()
-                } else {
-                    let mut rows = Vec::new();
-                    let mut offset = 0;
-                    while offset + 1 < positions.len() {
-                        let mut count = columns.min(positions.len() - 1 - offset);
-                        loop {
-                            let row = &line[positions[offset]..positions[offset + count]];
-                            let fits = self
-                                .text
-                                .borrow_mut()
-                                .styled(row, "monospace", size, self.theme.text, (width - 16.0).max(1.0) as f32, 400, 0)
-                                .is_some_and(|image| image.text.as_ref() == row);
-                            if fits || count == 1 {
-                                rows.push(start + positions[offset]..start + positions[offset + count]);
-                                offset += count;
-                                break;
-                            }
-                            count -= 1;
-                        }
-                    }
-                    rows
-                };
-                start += line.len() + 1;
-                rows
-            })
-            .collect()
+        self.text.borrow_mut().rows(text, &self.theme.font, self.theme.font_size, (width - 16.0).max(1.0) as f32)
     }
 
     pub(crate) fn feedback_scroll(&mut self, amount: i32) {
@@ -348,7 +316,7 @@ impl Tileception {
             return;
         }
         let rows = self.feedback_lines(layout.preview.w).len();
-        let visible = (layout.preview.h / self.feedback_line_height()).floor().max(1.0) as usize;
+        let visible = ((layout.preview.h - 12.0) / self.feedback_line_height()).floor().max(1.0) as usize;
         if let Some(feedback) = &mut self.feedback {
             feedback.scroll = feedback.scroll.saturating_add_signed(amount as isize).min(rows.saturating_sub(visible));
         }
@@ -538,7 +506,7 @@ impl Tileception {
         let range = &rows[index];
         let byte = self.text.borrow_mut().field_hit(
             &input.text[range.clone()],
-            if title { &self.theme.font } else { "monospace" },
+            &self.theme.font,
             self.theme.font_size,
             (rect.w - 16.0).max(1.0) as f32,
             input.cursor.saturating_sub(range.start).min(range.len()),
@@ -587,30 +555,67 @@ impl Tileception {
             );
         }
         for (action, rect) in &layout.controls {
-            if matches!(action, Action::Title | Action::Message) {
-                continue;
-            }
             let selected = feedback.selected == *action;
-            painter.shape(
-                *rect,
-                Shape {
-                    radius: theme.radius,
-                    border_width: if selected { 2.0 } else { 1.0 },
-                    border: if selected { theme.accent } else { theme.border },
-                    fill: (theme.panel(theme.popup()), theme.panel(theme.popup())),
-                    ..Default::default()
-                },
-            );
-            let text = match action {
-                Action::Details if feedback.details.is_some() => "[x] Include system details",
-                Action::Details => "[ ] Include system details",
-                Action::Cancel => "Cancel",
-                Action::Review => "Review",
-                Action::Edit => "Edit",
-                Action::Open => "Open in browser",
-                Action::Title | Action::Message => unreachable!("text fields drawn separately"),
-            };
-            painter.text(text, *rect, Style::new(theme.font_size, theme.text).align(Align::Centre));
+            match action {
+                Action::Title | Action::Message => {}
+                Action::Details => {
+                    if selected {
+                        painter.shape(
+                            *rect,
+                            Shape {
+                                border_width: 1.0,
+                                border: theme.accent,
+                                ..Shape::filled(crate::theme::Colour::TRANSPARENT, 6.0)
+                            },
+                        );
+                    }
+                    let track = Rect::new(rect.x + 8.0, rect.y + (rect.h - 20.0) / 2.0, 36.0, 20.0);
+                    crate::home::draw_switch(&mut painter, track, feedback.details.is_some(), false, true);
+                    let label =
+                        Rect::new(track.right() + 12.0, rect.y, (rect.right() - track.right() - 20.0).max(1.0), rect.h);
+                    painter.text("Include system details", label, Style::new(theme.font_size, theme.text));
+                }
+                _ => {
+                    let primary = matches!(action, Action::Review | Action::Open);
+                    painter.shape(
+                        *rect,
+                        Shape {
+                            fill: if primary {
+                                (theme.accent, theme.accent_end)
+                            } else {
+                                (theme.surface_raised, theme.surface_raised)
+                            },
+                            radius: 6.0,
+                            border_width: if selected {
+                                2.0
+                            } else if primary {
+                                0.0
+                            } else {
+                                1.0
+                            },
+                            border: if selected {
+                                if primary { theme.text } else { theme.accent }
+                            } else {
+                                theme.border
+                            },
+                            ..Default::default()
+                        },
+                    );
+                    let text = match action {
+                        Action::Cancel => "Cancel",
+                        Action::Review => "Review",
+                        Action::Edit => "Edit",
+                        _ => "Open in browser",
+                    };
+                    painter.text(
+                        text,
+                        *rect,
+                        Style::new(theme.font_size, if primary { theme.on_accent } else { theme.text })
+                            .weight(if primary { 600 } else { 400 })
+                            .align(Align::Centre),
+                    );
+                }
+            }
         }
         if !feedback.review {
             for (action, rect, label, placeholder) in [
@@ -634,7 +639,8 @@ impl Tileception {
         painter.fill(layout.preview, theme.background, 4.0);
         let rows = self.feedback_lines(layout.preview.w);
         let line_height = self.feedback_line_height();
-        let visible = (layout.preview.h / line_height).floor().max(1.0) as usize;
+        // The text sits a little in from the box's top and bottom edges.
+        let visible = ((layout.preview.h - 12.0) / line_height).floor().max(1.0) as usize;
         let scroll = feedback.scroll.min(rows.len().saturating_sub(visible));
         painter.clipped(layout.preview, |painter| {
             for (index, row) in rows.iter().skip(scroll).take(visible).enumerate() {
@@ -642,20 +648,23 @@ impl Tileception {
                     row,
                     Rect::new(
                         layout.preview.x + 8.0,
-                        layout.preview.y + index as f64 * line_height,
+                        layout.preview.y + 6.0 + index as f64 * line_height,
                         layout.preview.w - 16.0,
                         line_height,
                     ),
                     Style::new(theme.font_size, theme.text),
-                    "monospace",
+                    &theme.font,
                 );
             }
         });
-        painter.text(
-            &format!("Read-only. Up/Down, PgUp/PgDn ({}/{})", scroll + 1, rows.len()),
-            Rect::new(layout.preview.x, layout.preview.y + layout.preview.h, layout.preview.w, 24.0),
-            Style::new(theme.font_size * 0.8, theme.muted),
-        );
+        if rows.len() > visible {
+            let last = (scroll + visible).min(rows.len());
+            painter.text(
+                &format!("Lines {} to {last} of {}. Up and Down scroll.", scroll + 1, rows.len()),
+                Rect::new(layout.preview.x, layout.preview.bottom() + 2.0, layout.preview.w, 18.0),
+                Style::new(theme.font_size * 0.8, theme.muted),
+            );
+        }
         painter.finish()
     }
 
@@ -694,7 +703,7 @@ impl Tileception {
             for (index, range) in rows.iter().enumerate().skip(first).take(visible) {
                 let field = self.text.borrow_mut().field(
                     &input.text[range.clone()],
-                    if title { &theme.font } else { "monospace" },
+                    &theme.font,
                     theme.font_size,
                     theme.text,
                     (rect.w - 16.0).max(1.0) as f32,

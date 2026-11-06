@@ -1442,7 +1442,7 @@ fn dial_value(row: &DialRow, pointer_x: f64) -> u32 {
     (((pointer_x - row.track.x) / row.track.w).clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
-fn draw_switch(painter: &mut Painter, track: Rect, lit: bool, pending: bool, usable: bool) {
+pub(crate) fn draw_switch(painter: &mut Painter, track: Rect, lit: bool, pending: bool, usable: bool) {
     let theme = painter.theme();
     let radius = (track.h / 2.0) as f32;
     let alpha = if usable { 1.0 } else { 0.4 };

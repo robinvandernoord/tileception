@@ -1,7 +1,7 @@
 //! Text for the compositor's own interface (tab titles, menus), rasterised
 //! with cosmic-text into images that are cached and drawn as textures.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use cosmic_text::{
     Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, UnderlineStyle, Weight, Wrap,
@@ -125,11 +125,21 @@ pub struct RichImage {
     pub links: Vec<([f32; 4], String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RowsKey {
+    text: String,
+    font: String,
+    size_tenths: u32,
+    width: i32,
+}
+
 pub struct Text {
     fonts: Option<FontSystem>,
     swash: SwashCache,
     cache: HashMap<Key, TextImage>,
     rich: HashMap<RichKey, RichImage>,
+    /// Wrapped rows of multi-line fields, see [`Text::rows`].
+    rows: HashMap<RowsKey, Vec<Range<usize>>>,
     /// Physical pixels per logical pixel: text is laid out in logical
     /// pixels and rasterised this much larger, so it stays sharp.
     scale: f32,
@@ -137,7 +147,14 @@ pub struct Text {
 
 impl Default for Text {
     fn default() -> Self {
-        Text { fonts: None, swash: SwashCache::new(), cache: HashMap::new(), rich: HashMap::new(), scale: 1.0 }
+        Text {
+            fonts: None,
+            swash: SwashCache::new(),
+            cache: HashMap::new(),
+            rich: HashMap::new(),
+            rows: HashMap::new(),
+            scale: 1.0,
+        }
     }
 }
 
@@ -189,6 +206,7 @@ impl Text {
     pub fn clear(&mut self) {
         self.cache.clear();
         self.rich.clear();
+        self.rows.clear();
     }
 
     /// Rasterises at a new output scale from now on.
@@ -454,6 +472,56 @@ impl Text {
         let image = self.render(&key)?;
         self.cache.insert(key, image.clone());
         Some(image)
+    }
+
+    /// Splits text into rows that fit `width`, wrapping between words, or
+    /// inside a word too long for a row, as wrapped labels do. Each newline
+    /// starts a row. Rows are byte ranges that together cover the text apart
+    /// from its newlines, so every caret position falls in a row.
+    pub fn rows(&mut self, text: &str, font: &str, size: f32, width: f32) -> Vec<Range<usize>> {
+        let key = RowsKey {
+            text: text.to_owned(),
+            font: font.to_owned(),
+            size_tenths: (size * 10.0).round() as u32,
+            width: width.floor().max(1.0) as i32,
+        };
+        if let Some(rows) = self.rows.get(&key) {
+            return rows.clone();
+        }
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        // In physical pixels, as the rows are drawn.
+        let size = size * self.scale;
+        let mut buffer = Buffer::new(fonts, Metrics::new(size, (size * 1.3).ceil()));
+        buffer.set_wrap(Wrap::WordOrGlyph);
+        buffer.set_size(Some(key.width as f32 * self.scale), None);
+        let family = if font == "monospace" { Family::Monospace } else { Family::Name(font) };
+        let mut rows = Vec::new();
+        let mut start = 0;
+        for line in text.split('\n') {
+            buffer.set_text(line, &Attrs::new().family(family), Shaping::Advanced, None);
+            buffer.shape_until_scroll(fonts, false);
+            // Where each visual row begins within the line; the first row
+            // always begins at the line's start.
+            let mut breaks: Vec<usize> = buffer
+                .layout_runs()
+                .skip(1)
+                .filter_map(|run| run.glyphs.iter().map(|glyph| glyph.start).min())
+                .filter(|&offset| offset > 0 && offset < line.len())
+                .collect();
+            breaks.sort_unstable();
+            breaks.dedup();
+            let mut row_start = 0;
+            for offset in breaks.into_iter().chain([line.len()]) {
+                rows.push(start + row_start..start + offset);
+                row_start = offset;
+            }
+            start += line.len() + 1;
+        }
+        if self.rows.len() >= CACHE_LIMIT {
+            self.rows.clear();
+        }
+        self.rows.insert(key, rows.clone());
+        rows
     }
 
     pub fn field_hit(&mut self, text: &str, font: &str, size: f32, width: f32, cursor: usize, x_pos: f32) -> usize {

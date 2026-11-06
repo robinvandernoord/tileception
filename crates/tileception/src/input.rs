@@ -169,7 +169,11 @@ impl Tileception {
                 let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
                 let origin = self.output.as_ref().map(|output| output.current_location().to_f64()).unwrap_or_default();
                 self.handoff.absolute = Some(pos);
-                let pos = pos + Point::from((screen.x, screen.y)) - origin;
+                let pos = if event.device().has_capability(smithay::backend::input::DeviceCapability::TabletTool) {
+                    self.absolute_output_position(event.position_transformed((1, 1).into()))
+                } else {
+                    pos + Point::from((screen.x, screen.y)) - origin
+                };
                 if self.handoff_cross(Source::Local, pos) {
                     return;
                 }
@@ -217,21 +221,29 @@ impl Tileception {
                 if self.output.is_none() {
                     return;
                 }
-                let screen = self.output_rect();
-                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
+                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
                 self.touch_down(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchMotion { event } => {
                 if self.output.is_none() {
                     return;
                 }
-                let screen = self.output_rect();
-                let pos = event.position_transformed((screen.w as i32, screen.h as i32).into());
+                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
                 self.touch_motion(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchUp { event } => self.touch_up(event.slot(), event.time_msec()),
             InputEvent::TouchCancel { event } => self.touch_cancel(event.time_msec()),
             InputEvent::TouchFrame { .. } => self.touch_frame(),
+            InputEvent::TabletToolAxis { event } if self.output.is_some() => {
+                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                self.on_motion(pos, event.time_msec());
+                self.activate_constraint_under();
+            }
+            InputEvent::TabletToolProximity { event } if self.output.is_some() => {
+                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                self.on_motion(pos, event.time_msec());
+                self.activate_constraint_under();
+            }
             _ => {}
         }
     }
@@ -296,13 +308,6 @@ impl Tileception {
                 }
                 return FilterResult::Forward;
             }
-            if state.feedback.is_some() {
-                return FilterResult::Intercept(if pressed {
-                    vec![Command::FeedbackKey(sym, Mods::from_state(mods))]
-                } else {
-                    Vec::new()
-                });
-            }
             // Applications' global shortcuts, and the question for their keys,
             // which takes every key press but modifiers.
             if state.settings_record_key(pressed, raw_sym, Mods::from_state(mods)) {
@@ -335,6 +340,9 @@ impl Tileception {
                 builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
             {
                 return FilterResult::Intercept(vec![command]);
+            }
+            if state.feedback.is_some() {
+                return FilterResult::Intercept(vec![Command::FeedbackKey(sym, held)]);
             }
             if state.power_menu.is_some() {
                 // The menu takes every key while it is open.
