@@ -16,6 +16,7 @@ mod battery;
 mod builtin_lock;
 mod calc;
 mod capture;
+mod clipboard;
 mod commands;
 mod config;
 mod config_edit;
@@ -274,6 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket.display()
     );
 
+    state.init_clipboard();
     state.start_handoff();
     state.session_services = !nested && !headless;
     if !nested && !headless {
@@ -332,6 +334,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
+    state.clipboard.stop();
     if state.restart {
         return Err(restart_in_place().into());
     }

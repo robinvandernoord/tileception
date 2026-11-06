@@ -89,6 +89,7 @@ pub struct Tileception {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Tileception>,
     pub data_device_state: DataDeviceState,
+    pub clipboard: crate::clipboard::Clipboard,
     pub primary_selection_state: PrimarySelectionState,
     /// Clipboard managers and `wl-copy`/`wl-paste` without a window.
     pub wlr_data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
@@ -289,6 +290,7 @@ impl Tileception {
             output_manager_state,
             seat_state,
             data_device_state,
+            clipboard: Default::default(),
             primary_selection_state,
             wlr_data_control_state,
             ext_data_control_state,

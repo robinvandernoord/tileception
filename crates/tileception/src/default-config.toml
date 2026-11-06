@@ -45,6 +45,12 @@ autostart = []
 # launcher with a clock: type to search, tap Super for a plain desktop.
 # welcome = true
 
+[clipboard]
+# Keep the regular copy/paste clipboard after its source application closes.
+# Requires wl-clip-persist on PATH. Starts or stops when this file is saved.
+# Keeps only the latest copy in memory; no history or middle-click selection.
+persist = false
+
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
 # #rrggbbaa.

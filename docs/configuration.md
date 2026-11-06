@@ -250,6 +250,27 @@ or `minimized = true` to open a window in that state.
 All matching rules apply in file order, with later values overriding earlier
 ones. Editing a rule affects newly opened windows.
 
+## Clipboard
+
+Keep copied content available after the source application closes:
+
+```toml
+[clipboard]
+persist = true
+```
+
+The default is `false`. Install
+[wl-clip-persist](https://github.com/Linus789/wl-clip-persist) on `PATH` first.
+Tileception starts or stops its own helper when you save the config, including
+in nested and headless instances. It stops the helper on exit or restart.
+Do not also start it through autostart when using this setting.
+
+Only the latest regular copy/paste clipboard is held in memory. This adds no
+history or disk storage and leaves the middle-click selection alone. Switching
+persistence off discards the helper's retained clipboard. If the helper cannot
+start or exits, Tileception logs an error; reload the config after resolving
+the problem to retry.
+
 ## Autostart
 
 Use `general.autostart` for shell commands to run once when Tileception starts:

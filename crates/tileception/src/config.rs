@@ -27,6 +27,7 @@ pub const DEFAULT: &str = include_str!("default-config.toml");
 #[derive(Default)]
 pub struct ConfigFile {
     pub general: General,
+    pub clipboard: crate::clipboard::ClipboardConfig,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub touchpad: crate::gestures::TouchpadConfig,
@@ -450,6 +451,7 @@ impl Tileception {
         }
         let old = std::mem::replace(&mut self.config, config).file;
         self.apply_shell(&old.shell);
+        self.apply_clipboard();
         self.apply_handoff_config(&old.handoff);
         if old.home != self.config.file.home {
             self.apply_home();
