@@ -4,6 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use smithay::input::keyboard::xkb;
@@ -23,6 +24,177 @@ use crate::{
     shapes::{Shape, Shapes},
     theme::Colour,
 };
+
+/// A control's stable identity, bounds and pointer affordance. Buttons arm on
+/// press and only activate after release over the same target.
+#[derive(Clone)]
+pub(crate) struct PointerTarget {
+    pub rect: Rect,
+    pub cursor: smithay::input::pointer::CursorIcon,
+    on_press: bool,
+    action: Rc<dyn ErasedPointerAction>,
+}
+
+/// Components supply their own action type and activation handler.
+pub(crate) trait PointerAction: PartialEq + 'static {
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+}
+
+// Erasure lets the input stack hold a button from any component. Equality is
+// still checked using the concrete action type, never a string or numeric tag.
+trait ErasedPointerAction {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn same(&self, other: &dyn ErasedPointerAction) -> bool;
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+}
+
+impl<Action: PointerAction> ErasedPointerAction for Action {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn same(&self, other: &dyn ErasedPointerAction) -> bool {
+        other.as_any().downcast_ref::<Action>() == Some(self)
+    }
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) {
+        PointerAction::activate(self, state, rect, point);
+    }
+}
+
+impl PartialEq for PointerTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.rect == other.rect
+            && self.cursor == other.cursor
+            && self.on_press == other.on_press
+            && self.action.same(other.action.as_ref())
+    }
+}
+
+pub(crate) enum PointerEvent {
+    Press(PointerTarget),
+    Release(PointerTarget),
+    Captured,
+    Unrelated,
+}
+
+impl PointerTarget {
+    pub fn new(rect: Rect, action: impl PointerAction, cursor: smithay::input::pointer::CursorIcon) -> Self {
+        Self { rect, action: Rc::new(action), cursor, on_press: true }
+    }
+
+    pub fn button(rect: Rect, action: impl PointerAction) -> Self {
+        Self { rect, action: Rc::new(action), cursor: smithay::input::pointer::CursorIcon::Pointer, on_press: false }
+    }
+
+    pub fn on_press(&self) -> bool {
+        self.on_press
+    }
+
+    pub fn activate(&self, state: &mut Tileception, point: tileception_core::Point) {
+        self.action.activate(state, self.rect, point);
+    }
+
+    pub fn button_event(armed: &mut Option<Self>, target: Option<Self>, pressed: bool) -> PointerEvent {
+        if pressed {
+            *armed = None;
+            match target {
+                Some(target) if target.on_press => PointerEvent::Press(target),
+                Some(target) => {
+                    *armed = Some(target);
+                    PointerEvent::Captured
+                }
+                None => PointerEvent::Unrelated,
+            }
+        } else {
+            match armed.take() {
+                Some(pressed) if target.as_ref() == Some(&pressed) => PointerEvent::Release(pressed),
+                Some(_) => PointerEvent::Captured,
+                None => PointerEvent::Unrelated,
+            }
+        }
+    }
+}
+
+impl Tileception {
+    pub(crate) fn shell_pointer_target(&self, point: tileception_core::Point) -> Option<PointerTarget> {
+        if self.is_locked() || self.overlay_under(point) {
+            return None;
+        }
+        if self.power_menu.is_some() {
+            return self.power_pointer_target(point);
+        }
+        if let Some(target) = self.handoff_pointer_target(point) {
+            return Some(target);
+        }
+        if self.tray.open {
+            return self.tray_pointer_target(point);
+        }
+        if self.launcher.open && !self.launcher.home && self.launcher_takes(point) {
+            return self.launcher_pointer_target(point);
+        }
+        if self.doctor_contains(point) {
+            return self.doctor_pointer_target(point);
+        }
+        if self.notifications_contain(point) {
+            return self.notification_pointer_target(point);
+        }
+        if self.launcher.open && self.launcher_takes(point) {
+            return self.launcher_pointer_target(point);
+        }
+        if let Some(target) = self.duck_pointer_target(point) {
+            return Some(target);
+        }
+        if self.bar_takes(point) {
+            return self.bar_pointer_target(point);
+        }
+        if self.strip_takes(point) {
+            return self.strip_pointer_target(point);
+        }
+        None
+    }
+
+    pub(crate) fn shell_pointer_button(&mut self, pressed: bool) -> bool {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let target = self.shell_pointer_target(point);
+        match PointerTarget::button_event(&mut self.ui_pressed, target, pressed) {
+            PointerEvent::Release(target) => target.activate(self, point),
+            PointerEvent::Captured => {}
+            PointerEvent::Press(_) | PointerEvent::Unrelated => return false,
+        }
+        self.schedule_render();
+        true
+    }
+
+    pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.is_locked() || self.overlay_under(point) {
+            return None;
+        }
+        if let Some(target) = self.shell_pointer_target(point) {
+            return Some(target.cursor);
+        }
+        (self.power_menu.is_some()
+            || (self.launcher.open && self.launcher_takes(point))
+            || self.doctor_contains(point)
+            || self.notifications_contain(point)
+            || self.bar_takes(point))
+        .then_some(smithay::input::pointer::CursorIcon::Default)
+    }
+
+    pub(crate) fn shell_pointer_feedback(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let mut painter = Painter::new(self, renderer);
+        if let Some(target) = self.shell_pointer_target(point)
+            && !target.on_press()
+        {
+            painter.fill(
+                target.rect,
+                self.theme.text.alpha(if self.ui_pressed.as_ref() == Some(&target) { 0.12 } else { 0.04 }),
+                5.,
+            );
+        }
+        painter.finish()
+    }
+}
 
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).
 pub mod glyph {

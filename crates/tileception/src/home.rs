@@ -155,6 +155,52 @@ pub struct HomeBlock {
     pub notice: Option<(Rect, String)>,
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    View(bool),
+    Fold,
+    AllOff,
+    Select(String),
+    NextClimate(String),
+    Change { device: String, change: Change },
+    Dial { device: String, dial: Dial, track: Rect },
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::View(all) => state.home.all = *all,
+            Self::Fold => state.home.fold = Some((!state.panel_controls().home.folded, state.home_lit())),
+            Self::AllOff => {
+                if let Some(service) = &state.home.service {
+                    service.send(Request::AllOff);
+                }
+            }
+            Self::Select(device) => {
+                state.home.selected = (state.home.selected.as_ref() != Some(device)).then(|| device.clone())
+            }
+            Self::Change { device, change } => state.home_send(device.clone(), change.clone()),
+            Self::Dial { device, dial, track } => {
+                let value = (((point.x - track.x) / track.w).clamp(0., 1.) * 100.).round() as u32;
+                state.home.drag = Some((device.clone(), *dial, Instant::now(), value));
+                state.send_dial(device, *dial, value);
+            }
+            Self::NextClimate(device) => {
+                let climates: Vec<String> = state
+                    .home_devices()
+                    .into_iter()
+                    .filter(|candidate| candidate.kind == Kind::Climate)
+                    .map(|candidate| candidate.device_id.clone())
+                    .collect();
+                if let Some(index) = climates.iter().position(|candidate| candidate == device) {
+                    state.home.climate = climates.get((index + 1) % climates.len()).cloned();
+                }
+            }
+        }
+        state.schedule_render();
+    }
+}
+
 impl HomeBlock {
     fn empty(left: f64, top: f64, width: f64) -> HomeBlock {
         HomeBlock {
@@ -617,111 +663,104 @@ impl Tileception {
         block
     }
 
-    /// A press in the panel; returns whether the block took it.
-    pub fn home_press(&mut self, block: &HomeBlock, point: Point) -> bool {
+    pub(crate) fn home_pointer_target(&self, block: &HomeBlock, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
         if !block.rect.contains(point) {
-            return false;
+            return None;
         }
+        let mut buttons = Vec::new();
         if let Some((rooms, all)) = block.view {
-            if rooms.contains(point) {
-                self.home.all = false;
-                return true;
-            }
-            if all.contains(point) {
-                self.home.all = true;
-                return true;
-            }
+            buttons.extend([(rooms, PointerAction::View(false)), (all, PointerAction::View(true))]);
         }
-        if block.header.contains(point) {
-            if block.notice.is_none() {
-                self.home.fold = Some((!block.folded, self.home_lit()));
-            }
-            return true;
+        if block.notice.is_none() {
+            buttons.push((block.header, PointerAction::Fold));
+        }
+        if let Some((_, all_off)) = block.footer {
+            buttons.push((all_off, PointerAction::AllOff));
         }
         if let Some(climate) = &block.climate
             && climate.rect.contains(point)
         {
-            self.climate_press(climate, point);
-            return true;
+            return self.climate_pointer_target(climate, point);
+        }
+        for (rect, action) in buttons {
+            if rect.contains(point) {
+                return Some(PointerTarget::button(rect, action));
+            }
         }
         for dial in &block.dials {
-            if Rect::new(dial.track.x - 8.0, dial.track.y, dial.track.w + 16.0, dial.track.h).contains(point) {
-                let value = dial_value(dial, point.x);
-                self.home.drag = Some((dial.device_id.clone(), dial.dial, Instant::now(), value));
-                self.send_dial(&dial.device_id.clone(), dial.dial, value);
-                return true;
+            let rect = Rect::new(dial.track.x - 8., dial.track.y, dial.track.w + 16., dial.track.h);
+            if rect.contains(point) {
+                return Some(PointerTarget::new(
+                    rect,
+                    PointerAction::Dial { device: dial.device_id.clone(), dial: dial.dial, track: dial.track },
+                    smithay::input::pointer::CursorIcon::EwResize,
+                ));
             }
         }
         for row in &block.rows {
+            let Some(device) = self
+                .home
+                .snapshot
+                .devices
+                .iter()
+                .find(|device| device.device_id == row.device_id && device.reach == Reach::Online)
+            else {
+                continue;
+            };
             if !row.rect.contains(point) {
                 continue;
             }
-            let Some(device) = self.home.snapshot.devices.iter().find(|device| device.device_id == row.device_id)
-            else {
-                return true;
-            };
-            if row.switch.is_some_and(|switch| {
-                Rect::new(switch.x - 8.0, row.rect.y, switch.w + 16.0, row.rect.h).contains(point)
-            }) {
-                if device.reach == Reach::Online {
-                    let wanted = device.state.is_on != Some(true);
-                    self.home_send(row.device_id.clone(), Change::Switch(wanted));
+            if let Some(switch) = row.switch {
+                let switch = Rect::new(switch.x - 8., row.rect.y, switch.w + 16., row.rect.h);
+                if switch.contains(point) {
+                    return Some(PointerTarget::button(
+                        switch,
+                        PointerAction::Change {
+                            device: row.device_id.clone(),
+                            change: Change::Switch(device.state.is_on != Some(true)),
+                        },
+                    ));
                 }
-            } else if (device.dimmable || device.tunable) && device.reach == Reach::Online {
-                let selected = self.home.selected.as_ref() == Some(&row.device_id);
-                self.home.selected = (!selected).then(|| row.device_id.clone());
             }
-            return true;
+            if device.dimmable || device.tunable {
+                return Some(PointerTarget::button(row.rect, PointerAction::Select(row.device_id.clone())));
+            }
         }
-        if let Some((_, all_off)) = block.footer
-            && all_off.contains(point)
-            && let Some(service) = &self.home.service
-        {
-            service.send(Request::AllOff);
-        }
-        true
+        None
     }
 
-    fn climate_press(&mut self, climate: &ClimateBlock, point: Point) {
-        let Some(device) =
-            self.home.snapshot.devices.iter().find(|device| device.device_id == climate.device_id).cloned()
-        else {
-            return;
-        };
+    fn climate_pointer_target(&self, climate: &ClimateBlock, point: Point) -> Option<crate::ui::PointerTarget> {
+        let device = self.home.snapshot.devices.iter().find(|device| device.device_id == climate.device_id).cloned()?;
         if climate.name.contains(point) {
-            // Several climate devices: the name steps to the next one.
-            let climates: Vec<String> = self
-                .home_devices()
-                .into_iter()
-                .filter(|candidate| candidate.kind == Kind::Climate)
-                .map(|candidate| candidate.device_id.clone())
-                .collect();
-            if let Some(index) = climates.iter().position(|candidate| *candidate == device.device_id) {
-                self.home.climate = climates.get((index + 1) % climates.len()).cloned();
-            }
-            return;
+            return Some(crate::ui::PointerTarget::button(
+                climate.name,
+                PointerAction::NextClimate(device.device_id.clone()),
+            ));
         }
         if device.reach != Reach::Online {
-            return;
-        }
-        let device_id = device.device_id.clone();
-        if Rect::new(climate.switch.x - 6.0, climate.switch.y - 8.0, climate.switch.w + 12.0, climate.switch.h + 16.0)
-            .contains(point)
-        {
-            self.home_send(device_id.clone(), Change::Switch(device.state.is_on != Some(true)));
-            return;
+            return None;
         }
         let step = device.target_range.map_or(0.5, |(_, _, step)| step.max(0.1));
         let target = device.state.target.unwrap_or(21.0);
-        if climate.minus.contains(point) {
-            self.home_send(device_id.clone(), Change::Target(target - step));
-        } else if climate.plus.contains(point) {
-            self.home_send(device_id.clone(), Change::Target(target + step));
-        } else if let Some((_, mode)) = climate.modes.iter().find(|(rect, _)| rect.contains(point)) {
-            self.home_send(device_id.clone(), Change::Mode(mode.clone()));
-        } else if let Some((_, speed)) = climate.fans.iter().find(|(rect, _)| rect.contains(point)) {
-            self.home_send(device_id.clone(), Change::Fan(speed.clone()));
-        }
+        let switch =
+            Rect::new(climate.switch.x - 6., climate.switch.y - 8., climate.switch.w + 12., climate.switch.h + 16.);
+        let controls = [
+            (switch, Change::Switch(device.state.is_on != Some(true))),
+            (climate.minus, Change::Target(target - step)),
+            (climate.plus, Change::Target(target + step)),
+        ]
+        .into_iter()
+        .chain(climate.modes.iter().map(|(rect, mode)| (*rect, Change::Mode(mode.clone()))))
+        .chain(climate.fans.iter().map(|(rect, fan)| (*rect, Change::Fan(fan.clone()))));
+        controls.into_iter().find_map(|(rect, change)| {
+            rect.contains(point).then(|| {
+                crate::ui::PointerTarget::button(
+                    rect,
+                    PointerAction::Change { device: device.device_id.clone(), change },
+                )
+            })
+        })
     }
 
     fn home_send(&mut self, device_id: String, change: Change) {

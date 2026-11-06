@@ -93,6 +93,18 @@ enum Hit {
     Strip,
 }
 
+impl crate::ui::PointerAction for Hit {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match *self {
+            Self::Card(window) => state.strip.press = Some((window, point)),
+            Self::Close(window) => state.close_window(window),
+            Self::Previous => state.step_minimized(-1),
+            Self::Next => state.step_minimized(1),
+            Self::Strip => {}
+        }
+    }
+}
+
 struct Card {
     window: WindowId,
     rect: Rect,
@@ -211,28 +223,40 @@ impl Tileception {
         self.strip_hit(point).is_some()
     }
 
+    pub(crate) fn strip_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
+        if !self.strip_takes(point) {
+            return None;
+        }
+        self.strip_controls().into_iter().find_map(|(rect, hit)| {
+            rect.contains(point).then(|| match hit {
+                Hit::Card(_) => PointerTarget::new(rect, hit, smithay::input::pointer::CursorIcon::Grab),
+                _ => PointerTarget::button(rect, hit),
+            })
+        })
+    }
+
     fn strip_hit(&self, point: Point) -> Option<Hit> {
         if !self.strip.open || self.overlay_under(point) {
             return None;
         }
+        self.strip_controls()
+            .into_iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, hit)| hit)
+            .or_else(|| self.strip_rect().filter(|rect| rect.contains(point)).map(|_| Hit::Strip))
+    }
+
+    fn strip_controls(&self) -> Vec<(Rect, Hit)> {
+        let mut controls = Vec::new();
         for card in self.strip_cards() {
-            if card.close.contains(point) {
-                return Some(Hit::Close(card.window));
-            }
-            if card.rect.contains(point) {
-                return Some(Hit::Card(card.window));
-            }
+            controls.extend([(card.close, Hit::Close(card.window)), (card.rect, Hit::Card(card.window))]);
         }
         if let Some(strip) = self.strip_rect().filter(|_| self.strip_overflows()) {
             let (previous, next) = strip_paging_buttons(strip);
-            if previous.contains(point) {
-                return Some(Hit::Previous);
-            }
-            if next.contains(point) {
-                return Some(Hit::Next);
-            }
+            controls.extend([(previous, Hit::Previous), (next, Hit::Next)]);
         }
-        self.strip_rect().filter(|rect| rect.contains(point)).map(|_| Hit::Strip)
+        controls
     }
 
     fn step_minimized(&mut self, delta: isize) {
@@ -291,6 +315,9 @@ impl Tileception {
         let point = Point::new(self.pointer.x, self.pointer.y);
         if !pressed {
             let Some((window, _)) = self.strip.press.take() else { return false };
+            if !matches!(self.strip_hit(point), Some(Hit::Card(candidate)) if candidate == window) {
+                return true;
+            }
             // A click: back where it was.
             let now = self.now();
             if self.world.restore(window, now) {
@@ -301,12 +328,8 @@ impl Tileception {
             return true;
         }
         let Some(hit) = self.strip_hit(point) else { return false };
-        match hit {
-            Hit::Card(window) if button == crate::input::BTN_LEFT => self.strip.press = Some((window, point)),
-            Hit::Close(window) if button == crate::input::BTN_LEFT => self.close_window(window),
-            Hit::Previous if button == crate::input::BTN_LEFT => self.step_minimized(-1),
-            Hit::Next if button == crate::input::BTN_LEFT => self.step_minimized(1),
-            _ => {}
+        if button == crate::input::BTN_LEFT {
+            crate::ui::PointerAction::activate(&hit, self, self.output_rect(), point);
         }
         true
     }

@@ -105,6 +105,33 @@ enum Entry {
     Ask(String),
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Search,
+    Settings,
+    Entry(Entry),
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Search => {
+                let extend = state.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
+                state.launcher_cursor_at(point, extend);
+                state.launcher.selecting = true;
+                state.launcher.input.anchor.get_or_insert(state.launcher.input.cursor);
+            }
+            Self::Settings => state.toggle_settings(),
+            Self::Entry(entry) => {
+                if let Some(index) = state.launcher.entries.iter().position(|candidate| candidate == entry) {
+                    state.select_launcher(index);
+                    state.launch_selected(crate::config::Mods::default());
+                }
+            }
+        }
+    }
+}
+
 /// What a command row does.
 #[derive(Debug, Clone, Copy)]
 enum Does {
@@ -1064,6 +1091,30 @@ impl Tileception {
         layout.rows.iter().position(|row| row.contains(point)).map(|offset| layout.first + offset)
     }
 
+    pub(crate) fn launcher_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        let layout = self.launcher_layout();
+        if layout.field.contains(point) {
+            return Some(crate::ui::PointerTarget::new(
+                layout.field,
+                PointerAction::Search,
+                smithay::input::pointer::CursorIcon::Text,
+            ));
+        }
+        let settings = launcher_settings_button(layout.footer);
+        if settings.contains(point) {
+            return Some(crate::ui::PointerTarget::button(settings, PointerAction::Settings));
+        }
+        if let Some(card) = &layout.media
+            && let Some(target) = self.media_pointer_target(card, point)
+        {
+            return Some(target);
+        }
+        layout.rows.iter().enumerate().find_map(|(index, rect)| {
+            let entry = self.launcher.entries.get(layout.first + index)?;
+            rect.contains(point).then(|| crate::ui::PointerTarget::button(*rect, PointerAction::Entry(entry.clone())))
+        })
+    }
+
     pub fn launcher_motion(&mut self, point: Point) {
         if self.launcher.selecting {
             self.launcher_cursor_at(point, true);
@@ -1076,26 +1127,8 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
-        if launcher_settings_button(layout.footer).contains(point) {
-            self.toggle_settings();
-            return;
-        }
-        if layout.field.contains(point) {
-            let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
-            self.launcher_cursor_at(point, extend);
-            self.launcher.selecting = true;
-            self.launcher.input.anchor.get_or_insert(self.launcher.input.cursor);
-            return;
-        }
-        if let Some(card) = &layout.media
-            && card.rect.contains(point)
-        {
-            self.media_card_press(card, point);
-            return;
-        }
-        if let Some(index) = self.launcher_at(point) {
-            self.select_launcher(index);
-            self.launch_selected(crate::config::Mods::default());
+        if let Some(target) = self.launcher_pointer_target(point) {
+            target.activate(self, point);
         } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
         }

@@ -365,6 +365,31 @@ enum Hit {
 }
 
 /// A row of a menu over the conversation.
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Hit(Hit),
+    Send,
+    Text,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        if !state.doctor.focused {
+            state.doctor.focused = true;
+            state.force_keyboard_focus_sync();
+        }
+        match self {
+            Self::Hit(hit) => {
+                state.doctor.selected = None;
+                state.doctor_hit(hit.clone());
+            }
+            Self::Send if state.doctor.busy => state.doctor_hit(Hit::Stop),
+            Self::Send => state.doctor_key(keysyms::KEY_Return, Mods::default()),
+            Self::Text => state.doctor_select_from(point),
+        }
+    }
+}
+
 struct MenuRow {
     rect: Rect,
     label: String,
@@ -1392,73 +1417,94 @@ impl Tileception {
             self.doctor.focused = true;
             self.force_keyboard_focus_sync();
         }
-        // An open menu or the slash command list first: they lie on top.
-        if let Some(hit) = self.menu_hit(point) {
-            self.doctor_hit(hit);
-            return true;
-        }
-        if self.doctor.menu.take().is_some() {
+        let target = self.doctor_pointer_target(point);
+        if self.doctor.menu.is_some() && target.is_none() {
+            self.doctor.menu = None;
             self.schedule_render();
             return true;
         }
-        if frame.send.contains(point) {
-            if self.doctor.busy {
-                self.doctor_hit(Hit::Stop);
-            } else {
-                self.doctor_key(keysyms::KEY_Return, Mods::default());
-            }
-            return true;
-        }
-        if let Some(index) = frame.modes.iter().position(|rect| rect.contains(point)) {
-            self.doctor_hit(Hit::SetMode(Mode::ALL[index]));
-            return true;
-        }
-        if let Some((option, _)) = self.model_button(&frame).filter(|(_, rect)| rect.contains(point)) {
-            self.doctor_hit(Hit::OpenMenu(option.option_id.clone()));
-            return true;
-        }
-        if frame.agent.contains(point) {
-            self.doctor_hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker });
-            return true;
-        }
-        if let Some(index) = frame.attached.iter().position(|rect| rect.contains(point)) {
-            self.doctor_hit(Hit::Detach(index));
-            return true;
-        }
-        let hit = self.doctor_blocks(frame.messages).into_iter().find_map(|block| match block {
-            Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(point) => {
-                Some(hit)
-            }
-            Block::Picture { rect, open, .. } if rect.contains(point) => Some(Hit::Open(open)),
-            Block::Code { rect, copy, run, .. } if rect.contains(point) => {
-                let (copy_at, run_at) = code_buttons(rect, run.is_some());
-                if copy_at.contains(point) {
-                    Some(Hit::Copy(copy))
-                } else {
-                    run.filter(|_| run_at.is_some_and(|run_button| run_button.contains(point))).map(Hit::Run)
-                }
-            }
-            Block::Rich { rect, spans, style, .. } if rect.contains(point) => {
-                let image = self.rich_image(&spans, style, rect.w)?;
-                image.links.into_iter().find_map(|([left, top, width, height], url)| {
-                    let link = Rect::new(
-                        rect.x + f64::from(left),
-                        rect.y + f64::from(top),
-                        f64::from(width),
-                        f64::from(height),
-                    );
-                    link.contains(point).then_some(Hit::Open(url))
-                })
-            }
-            _ => None,
-        });
-        if let Some(hit) = hit {
-            self.doctor.selected = None;
-            self.doctor_hit(hit);
+        if let Some(target) = target {
+            target.activate(self, point);
         } else {
             self.doctor_select_from(point);
         }
         true
+    }
+
+    pub(crate) fn doctor_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
+        use smithay::input::pointer::CursorIcon;
+        let frame = self.doctor_frame();
+        if let Some((_, rows)) = self.menu_layout(&frame) {
+            return rows.iter().find_map(|row| {
+                row.rect.contains(point).then(|| PointerTarget::button(row.rect, PointerAction::Hit(row.hit.clone())))
+            });
+        }
+        if frame.field.contains(point) {
+            return Some(PointerTarget::new(frame.field, PointerAction::Text, CursorIcon::Text));
+        }
+        let mut buttons = vec![
+            (frame.send, PointerAction::Send),
+            (
+                frame.agent,
+                PointerAction::Hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker }),
+            ),
+        ];
+        if let Some((option, rect)) = self.model_button(&frame) {
+            buttons.push((rect, PointerAction::Hit(Hit::OpenMenu(option.option_id.clone()))));
+        }
+        buttons.extend(
+            frame.modes.iter().zip(Mode::ALL).map(|(rect, mode)| (*rect, PointerAction::Hit(Hit::SetMode(mode)))),
+        );
+        buttons.extend(
+            frame.attached.iter().enumerate().map(|(index, rect)| (*rect, PointerAction::Hit(Hit::Detach(index)))),
+        );
+        for (rect, action) in buttons {
+            if rect.contains(point) {
+                return Some(PointerTarget::button(rect, action));
+            }
+        }
+        for block in self.doctor_blocks(frame.messages) {
+            match block {
+                Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(point) => {
+                    return Some(PointerTarget::button(rect, PointerAction::Hit(hit)));
+                }
+                Block::Picture { rect, open, .. } if rect.contains(point) => {
+                    return Some(PointerTarget::button(rect, PointerAction::Hit(Hit::Open(open))));
+                }
+                Block::Code { rect, copy, run, .. } if rect.contains(point) => {
+                    let (copy_at, run_at) = code_buttons(rect, run.is_some());
+                    if copy_at.contains(point) {
+                        return Some(PointerTarget::button(copy_at, PointerAction::Hit(Hit::Copy(copy))));
+                    }
+                    if let Some(button) = run_at
+                        && button.contains(point)
+                        && let Some(run) = run
+                    {
+                        return Some(PointerTarget::button(button, PointerAction::Hit(Hit::Run(run))));
+                    }
+                    return Some(PointerTarget::new(rect, PointerAction::Text, CursorIcon::Text));
+                }
+                Block::Rich { rect, spans, style, .. } if rect.contains(point) => {
+                    if let Some(image) = self.rich_image(&spans, style, rect.w) {
+                        for ([left, top, width, height], url) in &image.links {
+                            let link = Rect::new(
+                                rect.x + f64::from(*left),
+                                rect.y + f64::from(*top),
+                                f64::from(*width),
+                                f64::from(*height),
+                            );
+                            if link.contains(point) {
+                                return Some(PointerTarget::button(link, PointerAction::Hit(Hit::Open(url.clone()))));
+                            }
+                        }
+                    }
+                    return Some(PointerTarget::new(rect, PointerAction::Text, CursorIcon::Text));
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// The text drawn for a block that has some, with where it is drawn.
@@ -2041,11 +2087,6 @@ impl Tileception {
         }
         let rows = rows.into_iter().skip(first).take(shown).collect();
         Some((outline, rows))
-    }
-
-    fn menu_hit(&self, point: Point) -> Option<Hit> {
-        let (_, rows) = self.menu_layout(&self.doctor_frame())?;
-        rows.into_iter().find(|row| row.rect.contains(point)).map(|row| row.hit)
     }
 
     /// A login, a key being typed or a login in progress is on screen.

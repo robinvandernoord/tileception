@@ -58,6 +58,56 @@ const PROMPT_CATEGORY: &str = "x-tileception.prompt";
 /// How long a notification of Tileception's own stays up.
 const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Copy, PartialEq)]
+enum NotificationKind {
+    Local,
+    Question,
+    Service,
+}
+
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Clear,
+    Dnd,
+    Close { identifier: u32, kind: NotificationKind, history: bool },
+    Invoke { identifier: u32, kind: NotificationKind, key: String },
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
+        match self {
+            Self::Clear => {
+                state.notification_request(Request::ClearHistory);
+                state.notification_request(Request::DismissAll);
+            }
+            Self::Dnd => state.toggle_dnd(),
+            Self::Close { identifier, kind: NotificationKind::Local, .. } => {
+                state.close_local_notification(*identifier)
+            }
+            Self::Invoke { identifier, kind: NotificationKind::Local, key } => state.local_action(*identifier, key),
+            Self::Close { identifier, kind: NotificationKind::Question, .. } => {
+                state.withdraw_question(*identifier);
+                state.answer_typing(*identifier, None);
+                state.answer_shortcut(*identifier);
+            }
+            Self::Invoke { identifier, kind: NotificationKind::Question, key } => {
+                state.withdraw_question(*identifier);
+                state.answer_typing(*identifier, Some(key));
+                state.answer_shortcut(*identifier);
+            }
+            Self::Close { identifier, history, .. } => {
+                if *history {
+                    state.notification_request(Request::RemoveFromHistory(*identifier));
+                }
+                state.notification_request(Request::Dismiss(*identifier));
+            }
+            Self::Invoke { identifier, key, .. } => {
+                state.notification_request(Request::Invoke { id: *identifier, action: key.clone(), token: None })
+            }
+        }
+    }
+}
+
 impl Tileception {
     pub fn start_notifications(&mut self, address: Option<String>) {
         let result = (|| {
@@ -462,77 +512,58 @@ impl Tileception {
     }
 
     pub fn notification_click(&mut self, point: Point) {
+        if let Some(target) = self.notification_pointer_target(point) {
+            target.activate(self, point);
+        }
+    }
+
+    pub(crate) fn notification_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
         if self.notifications.open {
             let controls = self.panel_controls();
-            if controls.clear.contains(point) {
-                self.notification_request(Request::ClearHistory);
-                self.notification_request(Request::DismissAll);
-                return;
+            for (rect, action) in [(controls.clear, PointerAction::Clear), (controls.dnd, PointerAction::Dnd)] {
+                if rect.contains(point) && (action != PointerAction::Dnd || self.builtin_notifications()) {
+                    return Some(PointerTarget::button(rect, action));
+                }
             }
-            if self.builtin_notifications() && controls.dnd.contains(point) {
-                self.toggle_dnd();
-                return;
+            if let Some(target) = self.controls_pointer_target(&controls.controls, point) {
+                return Some(target);
             }
-            if self.controls_press(&controls.controls, point) {
-                return;
-            }
-            if self.home_press(&controls.home, point) {
-                self.schedule_render();
-                return;
+            if let Some(target) = self.home_pointer_target(&controls.home, point) {
+                return Some(target);
             }
         }
         for card in self.notification_cards() {
-            if !card.rect.contains(point) {
-                continue;
-            }
             let notification = &card.notification;
-            let local = notification.category.as_deref() == Some(LOCAL_CATEGORY);
-            if local {
-                // Tileception's own: the service knows nothing of it.
-                if card.close.contains(point) {
-                    self.close_local_notification(notification.id);
-                } else if let Some(index) = card.actions.iter().position(|button| button.contains(point))
-                    && let Some((key, _)) = notification.actions.get(index)
-                {
-                    self.local_action(notification.id, &key.clone());
-                }
-                return;
-            }
-            if self.notifications.questions.contains(&notification.id) {
-                let action = card.actions.iter().position(|button| button.contains(point));
-                let answer = match action.and_then(|index| notification.actions.get(index)) {
-                    Some((key, _)) => Some(Some(key.as_str())),
-                    None => card.close.contains(point).then_some(None),
-                };
-                if let Some(answer) = answer {
-                    self.withdraw_question(notification.id);
-                    self.answer_typing(notification.id, answer);
-                    self.answer_shortcut(notification.id);
-                }
-                return;
-            }
+            let kind = if notification.category.as_deref() == Some(LOCAL_CATEGORY) {
+                NotificationKind::Local
+            } else if self.notifications.questions.contains(&notification.id) {
+                NotificationKind::Question
+            } else {
+                NotificationKind::Service
+            };
             if card.close.contains(point) {
-                if self.notifications.open {
-                    self.notification_request(Request::RemoveFromHistory(notification.id));
-                }
-                self.notification_request(Request::Dismiss(notification.id));
-            } else if let Some(index) = card.actions.iter().position(|button| button.contains(point)) {
-                if let Some((key, _)) = notification.actions.get(index) {
-                    self.notification_request(Request::Invoke {
-                        id: notification.id,
-                        action: key.clone(),
-                        token: None,
-                    });
-                }
-            } else if notification.default_action {
-                self.notification_request(Request::Invoke {
-                    id: notification.id,
-                    action: "default".into(),
-                    token: None,
-                });
+                return Some(PointerTarget::button(
+                    card.close,
+                    PointerAction::Close { identifier: notification.id, kind, history: self.notifications.open },
+                ));
             }
-            return;
+            for (rect, (key, _)) in card.actions.iter().zip(&notification.actions) {
+                if rect.contains(point) {
+                    return Some(PointerTarget::button(
+                        *rect,
+                        PointerAction::Invoke { identifier: notification.id, kind, key: key.clone() },
+                    ));
+                }
+            }
+            if notification.default_action && card.rect.contains(point) && kind == NotificationKind::Service {
+                return Some(PointerTarget::button(
+                    card.rect,
+                    PointerAction::Invoke { identifier: notification.id, kind, key: "default".into() },
+                ));
+            }
         }
+        None
     }
 
     pub fn notification_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {

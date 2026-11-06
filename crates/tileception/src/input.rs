@@ -238,6 +238,7 @@ impl Tileception {
 
     /// A key, from a keyboard or from `tileception msg key` in tests.
     pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        self.ui_pressed = None;
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
@@ -319,15 +320,9 @@ impl Tileception {
             let mut held = Mods::from_state(mods);
             // Unmodified, so Super+Shift+1 is "1" and not "!".
             let raw = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
-            if let Some(command) = builtin(
-                held,
-                sym,
-                raw,
-                state.world.in_overview()
-                    && !state.settings_focused()
-                    && !state.launcher.open
-                    && state.power_menu.is_none(),
-            ) {
+            if let Some(command) =
+                builtin(held, sym, raw, state.world.in_overview() && !state.launcher.open && state.power_menu.is_none())
+            {
                 return FilterResult::Intercept(vec![command]);
             }
             if state.power_menu.is_some() {
@@ -336,21 +331,6 @@ impl Tileception {
             }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
-            if panels && state.settings_focused() {
-                let mut bound = held;
-                if state.nested && bound.alt && !bound.logo {
-                    bound.alt = false;
-                    bound.logo = true;
-                }
-                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
-                if bound.logo {
-                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
-                }
-                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
-                    return FilterResult::Intercept(commands.to_vec());
-                }
-                return FilterResult::Intercept(vec![Command::SettingsKey(sym, Mods::from_state(mods))]);
-            }
             if panels && sym == keysyms::KEY_Escape && held == Mods::default() && state.close_tray() {
                 return FilterResult::Intercept(Vec::new());
             }
@@ -741,15 +721,6 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        if self.settings_takes_pointer(point) {
-            // Settings is Tileception's own window: no program gets the pointer.
-            self.settings_motion(point);
-            self.schedule_render();
-            let pointer = self.seat.get_pointer().expect("seat has a pointer");
-            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
-            pointer.frame(self);
-            return;
-        }
         if self.pointer_to_owner_in_area(pos, time) {
             return;
         }
@@ -796,6 +767,10 @@ impl Tileception {
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        if !self.is_locked() && button == BTN_LEFT && self.shell_pointer_button(state == ButtonState::Pressed) {
+            self.schedule_render();
+            return;
+        }
         // A held slider lets go wherever the button comes up.
         if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
@@ -854,8 +829,6 @@ impl Tileception {
         if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
         }
-        // A slider or other drag in Settings ends wherever the button comes up.
-        let settings_drag = state == ButtonState::Released && button == BTN_LEFT && self.settings_takes_pointer(point);
         // A held duck lets go wherever the button comes up.
         if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, point) {
             return;
@@ -1029,15 +1002,6 @@ impl Tileception {
                 return;
             }
         }
-        if settings_drag || self.settings_takes_pointer(point) {
-            if button == BTN_LEFT && state == ButtonState::Pressed {
-                self.settings_click(point);
-            } else if button == BTN_LEFT {
-                self.settings_release();
-            }
-            self.schedule_render();
-            return;
-        }
         if self.button_to_owner(button, state) {
             return;
         }
@@ -1054,6 +1018,7 @@ impl Tileception {
     }
 
     pub(crate) fn on_axis(&mut self, event: &AxisInput) {
+        self.ui_pressed = None;
         if self.draws_lock_screen() {
             return;
         }
@@ -1124,22 +1089,6 @@ impl Tileception {
         }
         self.tap_armed = None;
         if !self.is_locked() && self.wheel_binding(event) {
-            return;
-        }
-        let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if !self.is_locked() && self.power_menu.is_none() && self.settings_takes_pointer(pointer_at) {
-            let amount = if event.source() == AxisSource::Wheel {
-                event
-                    .amount_v120(Axis::Vertical)
-                    .map(|amount| amount / 120. * 54.)
-                    .or_else(|| event.amount(Axis::Vertical))
-            } else {
-                event.amount(Axis::Vertical)
-            }
-            .unwrap_or(0.);
-            if amount != 0. {
-                self.settings_scroll(amount);
-            }
             return;
         }
         if self.scroll_to_owner(event) {

@@ -38,10 +38,61 @@ struct Menu {
     loading: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Slot {
     Item(usize),
     More,
+}
+
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Back,
+    Overflow,
+    Item(String),
+    Menu { key: String, path: String, row: i32, submenu: bool },
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
+        self.activate_button(state, crate::input::BTN_LEFT);
+    }
+}
+
+impl PointerAction {
+    fn activate_button(&self, state: &mut Tileception, button: u32) {
+        match self {
+            Self::Back => state.tray_menu_back(),
+            Self::Overflow => state.tray_slot_button(Slot::More, button),
+            Self::Item(key) => {
+                if let Some(item) = state.tray_items().into_iter().find(|item| &item.key == key).cloned() {
+                    state.tray_activate(item, button);
+                }
+            }
+            Self::Menu { key, path, row, submenu } => {
+                if key.starts_with("debug:") {
+                    if *row == 1
+                        && let Some(item) = state.tray.debug.iter_mut().find(|item| &item.key == key)
+                    {
+                        item.attention = !item.attention;
+                    }
+                    if *row == 2 {
+                        state.tray.debug.retain(|item| &item.key != key);
+                    }
+                    state.close_tray();
+                } else if *submenu {
+                    let Some(menu) = &mut state.tray.menu else { return };
+                    menu.parents.push(*row);
+                    menu.rows.clear();
+                    menu.loading = true;
+                    state.tray.offset = 0;
+                    state.tray_request(Request::Menu { key: key.clone(), path: path.clone(), parent: *row });
+                } else {
+                    state.tray_request(Request::Click { key: key.clone(), path: path.clone(), id: *row });
+                    state.close_tray();
+                }
+            }
+        }
+    }
 }
 
 impl Tileception {
@@ -166,6 +217,14 @@ impl Tileception {
         }
     }
 
+    pub(crate) fn tray_slot_target(&self, slot: Slot, rect: Rect) -> Option<crate::ui::PointerTarget> {
+        let action = match slot {
+            Slot::More => PointerAction::Overflow,
+            Slot::Item(index) => PointerAction::Item(self.tray_items().get(index)?.key.clone()),
+        };
+        Some(crate::ui::PointerTarget::button(rect, action))
+    }
+
     pub fn tray_slot_button(&mut self, slot: Slot, button: u32) {
         match slot {
             Slot::More if button == crate::input::BTN_LEFT => {
@@ -283,49 +342,41 @@ impl Tileception {
         if button != crate::input::BTN_LEFT && button != crate::input::BTN_RIGHT {
             return;
         }
-        if point.y < rect.y + 36.0 {
-            if self.tray.menu.is_some() {
-                self.tray_menu_back();
-            }
-            return;
+        if let Some((_, action)) = self.tray_control(anchor, point) {
+            action.activate_button(self, button);
         }
-        let row = ((point.y - rect.y - 36.0) / ROW) as usize + self.tray.offset;
-        if let Some(menu) = &self.tray.menu {
-            let Some(entry) = menu.rows.get(row).cloned() else {
-                return;
-            };
+    }
+
+    pub(crate) fn tray_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        let anchor = self.tray_pointer_anchor()?;
+        self.tray_control(anchor, point).map(|(rect, action)| crate::ui::PointerTarget::button(rect, action))
+    }
+
+    fn tray_control(&self, anchor: Rect, point: Point) -> Option<(Rect, PointerAction)> {
+        let panel = self.tray_popup(anchor);
+        if !panel.contains(point) {
+            return None;
+        }
+        if point.y < panel.y + 36. {
+            return self.tray.menu.as_ref().map(|_| (Rect::new(panel.x, panel.y, panel.w, 36.), PointerAction::Back));
+        }
+        let offset = ((point.y - panel.y - 36.) / ROW) as usize;
+        let index = offset + self.tray.offset;
+        let action = if let Some(menu) = &self.tray.menu {
+            let entry = menu.rows.get(index)?;
             if !entry.enabled || entry.separator {
-                return;
+                return None;
             }
-            let key = menu.key.clone();
-            let path = menu.path.clone();
-            if key.starts_with("debug:") {
-                if entry.row_id == 1
-                    && let Some(item) = self.tray.debug.iter_mut().find(|item| item.key == key)
-                {
-                    item.attention = !item.attention;
-                }
-                if entry.row_id == 2 {
-                    self.tray.debug.retain(|item| item.key != key);
-                }
-                self.close_tray();
-            } else if entry.submenu {
-                let menu = self.tray.menu.as_mut().expect("a menu was selected above");
-                menu.parents.push(entry.row_id);
-                menu.rows.clear();
-                menu.loading = true;
-                self.tray.offset = 0;
-                self.tray_request(Request::Menu { key, path, parent: entry.row_id });
-            } else {
-                self.tray_request(Request::Click { key, path, id: entry.row_id });
-                self.close_tray();
+            PointerAction::Menu {
+                key: menu.key.clone(),
+                path: menu.path.clone(),
+                row: entry.row_id,
+                submenu: entry.submenu,
             }
         } else {
-            let item = self.tray_items().get(self.tray_inline_count() + row).copied().cloned();
-            if let Some(item) = item {
-                self.tray_activate(item, button);
-            }
-        }
+            PointerAction::Item(self.tray_items().get(self.tray_inline_count() + index)?.key.clone())
+        };
+        Some((Rect::new(panel.x, panel.y + 36. + offset as f64 * ROW, panel.w, ROW), action))
     }
 
     fn tray_menu_back(&mut self) {

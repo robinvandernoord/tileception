@@ -190,6 +190,7 @@ pub struct Tileception {
     pub power_menu: Option<crate::power::PowerMenu>,
     pub launcher: crate::launcher::Launcher,
     pub settings: crate::settings::Settings,
+    pub(crate) ui_pressed: Option<crate::ui::PointerTarget>,
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
@@ -367,6 +368,7 @@ impl Tileception {
             power_menu: None,
             launcher: Default::default(),
             settings: Default::default(),
+            ui_pressed: None,
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
@@ -523,6 +525,7 @@ impl Tileception {
             pending.states.set(xdg_toplevel::State::TiledBottom);
         });
         let window_id = self.next_id();
+        self.settings_client_window(&toplevel, window_id);
         self.windows.insert(window_id, Window::new_wayland_window(toplevel));
     }
 
@@ -554,7 +557,7 @@ impl Tileception {
         }
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
-        let float = rule.float.unwrap_or_else(|| wants_float(window));
+        let float = rule.float.unwrap_or_else(|| self.is_settings_window(window_id) || wants_float(window));
         let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
@@ -637,11 +640,6 @@ impl Tileception {
                 }
                 let size: Size<i32, Logical> =
                     (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
-                if self.is_settings_window(placement.window) {
-                    // Settings fills whatever place it is given.
-                    self.settings_resized(placement.rect.w.round().max(1.0), placement.rect.h.round().max(1.0));
-                    continue;
-                }
                 let Some(window) = self.windows.get(&placement.window) else {
                     // Another machine's window: its owner sizes it, and keeps
                     // its menus on this screen.
@@ -719,11 +717,7 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.settings_focused()
-            || self.launcher.open
-            || (self.doctor.open && self.doctor.focused)
-            || self.duck.typing()
-        {
+        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
             None
         } else {
             remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
@@ -826,10 +820,6 @@ impl Tileception {
 
     pub fn close_window(&self, window_id: WindowId) {
         if self.close_remote(window_id) {
-            return;
-        }
-        if self.is_settings_window(window_id) {
-            self.loop_handle.insert_idle(|state| state.close_settings());
             return;
         }
         let Some(window) = self.windows.get(&window_id) else { return };

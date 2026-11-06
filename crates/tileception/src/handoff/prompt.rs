@@ -51,7 +51,57 @@ struct Layout {
     resume: Rect,
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Dismiss(PeerId),
+    Resume(PeerId),
+    Place(PeerId),
+    Passive,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) {
+        match self {
+            Self::Dismiss(peer) => state.dismiss_peer(*peer),
+            Self::Resume(_) => {
+                if let Err(error) = state.handoff_resume() {
+                    tracing::warn!("handoff: {error}");
+                }
+            }
+            Self::Place(_) => {
+                state.handoff.prompt.drag = Some((point.x - rect.x, point.y - rect.y));
+                state.handoff.prompt.target = None;
+            }
+            Self::Passive => {}
+        }
+        state.schedule_render();
+    }
+}
+
 impl Tileception {
+    pub(crate) fn handoff_pointer_target(&self, point: tileception_core::Point) -> Option<crate::ui::PointerTarget> {
+        let (peer, card) = self.handoff_card()?;
+        let layout = self.handoff_layout();
+        if !layout.card.contains(point) {
+            return None;
+        }
+        if layout.close.contains(point) {
+            return Some(crate::ui::PointerTarget::button(layout.close, PointerAction::Dismiss(peer)));
+        }
+        if card == Card::Paused && layout.resume.contains(point) {
+            return Some(crate::ui::PointerTarget::button(layout.resume, PointerAction::Resume(peer)));
+        }
+        Some(crate::ui::PointerTarget::new(
+            layout.card,
+            if card == Card::Place { PointerAction::Place(peer) } else { PointerAction::Passive },
+            if card == Card::Place {
+                smithay::input::pointer::CursorIcon::Grab
+            } else {
+                smithay::input::pointer::CursorIcon::Default
+            },
+        ))
+    }
+
     fn handoff_card(&self) -> Option<(PeerId, Card)> {
         if self.is_locked() {
             return None;
@@ -119,7 +169,7 @@ impl Tileception {
 
     /// A button over or dragging the card; true when it takes it.
     pub(crate) fn handoff_prompt_button(&mut self, button: u32, pressed: bool) -> bool {
-        let Some((peer, card)) = self.handoff_card() else {
+        let Some((peer, _)) = self.handoff_card() else {
             self.handoff.prompt.drag = None;
             return false;
         };
@@ -136,25 +186,11 @@ impl Tileception {
             self.schedule_render();
             return true;
         }
-        let layout = self.handoff_layout();
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if !layout.card.contains(point) {
-            return false;
+        let Some(target) = self.handoff_pointer_target(point) else { return false };
+        if button == BTN_LEFT {
+            target.activate(self, point);
         }
-        if button != BTN_LEFT {
-            return true;
-        }
-        if layout.close.contains(point) {
-            self.dismiss_peer(peer);
-        } else if card == Card::Paused && layout.resume.contains(point) {
-            if let Err(error) = self.handoff_resume() {
-                tracing::warn!("handoff: {error}");
-            }
-        } else if card == Card::Place {
-            self.handoff.prompt.drag = Some((point.x - layout.card.x, point.y - layout.card.y));
-            self.handoff.prompt.target = None;
-        }
-        self.schedule_render();
         true
     }
 

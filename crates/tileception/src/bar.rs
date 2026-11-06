@@ -264,6 +264,7 @@ enum Hit {
     Clock,
     Battery,
     Notifications,
+    Tray(crate::tray::Slot),
     Bar,
 }
 
@@ -273,6 +274,23 @@ enum CalendarHit {
     Next,
     Today,
     Card,
+}
+
+impl crate::ui::PointerAction for Hit {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
+        state.bar_activate_hit(*self);
+    }
+}
+
+impl crate::ui::PointerAction for CalendarHit {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
+        match self {
+            Self::Previous => state.bar.calendar.offset -= 1,
+            Self::Next => state.bar.calendar.offset += 1,
+            Self::Today => state.bar.calendar.offset = 0,
+            Self::Card => {}
+        }
+    }
 }
 
 /// What one crumb shows.
@@ -701,7 +719,16 @@ impl Tileception {
         if !layout.bar.contains(point) {
             return None;
         }
-        let hits = [
+        self.bar_controls(layout)
+            .into_iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, hit)| hit)
+            .or(Some(Hit::Bar))
+    }
+
+    /// One binding table for painting hover state, hit-testing and activation.
+    fn bar_controls(&self, layout: &Layout) -> Vec<(Rect, Hit)> {
+        let mut hits = vec![
             (layout.launcher, Hit::Launcher),
             (layout.doctor, Hit::Doctor),
             (layout.back, Hit::Back),
@@ -709,31 +736,47 @@ impl Tileception {
             (layout.clock, Hit::Clock),
             (layout.notifications, Hit::Notifications),
         ];
-        if let Some((_, hit)) = hits.iter().find(|(rect, _)| rect.contains(point)) {
-            return Some(*hit);
+        hits.extend(layout.battery.as_ref().map(|(rect, _)| (*rect, Hit::Battery)));
+        hits.extend(layout.minimap.map(|rect| (rect, Hit::Minimap)));
+        hits.extend(layout.crumbs.iter().filter_map(|crumb| crumb.node.map(|node| (crumb.rect, Hit::Crumb(node)))));
+        hits.extend(layout.slots.iter().map(|(slot, rect)| (*rect, Hit::Slot(*slot))));
+        hits.extend(layout.tray.iter().map(|(slot, rect)| (*rect, Hit::Tray(*slot))));
+        hits.extend(layout.chips.iter().map(|chip| {
+            (
+                chip.rect,
+                match chip.kind {
+                    ChipKind::Media => Hit::Media,
+                    ChipKind::Dnd => Hit::Dnd,
+                    ChipKind::Capture => Hit::Bar,
+                },
+            )
+        }));
+        hits
+    }
+
+    pub(crate) fn bar_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
+        if self.bar.calendar.zoom.open {
+            return self
+                .calendar_controls()
+                .into_iter()
+                .find_map(|(rect, hit)| rect.contains(point).then(|| PointerTarget::button(rect, hit)));
         }
-        if layout.battery.as_ref().is_some_and(|(rect, _)| rect.contains(point)) {
-            return Some(Hit::Battery);
+        if self.bar.minimap.zoom.open {
+            return None;
         }
-        if layout.minimap.is_some_and(|rect| rect.contains(point)) {
-            return Some(Hit::Minimap);
-        }
-        if let Some(crumb) = layout.crumbs.iter().find(|crumb| crumb.rect.contains(point))
-            && let Some(node) = crumb.node
-        {
-            return Some(Hit::Crumb(node));
-        }
-        if let Some((slot, _)) = layout.slots.iter().find(|(_, rect)| rect.contains(point)) {
-            return Some(Hit::Slot(*slot));
-        }
-        if let Some(chip) = layout.chips.iter().find(|chip| chip.rect.contains(point)) {
-            return match chip.kind {
-                ChipKind::Media => Some(Hit::Media),
-                ChipKind::Dnd => Some(Hit::Dnd),
-                ChipKind::Capture => Some(Hit::Bar),
-            };
-        }
-        Some(Hit::Bar)
+        let layout = self.bar_layout()?;
+        self.bar_controls(&layout).into_iter().filter(|(_, hit)| !matches!(hit, Hit::Battery | Hit::Bar)).find_map(
+            |(rect, hit)| {
+                if !rect.contains(point) {
+                    return None;
+                }
+                match hit {
+                    Hit::Tray(slot) => self.tray_slot_target(slot, rect),
+                    _ => Some(PointerTarget::button(rect, hit)),
+                }
+            },
+        )
     }
 
     /// Whether the bar (or the open calendar) takes the pointer here.
@@ -778,9 +821,9 @@ impl Tileception {
             return false;
         }
         if let Some(layout) = self.bar_layout() {
-            if let Some((slot, _)) = layout.tray.iter().find(|(_, rect)| rect.contains(point)) {
+            if let Some(Hit::Tray(slot)) = self.bar_hit(&layout, point) {
                 self.bar.pressed = true;
-                self.tray_slot_button(*slot, button);
+                self.tray_slot_button(slot, button);
                 return true;
             }
             if self.tray.open {
@@ -801,10 +844,7 @@ impl Tileception {
             self.bar.pressed = true;
             if button == crate::input::BTN_LEFT {
                 match self.calendar_hit(point) {
-                    Some(CalendarHit::Previous) => self.bar.calendar.offset -= 1,
-                    Some(CalendarHit::Next) => self.bar.calendar.offset += 1,
-                    Some(CalendarHit::Today) => self.bar.calendar.offset = 0,
-                    Some(CalendarHit::Card) => {}
+                    Some(hit) => crate::ui::PointerAction::activate(&hit, self, self.calendar_card(), point),
                     // The clock itself, or anywhere outside: zoom back.
                     None => {
                         self.close_calendar();
@@ -822,6 +862,11 @@ impl Tileception {
         }
         let Some(layout) = self.bar_layout() else { return true };
         let Some(hit) = self.bar_hit(&layout, point) else { return true };
+        self.bar_activate_hit(hit);
+        true
+    }
+
+    fn bar_activate_hit(&mut self, hit: Hit) {
         match hit {
             Hit::Launcher => self.shell_launcher(),
             Hit::Doctor => match unseen_error(self.bar.seen_error) {
@@ -855,9 +900,9 @@ impl Tileception {
             Hit::Dnd => self.toggle_dnd(),
             Hit::Clock => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
+            Hit::Tray(slot) => self.tray_slot_button(slot, crate::input::BTN_LEFT),
             Hit::Battery | Hit::Bar => {}
         }
-        true
     }
 
     /// Scrolling on the bar steps in and out of the tree, a notch at a time;
@@ -940,16 +985,20 @@ impl Tileception {
         if !card.contains(point) {
             return None;
         }
-        let (month, previous, next) = self.calendar_parts(card);
-        if previous.contains(point) {
-            Some(CalendarHit::Previous)
-        } else if next.contains(point) {
-            Some(CalendarHit::Next)
-        } else if month.contains(point) && point.x < previous.x {
-            Some(CalendarHit::Today)
-        } else {
-            Some(CalendarHit::Card)
-        }
+        self.calendar_controls()
+            .into_iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, hit)| hit)
+            .or(Some(CalendarHit::Card))
+    }
+
+    fn calendar_controls(&self) -> Vec<(Rect, CalendarHit)> {
+        let (month, previous, next) = self.calendar_parts(self.calendar_card());
+        vec![
+            (previous, CalendarHit::Previous),
+            (next, CalendarHit::Next),
+            (Rect::new(month.x, month.y, (previous.x - month.x).max(0.), month.h), CalendarHit::Today),
+        ]
     }
 
     pub fn bar_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
@@ -998,6 +1047,11 @@ impl Tileception {
         let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
         self.draw_tray_popup(&mut painter, &layout.tray, anchor);
         painter.finish()
+    }
+
+    pub(crate) fn tray_pointer_anchor(&self) -> Option<Rect> {
+        let layout = self.bar_layout()?;
+        Some(layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock))
     }
 
     fn draw_bar(&self, painter: &mut Painter, layout: &Layout, mode: Mode) {
