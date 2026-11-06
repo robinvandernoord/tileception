@@ -36,6 +36,8 @@ pub struct ColourPick {
     /// The screen as it was when the pick started; until the next frame
     /// captures it, nothing shows.
     still: Option<Still>,
+    /// The screen the still is of. Moving to another screen takes a new one.
+    output: Option<smithay::output::Output>,
 }
 
 struct Still {
@@ -72,20 +74,52 @@ impl Tileception {
         // Open panels stay, so their colours can be picked too; the picker
         // takes the pointer and keyboard from them until it is done.
         self.colour_pick = Some(ColourPick::default());
+        self.take_colour_pick_still();
+        self.force_keyboard_focus_sync();
+    }
+
+    /// Queues a still of the active screen for the pick, replacing the one
+    /// it has.
+    fn take_colour_pick_still(&mut self) {
+        let output = self.output.clone();
+        let Some(pick) = self.colour_pick.as_mut() else { return };
+        pick.still = None;
+        pick.output = output;
         let region = smithay::utils::Rectangle::from_size(self.output_pixels().into());
         self.pending_captures
             .push(crate::capture::PendingCapture { region, target: crate::capture::CaptureTarget::ColourPick });
-        self.force_keyboard_focus_sync();
         self.schedule_render();
     }
 
-    /// The still for the pick, from [`Self::process_captures`].
+    /// The pointer moved during a pick: onto another screen, the magnifier
+    /// needs a still of that screen.
+    pub fn colour_pick_moved(&mut self) {
+        if self.colour_pick.as_ref().is_some_and(|pick| pick.output != self.output) {
+            self.take_colour_pick_still();
+        }
+        self.schedule_render();
+    }
+
+    /// The still for the pick, from [`Self::process_captures`], which runs
+    /// in the captured screen's context. One of a screen the pointer has
+    /// since left is no use.
     pub fn colour_pick_taken(&mut self, rgba: Vec<u8>, (width, height): (i32, i32)) {
         let scale = self.scale;
-        if let Some(pick) = self.colour_pick.as_mut() {
+        let output = self.output.clone();
+        if let Some(pick) = self.colour_pick.as_mut()
+            && pick.output == output
+        {
             pick.still = Some(Still { rgba, width, height, scale });
             self.schedule_render();
         }
+    }
+
+    /// The pointer is going to another machine: the pick ends here, and
+    /// whether one was under way says if it carries on there.
+    pub fn hand_over_colour_pick(&mut self) -> bool {
+        let picking = self.colour_pick.is_some();
+        self.cancel_colour_pick();
+        picking
     }
 
     pub fn cancel_colour_pick(&mut self) {

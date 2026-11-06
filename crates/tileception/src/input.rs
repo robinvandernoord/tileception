@@ -600,7 +600,7 @@ impl Tileception {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
-            self.schedule_render();
+            self.colour_pick_moved();
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.handoff_prompt_motion(pos) {

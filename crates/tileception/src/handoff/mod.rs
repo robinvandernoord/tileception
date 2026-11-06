@@ -488,6 +488,14 @@ impl Tileception {
             Message::Leave => {
                 self.forget_input(peer);
                 self.handoff.away = true;
+                // Its keys stop coming: a pick it was making here ends.
+                self.cancel_colour_pick();
+            }
+            // Only right after the pointer arrived here from that machine.
+            Message::PickColour => {
+                if self.handoff.forwarding.is_none() && !self.handoff.away && self.handoff.active_edge(peer).is_some() {
+                    self.pick_colour();
+                }
             }
             Message::Motion { right, down } => self.remote_motion(peer, right, down),
             Message::Button { button, pressed } => self.remote_button(peer, button, pressed),
