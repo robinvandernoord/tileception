@@ -211,7 +211,7 @@ impl Tileception {
             {
                 "Drag a display to a free edge. Equal rectangles show full-edge crossing."
             }
-            Kind::Displays => "Drag a display to a free edge. Apply previews changes before saving.",
+            Kind::Displays => "Drag a display to a free edge of another to arrange them.",
             Kind::Sharing => "Connect computers on the same network to share input and clipboard.",
             Kind::Touch => "Choose which display receives input from each touchscreen.",
             Kind::Shortcuts => {
@@ -659,6 +659,7 @@ impl Tileception {
                 continue;
             }
             let label = match action {
+                Action::Add if screen.kind == Kind::Displays => "Add screen",
                 Action::Add => "Add",
                 Action::Remove => {
                     if screen.kind == Kind::Displays
@@ -715,7 +716,7 @@ impl Tileception {
                 Action::Identify => "Identify",
                 Action::Touchscreens => "Touchscreens",
                 Action::Automatic => "Automatic layout",
-                Action::Cancel => "Discard screen",
+                Action::Cancel => "Discard changes",
                 Action::Back => "Back",
                 Action::Stage => "Apply changes",
                 _ => "",
@@ -753,15 +754,26 @@ impl Tileception {
         } else if screen.kind == Kind::Displays && !self.settings.message.is_empty() {
             self.settings.message.as_str()
         } else if screen.kind == Kind::Displays {
-            "Apply previews changes. Keep changes saves; Revert keeps your draft."
+            "Apply tries the changes first: keep them within 15 seconds or they go back."
         } else {
-            "Back keeps draft. Apply saves."
+            "Back keeps your changes as a draft. Apply saves them."
         };
         painter.text(
             status,
             Rect::new(layout.panel.x + 24., layout.panel.bottom() - 62., (layout.panel.w - 320.).max(1.), 54.),
-            Style::new(11., if screen.error.is_empty() && !self.settings.error { theme.muted } else { theme.danger })
-                .lines(3),
+            Style::new(
+                11.,
+                // The settings-wide error colours its own message only, not
+                // the hint shown in its place on other screens.
+                if !screen.error.is_empty()
+                    || screen.kind == Kind::Displays && self.settings.error && !self.settings.message.is_empty()
+                {
+                    theme.danger
+                } else {
+                    theme.muted
+                },
+            )
+            .lines(3),
         );
         if let Some(menu) = &screen.menu {
             painter.fill(layout.panel, Colour([0., 0., 0., 0.45]), 6.);

@@ -16,7 +16,7 @@ use std::{
 use smithay::{
     output::{Mode, Output},
     reexports::calloop::timer::{TimeoutAction, Timer},
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
     utils::{Logical, Point, Transform},
     wayland::seat::WaylandFocus,
 };
@@ -70,6 +70,7 @@ struct PreviewDesktop {
 #[derive(Default)]
 pub struct Outputs {
     connected: BTreeMap<String, Output>,
+    globals: BTreeMap<String, GlobalId>,
     preview: Option<OutputPreview>,
     generation: u64,
     pub active: Option<Output>,
@@ -217,11 +218,23 @@ impl Tileception {
             .collect()
     }
 
-    fn proposed_outputs(&self, proposed: &BTreeMap<String, OutputConfig>) -> Result<Vec<RuntimeOutput>, String> {
+    fn proposed_outputs(
+        &self,
+        proposed: &BTreeMap<String, OutputConfig>,
+        allow_fallback: bool,
+    ) -> Result<Vec<RuntimeOutput>, String> {
         crate::scale::validate(proposed)?;
         let mut runtime = Vec::new();
         for output in self.outputs.connected.values() {
-            let setting = proposed.get(&output.name()).or_else(|| proposed.get("*")).cloned().unwrap_or_default();
+            let explicit = proposed.get(&output.name());
+            let mut setting = explicit.or_else(|| proposed.get("*")).cloned().unwrap_or_default();
+            if output.name() == "winit" && explicit.is_none() {
+                if setting.mode.parse()?.is_some() || setting.transform != Default::default() {
+                    tracing::debug!("ignoring wildcard mode and transform for nested output");
+                }
+                setting.mode = Default::default();
+                setting.transform = Default::default();
+            }
             let requested = setting.mode.parse()?;
             let mode = requested
                 .or(output.preferred_mode())
@@ -248,7 +261,15 @@ impl Tileception {
             });
         }
         if !runtime.is_empty() && !runtime.iter().any(|output| output.enabled) {
-            return Err("cannot disable every connected monitor".into());
+            if !allow_fallback {
+                return Err("cannot disable every connected monitor".into());
+            }
+            let index = runtime
+                .iter()
+                .position(|target| ["eDP", "LVDS", "DSI"].iter().any(|prefix| target.output.name().starts_with(prefix)))
+                .unwrap_or(0);
+            runtime[index].enabled = true;
+            tracing::warn!(output = %runtime[index].output.name(), "configuration disables every connected monitor; enabling fallback");
         }
         Ok(runtime)
     }
@@ -260,12 +281,14 @@ impl Tileception {
             target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
             if self.output_named(&target.output.name()).is_none() {
                 self.add_output(target.output.clone());
+                self.advertise_output(&target.output);
             }
         }
         for target in runtime.iter().filter(|target| !target.enabled) {
             self.configure_drm_output(&target.output, target.mode, target.transform, false)?;
             if self.output_named(&target.output.name()).is_some() {
                 self.remove_output(&target.output);
+                self.withdraw_output(&target.output);
             }
             target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
         }
@@ -279,7 +302,7 @@ impl Tileception {
         if self.outputs.preview.is_some() {
             return Err("an output preview is already awaiting confirmation".into());
         }
-        let runtime = self.proposed_outputs(&proposed)?;
+        let runtime = self.proposed_outputs(&proposed, false)?;
         if runtime.is_empty() {
             return Err("no connected monitors".into());
         }
@@ -369,13 +392,6 @@ impl Tileception {
             return Err("output preview expired".into());
         }
         Ok(())
-    }
-
-    /// Confirms runtime only. Persistent callers should use the callback variant.
-    pub fn confirm_outputs(&mut self, token: u64) -> Result<BTreeMap<String, OutputConfig>, String> {
-        self.check_output_preview(token)?;
-        self.outputs.preview = None;
-        Ok(self.config.file.outputs.clone())
     }
 
     /// Call only after the user confirms. `persist` must write atomically: on
@@ -479,7 +495,18 @@ impl Tileception {
     }
 
     pub fn forget_connected_output(&mut self, output: &Output) {
+        self.withdraw_output(output);
         self.outputs.connected.remove(&output.name());
+    }
+
+    pub fn advertise_output(&mut self, output: &Output) {
+        self.outputs.globals.entry(output.name()).or_insert_with(|| output.create_global::<Self>(&self.display_handle));
+    }
+
+    fn withdraw_output(&mut self, output: &Output) {
+        if let Some(global) = self.outputs.globals.remove(&output.name()) {
+            self.display_handle.remove_global::<Self>(global);
+        }
     }
 
     pub fn all_outputs(&self) -> Vec<Output> {
@@ -1231,7 +1258,7 @@ impl Tileception {
         // A config reload supersedes any preview; its old timer must do nothing.
         self.outputs.preview = None;
         let proposed = self.config.file.outputs.clone();
-        let runtime = self.proposed_outputs(&proposed)?;
+        let runtime = self.proposed_outputs(&proposed, true)?;
         let previous = self.runtime_outputs();
         if let Err(error) = self.apply_runtime_outputs(&runtime) {
             return match self.apply_runtime_outputs(&previous) {
@@ -1239,7 +1266,6 @@ impl Tileception {
                 Err(rollback) => Err(format!("{error}; restoring displays also failed: {rollback}")),
             };
         }
-        self.configure_output_layouts();
         Ok(())
     }
 
@@ -1257,6 +1283,7 @@ impl Tileception {
             });
         }
         self.arrange_outputs();
+        self.settings_fit_screen();
     }
 
     pub fn output_for_window(&self, window: WindowId) -> Option<Output> {

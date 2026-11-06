@@ -31,7 +31,7 @@ pub fn init(
             model: "Winit".into(),
         },
     );
-    let _global = output.create_global::<Tileception>(&state.display_handle);
+    state.advertise_output(&output);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
     state.add_output(output.clone());

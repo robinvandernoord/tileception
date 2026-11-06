@@ -8,6 +8,9 @@ pub(super) struct Preview {
     document: String,
     before: String,
     keep_focused: bool,
+    /// When the preview reverts by itself, to tell a timeout from a preview
+    /// that a display change or reload ended early.
+    deadline: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -38,8 +41,14 @@ impl Tileception {
             return Ok(false);
         }
         let token = self.preview_outputs(proposed)?;
-        self.settings.display_preview =
-            Some(Preview { token, document, before: self.settings.document_before.clone(), keep_focused: false });
+        let deadline = self.output_preview_status().map(|status| status.deadline);
+        self.settings.display_preview = Some(Preview {
+            token,
+            document,
+            before: self.settings.document_before.clone(),
+            keep_focused: false,
+            deadline,
+        });
         self.settings.dropdown = None;
         self.settings.pressed = None;
         self.invalidate_settings_client();
@@ -68,17 +77,25 @@ impl Tileception {
             return;
         }
         let token = preview.token;
+        let timed_out = preview.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline);
         self.settings.display_preview = None;
-        self.settings.message = match self.revert_outputs(token) {
+        (self.settings.message, self.settings.error) = match self.revert_outputs(token) {
             Err(error) if error != "output preview expired or was superseded" => {
-                format!("Could not restore displays: {error}")
+                (format!("Could not restore displays: {error}"), true)
             }
-            _ => {
-                "Display preview ended or was cancelled by a display change or reload. Draft kept; Apply to try again."
-                    .into()
-            }
+            _ if timed_out => (
+                "The changes were not kept within 15 seconds, so the displays went back. Your changes are \
+                 still here: Apply to try again."
+                    .into(),
+                false,
+            ),
+            _ => (
+                "The screens changed or the config reloaded, so the displays went back. Your changes are still \
+                 here: Apply to try again."
+                    .into(),
+                false,
+            ),
         };
-        self.settings.error = true;
         self.invalidate_settings_client();
         self.schedule_render();
     }
@@ -91,7 +108,8 @@ impl Tileception {
         };
         match result {
             Ok(()) => {
-                self.settings.message = "Display preview reverted. Draft kept; Apply to try again.".into();
+                self.settings.message =
+                    "The displays went back. Your changes are still here: Apply to try again.".into();
                 self.settings.error = false;
             }
             Err(error) => {

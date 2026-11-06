@@ -19,7 +19,7 @@ use smithay::{
         touch::{DownEvent, MotionEvent, UpEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, SERIAL_COUNTER, Size, Transform},
 };
 
 use crate::{
@@ -95,6 +95,15 @@ fn shape<'a>(points: impl Iterator<Item = &'a Point<f64, Logical>> + Clone) -> (
 }
 
 impl Tileception {
+    /// Maps normalized device coordinates into the output's displayed orientation.
+    pub(crate) fn absolute_output_position(&self, position: Point<f64, Logical>) -> Point<f64, Logical> {
+        let screen = self.output_rect();
+        let transform = self.output.as_ref().map_or(Transform::Normal, |output| {
+            if output.name() == "winit" { Transform::Normal } else { output.current_transform() }
+        });
+        map_absolute_position(position, (screen.w, screen.h).into(), transform) + Point::from((screen.x, screen.y))
+    }
+
     /// Where a touch starting here goes: a program's surface, or None when
     /// Tileception's own interface takes it.
     fn touch_target(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
@@ -453,6 +462,43 @@ impl Tileception {
                     Motion::Down => (around(60.0, (0.0, 0.0)), around(60.0, (0.0, 160.0))),
                 };
                 self.inject_fingers(&from, &destination, time);
+            }
+        }
+    }
+}
+
+/// Device coordinates describe the untransformed panel; the result is output-local.
+fn map_absolute_position(
+    position: Point<f64, Logical>,
+    displayed_size: Size<f64, Logical>,
+    transform: Transform,
+) -> Point<f64, Logical> {
+    let panel_size = transform.transform_size(displayed_size);
+    transform.transform_point_in((position.x * panel_size.w, position.y * panel_size.h).into(), &panel_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_position_follows_all_output_transforms() {
+        for (transform, expected) in [
+            (Transform::Normal, (50.0, 60.0)),
+            (Transform::_90, (80.0, 25.0)),
+            (Transform::_180, (150.0, 40.0)),
+            (Transform::_270, (120.0, 75.0)),
+            (Transform::Flipped, (150.0, 60.0)),
+            (Transform::Flipped90, (120.0, 25.0)),
+            (Transform::Flipped180, (50.0, 40.0)),
+            (Transform::Flipped270, (80.0, 75.0)),
+        ] {
+            let actual = map_absolute_position((0.25, 0.6).into(), (200.0, 100.0).into(), transform);
+            assert_eq!(actual, expected.into(), "{transform:?}");
+            for corner in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                let mapped = map_absolute_position(corner.into(), (200.0, 100.0).into(), transform);
+                assert!((0.0..=200.0).contains(&mapped.x), "{transform:?}: {mapped:?}");
+                assert!((0.0..=100.0).contains(&mapped.y), "{transform:?}: {mapped:?}");
             }
         }
     }

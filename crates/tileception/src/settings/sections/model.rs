@@ -679,12 +679,14 @@ impl Screen {
                         "Connected screens appear automatically; saved disconnected screens remain available.",
                     );
                 }
-                fields.push(Spec::key(
-                    "enabled",
-                    "Screen enabled",
-                    "Disabled screens stay in this list so you can enable them again.",
-                    Form::Toggle,
-                ));
+                if row.name != "*" {
+                    fields.push(Spec::key(
+                        "enabled",
+                        "Screen enabled",
+                        "Disabled screens stay in this list so you can enable them again.",
+                        Form::Toggle,
+                    ));
+                }
                 let mut modes = vec![("Preferred resolution and refresh".into(), "preferred".into())];
                 if let Some(monitor) = self.monitors.iter().find(|monitor| monitor.name == row.name) {
                     for mode in &monitor.modes {
@@ -706,16 +708,21 @@ impl Screen {
                     "Choose an advertised mode. Apply previews it for 15 seconds.",
                     Form::Choice(modes),
                 ));
-                fields.push(Spec::key("transform", "Rotation and flip", "Rotations follow Wayland's counterclockwise convention. Flip mirrors horizontally before rotation.", Spec::choice(&[
-                    ("Normal", "normal"),
-                    ("90° counterclockwise", "90"),
-                    ("180°", "180"),
-                    ("90° clockwise", "270"),
-                    ("Mirrored", "flipped"),
-                    ("Mirrored, 90° counterclockwise", "flipped-90"),
-                    ("Mirrored, 180°", "flipped-180"),
-                    ("Mirrored, 90° clockwise", "flipped-270"),
-                ])));
+                fields.push(Spec::key(
+                    "transform",
+                    "Rotation and flip",
+                    "Turn the picture to match how the screen is mounted.",
+                    Spec::choice(&[
+                        ("Normal", "normal"),
+                        ("90° counterclockwise", "90"),
+                        ("180°", "180"),
+                        ("90° clockwise", "270"),
+                        ("Mirrored", "flipped"),
+                        ("Mirrored, 90° counterclockwise", "flipped-90"),
+                        ("Mirrored, 180°", "flipped-180"),
+                        ("Mirrored, 90° clockwise", "flipped-270"),
+                    ]),
+                ));
                 fields.push(Spec::key(
                     "scale",
                     "Scale",

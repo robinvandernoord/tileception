@@ -262,6 +262,7 @@ pub mod glyph {
     pub const MINIMAP: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 12h11"/><rect x="12.5" y="6.5" width="6" height="3" rx="0.5"/>"#;
     pub const CAMERA: &str = r#"<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>"#;
     pub const CONTRAST: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 3v18M12 7.5h5M12 12h6M12 16.5h5"/>"#;
+    pub const MONITOR: &str = r#"<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>"#;
     pub const WINDOW: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>"#;
     pub const ZOOM_IN: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>"#;
     pub const ZOOM_OUT: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>"#;

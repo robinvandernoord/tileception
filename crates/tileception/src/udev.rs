@@ -46,7 +46,7 @@ use smithay::{
         },
         input::Libinput,
         rustix::fs::OFlags,
-        wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
+        wayland_server::protocol::wl_surface::WlSurface,
     },
     utils::DeviceFd,
     wayland::{
@@ -110,7 +110,6 @@ struct Lit {
     crtc: crtc::Handle,
     output: Output,
     drm_output: Surface,
-    global: GlobalId,
     frame_pending: bool,
     /// Client buffers held until scanout completes. See `frame_buffers`.
     in_flight: Vec<Buffer>,
@@ -413,7 +412,6 @@ impl Tileception {
             for lit in gpu.surfaces {
                 self.remove_output(&lit.output);
                 self.forget_connected_output(&lit.output);
-                self.display_handle.remove_global::<Tileception>(lit.global);
             }
             self.loop_handle.remove(gpu._drm_token);
             if index == 0 {
@@ -476,7 +474,6 @@ impl Tileception {
                             let lit = gpu.surfaces.remove(index);
                             self.remove_output(&lit.output);
                             self.forget_connected_output(&lit.output);
-                            self.display_handle.remove_global::<Tileception>(lit.global);
                         }
                     }
                     _ => {}
@@ -565,7 +562,7 @@ impl Tileception {
         };
         let size = wl_mode.size;
         tracing::info!("lit {name} at {}x{}@{:.2}", size.w, size.h, wl_mode.refresh as f64 / 1000.0);
-        let global = output.create_global::<Tileception>(&self.display_handle);
+        self.advertise_output(&output);
         self.add_output(output.clone());
         surfaces.push(Lit {
             modes: connector.modes().to_vec(),
@@ -574,7 +571,6 @@ impl Tileception {
             crtc,
             output,
             drm_output,
-            global,
             frame_pending: false,
             in_flight: Vec::new(),
             lock_queued: false,

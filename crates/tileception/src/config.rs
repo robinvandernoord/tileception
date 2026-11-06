@@ -475,7 +475,7 @@ impl Tileception {
         if let Err(error) = self.configure_outputs() {
             self.config.file.outputs = old.outputs;
             self.configure_output_layouts();
-            return Err(error);
+            return Err(format!("reloaded, but outputs: {error}"));
         }
         Ok(())
     }

@@ -103,7 +103,7 @@ const CATEGORIES: &[Category] = &[
         title: "Displays",
         summary: "Arrangement, scaling & touchscreens",
         description: "Display layout, scaling and input routing.",
-        icon: glyph::GLOBE,
+        icon: glyph::MONITOR,
     },
     Category {
         title: "Sharing",
@@ -997,12 +997,7 @@ impl Tileception {
         if !self.settings.error {
             self.settings.message.clear();
         }
-        let screen = self.world.screen();
-        let size = (
-            (screen.w - if screen.w < 900. { 24. } else { 96. }).clamp(320., 1360.),
-            (screen.h - if screen.h < 700. { 48. } else { 96. }).clamp(240., 960.),
-        );
-        self.settings.size = size;
+        self.settings.size = settings_size(self.world.screen());
         self.open_settings_page_section();
         match client::Client::start(self) {
             Ok(client) => self.settings.client = Some(client),
@@ -1010,6 +1005,35 @@ impl Tileception {
                 self.settings.open = false;
                 tracing::warn!("could not open Settings client: {error}");
             }
+        }
+        self.schedule_render();
+    }
+
+    /// Fits the Settings window to its screen again when that screen changed
+    /// size or rotated, so every control, including a display confirmation,
+    /// stays reachable. A window that still fits keeps its place and size.
+    pub(crate) fn settings_fit_screen(&mut self) {
+        let Some(window) = self.settings.window else { return };
+        if let Some(area) = self.area_for_window(window)
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.settings_fit_screen());
+            return;
+        }
+        let screen = self.world.screen();
+        let Some(rect) = self.world.float_rect(window) else { return };
+        if screen.contains_rect(&rect) {
+            return;
+        }
+        let (width, height) = settings_size(screen);
+        let (width, height) = (width.min(screen.w), height.min(screen.h));
+        let fitted = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
+        self.world.set_float_rect(window, fitted);
+        self.settings.dropdown = None;
+        self.settings.colour = None;
+        self.apply_layout();
+        if let Some(toplevel) = self.windows.get(&window).and_then(|placed| placed.toplevel()) {
+            toplevel.send_configure();
         }
         self.schedule_render();
     }
@@ -2095,9 +2119,7 @@ impl Tileception {
         } else {
             state
                 .page
-                .map_or("Drafts stay until Apply. Ctrl+Page Up/Down: categories. Alt+Up: Back.", |index| {
-                    CATEGORIES[index].description
-                })
+                .map_or("Changes stay a draft until you apply them.", |index| CATEGORIES[index].description)
                 .into()
         };
         painter.text(
@@ -3154,4 +3176,13 @@ impl Tileception {
             });
         }
     }
+}
+
+/// The size Settings opens at: most of the screen, with a narrower margin on
+/// small screens, within readable limits.
+fn settings_size(screen: Rect) -> (f64, f64) {
+    (
+        (screen.w - if screen.w < 900. { 24. } else { 96. }).clamp(320., 1360.),
+        (screen.h - if screen.h < 700. { 48. } else { 96. }).clamp(240., 960.),
+    )
 }

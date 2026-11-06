@@ -94,7 +94,7 @@ pub fn init(
                 model: "Headless".into(),
             },
         );
-        let _global = output.create_global::<Tileception>(&state.display_handle);
+        state.advertise_output(&output);
         let mode = Mode { size: (width, height).into(), refresh: 60_000 };
         output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
         output.set_preferred(mode);
