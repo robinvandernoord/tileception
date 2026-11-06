@@ -124,3 +124,23 @@ machines. [Development](docs/development.md) describes both setups. Always
 target your own instances with `TILECEPTION_SOCKET`: without it, `tileception
 msg` reaches the user's running desktop. Say plainly what was only built and
 what was tried.
+
+## Text fields
+
+Every field Tileception draws itself must edit the same way, so users can rely
+on their habits everywhere: the launcher, Doctor's message field and its model
+filter, the rubber duck's question, and any new field. Keep its text in
+`text_input::TextInput`, draw it with `text::field` (caret, selection and
+scrolling), and handle at least:
+
+- Left and Right, by word with Ctrl or Alt, selecting with Shift; Home and End
+  (with Shift);
+- Backspace and Delete, by word with Ctrl or Alt;
+- Ctrl+A to select all, Ctrl+C and Ctrl+X to copy and cut the selection,
+  Ctrl+V to paste (text only, as one line), Ctrl+U to clear;
+- typing through `ui::compose_text`, so dead keys and compose sequences work.
+
+A list attached to a field, such as a menu's values, takes Up, Down, Page Up
+and Page Down; it leaves the editing keys to the field. Copy the key handling
+of an existing field rather than writing a smaller one, and try the keys
+in a headless instance.

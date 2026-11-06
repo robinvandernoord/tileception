@@ -190,11 +190,21 @@ impl Tileception {
             return false;
         }
         self.carry_drag(peer, source);
+        // A colour pick follows the pointer to the other machine.
+        let picking = self.hand_over_colour_pick();
         match source {
-            Source::Local => self.start_forwarding(peer, along),
+            Source::Local => {
+                self.start_forwarding(peer, along);
+                if picking && self.handoff.forwarding == Some(peer) {
+                    self.handoff.send(peer, Message::PickColour);
+                }
+            }
             Source::Peer(from) => {
                 self.share_selections(from);
                 self.handoff.send(from, Message::Return { along });
+                if picking {
+                    self.handoff.send(from, Message::PickColour);
+                }
                 self.forget_input(from);
                 self.handoff.away = true;
                 self.schedule_render();

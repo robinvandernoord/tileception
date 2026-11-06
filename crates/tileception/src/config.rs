@@ -27,6 +27,7 @@ pub const DEFAULT: &str = include_str!("default-config.toml");
 #[derive(Default)]
 pub struct ConfigFile {
     pub general: General,
+    pub clipboard: crate::clipboard::ClipboardConfig,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub touchpad: crate::gestures::TouchpadConfig,
@@ -453,6 +454,7 @@ impl Tileception {
         }
         let old = std::mem::replace(&mut self.config, config).file;
         self.apply_shell(&old.shell);
+        self.apply_clipboard();
         self.apply_handoff_config(&old.handoff);
         if old.home != self.config.file.home {
             self.apply_home();
@@ -546,7 +548,7 @@ mod tests {
         let defaults = Config::default_config().binds.len();
         let logo = Mods { logo: true, ..Default::default() };
         let key = |name| xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS).raw();
-        let config = Config::parse("[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
+        let config = Config::parse("[binds]\n\"Super+Y\" = \"spawn foot\"").unwrap();
         assert_eq!(config.binds.len(), defaults + 1, "a new key joins the defaults");
         assert_eq!(config.lookup(logo, key("h")), Some(&[Command::Action(crate::input::Action::Minimize)][..]));
         // The same key written another way still replaces its default.

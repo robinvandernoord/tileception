@@ -34,6 +34,8 @@ pub struct App {
     pub hidden: bool,
     /// Extra entry points from `[Desktop Action ...]` groups, in `Actions=` order.
     pub actions: Vec<AppAction>,
+    /// The desktop file it was read from.
+    pub source: PathBuf,
 }
 
 /// One desktop action, such as Firefox's "New Private Window".
@@ -136,12 +138,13 @@ impl AppIndex {
                 if !seen.insert(id.clone()) {
                     continue;
                 }
-                let Some(app) = fs::read_to_string(&file)
+                let Some(mut app) = fs::read_to_string(&file)
                     .ok()
                     .and_then(|text| desktop::parse(&text, &id, &self.desktop, &self.locale, &self.path))
                 else {
                     continue;
                 };
+                app.source = file.clone();
                 self.normalized.insert(
                     id.clone(),
                     Searchable {
@@ -308,6 +311,16 @@ fn normalize(text: &str) -> String {
 fn subsequence(query: &str, text: &str) -> bool {
     let mut chars = text.chars();
     query.chars().all(|needle| chars.by_ref().any(|c| c == needle))
+}
+
+/// Where the user's own desktop entries go (`~/.local/share/applications`);
+/// one there takes precedence over a system entry with the same id.
+pub fn user_applications_dir() -> Option<PathBuf> {
+    env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|data| data.join("applications"))
 }
 
 fn data_dirs() -> Vec<PathBuf> {

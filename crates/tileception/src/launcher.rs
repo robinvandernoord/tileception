@@ -1,7 +1,8 @@
 //! The launcher (tap Super) and the welcome screen: app search with a small
 //! persistent usage history, plus open windows, Tileception's own commands,
 //! desktop actions, instant answers (sums, conversions, times, colours,
-//! characters), paths and links, and `>` to run a command and see its output.
+//! characters), paths and links, `z words` for often visited folders, and
+//! `>` to run a command and see its output.
 
 use std::{
     collections::HashMap,
@@ -82,6 +83,8 @@ pub enum Paste {
     Launcher(u64),
     Doctor,
     Settings(u64),
+    /// The rubber duck's question.
+    Duck,
 }
 
 /// One row of results.
@@ -103,6 +106,24 @@ enum Entry {
     Run(String),
     /// "Ask Tileception", with the question.
     Ask(String),
+    /// One row of an app's details (Alt+Enter), by app id.
+    Detail { app: String, row: Detail },
+}
+
+/// What an app's details show: where its desktop entry is and what it runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Detail {
+    /// The command line it runs, with `[launch_args]`; Enter copies it.
+    Command,
+    /// The desktop file's path; Enter copies it.
+    File,
+    /// Opens the desktop file in the text editor.
+    Open,
+    /// Copies a system entry to `~/.local/share/applications`, which takes
+    /// precedence, and opens the copy.
+    EditCopy,
+    /// Opens the folder holding the desktop file.
+    Folder,
 }
 
 #[derive(Clone, PartialEq)]
@@ -180,6 +201,7 @@ const COMMANDS: &[Builtin] = &[
         glyph::CAMERA,
         Does::Line("spawn tileception-screenshot region --ask"),
     ),
+    builtin("Pick a colour", "color colour picker eyedropper pipette hex rgb", glyph::DROP, Does::Line("pick-colour")),
     builtin(
         "Dark style for apps",
         "dark mode theme colour color scheme night",
@@ -261,6 +283,11 @@ pub struct Launcher {
     lookup: IconLookup,
     pub icons: Icons,
     usage: HashMap<String, Usage>,
+    /// The app whose details show instead of the results (Alt+Enter).
+    details: Option<String>,
+    /// The folders z and zoxide know, read the first time `z ` is typed
+    /// after opening.
+    jumps: Option<Vec<crate::jumps::Folder>>,
     compose: Option<xkb::compose::State>,
 }
 
@@ -290,6 +317,8 @@ impl Default for Launcher {
             lookup: IconLookup::new("hicolor", &IconLookup::default_dirs()),
             icons: Icons::default(),
             compose: crate::ui::compose_state(),
+            jumps: None,
+            details: None,
             usage: usage
                 .into_iter()
                 .map(|(app_id, value)| {
@@ -410,6 +439,7 @@ impl Tileception {
                 self.settings_insert_paste(epoch, &text)
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
+            (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
             _ => return,
         }
         self.schedule_render();
@@ -475,6 +505,8 @@ impl Tileception {
         self.launcher.opened = Instant::now();
         self.launcher.copied = None;
         self.launcher.run = None;
+        self.launcher.jumps = None;
+        self.launcher.details = None;
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
@@ -495,6 +527,10 @@ impl Tileception {
 
     /// Works out the rows for what is typed now.
     fn refresh_launcher(&mut self) {
+        if self.launcher.jumps.is_none() && crate::jumps::query(&self.launcher.input.text).is_some() {
+            let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            self.launcher.jumps = Some(crate::jumps::load(&home, unix_now()));
+        }
         self.launcher.entries = self.launcher_entries();
         self.launcher.selected = 0;
         self.launcher.first = 0;
@@ -503,6 +539,15 @@ impl Tileception {
     fn launcher_entries(&self) -> Vec<Entry> {
         let text = self.launcher.input.text.trim();
         let launcher = &self.launcher;
+        if let Some(app) = launcher.details.as_ref().and_then(|app_id| launcher.index.get(app_id)) {
+            let own = tileception_apps::user_applications_dir().is_some_and(|dir| app.source.starts_with(dir));
+            let rows = [Detail::Command, Detail::File, Detail::Open, Detail::EditCopy, Detail::Folder];
+            return rows
+                .into_iter()
+                .filter(|row| *row != Detail::EditCopy || !own)
+                .map(|row| Entry::Detail { app: app.id.clone(), row })
+                .collect();
+        }
         if text.is_empty() {
             return launcher
                 .index
@@ -514,12 +559,18 @@ impl Tileception {
         if let Some(line) = answers::command(text) {
             return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64);
-        let found = answers::answers(text, now);
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        if let Some(words) = crate::jumps::query(&launcher.input.text) {
+            let folders = launcher.jumps.as_deref().unwrap_or_default();
+            return crate::jumps::matching(folders, &words, MAX_ROWS)
+                .into_iter()
+                .map(|folder| Entry::Place(jump_place(&folder.path, &home)))
+                .collect();
+        }
+        let found = answers::answers(text, unix_now());
         if text.starts_with(':') {
             return found.into_iter().map(Entry::Answer).collect();
         }
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let places = answers::places(text, &home);
         if !places.is_empty() || text.starts_with(['/', '~']) {
             return places.into_iter().map(Entry::Place).collect();
@@ -601,12 +652,27 @@ impl Tileception {
         let before = self.launcher.input.text.clone();
         self.launcher_key_inner(sym, mods);
         if self.launcher.open && self.launcher.input.text != before {
+            // Typing leaves an app's details for the results again.
+            self.launcher.details = None;
             self.refresh_launcher();
         }
     }
 
     fn launcher_key_inner(&mut self, sym: u32, mods: crate::config::Mods) {
         let word = mods.ctrl || mods.alt;
+        // Alt+Enter shows an app's desktop entry; Esc goes back to the results.
+        let enter = matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter);
+        if enter && mods.alt {
+            if let Some(Entry::App(app_id)) = self.launcher.entries.get(self.launcher.selected) {
+                self.launcher.details = Some(app_id.clone());
+                self.refresh_launcher();
+            }
+            return;
+        }
+        if sym == keysyms::KEY_Escape && self.launcher.details.is_some() {
+            self.launcher.details = None;
+            return self.refresh_launcher();
+        }
         // On the welcome screen's grid, arrows move between the tiles.
         if self.launcher.home && self.launcher.input.text.is_empty() {
             match sym {
@@ -702,11 +768,11 @@ impl Tileception {
         }
         let mut requested = false;
         let text = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
-        // Pictures first where they are welcome: a copied image often also
-        // offers its address as text.
+        // Pictures first where they are welcome (not in a menu's filter): a
+        // copied image often also offers its address as text.
         let mime_types = match target {
-            Paste::Doctor => [&["image/png"][..], &text].concat(),
-            Paste::Launcher(_) | Paste::Settings(_) => text.to_vec(),
+            Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
+            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Duck => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
@@ -835,10 +901,7 @@ impl Tileception {
         let Some(entry) = self.launcher.entries.get(self.launcher.selected).cloned() else { return };
         match entry {
             Entry::App(app_id) => {
-                let Some(command) = self.launcher.index.get(&app_id).map(|app| {
-                    let extra = self.config.launch_args(&app.id);
-                    tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra)
-                }) else {
+                let Some(command) = self.launcher.index.get(&app_id).map(|app| self.app_command(app)) else {
                     return;
                 };
                 self.launch_command(command, &app_id);
@@ -864,6 +927,12 @@ impl Tileception {
                 self.copy_text(answer.copy.clone());
                 self.launcher.copied = Some((answer.copy, Instant::now()));
             }
+            // A folder opens in the terminal with Ctrl.
+            Entry::Place(place) if place.folder && mods.ctrl => {
+                self.close_launcher();
+                let script = format!("cd {} && exec {}", shell_quote(&place.target), self.terminal);
+                self.spawn("sh", &["-c".into(), script]);
+            }
             Entry::Place(place) => {
                 self.close_launcher();
                 self.spawn("xdg-open", &[place.target]);
@@ -881,7 +950,59 @@ impl Tileception {
                 self.close_launcher();
                 self.ask_doctor(&question);
             }
+            Entry::Detail { app, row } => self.launch_detail(&app, row),
         }
+    }
+
+    /// The command line an app runs from the launcher, with `[launch_args]`.
+    fn app_command(&self, app: &tileception_apps::App) -> String {
+        let extra = self.config.launch_args(&app.id);
+        tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra)
+    }
+
+    fn launch_detail(&mut self, app_id: &str, row: Detail) {
+        let Some(app) = self.launcher.index.get(app_id).cloned() else { return };
+        match row {
+            Detail::Command | Detail::File => {
+                let text = if row == Detail::Command {
+                    self.app_command(&app)
+                } else {
+                    app.source.to_string_lossy().into_owned()
+                };
+                self.copy_text(text.clone());
+                self.launcher.copied = Some((text, Instant::now()));
+            }
+            Detail::Open => {
+                self.close_launcher();
+                self.open_in_text_editor(&app.source);
+            }
+            Detail::EditCopy => {
+                self.close_launcher();
+                match own_copy(&app) {
+                    Ok(copy) => self.open_in_text_editor(&copy),
+                    Err(error) => self.notify_locally(
+                        "Could not copy the desktop entry",
+                        &error,
+                        tileception_notify::Urgency::Normal,
+                    ),
+                }
+            }
+            Detail::Folder => {
+                self.close_launcher();
+                if let Some(folder) = app.source.parent() {
+                    self.spawn("xdg-open", &[folder.to_string_lossy().into_owned()]);
+                }
+            }
+        }
+    }
+
+    /// Opens a file in the default text editor. A desktop file handed to
+    /// xdg-open could start the app instead.
+    fn open_in_text_editor(&self, path: &std::path::Path) {
+        let script = "editor=$(xdg-mime query default text/plain); \
+            if [ -n \"$editor\" ] && gtk-launch \"$editor\" \"$1\"; then exit; fi; \
+            exec xdg-open \"$(dirname \"$1\")\"";
+        self.spawn("sh", &["-c".into(), script.into(), "sh".into(), path.to_string_lossy().into_owned()]);
     }
 
     /// Starts an app's command line and counts it towards its usage.
@@ -1258,8 +1379,16 @@ impl Tileception {
 
         let grid = self.home_grid();
         let trimmed = input.text.trim_start();
+        let details_caption = match entries.first() {
+            Some(Entry::Detail { app, .. }) => {
+                self.launcher.index.get(app).map(|app| format!("ABOUT {}", app.name.to_uppercase()))
+            }
+            _ => None,
+        };
         let caption = if running {
             "COMMAND"
+        } else if let Some(caption) = details_caption.as_deref() {
+            caption
         } else if trimmed.starts_with(':') {
             "CHARACTERS"
         } else if typing {
@@ -1328,6 +1457,8 @@ impl Tileception {
             Some(Entry::Place(_) | Entry::Window(_)) => "Open",
             Some(Entry::Command(_)) => "Do it",
             Some(Entry::Ask(_)) => "Ask",
+            Some(Entry::Detail { row: Detail::Command | Detail::File, .. }) => "Copy",
+            Some(Entry::Detail { .. }) => "Open",
             _ => "Launch",
         };
         let close = if self.launcher.home { ("Esc", "Clear") } else { ("Esc", "Close") };
@@ -1335,8 +1466,20 @@ impl Tileception {
             vec![("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
         } else if matches!(selected, Some(Entry::Run(_))) {
             vec![("Enter", "Run here"), ("Ctrl+Enter", "In a terminal"), close]
+        } else if matches!(selected, Some(Entry::Place(place)) if place.folder) {
+            vec![
+                ("\u{2191}\u{2193}", "Choose"),
+                ("Tab", "Complete"),
+                ("Enter", "Open"),
+                ("Ctrl+Enter", "Terminal"),
+                close,
+            ]
         } else if matches!(selected, Some(Entry::Place(place)) if place.completion.is_some()) {
             vec![("\u{2191}\u{2193}", "Choose"), ("Tab", "Complete"), ("Enter", "Open"), close]
+        } else if self.launcher.details.is_some() {
+            vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), ("Esc", "Back")]
+        } else if matches!(selected, Some(Entry::App(_))) {
+            vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), ("Alt+Enter", "Details"), close]
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
@@ -1477,6 +1620,32 @@ impl Tileception {
                 glyph_box(painter, glyph::CHAT, theme.accent);
                 title_style = Style::new(theme.font_size * 1.05, theme.text).bold();
                 ("Ask Tileception".into(), Some(question.clone()))
+            }
+            Entry::Detail { app, row } => {
+                let Some(app) = self.launcher.index.get(app) else { return };
+                let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let source = jump_place(&app.source, &home).detail;
+                let (glyph, title, detail) = match row {
+                    Detail::Command => {
+                        let command = self.app_command(app);
+                        copied = self.launcher.just_copied(&command);
+                        (glyph::TERMINAL, command, "The command it runs; Enter copies it".to_string())
+                    }
+                    Detail::File => {
+                        copied = self.launcher.just_copied(&app.source.to_string_lossy());
+                        (glyph::FILE, source, format!("{}; Enter copies the path", entry_origin(&app.source)))
+                    }
+                    Detail::Open => (glyph::FILE, "Open the desktop file".into(), "In the text editor".into()),
+                    Detail::EditCopy => {
+                        let copy = tileception_apps::user_applications_dir()
+                            .map(|dir| jump_place(&dir.join(&app.id), &home).detail)
+                            .unwrap_or_default();
+                        (glyph::COPY, "Edit a copy".into(), format!("As {copy}, which takes precedence"))
+                    }
+                    Detail::Folder => (glyph::FOLDER, "Show in folder".into(), source),
+                };
+                glyph_box(painter, glyph, theme.accent);
+                (title, Some(detail))
             }
         };
 
@@ -1802,6 +1971,60 @@ fn clean_output(text: &str) -> String {
     out
 }
 
+/// The user's own copy of an app's desktop entry, made from the system one
+/// unless it is there already.
+fn own_copy(app: &tileception_apps::App) -> Result<PathBuf, String> {
+    let dir = tileception_apps::user_applications_dir().ok_or("no home folder to copy it to")?;
+    let copy = dir.join(&app.id);
+    if !copy.exists() {
+        std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+        std::fs::copy(&app.source, &copy).map_err(|error| format!("{}: {error}", copy.display()))?;
+    }
+    Ok(copy)
+}
+
+/// Where a desktop entry comes from, in words.
+fn entry_origin(path: &std::path::Path) -> &'static str {
+    let text = path.to_string_lossy();
+    if tileception_apps::user_applications_dir().is_some_and(|dir| path.starts_with(dir)) {
+        "Your own entry"
+    } else if text.contains("/flatpak/") {
+        "Flatpak"
+    } else if text.contains("/snapd/") || text.starts_with("/snap/") {
+        "Snap"
+    } else {
+        "System entry"
+    }
+}
+
+/// Seconds since the epoch.
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+/// A row for a folder from z: its name over where it is, with `~` for home.
+fn jump_place(path: &std::path::Path, home: &std::path::Path) -> Place {
+    let shown = match path.strip_prefix(home) {
+        Ok(rest) if !home.as_os_str().is_empty() && rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    };
+    let title = path.file_name().map_or_else(|| shown.clone(), |name| name.to_string_lossy().into_owned());
+    Place {
+        title,
+        detail: shown.clone(),
+        target: path.to_string_lossy().into_owned(),
+        completion: Some(if shown.ends_with('/') { shown } else { format!("{shown}/") }),
+        folder: true,
+        link: false,
+    }
+}
+
+/// A string as one shell word.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// See [`Launcher::question`].
 fn question_in(typed: &str) -> Option<String> {
     let typed = typed.trim();
@@ -1893,8 +2116,18 @@ fn usage_path() -> PathBuf {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
-    use super::{RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
+    use super::{RunStatus, capture, clean_output, combo_label, completion, jump_place, quality, question_in};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn folders_from_z_show_home_as_a_tilde() {
+        let home = std::path::Path::new("/home/me");
+        let place = jump_place(std::path::Path::new("/home/me/src/web"), home);
+        assert_eq!((place.title.as_str(), place.detail.as_str()), ("web", "~/src/web"));
+        assert_eq!(place.completion.as_deref(), Some("~/src/web/"));
+        assert_eq!(jump_place(home, home).completion.as_deref(), Some("~/"));
+        assert_eq!(jump_place(std::path::Path::new("/srv"), home).detail, "/srv");
+    }
 
     #[test]
     fn questions_go_to_the_doctor() {

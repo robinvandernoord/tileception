@@ -757,6 +757,19 @@ impl Tileception {
             keysyms::KEY_BackSpace => input.delete(false, word),
             keysyms::KEY_Delete => input.delete(true, word),
             _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => input.select_all(),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
+                let range = input.selection();
+                if !range.is_empty() {
+                    let text = input.text[range].to_owned();
+                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                        input.insert("");
+                    }
+                    self.copy_text(text);
+                }
+            }
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
+                self.paste(crate::launcher::Paste::Duck);
+            }
             _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => input.clear(),
             _ if !mods.ctrl && !mods.logo && !mods.alt => {
                 if let Some(text) = crate::ui::compose_text(&mut self.duck.compose, sym) {
@@ -766,6 +779,13 @@ impl Tileception {
             _ => {}
         }
         self.schedule_render();
+    }
+
+    /// Pasted text arriving for the question, as one line.
+    pub fn duck_insert_paste(&mut self, text: &str) {
+        let text: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
+        self.duck.input.insert(&text);
+        self.duck.edited = Instant::now();
     }
 
     /// The duck is pressed or held.

@@ -160,6 +160,7 @@ pub(crate) fn parse_groups(
         wm_class: string("StartupWMClass"),
         hidden: hidden || boolean("NoDisplay") || !includes || excludes,
         actions: values.get("Actions").map(|value| actions(groups, value, &locales)).unwrap_or_default(),
+        source: PathBuf::new(),
     })
 }
 

@@ -230,15 +230,10 @@ fn timestamp(text: &str, now: i64) -> Option<Answer> {
 /// A colour in the other notations: hex, rgb() and hsl().
 fn colours(text: &str) -> Vec<Answer> {
     let Some(rgb) = parse_colour(text) else { return Vec::new() };
-    let [red, green, blue] = rgb;
-    let (hue, saturation, lightness) = to_hsl(rgb);
-    let notations = [
-        (format!("#{red:02x}{green:02x}{blue:02x}"), "Hex"),
-        (format!("rgb({red}, {green}, {blue})"), "Red, green, blue"),
-        (format!("hsl({hue}, {saturation}%, {lightness}%)"), "Hue, saturation, lightness"),
-    ];
-    notations
+    let names = ["Hex", "Red, green, blue", "Hue, saturation, lightness"];
+    colour_notations(rgb)
         .into_iter()
+        .zip(names)
         .map(|(notation, name)| Answer {
             title: notation.clone(),
             detail: name.to_string(),
@@ -246,6 +241,17 @@ fn colours(text: &str) -> Vec<Answer> {
             look: Look::Colour(rgb),
         })
         .collect()
+}
+
+/// A colour as `#rrggbb`, `rgb(…)` and `hsl(…)`.
+pub fn colour_notations(rgb: [u8; 3]) -> [String; 3] {
+    let [red, green, blue] = rgb;
+    let (hue, saturation, lightness) = to_hsl(rgb);
+    [
+        format!("#{red:02x}{green:02x}{blue:02x}"),
+        format!("rgb({red}, {green}, {blue})"),
+        format!("hsl({hue}, {saturation}%, {lightness}%)"),
+    ]
 }
 
 pub fn parse_colour(text: &str) -> Option<[u8; 3]> {

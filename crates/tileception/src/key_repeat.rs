@@ -32,6 +32,10 @@ impl Repeat {
                 | Command::DoctorKey(sym, mods)
                 | Command::SettingsKey(sym, mods) => edits(*sym, *mods),
                 Command::PowerMenuKey(sym) => edits(*sym, Mods::default()),
+                Command::ColourPickKey(sym, mods) => edits(*sym, *mods),
+                Command::NotificationKey(sym, _) => {
+                    matches!(*sym, keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down)
+                }
                 _ => false,
             });
         repeats.then(|| Repeat::Commands(commands.to_vec()))
@@ -110,6 +114,8 @@ impl Tileception {
                     Command::DuckKey(..) => self.duck.typing(),
                     Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),
+                    Command::ColourPickKey(..) => self.colour_pick.is_some(),
+                    Command::NotificationKey(..) => self.notifications.answering.is_some(),
                     _ => true,
                 });
                 if !still {

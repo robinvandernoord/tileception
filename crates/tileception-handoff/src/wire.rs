@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 9;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -143,6 +143,9 @@ pub enum Message {
     Paused,
     /// Sharing goes on again after a pause.
     Resumed,
+    /// Sent right after `Enter` or `Return` when the pointer left during a
+    /// colour pick: the pick carries on where the pointer arrived.
+    PickColour,
     /// One of the sender's windows comes here, dragged by the pointer that
     /// follows: held at `grab` (fractions of its size) with `button` down.
     /// Without a button it just opens here: a dialog of one of the sender's
@@ -398,6 +401,7 @@ mod tests {
                 mime_types: vec!["text/plain;charset=utf-8".into()],
             }),
             Frame::App(Message::Data { request: 1, bytes: vec![0; CHUNK] }),
+            Frame::App(Message::PickColour),
         ];
         for frame in frames {
             let bytes = encode(&frame).expect("encodes");

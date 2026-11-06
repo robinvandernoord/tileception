@@ -45,6 +45,12 @@ autostart = []
 # launcher with a clock: type to search, tap Super for a plain desktop.
 # welcome = true
 
+[clipboard]
+# Keep the regular copy/paste clipboard after its source application closes.
+# Requires wl-clip-persist on PATH. Starts or stops when this file is saved.
+# Keeps only the latest copy in memory; no history or middle-click selection.
+persist = false
+
 [theme]
 # Tide: flat graphite with a teal to blue accent. Colours are #rrggbb or
 # #rrggbbaa.
@@ -347,6 +353,7 @@ repeat_rate = 30
 "Super+L" = "lock"
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
+"Super+Return" = "answer-notification"
 "Super+slash" = "doctor"
 "Super+comma" = "settings"
 "Super+G" = "group"
@@ -429,6 +436,7 @@ repeat_rate = 30
 
 # Screenshots (grim and slurp). Print captures the whole screen; Shift+Print
 # lets you drag a region. Both ask whether to copy, save, or do both.
+# Ctrl+Print picks a colour from the screen and copies it as hex.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"
 "XF86AudioMute" = "volume mute"
@@ -451,6 +459,7 @@ repeat_rate = 30
 "Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"
+"Ctrl+Print" = "pick-colour"
 
 "Super+1" = "go 1"
 "Super+2" = "go 2"
