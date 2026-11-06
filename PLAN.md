@@ -136,6 +136,36 @@ language as the bindings.
   - Possibly later: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
   - The same plugins can later be offered to Doctor's agent as MCP servers.
+  - Other places, through the same MCP plugin: each place only asks a
+    plugin for what it offers.
+    - Bar: small status items with a click action (CI status, VPN, timers),
+      as MCP resources the bar subscribes to. The strongest next place.
+    - Notification panel: blocks like the smart home one, which becomes the
+      first, bundled.
+    - Key bindings: `tileception msg plugin <name> <tool>`.
+    - Lock screen: only read-only status items from plugins explicitly
+      allowed there (`lock = true`), following the lock screen's privacy
+      level, without input or actions. Never launcher plugins.
+    - Not on the welcome screen or the login screen, not for events (window
+      opened, screen added), and not for layout, input or placement.
+- Notifications on Tileception's own lock screen (external lockers draw
+  only themselves). Today only Tileception's own notifications show there,
+  plus a count. Decided:
+
+  ```toml
+  [lock]
+  notifications = "count"   # "none" | "count" | "apps" | "full"
+  [lock.notification_apps]  # exceptions per app
+  "org.gnome.Calendar" = "full"
+  ```
+
+  - `notifications` is what every app gets; `notification_apps` holds the
+    exceptions. A low default with "full" exceptions is opt-in; "full"
+    with lower exceptions is opt-out. The default stays "count".
+  - A "Show on lock screen" toggle per app in the notification panel
+    writes that exception, so opting in needs no config editing.
+  - No buttons on the lock screen (they would run an app's action without
+    unlocking), except Tileception's own. Do not disturb applies there too.
 - A settings window instead of editing the config file.
 - Display settings in that window, like Cinnamon's: rotation, resolution and
   refresh rate, scale, arrangement and turning screens off. Screens cannot be
