@@ -296,6 +296,13 @@ impl Tileception {
                 }
                 return FilterResult::Forward;
             }
+            if state.feedback.is_some() {
+                return FilterResult::Intercept(if pressed {
+                    vec![Command::FeedbackKey(sym, Mods::from_state(mods))]
+                } else {
+                    Vec::new()
+                });
+            }
             // Applications' global shortcuts, and the question for their keys,
             // which takes every key press but modifiers.
             if state.settings_record_key(pressed, raw_sym, Mods::from_state(mods)) {
@@ -620,6 +627,12 @@ impl Tileception {
             return;
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
+        if !self.is_locked() && self.feedback.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         // The colour picker's magnifier follows the pointer; nothing else sees it.
         if self.colour_pick.is_some() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -760,9 +773,16 @@ impl Tileception {
         if self.pointer_to_owner_in_area(pos, time) {
             return;
         }
-        let under = self.surface_under_in_area(pos);
+        let motion = self.pointer_motion_in_area(pos);
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
-        pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.motion(
+            self,
+            motion.focus,
+            &MotionEvent { location: motion.location, serial: SERIAL_COUNTER.next_serial(), time },
+        );
+        // Smithay's grab coordinates are client-scaled, but the seat's global
+        // location remains on screen for compositor drags and handoff.
+        pointer.set_location(pos);
         pointer.frame(self);
     }
 
@@ -805,6 +825,9 @@ impl Tileception {
         self.tap_armed = None;
         if !self.is_locked() && button == BTN_LEFT && self.shell_pointer_button(state == ButtonState::Pressed) {
             self.schedule_render();
+            return;
+        }
+        if !self.is_locked() && self.feedback.is_some() {
             return;
         }
         // A held slider lets go wherever the button comes up.
@@ -1065,6 +1088,13 @@ impl Tileception {
         if self.draws_lock_screen() {
             return;
         }
+        if !self.is_locked() && self.feedback.is_some() {
+            let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
+            if amount != 0.0 {
+                self.feedback_scroll(if amount > 0.0 { 1 } else { -1 });
+            }
+            return;
+        }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {
             let notches = event
                 .amount_v120(Axis::Vertical)
@@ -1143,9 +1173,15 @@ impl Tileception {
     /// Scrolling for the program under the pointer.
     pub(crate) fn deliver_axis(&mut self, event: &AxisInput) {
         let source = event.source();
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let scale = if !self.is_locked() && matches!(source, AxisSource::Finger | AxisSource::Continuous) {
+            pointer.current_focus().map(|surface| self.pointer_scale_in_areas(&surface)).unwrap_or((1.0, 1.0))
+        } else {
+            (1.0, 1.0)
+        };
         let amount = |axis| event.amount(axis).unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
-        let horizontal = amount(Axis::Horizontal);
-        let vertical = amount(Axis::Vertical);
+        let horizontal = amount(Axis::Horizontal) / scale.0;
+        let vertical = amount(Axis::Vertical) / scale.1;
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         if horizontal != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal);
@@ -1167,7 +1203,6 @@ impl Tileception {
                 frame = frame.stop(Axis::Vertical);
             }
         }
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
         pointer.axis(self, frame);
         pointer.frame(self);
     }
@@ -1242,21 +1277,58 @@ impl Tileception {
         self.layer_surface_under(pos, &[Layer::Bottom, Layer::Background])
     }
 
+    /// The scale of a local window surface, including its popups/subsurfaces.
+    pub(crate) fn pointer_surface_scale(&self, surface: &WlSurface) -> Option<(f64, f64)> {
+        for overlay in &self.x11_overlays {
+            if overlay.wl_surface().as_ref() == Some(surface) {
+                return self.overlay_transform(overlay).map(|(_, scale)| scale);
+            }
+        }
+        for drawn in self.drawn_windows(self.now()) {
+            let Some(window) = self.windows.get(&drawn.window_id) else { continue };
+            let mut contains = false;
+            window.with_surfaces(|candidate, _| contains |= candidate == surface);
+            if contains {
+                return Some(drawn.scale);
+            }
+        }
+        None
+    }
+
+    /// Use a virtual surface origin so Smithay delivers client-local pixels.
+    /// An implicit grab retains its press origin, so its motion must also be
+    /// expressed relative to the press using the grabbed window's scale.
+    pub(crate) fn scaled_pointer_motion(&self, pos: Point<f64, Logical>, grab_scale: (f64, f64)) -> ClientMotion {
+        let mut under = self.surface_under(pos);
+        let mut location = pos;
+        if let Some(start) = self.seat.get_pointer().and_then(|pointer| pointer.grab_start_data())
+            && start.focus.is_some()
+        {
+            location = start.location
+                + Point::from(((pos.x - start.location.x) / grab_scale.0, (pos.y - start.location.y) / grab_scale.1));
+            if let Some((_, origin)) = under.as_mut() {
+                *origin += location - pos;
+            }
+        }
+        ClientMotion { focus: under, location }
+    }
+
     fn window_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         for overlay in self.x11_overlays.iter().rev() {
-            let geo = self.overlay_geometry(overlay);
-            if !geo.to_f64().contains(pos) || self.handoff.windows.overlay_is_away(overlay) {
+            if self.handoff.windows.overlay_is_away(overlay) {
                 continue;
             }
+            let Some((origin, scale)) = self.overlay_transform(overlay) else { continue };
+            let local = Point::from(((pos.x - origin.x) / scale.0, (pos.y - origin.y) / scale.1));
             if let Some(surface) = overlay.wl_surface() {
                 let hit = smithay::desktop::utils::under_from_surface_tree(
                     &surface,
-                    pos,
-                    geo.loc,
+                    local,
+                    (0, 0),
                     smithay::desktop::WindowSurfaceType::ALL,
                 );
                 if let Some((hit_surface, loc)) = hit {
-                    return Some((hit_surface, loc.to_f64()));
+                    return Some((hit_surface, pos - (local - loc.to_f64())));
                 }
             }
         }
@@ -1266,11 +1338,10 @@ impl Tileception {
         // Menus may reach outside their window's tile.
         for shown in drawn.iter().filter(|candidate| candidate.live) {
             let Some(window) = self.windows.get(&shown.window_id) else { continue };
-            let origin: Point<f64, Logical> = (shown.origin.x.round(), shown.origin.y.round()).into();
-            if let Some((hit_surface, loc)) =
-                window.surface_under(pos - origin, smithay::desktop::WindowSurfaceType::POPUP)
-            {
-                return Some((hit_surface, loc.to_f64() + origin));
+            let local =
+                Point::from(((pos.x - shown.origin.x) / shown.scale.0, (pos.y - shown.origin.y) / shown.scale.1));
+            if let Some((hit_surface, loc)) = window.surface_under(local, smithay::desktop::WindowSurfaceType::POPUP) {
+                return Some((hit_surface, pos - (local - loc.to_f64())));
             }
         }
         let shown = drawn.iter().find(|candidate| candidate.content.contains(point))?;
@@ -1278,10 +1349,10 @@ impl Tileception {
             return None;
         }
         let window = self.windows.get(&shown.window_id)?;
-        let origin: Point<f64, Logical> = (shown.origin.x.round(), shown.origin.y.round()).into();
+        let local = Point::from(((pos.x - shown.origin.x) / shown.scale.0, (pos.y - shown.origin.y) / shown.scale.1));
         window
-            .surface_under(pos - origin, smithay::desktop::WindowSurfaceType::ALL)
-            .map(|(hit_surface, loc)| (hit_surface, loc.to_f64() + origin))
+            .surface_under(local, smithay::desktop::WindowSurfaceType::ALL)
+            .map(|(hit_surface, loc)| (hit_surface, pos - (local - loc.to_f64())))
     }
 
     /// The split boundary under a point, if any, for dragging gaps.
@@ -1318,7 +1389,12 @@ impl Tileception {
     }
 }
 
-/// Keys that work whatever the config says.
+/// Pointer delivery in client pixels, with a virtual surface origin.
+pub(crate) struct ClientMotion {
+    pub focus: Option<(WlSurface, Point<f64, Logical>)>,
+    pub location: Point<f64, Logical>,
+}
+
 /// One scroll step, from a local pointer or from another machine.
 pub(crate) struct AxisInput {
     pub source: AxisSource,
@@ -1364,6 +1440,7 @@ impl AxisInput {
     }
 }
 
+/// Keys that work whatever the config says.
 fn builtin(held: Mods, sym: u32, raw: u32, in_overview: bool) -> Option<Command> {
     let plain = held == Mods::default();
     if in_overview && plain && sym == keysyms::KEY_Escape {

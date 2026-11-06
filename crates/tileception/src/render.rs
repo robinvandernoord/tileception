@@ -2,8 +2,8 @@
 //!
 //! Every window is drawn from its live buffer. While the camera moves, or in
 //! Overview, a window is scaled into the rectangle the layout gives it. Once
-//! everything has settled and the client has drawn at the new size, the window
-//! is drawn 1:1 and receives pointer input ("live").
+//! everything has settled, windows receive pointer input ("live") unless
+//! fitting them into their tile needs a scale below the configured minimum.
 //!
 //! Elements are listed topmost first. A window's frame (rounded corners,
 //! border, focus glow) is drawn just above the window itself.
@@ -86,15 +86,9 @@ pub struct Drawn {
     /// Where the top left of the window's buffer ends up, before scaling.
     pub origin: Point<f64, smithay::utils::Logical>,
     pub scale: (f64, f64),
-    /// Drawn 1:1 and accepting pointer input.
+    /// Accepting pointer input at the drawn scale.
     pub live: bool,
-    /// Live but larger than its slot, so cut off at `content`.
-    pub clipped: bool,
 }
-
-/// How many pixels a resting tiled window may be too big for its slot and still be
-/// drawn live, cut off, rather than as a scaled preview.
-const MAX_CLIP: f64 = 32.0;
 
 impl Tileception {
     /// The colour behind everything.
@@ -127,7 +121,6 @@ impl Tileception {
                 origin,
                 scale: (1.0, 1.0),
                 live: true,
-                clipped: false,
             }];
         }
 
@@ -144,38 +137,11 @@ impl Tileception {
             let (geometry_width, geometry_height) = (geo.size.w as f64, geo.size.h as f64);
             // Floating windows hang still while the camera moves.
             let moving = moving && placement.role == WindowRole::Tiled;
-            let (over_w, over_h) = (geometry_width - placement.rect.w, geometry_height - placement.rect.h);
-            let tiled = placement.role == WindowRole::Tiled;
-            if tiled && !moving && !overview && over_w.max(over_h) > 0.0 && over_w.max(over_h) <= MAX_CLIP {
-                // Just too big, usually from a minimum size: drawn 1:1 from
-                // the slot's top left and cut off at its edges, so it stays
-                // sharp and usable instead of becoming a preview.
-                let content = Rect::new(
-                    placement.rect.x,
-                    placement.rect.y,
-                    geometry_width.min(placement.rect.w),
-                    geometry_height.min(placement.rect.h),
-                );
-                let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
-                out.push(Drawn {
-                    window_id: placement.window,
-                    role: placement.role,
-                    leaf: placement.leaf,
-                    slot: placement.rect,
-                    content,
-                    origin,
-                    scale: (1.0, 1.0),
-                    live: true,
-                    clipped: true,
-                });
-                continue;
-            }
             let (scale_x, scale_y) = if moving {
                 // Stretch into the moving slot; the client catches up after.
                 (placement.rect.w / geometry_width, placement.rect.h / geometry_height)
             } else {
-                // Fit without enlarging: a window too big for its slot shows
-                // as a preview, a smaller one sits in the middle.
+                // Fit without enlarging; smaller windows sit in the middle.
                 let uniform_scale =
                     (placement.rect.w / geometry_width).min(placement.rect.h / geometry_height).min(1.0);
                 (uniform_scale, uniform_scale)
@@ -187,7 +153,8 @@ impl Tileception {
                 geometry_height * scale_y,
             );
             let origin = (content.x - geo.loc.x as f64 * scale_x, content.y - geo.loc.y as f64 * scale_y).into();
-            let live = !moving && !overview && scale_x >= 0.999 && scale_y >= 0.999;
+            let minimum = self.config.file.general.min_live_scale;
+            let live = !moving && !overview && scale_x >= minimum && scale_y >= minimum;
             out.push(Drawn {
                 window_id: placement.window,
                 role: placement.role,
@@ -197,7 +164,6 @@ impl Tileception {
                 origin,
                 scale: (scale_x, scale_y),
                 live,
-                clipped: false,
             });
         }
         // Floating windows above tiles, the focused one above its peers.
@@ -264,8 +230,10 @@ impl Tileception {
         if self.is_locked() {
             // Only the locker (and the volume card); black where it has not drawn yet.
             let mut elements = self.osd_elements(renderer);
-            elements.extend(self.lock_elements(renderer));
+            let (panels, backdrop) = self.lock_elements(renderer);
+            elements.extend(panels);
             let scene = elements.len();
+            elements.extend(backdrop);
             elements.push(solid(&self.output_rect(), [0.0, 0.0, 0.0, 1.0], self.scale));
             return (elements, scene);
         }
@@ -276,6 +244,10 @@ impl Tileception {
         let mut elements: Vec<OutputElement> = Vec::new();
         elements.extend(self.settings_identify_elements(renderer));
         if active {
+            if self.feedback.is_some() {
+                elements.extend(self.shell_pointer_feedback(renderer));
+            }
+            elements.extend(self.feedback_elements(renderer));
             elements.extend(self.colour_pick_elements(renderer));
             elements.extend(self.osd_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
@@ -285,7 +257,9 @@ impl Tileception {
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
         if active {
-            elements.extend(self.shell_pointer_feedback(renderer));
+            if self.feedback.is_none() {
+                elements.extend(self.shell_pointer_feedback(renderer));
+            }
             elements.extend(self.tray_elements(renderer));
             // The welcome screen is part of the desktop: notifications go over it.
             if !self.launcher.home {
@@ -718,10 +692,10 @@ impl Tileception {
                 continue;
             }
             let Some(surface) = overlay.wl_surface() else { continue };
-            let loc = self.overlay_geometry(overlay).loc;
-            let origin = physical_point((loc.x as f64, loc.y as f64), self.scale);
+            let Some((loc, scale)) = self.overlay_transform(overlay) else { continue };
+            let origin = physical_point((loc.x, loc.y), self.scale);
             let surfaces = render_elements_from_surface_tree(renderer, &surface, origin, 1.0, 1.0, Kind::Unspecified);
-            elements.extend(enlarged(surfaces, origin, self.scale));
+            elements.extend(enlarged(surfaces, origin, self.scale * scale.0));
         }
         elements
     }
@@ -739,16 +713,16 @@ fn popup_elements(
     smithay::desktop::PopupManager::popups_for_surface(toplevel.wl_surface())
         .flat_map(|(popup, offset)| {
             let loc = (window.geometry().loc + offset - popup.geometry().loc).to_f64();
-            let origin = physical_point((drawn.origin.x + loc.x, drawn.origin.y + loc.y), scale);
+            let origin =
+                physical_point((drawn.origin.x + loc.x * drawn.scale.0, drawn.origin.y + loc.y * drawn.scale.1), scale);
             let surfaces =
                 render_elements_from_surface_tree(renderer, popup.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified);
-            enlarged(surfaces, origin, scale)
+            enlarged(surfaces, origin, scale * drawn.scale.0)
         })
         .collect()
 }
 
-/// A live window without its popups, cut off at `drawn.content` when it is
-/// larger than its slot.
+/// A live window without its popups, uniformly fitted into its slot.
 fn live(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
@@ -762,17 +736,7 @@ fn live(
         }
         None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
     };
-    if !drawn.clipped {
-        return enlarged(surfaces, origin, scale).collect();
-    }
-    let crop = physical(&drawn.content, scale);
-    surfaces
-        .into_iter()
-        .filter_map(|surface| {
-            let scaled = RescaleRenderElement::from_element(surface, origin, scale);
-            CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
-        })
-        .collect()
+    enlarged(surfaces, origin, scale * drawn.scale.0).collect()
 }
 
 /// Client surfaces made at `origin` with their offsets in logical pixels,

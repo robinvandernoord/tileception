@@ -61,6 +61,8 @@ show_notification_count = true
 # accent = "#2bd4a7"
 # accent_end = "#5c8ff2"
 # wallpaper = "/usr/share/backgrounds/tide.jpg"
+# Translucent, blurred tiles and bar:
+# frost = true
 
 [keyboard]
 # The same keys as the session's [keyboard]. Without a layout, the system's

@@ -51,6 +51,67 @@ language as the bindings.
 
 ## Roadmap
 
+### Parallel execution, started 2026-11-06
+
+Workspace credits interrupted the display backend, display UI and remaining
+verification workers; work resumed after the user's Continue. Combined
+`make test` and `make lint` pass, including the independent crates. The parent
+built and exercised the combined binary on isolated desktop and compact
+headless instances. Evidence: `target/integration-verification/final-parent/REPORT.md`.
+
+- [x] Implemented: Doctor permission modes and bundled-document export.
+  Existing ACP and Doctor-policy checks, build and controlled headless checks
+  passed. Verified acknowledged mode changes, per-message approvals, mode
+  warnings and unchanged exports. Real provider-backed edits remain untried:
+  Claude/Codex authentication was unavailable and OpenCode was checked through
+  primary source and fixtures.
+- [x] Implemented: live scaled windows, with a configurable 0.5 threshold
+  and percentage-based clipping deferred. Headless checks cover updating
+  Wayland buffers, mapped clicks and drags, popup activation and the preview
+  threshold. Existing 170 compositor tests, build, formatting and strict
+  Clippy passed in the worker's snapshot.
+- [x] Implemented: launcher plugin foundation and one example plugin.
+  Configuration wiring, the commented default-config example and configuration
+  guide link are integrated. Worker reports successful headless search/action,
+  cancellation, timeout/restart, prefix-conflict and process-cleanup checks;
+  final build and smoke verification passed. URL opening and compositor exec
+  restart were not manually exercised.
+- [x] Coordinator: integrate shared-file changes and existing frost work,
+  then verify the combined compositor in isolated headless instances.
+  Existing frost implementation from `d6f6e9f` applied as file changes;
+  configuration documentation updated. Greeter frost and popup layering
+  passed; parent verified the combined plugin/feedback/Settings/display
+  preview and revert paths, including unchanged config hashes.
+- [x] Implemented: Settings compact layouts, control clarity and draft
+  navigation, retaining the current visual design. Headless desktop and
+  640x480 checks covered Apply, Back, invalid/source draft retention,
+  keyboard access, scrolling and clipboard editing. Dead-key composition
+  remains unverified.
+- [x] Implemented: feedback confirmation with opt-in system details and an
+  exact preview. Intercepted opener payloads matched preview titles/bodies,
+  including Unicode; compact layout checked down to 320x240. Actual browser
+  navigation was not exercised. Usage documentation updated.
+- [x] Implemented: display backend using the approved output configuration
+  contract below. Headless checks cover rotation/capture geometry, fractional
+  refresh, disable/re-enable, all-disabled rejection, timeout, confirmation,
+  save-failure rollback, stale timers and window/focus restoration. Existing
+  scale/output tests, build and strict Clippy passed. Physical DRM modesetting
+  and nested interaction remain untried. Configuration documentation updated.
+- [x] Implemented: display Settings UI using the backend preview API.
+  Parent verified desktop and 640x480 rendering, disabling a rotated second
+  monitor through preview, and Escape restoring it without writes. Worker
+  checks also passed rotation/flip, fractional refresh, disable/re-enable,
+  all-disabled rejection, Keep/Revert, Back/close/timeout/reload cancellation,
+  comment-preserving persistence and save-failure recovery. Physical hotplug
+  and hardware-specific unsupported modes remain untried. Final handoff did
+  not change source after the parent's accepted combined build.
+- [x] Remaining scaled-window and frost headless verification completed on
+  the worker's frozen binary. Passed relative motion, constraints/hints,
+  continuous scroll/wheel notches, cross-area drag, localhost handoff with
+  popup selection, X11 popup at output scale 1.5, and greeter frost/popup
+  layering. Resting X11 parent shrink below 1.0 remains unverified. Evidence in
+  `target/integration-verification/REPORT.md`.
+
 ### Next
 
 - Settings panel: replace the eight TOML section editors with native screens.
@@ -60,8 +121,7 @@ language as the bindings.
   - [x] Autostart, application arguments, window rules and battery thresholds.
   - [x] Check desktop and compact layouts in isolated instances, then request
     Opus code and visual review. Keep raw source as an advanced option.
-  Documentation is deferred until functionality is finalized. No commits by
-  the coding agent.
+  Usage and configuration documentation updated. No commits by the coding agent.
   Native forms retain source comments and keep unaccepted drafts when returning
   to Settings. Verified all eight screens saving through the UI, arranging two
   headless monitors, and connecting two isolated sharing instances on localhost.
@@ -89,17 +149,20 @@ language as the bindings.
     headless checks verified one-click saving and Back staging valid edits.
     Opus scored 7.5/10 overall; fresh-context Sol scored 8/10. Both inspected
     screenshots directly. Remaining concerns include compact-screen clipping,
-    subdued affordances and draft navigation clarity. No changes made from
-    these new evaluations pending reporting them to Robin.
+    subdued affordances and draft navigation clarity.
+  - [x] Follow-up approved 2026-11-06: fix compact-screen clipping, clarify
+    controls and draft navigation, retaining the current visual design.
 - Frost on the lock screen and the login screen, so `[theme] frost = true`
   covers every panel Tileception draws. Part of `feature/frost`; finish it
   before that branch merges.
+  Existing implementation integrated as file changes. Standalone headless
+  greeter frost on/off and popup layering passed; built-in locking was not
+  triggered, following the automated-verification restriction below.
 
 ### Later
 
-- Doctor's Ask and Tweak modes the same for every agent. Today only Yolo
-  switches the agent's own mode, so OpenCode edits without asking in Ask and
-  Codex's sandbox refuses instead of asking. Decided:
+- Doctor's Ask and Tweak modes the same for every agent. Implementation
+  completed 2026-11-06; provider-backed editing remains untried. Decided:
   - Every Tileception mode sets the agent's own mode, through the config
     option of category "mode" and the older `session/set_mode`, from a small
     table of known ids: Codex `read-only` for Ask and Tweak and
@@ -114,20 +177,26 @@ language as the bindings.
     switch instead of a silent, weaker Ask.
   - The mode is restated with the next message after a switch, and approved
     paths last for one message, not the whole conversation.
-  - Tried headless with OpenCode, Codex and Claude in each mode.
-- Small windows stay usable. Today a resting tiled window more than 32 px
-  bigger than its tile (usually from a minimum size) becomes a preview: a
-  frozen picture that takes no pointer input. Decided:
+  - Verification target: OpenCode, Codex and Claude in each mode. Controlled
+    fixtures passed; actual provider-backed edits remain untried.
+- Small windows stay usable. Implemented 2026-11-06.
+  Headless scrolling, pointer constraints, cross-area drags, handoff
+  and X11 popup at output scale 1.5 passed. A resting X11 parent shrunk below
+  1.0 remains unverified. Decided:
   - A window is live, drawn from its own updating buffers and scaled down
     if needed, with all pointer input (hover, cursor shape, scrolling,
     clicks, popups, drags) mapped through that scale.
-  - It becomes a preview only below a scale threshold, configurable (for
-    example 0.5), and still while the camera moves and in Overview.
-  - Optionally, a window only slightly too big (within 5 to 10 percent) is
-    drawn 1:1 and cut off instead of scaled, so its text stays sharp. This
-    replaces `MAX_CLIP` and the exact 1:1 rule.
+  - It becomes a preview only below a configurable scale threshold,
+    defaulting to 0.5, and still while the camera moves and in Overview.
+  - First version replaces `MAX_CLIP` and the exact 1:1 rule with live
+    scaling. Optional percentage-based clipping is deferred
+    (decided 2026-11-06).
 - Launcher plugins: any program (Python script, Rust binary, anything) as an
   MCP server over stdio. Decided:
+  - First release: launcher discovery, search, actions and lifecycle, with
+    one example plugin. Migration of built-in sources and integration with
+    the bar, notification panel and lock screen are later phases
+    (decided 2026-11-06).
   - A small documented convention on top of MCP: a `launcher_search` tool
     taking `{ query }` and returning rows (title, detail, icon, actions) as
     structured output. Actions are mostly done by Tileception itself (copy,
@@ -199,9 +268,18 @@ language as the bindings.
   - No buttons on the lock screen (they would run an app's action without
     unlocking), except Tileception's own. Do not disturb applies there too.
 - Display settings in that window, like Cinnamon's: rotation, resolution and
-  refresh rate, scale, arrangement and turning screens off. Screens cannot be
-  rotated at all yet, not even through `[outputs]`; add `transform` there
-  first.
+  refresh rate, scale, arrangement and turning screens off. Backend controls
+  and safe preview implemented 2026-11-06. Settings UI final verification,
+  combined checks and parent preview/revert smoke verification passed.
+  - Split backend support from Settings UI work after agreeing the
+    configuration fields. Disruptive changes need confirmation and
+    automatic rollback (decided 2026-11-06).
+  - Configuration approved 2026-11-06, under `[outputs."connector"]`:
+    `enabled = true`, `transform = "normal"` (also `"90"`, `"180"`,
+    `"270"` and flipped variants), and `mode = "preferred"` or a mode
+    string such as `"1920x1080@59.94"`. Existing scale, position and split
+    fields remain. Settings changes need confirmation within 15 seconds or
+    revert; disabling every connected screen is rejected.
 - More launcher actions in plain words, such as "set a timer for 10 minutes"
   or "remind me at 3", and better unit conversions. Optional: a tiny local
   tool-calling model (Cactus Needle or similar) to map free text onto those
@@ -212,9 +290,9 @@ language as the bindings.
     [title]` open a pre-filled new-issue page on GitHub (title, body with
     the version, `feedback` label) in the browser, filed under the user's
     own account.
-  - Next: system details in the body only if the user ticks a box, shown
-    before sending. Needs a small confirmation view before the browser
-    opens.
+  - Done 2026-11-06: a confirmation view before the browser opens, with an unchecked
+    "Include system details" option and an exact preview of what will be
+    included. The anonymous relay remains deferred (decided 2026-11-06).
   - Later, for people without a GitHub account: a small relay (OVH host or a
     serverless function) holding a GitHub App's key, which files the issue
     as the App's bot. The key never ships in Tileception. The relay needs

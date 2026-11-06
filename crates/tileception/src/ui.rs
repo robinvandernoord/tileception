@@ -116,6 +116,9 @@ impl PointerTarget {
 
 impl Tileception {
     pub(crate) fn shell_pointer_target(&self, point: tileception_core::Point) -> Option<PointerTarget> {
+        if !self.is_locked() && self.feedback.is_some() {
+            return self.feedback_pointer_target(point);
+        }
         if self.is_locked() || self.overlay_under(point) {
             return None;
         }
@@ -166,13 +169,14 @@ impl Tileception {
 
     pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if self.is_locked() || self.overlay_under(point) {
+        if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
         }
-        (self.power_menu.is_some()
+        (self.feedback.is_some()
+            || self.power_menu.is_some()
             || (self.launcher.open && self.launcher_takes(point))
             || self.doctor_contains(point)
             || self.notifications_contain(point)
@@ -591,6 +595,12 @@ impl<'a> Painter<'a> {
     /// A panel background: with frost on, translucent over a blur of what
     /// is behind it.
     pub fn frosted(&mut self, rect: Rect, shape: Shape) {
+        self.frosted_over(rect, shape, false);
+    }
+
+    /// [`Painter::frosted`]; `over_panels` also blurs the frosted panels
+    /// it covers, for popups opened over them.
+    fn frosted_over(&mut self, rect: Rect, shape: Shape, over_panels: bool) {
         let theme = self.theme();
         let shape = Shape { fill: (theme.panel(shape.fill.0), theme.panel(shape.fill.1)), ..shape };
         let before = self.layers.len();
@@ -605,6 +615,7 @@ impl<'a> Painter<'a> {
                 rect: self.shifted(rect),
                 radius: shape.radius,
                 alpha: self.alpha,
+                over_panels,
             });
         }
     }
@@ -761,9 +772,10 @@ impl<'a> Painter<'a> {
                 ..Default::default()
             },
         );
-        self.frosted(
+        self.frosted_over(
             rect,
             Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.popup(), theme.popup_radius) },
+            true,
         );
     }
 

@@ -104,6 +104,9 @@ struct Gpu {
 }
 
 struct Lit {
+    modes: Vec<smithay::reexports::drm::control::Mode>,
+    mode: WlMode,
+    enabled: bool,
     crtc: crtc::Handle,
     output: Output,
     drm_output: Surface,
@@ -403,11 +406,13 @@ impl Tileception {
     }
 
     fn remove_gpu(&mut self, device_id: libc::dev_t) {
+        self.cancel_output_preview();
         let Some(mut udev) = self.udev.take() else { return };
         if let Some(index) = udev.gpus.iter().position(|gpu| gpu.node.dev_id() == device_id) {
             let gpu = udev.gpus.remove(index);
             for lit in gpu.surfaces {
                 self.remove_output(&lit.output);
+                self.forget_connected_output(&lit.output);
                 self.display_handle.remove_global::<Tileception>(lit.global);
             }
             self.loop_handle.remove(gpu._drm_token);
@@ -430,6 +435,9 @@ impl Tileception {
         }
         let mut success = true;
         for lit in udev.gpus.iter_mut().flat_map(|gpu| &mut gpu.surfaces) {
+            if !lit.enabled {
+                continue;
+            }
             if asleep {
                 if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
                     tracing::warn!("could not power down {}: {error}", lit.output.name());
@@ -445,6 +453,7 @@ impl Tileception {
     }
 
     fn scan_connectors(&mut self) {
+        self.cancel_output_preview();
         let Some(mut udev) = self.udev.take() else { return };
         for gpu in &mut udev.gpus {
             let events = match gpu.scanner.scan_connectors(gpu.manager.device()) {
@@ -466,6 +475,7 @@ impl Tileception {
                         if let Some(index) = gpu.surfaces.iter().position(|lit| lit.crtc == crtc) {
                             let lit = gpu.surfaces.remove(index);
                             self.remove_output(&lit.output);
+                            self.forget_connected_output(&lit.output);
                             self.display_handle.remove_global::<Tileception>(lit.global);
                         }
                     }
@@ -474,6 +484,9 @@ impl Tileception {
             }
         }
         self.udev = Some(udev);
+        if let Err(error) = self.configure_outputs() {
+            tracing::error!("output configuration rejected; retaining connected displays: {error}");
+        }
         self.schedule_render();
     }
 
@@ -507,6 +520,9 @@ impl Tileception {
             },
         );
         output.set_preferred(wl_mode);
+        for mode in connector.modes() {
+            output.add_mode(WlMode::from(*mode));
+        }
         output.change_current_state(Some(wl_mode), None, None, Some((0, 0).into()));
 
         let mut planes = match manager.device().planes(&crtc) {
@@ -552,6 +568,9 @@ impl Tileception {
         let global = output.create_global::<Tileception>(&self.display_handle);
         self.add_output(output.clone());
         surfaces.push(Lit {
+            modes: connector.modes().to_vec(),
+            mode: wl_mode,
+            enabled: true,
             crtc,
             output,
             drm_output,
@@ -564,6 +583,64 @@ impl Tileception {
         });
     }
 
+    /// Changes the KMS mode as well as Smithay's rendering transform. Disabled
+    /// connectors retain their surface and mode list for later re-enabling.
+    pub fn configure_drm_output(
+        &mut self,
+        output: &Output,
+        mode: WlMode,
+        transform: smithay::utils::Transform,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let Some(udev) = self.udev.as_mut() else { return Ok(()) };
+        for gpu in &mut udev.gpus {
+            let Some(lit) = gpu.surfaces.iter_mut().find(|lit| &lit.output == output) else { continue };
+            if !enabled {
+                lit.drm_output
+                    .with_compositor(|compositor| compositor.clear())
+                    .map_err(|error| format!("could not disable {}: {error}", output.name()))?;
+                lit.enabled = false;
+                lit.frame_pending = false;
+                lit.in_flight.clear();
+                return Ok(());
+            }
+            let drm_mode = lit
+                .modes
+                .iter()
+                .find(|candidate| WlMode::from(**candidate) == mode)
+                .copied()
+                .ok_or_else(|| format!("{} does not advertise the requested mode", output.name()))?;
+            let mode_changed = lit.mode != mode;
+            if mode_changed {
+                let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                lit.drm_output
+                    .use_mode::<_, crate::render::OutputElement>(
+                        drm_mode,
+                        renderer,
+                        &DrmOutputRenderElements::default(),
+                    )
+                    .map_err(|error| format!("could not set mode on {}: {error}", output.name()))?;
+                lit.mode = mode;
+            }
+            lit.drm_output.with_compositor(|compositor| {
+                compositor.set_output_mode_source(smithay::output::OutputModeSource::Static {
+                    size: mode.size,
+                    scale: 1.0.into(),
+                    transform,
+                })
+            });
+            if !lit.enabled || mode_changed || output.current_transform() != transform {
+                lit.drm_output.reset_buffers();
+                lit.frame_pending = false;
+                lit.in_flight.clear();
+                lit.mirror = None;
+            }
+            lit.enabled = true;
+            return Ok(());
+        }
+        Err(format!("{} is no longer connected to DRM", output.name()))
+    }
+
     /// Asks for a frame soon, unless one is already on its way.
     pub fn schedule_render(&mut self) {
         if let Some(udev) = self.udev.as_mut() {
@@ -574,7 +651,9 @@ impl Tileception {
 
     fn request_render(&mut self) {
         let Some(udev) = self.udev.as_mut() else { return };
-        if udev.render_pending || udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).all(|lit| lit.frame_pending) {
+        if udev.render_pending
+            || udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).all(|lit| !lit.enabled || lit.frame_pending)
+        {
             return;
         }
         udev.render_pending = true;
@@ -623,7 +702,8 @@ impl Tileception {
         // The sleep inhibitor must cover every output, not just the first
         // monitor whose page flip completes.
         let refresh = lit.output.current_mode().map_or(60_000, |mode| mode.refresh);
-        let locked_everywhere = udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).all(|lit| lit.lock_shown);
+        let locked_everywhere =
+            udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).filter(|lit| lit.enabled).all(|lit| lit.lock_shown);
         if locked_everywhere {
             self.sleep_frame_shown();
         }
@@ -668,7 +748,7 @@ impl Tileception {
         self.process_streams(&mut udev.renderer);
         for gpu in &mut gpus {
             for lit in &mut gpu.surfaces {
-                if lit.frame_pending {
+                if !lit.enabled || lit.frame_pending {
                     continue;
                 }
                 let output = lit.output.clone();
@@ -744,7 +824,7 @@ impl Tileception {
             (true, true) => QUIET_FRAMES - ASKED_FRAMES,
             (false, _) => udev.quiet.saturating_add(1),
         };
-        if udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).any(|lit| !lit.frame_pending) {
+        if udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).any(|lit| lit.enabled && !lit.frame_pending) {
             // Nothing changed on screen: look again in about a frame, and
             // less often once it has been still for a while. Input and
             // client commits ask for a frame themselves.

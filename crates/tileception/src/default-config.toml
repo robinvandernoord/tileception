@@ -14,6 +14,11 @@ gap = 12
 # Length of a zoom or move, in milliseconds.
 animation_ms = 280
 
+# Smallest scale at which a resting window stays interactive. Larger windows
+# fit uniformly into their tile; below this scale they become previews.
+# Range: 0.1 to 1.0. Camera motion and Overview always use previews.
+min_live_scale = 0.5
+
 # Hold this and drag a window with the left button to move it, or with the
 # right button to resize it: Alt, Super, Ctrl or Shift.
 drag_modifier = "Alt"
@@ -229,6 +234,9 @@ tray_max_icons = 3
 #
 # [outputs."eDP-1"]
 # scale = 1.5
+# enabled = true                # keep at least one connected screen enabled
+# transform = "normal"          # 90, 180, 270, flipped, flipped-90/180/270
+# mode = "preferred"            # or an advertised mode such as 1920x1080@59.94
 # position = [0, 0]             # top-left corner in logical pixels
 #
 # [outputs."DP-1"]
@@ -283,6 +291,16 @@ tray_max_icons = 3
 # spotify_spotify = ["--ozone-platform=wayland"]
 # "com.spotify.Client" = ["--ozone-platform=wayland"]
 # firefox = ["-P", "work"]
+
+# Launcher plugins are executable MCP servers over stdio. Installing a
+# manifest in ~/.local/share/tileception/plugins/ enables its command.
+# Only install plugins you trust, as with autostart commands.
+# Build the opt-in example with:
+# cargo plane build -p tileception --bin tileception-launcher-example
+# [launcher.plugins.example]
+# command = "/absolute/path/to/tileception-launcher-example"
+# prefixes = ["echo"]
+# enabled = false
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

@@ -40,6 +40,8 @@ pub enum Command {
     Unlock,
     /// A key pressed while the power menu is open (not available as text).
     PowerMenuKey(u32),
+    /// A key pressed in the feedback confirmation.
+    FeedbackKey(u32, crate::config::Mods),
     /// Process launcher input after Smithay releases its keyboard lock.
     LauncherKey(u32, crate::config::Mods),
     Settings,
@@ -161,8 +163,8 @@ Shell:
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
-  feedback [title]          open a new GitHub issue for feedback or a feature
-                            request in the browser (needs a GitHub account)
+  feedback [title]          preview and confirm a new GitHub feedback issue
+                            then edit in the browser (needs a GitHub account)
   handoff                   machines sharing this mouse and keyboard
   handoff edge [machine] <output> <side>
                             place a machine at an edge (left, right, top,
@@ -491,6 +493,7 @@ impl Tileception {
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::Duck => self.toggle_duck(),
             Command::Feedback(title) => self.send_feedback(&title),
+            Command::FeedbackKey(sym, mods) => self.feedback_key(sym, mods),
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),

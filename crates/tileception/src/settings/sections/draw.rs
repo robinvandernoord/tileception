@@ -21,24 +21,34 @@ impl Tileception {
             };
         };
         let compact = panel.w < 900.;
-        let list_width = if compact { 172. } else { 248. };
-        let map = (screen.kind == Kind::Displays)
-            .then(|| Rect::new(panel.x + 24., panel.y + 132., (panel.w - 76.) * 0.6, (panel.h - 218.).max(160.)));
-        let top = if map.is_some() { panel.y + 166. } else { panel.y + 124. };
+        let list_width = if compact { (panel.w * 0.28).clamp(120., 172.) } else { 248. };
+        let map = (screen.kind == Kind::Displays).then(|| {
+            if compact {
+                Rect::new(panel.x + 24., panel.y + 122., list_width, 76.)
+            } else {
+                Rect::new(panel.x + 24., panel.y + 132., (panel.w - 76.) * 0.6, (panel.h - 218.).max(160.))
+            }
+        });
+        let top = if map.is_some() { panel.y + if compact { 240. } else { 166. } } else { panel.y + 124. };
         let search_height = if screen.kind == Kind::Shortcuts { 40. } else { 0. };
         let mut list = Rect::new(
             panel.x + 24.,
             top + search_height,
             list_width,
-            (panel.bottom() - top - 112. - search_height).max(1.),
+            (panel.bottom() - top - if compact && screen.kind == Kind::Displays { 70. } else { 112. } - search_height)
+                .max(1.),
         );
         let mut body = Rect::new(
-            list.right() + 28.,
+            list.right() + if compact { 16. } else { 28. },
             top - 34.,
-            (panel.right() - list.right() - 52.).max(1.),
+            (panel.right() - list.right() - if compact { 40. } else { 52. }).max(1.),
             (panel.bottom() - top - 52.).max(1.),
         );
-        if let Some(map) = map {
+        if compact && screen.kind == Kind::Displays {
+            body.y = panel.y + 122.;
+            body.h = (panel.bottom() - body.y - 74.).max(1.);
+        }
+        if let Some(map) = map.filter(|_| !compact) {
             let left = map.right() + 28.;
             let width = (panel.right() - left - 24.).max(1.);
             list = Rect::new(left, top, width, (screen.rows.len() as f64 * 52.).clamp(52., 156.));
@@ -75,10 +85,14 @@ impl Tileception {
             }
         }
         if screen.kind == Kind::Displays {
+            let second = if compact { panel.y + 90. } else { panel.y + 60. };
             hits.push((Rect::new(panel.x + 24., panel.y + 60., 236., 28.), Action::Edges));
             hits.push((Rect::new(panel.x + 268., panel.y + 60., 80., 28.), Action::Identify));
-            hits.push((Rect::new(panel.x + 356., panel.y + 60., 116., 28.), Action::Automatic));
-            hits.push((Rect::new(panel.x + 480., panel.y + 60., 100., 28.), Action::Touchscreens));
+            hits.push((Rect::new(panel.x + if compact { 24. } else { 356. }, second, 116., 28.), Action::Automatic));
+            hits.push((
+                Rect::new(panel.x + if compact { 148. } else { 480. }, second, 100., 28.),
+                Action::Touchscreens,
+            ));
         }
         let specs = screen.fields(&self.section_outputs(), &self.touch.devices);
         let mut fields = Vec::new();
@@ -99,7 +113,7 @@ impl Tileception {
             let extra = field_extra(&field, screen.kind);
             if input.y >= body.y && input.bottom() <= body.bottom() {
                 hits.push((Rect::new(input.x, input.y, input.w - extra, input.h), Action::Field(index)));
-                if let Some(options) = segments(&field) {
+                if let Some(options) = segments(&field, input.w - extra) {
                     let width = (input.w - extra) / options.len() as f64;
                     for position in 0..options.len() {
                         hits.push((
@@ -197,7 +211,7 @@ impl Tileception {
             {
                 "Drag a display to a free edge. Equal rectangles show full-edge crossing."
             }
-            Kind::Displays => "Drag a display to a free edge. Apply saves the arrangement.",
+            Kind::Displays => "Drag a display to a free edge. Apply previews changes before saving.",
             Kind::Sharing => "Connect computers on the same network to share input and clipboard.",
             Kind::Touch => "Choose which display receives input from each touchscreen.",
             Kind::Shortcuts => {
@@ -210,16 +224,18 @@ impl Tileception {
                 "Choose the focused border colour at each charge threshold. The lowest matching threshold wins."
             }
         };
-        painter.text(
-            hint,
-            Rect::new(
-                layout.panel.x + 24.,
-                layout.panel.y + if screen.kind == Kind::Displays { 94. } else { 60. },
-                layout.panel.w - 48.,
-                32.,
-            ),
-            Style::new(12., theme.muted).lines(2),
-        );
+        if screen.kind != Kind::Displays || layout.panel.w >= 900. {
+            painter.text(
+                hint,
+                Rect::new(
+                    layout.panel.x + 24.,
+                    layout.panel.y + if screen.kind == Kind::Displays { 94. } else { 60. },
+                    layout.panel.w - 48.,
+                    32.,
+                ),
+                Style::new(12., theme.muted).lines(2),
+            );
+        }
         if let Some(map) = layout.map {
             self.section_draw_map(painter, map);
         }
@@ -302,7 +318,11 @@ impl Tileception {
                         }
                     } else if screen.kind == Kind::Displays {
                         if screen.monitors.iter().any(|monitor| monitor.name == row.name) {
-                            "Connected"
+                            if row.value.get("enabled").and_then(toml::Value::as_bool) == Some(false) {
+                                "Disabled"
+                            } else {
+                                "Connected"
+                            }
                         } else if row.name == "*" {
                             "Display defaults"
                         } else {
@@ -383,7 +403,7 @@ impl Tileception {
                     painter.fill(Rect::new(rect.x, rect.bottom() + 2., rect.w, 1.), theme.border.alpha(0.6), 0.);
                     continue;
                 }
-                if let Some(options) = segments(field) {
+                if let Some(options) = segments(field, control.w) {
                     painter.shape(
                         control,
                         Shape {
@@ -539,7 +559,7 @@ impl Tileception {
                 ("Nothing selected", "Choose an entry from the list to edit it.")
             };
             let left = if screen.rows.is_empty() { layout.list.x } else { layout.body.x };
-            let block = Rect::new(left, layout.body.y + 60., 520., 80.);
+            let block = Rect::new(left, layout.body.y + 12., (layout.panel.right() - left - 24.).max(1.), 80.);
             painter.text(title, Rect::new(block.x, block.y, block.w, 26.), Style::new(15., theme.text).weight(500));
             painter.text(text, Rect::new(block.x, block.y + 28., block.w, 40.), Style::new(12., theme.muted).lines(2));
         }
@@ -695,7 +715,7 @@ impl Tileception {
                 Action::Identify => "Identify",
                 Action::Touchscreens => "Touchscreens",
                 Action::Automatic => "Automatic layout",
-                Action::Cancel => "Cancel",
+                Action::Cancel => "Discard screen",
                 Action::Back => "Back",
                 Action::Stage => "Apply changes",
                 _ => "",
@@ -728,10 +748,20 @@ impl Tileception {
             }
         }
         painter.fill(Rect::new(layout.panel.x, layout.panel.bottom() - 68., layout.panel.w, 1.), theme.border, 0.);
+        let status = if !screen.error.is_empty() {
+            screen.error.as_str()
+        } else if screen.kind == Kind::Displays && !self.settings.message.is_empty() {
+            self.settings.message.as_str()
+        } else if screen.kind == Kind::Displays {
+            "Apply previews changes. Keep changes saves; Revert keeps your draft."
+        } else {
+            "Back keeps draft. Apply saves."
+        };
         painter.text(
-            &screen.error,
+            status,
             Rect::new(layout.panel.x + 24., layout.panel.bottom() - 62., (layout.panel.w - 320.).max(1.), 54.),
-            Style::new(11., theme.danger).lines(3),
+            Style::new(11., if screen.error.is_empty() && !self.settings.error { theme.muted } else { theme.danger })
+                .lines(3),
         );
         if let Some(menu) = &screen.menu {
             painter.fill(layout.panel, Colour([0., 0., 0., 0.45]), 6.);
@@ -906,7 +936,13 @@ impl Tileception {
     }
 }
 
-fn draw_scrollbar(painter: &mut Painter<'_>, area: Rect, scroll: f64, maximum: f64, theme: &crate::theme::Theme) {
+pub(in crate::settings) fn draw_scrollbar(
+    painter: &mut Painter<'_>,
+    area: Rect,
+    scroll: f64,
+    maximum: f64,
+    theme: &crate::theme::Theme,
+) {
     if maximum <= 0. {
         return;
     }
@@ -932,12 +968,15 @@ pub(super) fn field_height(field: &Field) -> f64 {
 
 /// The options of a short choice, shown as side-by-side buttons rather than
 /// a menu.
-fn segments(field: &Field) -> Option<&Vec<(String, String)>> {
+fn segments(field: &Field, width: f64) -> Option<&Vec<(String, String)>> {
     match &field.form {
         Form::Choice(options)
             if (2..=3).contains(&options.len())
                 && field.path != Path::Name
-                && options.iter().all(|(label, _)| label.chars().count() <= 24) =>
+                && options.iter().all(|(label, _)| label.chars().count() <= 24)
+                && options
+                    .iter()
+                    .all(|(label, _)| label.chars().count() as f64 * 6.5 + 20. <= width / options.len() as f64) =>
         {
             Some(options)
         }

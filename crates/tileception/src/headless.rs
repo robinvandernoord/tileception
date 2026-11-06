@@ -102,6 +102,9 @@ pub fn init(
         outputs.push(output);
     }
     state.headless = Some(Box::new(Headless { renderer, outputs }));
+    if let Err(error) = state.configure_outputs() {
+        tracing::error!("output configuration rejected; retaining startup displays: {error}");
+    }
 
     event_loop.handle().insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
         state.headless_tick();
@@ -117,6 +120,9 @@ impl Tileception {
         let elapsed = self.start.elapsed();
         self.process_streams(&mut headless.renderer);
         for output in &headless.outputs {
+            if self.output_named(&output.name()).is_none() {
+                continue;
+            }
             self.with_output(output, |state| {
                 state.update_bar();
                 state.process_captures(&mut headless.renderer);

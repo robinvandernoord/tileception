@@ -96,6 +96,38 @@ impl Tileception {
         self.x11_overlay_geometry.get(&overlay.window_id()).copied().unwrap_or_else(|| overlay.geometry())
     }
 
+    /// Place an X11 menu in the same scaled coordinates as its owning window.
+    /// Unrelated overlays keep their native screen coordinates.
+    pub(crate) fn overlay_transform(
+        &self,
+        overlay: &X11Surface,
+    ) -> Option<(smithay::utils::Point<f64, Logical>, (f64, f64))> {
+        let geometry = self.overlay_geometry(overlay);
+        let owner = self.drawn_windows(self.now()).into_iter().find_map(|drawn| {
+            let window = self.windows.get(&drawn.window_id)?;
+            let x11 = window.x11_surface()?;
+            let same = overlay.is_transient_for().map_or_else(
+                || {
+                    self.same_x11_client(x11.window_id(), overlay.window_id())
+                        .unwrap_or_else(|| overlay.pid().is_some() && overlay.pid() == x11.pid())
+                },
+                |parent| parent == x11.window_id(),
+            );
+            same.then_some((drawn, x11.geometry().loc))
+        });
+        match owner {
+            Some((drawn, _)) if !drawn.live => None,
+            Some((drawn, parent)) => {
+                let offset = (geometry.loc - parent).to_f64();
+                Some((
+                    (drawn.origin.x + offset.x * drawn.scale.0, drawn.origin.y + offset.y * drawn.scale.1).into(),
+                    drawn.scale,
+                ))
+            }
+            None => Some((geometry.loc.to_f64(), (1.0, 1.0))),
+        }
+    }
+
     /// Our own connection to Xwayland, made when first needed, for asking:
     /// X sends changes made through it to the window manager to decide, as
     /// it does any client's. The window manager's is smithay's, and it lets

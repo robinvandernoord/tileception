@@ -15,6 +15,34 @@ terminal in another. Zoom into the development group while working, then zoom
 out to see both groups again. The windows stay in the same layout as you move
 between views.
 
+## Settings
+
+Settings keeps unapplied drafts while you move between categories or close and
+reopen its window. Back returns to the category and keeps the screen's draft,
+including unfinished input. Apply changes saves and applies it in one step;
+Discard screen explicitly removes that screen's edits since opening it.
+Drafts last for the current session and are not saved across a compositor restart.
+
+In Settings, use **Ctrl+Page Up/Down** to switch categories and **Alt+Up** to
+go Back. **Tab** and **Shift+Tab** move between controls, **Page Up/Down**
+scroll the page, and **Ctrl+S** applies the draft. On compact screens the
+category sidebar scrolls independently; move the pointer over it to scroll.
+
+### Display Settings
+
+Open **Displays** to arrange screens, choose resolution and refresh rate,
+rotate or mirror a screen, change its scale, or split it into workspace areas.
+Disabled connected screens stay in the list so you can enable them again.
+At least one connected screen must remain enabled. Rotation labels follow
+Wayland's counterclockwise convention; mirroring happens before rotation.
+
+**Apply changes** previews display changes for 15 seconds without saving the
+configuration. Choose **Keep changes** to save, or **Revert** to restore the
+previous setup. Escape, Alt+Up, closing Settings and the countdown ending also
+restore it. Your draft stays available to retry. A display change or config
+reload cancels an active preview. If saving fails, the preview reverts and the
+error appears in Settings.
+
 ## Moving around
 
 | Shortcut                | Action                                               |
@@ -194,11 +222,15 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
-"Send feedback" in the launcher opens a new GitHub issue in your browser, with
-Tileception's version filled in, for a bug report or a feature request. It is
-filed under your own GitHub account, so you need one; nothing is sent until you
-submit the issue there. `tileception msg feedback <title>` does the same with a
-title filled in.
+"Send feedback" and `tileception msg feedback [title]` first show a confirmation
+with the exact title and issue body, including Tileception's version.
+"Include system details" starts unchecked. Checking it adds OS/version,
+architecture, backend and output pixel sizes/scales to the preview.
+**Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
+**Cancel** or **Escape** closes the dialog. **Open in browser** opens the
+prefilled GitHub issue, where you can edit and submit it using your GitHub
+account. Tileception does not submit the issue. Anonymous feedback remains
+deferred.
 
 Popups never take the keyboard by themselves. To answer one with buttons, such
 as the screenshot's Copy, Save and Save and copy, press **Super+Enter** (the

@@ -3,6 +3,7 @@
 
 mod displays;
 mod draw;
+pub(super) use draw::draw_scrollbar;
 pub(super) mod model;
 
 use super::*;
@@ -244,13 +245,34 @@ impl Tileception {
         if discard && let Some(before) = self.settings.edges_before.take() {
             self.settings.draft[edges()] = before;
         }
-        if !discard && !self.section_stage(false) {
-            return;
+        if !discard {
+            self.settings_leave_section();
         }
         self.settings.section = None;
         self.open_settings_page_section();
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.schedule_render();
+    }
+
+    pub(super) fn section_keep_back(&mut self) {
+        self.section_back(false);
+    }
+
+    /// Navigation keeps unfinished input, including invalid input, in memory.
+    pub(super) fn settings_leave_section(&mut self) {
+        if self.settings.section.is_none() {
+            return;
+        }
+        self.section_cancel_recording();
+        if !self.section_stage(false)
+            && let Some(screen) = self.settings.section.take()
+        {
+            self.settings.parked_sections.push(screen);
+            self.settings.message = "Unfinished draft kept. Reopen its screen to finish it before Apply.".into();
+            self.settings.error = false;
+        } else {
+            self.settings.message = "Draft kept. Apply saves it; closing Settings keeps it for later.".into();
+        }
     }
 
     pub(super) fn section_stage(&mut self, apply: bool) -> bool {
@@ -510,6 +532,11 @@ impl Tileception {
     }
 
     pub(super) fn section_paste(&mut self, text: &str) {
+        let text: String = text
+            .chars()
+            .map(|character| if matches!(character, '\n' | '\r' | '\t') { ' ' } else { character })
+            .filter(|character| !character.is_control())
+            .collect();
         if let Some(screen) = self.settings.section.as_mut() {
             if let Some(menu) = screen.menu.as_mut().filter(|menu| menu.picker) {
                 menu.filter.insert(text.trim());
@@ -519,7 +546,6 @@ impl Tileception {
                 screen.search.insert(text.trim());
                 screen.filter_changed();
             } else if let Some((_, input)) = screen.edit.as_mut() {
-                let text: String = text.chars().filter(|character| !character.is_control()).collect();
                 input.insert(&text);
             }
         }
@@ -592,15 +618,43 @@ impl Tileception {
         let inline = self.section_is_page();
         let layout = self.section_layout();
         let Some(screen) = self.settings.section.as_mut() else { return };
+        if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
+            self.paste(Paste::Settings(self.settings.editor_epoch));
+            return;
+        }
+        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
+            let input = if let Some(menu) = screen.menu.as_mut().filter(|menu| menu.picker) {
+                Some(&mut menu.filter)
+            } else if screen.searching {
+                Some(&mut screen.search)
+            } else {
+                screen
+                    .edit
+                    .as_mut()
+                    .filter(|(field, _)| !matches!(field.form, Form::Secret) || screen.reveal)
+                    .map(|(_, input)| input)
+            };
+            if let Some(input) = input {
+                let text = input.text[input.selection()].to_string();
+                if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                    input.delete(false, false);
+                }
+                self.copy_text(text);
+            }
+            self.schedule_render();
+            return;
+        }
         if let Some(menu) = screen.menu.as_mut() {
             let count = menu.filtered().len();
             match sym {
                 keysyms::KEY_Escape => screen.menu = None,
-                keysyms::KEY_Up | keysyms::KEY_Down if count > 0 => {
-                    menu.selected = if sym == keysyms::KEY_Down {
-                        (menu.selected + 1) % count
-                    } else {
-                        (menu.selected + count - 1) % count
+                keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down if count > 0 => {
+                    let page = ((layout.panel.h - 124.).min(count as f64 * 32.) / 32.).floor().max(1.) as usize;
+                    menu.selected = match sym {
+                        keysyms::KEY_Down => (menu.selected + 1) % count,
+                        keysyms::KEY_Up => (menu.selected + count - 1) % count,
+                        keysyms::KEY_Page_Down => (menu.selected + page).min(count - 1),
+                        _ => menu.selected.saturating_sub(page),
                     };
                     let visible = ((self.section_menu_rect(&layout).h - 44.) / 32.).floor().max(1.) as usize;
                     if let Some(menu) = self.settings.section.as_mut().and_then(|screen| screen.menu.as_mut()) {
@@ -612,7 +666,7 @@ impl Tileception {
                     self.section_choose(selected);
                 }
                 _ if menu.picker => {
-                    edit_key(&mut menu.filter, sym, mods);
+                    edit_key(&mut menu.filter, &mut self.settings.compose, sym, mods);
                     menu.first = 0;
                     menu.selected = 0;
                 }
@@ -626,7 +680,7 @@ impl Tileception {
             }
             screen.searching = true;
             screen.focus = Some(Action::Search);
-        } else if mods.ctrl && sym == keysyms::KEY_Return {
+        } else if mods.ctrl && matches!(sym, keysyms::KEY_Return | keysyms::KEY_s | keysyms::KEY_S) {
             self.section_stage(true);
             return;
         } else if sym == keysyms::KEY_Escape {
@@ -642,19 +696,6 @@ impl Tileception {
                     self.section_back(false);
                 }
                 return;
-            }
-        } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-            self.paste(Paste::Settings(self.settings.editor_epoch));
-            return;
-        } else if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-            if let Some((field, input)) = &mut screen.edit
-                && (!matches!(field.form, Form::Secret) || screen.reveal)
-            {
-                let text = input.text[input.selection()].to_string();
-                if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                    input.delete(false, false);
-                }
-                self.copy_text(text);
             }
         } else if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) {
             if let Err(error) = screen.finish_input() {
@@ -720,7 +761,7 @@ impl Tileception {
         } else if sym == keysyms::KEY_Page_Down || sym == keysyms::KEY_Page_Up {
             self.section_scroll(if sym == keysyms::KEY_Page_Down { 180. } else { -180. });
         } else if screen.searching {
-            edit_key(&mut screen.search, sym, mods);
+            edit_key(&mut screen.search, &mut self.settings.compose, sym, mods);
             screen.filter_changed();
         } else if let Some((_, input)) = screen.edit.as_mut() {
             if sym == keysyms::KEY_Return {
@@ -728,7 +769,7 @@ impl Tileception {
                     screen.error = error;
                 }
             } else {
-                edit_key(input, sym, mods);
+                edit_key(input, &mut self.settings.compose, sym, mods);
             }
         } else if matches!(sym, keysyms::KEY_Return | keysyms::KEY_space)
             && let Some(action) = screen.focus
@@ -755,21 +796,20 @@ pub(super) fn edges() -> usize {
     FIELDS.iter().position(|field| field.key == "general.stretch_screen_edges").expect("full-edge crossing is a field")
 }
 
-pub(super) fn edit_key(input: &mut TextInput, sym: u32, mods: Mods) {
+pub(super) fn edit_key(input: &mut TextInput, compose: &mut Option<xkb::compose::State>, sym: u32, mods: Mods) {
     match sym {
         keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => input.select_all(),
         keysyms::KEY_Left | keysyms::KEY_Right => {
-            input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl, mods.shift)
+            input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl || mods.alt, mods.shift)
         }
         keysyms::KEY_Home | keysyms::KEY_End => {
             input.move_to(if sym == keysyms::KEY_Home { 0 } else { input.text.len() }, mods.shift)
         }
-        keysyms::KEY_BackSpace | keysyms::KEY_Delete => input.delete(sym == keysyms::KEY_Delete, mods.ctrl),
+        keysyms::KEY_BackSpace | keysyms::KEY_Delete => input.delete(sym == keysyms::KEY_Delete, mods.ctrl || mods.alt),
+        keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => input.clear(),
         _ if !mods.ctrl && !mods.alt && !mods.logo => {
-            if let Some(character) =
-                char::from_u32(xkb::keysym_to_utf32(sym.into())).filter(|character| !character.is_control())
-            {
-                input.insert(&character.to_string());
+            if let Some(text) = crate::ui::compose_text(compose, sym) {
+                input.insert(&text);
             }
         }
         _ => {}

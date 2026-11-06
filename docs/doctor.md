@@ -30,7 +30,8 @@ Doctor tells the agent where to find your config, session log, the commented
 default config and these guides. Copies of the default config and guides are
 written under `~/.local/state/tileception/` (or `$XDG_STATE_HOME/tileception/`)
 when an agent starts, so they are available without a source checkout. The
-agent reads them only as needed.
+agent reads them only as needed. Existing exports are rewritten only when
+their bundled contents have changed; missing files are restored.
 
 Your messages, attachments and anything the agent reads, such as config files
 and log lines, are sent to the agent's provider. Session logs can contain window
@@ -53,8 +54,30 @@ switch smart home devices), `tileception home status`, and
 `tileception config set home.enabled true|false`. Other permission requests
 are shown for approval.
 
-Yolo also selects the agent's full-access mode when supported. These modes
-control Doctor's approvals; they are not an operating-system sandbox.
+Doctor also sets the agent's own permission mode, using the modes it actually
+advertises. Codex uses `read-only` for Ask and Tweak, and `agent-full-access`
+or `full-access` for Yolo. Claude uses `default` for Ask and Tweak, and
+`bypassPermissions` for Yolo. Doctor waits for setting changes to be
+acknowledged before sending a message. If the agent rejects a setting, the
+message is withheld; retry the setting or restart the agent.
+
+OpenCode starts with `OPENCODE_PERMISSION='{"edit":"ask","bash":"ask"}'`
+in Ask and Tweak, so its edits and commands reach Doctor for approval.
+For OpenCode 2, which no longer reads that variable, Doctor also merges those
+rules into the child process's `OPENCODE_CONFIG_CONTENT`. Other inline config
+values are preserved. Invalid or non-JSON inline config shows a warning because
+Doctor cannot merge its rules safely. Your agent's config files are not changed.
+Yolo changes the two rules to `allow`. Switching OpenCode's mode restarts
+its process and starts a new agent conversation; the panel retains the earlier
+messages. Login environment variables entered in Doctor survive that restart.
+
+An agent without a known permission mode shows a warning underneath the mode
+switch: its own tools may act without asking. Agent settings and administrative
+policies can also impose their own limits. These modes control Doctor's
+approvals; they are not an operating-system sandbox.
+
+The next message after a mode switch restates the current mode to the agent.
+Paths approved for a change are remembered only for that message, then cleared.
 
 ### Changes and undo
 

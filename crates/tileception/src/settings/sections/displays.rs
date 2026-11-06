@@ -1,11 +1,17 @@
 use super::*;
 
+#[derive(PartialEq)]
 pub(super) struct Monitor {
     pub name: String,
     pub width: f64,
     pub height: f64,
     pub scale: f64,
     pub auto_scale: f64,
+    pub modes: Vec<smithay::output::Mode>,
+}
+
+pub(super) fn mode_string(mode: smithay::output::Mode) -> String {
+    format!("{}x{}@{}", mode.size.w, mode.size.h, f64::from(mode.refresh) / 1000.)
 }
 
 pub(super) struct Drag {
@@ -40,7 +46,12 @@ impl Screen {
 
     pub(super) fn display_rects(&self) -> Vec<(usize, Rect)> {
         let mut next = 0.;
-        let mut indices: Vec<_> = (0..self.rows.len()).filter(|index| self.rows[*index].name != "*").collect();
+        let mut indices: Vec<_> = (0..self.rows.len())
+            .filter(|index| {
+                self.rows[*index].name != "*"
+                    && self.rows[*index].value.get("enabled").and_then(toml::Value::as_bool) != Some(false)
+            })
+            .collect();
         indices.sort_by_key(|index| {
             (
                 !self.monitors.iter().any(|monitor| monitor.name == self.rows[*index].name),
@@ -73,8 +84,16 @@ impl Screen {
                         .map(crate::scale::tidy)
                         .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
                 };
-                let width = monitor.map_or(1280., |monitor| monitor.width) / scale;
-                let height = monitor.map_or(720., |monitor| monitor.height) / scale;
+                let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
+                let mode = setting.mode.parse().ok().flatten();
+                let size = mode.map_or_else(
+                    || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
+                    |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),
+                );
+                let transform: smithay::utils::Transform = setting.transform.into();
+                let size = transform.transform_size(smithay::utils::Size::<f64, smithay::utils::Physical>::from(size));
+                let width = size.w / scale;
+                let height = size.h / scale;
                 let configured = row.value.get("position").and_then(toml::Value::as_array);
                 let position = configured
                     .and_then(|position| {
@@ -186,7 +205,7 @@ impl Tileception {
     }
 
     pub(super) fn section_outputs(&self) -> Vec<String> {
-        let mut names: Vec<_> = self.all_outputs().iter().map(|output| output.name()).collect();
+        let mut names: Vec<_> = self.connected_monitors().into_iter().map(|monitor| monitor.name).collect();
         names.extend(self.config.file.outputs.keys().filter(|name| name.as_str() != "*").cloned());
         if let Some(screen) = &self.settings.section
             && screen.kind == Kind::Displays
@@ -198,35 +217,38 @@ impl Tileception {
         names
     }
 
-    pub(super) fn section_detected_displays(&self, screen: &mut Screen) {
+    pub(in crate::settings) fn section_detected_displays(&self, screen: &mut Screen) {
         if screen.kind != Kind::Displays {
             return;
         }
-        screen.monitors.clear();
-        for output in self.all_outputs() {
-            let Some(mode) = output.current_mode() else { continue };
-            let physical = output.physical_properties().size;
-            let size = output.current_transform().transform_size(mode.size);
+        let previous = std::mem::take(&mut screen.monitors);
+        for monitor in self.connected_monitors() {
+            let Some(mode) = monitor.preferred_mode.or(monitor.current_mode) else { continue };
+            let output = self.output_named(&monitor.name);
+            let physical = output.as_ref().map(|output| output.physical_properties().size);
+            let mut modes = monitor.modes;
+            modes.sort_by_key(|mode| (mode.size.w, mode.size.h, mode.refresh));
+            modes.dedup();
             screen.monitors.push(Monitor {
-                name: output.name(),
-                width: size.w as f64,
-                height: size.h as f64,
-                scale: output.current_scale().fractional_scale(),
-                auto_scale: crate::scale::guess((physical.w, physical.h), (mode.size.w, mode.size.h)),
+                name: monitor.name.clone(),
+                width: mode.size.w as f64,
+                height: mode.size.h as f64,
+                scale: output.as_ref().map_or(1., |output| output.current_scale().fractional_scale()),
+                auto_scale: physical
+                    .map_or(1., |physical| crate::scale::guess((physical.w, physical.h), (mode.size.w, mode.size.h))),
+                modes,
             });
-            if !screen.rows.iter().any(|row| row.name == output.name()) {
-                let scale = screen
+            if !screen.rows.iter().any(|row| row.name == monitor.name) {
+                let inherited = screen
                     .rows
                     .iter()
                     .find(|row| row.name == "*")
-                    .and_then(|row| row.value.get("scale"))
-                    .cloned()
-                    .unwrap_or_else(|| toml::Value::String("auto".into()));
-                let inherited = toml::Value::Table(toml::Table::from_iter([("scale".into(), scale)]));
-                screen.initial.push((output.name(), inherited.clone()));
+                    .map(|row| row.value.clone())
+                    .unwrap_or_else(|| toml::Value::Table(toml::Table::new()));
+                screen.initial.push((monitor.name.clone(), inherited.clone()));
                 screen.rows.push(Row {
-                    name: output.name(),
-                    original_name: output.name(),
+                    name: monitor.name.clone(),
+                    original_name: monitor.name,
                     value: inherited.clone(),
                     original: inherited,
                     source: None,
@@ -237,6 +259,9 @@ impl Tileception {
         }
         if screen.selected.is_none() && !screen.rows.is_empty() {
             screen.selected = Some(0);
+        }
+        if previous != screen.monitors {
+            self.invalidate_settings_client();
         }
     }
 

@@ -17,7 +17,7 @@ impl crate::ui::PointerAction for PointerAction {
     fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
         match self {
             Self::Text => state.settings_editor_caret(point, false),
-            Self::Cancel => state.settings.editor = None,
+            Self::Cancel => state.settings_editor_key(keysyms::KEY_Escape, Mods::default()),
             Self::Apply => state.finish_settings_editor(true),
         }
         state.schedule_render();
@@ -26,7 +26,7 @@ impl crate::ui::PointerAction for PointerAction {
 
 fn buttons(frame: &Frame, reference: bool) -> [(Rect, &'static str, PointerAction); 2] {
     [
-        (Rect::new(frame.panel.right() - 280., frame.panel.bottom() - 49., 110., 33.), "Cancel", PointerAction::Cancel),
+        (Rect::new(frame.panel.right() - 280., frame.panel.bottom() - 49., 110., 33.), "Back", PointerAction::Cancel),
         (
             Rect::new(frame.panel.right() - 160., frame.panel.bottom() - 49., 110., 33.),
             if reference { "Close" } else { "Apply changes" },
@@ -289,7 +289,7 @@ impl Tileception {
             return;
         }
         if mods.ctrl && sym == keysyms::KEY_Return {
-            self.finish_settings_editor(true);
+            self.finish_settings_editor(false);
             return;
         }
         if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
@@ -299,8 +299,11 @@ impl Tileception {
         let visible = (body(&self.settings_frame()).h / LINE).max(1.) as usize;
         let columns = ((body(&self.settings_frame()).w - 70.) / 7.2).max(1.) as usize;
         let Some(editor) = self.settings.editor.as_mut() else { return };
-        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
+        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
             let selection = editor.input.text[editor.input.selection()].to_string();
+            if !editor.reference && matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                editor.input.delete_with_limit(false, false, LIMIT);
+            }
             self.copy_text(selection);
             return;
         }
@@ -317,11 +320,12 @@ impl Tileception {
         match sym {
             keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => editor.input.select_all(),
             keysyms::KEY_Left | keysyms::KEY_Right => {
-                editor.input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl, mods.shift)
+                editor.input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl || mods.alt, mods.shift)
             }
             keysyms::KEY_BackSpace | keysyms::KEY_Delete => {
-                editor.input.delete_with_limit(sym == keysyms::KEY_Delete, mods.ctrl, LIMIT)
+                editor.input.delete_with_limit(sym == keysyms::KEY_Delete, mods.ctrl || mods.alt, LIMIT)
             }
+            keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => editor.input.clear(),
             keysyms::KEY_Home | keysyms::KEY_End => {
                 let position = if mods.ctrl {
                     if sym == keysyms::KEY_Home { 0 } else { editor.input.text.len() }
@@ -353,10 +357,8 @@ impl Tileception {
             keysyms::KEY_Return => editor.insert("\n"),
             keysyms::KEY_Tab => editor.insert("    "),
             _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                if let Some(character) =
-                    char::from_u32(xkb::keysym_to_utf32(sym.into())).filter(|character| !character.is_control())
-                {
-                    editor.insert(&character.to_string());
+                if let Some(text) = crate::ui::compose_text(&mut self.settings.compose, sym) {
+                    editor.insert(&text);
                 }
             }
             _ => {}

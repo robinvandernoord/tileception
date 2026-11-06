@@ -343,6 +343,13 @@ impl Screen {
                     .into()
                 } else if *path == Path::Key("scale".into()) {
                     "auto".into()
+                } else if self.kind == Kind::Displays {
+                    match path {
+                        Path::Key(key) if key == "enabled" => "true".into(),
+                        Path::Key(key) if key == "mode" => "preferred".into(),
+                        Path::Key(key) if key == "transform" => "normal".into(),
+                        _ => String::new(),
+                    }
                 } else {
                     String::new()
                 }
@@ -672,6 +679,43 @@ impl Screen {
                         "Connected screens appear automatically; saved disconnected screens remain available.",
                     );
                 }
+                fields.push(Spec::key(
+                    "enabled",
+                    "Screen enabled",
+                    "Disabled screens stay in this list so you can enable them again.",
+                    Form::Toggle,
+                ));
+                let mut modes = vec![("Preferred resolution and refresh".into(), "preferred".into())];
+                if let Some(monitor) = self.monitors.iter().find(|monitor| monitor.name == row.name) {
+                    for mode in &monitor.modes {
+                        let value = displays::mode_string(*mode);
+                        modes.push((
+                            format!("{} × {} at {} Hz", mode.size.w, mode.size.h, f64::from(mode.refresh) / 1000.),
+                            value,
+                        ));
+                    }
+                }
+                if let Some(value) = row.value.get("mode").and_then(Value::as_str)
+                    && !modes.iter().any(|(_, candidate)| candidate == value)
+                {
+                    modes.push((format!("{value} (saved mode)"), value.into()));
+                }
+                fields.push(Spec::key(
+                    "mode",
+                    "Resolution and refresh",
+                    "Choose an advertised mode. Apply previews it for 15 seconds.",
+                    Form::Choice(modes),
+                ));
+                fields.push(Spec::key("transform", "Rotation and flip", "Rotations follow Wayland's counterclockwise convention. Flip mirrors horizontally before rotation.", Spec::choice(&[
+                    ("Normal", "normal"),
+                    ("90° counterclockwise", "90"),
+                    ("180°", "180"),
+                    ("90° clockwise", "270"),
+                    ("Mirrored", "flipped"),
+                    ("Mirrored, 90° counterclockwise", "flipped-90"),
+                    ("Mirrored, 180°", "flipped-180"),
+                    ("Mirrored, 90° clockwise", "flipped-270"),
+                ])));
                 fields.push(Spec::key(
                     "scale",
                     "Scale",
