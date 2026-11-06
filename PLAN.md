@@ -53,6 +53,44 @@ language as the bindings.
 
 ### Next
 
+- Settings panel: replace the eight TOML section editors with native screens.
+  - [x] Displays: detected monitors, draggable arrangement, scale and splits.
+  - [x] Sharing: guided setup, discovery, manual peers and connection status.
+  - [x] Touchscreen mappings, shortcut recording and action selection.
+  - [x] Autostart, application arguments, window rules and battery thresholds.
+  - [x] Check desktop and compact layouts in isolated instances, then request
+    Opus code and visual review. Keep raw source as an advanced option.
+  Documentation is deferred until functionality is finalized. No commits by
+  the coding agent.
+  Native forms retain source comments and keep unaccepted drafts when returning
+  to Settings. Verified all eight screens saving through the UI, arranging two
+  headless monitors, and connecting two isolated sharing instances on localhost.
+  Review fixes preserve comments above keys, literal strings, multiline arrays
+  and threshold tables. Verified modifier-tap and Super+Escape recording, native
+  overrides of built-ins, and unchanged default sections. Build, strict Clippy,
+  formatting and all 160 existing compositor tests pass.
+  - [x] Replace the launcher app-slot entry with a dedicated gear and add
+    Super+comma. Collapse advanced appearance controls and add an XKB picker.
+  - [x] Keep all nine overview categories in a masonry tile layout, remove
+    retention notices, and add optional proportional full-edge screen crossing.
+  Verified horizontal, reverse and vertical proportional crossing on unequal
+  headless outputs, the launcher gear in app-grid mode, the layout picker saving
+  Dutch, the Advanced disclosure and the nine-category masonry overview.
+  - [x] Collect evaluation-only scorecards from Opus, Mistral Large 4 and
+    GLM 5.3 (the latter two via Vibe). Report them before acting on feedback.
+  Evaluations collected: Opus 7.5/10 overall from direct screenshot inspection;
+  Mistral 8/10 using OCR/pixel analysis; GLM declined an overall score without
+  image access. No implementation changes based on these evaluations.
+  - [x] Review follow-up: one-step Apply in native screens, optional TOML
+    comparison, constrained forms, consistent actions and a distinct sharing guide.
+  - [x] Verify the updates, then collect evaluation-only scorecards from Opus
+    and a fresh-context Sol reviewer. Do not use Vibe for future visual reviews.
+    Build, formatting, strict Clippy and 160 existing tests passed. Isolated
+    headless checks verified one-click saving and Back staging valid edits.
+    Opus scored 7.5/10 overall; fresh-context Sol scored 8/10. Both inspected
+    screenshots directly. Remaining concerns include compact-screen clipping,
+    subdued affordances and draft navigation clarity. No changes made from
+    these new evaluations pending reporting them to Robin.
 - Frost on the lock screen and the login screen, so `[theme] frost = true`
   covers every panel Tileception draws. Part of `feature/frost`; finish it
   before that branch merges.
@@ -65,7 +103,6 @@ language as the bindings.
 
 ### Later
 
-- A settings window instead of editing the config file.
 - Smart home settings window integration: import devices, configure cloud
   sensors and switch `[home] enabled` from the settings window. Deferred to a
   future update; not a blocker for merging `feature/smart-home`.
