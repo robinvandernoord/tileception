@@ -82,6 +82,8 @@ struct StoredUsage {
 pub enum Paste {
     Launcher(u64),
     Doctor,
+    /// The rubber duck's question.
+    Duck,
 }
 
 /// One row of results.
@@ -396,6 +398,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Text(text)) if self.doctor.open => self.doctor_insert_paste(&text),
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
+            (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
             _ => return,
         }
         self.schedule_render();
@@ -727,7 +730,7 @@ impl Tileception {
         // copied image often also offers its address as text.
         let mime_types = match target {
             Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor | Paste::Launcher(_) => text.to_vec(),
+            Paste::Doctor | Paste::Launcher(_) | Paste::Duck => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
