@@ -48,6 +48,8 @@ const HINTS_H: f64 = 34.0;
 const MENU_ROW_H: f64 = 32.0;
 /// Suggestions shown at most while typing a slash command.
 const MENU_ROWS: usize = 7;
+/// Values shown at once in a setting's menu; more scroll.
+const MENU_VALUE_ROWS: usize = 10;
 const PAD: f64 = 12.0;
 /// Lines a single message may wrap to before it is cut short.
 const MAX_LINES: u8 = 200;
@@ -244,6 +246,10 @@ pub struct Doctor {
     menu: Option<String>,
     /// The highlighted row of the menu or of the slash command suggestions.
     menu_selected: usize,
+    /// What is typed to narrow down the open menu's values.
+    menu_filter: crate::text_input::TextInput,
+    /// The open menu's first shown value, when it has more than fit.
+    menu_first: usize,
     /// The remembered model per agent; put back on every new session.
     models: std::collections::BTreeMap<String, String>,
     restore_model: bool,
@@ -313,6 +319,8 @@ impl Default for Doctor {
             secret: None,
             menu: None,
             menu_selected: 0,
+            menu_filter: Default::default(),
+            menu_first: 0,
             models: saved.models,
             restore_model: false,
             agent_mode: None,
@@ -1224,6 +1232,10 @@ impl Tileception {
     /// A key while the panel has the keyboard.
     pub fn doctor_key(&mut self, sym: u32, mods: Mods) {
         self.doctor.edited = Instant::now();
+        // A setting's menu takes the keyboard: typing narrows it down.
+        if self.doctor.menu.is_some() {
+            return self.menu_key(sym, mods);
+        }
         // Copies what is selected in the field (unless it is a key being
         // entered), or else in the conversation.
         if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
@@ -1236,12 +1248,19 @@ impl Tileception {
                 return;
             }
         }
+        // Cuts what is selected in the field (never a key being entered).
+        if mods.ctrl && matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+            let range = self.doctor.input.selection();
+            if !range.is_empty() && self.doctor.secret.is_none() {
+                let text = self.doctor.input.text[range].to_owned();
+                self.doctor.input.insert("");
+                self.copy_text(text);
+            }
+            return;
+        }
         let word = mods.ctrl || mods.alt;
-        // A menu over the conversation takes the arrows, Enter and Esc.
-        let rows = match &self.doctor.menu {
-            Some(_) => self.menu_values().len(),
-            None => self.suggestions().len(),
-        };
+        // Slash command suggestions take the arrows, Enter and Tab.
+        let rows = self.suggestions().len();
         if rows > 0 {
             let selected = self.doctor.menu_selected.min(rows - 1);
             match sym {
@@ -1252,13 +1271,6 @@ impl Tileception {
                 keysyms::KEY_Down => {
                     self.doctor.menu_selected = (selected + 1) % rows;
                     return;
-                }
-                keysyms::KEY_Escape if self.doctor.menu.is_some() => {
-                    self.doctor.menu = None;
-                    return;
-                }
-                keysyms::KEY_Return | keysyms::KEY_KP_Enter if self.doctor.menu.is_some() => {
-                    return self.choose_menu_value(selected);
                 }
                 keysyms::KEY_Tab => return self.complete_suggestion(selected, false),
                 keysyms::KEY_Return | keysyms::KEY_KP_Enter => return self.complete_suggestion(selected, true),
@@ -1319,7 +1331,97 @@ impl Tileception {
         self.doctor.menu_selected = 0;
     }
 
+    /// Keys while a setting's menu is open: arrows and pages choose, typing
+    /// filters, Enter picks and Esc clears the filter, then closes.
+    fn menu_key(&mut self, sym: u32, mods: Mods) {
+        let rows = self.menu_values().len();
+        let selected = self.doctor.menu_selected.min(rows.saturating_sub(1));
+        let page = self.menu_layout(&self.doctor_frame()).map_or(1, |(_, rows)| rows.len().max(1));
+        let word = mods.ctrl || mods.alt;
+        let before = self.doctor.menu_filter.text.clone();
+        let filter = &mut self.doctor.menu_filter;
+        match sym {
+            keysyms::KEY_Up if rows > 0 => self.doctor.menu_selected = (selected + rows - 1) % rows,
+            keysyms::KEY_Down if rows > 0 => self.doctor.menu_selected = (selected + 1) % rows,
+            keysyms::KEY_Page_Up => self.doctor.menu_selected = selected.saturating_sub(page),
+            keysyms::KEY_Page_Down => self.doctor.menu_selected = (selected + page).min(rows.saturating_sub(1)),
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter if rows > 0 => return self.choose_menu_value(selected),
+            keysyms::KEY_Escape if !filter.text.is_empty() => filter.clear(),
+            keysyms::KEY_Escape => {
+                self.doctor.menu = None;
+                return self.schedule_render();
+            }
+            // The filter edits like every other field.
+            keysyms::KEY_Left => filter.move_horizontal(false, word, mods.shift),
+            keysyms::KEY_Right => filter.move_horizontal(true, word, mods.shift),
+            keysyms::KEY_Home => filter.move_to(0, mods.shift),
+            keysyms::KEY_End => filter.move_to(filter.text.len(), mods.shift),
+            keysyms::KEY_BackSpace => filter.delete(false, word),
+            keysyms::KEY_Delete => filter.delete(true, word),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => filter.select_all(),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
+                let range = filter.selection();
+                if !range.is_empty() {
+                    let text = filter.text[range].to_owned();
+                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                        filter.insert("");
+                    }
+                    self.copy_text(text);
+                }
+            }
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => self.paste(Paste::Doctor),
+            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => filter.clear(),
+            _ if !mods.ctrl && !mods.logo && !mods.alt => {
+                if let Some(text) = crate::ui::compose_text(&mut self.doctor.compose, sym) {
+                    self.doctor.menu_filter.insert(&text);
+                }
+            }
+            _ => {}
+        }
+        self.doctor.edited = Instant::now();
+        if self.doctor.menu_filter.text != before {
+            self.menu_filter_changed();
+        }
+        self.reveal_menu_selected();
+        self.schedule_render();
+    }
+
+    /// Whether a setting's menu (with its filter field) is open.
+    pub fn doctor_menu_open(&self) -> bool {
+        self.doctor.menu.is_some()
+    }
+
+    /// The filter's text changed: back to the top, on the current value
+    /// while it still matches.
+    fn menu_filter_changed(&mut self) {
+        self.doctor.menu_first = 0;
+        self.doctor.menu_selected = self.menu_values().iter().position(|entry| entry.1).unwrap_or(0);
+        self.reveal_menu_selected();
+    }
+
+    /// Scrolls the open menu so its highlighted value shows.
+    fn reveal_menu_selected(&mut self) {
+        let Some((_, rows)) = self.menu_layout(&self.doctor_frame()) else { return };
+        let shown = rows.len().max(1);
+        let selected = self.doctor.menu_selected;
+        let first = &mut self.doctor.menu_first;
+        if selected < *first {
+            *first = selected;
+        } else if selected >= *first + shown {
+            *first = selected + 1 - shown;
+        }
+    }
+
     pub fn doctor_insert_paste(&mut self, text: &str) {
+        // Into the open menu's filter, as a single line.
+        if self.doctor.menu.is_some() {
+            let line: String =
+                text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
+            self.doctor.menu_filter.insert(line.trim());
+            self.doctor.edited = Instant::now();
+            self.menu_filter_changed();
+            return self.schedule_render();
+        }
         let text: String = if self.doctor.secret.is_some() {
             text.trim().chars().filter(|character| !character.is_control()).collect()
         } else {
@@ -1332,6 +1434,16 @@ impl Tileception {
     /// Scrolls; positive goes towards newer messages (or down the picker).
     pub fn doctor_scroll(&mut self, notches: f64) {
         let frame = self.doctor_frame();
+        // Over an open setting's menu, the wheel scrolls its values.
+        if self.doctor.menu.is_some()
+            && let Some((outline, rows)) = self.menu_layout(&frame)
+            && outline.contains(Point::new(self.pointer.x, self.pointer.y))
+        {
+            let most = self.menu_values().len().saturating_sub(rows.len());
+            let first = self.doctor.menu_first.min(most) as f64 + notches;
+            self.doctor.menu_first = first.clamp(0.0, most as f64) as usize;
+            return self.schedule_render();
+        }
         let content = self.doctor_content_height(frame.messages);
         let max = (content - frame.messages.h).max(0.0);
         let delta = notches * SCROLL_STEP;
@@ -1394,6 +1506,10 @@ impl Tileception {
         // An open menu or the slash command list first: they lie on top.
         if let Some(hit) = self.menu_hit(point) {
             self.doctor_hit(hit);
+            return true;
+        }
+        // The filter row and the menu's edges keep it open.
+        if self.doctor.menu.is_some() && self.menu_layout(&frame).is_some_and(|(outline, _)| outline.contains(point)) {
             return true;
         }
         if self.doctor.menu.take().is_some() {
@@ -1707,8 +1823,11 @@ impl Tileception {
             Hit::OpenMenu(option_id) => {
                 let open = self.doctor.menu.as_ref() == Some(&option_id);
                 self.doctor.menu = (!open).then_some(option_id);
+                self.doctor.menu_filter.clear();
+                self.doctor.menu_first = 0;
                 // Start on the current value.
                 self.doctor.menu_selected = self.menu_values().iter().position(|entry| entry.1).unwrap_or(0);
+                self.reveal_menu_selected();
             }
             Hit::SetOption(option_id, value) => {
                 self.doctor.menu = None;
@@ -1930,7 +2049,17 @@ impl Tileception {
         let Some(option) = self.doctor.options.iter().find(|option| &option.option_id == option_id) else {
             return Vec::new();
         };
-        option.values.iter().map(|value| (value.clone(), value.value == option.current)).collect()
+        let filter = self.doctor.menu_filter.text.to_lowercase();
+        option
+            .values
+            .iter()
+            .filter(|value| {
+                let text =
+                    format!("{} {}", value.name, value.description.as_deref().unwrap_or_default()).to_lowercase();
+                filter.split_whitespace().all(|word| text.contains(word))
+            })
+            .map(|value| (value.clone(), value.value == option.current))
+            .collect()
     }
 
     fn choose_menu_value(&mut self, index: usize) {
@@ -2023,14 +2152,20 @@ impl Tileception {
                 (rows, frame.field, frame.field.w)
             }
         };
-        if rows.is_empty() {
+        // A setting's menu keeps a filter row at its foot, even when nothing matches.
+        let filter_row = usize::from(self.doctor.menu.is_some());
+        if rows.is_empty() && filter_row == 0 {
             return None;
         }
         let room = ((anchor.y - 10.0 - frame.messages.y) / MENU_ROW_H).floor().max(1.0) as usize;
-        let limit = if self.doctor.menu.is_some() { usize::MAX } else { MENU_ROWS };
-        let shown = rows.len().min(room).min(limit);
-        let first = selected.saturating_sub(shown - 1).min(rows.len() - shown);
-        let height = shown as f64 * MENU_ROW_H + 8.0;
+        let limit = if self.doctor.menu.is_some() { MENU_VALUE_ROWS } else { MENU_ROWS };
+        let shown = rows.len().min(room.saturating_sub(filter_row).max(1)).min(limit);
+        let first = if self.doctor.menu.is_some() {
+            self.doctor.menu_first.min(rows.len() - shown)
+        } else {
+            selected.saturating_sub(shown.saturating_sub(1)).min(rows.len() - shown)
+        };
+        let height = (shown + filter_row) as f64 * MENU_ROW_H + 8.0;
         let left = (anchor.right() - width).max(frame.field.x);
         let outline = Rect::new(left, anchor.y - 6.0 - height, width, height);
         for (index, row) in rows.iter_mut().enumerate() {
@@ -2684,7 +2819,7 @@ impl Tileception {
             painter.text(Mode::ALL[index].description(), text, Style::new(theme.font_size * 0.9, theme.muted));
         } else {
             let keys: &[(&str, &str)] = if self.doctor.menu.is_some() {
-                &[("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Close")]
+                &[("Type", "Filter"), ("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Close")]
             } else if !self.suggestions().is_empty() {
                 &[("\u{2191}\u{2193}", "Choose"), ("Tab", "Fill in"), ("Enter", "Run")]
             } else if self.doctor.secret.is_some() {
@@ -2699,6 +2834,9 @@ impl Tileception {
         // Menus lie over everything else.
         if let Some((outline, rows)) = self.menu_layout(&frame) {
             painter.popup(outline);
+            if let Some(option_id) = &self.doctor.menu {
+                self.draw_menu_filter(&mut painter, outline, option_id);
+            }
             for row in rows {
                 let hover = row.rect.contains(pointer);
                 if row.selected {
@@ -2707,8 +2845,9 @@ impl Tileception {
                     painter.fill(row.rect, theme.surface_raised, theme.radius);
                 }
                 let colour = if row.current { theme.accent } else { theme.text };
-                let label_w =
-                    painter.measure(&row.label, row.rect.w * 0.6, Style::new(theme.font_size, colour).bold()).0;
+                // The name takes the whole row when there is no description.
+                let room = if row.detail.is_empty() { row.rect.w - 46.0 } else { row.rect.w * 0.6 };
+                let label_w = painter.measure(&row.label, room, Style::new(theme.font_size, colour).bold()).0;
                 painter.text(
                     &row.label,
                     Rect::new(row.rect.x + 10.0, row.rect.y, label_w + 1.0, row.rect.h),
@@ -2728,6 +2867,48 @@ impl Tileception {
             }
         }
         painter.finish()
+    }
+
+    /// The foot of a setting's menu: what is typed to filter it, and how
+    /// many values match.
+    fn draw_menu_filter(&self, painter: &mut Painter, outline: Rect, option_id: &str) {
+        let theme = &self.theme;
+        let row = Rect::new(outline.x + 4.0, outline.bottom() - 4.0 - MENU_ROW_H, outline.w - 8.0, MENU_ROW_H);
+        painter.fill(Rect::new(row.x + 6.0, row.y, row.w - 12.0, 1.0), theme.border, 0.0);
+        painter.glyph(glyph::SEARCH, Rect::new(row.x + 4.0, row.y, 20.0, row.h), 12, theme.muted);
+        let all = self
+            .doctor
+            .options
+            .iter()
+            .find(|option| option.option_id == option_id)
+            .map_or(0, |option| option.values.len());
+        let matching = self.menu_values().len();
+        let filter = &self.doctor.menu_filter;
+        let count = if filter.text.is_empty() { format!("{all}") } else { format!("{matching} of {all}") };
+        let count_style = Style::new(theme.font_size * 0.88, theme.muted);
+        let count_w = painter.measure(&count, row.w / 3.0, count_style).0;
+        painter.text(&count, Rect::new(row.right() - 10.0 - count_w, row.y, count_w + 1.0, row.h), count_style);
+        let text = Rect::new(row.x + 30.0, row.y, row.w - 50.0 - count_w, row.h);
+        if filter.text.is_empty() {
+            painter.text("Type to filter", text, Style::new(theme.font_size, theme.muted).lines(1));
+        }
+        // Drawn like the other fields: caret, selection and scrolling.
+        let field = self.text.borrow_mut().field(
+            &filter.text,
+            &theme.font,
+            theme.font_size,
+            theme.text,
+            text.w as f32,
+            crate::text::Field {
+                cursor: filter.cursor,
+                anchor: filter.anchor,
+                visible: self.doctor.edited.elapsed().as_millis() % 1000 < 600,
+                accent: theme.accent.straight_rgba8(),
+            },
+        );
+        if let Some(image) = field {
+            painter.image(&image.buffer, (text.x, text.y + (text.h - image.height) / 2.0));
+        }
     }
 
     /// Under the field: the permission mode as a switch, and the model.

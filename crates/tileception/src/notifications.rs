@@ -46,6 +46,9 @@ pub struct Notifications {
     local_actions: HashMap<u32, Vec<Option<crate::commands::Command>>>,
     /// Ids of [`Tileception::ask_locally`]'s questions still waiting for an answer.
     questions: HashSet<u32>,
+    /// The popup whose buttons have the keyboard (Super+Enter), and the
+    /// highlighted button. Only ever on request: popups never take it.
+    pub answering: Option<(u32, usize)>,
 }
 
 /// The category of [`Tileception::notify_locally`]'s notifications: the only
@@ -117,6 +120,7 @@ impl Tileception {
         if self.notifications.open {
             self.refresh_notification_history();
         }
+        self.check_answering();
         self.schedule_render();
     }
 
@@ -214,9 +218,19 @@ impl Tileception {
         notification_id
     }
 
+    /// Gives one of Tileception's own notifications a picture.
+    pub fn set_local_notification_image(&mut self, notification_id: u32, image: Image) {
+        if let Some(notification) = self.notifications.active.get_mut(&notification_id) {
+            Arc::make_mut(notification).image = Some(image);
+            self.notifications.thumbnails.borrow_mut().remove(&notification_id);
+            self.schedule_render();
+        }
+    }
+
     pub fn close_local_notification(&mut self, notification_id: u32) {
         self.notifications.local_actions.remove(&notification_id);
         if self.notifications.active.remove(&notification_id).is_some() {
+            self.check_answering();
             self.schedule_render();
         }
     }
@@ -264,6 +278,7 @@ impl Tileception {
     pub fn withdraw_question(&mut self, notification_id: u32) {
         if self.notifications.questions.remove(&notification_id) {
             self.notifications.active.remove(&notification_id);
+            self.check_answering();
             self.schedule_render();
         }
     }
@@ -486,27 +501,23 @@ impl Tileception {
                 continue;
             }
             let notification = &card.notification;
+            let button = card.actions.iter().position(|button| button.contains(point));
+            if let Some((key, _)) = button.and_then(|index| notification.actions.get(index)) {
+                self.press_notification_button(notification, key);
+                return;
+            }
             let local = notification.category.as_deref() == Some(LOCAL_CATEGORY);
             if local {
                 // Tileception's own: the service knows nothing of it.
                 if card.close.contains(point) {
                     self.close_local_notification(notification.id);
-                } else if let Some(index) = card.actions.iter().position(|button| button.contains(point))
-                    && let Some((key, _)) = notification.actions.get(index)
-                {
-                    self.local_action(notification.id, &key.clone());
                 }
                 return;
             }
             if self.notifications.questions.contains(&notification.id) {
-                let action = card.actions.iter().position(|button| button.contains(point));
-                let answer = match action.and_then(|index| notification.actions.get(index)) {
-                    Some((key, _)) => Some(Some(key.as_str())),
-                    None => card.close.contains(point).then_some(None),
-                };
-                if let Some(answer) = answer {
+                if card.close.contains(point) {
                     self.withdraw_question(notification.id);
-                    self.answer_typing(notification.id, answer);
+                    self.answer_typing(notification.id, None);
                     self.answer_shortcut(notification.id);
                 }
                 return;
@@ -516,14 +527,6 @@ impl Tileception {
                     self.notification_request(Request::RemoveFromHistory(notification.id));
                 }
                 self.notification_request(Request::Dismiss(notification.id));
-            } else if let Some(index) = card.actions.iter().position(|button| button.contains(point)) {
-                if let Some((key, _)) = notification.actions.get(index) {
-                    self.notification_request(Request::Invoke {
-                        id: notification.id,
-                        action: key.clone(),
-                        token: None,
-                    });
-                }
             } else if notification.default_action {
                 self.notification_request(Request::Invoke {
                     id: notification.id,
@@ -533,6 +536,105 @@ impl Tileception {
             }
             return;
         }
+    }
+
+    /// Presses one of a notification's buttons, by its action key: clicked,
+    /// or chosen from the keyboard.
+    pub fn press_notification_button(&mut self, notification: &Notification, key: &str) {
+        if notification.category.as_deref() == Some(LOCAL_CATEGORY) {
+            // Tileception's own: the service knows nothing of it.
+            self.local_action(notification.id, key);
+        } else if self.notifications.questions.contains(&notification.id) {
+            self.withdraw_question(notification.id);
+            self.answer_typing(notification.id, Some(key));
+            self.answer_shortcut(notification.id);
+        } else {
+            self.notification_request(Request::Invoke { id: notification.id, action: key.to_string(), token: None });
+        }
+    }
+
+    /// The newest popup with buttons: the one Super+Enter answers.
+    fn popup_to_answer(&self) -> Option<Arc<Notification>> {
+        let locked = self.is_locked();
+        self.notifications
+            .active
+            .values()
+            .filter(|notification| notification.show_popup && !notification.actions.is_empty())
+            .filter(|notification| !locked || notification.category.as_deref() == Some(LOCAL_CATEGORY))
+            .max_by_key(|notification| notification.created)
+            .cloned()
+    }
+
+    /// Gives the newest popup with buttons the keyboard, or gives it back.
+    pub fn answer_notification(&mut self) {
+        if self.notifications.answering.take().is_none()
+            && !self.notifications.open
+            && let Some(notification) = self.popup_to_answer()
+        {
+            self.notifications.answering = Some((notification.id, 0));
+        }
+        self.force_keyboard_focus_sync();
+        self.schedule_render();
+    }
+
+    /// Keys while a popup has the keyboard: arrows and Tab move between its
+    /// buttons, a number or Enter presses one, Esc gives the keyboard back.
+    pub fn notification_key(&mut self, sym: u32, mods: crate::config::Mods) {
+        use smithay::input::keyboard::keysyms;
+        let Some((notification_id, selected)) = self.notifications.answering else { return };
+        let Some(notification) = self.notifications.active.get(&notification_id).cloned() else {
+            return self.check_answering();
+        };
+        let count = notification.actions.len().max(1);
+        let pressed = match sym {
+            keysyms::KEY_Escape => None,
+            keysyms::KEY_Left | keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => {
+                self.notifications.answering = Some((notification_id, (selected + count - 1) % count));
+                return self.schedule_render();
+            }
+            keysyms::KEY_Tab if mods.shift => {
+                self.notifications.answering = Some((notification_id, (selected + count - 1) % count));
+                return self.schedule_render();
+            }
+            keysyms::KEY_Right | keysyms::KEY_Down | keysyms::KEY_Tab => {
+                self.notifications.answering = Some((notification_id, (selected + 1) % count));
+                return self.schedule_render();
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space if !mods.logo => Some(selected),
+            keysyms::KEY_1..=keysyms::KEY_9 => Some((sym - keysyms::KEY_1) as usize),
+            keysyms::KEY_KP_1..=keysyms::KEY_KP_9 => Some((sym - keysyms::KEY_KP_1) as usize),
+            // Super+Enter again gives the keyboard back too.
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter => None,
+            _ => return,
+        };
+        self.notifications.answering = None;
+        self.force_keyboard_focus_sync();
+        self.schedule_render();
+        if let Some((key, _)) = pressed.and_then(|index| notification.actions.get(index)) {
+            self.press_notification_button(&notification, key);
+        }
+    }
+
+    /// Gives the keyboard back once the popup being answered has gone.
+    fn check_answering(&mut self) {
+        let Some((notification_id, _)) = self.notifications.answering else { return };
+        let showing =
+            self.notifications.active.get(&notification_id).is_some_and(|notification| notification.show_popup);
+        if !showing || self.notifications.open {
+            self.notifications.answering = None;
+            self.force_keyboard_focus_sync();
+        }
+    }
+
+    /// The key that gives popups the keyboard, such as "Super+Enter", if bound.
+    fn answer_shortcut_label(&self) -> Option<String> {
+        let bind = self
+            .config
+            .binds
+            .iter()
+            .find(|bind| bind.commands.first() == Some(&crate::commands::Command::AnswerNotification))?;
+        let label = crate::launcher::combo_label(bind.mods, bind.key);
+        Some(if self.nested { label.replacen("Super", "Alt", 1) } else { label })
     }
 
     pub fn notification_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
@@ -717,12 +819,30 @@ impl Tileception {
             painter.image(&icon, (cursor_x, card.header.y + 2.0));
             cursor_x += 22.0;
         }
+        // The popup Super+Enter would answer says so; while it has the
+        // keyboard, it says how to give it back.
+        let mut header_right = card.header.right();
+        let answering =
+            card.popup && self.notifications.answering.is_some_and(|(answered, _)| answered == notification.id);
+        let shortcut = if answering {
+            Some("Esc".to_string())
+        } else if card.popup && self.popup_to_answer().is_some_and(|newest| newest.id == notification.id) {
+            self.answer_shortcut_label()
+        } else {
+            None
+        };
+        if let Some(key) = shortcut.as_deref() {
+            let hint = [(key, if answering { "Back" } else { "Choose" })];
+            let width = painter.key_hints(&hint, 0.0, 0.0, true);
+            header_right -= width + 8.0;
+            painter.key_hints(&hint, header_right + 8.0, card.header.y + card.header.h / 2.0, false);
+        }
         let app = if notification.app_name.is_empty() { "Notification" } else { &notification.app_name };
         let header = format!("{app}  \u{00b7}  {}", ago(notification.created));
         painter.text(
             &header,
-            Rect::new(cursor_x, card.header.y, card.header.right() - cursor_x, card.header.h),
-            Style::new(theme.font_size * 0.9, theme.muted),
+            Rect::new(cursor_x, card.header.y, (header_right - cursor_x).max(0.0), card.header.h),
+            Style::new(theme.font_size * 0.9, theme.muted).lines(1),
         );
         let hover_close = card.close.contains(pointer);
         if hover_close {
@@ -779,8 +899,25 @@ impl Tileception {
             } else {
                 theme.text.alpha(0.85)
             };
+            // With the keyboard: a ring on the chosen button, and numbers.
+            let label = if answering {
+                if self.notifications.answering.is_some_and(|(_, chosen)| chosen == index) {
+                    let ring = Rect::new(action.x - 3.0, action.y - 3.0, action.w + 6.0, action.h + 6.0);
+                    painter.shape(
+                        ring,
+                        Shape {
+                            border_width: 2.0,
+                            border: theme.accent,
+                            ..Shape::filled(crate::theme::Colour::TRANSPARENT, theme.radius + 3.0)
+                        },
+                    );
+                }
+                if index < 9 { format!("{}  {label}", index + 1) } else { label.clone() }
+            } else {
+                label.clone()
+            };
             painter.text(
-                label,
+                &label,
                 action.inset(6.0),
                 Style::new(theme.font_size * 0.92, colour).bold().align(Align::Centre),
             );

@@ -311,6 +311,19 @@ impl Tileception {
                 // The menu takes every key while it is open.
                 return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
             }
+            if state.colour_pick.is_some() {
+                return FilterResult::Intercept(vec![Command::ColourPickKey(sym, held)]);
+            }
+            // A popup given the keyboard with Super+Enter keeps it until a
+            // button is chosen or Esc; other Super shortcuts give it back first.
+            if state.notifications.answering.is_some() {
+                let enter = matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter);
+                if !held.logo || enter {
+                    return FilterResult::Intercept(vec![Command::NotificationKey(sym, held)]);
+                }
+                state.notifications.answering = None;
+                state.force_keyboard_focus_sync();
+            }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
             if panels && sym == keysyms::KEY_Escape && held == Mods::default() && state.close_tray() {
@@ -350,6 +363,14 @@ impl Tileception {
                 }
             }
             if panels && state.launcher.open {
+                // Bound keys the launcher has no use for (Print, volume,
+                // media) still work while it is open.
+                if !types(sym)
+                    && let Some(commands) = state.config.lookup(held, raw).or_else(|| state.config.lookup(held, sym))
+                    && !commands.is_empty()
+                {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
                 return FilterResult::Intercept(vec![Command::LauncherKey(sym, Mods::from_state(mods))]);
             }
             if panels && state.doctor.open && state.doctor.focused {
@@ -574,6 +595,14 @@ impl Tileception {
             return;
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
+        // The colour picker's magnifier follows the pointer; nothing else sees it.
+        if self.colour_pick.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.schedule_render();
+            return;
+        }
         if !self.is_locked() && self.power_menu.is_none() && self.handoff_prompt_motion(pos) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -764,6 +793,13 @@ impl Tileception {
         if self.is_locked() {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
+            return;
+        }
+        if self.colour_pick.is_some() {
+            // A left click picks; any other button cancels.
+            if state == ButtonState::Pressed {
+                if button == BTN_LEFT { self.finish_colour_pick() } else { self.cancel_colour_pick() }
+            }
             return;
         }
         if state == ButtonState::Pressed && self.power_menu.is_none() && !self.launcher.open {
@@ -1320,8 +1356,8 @@ fn builtin(held: Mods, sym: u32, raw: u32, in_overview: bool) -> Option<Command>
     None
 }
 
-/// Whether a key is one the Doctor's text field uses: text, or editing and
-/// moving around in it. Everything else may run its shortcut.
+/// Whether a key is one the Doctor's or the launcher's text field uses: text,
+/// or editing and moving around in it. Everything else may run its shortcut.
 fn types(sym: u32) -> bool {
     use keysyms::*;
     let editing = [

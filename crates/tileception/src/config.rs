@@ -545,7 +545,7 @@ mod tests {
         let defaults = Config::default_config().binds.len();
         let logo = Mods { logo: true, ..Default::default() };
         let key = |name| xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS).raw();
-        let config = Config::parse("[binds]\n\"Super+Return\" = \"spawn foot\"").unwrap();
+        let config = Config::parse("[binds]\n\"Super+Y\" = \"spawn foot\"").unwrap();
         assert_eq!(config.binds.len(), defaults + 1, "a new key joins the defaults");
         assert_eq!(config.lookup(logo, key("h")), Some(&[Command::Action(crate::input::Action::Minimize)][..]));
         // The same key written another way still replaces its default.

@@ -24,6 +24,16 @@ pub enum Command {
     Screenshot(std::path::PathBuf),
     /// Puts a PNG file on the clipboard.
     CopyImage(std::path::PathBuf),
+    /// Puts text on the clipboard.
+    CopyText(String),
+    /// Picks a colour from the screen with a magnifier and copies it.
+    PickColour,
+    /// Gives the newest popup with buttons the keyboard, or gives it back.
+    AnswerNotification,
+    /// A key pressed while a popup has the keyboard (not available as text).
+    NotificationKey(u32, crate::config::Mods),
+    /// A key pressed while picking a colour (not available as text).
+    ColourPickKey(u32, crate::config::Mods),
     ReloadConfig,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
@@ -128,11 +138,16 @@ Views:
 Shell:
   launcher                  open the launcher
   notifications             open the notification list
+  answer-notification       give the newest popup with buttons the keyboard:
+                            arrows or numbers and Enter choose, Esc gives it back
   do-not-disturb            toggle do not disturb
   lock                      lock the screen (see lock_command)
   unlock                    end a lock whatever the locker does (from a console)
   power-menu                lock, log out, suspend, restart or power off
   copy-image <file.png>     put a PNG on the clipboard
+  copy-text <text>          put text on the clipboard
+  pick-colour               pick a colour from the screen and copy it as hex
+                            (also: pick-color)
   colour-scheme <s>         dark, light or default, until the config is reloaded
                             (also: color-scheme)
   doctor                    open or close the doctor panel
@@ -297,6 +312,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
             }
             return Ok(Command::Screenshot(rest.into()));
         }
+        "copy-text" => {
+            if rest.is_empty() {
+                return Err("copy-text needs some text".into());
+            }
+            return Ok(Command::CopyText(rest.to_string()));
+        }
         "copy-image" => {
             if rest.is_empty() {
                 return Err("copy-image needs a PNG file".into());
@@ -308,6 +329,10 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let [x_pos, y_pos] = coords[..] else { return Err("drop needs x and y".into()) };
             return Ok(Command::Drop(x_pos, y_pos));
         }
+        "answer-notification" if rest.is_empty() => return Ok(Command::AnswerNotification),
+        "answer-notification" => return Err(format!("answer-notification takes nothing, not {rest:?}")),
+        "pick-colour" | "pick-color" if rest.is_empty() => return Ok(Command::PickColour),
+        "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "quit" => Action::Quit,
@@ -426,6 +451,11 @@ impl Tileception {
             Command::ShowMinimized => self.peek_minimized(),
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
+            Command::CopyText(text) => self.copy_text(text),
+            Command::PickColour => self.pick_colour(),
+            Command::AnswerNotification => self.answer_notification(),
+            Command::NotificationKey(sym, mods) => self.notification_key(sym, mods),
+            Command::ColourPickKey(sym, mods) => self.colour_pick_key(sym, mods),
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),

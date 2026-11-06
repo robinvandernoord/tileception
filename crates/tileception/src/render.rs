@@ -274,6 +274,7 @@ impl Tileception {
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
         if active {
+            elements.extend(self.colour_pick_elements(renderer));
             elements.extend(self.osd_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
             elements.extend(self.handoff_elements(renderer));

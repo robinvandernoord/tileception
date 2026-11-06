@@ -54,6 +54,8 @@ pub enum CaptureTarget {
     },
     /// The whole output without the rubber duck, for its question.
     Duck,
+    /// The whole output, for the colour picker's magnifier.
+    ColourPick,
 }
 
 /// What is on screen, ready to be rendered into each capture's buffer.
@@ -82,11 +84,13 @@ pub fn init_screencopy(display_handle: &DisplayHandle) {
 
 impl Tileception {
     pub fn fail_captures(&mut self) {
-        for capture in self.pending_captures.drain(..) {
+        let pending = std::mem::take(&mut self.pending_captures);
+        for capture in pending {
             match capture.target {
                 CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
                 CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
                 CaptureTarget::Duck => {}
+                CaptureTarget::ColourPick => self.cancel_colour_pick(),
             }
         }
     }
@@ -198,6 +202,13 @@ impl Tileception {
                     let rendered = render_scene(renderer, &mut dmabuf, shown);
                     finish_frame(&frame, region.size, damage, rendered);
                 }
+                CaptureTarget::ColourPick => match pixels(renderer, &mut texture, &scene, region) {
+                    Ok(rgba) => self.colour_pick_taken(rgba, (region.size.w, region.size.h)),
+                    Err(err) => {
+                        tracing::warn!("colour pick capture failed: {err}");
+                        self.cancel_colour_pick();
+                    }
+                },
                 CaptureTarget::Duck => {}
             }
         }

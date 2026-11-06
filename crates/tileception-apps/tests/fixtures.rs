@@ -80,6 +80,7 @@ fn finds_apps_by_program() {
     );
     let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
     assert_eq!(index.by_program(Path::new("/usr/bin/keepassxc")).unwrap().name, "KeePassXC");
+    assert_eq!(index.get("keepassxc.desktop").unwrap().source, fixture.0.join("apps/keepassxc.desktop"));
     assert!(index.by_program(Path::new("/usr/bin/keepass")).is_none());
     assert!(index.by_program(Path::new("/")).is_none());
 }

@@ -189,6 +189,8 @@ pub struct Tileception {
     /// Blurred backdrops for frosted panels.
     pub frost: std::cell::RefCell<crate::frost::Frost>,
     pub power_menu: Option<crate::power::PowerMenu>,
+    /// A colour pick in progress, which takes the pointer and keyboard.
+    pub colour_pick: Option<crate::colour_pick::ColourPick>,
     pub launcher: crate::launcher::Launcher,
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
@@ -366,6 +368,7 @@ impl Tileception {
             shapes: Default::default(),
             frost: Default::default(),
             power_menu: None,
+            colour_pick: None,
             launcher: Default::default(),
             glyphs: Default::default(),
             notifications: Default::default(),
@@ -688,7 +691,7 @@ impl Tileception {
             None
         } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
-        } else if self.power_menu.is_some() {
+        } else if self.power_menu.is_some() || self.colour_pick.is_some() || self.notifications.answering.is_some() {
             None
         } else if let Some(away) = self.away_keyboard_target() {
             // One of this machine's windows, typed into from another machine.

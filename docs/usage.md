@@ -164,6 +164,8 @@ window.
 | Super+B       | Open the default browser              |
 | Super+E       | Open your home folder                 |
 | Super+N       | Open notifications and sound controls |
+| Super+Enter   | Answer a popup's buttons by keyboard  |
+| Ctrl+Print    | Pick a colour from the screen         |
 | Super+/       | Open Doctor                           |
 | Super+L       | Lock the screen                       |
 | Super+X       | Open the power menu                   |
@@ -177,6 +179,26 @@ open the selected result. Use the arrow keys to choose another result and
 
 The launcher also handles calculations, unit conversions, file paths and URLs.
 Prefix a shell command with `>` to run it and see its output.
+
+Press **Alt+Enter** on an application to see its desktop entry: the command it
+runs (including `[launch_args]`), the `.desktop` file it comes from and
+whether that is a system, Flatpak or Snap entry or your own. From there you can
+copy either, open the file in your text editor, or **Edit a copy**: a copy in
+`~/.local/share/applications` takes precedence over the system entry, so
+your changes survive package updates. **Escape** goes back to the results.
+
+Type `z` and a space, then parts of a folder's path, to list the folders you
+visit most, as [z](https://github.com/rupa/z) and
+[zoxide](https://github.com/ajeetdsouza/zoxide) know them: `z proj web` finds
+`~/projects/website`. **Enter** opens the folder in the file manager,
+**Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
+from typed paths work the same way.
+
+Popups never take the keyboard by themselves. To answer one with buttons, such
+as the screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
+popup shows the hint): its buttons get numbers. Press a number, or choose with
+the arrow keys or **Tab** and press **Enter**. **Escape**, or **Super+Enter**
+again, gives the keyboard back without answering.
 
 **Super+N** opens notification history and sound controls, and your smart home
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
@@ -207,6 +229,14 @@ to discard the capture, or press **Escape** during region selection to cancel.
 
 Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`.
+
+### Colour picker
+
+**Ctrl+Print**, or "Pick a colour" in the launcher, shows a magnifier next to
+the pointer. Click, or press **Enter**, to copy the colour under it as hex,
+such as `#2acea2`. The arrow keys move a pixel at a time, ten with **Shift**;
+**Escape** or a right click cancels. A notification then offers the RGB and
+HSL notations and another pick, also from the launcher's top rows.
 
 ### Password manager auto-type
 

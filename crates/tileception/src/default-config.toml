@@ -353,6 +353,7 @@ repeat_rate = 30
 "Super+L" = "lock"
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
+"Super+Return" = "answer-notification"
 "Super+slash" = "doctor"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
@@ -434,6 +435,7 @@ repeat_rate = 30
 
 # Screenshots (grim and slurp). Print captures the whole screen; Shift+Print
 # lets you drag a region. Both ask whether to copy, save, or do both.
+# Ctrl+Print picks a colour from the screen and copies it as hex.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"
 "XF86AudioMute" = "volume mute"
@@ -456,6 +458,7 @@ repeat_rate = 30
 "Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
 "Shift+Print" = "spawn tileception-screenshot region --ask"
+"Ctrl+Print" = "pick-colour"
 
 "Super+1" = "go 1"
 "Super+2" = "go 2"
