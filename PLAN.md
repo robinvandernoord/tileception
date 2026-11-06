@@ -65,6 +65,77 @@ language as the bindings.
 
 ### Later
 
+- Doctor's Ask and Tweak modes the same for every agent. Today only Yolo
+  switches the agent's own mode, so OpenCode edits without asking in Ask and
+  Codex's sandbox refuses instead of asking. Decided:
+  - Every Tileception mode sets the agent's own mode, through the config
+    option of category "mode" and the older `session/set_mode`, from a small
+    table of known ids: Codex `read-only` for Ask and Tweak and
+    `agent-full-access` for Yolo; Claude `default` and `bypassPermissions`
+    (check the ids against what Claude lists). Tweak's own policy then
+    approves config edits and safe commands as they arrive.
+  - OpenCode has no such modes: Doctor starts it with
+    `OPENCODE_PERMISSION='{"edit":"ask","bash":"ask"}'` outside Yolo, and
+    restarts it when the mode changes. First check that `opencode acp`
+    sends "ask" as a permission request rather than rejecting it.
+  - An agent without a known ask-first mode gets a warning beside the mode
+    switch instead of a silent, weaker Ask.
+  - The mode is restated with the next message after a switch, and approved
+    paths last for one message, not the whole conversation.
+  - Tried headless with OpenCode, Codex and Claude in each mode.
+- Small windows stay usable. Today a resting tiled window more than 32 px
+  bigger than its tile (usually from a minimum size) becomes a preview: a
+  frozen picture that takes no pointer input. Decided:
+  - A window is live, drawn from its own updating buffers and scaled down
+    if needed, with all pointer input (hover, cursor shape, scrolling,
+    clicks, popups, drags) mapped through that scale.
+  - It becomes a preview only below a scale threshold, configurable (for
+    example 0.5), and still while the camera moves and in Overview.
+  - Optionally, a window only slightly too big (within 5 to 10 percent) is
+    drawn 1:1 and cut off instead of scaled, so its text stays sharp. This
+    replaces `MAX_CLIP` and the exact 1:1 rule.
+- Launcher plugins: any program (Python script, Rust binary, anything) as an
+  MCP server over stdio. Decided:
+  - A small documented convention on top of MCP: a `launcher_search` tool
+    taking `{ query }` and returning rows (title, detail, icon, actions) as
+    structured output. Actions are mostly done by Tileception itself (copy,
+    open a path or link, run a command) or call another of the plugin's
+    tools, so every plugin feels like the rest of the launcher.
+  - A prefix is required: a plugin only sees queries starting with one of
+    its keywords (several allowed, such as `timer` and `remind`). No plugins
+    that see every query; a locally matched pattern may come later.
+  - Asynchronous: the compositor never waits on a plugin; stale queries are
+    cancelled. Plugins are long-running processes with timeouts and a
+    restart, trusted like `spawn`.
+  - Built-in sources share one internal result interface with plugins.
+    `z` folders, timers and the smart home become bundled plugins; the
+    instant pure ones (calculations, conversions, times, colours,
+    characters) and those needing compositor state (apps, windows, commands,
+    app details, `>`, the colour picker) stay built in.
+  - Adding one means pointing at a command (any executable, with
+    arguments). The plugin reports its name, description, icon and default
+    prefixes over MCP (for example a `launcher_info` tool); the user only
+    overrides what they want:
+
+    ```toml
+    [launcher.plugins.weather]
+    command = "~/bin/weather --units metric"
+    # prefixes = ["w", "weather"]   # the plugin's own by default
+    # enabled = false
+    ```
+
+  - The same fields as a `.toml` file per plugin are read from
+    `~/.local/share/tileception/plugins/` (installed by the user, such as
+    with pip) and `/usr/share/tileception/plugins/` (packages and the bundled
+    plugins), so installing one needs no edit to `config.toml`.
+    `[launcher.plugins]` in `config.toml` can switch any of them off or change
+    their prefixes.
+  - Clashing prefixes: `config.toml` wins over the user folder, which wins
+    over the system folder; the one that loses is shown in the log and in
+    Doctor, never dropped silently.
+  - Possibly later: `tileception msg plugin add <command>` writes the config
+    entry, so Doctor can set a plugin up on request.
+  - The same plugins can later be offered to Doctor's agent as MCP servers.
 - A settings window instead of editing the config file.
 - Display settings in that window, like Cinnamon's: rotation, resolution and
   refresh rate, scale, arrangement and turning screens off. Screens cannot be
