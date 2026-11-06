@@ -628,6 +628,7 @@ impl Tileception {
         }
         let point = tileception_core::Point::new(pos.x, pos.y);
         if !self.is_locked() && self.feedback.is_some() {
+            self.feedback_motion(tileception_core::Point::new(pos.x, pos.y));
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -828,6 +829,17 @@ impl Tileception {
             return;
         }
         if !self.is_locked() && self.feedback.is_some() {
+            if button == BTN_LEFT && state == ButtonState::Pressed {
+                let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+                if let Some(target) = self.feedback_pointer_target(point)
+                    && target.on_press()
+                {
+                    target.activate(self, point);
+                }
+            }
+            if button == BTN_LEFT && state == ButtonState::Released {
+                self.feedback_release();
+            }
             return;
         }
         // A held slider lets go wherever the button comes up.

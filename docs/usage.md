@@ -222,12 +222,15 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
-"Send feedback" and `tileception msg feedback [title]` first show a confirmation
-with the exact title and issue body, including Tileception's version.
+"Send feedback" and `tileception msg feedback [title]` open editable title and
+feedback fields. Enter adds a line in the feedback field; the usual selection,
+word navigation and clipboard shortcuts work. Choose **Review** to see the
+exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
-**Cancel** or **Escape** closes the dialog. **Open in browser** opens the
+**Edit** or **Escape** returns from the preview to your draft; **Cancel** or
+Escape while editing closes the dialog. **Open in browser** opens the
 prefilled GitHub issue, where you can edit and submit it using your GitHub
 account. Tileception does not submit the issue. Anonymous feedback remains
 deferred.

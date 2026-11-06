@@ -293,6 +293,14 @@ headless instances. Evidence: `target/integration-verification/final-parent/REPO
   - Done 2026-11-06: a confirmation view before the browser opens, with an unchecked
     "Include system details" option and an exact preview of what will be
     included. The anonymous relay remains deferred (decided 2026-11-06).
+  - Done 2026-11-06: editable title and multiline feedback before Review,
+    using shared text-field editing. Desktop/320x240 checks covered compose,
+    selection, clipboard editing and exact browser payloads. Created the
+    repository's missing `feedback`
+    label; the issue template still needs to reach the default branch for
+    automatic template labels for non-maintainers.
+  - [ ] Optional screenshot attachment: explicit opt-in, preview the captured
+    image before including it, and allow removing it before opening the issue.
   - Later, for people without a GitHub account: a small relay (OVH host or a
     serverless function) holding a GitHub App's key, which files the issue
     as the App's bot. The key never ships in Tileception. The relay needs

@@ -30,11 +30,9 @@ impl Repeat {
                 Command::LauncherKey(sym, mods)
                 | Command::DuckKey(sym, mods)
                 | Command::DoctorKey(sym, mods)
+                | Command::FeedbackKey(sym, mods)
                 | Command::SettingsKey(sym, mods) => edits(*sym, *mods),
                 Command::PowerMenuKey(sym) => edits(*sym, Mods::default()),
-                Command::FeedbackKey(sym, _) => {
-                    matches!(*sym, keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down)
-                }
                 Command::ColourPickKey(sym, mods) => edits(*sym, *mods),
                 Command::NotificationKey(sym, _) => {
                     matches!(*sym, keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down)
@@ -117,7 +115,7 @@ impl Tileception {
                     Command::DuckKey(..) => self.duck.typing(),
                     Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),
-                    Command::FeedbackKey(..) => self.feedback.is_some(),
+                    Command::FeedbackKey(sym, mods) => self.feedback_key_repeats(*sym, *mods),
                     Command::ColourPickKey(..) => self.colour_pick.is_some(),
                     Command::NotificationKey(..) => self.notifications.answering.is_some(),
                     _ => true,
