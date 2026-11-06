@@ -94,6 +94,8 @@ pub struct General {
     pub default_binds: bool,
     /// Show the launcher, with a clock, on an empty desktop.
     pub welcome: bool,
+    /// Map the full edge proportionally when crossing to an adjacent screen.
+    pub stretch_screen_edges: bool,
 }
 
 impl Default for General {
@@ -112,6 +114,7 @@ impl Default for General {
             suspend_enabled: true,
             default_binds: true,
             welcome: true,
+            stretch_screen_edges: false,
         }
     }
 }

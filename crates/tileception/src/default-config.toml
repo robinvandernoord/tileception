@@ -348,6 +348,7 @@ repeat_rate = 30
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
 "Super+slash" = "doctor"
+"Super+comma" = "settings"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]

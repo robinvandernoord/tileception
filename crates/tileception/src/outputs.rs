@@ -1067,6 +1067,13 @@ impl Tileception {
     /// pointer and layout coordinates stay local to its output.
     pub fn desktop_motion(&mut self, position: Point<f64, Logical>) -> Point<f64, Logical> {
         let Some(current) = self.output.clone() else { return position };
+        let stretched = self
+            .config
+            .file
+            .general
+            .stretch_screen_edges
+            .then(|| self.stretched_screen_target(&current, position))
+            .flatten();
         let location = current.current_location().to_f64();
         let global = position + location;
         let outputs = self.all_outputs();
@@ -1084,7 +1091,9 @@ impl Tileception {
                 nearest = Some((output, clamped, distance));
             }
         }
-        let Some((target, position, _)) = nearest else { return position };
+        let Some((target, position, _)) = stretched.map(|(output, point)| (output, point, 0.)).or(nearest) else {
+            return position;
+        };
         if target != current {
             if let Some(drag) = self.move_drag {
                 let _ = self.move_window_to_output(drag.window, &target);
@@ -1110,6 +1119,78 @@ impl Tileception {
             }
         }
         position
+    }
+
+    fn stretched_screen_target(
+        &self,
+        current: &Output,
+        point: Point<f64, Logical>,
+    ) -> Option<(Output, Point<f64, Logical>)> {
+        let geometry = |output: &Output| {
+            let mode = output.current_mode()?;
+            let size = output
+                .current_transform()
+                .transform_size(mode.size.to_f64().to_logical(output.current_scale().fractional_scale()));
+            let location = output.current_location();
+            Some(Rect::new(location.x as f64, location.y as f64, size.w, size.h))
+        };
+        let source = geometry(current)?;
+        let horizontal = point.x < 0. || point.x >= source.w;
+        let vertical = point.y < 0. || point.y >= source.h;
+        if !horizontal && !vertical {
+            return None;
+        }
+        let horizontal = if horizontal && vertical {
+            (if point.x < 0. { -point.x } else { point.x - source.w })
+                >= (if point.y < 0. { -point.y } else { point.y - source.h })
+        } else {
+            horizontal
+        };
+        let forward = if horizontal { point.x >= source.w } else { point.y >= source.h };
+        let mut candidates = Vec::new();
+        for output in self.all_outputs() {
+            if &output == current {
+                continue;
+            }
+            let Some(target) = geometry(&output) else { continue };
+            let (gap, overlap, along, start, span) = if horizontal {
+                (
+                    if forward { target.x - source.right() } else { source.x - target.right() },
+                    source.bottom().min(target.bottom()) - source.y.max(target.y),
+                    source.y + point.y,
+                    target.y,
+                    target.h,
+                )
+            } else {
+                (
+                    if forward { target.y - source.bottom() } else { source.y - target.bottom() },
+                    source.right().min(target.right()) - source.x.max(target.x),
+                    source.x + point.x,
+                    target.x,
+                    target.w,
+                )
+            };
+            if gap < -1. || overlap <= 0. {
+                continue;
+            }
+            let distance = (along - along.clamp(start, start + span)).abs();
+            candidates.push((gap.max(0.), distance, output, target));
+        }
+        candidates.sort_by(|left, right| left.0.total_cmp(&right.0).then_with(|| left.1.total_cmp(&right.1)));
+        let (_, _, output, target) = candidates.into_iter().next()?;
+        let mapped = if horizontal {
+            let fraction = (point.y / (source.h - 1.).max(1.)).clamp(0., 1.);
+            let overflow = if forward { point.x - source.w } else { -point.x };
+            (if forward { overflow } else { target.w - 1. - overflow }, fraction * (target.h - 1.).max(0.))
+        } else {
+            let fraction = (point.x / (source.w - 1.).max(1.)).clamp(0., 1.);
+            let overflow = if forward { point.y - source.h } else { -point.y };
+            (fraction * (target.w - 1.).max(0.), if forward { overflow } else { target.h - 1. - overflow })
+        };
+        Some((
+            output,
+            (mapped.0.clamp(0., (target.w - 1.).max(0.)), mapped.1.clamp(0., (target.h - 1.).max(0.))).into(),
+        ))
     }
 
     pub fn desktop_bounds(&self) -> Rect {
