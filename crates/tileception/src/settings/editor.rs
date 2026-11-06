@@ -8,7 +8,7 @@ const LIMIT: usize = 256 * 1024;
 
 pub(super) struct Editor {
     input: TextInput,
-    field: Option<usize>,
+    pub(super) field: Option<usize>,
     first: usize,
     horizontal: usize,
     error: String,
@@ -139,7 +139,7 @@ impl Tileception {
         match result {
             Ok(()) => {
                 self.settings.editor = None;
-                self.settings.message = "Draft updated. Apply to save.".into();
+                self.settings.message.clear();
                 self.settings.error = false;
                 if apply {
                     self.settings_activate(Hit::Apply, None);
@@ -170,7 +170,7 @@ impl Tileception {
         let area = body(&frame);
         if point.y > frame.panel.bottom() - 58. {
             if point.x > frame.panel.right() - 160. {
-                self.finish_settings_editor(false);
+                self.finish_settings_editor(true);
             } else if point.x > frame.panel.right() - 280. {
                 self.settings.editor = None;
             }
@@ -197,6 +197,14 @@ impl Tileception {
 
     pub fn settings_insert_paste(&mut self, epoch: u64, text: &str) {
         if self.settings.editor_epoch != epoch {
+            return;
+        }
+        if self.settings.keymap.is_some() {
+            self.keymap_paste(text);
+            return;
+        }
+        if self.settings.section.is_some() {
+            self.section_paste(text);
             return;
         }
         if self.settings.connect.is_some() {
@@ -234,7 +242,7 @@ impl Tileception {
                 && editor.input.text != editor.original
             {
                 self.settings.parked_editors.push(editor);
-                self.settings.message = "Editor draft kept. Reopen its editor to resume.".into();
+                self.settings.message.clear();
             }
             self.schedule_render();
             return;
@@ -244,7 +252,7 @@ impl Tileception {
             return;
         }
         if mods.ctrl && sym == keysyms::KEY_Return {
-            self.finish_settings_editor(false);
+            self.finish_settings_editor(true);
             return;
         }
         if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
@@ -395,7 +403,7 @@ impl Tileception {
             Rect::new(area.x, frame.panel.bottom() - 61., area.w - 285., 52.),
             Style::new(11., if editor.error.is_empty() { theme.muted } else { theme.danger }).lines(3),
         );
-        for (right, label) in [(280., "Cancel"), (160., if editor.reference { "Close" } else { "Use draft" })] {
+        for (right, label) in [(280., "Cancel"), (160., if editor.reference { "Close" } else { "Apply changes" })] {
             let rect = Rect::new(frame.panel.right() - right, frame.panel.bottom() - 49., 110., 33.);
             painter.fill(rect, theme.surface_raised, 6.);
             painter.text(label, rect, Style::new(12., theme.text).align(Align::Centre));

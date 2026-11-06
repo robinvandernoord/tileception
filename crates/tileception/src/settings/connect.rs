@@ -111,7 +111,7 @@ impl Tileception {
     }
 
     fn connect_layout(&self) -> Layout {
-        let screen = self.output_rect();
+        let screen = self.settings_frame().panel;
         let width = (screen.w - 48.).clamp(280., 720.).min(screen.w);
         let height = (screen.h - 48.).clamp(240., 620.).min(screen.h);
         let panel = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
@@ -458,7 +458,7 @@ impl Tileception {
         let layout = self.connect_layout();
         let theme = &self.theme;
         let busy = form.job.is_some();
-        painter.fill(self.output_rect(), Colour([0., 0., 0., 0.55]), 0.);
+        painter.fill(self.settings_frame().panel, Colour([0., 0., 0., 0.55]), 10.);
         painter.shape(
             layout.panel,
             Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, 8.) },

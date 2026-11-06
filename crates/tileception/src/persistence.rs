@@ -93,6 +93,8 @@ impl Tileception {
             return;
         }
         let mut ids = self.world.tree().windows_in(self.world.tree().root());
+        // Settings is Tileception's own and opens fresh each time.
+        ids.retain(|window| !self.is_settings_window(*window));
         ids.sort();
         if ids.is_empty() {
             return;

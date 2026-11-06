@@ -99,7 +99,6 @@ impl Tileception {
         self.loop_handle.insert_idle(|state| state.greeter_keyboard_layouts());
         self.power_menu = None;
         self.launcher.open = false;
-        self.settings.open = false;
         self.settings_release();
         self.notifications.open = false;
         self.move_drag = None;

@@ -4,10 +4,13 @@ use smithay::{
     backend::renderer::gles::GlesRenderer,
     input::keyboard::{keysyms, xkb},
 };
-use tileception_core::{Point, Rect};
+use tileception_core::{Placement, Point, Rect, WindowId};
 
+mod colour;
 mod connect;
 mod editor;
+mod keymap;
+mod sections;
 
 use crate::{
     Tileception,
@@ -25,7 +28,8 @@ enum Control {
     Choice(&'static [&'static str]),
     Text,
     Colour,
-    Toml,
+    Section,
+    Keyboard,
 }
 
 struct Field {
@@ -198,7 +202,7 @@ const FIELDS: &[Field] = &[
         "shell.tray_max_icons",
         "Tray slots",
         "Extra applications move into an overflow menu.",
-        Control::Number(1., 8., 1., ""),
+        Control::Number(1., 8., 1., "icons"),
     ),
     field(2, "shell.launcher", "Launcher", "The panel opened with Super.", Control::Choice(&["builtin", "none"])),
     field(
@@ -215,7 +219,7 @@ const FIELDS: &[Field] = &[
         "The assistant panel opened with Super+/.",
         Control::Choice(&["builtin", "none"]),
     ),
-    field(3, "keyboard.layout", "Keyboard layout", "XKB layout names, such as us or us,nl.", Control::Text),
+    field(3, "keyboard.layout", "Keyboard layout", "Choose a layout and variant.", Control::Keyboard),
     field(
         3,
         "keyboard.repeat_delay",
@@ -244,15 +248,15 @@ const FIELDS: &[Field] = &[
         4,
         "idle.lock_after",
         "Lock after idle",
-        "Seconds of inactivity. Zero means never.",
-        Control::Number(0., 1800., 60., "s"),
+        "Time without input before the screen locks.",
+        Control::Number(0., 3600., 60., "s"),
     ),
     field(
         4,
         "idle.off_after",
         "Screen off after idle",
-        "Seconds of inactivity. Zero means never.",
-        Control::Number(0., 3600., 60., "s"),
+        "Time without input before the screens turn off.",
+        Control::Number(0., 7200., 60., "s"),
     ),
     field(
         4,
@@ -267,6 +271,13 @@ const FIELDS: &[Field] = &[
         "Power saver at",
         "Switch profiles at or below this charge.",
         Control::Number(0., 50., 1., "%"),
+    ),
+    field(
+        4,
+        "battery.power_profiles",
+        "Automatic power profiles",
+        "Select profiles based on charger and battery state.",
+        Control::Toggle,
     ),
     field(
         4,
@@ -300,7 +311,7 @@ const FIELDS: &[Field] = &[
     ),
     field(6, "general.suspend_enabled", "Allow suspend", "Show suspend in the power menu.", Control::Toggle),
     field(6, "general.welcome", "Welcome launcher", "Show the launcher on an empty desktop.", Control::Toggle),
-    field(7, "general.autostart", "Autostart commands", "Commands run once when the session starts.", Control::Toml),
+    field(7, "general.autostart", "Autostart commands", "Commands run once when the session starts.", Control::Section),
     field(
         7,
         "general.default_binds",
@@ -308,9 +319,9 @@ const FIELDS: &[Field] = &[
         "Include the built-in bindings; custom shortcuts override them.",
         Control::Toggle,
     ),
-    field(7, "binds", "Keyboard & gesture shortcuts", "Map key combinations and gestures to commands.", Control::Toml),
+    field(7, "binds", "Keyboard & gesture shortcuts", "Record shortcuts and choose their actions.", Control::Section),
     field(7, "general.terminal", "Default terminal", "Terminal command used by the desktop.", Control::Text),
-    field(7, "launch_args", "Application arguments", "Extra arguments by desktop file name.", Control::Toml),
+    field(7, "launch_args", "Application arguments", "Extra arguments by desktop file name.", Control::Section),
     field(0, "theme.font", "Interface font", "Font family used by built-in panels.", Control::Text),
     field(0, "theme.wallpaper", "Wallpaper", "Image path. Empty uses the background colour.", Control::Text),
     field(
@@ -337,7 +348,7 @@ const FIELDS: &[Field] = &[
     field(0, "theme.danger", "Error colour", "Errors and critical notifications.", Control::Colour),
     field(0, "theme.warning", "Warning colour", "Warnings and caution states.", Control::Colour),
     field(0, "theme.guest", "Guest window colour", "Borders of windows from another computer.", Control::Colour),
-    field(1, "rules", "Window rules", "Floating, size, fullscreen and minimized rules.", Control::Toml),
+    field(1, "rules", "Window rules", "Floating, size, fullscreen and minimized rules.", Control::Section),
     field(
         2,
         "shell.power_menu",
@@ -375,7 +386,7 @@ const FIELDS: &[Field] = &[
         "How long an indicator remains visible.",
         Control::Number(100., 5000., 100., "ms"),
     ),
-    field(2, "duck.size", "Rubber duck size", "Size of the desktop duck.", Control::Number(24., 160., 4., "px")),
+    field(2, "duck.size", "Rubber duck size", "1 is the normal size.", Control::Number(0.5, 4., 0.25, "x")),
     field(3, "keyboard.variant", "Keyboard variant", "XKB variant, such as altgr-intl.", Control::Text),
     field(3, "keyboard.options", "Keyboard options", "XKB options, such as compose:ralt.", Control::Text),
     field(3, "keyboard.model", "Keyboard model", "Empty uses the default XKB model.", Control::Text),
@@ -401,13 +412,12 @@ const FIELDS: &[Field] = &[
         Control::Toggle,
     ),
     field(4, "battery.charging", "Charging colour", "A hex colour or a named theme colour.", Control::Text),
-    field(4, "battery.levels", "Battery colour thresholds", "Charge levels and their border colours.", Control::Toml),
     field(
         4,
-        "battery.power_profiles",
-        "Automatic power profiles",
-        "Select profiles based on charger and battery state.",
-        Control::Toggle,
+        "battery.levels",
+        "Battery colour thresholds",
+        "Charge levels and their border colours.",
+        Control::Section,
     ),
     field(
         6,
@@ -416,9 +426,22 @@ const FIELDS: &[Field] = &[
         "Publish this session's accent and wallpaper.",
         Control::Toggle,
     ),
-    field(8, "touchscreens", "Touchscreens", "Map touchscreen device names to outputs.", Control::Toml),
-    field(8, "outputs", "Displays", "Scale, position and split areas by connector.", Control::Toml),
-    field(8, "handoff", "Sharing", "Peer names, addresses, discovery, port and passphrase.", Control::Toml),
+    field(
+        8,
+        "outputs",
+        "Displays",
+        "Arrange monitors, how the pointer crosses between them, scaling and screen areas.",
+        Control::Section,
+    ),
+    field(
+        8,
+        "general.stretch_screen_edges",
+        "Full-edge pointer crossing",
+        "Map the whole screen edge proportionally onto the neighboring screen.",
+        Control::Toggle,
+    ),
+    field(8, "touchscreens", "Touchscreens", "Choose the display each touchscreen controls.", Control::Section),
+    field(8, "handoff", "Sharing", "Connect computers to share mouse, keyboard and clipboard.", Control::Section),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -427,6 +450,8 @@ enum Hit {
     Card(usize),
     Search,
     Field(usize),
+    /// The swatch of a colour field, which opens the colour picker.
+    Swatch(usize),
     Reset(usize),
     ResetSection,
     Discard,
@@ -439,11 +464,17 @@ enum Hit {
     HomeImport,
     HomeCloud(bool),
     Reference,
+    AdvancedAppearance,
+    ReviewChanges,
 }
 
 #[derive(Default)]
 pub struct Settings {
     pub open: bool,
+    /// The window Settings is shown in, while open.
+    window: Option<WindowId>,
+    /// That window's size, as the layout last gave it.
+    size: (f64, f64),
     page: Option<usize>,
     query: String,
     before: Vec<Option<toml::Value>>,
@@ -466,6 +497,15 @@ pub struct Settings {
     home_cloud_labels: [String; 2],
     needs_reload: bool,
     connect: Option<connect::Connect>,
+    section: Option<sections::model::Screen>,
+    parked_sections: Vec<sections::model::Screen>,
+    identify_until: Option<std::time::Instant>,
+    advanced_appearance: bool,
+    keymap: Option<keymap::Picker>,
+    review_changes: bool,
+    colour: Option<colour::Picker>,
+    /// Full-edge crossing as it was when the Displays screen opened, for its Cancel.
+    edges_before: Option<Option<toml::Value>>,
 }
 
 fn values(file: &ConfigFile) -> Result<Vec<Option<toml::Value>>, String> {
@@ -479,6 +519,25 @@ fn values(file: &ConfigFile) -> Result<Vec<Option<toml::Value>>, String> {
         .collect())
 }
 
+fn advanced_appearance(key: &str) -> bool {
+    matches!(
+        key,
+        "theme.accent_end"
+            | "theme.glow"
+            | "theme.popup_radius"
+            | "theme.background"
+            | "theme.surface"
+            | "theme.surface_raised"
+            | "theme.border"
+            | "theme.text"
+            | "theme.muted"
+            | "theme.on_accent"
+            | "theme.danger"
+            | "theme.warning"
+            | "theme.guest"
+    )
+}
+
 fn show(value: Option<&toml::Value>) -> String {
     match value {
         Some(toml::Value::String(text)) => text.clone(),
@@ -488,26 +547,131 @@ fn show(value: Option<&toml::Value>) -> String {
     }
 }
 
+/// The heading a field is listed under on its category page. Fields with an
+/// empty group open the page without a heading.
+fn group(key: &str) -> &'static str {
+    match key {
+        "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.tray_max_icons" => "Bar",
+        "shell.launcher" | "shell.notifications" | "shell.doctor" | "shell.power_menu" | "duck.size" => "Panels",
+        "shell.media" => "Media keys",
+        "shell.lock" | "general.lock_command" => "Lock screen",
+        "general.suspend_enabled" | "general.welcome" | "greeter.share" => "Session",
+        "general.default_binds" | "binds" => "Shortcuts",
+        "general.autostart" | "general.terminal" | "launch_args" => "Applications",
+        "general.stretch_screen_edges" | "outputs" | "touchscreens" => "Displays",
+        "handoff" => "Sharing",
+        key if advanced_appearance(key) => "Advanced",
+        key if key.starts_with("media.") => "Media keys",
+        key if key.starts_with("keyboard.") => "Keyboard",
+        key if key.starts_with("touchpad.") => "Touchpad",
+        key if key.starts_with("idle.") => "Idle",
+        key if key.starts_with("battery.") => "Battery",
+        _ => "",
+    }
+}
+
+const GROUPS: &[&str] = &[
+    "",
+    "Bar",
+    "Panels",
+    "Media keys",
+    "Keyboard",
+    "Touchpad",
+    "Idle",
+    "Battery",
+    "Lock screen",
+    "Session",
+    "Shortcuts",
+    "Applications",
+    "Displays",
+    "Sharing",
+    "Advanced",
+];
+
+/// A config value as the panel shows it: "Built-in" rather than `builtin`.
+fn choice_label(key: &str, value: &str) -> String {
+    match (key, value) {
+        (_, "builtin") => "Built-in".into(),
+        (_, "none") => "Off".into(),
+        ("theme.colour_scheme", "default") => "Each app decides".into(),
+        (_, "center") => "Centre".into(),
+        (_, "areas") => "Click areas".into(),
+        (_, "clickfinger") => "Finger count".into(),
+        (_, value) if value.chars().all(|character| character.is_ascii_lowercase()) => {
+            let mut characters = value.chars();
+            characters
+                .next()
+                .map_or_else(String::new, |first| first.to_ascii_uppercase().to_string() + characters.as_str())
+        }
+        (_, value) => value.into(),
+    }
+}
+
+/// Seconds as a short duration: "45 s", "10 min", "1 h 30 min".
+fn duration(seconds: f64) -> String {
+    let seconds = seconds.round() as i64;
+    if seconds < 60 {
+        return format!("{seconds} s");
+    }
+    let minutes = seconds / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    }
+}
+
+fn number_label(key: &str, number: f64, unit: &str) -> String {
+    if key.starts_with("idle.") {
+        return if number == 0. { "Never".into() } else { duration(number) };
+    }
+    if unit == "x" {
+        return format!("{number}x");
+    }
+    if key == "touchpad.speed" {
+        return if number == 0. { "Default".into() } else { format!("{number:+.1}") };
+    }
+    let number = (number * 100.).round() / 100.;
+    if unit.is_empty() { number.to_string() } else { format!("{number} {unit}") }
+}
+
+/// A battery colour as entered: a hex colour or a theme colour's name.
+fn named_colour(theme: &crate::theme::Theme, value: &str) -> Option<Colour> {
+    Colour::parse(value).ok().or(match value {
+        "accent" => Some(theme.accent),
+        "warning" => Some(theme.warning),
+        "danger" => Some(theme.danger),
+        "muted" => Some(theme.muted),
+        "text" => Some(theme.text),
+        _ => None,
+    })
+}
+
 struct Frame {
     panel: Rect,
     body: Rect,
     content: Rect,
+    /// Where the scrolled part of the page starts.
+    top: f64,
     preview: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
     rows: Vec<(Rect, usize)>,
     cards: Vec<(Rect, usize)>,
     config: Option<Rect>,
-    group: Option<Rect>,
+    /// Each group's heading and the card holding its rows.
+    groups: Vec<(&'static str, Rect)>,
+    advanced: Option<Rect>,
+    /// The card holding the smart-home connection controls.
+    home: Option<Rect>,
     max_scroll: f64,
 }
 
 fn viewport(frame: &Frame) -> Rect {
-    let offset = if frame.config.is_some() && frame.body.h < 500. { 88. } else { 100. };
     Rect::new(
         frame.content.x - 1.,
-        frame.content.y + offset,
+        frame.top,
         frame.content.w + 2.,
-        (frame.config.map_or(frame.body.bottom() - 8., |rect| rect.y - 12.) - frame.content.y - offset).max(1.),
+        (frame.config.map_or(frame.body.bottom() - 8., |rect| rect.y - 12.) - frame.top).max(1.),
     )
 }
 
@@ -520,10 +684,10 @@ fn intersect(left: Rect, right: Rect) -> Option<Rect> {
 }
 
 fn control_rect(row: Rect) -> Rect {
-    Rect::new(row.right() - 194., row.y + 18., 150., 38.)
+    Rect::new(row.right() - 194., row.y + (row.h - 36.) / 2., 150., 36.)
 }
 fn reset_rect(row: Rect) -> Rect {
-    Rect::new(row.right() - 36., row.y + 21., 28., 32.)
+    Rect::new(row.right() - 36., row.y + (row.h - 32.) / 2., 28., 32.)
 }
 
 fn custom_command(index: usize) -> bool {
@@ -572,24 +736,55 @@ impl Settings {
     fn changed(&self) -> usize {
         let count = self.draft.iter().zip(&self.before).filter(|(draft, before)| draft != before).count();
         count.max(usize::from(
-            self.document_draft != self.document_before || !self.parked_editors.is_empty() || self.needs_reload,
+            self.document_draft != self.document_before
+                || !self.parked_editors.is_empty()
+                || !self.parked_sections.is_empty()
+                || self.needs_reload,
         ))
     }
 
     fn selected(&self) -> Vec<usize> {
         let query = self.query.to_lowercase();
-        FIELDS
+        let mut selected: Vec<_> = FIELDS
             .iter()
             .enumerate()
             .filter(|(_, field)| {
                 if query.is_empty() {
+                    // Full-edge crossing lives in the Displays screen, beside the arrangement.
                     self.page == Some(field.category)
+                        && (self.advanced_appearance || !advanced_appearance(field.key))
+                        && field.key != "general.stretch_screen_edges"
                 } else {
                     format!("{} {} {}", field.label, field.description, field.key).to_lowercase().contains(&query)
                 }
             })
             .map(|(index, _)| index)
-            .collect()
+            .collect();
+        if query.is_empty() {
+            selected.sort_by_key(|index| GROUPS.iter().position(|group_name| *group_name == group(FIELDS[*index].key)));
+        } else {
+            selected.sort_by_key(|index| FIELDS[*index].category);
+        }
+        selected
+    }
+
+    /// The heading a listed field falls under: its group on a category page,
+    /// its category among search results.
+    fn heading(&self, index: usize) -> &'static str {
+        if self.query.is_empty() { group(FIELDS[index].key) } else { CATEGORIES[FIELDS[index].category].title }
+    }
+
+    /// Whether the draft changes anything in this category.
+    fn category_changed(&self, category: usize) -> bool {
+        FIELDS
+            .iter()
+            .enumerate()
+            .any(|(index, field)| field.category == category && self.draft[index] != self.before[index])
+            || self.parked_sections.iter().any(|screen| FIELDS[screen.field].category == category)
+            || self
+                .parked_editors
+                .iter()
+                .any(|editor| editor.field.is_some_and(|index| FIELDS[index].category == category))
     }
 
     fn number(&self, key: &str, fallback: f64) -> f64 {
@@ -657,114 +852,251 @@ impl Tileception {
         self.settings_load()
     }
 
+    /// The options of an open dropdown, below its control (or above it near
+    /// the bottom), at least as wide as the control and right-aligned with it.
     fn settings_dropdown_rects(&self, frame: &Frame, index: usize) -> Vec<Rect> {
         let Some((row, _)) = frame.rows.iter().find(|(_, field)| *field == index) else { return Vec::new() };
         let control = control_rect(*row);
-        let count = self.settings.options(index).len();
-        let top = (control.bottom() + 4.).min(frame.panel.bottom() - 70. - count as f64 * 34.).max(frame.panel.y + 70.);
-        (0..count).map(|position| Rect::new(control.x, top + position as f64 * 34., 180., 34.)).collect()
+        let options = self.settings.options(index);
+        let widest = options
+            .iter()
+            .filter_map(|option| {
+                let label = choice_label(FIELDS[index].key, option);
+                let style = Style::new(12., self.theme.text);
+                self.text
+                    .borrow_mut()
+                    .styled(&label, &self.theme.font, style.size, style.colour, 400., style.weight, style.lines)
+                    .map(|rendered| rendered.width)
+            })
+            .fold(0., f64::max);
+        let width = (widest + 52.).max(control.w).min(320.);
+        let height = options.len() as f64 * 32.;
+        let below = control.bottom() + 6.;
+        let top = if below + height + 8. > frame.panel.bottom() - 64. { control.y - 6. - height } else { below };
+        let top = top.max(frame.panel.y + 70.);
+        (0..options.len())
+            .map(|position| Rect::new(control.right() - width, top + position as f64 * 32., width, 32.))
+            .collect()
     }
 
+    /// Opens Settings in a floating window on the Desktop, or closes it.
+    /// Drafts are kept while it is closed.
     pub fn toggle_settings(&mut self) {
+        self.section_cancel_recording();
         if self.is_locked() {
             return;
         }
         if self.settings.open {
-            // Keep the draft when closed, so Escape never silently loses work.
-            self.settings.open = false;
-            self.settings.drag = None;
-            self.settings.focus = None;
-        } else {
-            if (self.settings.before.is_empty() || self.settings.changed() == 0)
-                && self.settings.editor.is_none()
-                && self.settings.editing.is_none()
-                && self.settings.parked_editors.is_empty()
-                && self.settings.connect.is_none()
-                && let Err(error) = self.settings_load()
-            {
-                tracing::warn!("could not open Settings: {error}");
-                return;
-            }
-            self.settings.open = true;
-            self.power_menu = None;
-            self.close_tray();
-            self.close_launcher();
-            self.close_doctor();
-            self.notifications.open = false;
-            if !self.settings.error {
-                self.settings.message.clear();
-            }
+            self.close_settings();
+            return;
         }
+        if (self.settings.before.is_empty() || self.settings.changed() == 0)
+            && self.settings.editor.is_none()
+            && self.settings.editing.is_none()
+            && self.settings.parked_editors.is_empty()
+            && self.settings.connect.is_none()
+            && self.settings.section.is_none()
+            && self.settings.parked_sections.is_empty()
+            && self.settings.keymap.is_none()
+            && let Err(error) = self.settings_load()
+        {
+            tracing::warn!("could not open Settings: {error}");
+            return;
+        }
+        self.settings.open = true;
+        self.power_menu = None;
+        self.close_tray();
+        self.close_launcher();
+        self.notifications.open = false;
+        if !self.settings.error {
+            self.settings.message.clear();
+        }
+        let window = self.next_id();
+        let screen = self.world.screen();
+        let size = ((screen.w - 96.).clamp(320., 1360.), (screen.h - 96.).clamp(240., 960.));
+        let now = self.now();
+        self.settings.window = Some(window);
+        self.settings.size = size;
+        self.world.add_window(window, Placement::Float, now);
+        self.world.size_float(window, size.0, size.1);
+        self.world.focus_window(window, now);
+        self.apply_layout();
         self.force_keyboard_focus_sync();
         self.schedule_render();
     }
 
+    /// Takes the Settings window away, wherever it is; the draft stays.
+    pub(crate) fn close_settings(&mut self) {
+        let Some(window) = self.settings.window else {
+            self.settings.open = false;
+            return;
+        };
+        if let Some(area) = self.area_for_window(window)
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.close_settings());
+            return;
+        }
+        self.settings.open = false;
+        self.settings.window = None;
+        self.settings.drag = None;
+        self.settings.focus = None;
+        self.settings.colour = None;
+        self.settings.dropdown = None;
+        if self.move_drag.is_some_and(|drag| drag.window == window) {
+            self.move_drag = None;
+        }
+        if self.resize_drag.is_some_and(|drag| drag.window == window) {
+            self.resize_drag = None;
+        }
+        self.selection.windows.remove(&window);
+        let now = self.now();
+        self.world.remove_window(window, now);
+        if self.keyboard_focus == Some(window) {
+            self.keyboard_focus = None;
+        }
+        self.apply_layout();
+        self.force_keyboard_focus_sync();
+        self.schedule_render();
+    }
+
+    pub(crate) fn is_settings_window(&self, window: WindowId) -> bool {
+        self.settings.window == Some(window)
+    }
+
+    /// The Settings window's size, for the layout.
+    pub(crate) fn settings_geometry(&self) -> smithay::utils::Size<i32, smithay::utils::Logical> {
+        (self.settings.size.0.round().max(1.) as i32, self.settings.size.1.round().max(1.) as i32).into()
+    }
+
+    /// The layout gave the Settings window a new size; it fills it.
+    pub(crate) fn settings_resized(&mut self, width: f64, height: f64) {
+        if (self.settings.size.0 - width).abs() > 0.5 || (self.settings.size.1 - height).abs() > 0.5 {
+            self.settings.size = (width, height);
+            self.settings.dropdown = None;
+            self.settings.colour = None;
+            self.schedule_render();
+        }
+    }
+
+    /// Where the Settings window shows, 1:1, in this area. Scaled in
+    /// Overview or while moving, it shows a card instead and takes no input.
+    fn settings_rect(&self) -> Option<Rect> {
+        let window = self.settings.window?;
+        if !self.world.contains_window(window) {
+            return None;
+        }
+        self.drawn_windows(self.now())
+            .into_iter()
+            .find(|drawn| drawn.window_id == window && drawn.live)
+            .map(|drawn| drawn.content)
+    }
+
+    /// Whether keys go to Settings.
+    pub(crate) fn settings_focused(&self) -> bool {
+        self.settings.window.is_some()
+            && self.world.focus() == self.settings.window
+            && self.is_active_output()
+            && !self.world.in_overview()
+    }
+
+    /// Whether the pointer is over the Settings window, or Settings holds it
+    /// for a drag (a slider, the colour picker, a display being arranged).
+    pub(crate) fn settings_takes_pointer(&self, point: Point) -> bool {
+        let dragging = self.settings.drag.is_some()
+            || self.settings.colour.as_ref().is_some_and(|picker| picker.drag.is_some())
+            || self.section_map_dragging();
+        self.settings.open && (dragging || self.settings_rect().is_some_and(|rect| rect.contains(point)))
+    }
+
     fn settings_frame(&self) -> Frame {
-        let screen = self.output_rect();
-        let width = (screen.w - 32.).clamp(320., 1420.).min(screen.w);
-        let height = (screen.h - 64.).max(240.).min(screen.h);
-        let panel = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
+        let panel = self.settings_rect().unwrap_or_else(|| {
+            let screen = self.output_rect();
+            Rect::new(screen.x, screen.y, self.settings.size.0.max(320.), self.settings.size.1.max(240.))
+        });
+        let width = panel.w;
+        let height = panel.h;
         let sidebar = if width < 900. { 64. } else { 205. };
         let body = Rect::new(panel.x + sidebar, panel.y + 65., width - sidebar, height - 125.);
-        let content = Rect::new(body.x + 28., body.y + 26., (body.w - 56.).max(1.), body.h - 52.);
+        let compact = body.h < 640.;
+        let content =
+            Rect::new(body.x + 28., body.y + if compact { 18. } else { 26. }, (body.w - 56.).max(1.), body.h - 40.);
         let search = Rect::new(panel.right() - 340., panel.y + 15., 282., 35.);
         let mut hits =
             vec![(search, Hit::Search), (Rect::new(panel.right() - 48., panel.y + 15., 34., 35.), Hit::Close)];
         hits.push((Rect::new(panel.x + 12., body.y + 20., sidebar - 24., 40.), Hit::Page(None)));
-        let nav_pitch = ((body.h - 100.) / CATEGORIES.len() as f64).clamp(26., 46.);
+        let nav_pitch = ((body.h - 196.) / CATEGORIES.len() as f64).clamp(26., 46.);
         for index in 0..CATEGORIES.len() {
             hits.push((
                 Rect::new(panel.x + 12., body.y + 86. + index as f64 * nav_pitch, sidebar - 24., nav_pitch - 4.),
                 Hit::Page(Some(index)),
             ));
         }
+        hits.push((Rect::new(panel.x + 12., body.bottom() - 88., sidebar - 24., 36.), Hit::EditDocument));
+        hits.push((Rect::new(panel.x + 12., body.bottom() - 48., sidebar - 24., 36.), Hit::Reference));
+        let changed = self.settings.changed() > 0;
+        if changed {
+            hits.push((Rect::new(panel.x + 20., panel.bottom() - 46., 150., 32.), Hit::ReviewChanges));
+        }
         hits.push((Rect::new(panel.right() - 300., panel.bottom() - 46., 134., 32.), Hit::Discard));
         hits.push((Rect::new(panel.right() - 154., panel.bottom() - 46., 130., 32.), Hit::Apply));
+        let header = if compact { 64. } else { 84. };
         let mut frame = Frame {
             panel,
             body,
             content,
+            top: content.y + header,
             preview: None,
             hits,
             rows: Vec::new(),
             cards: Vec::new(),
             config: None,
-            group: None,
+            groups: Vec::new(),
+            advanced: None,
+            home: None,
             max_scroll: 0.,
         };
+        if changed && self.settings.review_changes {
+            let lines = if compact { 4 } else { 6 };
+            let config_height = (42. + lines as f64 * 23.).min(body.h * 0.4).max(100.);
+            frame.config = Some(Rect::new(content.x, body.bottom() - config_height - 12., content.w, config_height));
+        }
         if self.settings.page.is_none() && self.settings.query.is_empty() {
             let gap = 12.;
             let col = (content.w - gap * 2.) / 3.;
-            let top = content.y + 100.;
-            let row = ((content.h - 116.) / 3.).clamp(140., 180.);
+            let top = frame.top;
+            let row = ((content.h - header - 40.) / 4.).clamp(150., 176.);
+            let short = (row * 0.85).max(150.);
             let mut rects = [
                 Rect::new(content.x, top, col, row * 2. + gap),
                 Rect::new(content.x + col + gap, top, col, row),
                 Rect::new(content.x + 2. * (col + gap), top, col, row),
                 Rect::new(content.x + col + gap, top + row + gap, col * 2. + gap, row),
-                Rect::new(content.x, top + 2. * (row + gap), col, (row * 0.8).max(140.)),
-                Rect::new(content.x + col + gap, top + 2. * (row + gap), col * 2. + gap, (row * 0.8).max(140.)),
+                Rect::new(content.x, top + 2. * (row + gap), col, short),
+                Rect::new(content.x + col + gap, top + 2. * (row + gap), col, short),
+                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap), col, short),
+                Rect::new(content.x, top + 2. * (row + gap) + short + gap, col * 2. + gap, 150.),
+                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap) + short + gap, col, 150.),
             ];
-            if content.w < 700. || content.h < 500. {
+            if content.w < 700. {
                 let half = (content.w - gap) / 2.;
                 rects = [
-                    Rect::new(content.x, top, content.w, 156.),
-                    Rect::new(content.x, top + 168., half, 140.),
-                    Rect::new(content.x + half + gap, top + 168., half, 140.),
-                    Rect::new(content.x, top + 320., half, 140.),
-                    Rect::new(content.x + half + gap, top + 320., half, 140.),
-                    Rect::new(content.x, top + 472., content.w, 140.),
+                    Rect::new(content.x, top, content.w, 300.),
+                    Rect::new(content.x, top + 312., half, 150.),
+                    Rect::new(content.x + half + gap, top + 312., half, 150.),
+                    Rect::new(content.x, top + 474., content.w, 150.),
+                    Rect::new(content.x, top + 636., half, 150.),
+                    Rect::new(content.x + half + gap, top + 636., half, 150.),
+                    Rect::new(content.x, top + 798., half, 150.),
+                    Rect::new(content.x + half + gap, top + 798., half, 150.),
+                    Rect::new(content.x, top + 960., content.w, 150.),
                 ];
             }
-            let mut cards = rects.to_vec();
-            let bottom = rects[5].bottom() + 12.;
-            for index in 6..CATEGORIES.len() {
-                cards.push(Rect::new(content.x, bottom + (index - 6) as f64 * 152., content.w, 140.));
-            }
-            frame.max_scroll = (cards.last().map_or(bottom, Rect::bottom) - body.bottom() + 20.).max(0.);
-            for (index, mut rect) in cards.into_iter().enumerate() {
+            let bottom = rects.iter().map(Rect::bottom).reduce(f64::max).unwrap_or(top);
+            frame.max_scroll = (bottom - body.bottom() + 20.).max(0.);
+            for (index, mut rect) in rects.into_iter().enumerate() {
                 rect.y -= self.settings.scroll.min(frame.max_scroll);
-                if rect.bottom() > content.y + 100. && rect.y < body.bottom() - 8. {
+                if rect.bottom() > frame.top && rect.y < body.bottom() - 8. {
                     frame.cards.push((rect, index));
                     let clipped = intersect(viewport(&frame), rect);
                     if let Some(clipped) = clipped {
@@ -774,46 +1106,91 @@ impl Tileception {
             }
         } else {
             let selected = self.settings.selected();
-            let show_preview = body.w >= 860.
-                && body.h >= 530.
-                && self.settings.page.is_some_and(|page| page <= 2)
-                && self.settings.query.is_empty();
-            let row_width = if show_preview { content.w - 290. } else { content.w };
+            // The preview column is kept on every page when the window has room
+            // for it, so controls stay in one place from page to page.
+            let room = body.w >= 860. && body.h >= 530.;
+            let show_preview =
+                room && self.settings.page.is_some_and(|page| page <= 2) && self.settings.query.is_empty();
+            let row_width = if room { content.w - 290. } else { content.w };
             if show_preview {
-                frame.preview = Some(Rect::new(content.right() - 260., content.y + 108., 260., 330.));
+                frame.preview = Some(Rect::new(content.right() - 260., frame.top + 26., 260., 178.));
             }
-            frame.hits.push((Rect::new(content.right() - 112., content.y, 112., 30.), Hit::ResetSection));
-            let lines = selected.len().min(if body.h < 650. { 2 } else { 5 });
-            let config_height = if body.h < 500. { 36. } else { 109. + lines as f64 * 23. };
-            let rows_top = content.y + if body.h < 500. { 90. } else { 110. };
-            if !selected.is_empty() {
-                frame.config =
-                    Some(Rect::new(content.x, body.bottom() - config_height - 12., content.w, config_height));
+            if self.settings.query.is_empty() && self.settings.page.is_some() {
+                frame.hits.push((Rect::new(content.right() - 132., content.y + 4., 132., 30.), Hit::ResetSection));
             }
-            let total = selected.len() as f64 * 78. + if self.settings.page == Some(5) { 130. } else { 0. };
-            frame.max_scroll = (total - viewport(&frame).h + 20.).max(0.);
+            let row_height = if compact { 64. } else { 72. };
+            let advanced = self.settings.page == Some(0) && self.settings.query.is_empty();
+            let scroll_top = frame.top;
+            let mut offset = 0.;
+            let mut rows = Vec::new();
+            let mut current: Option<(&'static str, f64)> = None;
+            let mut advanced_at = None;
+            for index in &selected {
+                let heading = self.settings.heading(*index);
+                if current.is_none_or(|(name, _)| name != heading) {
+                    if let Some((name, start)) = current.take() {
+                        frame.groups.push((name, Rect::new(content.x, start, row_width, offset - start)));
+                        offset += 18.;
+                    }
+                    if heading == "Advanced" && advanced {
+                        advanced_at = Some(offset);
+                        offset += 44.;
+                    } else if !heading.is_empty() {
+                        offset += 26.;
+                    }
+                    current = Some((heading, offset));
+                }
+                rows.push((Rect::new(content.x, offset, row_width, row_height), *index));
+                offset += row_height;
+            }
+            if let Some((name, start)) = current {
+                frame.groups.push((name, Rect::new(content.x, start, row_width, offset - start)));
+            }
+            if advanced && advanced_at.is_none() {
+                advanced_at = Some(offset + 18.);
+                offset += 62.;
+            }
+            if self.settings.page == Some(5) && self.settings.query.is_empty() {
+                frame.home = Some(Rect::new(content.x, offset + 44., row_width, 104.));
+                offset += 148.;
+            }
+            frame.max_scroll = (offset - viewport(&frame).h + 20.).max(0.);
             let scroll = self.settings.scroll.min(frame.max_scroll);
-            if !selected.is_empty() {
-                frame.group = Some(Rect::new(content.x, rows_top - scroll, row_width, selected.len() as f64 * 78.));
+            let shift = scroll_top - scroll;
+            for (_, rect) in &mut frame.groups {
+                rect.y += shift;
             }
-            for (position, index) in selected.iter().enumerate() {
-                let rect = Rect::new(content.x, rows_top + position as f64 * 78. - scroll, row_width, 78.);
-                if rect.bottom() > viewport(&frame).y && rect.y < viewport(&frame).bottom() {
-                    frame.rows.push((rect, *index));
+            if let Some(card) = &mut frame.home {
+                card.y += shift;
+            }
+            let area = viewport(&frame);
+            if let Some(top) = advanced_at {
+                let rect = Rect::new(content.x, top + shift, row_width, 34.);
+                frame.advanced = Some(rect);
+                if rect.y >= area.y && rect.bottom() <= area.bottom() {
+                    frame.hits.push((rect, Hit::AdvancedAppearance));
+                }
+            }
+            for (mut rect, index) in rows {
+                rect.y += shift;
+                if rect.bottom() > area.y && rect.y < area.bottom() {
+                    frame.rows.push((rect, index));
                     let mut control = control_rect(rect);
-                    if matches!(FIELDS[*index].control, Control::Number(..)) {
+                    if matches!(FIELDS[index].control, Control::Number(..)) {
                         control.w = 90.;
                     }
-                    if control.y >= viewport(&frame).y && control.bottom() <= viewport(&frame).bottom() {
-                        frame.hits.push((control, Hit::Field(*index)));
-                        if self.settings.draft[*index] != self.settings.defaults[*index] {
-                            frame.hits.push((reset_rect(rect), Hit::Reset(*index)));
+                    if control.y >= area.y && control.bottom() <= area.bottom() {
+                        frame.hits.push((control, Hit::Field(index)));
+                        if matches!(FIELDS[index].control, Control::Colour) || FIELDS[index].key == "battery.charging" {
+                            frame.hits.push((Rect::new(control.x, control.y, 36., control.h), Hit::Swatch(index)));
+                        }
+                        if self.settings.draft[index] != self.settings.defaults[index] {
+                            frame.hits.push((reset_rect(rect), Hit::Reset(index)));
                         }
                     }
                 }
             }
-            if self.settings.page == Some(5) {
-                let top = rows_top + 34. + total - 130. - scroll;
+            if let Some(card) = frame.home {
                 for (position, hit) in [
                     if self.settings_home_connected() { Hit::HomeDisconnect } else { Hit::HomeConnect },
                     Hit::HomeImport,
@@ -824,20 +1201,16 @@ impl Tileception {
                 .enumerate()
                 {
                     let rect = Rect::new(
-                        content.x + (position % 2) as f64 * 200.,
-                        top + (position / 2) as f64 * 44.,
+                        card.x + 16. + (position % 2) as f64 * 200.,
+                        card.y + 16. + (position / 2) as f64 * 40.,
                         188.,
-                        34.,
+                        32.,
                     );
-                    if rect.y >= viewport(&frame).y && rect.bottom() <= viewport(&frame).bottom() {
+                    if rect.y >= area.y && rect.bottom() <= area.bottom() {
                         frame.hits.push((rect, hit));
                     }
                 }
             }
-        }
-        if let Some(config) = frame.config {
-            frame.hits.push((Rect::new(config.right() - 206., config.y + 4., 84., 28.), Hit::Reference));
-            frame.hits.push((Rect::new(config.right() - 112., config.y + 4., 100., 28.), Hit::EditDocument));
         }
         if let Some((index, _)) = self.settings.dropdown {
             for (position, rect) in self.settings_dropdown_rects(&frame, index).into_iter().enumerate() {
@@ -848,6 +1221,14 @@ impl Tileception {
     }
 
     pub fn settings_scroll(&mut self, amount: f64) {
+        if self.settings.keymap.is_some() {
+            self.keymap_scroll(amount);
+            return;
+        }
+        if self.settings.section.is_some() {
+            self.section_scroll(amount);
+            return;
+        }
         if self.settings.connect.is_some() {
             self.settings_connect_scroll(amount);
             return;
@@ -858,13 +1239,14 @@ impl Tileception {
         }
         self.settings.dropdown = None;
         self.settings.drag = None;
+        self.settings.colour = None;
         let frame = self.settings_frame();
         if let Some(config) = frame.config
             && config.h > 70.
             && config.contains(Point::new(self.pointer.x, self.pointer.y))
         {
             let count = self.settings_config_lines(true).len();
-            let shown = config.h - 78.;
+            let shown = config.h - 42.;
             let max = (count as f64 * 23. - shown).max(0.);
             self.settings.config_scroll = (self.settings.config_scroll + amount).clamp(0., max);
             self.schedule_render();
@@ -875,6 +1257,14 @@ impl Tileception {
     }
 
     pub fn settings_click(&mut self, point: Point) {
+        if self.settings.keymap.is_some() {
+            self.keymap_click(point);
+            return;
+        }
+        if self.settings.section.is_some() {
+            self.section_click(point);
+            return;
+        }
         if self.settings.connect.is_some() {
             self.settings_connect_click(point);
             return;
@@ -882,6 +1272,21 @@ impl Tileception {
         if self.settings.editor.is_some() {
             self.settings_editor_click(point);
             return;
+        }
+        if self.settings.colour.is_some() {
+            if self.colour_press(point) {
+                return;
+            }
+            // A press elsewhere closes the picker; on its own swatch that is all.
+            let open = self.settings.colour.take().map(|picker| picker.index);
+            let frame = self.settings_frame();
+            if open.is_some_and(|index| {
+                frame.hits.iter().rev().find(|(rect, _)| rect.contains(point)).map(|(_, hit)| *hit)
+                    == Some(Hit::Swatch(index))
+            }) {
+                self.schedule_render();
+                return;
+            }
         }
         let frame = self.settings_frame();
         if let Some((rect, hit)) = frame.hits.iter().rev().find(|(rect, _)| rect.contains(point)) {
@@ -919,17 +1324,35 @@ impl Tileception {
             }
         } else {
             self.settings.dropdown = None;
+            // The header bar moves the window, like a title bar.
+            if point.y < frame.panel.y + 64.
+                && let Some(window) = self.settings.window
+            {
+                self.start_move_drag(window, self.pointer);
+            }
             self.schedule_render();
         }
     }
 
     pub fn settings_motion(&mut self, point: Point) {
+        if self.settings.colour.as_ref().is_some_and(|picker| picker.drag.is_some()) {
+            self.colour_motion(point);
+            return;
+        }
+        if self.settings.section.is_some() {
+            self.section_map_motion(point);
+            return;
+        }
         if let Some((index, rect)) = self.settings.drag {
             self.settings_activate(Hit::Field(index), Some((point.x - rect.x) / rect.w));
         }
     }
 
     pub fn settings_release(&mut self) {
+        if let Some(picker) = &mut self.settings.colour {
+            picker.drag = None;
+        }
+        self.section_map_release();
         self.settings.drag = None;
     }
 
@@ -941,11 +1364,12 @@ impl Tileception {
             self.settings.error = true;
             return false;
         }
-        self.settings.draft[index] = if matches!(FIELDS[index].control, Control::Text) && text.is_empty() {
-            None
-        } else {
-            Some(toml::Value::String(text.into()))
-        };
+        self.settings.draft[index] =
+            if matches!(FIELDS[index].control, Control::Text | Control::Keyboard) && text.is_empty() {
+                None
+            } else {
+                Some(toml::Value::String(text.into()))
+            };
         self.settings.editing = None;
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.settings.error = false;
@@ -967,6 +1391,11 @@ impl Tileception {
             Hit::Search => {}
             Hit::EditDocument => self.open_settings_editor(None, false),
             Hit::Reference => self.open_settings_editor(None, true),
+            Hit::ReviewChanges => {
+                self.settings.review_changes = !self.settings.review_changes;
+                self.settings.config_scroll = 0.;
+            }
+            Hit::AdvancedAppearance => self.settings.advanced_appearance = !self.settings.advanced_appearance,
             Hit::HomeConnect => {
                 if self.config.file.home.enabled {
                     self.apply_home();
@@ -1020,8 +1449,10 @@ impl Tileception {
                 self.settings.query.clear();
                 self.settings.scroll = 0.;
                 self.settings.config_scroll = 0.;
+                self.settings.colour = None;
             }
             Hit::Discard => {
+                self.settings.parked_sections.clear();
                 self.settings.parked_editors.clear();
                 match self.settings_load() {
                     Ok(()) => {
@@ -1036,6 +1467,12 @@ impl Tileception {
                 }
             }
             Hit::Apply => {
+                if !self.settings.parked_sections.is_empty() {
+                    self.settings.section = Some(self.settings.parked_sections.remove(0));
+                    self.settings.message = "Finish the saved screen draft before applying.".into();
+                    self.schedule_render();
+                    return;
+                }
                 if !self.settings.parked_editors.is_empty() {
                     self.settings.editor = Some(self.settings.parked_editors.remove(0));
                     self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
@@ -1099,7 +1536,18 @@ impl Tileception {
                 }
             }
             Hit::Reset(_) | Hit::ResetSection => {
-                let indices = if let Hit::Reset(index) = hit { vec![index] } else { self.settings.selected() };
+                let indices = if let Hit::Reset(index) = hit {
+                    vec![index]
+                } else if self.settings.query.is_empty() {
+                    FIELDS
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, field)| self.settings.page == Some(field.category))
+                        .map(|(index, _)| index)
+                        .collect()
+                } else {
+                    self.settings.selected()
+                };
                 let changes: Vec<_> = indices.into_iter().map(|index| (FIELDS[index].key, None)).collect();
                 let result = self
                     .settings_document()
@@ -1119,6 +1567,10 @@ impl Tileception {
                     }
                 }
             }
+            Hit::Swatch(index) => {
+                self.open_colour_picker(index);
+                self.settings.focus = Some(Hit::Field(index));
+            }
             Hit::Field(index) => {
                 let value = self.settings.draft[index].as_ref();
                 let next = match FIELDS[index].control {
@@ -1132,8 +1584,12 @@ impl Tileception {
                         self.schedule_render();
                         return;
                     }
-                    Control::Toml => {
-                        self.open_settings_editor(Some(index), false);
+                    Control::Section => {
+                        self.open_settings_section(index);
+                        return;
+                    }
+                    Control::Keyboard => {
+                        self.open_keymap_picker(index);
                         return;
                     }
                     Control::Number(min, max, step, _) => {
@@ -1143,7 +1599,8 @@ impl Tileception {
                         let number =
                             position.map_or(current + step, |fraction| min + fraction.clamp(0., 1.) * (max - min));
                         let number = ((number / step).round() * step).clamp(min, max);
-                        if matches!(value, Some(toml::Value::Integer(_))) || FIELDS[index].key.starts_with("keyboard.")
+                        if FIELDS[index].key.starts_with("keyboard.")
+                            || matches!(value, Some(toml::Value::Integer(_))) && step.fract() == 0.
                         {
                             toml::Value::Integer(number.round() as i64)
                         } else {
@@ -1166,12 +1623,26 @@ impl Tileception {
     }
 
     pub fn settings_key(&mut self, sym: u32, mods: Mods) {
+        if self.settings.keymap.is_some() {
+            self.keymap_key(sym, mods);
+            return;
+        }
+        if self.settings.section.is_some() {
+            self.section_key(sym, mods);
+            return;
+        }
         if self.settings.connect.is_some() {
             self.settings_connect_key(sym, mods);
             return;
         }
         if self.settings.editor.is_some() {
             self.settings_editor_key(sym, mods);
+            return;
+        }
+        if self.settings.colour.is_some() && matches!(sym, keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_Tab)
+        {
+            self.settings.colour = None;
+            self.schedule_render();
             return;
         }
         if let Some((index, selected)) = self.settings.dropdown {
@@ -1284,7 +1755,7 @@ impl Tileception {
                     let number = if current < min || current > max { next } else { next.clamp(min, max) };
                     self.settings.draft[index] = Some(
                         if FIELDS[index].key.starts_with("keyboard.")
-                            || matches!(self.settings.draft[index], Some(toml::Value::Integer(_)))
+                            || matches!(self.settings.draft[index], Some(toml::Value::Integer(_))) && step.fract() == 0.
                         {
                             toml::Value::Integer(number.round() as i64)
                         } else {
@@ -1301,23 +1772,28 @@ impl Tileception {
         self.schedule_render();
     }
 
-    pub fn settings_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        if !self.settings.open || !self.is_active_output() {
+    pub(crate) fn settings_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        if !self.settings.open || self.settings_rect().is_none() {
             return Vec::new();
         }
         let frame = self.settings_frame();
         let theme = &self.theme;
         let state = &self.settings;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
+        let compact = frame.body.h < 640.;
+        let changes = state.changed();
         let mut painter = Painter::new(self, renderer);
-        painter.fill(self.output_rect(), Colour([0., 0., 0., 0.55]), 0.);
         painter.shape(
             frame.panel,
-            Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, 10.) },
+            Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, theme.radius) },
         );
-        painter.fill(Rect::new(frame.panel.x + 1., frame.panel.y + 1., frame.panel.w - 2., 63.), theme.surface, 9.);
+        painter.fill(
+            Rect::new(frame.panel.x + 1., frame.panel.y + 1., frame.panel.w - 2., 63.),
+            theme.surface,
+            (theme.radius - 1.).max(0.),
+        );
         let title = Rect::new(frame.panel.x + 24., frame.panel.y + 15., 24., 34.);
-        painter.glyph(glyph::MINIMAP, title, 22, theme.accent);
+        painter.glyph(glyph::SETTINGS, title, 22, theme.accent);
         painter.text(
             "Settings",
             Rect::new(title.right() + 12., title.y, 140., title.h),
@@ -1326,36 +1802,55 @@ impl Tileception {
         painter.fill(Rect::new(frame.panel.x, frame.body.y, frame.panel.w, 1.), theme.border, 0.);
         painter.fill(Rect::new(frame.body.x, frame.body.y, 1., frame.body.h), theme.border, 0.);
         painter.fill(Rect::new(frame.panel.x, frame.panel.bottom() - 60., frame.panel.w, 1.), theme.border, 0.);
-        let heading = state.page.map_or("Your workspace.", |index| CATEGORIES[index].title);
-        painter.text(
-            if state.query.is_empty() { heading } else { "Search results" },
-            Rect::new(frame.content.x, frame.content.y, frame.content.w - 125., 38.),
-            Style::new(27., theme.text).weight(500),
-        );
-        let subtitle = if state.page == Some(5) {
-            self.settings_home_status()
-        } else if !state.query.is_empty() {
-            "Matching settings across your desktop.".into()
+        let heading = if !state.query.is_empty() {
+            "Search results"
         } else {
-            state.page.map_or("Desktop settings", |index| CATEGORIES[index].description).into()
+            state.page.map_or("Overview", |index| CATEGORIES[index].title)
         };
-        {
-            painter.text(
-                &subtitle,
-                Rect::new(
-                    frame.content.x,
-                    frame.content.y + if frame.body.h < 500. { 40. } else { 44. },
-                    frame.content.w,
-                    if frame.body.h < 500. { 22. } else { 35. },
-                ),
-                Style::new(12., theme.muted).lines(if frame.body.h < 500. { 1 } else { 2 }),
-            );
-        }
+        painter.text(
+            heading,
+            Rect::new(frame.content.x, frame.content.y, frame.content.w - 150., if compact { 30. } else { 38. }),
+            Style::new(if compact { 22. } else { 27. }, theme.text).weight(500),
+        );
+        let subtitle = if !state.query.is_empty() {
+            match state.selected().len() {
+                0 => format!("Nothing matches \"{}\".", state.query),
+                1 => format!("1 setting matches \"{}\".", state.query),
+                count => format!("{count} settings match \"{}\".", state.query),
+            }
+        } else if state.page == Some(5) {
+            self.settings_home_status()
+        } else {
+            state
+                .page
+                .map_or("Changes stay a draft until you apply them.", |index| CATEGORIES[index].description)
+                .into()
+        };
+        painter.text(
+            &subtitle,
+            Rect::new(frame.content.x, frame.content.y + if compact { 30. } else { 42. }, frame.content.w - 150., 22.),
+            Style::new(12., theme.muted),
+        );
         painter.fill(
             Rect::new(frame.panel.x + 24., frame.body.y + 73., frame.body.x - frame.panel.x - 48., 1.),
             theme.border,
             0.,
         );
+        painter.clipped(viewport(&frame), |painter| {
+            if let Some(card) = frame.home {
+                painter.text(
+                    "CONNECTION",
+                    Rect::new(card.x + 2., card.y - 24., 200., 20.),
+                    Style::new(10., theme.muted).weight(600),
+                );
+                let note = "These take effect at once, without Apply.";
+                let style = Style::new(11., theme.muted);
+                let (width, _) = painter.measure(note, card.w, style);
+                painter.text(note, Rect::new(card.right() - width - 2., card.y - 24., width + 1., 20.), style);
+                painter
+                    .shape(card, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 8.) });
+            }
+        });
         for (rect, hit) in &frame.hits {
             let focused = state.focus == Some(*hit);
             let hovered = rect.contains(pointer);
@@ -1374,16 +1869,48 @@ impl Tileception {
                     } else if hovered {
                         painter.fill(*rect, theme.surface, 6.);
                     }
-                    let (label, icon) = page.map_or(("Overview", glyph::MINIMAP), |index| {
+                    let (label, icon) = page.map_or(("Overview", glyph::OVERVIEW), |index| {
                         (CATEGORIES[index].title, CATEGORIES[index].icon)
                     });
-                    let colour = if active { theme.accent } else { theme.muted };
+                    let colour = if active {
+                        theme.accent
+                    } else if hovered {
+                        theme.text
+                    } else {
+                        theme.muted
+                    };
                     painter.glyph(icon, Rect::new(rect.x + 10., rect.y, 20., rect.h), 18, colour);
                     if rect.w > 60. {
                         painter.text(
                             label,
-                            Rect::new(rect.x + 40., rect.y, rect.w - 44., rect.h),
+                            Rect::new(rect.x + 40., rect.y, rect.w - 52., rect.h),
                             Style::new(12., colour),
+                        );
+                    }
+                    if page.is_some_and(|index| state.category_changed(index)) {
+                        painter.fill(
+                            Rect::new(rect.right() - 10., rect.y + rect.h / 2. - 3., 6., 6.),
+                            theme.accent,
+                            3.,
+                        );
+                    }
+                }
+                Hit::EditDocument | Hit::Reference => {
+                    if hovered {
+                        painter.fill(*rect, theme.surface, 6.);
+                    }
+                    let (label, icon) = if *hit == Hit::EditDocument {
+                        ("Edit config.toml", glyph::FILE)
+                    } else {
+                        ("Option reference", glyph::SEARCH)
+                    };
+                    let colour = if hovered { theme.text } else { theme.muted };
+                    painter.glyph(icon, Rect::new(rect.x + 10., rect.y, 20., rect.h), 16, colour);
+                    if rect.w > 60. {
+                        painter.text(
+                            label,
+                            Rect::new(rect.x + 40., rect.y, rect.w - 44., rect.h),
+                            Style::new(11., colour),
                         );
                     }
                 }
@@ -1408,40 +1935,83 @@ impl Tileception {
                         painter.fill(Rect::new(left.min(rect.right() - 9.), rect.y + 10., 1., 15.), theme.text, 0.);
                     }
                 }
-                Hit::Close => painter.glyph(glyph::CLOSE, *rect, 18, theme.muted),
+                Hit::Close => {
+                    if hovered {
+                        painter.fill(*rect, theme.surface_raised, 6.);
+                    }
+                    painter.glyph(glyph::CLOSE, *rect, 18, if hovered { theme.text } else { theme.muted });
+                }
                 Hit::HomeCloud(sensors) => {
                     let label = &state.home_cloud_labels[usize::from(!sensors)];
                     let enabled = label.ends_with(": on");
+                    painter.shape(
+                        *rect,
+                        Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 6.) },
+                    );
                     painter.text(
                         label.split(':').next().unwrap_or(label),
-                        Rect::new(rect.x + 10., rect.y, rect.w - 58., rect.h),
+                        Rect::new(rect.x + 12., rect.y, rect.w - 60., rect.h),
                         Style::new(11., theme.text),
                     );
-                    let switch = Rect::new(rect.right() - 44., rect.y + 7., 34., 20.);
-                    painter.fill(switch, if enabled { theme.accent } else { theme.surface_raised }, 10.);
+                    let switch = Rect::new(rect.right() - 46., rect.y + 7., 34., 20.);
+                    painter.shape(
+                        switch,
+                        Shape {
+                            radius: 10.,
+                            fill: if enabled {
+                                (theme.accent, theme.accent_end)
+                            } else {
+                                (theme.surface_raised, theme.surface_raised)
+                            },
+                            ..Default::default()
+                        },
+                    );
                     painter.fill(
                         Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
                         theme.text,
                         7.,
                     );
                 }
-                Hit::EditDocument | Hit::Reference | Hit::HomeConnect | Hit::HomeDisconnect | Hit::HomeImport => {
+                Hit::HomeConnect | Hit::HomeDisconnect | Hit::HomeImport => {
                     let label = match hit {
-                        Hit::EditDocument => "Edit config.toml",
-                        Hit::Reference => "Configuration reference",
                         Hit::HomeConnect => "Reconnect",
                         Hit::HomeDisconnect => "Disconnect",
-                        Hit::HomeImport => "Set up devices...",
-                        _ => "",
+                        _ => "Set up devices...",
                     };
-                    painter.fill(*rect, theme.surface_raised, 6.);
+                    painter.shape(
+                        *rect,
+                        Shape {
+                            border_width: 1.,
+                            border: if hovered { theme.muted } else { theme.border },
+                            ..Shape::filled(theme.surface_raised, 6.)
+                        },
+                    );
                     painter.text(label, *rect, Style::new(11., theme.text).align(Align::Centre));
                 }
+                Hit::ReviewChanges if state.section.is_some() => {}
+                Hit::ReviewChanges => {
+                    if hovered || state.review_changes {
+                        painter.fill(*rect, theme.surface, 6.);
+                    }
+                    painter.glyph(
+                        if state.review_changes { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_UP },
+                        Rect::new(rect.x + 6., rect.y, 18., rect.h),
+                        14,
+                        theme.muted,
+                    );
+                    painter.text(
+                        "Review changes",
+                        Rect::new(rect.x + 30., rect.y, rect.w - 34., rect.h),
+                        Style::new(12., theme.text).weight(500),
+                    );
+                }
                 Hit::Apply | Hit::Discard | Hit::ResetSection => {
-                    let enabled = *hit == Hit::ResetSection || state.changed() > 0;
+                    let enabled = *hit == Hit::ResetSection || changes > 0;
                     let primary = *hit == Hit::Apply && enabled;
                     let fill = if primary {
                         (theme.accent, theme.accent_end)
+                    } else if *hit == Hit::ResetSection && !hovered {
+                        (Colour::TRANSPARENT, Colour::TRANSPARENT)
                     } else {
                         (theme.surface_raised, theme.surface_raised)
                     };
@@ -1451,143 +2021,104 @@ impl Tileception {
                             fill,
                             radius: 6.,
                             border_width: if primary { 0. } else { 1. },
-                            border: if hovered { theme.muted } else { theme.border },
+                            border: if hovered && enabled { theme.muted } else { theme.border },
                             ..Default::default()
                         },
                     );
                     let label = match hit {
                         Hit::Apply => "Apply changes",
-                        Hit::Discard => "Discard changes",
-                        _ => "Reset section",
+                        Hit::Discard => "Discard",
+                        _ => "Restore defaults",
                     };
                     painter.text(
                         label,
                         *rect,
                         Style::new(
-                            11.,
+                            if primary { 12. } else { 11. },
                             if primary {
                                 theme.on_accent
                             } else if enabled {
                                 theme.text
                             } else {
-                                theme.muted
+                                theme.muted.alpha(0.6)
                             },
                         )
+                        .weight(if primary { 600 } else { 400 })
                         .align(Align::Centre),
                     );
                 }
                 _ => {}
             }
             if focused
-                && !matches!(hit, Hit::Search | Hit::Card(_))
-                && (!matches!(hit, Hit::Apply | Hit::Discard) || state.changed() > 0)
+                && !matches!(hit, Hit::Search | Hit::Card(_) | Hit::Field(_) | Hit::Reset(_) | Hit::AdvancedAppearance)
+                && (!matches!(hit, Hit::Apply | Hit::Discard) || changes > 0)
             {
                 painter
                     .shape(*rect, Shape { radius: 6., border_width: 1., border: theme.accent, ..Default::default() });
             }
         }
         painter.clipped(viewport(&frame), |painter| {
-            if state.page == Some(5)
-                && let Some((first, _)) =
-                    frame.hits.iter().find(|(_, hit)| matches!(hit, Hit::HomeConnect | Hit::HomeDisconnect))
-            {
-                painter.text(
-                    "Connection and cloud changes apply immediately.",
-                    Rect::new(first.x, first.y - 26., frame.content.w, 20.),
-                    Style::new(11., theme.muted),
-                );
-            }
             for (rect, index) in &frame.cards {
-                let category = &CATEGORIES[*index];
-                painter.shape(
-                    *rect,
-                    Shape {
-                        border_width: 1.,
-                        border: if rect.contains(pointer) { theme.accent } else { theme.border },
-                        ..Shape::filled(theme.surface, 6.)
-                    },
-                );
-                painter.glyph(category.icon, Rect::new(rect.x + 20., rect.y + 20., 25., 25.), 24, theme.accent);
-                painter.glyph(
-                    glyph::ARROW_RIGHT,
-                    Rect::new(rect.right() - 36., rect.y + 16., 20., 24.),
-                    16,
-                    theme.muted,
-                );
-                if *index == 0 && rect.h > 250. {
-                    self.settings_preview(painter, Rect::new(rect.x + 20., rect.y + 70., rect.w - 40., rect.h - 168.));
-                }
-                painter.text(
-                    category.title,
-                    Rect::new(rect.x + 20., rect.bottom() - 80., rect.w - 38., 40.),
-                    Style::new(18., theme.text).weight(500).lines(2),
-                );
-                painter.text(
-                    category.summary,
-                    Rect::new(rect.x + 20., rect.bottom() - 39., rect.w - 38., 28.),
-                    Style::new(11., theme.muted).lines(2),
-                );
-                if state.focus == Some(Hit::Card(*index)) {
-                    painter.shape(
-                        *rect,
-                        Shape { radius: 6., border_width: 1., border: theme.accent, ..Default::default() },
+                self.settings_card(painter, *rect, *index, pointer);
+            }
+            for (name, rect) in &frame.groups {
+                if !name.is_empty() && *name != "Advanced" {
+                    painter.text(
+                        &name.to_uppercase(),
+                        Rect::new(rect.x + 2., rect.y - 24., rect.w, 20.),
+                        Style::new(10., theme.muted).weight(600),
                     );
                 }
-            }
-            if let Some(group) = frame.group {
                 painter
-                    .shape(group, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 6.) });
+                    .shape(*rect, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 8.) });
             }
             for (rect, index) in &frame.rows {
                 self.settings_row(painter, *rect, *index);
             }
+            if let Some(rect) = frame.advanced {
+                let hovered = rect.contains(pointer);
+                painter.shape(
+                    rect,
+                    Shape {
+                        border_width: 1.,
+                        border: if state.focus == Some(Hit::AdvancedAppearance) { theme.accent } else { theme.border },
+                        ..Shape::filled(if hovered { theme.surface_raised } else { theme.surface }, 6.)
+                    },
+                );
+                painter.glyph(
+                    if state.advanced_appearance { glyph::CHEVRON_DOWN } else { glyph::CHEVRON_RIGHT },
+                    Rect::new(rect.x + 10., rect.y + 8., 18., 18.),
+                    16,
+                    theme.muted,
+                );
+                painter.text(
+                    if state.advanced_appearance { "Fewer options" } else { "More colours and options" },
+                    Rect::new(rect.x + 36., rect.y, rect.w - 44., rect.h),
+                    Style::new(12., theme.text),
+                );
+            }
         });
-        if frame.group.is_some() {
-            let label = state.page.map_or("MATCHING SETTINGS", |index| {
-                [
-                    "LOOK & FEEL",
-                    "WINDOWS & MOVEMENT",
-                    "DESKTOP TOOLS",
-                    "KEYBOARD & TOUCHPAD",
-                    "IDLE & BATTERY",
-                    "CONNECTION",
-                    "LOCK & SESSION",
-                    "SHORTCUTS & STARTUP",
-                    "DISPLAYS & SHARING",
-                ]
-                .get(index)
-                .copied()
-                .unwrap_or("SETTINGS")
-            });
-            painter.text(
-                label,
-                Rect::new(
-                    frame.content.x,
-                    frame.content.y + if frame.body.h < 500. { 64. } else { 80. },
-                    frame.content.w,
-                    19.,
-                ),
-                Style::new(10., theme.muted),
-            );
-        }
         if (state.page.is_some() || !state.query.is_empty()) && state.selected().is_empty() {
             painter.text(
-                "No settings match. Try accent, gap or bar.",
-                Rect::new(frame.content.x, frame.content.y + 120., frame.content.w, 35.),
+                "Try a word such as accent, gap, bar or battery.",
+                Rect::new(frame.content.x, frame.top + 8., frame.content.w, 30.),
                 Style::new(13., theme.muted),
             );
         }
         if let Some(rect) = frame.preview {
-            painter.text("LIVE PREVIEW", Rect::new(rect.x, rect.y - 28., rect.w, 20.), Style::new(10., theme.muted));
-            self.settings_preview(&mut painter, Rect::new(rect.x, rect.y, rect.w, 178.));
+            painter.text(
+                "LIVE PREVIEW",
+                Rect::new(rect.x + 2., rect.y - 24., rect.w, 20.),
+                Style::new(10., theme.muted).weight(600),
+            );
+            self.settings_preview(&mut painter, rect);
         }
         if let Some(rect) = frame.config {
             self.settings_config(&mut painter, rect);
         }
         if frame.max_scroll > 0. {
             let area = viewport(&frame);
-            let track = Rect::new(frame.body.right() - 7., area.y, 3., area.h.max(12.));
-            painter.fill(track, theme.border, 2.);
+            let track = Rect::new(frame.body.right() - 9., area.y, 3., area.h.max(12.));
             let height = (track.h * track.h / (track.h + frame.max_scroll)).max(22.).min(track.h);
             painter.fill(
                 Rect::new(
@@ -1596,42 +2127,263 @@ impl Tileception {
                     3.,
                     height,
                 ),
-                theme.muted,
+                theme.muted.alpha(0.5),
                 2.,
             );
         }
+        let status_left = frame.panel.x + if changes > 0 { 182. } else { 24. };
+        let status = if state.section.is_some() {
+            String::new()
+        } else if !state.message.is_empty() {
+            state.message.clone()
+        } else if changes > 0 && state.document_draft != state.document_before {
+            "Unapplied changes".into()
+        } else if changes == 1 {
+            "1 unapplied change".into()
+        } else if changes > 1 {
+            format!("{changes} unapplied changes")
+        } else {
+            String::new()
+        };
+        if changes > 0 && state.message.is_empty() && state.section.is_none() {
+            painter.fill(Rect::new(status_left, frame.panel.bottom() - 33., 6., 6.), theme.accent, 3.);
+        }
         painter.text(
-            &state.message,
-            Rect::new(frame.panel.x + 24., frame.panel.bottom() - 53., frame.panel.w - 345., 46.),
+            &status,
+            Rect::new(
+                status_left + if changes > 0 && state.message.is_empty() { 14. } else { 0. },
+                frame.panel.bottom() - 53.,
+                (frame.panel.right() - 320. - status_left).max(1.),
+                46.,
+            ),
             Style::new(11., if state.error { theme.danger } else { theme.muted }).lines(2),
         );
-        if let Some((index, selected)) = state.dropdown {
+        if let Some((index, highlighted)) = state.dropdown {
             let options = state.options(index);
-            for (position, rect) in self.settings_dropdown_rects(&frame, index).into_iter().enumerate() {
+            let rects = self.settings_dropdown_rects(&frame, index);
+            let current = state.draft[index].as_ref().and_then(toml::Value::as_str).unwrap_or("");
+            if let (Some(first), Some(last)) = (rects.first(), rects.last()) {
                 painter.shape(
-                    rect,
+                    Rect::new(first.x - 4., first.y - 4., first.w + 8., last.bottom() - first.y + 8.),
                     Shape {
                         border_width: 1.,
                         border: theme.border,
-                        ..Shape::filled(
-                            if position == selected || rect.contains(pointer) {
-                                theme.surface_raised
-                            } else {
-                                theme.surface
-                            },
-                            2.,
-                        )
+                        glow_radius: 16.,
+                        glow: Colour([0., 0., 0., 0.35]),
+                        ..Shape::filled(theme.surface, 8.)
                     },
                 );
+            }
+            for (position, rect) in rects.into_iter().enumerate() {
+                if position == highlighted || rect.contains(pointer) {
+                    painter.fill(rect, theme.surface_raised, 5.);
+                }
+                let chosen = options[position].eq_ignore_ascii_case(current)
+                    || current.is_empty() && FIELDS[index].key == "touchpad.click_method" && position == 0;
                 painter.text(
-                    &options[position],
-                    Rect::new(rect.x + 12., rect.y, rect.w - 24., rect.h),
-                    Style::new(12., if position == selected { theme.accent } else { theme.text }),
+                    &choice_label(FIELDS[index].key, &options[position]),
+                    Rect::new(rect.x + 12., rect.y, rect.w - 40., rect.h),
+                    Style::new(12., if chosen { theme.accent } else { theme.text }),
                 );
+                if chosen {
+                    painter.glyph(glyph::CHECK, Rect::new(rect.right() - 28., rect.y, 18., rect.h), 14, theme.accent);
+                }
             }
         }
+        self.draw_colour_picker(&mut painter, &frame);
         self.settings_draw_editor(&mut painter, &frame);
         self.settings_draw_connect(&mut painter);
+        self.section_draw(&mut painter);
+        self.draw_keymap_picker(&mut painter);
+        painter.finish()
+    }
+
+    /// An overview tile: the category and a few of its current settings.
+    fn settings_card(&self, painter: &mut Painter, rect: Rect, index: usize, pointer: Point) {
+        let theme = &self.theme;
+        let category = &CATEGORIES[index];
+        let hovered = rect.contains(pointer);
+        painter.shape(
+            rect,
+            Shape {
+                border_width: 1.,
+                border: if hovered || self.settings.focus == Some(Hit::Card(index)) {
+                    theme.accent.alpha(0.8)
+                } else {
+                    theme.border
+                },
+                ..Shape::filled(if hovered { theme.surface_raised } else { theme.surface }, 8.)
+            },
+        );
+        painter.shape(
+            Rect::new(rect.x + 16., rect.y + 16., 36., 36.),
+            Shape { fill: (theme.accent.alpha(0.16), theme.accent_end.alpha(0.08)), radius: 8., ..Default::default() },
+        );
+        painter.glyph(category.icon, Rect::new(rect.x + 16., rect.y + 16., 36., 36.), 20, theme.accent);
+        painter.text(
+            category.title,
+            Rect::new(rect.x + 64., rect.y + 13., rect.w - 110., 24.),
+            Style::new(15., theme.text).weight(500),
+        );
+        painter.text(
+            category.summary,
+            Rect::new(rect.x + 64., rect.y + 35., rect.w - 110., 18.),
+            Style::new(11., theme.muted),
+        );
+        painter.glyph(
+            glyph::ARROW_RIGHT,
+            Rect::new(rect.right() - 36., rect.y + 18., 20., 24.),
+            16,
+            if hovered { theme.accent } else { theme.muted },
+        );
+        if self.settings.category_changed(index) {
+            painter.fill(Rect::new(rect.right() - 50., rect.y + 27., 6., 6.), theme.accent, 3.);
+        }
+        if index == 0 && rect.h > 250. {
+            self.settings_preview(painter, Rect::new(rect.x + 16., rect.y + 68., rect.w - 32., rect.h - 84.));
+            return;
+        }
+        let lines = self.settings_overview(index);
+        let columns = if rect.w > 640. { 2 } else { 1 };
+        let width = (rect.w - 32. - (columns - 1) as f64 * 32.) / columns as f64;
+        let per_column = lines.len().div_ceil(columns);
+        for (position, (label, value)) in lines.iter().enumerate() {
+            let column = position / per_column;
+            let top = rect.y + 70. + (position % per_column) as f64 * 24.;
+            if top + 22. > rect.bottom() - 6. {
+                continue;
+            }
+            let left = rect.x + 16. + column as f64 * (width + 32.);
+            painter.fill(Rect::new(left, top + 23., width, 1.), theme.border.alpha(0.5), 0.);
+            painter.text(label, Rect::new(left, top, width * 0.55, 22.), Style::new(11., theme.muted));
+            let style = Style::new(11., theme.text);
+            let (value_width, _) = painter.measure(value, width * 0.6, style);
+            painter.text(value, Rect::new(left + width - value_width, top, value_width + 1., 22.), style);
+        }
+    }
+
+    /// A few current values per category for the overview.
+    fn settings_overview(&self, category: usize) -> Vec<(String, String)> {
+        let state = &self.settings;
+        let switch = |key: &str| if state.flag(key) { "On" } else { "Off" }.to_string();
+        let text = |key: &str, empty: &str| {
+            let value = state.text(key);
+            if value.is_empty() { empty.to_string() } else { choice_label(key, value) }
+        };
+        let number = |key: &str, unit: &str| number_label(key, state.number(key, 0.), unit);
+        let count = |key: &str, one: &str, many: &str| {
+            let count = state.value(key).map_or(0, |value| {
+                value.as_array().map(Vec::len).or_else(|| value.as_table().map(toml::Table::len)).unwrap_or(0)
+            });
+            match count {
+                0 => "None".to_string(),
+                1 => format!("1 {one}"),
+                count => format!("{count} {many}"),
+            }
+        };
+        let lines = match category {
+            0 => vec![
+                ("Accent", text("theme.accent", "Default")),
+                ("Font", format!("{} {} pt", text("theme.font", "Default"), state.number("theme.font_size", 13.))),
+                ("Frosted panels", switch("theme.frost")),
+            ],
+            1 => vec![
+                ("Window spacing", number("general.gap", "px")),
+                ("Animation", number("general.animation_ms", "ms")),
+                ("Drag modifier", text("general.drag_modifier", "Alt")),
+            ],
+            2 => vec![
+                ("Bar", text("shell.bar", "Built-in")),
+                ("Launcher", text("shell.launcher", "Built-in")),
+                ("Notifications", text("shell.notifications", "Built-in")),
+            ],
+            3 => vec![
+                ("Layout", text("keyboard.layout", "System default")),
+                ("Repeat delay", number("keyboard.repeat_delay", "ms")),
+                ("Repeat rate", number("keyboard.repeat_rate", "/s")),
+                ("Tap to click", switch("touchpad.tap")),
+                ("Natural scrolling", switch("touchpad.natural_scroll")),
+                ("Pointer speed", number("touchpad.speed", "")),
+            ],
+            4 => vec![
+                ("Lock after", number("idle.lock_after", "")),
+                ("Screen off after", number("idle.off_after", "")),
+                ("Power saver at", number("battery.power_saver_at", "%")),
+            ],
+            5 => vec![("In the panel", switch("home.enabled")), ("Status", self.settings_home_status())],
+            6 => vec![
+                ("Locker", text("shell.lock", "Built-in")),
+                ("Suspend", if state.flag("general.suspend_enabled") { "Allowed" } else { "Hidden" }.into()),
+                ("Login screen look", switch("greeter.share")),
+            ],
+            7 => vec![
+                ("Built-in shortcuts", switch("general.default_binds")),
+                ("Shortcuts in config", count("binds", "shortcut", "shortcuts")),
+                ("Autostart", count("general.autostart", "command", "commands")),
+                ("Terminal", text("general.terminal", "System default")),
+            ],
+            _ => vec![
+                ("Displays", format!("{} connected", self.all_outputs().len())),
+                ("Sharing", switch("handoff.enabled")),
+                ("Full-edge crossing", switch("general.stretch_screen_edges")),
+            ],
+        };
+        lines.into_iter().map(|(label, value)| (label.to_string(), value)).collect()
+    }
+
+    /// Settings as a small picture: in Overview, while moving and in the
+    /// strip of minimized windows.
+    pub(crate) fn settings_card_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        rect: &Rect,
+        alpha: f32,
+    ) -> Vec<OutputElement> {
+        let theme = &self.theme;
+        let mut painter = Painter::new(self, renderer);
+        painter.shape(
+            *rect,
+            Shape {
+                border_width: 1.,
+                border: theme.border.alpha(alpha),
+                ..Shape::filled(theme.background.alpha(alpha), theme.radius)
+            },
+        );
+        let size = (rect.w.min(rect.h) * 0.3).clamp(12., 64.);
+        let label =
+            Style::new((size * 0.4).clamp(8., 18.) as f32, theme.text.alpha(alpha)).weight(500).align(Align::Centre);
+        let top = rect.y + (rect.h - size - size * 0.8) / 2.;
+        painter.glyph(glyph::SETTINGS, Rect::new(rect.x, top, rect.w, size), size as u32, theme.accent.alpha(alpha));
+        if rect.h > size * 2. {
+            painter.text("Settings", Rect::new(rect.x, top + size + 4., rect.w, size * 0.8), label);
+        }
+        painter.finish()
+    }
+
+    pub(crate) fn settings_identify_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        if !self.settings.open || self.settings.identify_until.is_none_or(|until| until <= std::time::Instant::now()) {
+            return Vec::new();
+        }
+        let Some(output) = &self.output else { return Vec::new() };
+        let screen = self.output_rect();
+        let width = screen.w.min(320.);
+        let rect = Rect::new(screen.x + (screen.w - width) / 2., screen.y + 40., width, 108.);
+        let mut painter = Painter::new(self, renderer);
+        painter.shape(
+            rect,
+            Shape { border_width: 2., border: self.theme.accent, ..Shape::filled(self.theme.background, 8.) },
+        );
+        let number = self.all_outputs().iter().position(|candidate| candidate == output).unwrap_or(0) + 1;
+        painter.text(
+            &number.to_string(),
+            Rect::new(rect.x, rect.y + 6., rect.w, 60.),
+            Style::new(36., self.theme.accent).weight(500).align(Align::Centre),
+        );
+        painter.text(
+            &output.name(),
+            Rect::new(rect.x, rect.y + 68., rect.w, 28.),
+            Style::new(14., self.theme.text).align(Align::Centre),
+        );
         painter.finish()
     }
 
@@ -1640,26 +2392,34 @@ impl Tileception {
         let state = &self.settings;
         let field = &FIELDS[index];
         let invalid = state.error && (state.editing == Some(index) || state.message.starts_with(field.key));
-        painter.fill(Rect::new(rect.x + 1., rect.bottom() - 1., rect.w - 2., 1.), theme.border, 0.);
+        let group_bottom = state
+            .selected()
+            .iter()
+            .position(|other| *other == index)
+            .and_then(|position| state.selected().get(position + 1).copied())
+            .is_none_or(|next| state.heading(next) != state.heading(index));
+        if !group_bottom {
+            painter.fill(Rect::new(rect.x + 16., rect.bottom() - 1., rect.w - 32., 1.), theme.border, 0.);
+        }
         if invalid {
-            painter.fill(Rect::new(rect.x + 1., rect.y + 4., 2., rect.h - 8.), theme.danger, 0.);
+            painter.fill(Rect::new(rect.x + 1., rect.y + 10., 3., rect.h - 20.), theme.danger, 1.);
+        } else if state.draft[index] != state.before[index] {
+            painter.fill(Rect::new(rect.x + 1., rect.y + 10., 3., rect.h - 20.), theme.accent, 1.);
         }
-        if state.draft[index] != state.before[index] {
-            painter.fill(Rect::new(rect.x, rect.y + 8., 2., rect.h - 16.), theme.accent, 1.);
-        }
-        let label = Rect::new(rect.x + 17., rect.y + 10., rect.w - 235., 25.);
+        let padding = (rect.h - 42.) / 2.;
+        let label = Rect::new(rect.x + 18., rect.y + padding, rect.w - 250., 21.);
         painter.text(field.label, label, Style::new(12., theme.text).weight(500));
         painter.text(
             field.description,
-            Rect::new(label.x, label.bottom(), label.w, 34.),
-            Style::new(11., theme.muted).lines(2),
+            Rect::new(label.x, label.bottom() + 1., label.w, 20.),
+            Style::new(11., theme.muted),
         );
         let control = control_rect(rect);
         let value = state.draft[index].as_ref();
         match field.control {
             Control::Toggle => {
                 let enabled = value.and_then(toml::Value::as_bool).unwrap_or(false);
-                let switch = Rect::new(control.right() - 38., control.y + 9., 34., 20.);
+                let switch = Rect::new(control.right() - 38., control.y + (control.h - 20.) / 2., 34., 20.);
                 painter.shape(
                     switch,
                     Shape {
@@ -1669,12 +2429,14 @@ impl Tileception {
                         } else {
                             (theme.surface_raised, theme.surface_raised)
                         },
+                        border_width: if enabled { 0. } else { 1. },
+                        border: theme.border,
                         ..Default::default()
                     },
                 );
                 painter.fill(
                     Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
-                    theme.text,
+                    if enabled { theme.text } else { theme.muted },
                     7.,
                 );
             }
@@ -1682,33 +2444,49 @@ impl Tileception {
                 let number = state.number(field.key, min);
                 let min = min.min(number);
                 let max = max.max(number);
-                let track = Rect::new(control.x, control.y + 18., 90., 3.);
+                let track = Rect::new(control.x, control.y + control.h / 2. - 1.5, 90., 3.);
                 painter.fill(track, theme.border, 2.);
                 let fraction = ((number - min) / (max - min)).clamp(0., 1.);
-                painter.fill(Rect::new(track.x, track.y, track.w * fraction, 3.), theme.accent, 2.);
-                painter.fill(Rect::new(track.x + track.w * fraction - 4., track.y - 3., 9., 9.), theme.text, 5.);
-                let label = if number == 0. && field.key.starts_with("idle.") {
-                    "Never".into()
-                } else {
-                    format!("{} {}", number, unit)
-                };
+                painter.shape(
+                    Rect::new(track.x, track.y, track.w * fraction, 3.),
+                    Shape { fill: (theme.accent, theme.accent_end), radius: 2., ..Default::default() },
+                );
+                painter.fill(Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.), theme.text, 7.);
                 painter.text(
-                    &label,
-                    Rect::new(control.x + 98., control.y, 52., control.h),
-                    Style::new(11., theme.muted).align(Align::Centre),
+                    &number_label(field.key, number, unit),
+                    Rect::new(control.x + 102., control.y, 56., control.h),
+                    Style::new(11., theme.text),
                 );
             }
-            Control::Toml => {
-                painter.fill(control, theme.surface_raised, 6.);
-                painter.glyph(glyph::FILE, Rect::new(control.x + 10., control.y, 18., control.h), 15, theme.muted);
+            Control::Section => {
+                let hovered = control.contains(Point::new(self.pointer.x, self.pointer.y));
+                painter.shape(
+                    control,
+                    Shape {
+                        border_width: 1.,
+                        border: if hovered { theme.muted } else { theme.border },
+                        ..Shape::filled(theme.surface_raised, 6.)
+                    },
+                );
                 painter.text(
-                    "Edit section",
-                    Rect::new(control.x + 34., control.y, control.w - 40., control.h),
+                    if state.parked_sections.iter().any(|screen| screen.field == index) {
+                        "Edited, continue"
+                    } else {
+                        "Open"
+                    },
+                    Rect::new(control.x + 12., control.y, control.w - 40., control.h),
                     Style::new(11., theme.text).weight(500),
+                );
+                painter.glyph(
+                    glyph::CHEVRON_RIGHT,
+                    Rect::new(control.right() - 26., control.y, 16., control.h),
+                    14,
+                    theme.muted,
                 );
             }
             _ => {
                 let editing = state.editing == Some(index);
+                let hovered = control.contains(Point::new(self.pointer.x, self.pointer.y));
                 painter.shape(
                     control,
                     Shape {
@@ -1717,27 +2495,46 @@ impl Tileception {
                             theme.danger
                         } else if editing {
                             theme.accent
+                        } else if hovered {
+                            theme.muted
                         } else {
                             theme.border
                         },
-                        ..Shape::filled(theme.surface_raised, 6.)
+                        ..Shape::filled(if editing { theme.background } else { theme.surface_raised }, 6.)
                     },
                 );
-                let label = if editing {
-                    state.input.text.clone()
-                } else if matches!(field.control, Control::Toml) {
-                    "Edit...".into()
-                } else {
-                    show(value)
+                let label = match (value.and_then(toml::Value::as_str), field.control) {
+                    (_, _) if editing => state.input.text.clone(),
+                    (Some(text), Control::Choice(_)) => choice_label(field.key, text),
+                    (None, Control::Choice(_)) if field.key == "touchpad.click_method" => "Device default".into(),
+                    _ => show(value),
                 };
-                let colour = matches!(field.control, Control::Colour);
-                if colour {
-                    let swatch = value
-                        .and_then(toml::Value::as_str)
-                        .and_then(|value| Colour::parse(value).ok())
-                        .unwrap_or(theme.accent);
-                    painter.fill(Rect::new(control.x + 8., control.y + 10., 18., 18.), swatch, 4.);
+                let swatch = match field.control {
+                    Control::Colour => Some(
+                        value
+                            .and_then(toml::Value::as_str)
+                            .and_then(|value| Colour::parse(value).ok())
+                            .unwrap_or(theme.accent),
+                    ),
+                    _ if field.key == "battery.charging" => {
+                        value.and_then(toml::Value::as_str).and_then(|value| named_colour(theme, value))
+                    }
+                    _ => None,
+                };
+                if let Some(swatch) = swatch {
+                    let pointer = Point::new(self.pointer.x, self.pointer.y);
+                    let active = state.colour.as_ref().is_some_and(|picker| picker.index == index)
+                        || Rect::new(control.x, control.y, 36., control.h).contains(pointer);
+                    painter.shape(
+                        Rect::new(control.x + 9., control.y + (control.h - 18.) / 2., 18., 18.),
+                        Shape {
+                            border_width: if active { 2. } else { 1. },
+                            border: if active { theme.text } else { theme.border },
+                            ..Shape::filled(swatch, 4.)
+                        },
+                    );
                 }
+                let colour = swatch.is_some();
                 let text_rect = Rect::new(
                     control.x + if colour { 34. } else { 10. },
                     control.y,
@@ -1763,9 +2560,14 @@ impl Tileception {
                         painter.image(&image.buffer, (text_rect.x, text_rect.y + (text_rect.h - image.height) / 2.));
                     }
                 } else {
-                    painter.text(&label, text_rect, Style::new(11., theme.text));
+                    let unset = value.is_none() && !matches!(field.control, Control::Choice(_));
+                    painter.text(
+                        &label,
+                        Rect::new(text_rect.x, text_rect.y, text_rect.w - 14., text_rect.h),
+                        Style::new(11., if unset { theme.muted } else { theme.text }),
+                    );
                 }
-                if matches!(field.control, Control::Choice(_)) {
+                if matches!(field.control, Control::Choice(_) | Control::Keyboard) {
                     painter.glyph(
                         glyph::CHEVRON_DOWN,
                         Rect::new(control.right() - 22., control.y, 16., control.h),
@@ -1776,18 +2578,23 @@ impl Tileception {
             }
         }
         if state.draft[index] != state.defaults[index] {
-            painter.glyph(glyph::RESTART, reset_rect(rect), 14, theme.muted);
+            let reset = reset_rect(rect);
+            let hovered = reset.contains(Point::new(self.pointer.x, self.pointer.y));
+            if hovered {
+                painter.fill(reset, theme.surface_raised, 6.);
+            }
+            painter.glyph(glyph::RESTART, reset, 14, if hovered { theme.text } else { theme.muted });
         }
         if state.focus == Some(Hit::Field(index)) {
             let control = if matches!(field.control, Control::Toggle) {
-                Rect::new(control.right() - 42., control.y + 5., 42., 28.)
+                Rect::new(control.right() - 42., control.y + (control.h - 28.) / 2., 42., 28.)
             } else {
                 control
             };
             painter.shape(
                 control,
                 Shape {
-                    radius: 6.,
+                    radius: if matches!(field.control, Control::Toggle) { 14. } else { 6. },
                     border_width: 1.,
                     border: if invalid { theme.danger } else { theme.accent },
                     ..Default::default()
@@ -1935,11 +2742,8 @@ impl Tileception {
             let all = toml::Table::try_from(&config.file).map_err(|error| error.to_string())?;
             let mut table = toml::Table::new();
             let selected = self.settings.selected();
-            let changed: Vec<_> = selected
-                .iter()
-                .copied()
-                .filter(|index| self.settings.draft[*index] != self.settings.before[*index])
-                .collect();
+            let changed: Vec<_> =
+                (0..FIELDS.len()).filter(|index| self.settings.draft[*index] != self.settings.before[*index]).collect();
             for index in if changed.is_empty() { selected } else { changed } {
                 let key = FIELDS[index].key;
                 if let Some((section, name)) = key.split_once('.') {
@@ -1963,43 +2767,21 @@ impl Tileception {
 
     fn settings_config(&self, painter: &mut Painter, rect: Rect) {
         let theme = &self.theme;
-        painter.text(
-            "config.toml",
-            Rect::new(rect.x, rect.y, rect.w - 32., 36.),
-            Style::new(12., theme.text).weight(500),
-        );
-        let edit = Rect::new(rect.right() - 112., rect.y + 4., 100., 28.);
-        painter.fill(edit, theme.surface_raised, 5.);
-        painter.text("Edit full file...", edit, Style::new(11., theme.text).align(Align::Centre));
-        let reference = Rect::new(rect.right() - 206., rect.y + 4., 84., 28.);
-        painter.fill(reference, theme.surface_raised, 5.);
-        painter.text("Reference", reference, Style::new(11., theme.text).align(Align::Centre));
-        if self.settings.focus == Some(Hit::EditDocument) {
-            painter.shape(edit, Shape { radius: 5., border_width: 1., border: theme.accent, ..Default::default() });
-        }
-        if self.settings.focus == Some(Hit::Reference) {
-            painter
-                .shape(reference, Shape { radius: 5., border_width: 1., border: theme.accent, ..Default::default() });
-        }
-        if rect.h < 70. {
-            return;
-        }
         let before = self.settings_config_lines(false);
         let after = self.settings_config_lines(true);
         let before_keys = config_line_keys(&before);
         let after_keys = config_line_keys(&after);
         let before_values: std::collections::BTreeMap<_, _> = before_keys.iter().zip(&before).collect();
         let width = (rect.w - 12.) / 2.;
-        for (column, title) in ["Before", "After"].iter().enumerate() {
+        for (column, title) in ["Applied now", "After applying"].iter().enumerate() {
             let left = rect.x + column as f64 * (width + 12.);
             painter.text(
                 title,
-                Rect::new(left, rect.y + 36., width, 22.),
-                Style::new(11., if column == 0 { theme.muted } else { theme.accent }),
+                Rect::new(left + 2., rect.y, width, 22.),
+                Style::new(10., if column == 0 { theme.muted } else { theme.accent }).weight(600),
             );
-            let pane = Rect::new(left, rect.y + 62., width, rect.h - 62.);
-            painter
-                .shape(pane, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, 6.) });
+            let pane = Rect::new(left, rect.y + 26., width, rect.h - 26.);
+            painter.shape(pane, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 6.) });
             let area = Rect::new(left + 8., pane.y + 8., width - 16., pane.h - 16.);
             let lines = if column == 0 { &before } else { &after };
             painter.clipped(area, |painter| {
@@ -2010,7 +2792,7 @@ impl Tileception {
                     }
                     let changed = column == 1 && before_values.get(&after_keys[line]) != Some(&label);
                     if changed {
-                        painter.fill(Rect::new(area.x, top, area.w, 23.), theme.accent.alpha(0.06), 0.);
+                        painter.fill(Rect::new(area.x, top, area.w, 23.), theme.accent.alpha(0.08), 3.);
                     }
                     painter.text_font(
                         label,

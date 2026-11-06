@@ -106,7 +106,7 @@ impl Tileception {
             Repeat::Commands(commands) => {
                 let still = commands.iter().all(|command| match command {
                     Command::LauncherKey(..) => self.launcher.open,
-                    Command::SettingsKey(..) => self.settings.open,
+                    Command::SettingsKey(..) => self.settings_focused(),
                     Command::DuckKey(..) => self.duck.typing(),
                     Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),

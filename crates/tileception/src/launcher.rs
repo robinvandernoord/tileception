@@ -312,6 +312,10 @@ impl Launcher {
 }
 
 impl Tileception {
+    pub(crate) fn settings_applications(&self) -> Vec<tileception_apps::App> {
+        self.launcher.index.search("", &self.launcher.usage, usize::MAX).into_iter().cloned().collect()
+    }
+
     /// Puts a PNG file on the clipboard, owned by the compositor, so copying a
     /// screenshot needs no helper window.
     pub fn copy_image(&mut self, path: &std::path::Path) -> Result<(), String> {
@@ -431,7 +435,6 @@ impl Tileception {
     }
 
     fn open_launcher(&mut self, home: bool) {
-        self.settings.open = false;
         if self.launcher.index.changed_since_scan() {
             self.launcher.index.refresh();
         }
@@ -1073,6 +1076,10 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
+        if launcher_settings_button(layout.footer).contains(point) {
+            self.toggle_settings();
+            return;
+        }
         if layout.field.contains(point) {
             let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
             self.launcher_cursor_at(point, extend);
@@ -1300,7 +1307,20 @@ impl Tileception {
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
-        painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - 52.).max(1.), footer.h), |painter| {
+            painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        });
+        let settings = launcher_settings_button(footer);
+        let hovered = settings.contains(Point::new(self.pointer.x, self.pointer.y));
+        if hovered {
+            painter.fill(settings, theme.surface_raised, 5.);
+        }
+        painter.glyph(
+            glyph::SETTINGS,
+            Rect::new(settings.x + 6., settings.y + 6., 20., 20.),
+            18,
+            if hovered { theme.accent } else { theme.muted },
+        );
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
             painter.popup(card.rect);
@@ -1824,6 +1844,10 @@ struct LauncherLayout {
     /// A `>` command's output, under its row.
     output: Option<Rect>,
     footer: Rect,
+}
+
+fn launcher_settings_button(footer: Rect) -> Rect {
+    Rect::new(footer.right() - 44., footer.y + (footer.h - 32.) / 2., 32., 32.)
 }
 
 fn usage_path() -> PathBuf {

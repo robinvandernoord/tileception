@@ -84,6 +84,15 @@ pub enum Action {
 
 impl Tileception {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        if let InputEvent::DeviceAdded { device } = &event
+            && device.has_capability(smithay::backend::input::DeviceCapability::Touch)
+            && !self.touch.devices.contains(&device.name())
+        {
+            self.touch.devices.push(device.name());
+        }
+        if let InputEvent::DeviceRemoved { device } = &event {
+            self.touch.devices.retain(|name| name != &device.name());
+        }
         let touchscreen = match &event {
             InputEvent::TouchDown { event } => Some(event.device().name()),
             InputEvent::TouchMotion { event } => Some(event.device().name()),
@@ -92,6 +101,11 @@ impl Tileception {
             InputEvent::TouchFrame { event } => Some(event.device().name()),
             _ => None,
         };
+        if let Some(name) = &touchscreen
+            && !self.touch.devices.contains(name)
+        {
+            self.touch.devices.push(name.clone());
+        }
         if let Some(mapping) = touchscreen.as_ref().and_then(|name| self.config.file.touchscreens.get(name)) {
             // An explicitly mapped touchscreen never falls through to another
             // screen when its display is disconnected.
@@ -279,6 +293,9 @@ impl Tileception {
             }
             // Applications' global shortcuts, and the question for their keys,
             // which takes every key press but modifiers.
+            if state.settings_record_key(pressed, raw_sym, Mods::from_state(mods)) {
+                return FilterResult::Intercept(Vec::new());
+            }
             let trigger = crate::global_shortcuts::Trigger::new(Mods::from_state(mods), raw_sym);
             let modifier = crate::config::modifier_of(raw_sym).is_some() || handle.modified_sym().is_modifier_key();
             if state.asking_for_shortcut() && pressed && !modifier {
@@ -306,7 +323,10 @@ impl Tileception {
                 held,
                 sym,
                 raw,
-                state.world.in_overview() && !state.settings.open && !state.launcher.open && state.power_menu.is_none(),
+                state.world.in_overview()
+                    && !state.settings_focused()
+                    && !state.launcher.open
+                    && state.power_menu.is_none(),
             ) {
                 return FilterResult::Intercept(vec![command]);
             }
@@ -316,7 +336,7 @@ impl Tileception {
             }
             // A layer surface with the keyboard (slurp) gets it over the panels.
             let panels = state.layer_focus.is_none();
-            if panels && state.settings.open {
+            if panels && state.settings_focused() {
                 let mut bound = held;
                 if state.nested && bound.alt && !bound.logo {
                     bound.alt = false;
@@ -601,13 +621,6 @@ impl Tileception {
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
-        if !self.is_locked() && self.settings.open && self.power_menu.is_none() {
-            self.settings_motion(point);
-            let pointer = self.seat.get_pointer().expect("seat has a pointer");
-            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
-            pointer.frame(self);
-            return;
-        }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
             self.launcher_motion(point);
             return;
@@ -728,6 +741,15 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.settings_takes_pointer(point) {
+            // Settings is Tileception's own window: no program gets the pointer.
+            self.settings_motion(point);
+            self.schedule_render();
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         if self.pointer_to_owner_in_area(pos, time) {
             return;
         }
@@ -791,14 +813,6 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
-        if self.settings.open && self.power_menu.is_none() {
-            if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.settings_click(tileception_core::Point::new(self.pointer.x, self.pointer.y));
-            } else if state == ButtonState::Released && button == BTN_LEFT {
-                self.settings_release();
-            }
-            return;
-        }
         if state == ButtonState::Pressed && self.power_menu.is_none() && !self.launcher.open {
             // Clicking into another area of a split screen makes it the active
             // one; another machine's window there is looked up again in it.
@@ -840,6 +854,8 @@ impl Tileception {
         if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
         }
+        // A slider or other drag in Settings ends wherever the button comes up.
+        let settings_drag = state == ButtonState::Released && button == BTN_LEFT && self.settings_takes_pointer(point);
         // A held duck lets go wherever the button comes up.
         if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, point) {
             return;
@@ -1013,6 +1029,15 @@ impl Tileception {
                 return;
             }
         }
+        if settings_drag || self.settings_takes_pointer(point) {
+            if button == BTN_LEFT && state == ButtonState::Pressed {
+                self.settings_click(point);
+            } else if button == BTN_LEFT {
+                self.settings_release();
+            }
+            self.schedule_render();
+            return;
+        }
         if self.button_to_owner(button, state) {
             return;
         }
@@ -1041,7 +1066,7 @@ impl Tileception {
             self.bar_scroll(notches);
             return;
         }
-        if !self.is_locked() && self.power_menu.is_none() && !self.settings.open {
+        if !self.is_locked() && self.power_menu.is_none() {
             let notches = event
                 .amount_v120(Axis::Vertical)
                 .or_else(|| event.amount_v120(Axis::Horizontal))
@@ -1053,21 +1078,6 @@ impl Tileception {
             if self.strip_scroll(notches) {
                 return;
             }
-        }
-        if self.settings.open && !self.is_locked() && self.power_menu.is_none() {
-            let amount = if event.source() == AxisSource::Wheel {
-                event
-                    .amount_v120(Axis::Vertical)
-                    .map(|amount| amount / 120. * 54.)
-                    .or_else(|| event.amount(Axis::Vertical))
-            } else {
-                event.amount(Axis::Vertical)
-            }
-            .unwrap_or(0.);
-            if amount != 0. {
-                self.settings_scroll(amount);
-            }
-            return;
         }
         if self.launcher.open
             && !self.is_locked()
@@ -1114,6 +1124,22 @@ impl Tileception {
         }
         self.tap_armed = None;
         if !self.is_locked() && self.wheel_binding(event) {
+            return;
+        }
+        let pointer_at = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if !self.is_locked() && self.power_menu.is_none() && self.settings_takes_pointer(pointer_at) {
+            let amount = if event.source() == AxisSource::Wheel {
+                event
+                    .amount_v120(Axis::Vertical)
+                    .map(|amount| amount / 120. * 54.)
+                    .or_else(|| event.amount(Axis::Vertical))
+            } else {
+                event.amount(Axis::Vertical)
+            }
+            .unwrap_or(0.);
+            if amount != 0. {
+                self.settings_scroll(amount);
+            }
             return;
         }
         if self.scroll_to_owner(event) {

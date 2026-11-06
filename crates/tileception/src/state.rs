@@ -637,6 +637,11 @@ impl Tileception {
                 }
                 let size: Size<i32, Logical> =
                     (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                if self.is_settings_window(placement.window) {
+                    // Settings fills whatever place it is given.
+                    self.settings_resized(placement.rect.w.round().max(1.0), placement.rect.h.round().max(1.0));
+                    continue;
+                }
                 let Some(window) = self.windows.get(&placement.window) else {
                     // Another machine's window: its owner sizes it, and keeps
                     // its menus on this screen.
@@ -714,7 +719,7 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.settings.open
+        } else if self.settings_focused()
             || self.launcher.open
             || (self.doctor.open && self.doctor.focused)
             || self.duck.typing()
@@ -821,6 +826,10 @@ impl Tileception {
 
     pub fn close_window(&self, window_id: WindowId) {
         if self.close_remote(window_id) {
+            return;
+        }
+        if self.is_settings_window(window_id) {
+            self.loop_handle.insert_idle(|state| state.close_settings());
             return;
         }
         let Some(window) = self.windows.get(&window_id) else { return };

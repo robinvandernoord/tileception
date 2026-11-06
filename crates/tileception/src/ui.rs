@@ -26,6 +26,7 @@ use crate::{
 
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).
 pub mod glyph {
+    pub const SETTINGS: &str = r#"<path d="M10.1 5.1L10.2 2.7L13.8 2.7L13.9 5.1L15.5 5.7L17.3 4.1L19.9 6.7L18.3 8.5L18.9 10.1L21.3 10.2L21.3 13.8L18.9 13.9L18.3 15.5L19.9 17.3L17.3 19.9L15.5 18.3L13.9 18.9L13.8 21.3L10.2 21.3L10.1 18.9L8.5 18.3L6.7 19.9L4.1 17.3L5.7 15.5L5.1 13.9L2.7 13.8L2.7 10.2L5.1 10.1L5.7 8.5L4.1 6.7L6.7 4.1L8.5 5.7z"/><circle cx="12" cy="12" r="3"/>"#;
     pub const HOME: &str = r#"<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>"#;
     pub const BULB: &str = r#"<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>"#;
     pub const PLUG: &str = r#"<path d="M9 3v5M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v4"/>"#;

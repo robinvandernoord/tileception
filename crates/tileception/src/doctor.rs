@@ -574,7 +574,6 @@ impl Tileception {
             tracing::info!("the doctor is switched off in [shell]");
             return;
         }
-        self.settings.open = false;
         if !self.doctor_here() {
             self.doctor.opened = Instant::now();
         }

@@ -273,6 +273,7 @@ impl Tileception {
         let view = self.world.view(now);
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
+        elements.extend(self.settings_identify_elements(renderer));
         if active {
             elements.extend(self.osd_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
@@ -281,9 +282,6 @@ impl Tileception {
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
-        if active {
-            elements.extend(self.settings_elements(renderer));
-        }
         if active {
             elements.extend(self.tray_elements(renderer));
             // The welcome screen is part of the desktop: notifications go over it.
@@ -380,6 +378,28 @@ impl Tileception {
         let mut elements: Vec<OutputElement> = Vec::new();
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
+            if self.is_settings_window(drawn.window_id) {
+                // Settings, drawn by Tileception itself: live at 1:1, a card
+                // when scaled.
+                let focused = Some(drawn.window_id) == focus;
+                let floating = drawn.role == WindowRole::Floating;
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.frame(focused, !floating));
+                if drawn.live {
+                    elements.extend(self.settings_elements(renderer));
+                } else {
+                    elements.extend(self.settings_card_elements(renderer, &drawn.content, 1.0));
+                }
+                if floating {
+                    let shadow = Shape {
+                        radius: theme.radius,
+                        glow_radius: 28.0,
+                        glow: Colour([0.0, 0.0, 0.0, 0.4]),
+                        ..Default::default()
+                    };
+                    push_shape(&mut elements, shapes.as_ref(), &drawn.content, shadow);
+                }
+                continue;
+            }
             if self.handoff.windows.is_remote(drawn.window_id) {
                 // Another machine's window, drawn from its pictures, in a
                 // frame of the guest colour.
@@ -673,6 +693,9 @@ impl Tileception {
         content: &Rect,
         alpha: f32,
     ) -> Vec<OutputElement> {
+        if self.is_settings_window(window_id) {
+            return self.settings_card_elements(renderer, content, alpha);
+        }
         if let Some(geo) = self.window_geometry(window_id).filter(|_| self.handoff.windows.is_remote(window_id)) {
             let shown = (f64::from(geo.size.w), f64::from(geo.size.h));
             return self.remote_elements(renderer, window_id, content, shown, alpha);
