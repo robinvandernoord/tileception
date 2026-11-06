@@ -13,8 +13,41 @@ pub(super) enum Part {
     Hue,
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Drag(Part),
+    Preset(&'static str),
+    Passive,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Drag(part) => {
+                if let Some(picker) = &mut state.settings.colour {
+                    picker.drag = Some(*part);
+                }
+                state.colour_motion(point);
+            }
+            Self::Preset(preset) => {
+                if let Some(current) = &state.settings.colour {
+                    let mut picker =
+                        Picker::new(current.index, &format!("{preset}{}", current.alpha), state.theme.accent);
+                    picker.level = current.level;
+                    state.settings.colour = Some(picker);
+                    state.colour_commit();
+                }
+            }
+            Self::Passive => {}
+        }
+        state.schedule_render();
+    }
+}
+
 pub(super) struct Picker {
     pub index: usize,
+    /// A battery colour threshold being coloured, rather than the field itself.
+    pub level: Option<usize>,
     hue: f64,
     saturation: f64,
     value: f64,
@@ -61,7 +94,7 @@ impl Picker {
         let digits = text.trim().trim_start_matches('#');
         let alpha =
             if digits.len() == 8 && Colour::parse(text).is_ok() { digits[6..].to_string() } else { String::new() };
-        Picker { index, hue, saturation, value, alpha, drag: None }
+        Picker { index, level: None, hue, saturation, value, alpha, drag: None }
     }
 
     fn hex(&self) -> String {
@@ -94,12 +127,40 @@ fn layout(panel: Rect) -> Layout {
 }
 
 impl Tileception {
+    pub(super) fn colour_pointer_target(&self, point: Point) -> Option<interaction::Target> {
+        let layout = self.colour_layout(&self.settings_frame())?;
+        if !layout.panel.contains(point) {
+            return None;
+        }
+        for (rect, part) in [(layout.square, Part::Square), (layout.hue, Part::Hue)] {
+            if rect.contains(point) {
+                return Some(interaction::Target::new(
+                    rect,
+                    PointerAction::Drag(part),
+                    smithay::input::pointer::CursorIcon::Crosshair,
+                ));
+            }
+        }
+        for (rect, preset) in layout.presets.iter().zip(PRESETS) {
+            if rect.contains(point) {
+                return Some(interaction::Target::button(*rect, PointerAction::Preset(preset)));
+            }
+        }
+        Some(interaction::Target::new(
+            layout.panel,
+            PointerAction::Passive,
+            smithay::input::pointer::CursorIcon::Default,
+        ))
+    }
+
     /// Where the picker for this field opens: below its control, or above it
     /// near the bottom of Settings.
     fn colour_layout(&self, frame: &Frame) -> Option<Layout> {
         let picker = self.settings.colour.as_ref()?;
-        let (row, _) = frame.rows.iter().find(|(_, field)| *field == picker.index)?;
-        let control = control_rect(*row);
+        let control = match picker.level {
+            Some(level) => level_parts(frame.levels.iter().find(|(_, shown)| *shown == level)?.0).swatch,
+            None => control_rect(frame.rows.iter().find(|(_, field)| *field == picker.index)?.0),
+        };
         let (width, height) = (256., 228.);
         let below = control.bottom() + 6.;
         let top = if below + height > frame.panel.bottom() - 64. { control.y - 6. - height } else { below };
@@ -117,29 +178,16 @@ impl Tileception {
         self.settings.dropdown = None;
     }
 
-    /// A press while the picker is open. False when it lands outside it.
-    pub(super) fn colour_press(&mut self, point: Point) -> bool {
-        let frame = self.settings_frame();
-        let Some(layout) = self.colour_layout(&frame) else { return false };
-        if !layout.panel.contains(point) {
-            return false;
-        }
-        if let Some(position) = layout.presets.iter().position(|rect| rect.contains(point)) {
-            let index = self.settings.colour.as_ref().map(|picker| picker.index);
-            if let Some(index) = index {
-                let alpha = self.settings.colour.as_ref().map(|picker| picker.alpha.clone()).unwrap_or_default();
-                let fallback = self.theme.accent;
-                self.settings.colour = Some(Picker::new(index, &format!("{}{alpha}", PRESETS[position]), fallback));
-                self.colour_commit();
-            }
-        } else if layout.square.contains(point) || layout.hue.contains(point) {
-            if let Some(picker) = &mut self.settings.colour {
-                picker.drag = Some(if layout.square.contains(point) { Part::Square } else { Part::Hue });
-            }
-            self.colour_motion(point);
-        }
-        self.schedule_render();
-        true
+    /// The picker for a battery colour threshold. A theme colour's name
+    /// starts it at that colour; choosing one writes a hex colour.
+    pub(super) fn open_level_picker(&mut self, level: usize) {
+        let text = self.settings.levels().get(level).map(|(_, colour)| colour.clone()).unwrap_or_default();
+        let start = named_colour(&self.theme, &text).unwrap_or(self.theme.warning);
+        let [red, green, blue, _] = start.straight_rgba8();
+        let mut picker = Picker::new(levels_index(), &format!("#{red:02x}{green:02x}{blue:02x}"), start);
+        picker.level = Some(level);
+        self.settings.colour = Some(picker);
+        self.settings.dropdown = None;
     }
 
     pub(super) fn colour_motion(&mut self, point: Point) {
@@ -161,8 +209,16 @@ impl Tileception {
 
     fn colour_commit(&mut self) {
         let Some(picker) = &self.settings.colour else { return };
-        let (index, hex) = (picker.index, picker.hex());
-        self.settings.draft[index] = Some(toml::Value::String(hex));
+        let (index, level, hex) = (picker.index, picker.level, picker.hex());
+        if let Some(level) = level {
+            let mut levels = self.settings.levels();
+            if let Some(entry) = levels.get_mut(level) {
+                entry.1 = hex;
+                self.settings.set_levels(&levels);
+            }
+        } else {
+            self.settings.draft[index] = Some(toml::Value::String(hex));
+        }
         self.settings.error = false;
     }
 

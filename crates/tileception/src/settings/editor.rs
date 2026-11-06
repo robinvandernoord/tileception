@@ -6,6 +6,35 @@ use crate::{launcher::Paste, text_input::TextInput};
 const LINE: f64 = 21.;
 const LIMIT: usize = 256 * 1024;
 
+#[derive(Clone, Copy, PartialEq)]
+enum PointerAction {
+    Text,
+    Cancel,
+    Apply,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Text => state.settings_editor_caret(point, false),
+            Self::Cancel => state.settings.editor = None,
+            Self::Apply => state.finish_settings_editor(true),
+        }
+        state.schedule_render();
+    }
+}
+
+fn buttons(frame: &Frame, reference: bool) -> [(Rect, &'static str, PointerAction); 2] {
+    [
+        (Rect::new(frame.panel.right() - 280., frame.panel.bottom() - 49., 110., 33.), "Cancel", PointerAction::Cancel),
+        (
+            Rect::new(frame.panel.right() - 160., frame.panel.bottom() - 49., 110., 33.),
+            if reference { "Close" } else { "Apply changes" },
+            PointerAction::Apply,
+        ),
+    ]
+}
+
 pub(super) struct Editor {
     input: TextInput,
     pub(super) field: Option<usize>,
@@ -52,6 +81,21 @@ fn columns(text: &str, start: usize) -> &str {
 }
 
 impl Tileception {
+    pub(super) fn editor_pointer_target(&self, point: Point) -> Option<interaction::Target> {
+        let frame = self.settings_frame();
+        let area = body(&frame);
+        if area.contains(point) {
+            return Some(interaction::Target::new(
+                area,
+                PointerAction::Text,
+                smithay::input::pointer::CursorIcon::Text,
+            ));
+        }
+        buttons(&frame, self.settings.editor.as_ref()?.reference)
+            .into_iter()
+            .find_map(|(rect, _, action)| rect.contains(point).then(|| interaction::Target::button(rect, action)))
+    }
+
     pub(super) fn open_settings_editor(&mut self, field: Option<usize>, reference: bool) {
         if let Some(position) = self
             .settings
@@ -165,37 +209,29 @@ impl Tileception {
         self.schedule_render();
     }
 
-    pub(super) fn settings_editor_click(&mut self, point: Point) {
-        let frame = self.settings_frame();
-        let area = body(&frame);
-        if point.y > frame.panel.bottom() - 58. {
-            if point.x > frame.panel.right() - 160. {
-                self.finish_settings_editor(true);
-            } else if point.x > frame.panel.right() - 280. {
-                self.settings.editor = None;
-            }
-        } else if area.contains(point) {
-            let Some(editor) = self.settings.editor.as_mut() else { return };
-            let row = editor.first + ((point.y - area.y) / LINE).max(0.) as usize;
-            let lines: Vec<&str> = editor.input.text.split('\n').collect();
-            let row = row.min(lines.len() - 1);
-            let offset: usize = lines.iter().take(row).map(|line| line.len() + 1).sum();
-            let shown = columns(lines[row], editor.horizontal);
-            let hidden = lines[row].len() - shown.len();
-            let byte = self.text.borrow_mut().field_hit(
-                shown,
-                "monospace",
-                12.,
-                (area.w - 58.) as f32,
-                0,
-                (point.x - area.x - 48.).max(0.) as f32,
-            );
-            editor.input.move_to(offset + hidden + byte, false);
-        }
+    pub(super) fn settings_editor_caret(&mut self, point: Point, extend: bool) {
+        let area = body(&self.settings_frame());
+        let Some(editor) = self.settings.editor.as_mut() else { return };
+        let row = editor.first + ((point.y - area.y) / LINE).max(0.) as usize;
+        let lines: Vec<&str> = editor.input.text.split('\n').collect();
+        let row = row.min(lines.len() - 1);
+        let offset: usize = lines.iter().take(row).map(|line| line.len() + 1).sum();
+        let shown = columns(lines[row], editor.horizontal);
+        let hidden = lines[row].len() - shown.len();
+        let byte = self.text.borrow_mut().field_hit(
+            shown,
+            "monospace",
+            12.,
+            (area.w - 58.) as f32,
+            0,
+            (point.x - area.x - 48.).max(0.) as f32,
+        );
+        editor.input.move_to(offset + hidden + byte, extend);
         self.schedule_render();
     }
 
     pub fn settings_insert_paste(&mut self, epoch: u64, text: &str) {
+        self.invalidate_settings_client();
         if self.settings.editor_epoch != epoch {
             return;
         }
@@ -229,7 +265,8 @@ impl Tileception {
             if self.settings.editing.is_some() {
                 self.settings.input.insert(&text);
             } else if self.settings.focus == Some(Hit::Search) && self.settings.query.len() + text.len() <= 4096 {
-                self.settings.query.push_str(&text);
+                self.settings.search_input.insert(&text);
+                self.settings.query.clone_from(&self.settings.search_input.text);
             }
         }
         self.schedule_render();
@@ -403,8 +440,7 @@ impl Tileception {
             Rect::new(area.x, frame.panel.bottom() - 61., area.w - 285., 52.),
             Style::new(11., if editor.error.is_empty() { theme.muted } else { theme.danger }).lines(3),
         );
-        for (right, label) in [(280., "Cancel"), (160., if editor.reference { "Close" } else { "Apply changes" })] {
-            let rect = Rect::new(frame.panel.right() - right, frame.panel.bottom() - 49., 110., 33.);
+        for (rect, label, _) in buttons(frame, editor.reference) {
             painter.fill(rect, theme.surface_raised, 6.);
             painter.text(label, rect, Style::new(12., theme.text).align(Align::Centre));
         }

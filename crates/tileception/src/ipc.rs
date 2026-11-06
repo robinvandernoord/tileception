@@ -94,7 +94,6 @@ pub fn describe(state: &Tileception) -> String {
                             .get(window_id)
                             .map(crate::state::app_id)
                             .or_else(|| state.handoff.windows.remote_app(*window_id))
-                            .or_else(|| state.is_settings_window(*window_id).then(|| "tileception-settings".into()))
                             .unwrap_or_default();
                         format!("{}:{}", window_id.0, app)
                     })

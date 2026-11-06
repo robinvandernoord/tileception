@@ -31,10 +31,10 @@ enum Action {
     Generate,
     Advanced,
     Search,
-    Map,
     Cancel,
     Back,
     Stage,
+    Touchscreens,
 }
 
 struct Layout {
@@ -45,6 +45,36 @@ struct Layout {
     hits: Vec<(Rect, Action)>,
     fields: Vec<(Rect, Field)>,
     max_scroll: f64,
+}
+
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Action(Action),
+    Choose { field: usize, value: String },
+    Search,
+    Dismiss,
+    Monitor(usize),
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _: Rect, point: Point) {
+        match self {
+            Self::Action(action) => state.section_activate(*action),
+            Self::Choose { field, value } => state.section_choose_value(*field, value),
+            Self::Search => {}
+            Self::Dismiss => {
+                if let Some(screen) = &mut state.settings.section {
+                    screen.menu = None;
+                }
+            }
+            Self::Monitor(row) => {
+                if let Some(area) = state.section_layout().map {
+                    state.section_map_start(*row, point, area);
+                }
+            }
+        }
+        state.schedule_render();
+    }
 }
 
 struct Menu {
@@ -58,6 +88,130 @@ struct Menu {
 }
 
 impl Tileception {
+    pub(super) fn section_text_caret(&mut self, point: Point, extend: bool) {
+        let layout = self.section_layout();
+        let Some(screen) = self.settings.section.as_mut() else { return };
+        let Some((field, input)) = &mut screen.edit else { return };
+        let Some((rect, _)) =
+            layout.fields.iter().find(|(_, candidate)| candidate.path == field.path && candidate.label == field.label)
+        else {
+            return;
+        };
+        let secret = matches!(field.form, Form::Secret) && !screen.reveal;
+        let shown = if secret { "•".repeat(input.text.chars().count()) } else { input.text.clone() };
+        let cursor = if secret { input.text[..input.cursor].chars().count() * "•".len() } else { input.cursor };
+        let position = self.text.borrow_mut().field_hit(
+            &shown,
+            &self.theme.font,
+            11.,
+            (rect.w - 20.) as f32,
+            cursor,
+            (point.x - rect.x - 10.).max(0.) as f32,
+        );
+        let position = if secret {
+            input
+                .text
+                .char_indices()
+                .nth(shown[..position].chars().count())
+                .map_or(input.text.len(), |(offset, _)| offset)
+        } else {
+            position
+        };
+        input.move_to(position, extend);
+    }
+
+    pub(super) fn section_pointer_target(&self, point: Point) -> Option<interaction::Target> {
+        use smithay::input::pointer::CursorIcon;
+        let screen = self.settings.section.as_ref()?;
+        let layout = self.section_layout();
+        if let Some(menu) = &screen.menu {
+            let rect = self.section_menu_rect(&layout);
+            if rect.contains(point) {
+                if point.y < rect.y + 44. && menu.picker {
+                    return Some(interaction::Target::new(
+                        Rect::new(rect.x, rect.y, rect.w, 44.),
+                        PointerAction::Search,
+                        CursorIcon::Text,
+                    ));
+                }
+                let offset = ((point.y - rect.y - 44.) / 32.).floor();
+                if offset >= 0. && menu.first + (offset as usize) < menu.filtered().len() {
+                    return Some(interaction::Target::button(
+                        Rect::new(rect.x, rect.y + 44. + offset * 32., rect.w, 32.),
+                        PointerAction::Choose {
+                            field: menu.field,
+                            value: menu.filtered()[menu.first + offset as usize].1.to_string(),
+                        },
+                    ));
+                }
+            }
+            return Some(interaction::Target::new(
+                self.settings_frame().panel,
+                PointerAction::Dismiss,
+                CursorIcon::Default,
+            ));
+        }
+        if !layout.panel.contains(point) {
+            return self.settings_main_target(point);
+        }
+        if let Some(map) = layout.map
+            && map.contains(point)
+        {
+            let equal = self.settings.draft[edges()].as_ref().and_then(toml::Value::as_bool).unwrap_or(false);
+            let (origin, factor) = screen.display_map(map, equal);
+            return screen.display_map_rects(equal).iter().rev().find_map(|(index, rect)| {
+                let shown =
+                    Rect::new(origin.x + rect.x * factor, origin.y + rect.y * factor, rect.w * factor, rect.h * factor);
+                shown
+                    .contains(point)
+                    .then(|| interaction::Target::new(shown, PointerAction::Monitor(*index), CursorIcon::Grab))
+            });
+        }
+        layout.hits.iter().rev().find_map(|(rect, action)| {
+            if !rect.contains(point) {
+                return None;
+            }
+            let cursor = match action {
+                Action::Search => CursorIcon::Text,
+                Action::Field(index)
+                    if layout
+                        .fields
+                        .get(*index)
+                        .is_some_and(|(_, field)| !matches!(field.form, Form::Toggle | Form::Choice(_))) =>
+                {
+                    CursorIcon::Text
+                }
+                _ => CursorIcon::Pointer,
+            };
+            let action = PointerAction::Action(*action);
+            Some(if cursor == CursorIcon::Pointer {
+                interaction::Target::button(*rect, action)
+            } else {
+                interaction::Target::new(*rect, action, cursor)
+            })
+        })
+    }
+
+    pub(super) fn section_is_page(&self) -> bool {
+        self.settings.section.as_ref().is_some_and(|screen| {
+            matches!((self.settings.page, screen.kind), (Some(8), Kind::Displays) | (Some(9), Kind::Sharing))
+        })
+    }
+
+    pub(super) fn open_settings_page_section(&mut self) {
+        if self.settings.section.is_some() {
+            return;
+        }
+        let key = match self.settings.page {
+            Some(8) => "outputs",
+            Some(9) => "handoff",
+            _ => return,
+        };
+        if let Some(index) = FIELDS.iter().position(|field| field.key == key) {
+            self.open_settings_section(index);
+        }
+    }
+
     pub(super) fn open_settings_section(&mut self, index: usize) {
         let result = (|| {
             if let Some(position) = self.settings.parked_sections.iter().position(|screen| screen.field == index) {
@@ -69,7 +223,8 @@ impl Tileception {
             Ok::<_, String>(screen)
         })();
         match result {
-            Ok(screen) => {
+            Ok(mut screen) => {
+                screen.error = screen.validate_displays().err().unwrap_or_default();
                 self.settings.edges_before =
                     (screen.kind == Kind::Displays).then(|| self.settings.draft[edges()].clone());
                 self.settings.section = Some(screen);
@@ -89,24 +244,20 @@ impl Tileception {
         if discard && let Some(before) = self.settings.edges_before.take() {
             self.settings.draft[edges()] = before;
         }
-        if !discard && self.section_stage(false) {
+        if !discard && !self.section_stage(false) {
             return;
         }
-        if let Some(screen) = self.settings.section.take()
-            && !discard
-            && screen.changed()
-        {
-            self.settings.parked_sections.push(screen);
-            self.settings.message.clear();
-        }
+        self.settings.section = None;
+        self.open_settings_page_section();
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.schedule_render();
     }
 
-    fn section_stage(&mut self, apply: bool) -> bool {
+    pub(super) fn section_stage(&mut self, apply: bool) -> bool {
         let Some(mut screen) = self.settings.section.take() else { return true };
         let result = (|| {
             screen.finish_input()?;
+            screen.validate_displays()?;
             if !screen.changed() {
                 return Ok(());
             }
@@ -129,6 +280,7 @@ impl Tileception {
                 self.settings.error = false;
                 if apply {
                     self.settings_activate(Hit::Apply, None);
+                    self.open_settings_page_section();
                 }
             }
             Err(error) => {
@@ -146,6 +298,14 @@ impl Tileception {
             self.section_cancel_recording();
         }
         let list_height = self.section_layout().list.h;
+        if action == Action::Touchscreens {
+            if self.section_stage(false)
+                && let Some(index) = FIELDS.iter().position(|field| field.key == "touchscreens")
+            {
+                self.open_settings_section(index);
+            }
+            return;
+        }
         if action == Action::Cancel || action == Action::Back {
             self.section_back(action == Action::Cancel);
             return;
@@ -283,14 +443,13 @@ impl Tileception {
                     icons,
                 });
             }
-            Action::Automatic => screen.automatic_displays(),
+            Action::Automatic => {
+                screen.automatic_displays();
+                screen.error = screen.validate_displays().err().unwrap_or_default();
+            }
             Action::Reveal => screen.reveal = !screen.reveal,
             Action::Advanced => screen.advanced = !screen.advanced,
             Action::Search => {}
-            Action::Map => {
-                screen.map_collapsed = !screen.map_collapsed;
-                screen.scroll = 0.;
-            }
             Action::Generate => match crate::handoff::suggest_passphrase() {
                 Ok(passphrase) => {
                     screen.write(&Path::Key("passphrase".into()), toml::Value::String(passphrase));
@@ -298,37 +457,12 @@ impl Tileception {
                 }
                 Err(error) => screen.error = error,
             },
-            Action::Identify | Action::Edges | Action::Cancel | Action::Back | Action::Stage => {}
+            Action::Identify | Action::Edges | Action::Cancel | Action::Back | Action::Stage | Action::Touchscreens => {
+            }
         }
         self.settings.section = Some(screen);
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.schedule_render();
-    }
-
-    pub(super) fn section_click(&mut self, point: Point) {
-        let layout = self.section_layout();
-        if self.settings.section.as_ref().is_some_and(|screen| screen.menu.is_some()) {
-            let menu = self.section_menu_rect(&layout);
-            if menu.contains(point) && point.y >= menu.y + 44. {
-                let row = ((point.y - menu.y - 44.) / 32.) as usize;
-                self.section_choose(row);
-            } else if !menu.contains(point)
-                && let Some(screen) = &mut self.settings.section
-            {
-                screen.menu = None;
-            }
-            self.schedule_render();
-            return;
-        }
-        if let Some(map) = layout.map
-            && map.contains(point)
-        {
-            self.section_map_press(point, map);
-            return;
-        }
-        if let Some((_, action)) = layout.hits.iter().rev().find(|(rect, _)| rect.contains(point)) {
-            self.section_activate(*action);
-        }
     }
 
     pub(super) fn section_scroll(&mut self, amount: f64) {
@@ -338,7 +472,7 @@ impl Tileception {
                 let count = menu.filtered().len();
                 menu.first =
                     (menu.first as f64 + (amount / 32.).round()).clamp(0., count.saturating_sub(1) as f64) as usize;
-            } else if layout.list.contains(Point::new(self.pointer.x, self.pointer.y)) {
+            } else if layout.list.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1)) {
                 let total = if screen.kind == Kind::Sharing {
                     430. + self.handoff.peers.len() as f64 * 48.
                 } else {
@@ -353,15 +487,21 @@ impl Tileception {
     }
 
     fn section_choose(&mut self, offset: usize) {
-        let outputs = self.section_outputs();
         let Some(screen) = self.settings.section.as_mut() else { return };
         let Some(menu) = screen.menu.take() else { return };
         let Some((_, value)) = menu.filtered().get(menu.first + offset).copied() else {
             screen.menu = Some(menu);
             return;
         };
+        self.section_choose_value(menu.field, value);
+    }
+
+    fn section_choose_value(&mut self, index: usize, value: &str) {
+        let outputs = self.section_outputs();
+        let Some(screen) = self.settings.section.as_mut() else { return };
+        screen.menu = None;
         let fields = screen.fields(&outputs, &self.touch.devices);
-        if let Some(field) = fields.get(menu.field)
+        if let Some(field) = fields.get(index)
             && let Err(error) = screen.set_text(field, value)
         {
             screen.error = error;
@@ -387,7 +527,7 @@ impl Tileception {
     }
 
     pub(crate) fn settings_recording(&self) -> bool {
-        self.settings.open && self.settings.section.as_ref().is_some_and(|screen| screen.recording)
+        self.settings_focused() && self.settings.section.as_ref().is_some_and(|screen| screen.recording)
     }
 
     pub(super) fn section_cancel_recording(&mut self) {
@@ -401,6 +541,7 @@ impl Tileception {
         if !self.settings_recording() {
             return false;
         }
+        self.invalidate_settings_client();
         let list_height = self.section_layout().list.h;
         let Some(screen) = self.settings.section.as_mut() else { return false };
         self.tap_armed = None;
@@ -448,6 +589,7 @@ impl Tileception {
     }
 
     pub(super) fn section_key(&mut self, sym: u32, mods: Mods) {
+        let inline = self.section_is_page();
         let layout = self.section_layout();
         let Some(screen) = self.settings.section.as_mut() else { return };
         if let Some(menu) = screen.menu.as_mut() {
@@ -493,7 +635,12 @@ impl Tileception {
                 screen.searching = false;
                 screen.list_scroll = 0.;
             } else if screen.edit.take().is_none() {
-                self.section_back(false);
+                if inline {
+                    // Keep the draft when closing a page, just like the other pages.
+                    self.close_settings();
+                } else {
+                    self.section_back(false);
+                }
                 return;
             }
         } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {

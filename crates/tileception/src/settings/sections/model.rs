@@ -73,7 +73,6 @@ pub(in crate::settings) struct Screen {
     pub record_modifier: Option<Mods>,
     pub removed: bool,
     pub initial: Vec<(String, Value)>,
-    pub map_collapsed: bool,
     pub reveal: bool,
     pub advanced: bool,
     pub(super) monitors: Vec<displays::Monitor>,
@@ -224,7 +223,6 @@ impl Screen {
             record_modifier: None,
             removed: false,
             initial,
-            map_collapsed: false,
             reveal: false,
             advanced: false,
             monitors: Vec::new(),
@@ -834,6 +832,7 @@ impl Screen {
     }
 
     pub fn source(&self) -> Result<String, String> {
+        self.validate_displays()?;
         let mut excerpt: DocumentMut = self.original.parse().map_err(|error| format!("{error}"))?;
         let key = FIELDS[self.field].key;
         let mut names = std::collections::BTreeSet::new();

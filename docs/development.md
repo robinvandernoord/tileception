@@ -85,6 +85,24 @@ with window and input events, then renders the resulting layout. DRM/KMS runs
 the desktop session, winit runs nested windows, and the headless backend renders
 without taking over a display.
 
+Settings uses an in-process Wayland client with a real `xdg_toplevel` and
+shared-memory buffers. Its UI model stays in the compositor, while pointer,
+keyboard, moving, resizing and closing use the normal Wayland window paths.
+Backends service its drawing through `update_settings_client`, including the
+headless backend, so UI updates do not depend on taking a screenshot. Screen
+captures and window previews use the client's surface like any other window.
+
+Built-in controls share `ui::PointerTarget` for cursor feedback and button
+activation. Text uses the I-beam, buttons use the pointer hand, and sliders
+and draggable displays advertise their drag behaviour. Buttons activate only
+after a press and release over the same control; moving away cancels the
+activation. Text selection, sliders and window/display dragging start on
+press. Keep hit regions aligned with the drawn controls, including disabled
+states and modal dialogs. Each component owns its typed actions and defines its
+controls once, using the same bindings for hit testing, cursor feedback and
+activation. The shared layer stores the armed target and matches release to
+press; it does not dispatch string scopes or maintain lists of control IDs.
+
 `resources/` contains session helpers and desktop integration files.
 `scripts/` contains dependency, installation and packaging tools.
 `packaging/` contains package metadata and the archive signing key.

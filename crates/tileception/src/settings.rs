@@ -4,11 +4,13 @@ use smithay::{
     backend::renderer::gles::GlesRenderer,
     input::keyboard::{keysyms, xkb},
 };
-use tileception_core::{Placement, Point, Rect, WindowId};
+use tileception_core::{Point, Rect, WindowId};
 
+mod client;
 mod colour;
 mod connect;
 mod editor;
+mod interaction;
 mod keymap;
 mod sections;
 
@@ -97,9 +99,15 @@ const CATEGORIES: &[Category] = &[
         icon: glyph::TERMINAL,
     },
     Category {
-        title: "Displays & sharing",
-        summary: "Outputs, touchscreens & peers",
-        description: "Display layout, input routing and connections to other computers.",
+        title: "Displays",
+        summary: "Arrangement, scaling & touchscreens",
+        description: "Display layout, scaling and input routing.",
+        icon: glyph::GLOBE,
+    },
+    Category {
+        title: "Sharing",
+        summary: "Mouse, keyboard & clipboard",
+        description: "Connections to other computers.",
         icon: glyph::GLOBE,
     },
 ];
@@ -441,7 +449,7 @@ const FIELDS: &[Field] = &[
         Control::Toggle,
     ),
     field(8, "touchscreens", "Touchscreens", "Choose the display each touchscreen controls.", Control::Section),
-    field(8, "handoff", "Sharing", "Connect computers to share mouse, keyboard and clipboard.", Control::Section),
+    field(9, "handoff", "Sharing", "Connect computers to share mouse, keyboard and clipboard.", Control::Section),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -452,6 +460,11 @@ enum Hit {
     Field(usize),
     /// The swatch of a colour field, which opens the colour picker.
     Swatch(usize),
+    /// A battery colour threshold: its charge slider, swatch and remove button.
+    LevelAt(usize),
+    LevelColour(usize),
+    LevelRemove(usize),
+    LevelAdd,
     Reset(usize),
     ResetSection,
     Discard,
@@ -473,10 +486,15 @@ pub struct Settings {
     pub open: bool,
     /// The window Settings is shown in, while open.
     window: Option<WindowId>,
+    client: Option<client::Client>,
+    pointer: (f64, f64),
+    pressed: Option<interaction::Target>,
+    text_drag: bool,
     /// That window's size, as the layout last gave it.
     size: (f64, f64),
     page: Option<usize>,
     query: String,
+    search_input: crate::text_input::TextInput,
     before: Vec<Option<toml::Value>>,
     draft: Vec<Option<toml::Value>>,
     defaults: Vec<Option<toml::Value>>,
@@ -484,6 +502,8 @@ pub struct Settings {
     focus: Option<Hit>,
     editing: Option<usize>,
     drag: Option<(usize, Rect)>,
+    /// A battery threshold's charge slider being dragged.
+    level_drag: Option<(usize, Rect)>,
     input: crate::text_input::TextInput,
     message: String,
     error: bool,
@@ -663,6 +683,8 @@ struct Frame {
     advanced: Option<Rect>,
     /// The card holding the smart-home connection controls.
     home: Option<Rect>,
+    /// The battery colour thresholds, under their row on Power & battery.
+    levels: Vec<(Rect, usize)>,
     max_scroll: f64,
 }
 
@@ -688,6 +710,33 @@ fn control_rect(row: Rect) -> Rect {
 }
 fn reset_rect(row: Rect) -> Rect {
     Rect::new(row.right() - 36., row.y + (row.h - 32.) / 2., 28., 32.)
+}
+
+fn levels_index() -> usize {
+    FIELDS.iter().position(|field| field.key == "battery.levels").expect("battery levels are a field")
+}
+
+/// The height of one battery colour threshold under its row.
+const LEVEL_ROW: f64 = 52.;
+
+/// Whether this field's entries show on its page, rather than in a screen of their own.
+fn inline_levels(index: usize, query: &str) -> bool {
+    FIELDS[index].key == "battery.levels" && query.is_empty()
+}
+
+struct LevelParts {
+    swatch: Rect,
+    slider: Rect,
+    remove: Rect,
+}
+
+fn level_parts(row: Rect) -> LevelParts {
+    let control = control_rect(Rect::new(row.x, row.y, row.w, row.h));
+    LevelParts {
+        swatch: Rect::new(control.x, row.y + (row.h - 30.) / 2., 30., 30.),
+        slider: Rect::new(control.x + 44., row.y + (row.h - 24.) / 2., control.right() - control.x - 44., 24.),
+        remove: reset_rect(row),
+    }
 }
 
 fn custom_command(index: usize) -> bool {
@@ -810,6 +859,38 @@ impl Settings {
         self.value(key).and_then(toml::Value::as_str).unwrap_or("")
     }
 
+    /// The battery colour thresholds in the draft: charge and colour.
+    fn levels(&self) -> Vec<(i64, String)> {
+        self.draft[levels_index()]
+            .as_ref()
+            .and_then(toml::Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .map(|level| {
+                        (
+                            level.get("at").and_then(toml::Value::as_integer).unwrap_or(0),
+                            level.get("colour").and_then(toml::Value::as_str).unwrap_or("").to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn set_levels(&mut self, levels: &[(i64, String)]) {
+        let entries = levels
+            .iter()
+            .map(|(threshold, colour)| {
+                toml::Value::Table(toml::Table::from_iter([
+                    ("at".to_string(), toml::Value::Integer(*threshold)),
+                    ("colour".to_string(), toml::Value::String(colour.clone())),
+                ]))
+            })
+            .collect();
+        self.draft[levels_index()] = Some(toml::Value::Array(entries));
+    }
+
     fn flag(&self, key: &str) -> bool {
         self.value(key).and_then(toml::Value::as_bool).unwrap_or(false)
     }
@@ -911,62 +992,37 @@ impl Tileception {
         if !self.settings.error {
             self.settings.message.clear();
         }
-        let window = self.next_id();
         let screen = self.world.screen();
         let size = ((screen.w - 96.).clamp(320., 1360.), (screen.h - 96.).clamp(240., 960.));
-        let now = self.now();
-        self.settings.window = Some(window);
         self.settings.size = size;
-        self.world.add_window(window, Placement::Float, now);
-        self.world.size_float(window, size.0, size.1);
-        self.world.focus_window(window, now);
-        self.apply_layout();
-        self.force_keyboard_focus_sync();
+        self.open_settings_page_section();
+        match client::Client::start(self) {
+            Ok(client) => self.settings.client = Some(client),
+            Err(error) => {
+                self.settings.open = false;
+                tracing::warn!("could not open Settings client: {error}");
+            }
+        }
         self.schedule_render();
     }
 
     /// Takes the Settings window away, wherever it is; the draft stays.
     pub(crate) fn close_settings(&mut self) {
-        let Some(window) = self.settings.window else {
-            self.settings.open = false;
-            return;
-        };
-        if let Some(area) = self.area_for_window(window)
-            && self.context_area().as_ref() != Some(&area)
-        {
-            self.with_area(&area, |state| state.close_settings());
-            return;
-        }
+        self.settings_release();
         self.settings.open = false;
+        if let Some(client) = self.settings.client.take() {
+            self.loop_handle.remove(client.source);
+        }
         self.settings.window = None;
         self.settings.drag = None;
         self.settings.focus = None;
         self.settings.colour = None;
         self.settings.dropdown = None;
-        if self.move_drag.is_some_and(|drag| drag.window == window) {
-            self.move_drag = None;
-        }
-        if self.resize_drag.is_some_and(|drag| drag.window == window) {
-            self.resize_drag = None;
-        }
-        self.selection.windows.remove(&window);
-        let now = self.now();
-        self.world.remove_window(window, now);
-        if self.keyboard_focus == Some(window) {
-            self.keyboard_focus = None;
-        }
-        self.apply_layout();
-        self.force_keyboard_focus_sync();
         self.schedule_render();
     }
 
     pub(crate) fn is_settings_window(&self, window: WindowId) -> bool {
         self.settings.window == Some(window)
-    }
-
-    /// The Settings window's size, for the layout.
-    pub(crate) fn settings_geometry(&self) -> smithay::utils::Size<i32, smithay::utils::Logical> {
-        (self.settings.size.0.round().max(1.) as i32, self.settings.size.1.round().max(1.) as i32).into()
     }
 
     /// The layout gave the Settings window a new size; it fills it.
@@ -979,17 +1035,9 @@ impl Tileception {
         }
     }
 
-    /// Where the Settings window shows, 1:1, in this area. Scaled in
-    /// Overview or while moving, it shows a card instead and takes no input.
+    /// Settings renders in surface-local coordinates, like any other client.
     fn settings_rect(&self) -> Option<Rect> {
-        let window = self.settings.window?;
-        if !self.world.contains_window(window) {
-            return None;
-        }
-        self.drawn_windows(self.now())
-            .into_iter()
-            .find(|drawn| drawn.window_id == window && drawn.live)
-            .map(|drawn| drawn.content)
+        self.settings.open.then(|| Rect::new(0., 0., self.settings.size.0, self.settings.size.1))
     }
 
     /// Whether keys go to Settings.
@@ -1000,13 +1048,128 @@ impl Tileception {
             && !self.world.in_overview()
     }
 
-    /// Whether the pointer is over the Settings window, or Settings holds it
-    /// for a drag (a slider, the colour picker, a display being arranged).
-    pub(crate) fn settings_takes_pointer(&self, point: Point) -> bool {
-        let dragging = self.settings.drag.is_some()
-            || self.settings.colour.as_ref().is_some_and(|picker| picker.drag.is_some())
-            || self.section_map_dragging();
-        self.settings.open && (dragging || self.settings_rect().is_some_and(|rect| rect.contains(point)))
+    pub(crate) fn settings_client_window(
+        &mut self,
+        surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+        window: WindowId,
+    ) {
+        use smithay::reexports::wayland_server::Resource;
+        if self
+            .settings
+            .client
+            .as_ref()
+            .is_some_and(|client| surface.wl_surface().client().is_some_and(|owner| owner.id() == client.client_id))
+        {
+            self.settings.window = Some(window);
+            surface.with_pending_state(|pending| {
+                pending.size = Some((self.settings.size.0 as i32, self.settings.size.1 as i32).into())
+            });
+        }
+    }
+
+    fn settings_client_event(&mut self, event: client::Event) {
+        if !self.settings.open {
+            return;
+        }
+        self.invalidate_settings_client();
+        if let Some(area) = self.settings.window.and_then(|window| self.area_for_window(window))
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.settings_client_event(event));
+            return;
+        }
+        match event {
+            client::Event::Resize(width, height) => {
+                self.settings.pressed = None;
+                self.settings_resized(f64::from(width), f64::from(height));
+            }
+            client::Event::Motion(point) => {
+                self.settings.pointer = (point.x, point.y);
+                self.settings_motion(point);
+            }
+            client::Event::Leave => {
+                self.settings.pointer = (-1., -1.);
+                self.settings.pressed = None;
+            }
+            client::Event::Button(pressed) => self.settings_pointer_button(pressed),
+            client::Event::Scroll(amount) => self.settings_scroll(amount),
+            client::Event::Key { sym, mods, pressed, code } => {
+                if pressed {
+                    self.settings_key(sym, mods);
+                    if crate::key_repeat::edits(sym, mods) {
+                        self.start_key_repeat(
+                            code,
+                            crate::key_repeat::Repeat::Commands(vec![crate::commands::Command::SettingsKey(sym, mods)]),
+                        );
+                    }
+                } else {
+                    self.key_released(code, crate::config::modifier_of(sym).is_some());
+                }
+            }
+            client::Event::Unfocus => {
+                self.stop_key_repeat();
+                self.settings_release();
+                self.section_cancel_recording();
+            }
+            client::Event::Closed => self.close_settings(),
+        }
+        self.settings_update_cursor();
+        self.schedule_render();
+    }
+
+    fn invalidate_settings_client(&self) {
+        if let Some(client) = &self.settings.client {
+            client.invalidate();
+        }
+    }
+
+    /// Service the client's drawing independently of screen captures and the
+    /// window's visibility, in the output context that owns its UI model.
+    pub(crate) fn update_settings_client(&mut self, renderer: &mut GlesRenderer) {
+        if let Some(area) = self.settings.window.and_then(|window| self.area_for_window(window))
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.render_settings_client(renderer));
+        } else {
+            self.render_settings_client(renderer);
+        }
+    }
+
+    /// Fill the client's shared-memory buffer. The scene then displays its
+    /// wl_surface normally, including in captures, previews and Overview.
+    fn render_settings_client(&self, renderer: &mut GlesRenderer) {
+        use smithay::{
+            backend::{
+                allocator::Fourcc,
+                renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
+            },
+            utils::{Rectangle, Transform},
+        };
+        let Some(client) = &self.settings.client else { return };
+        if !client.needs_frame(self.scale) {
+            return;
+        }
+        let logical = (self.settings.size.0 as i32, self.settings.size.1 as i32);
+        let size =
+            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
+        let result = (|| -> Result<Vec<u8>, String> {
+            let elements = self.settings_elements(renderer);
+            let mut texture: GlesTexture =
+                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
+            {
+                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
+                let mut damage = OutputDamageTracker::new(size, self.scale, Transform::Normal);
+                let result = damage
+                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
+                    .map_err(|error| format!("{error:?}"))?;
+                result.sync.wait().map_err(|error| format!("{error:?}"))?;
+            }
+            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
+        })();
+        match result {
+            Ok(pixels) => client.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
+            Err(error) => tracing::warn!("could not draw Settings client: {error}"),
+        }
     }
 
     fn settings_frame(&self) -> Frame {
@@ -1054,6 +1217,7 @@ impl Tileception {
             groups: Vec::new(),
             advanced: None,
             home: None,
+            levels: Vec::new(),
             max_scroll: 0.,
         };
         if changed && self.settings.review_changes {
@@ -1077,6 +1241,7 @@ impl Tileception {
                 Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap), col, short),
                 Rect::new(content.x, top + 2. * (row + gap) + short + gap, col * 2. + gap, 150.),
                 Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap) + short + gap, col, 150.),
+                Rect::new(content.x, top + 2. * (row + gap) + short + 162., content.w, 150.),
             ];
             if content.w < 700. {
                 let half = (content.w - gap) / 2.;
@@ -1090,6 +1255,7 @@ impl Tileception {
                     Rect::new(content.x, top + 798., half, 150.),
                     Rect::new(content.x + half + gap, top + 798., half, 150.),
                     Rect::new(content.x, top + 960., content.w, 150.),
+                    Rect::new(content.x, top + 1122., content.w, 150.),
                 ];
             }
             let bottom = rects.iter().map(Rect::bottom).reduce(f64::max).unwrap_or(top);
@@ -1123,6 +1289,7 @@ impl Tileception {
             let scroll_top = frame.top;
             let mut offset = 0.;
             let mut rows = Vec::new();
+            let mut level_rows = Vec::new();
             let mut current: Option<(&'static str, f64)> = None;
             let mut advanced_at = None;
             for index in &selected {
@@ -1142,6 +1309,12 @@ impl Tileception {
                 }
                 rows.push((Rect::new(content.x, offset, row_width, row_height), *index));
                 offset += row_height;
+                if inline_levels(*index, &self.settings.query) {
+                    for level in 0..self.settings.levels().len() {
+                        level_rows.push((Rect::new(content.x, offset, row_width, LEVEL_ROW), level));
+                        offset += LEVEL_ROW;
+                    }
+                }
             }
             if let Some((name, start)) = current {
                 frame.groups.push((name, Rect::new(content.x, start, row_width, offset - start)));
@@ -1180,13 +1353,27 @@ impl Tileception {
                         control.w = 90.;
                     }
                     if control.y >= area.y && control.bottom() <= area.bottom() {
-                        frame.hits.push((control, Hit::Field(index)));
+                        let hit =
+                            if inline_levels(index, &self.settings.query) { Hit::LevelAdd } else { Hit::Field(index) };
+                        frame.hits.push((control, hit));
                         if matches!(FIELDS[index].control, Control::Colour) || FIELDS[index].key == "battery.charging" {
                             frame.hits.push((Rect::new(control.x, control.y, 36., control.h), Hit::Swatch(index)));
                         }
                         if self.settings.draft[index] != self.settings.defaults[index] {
                             frame.hits.push((reset_rect(rect), Hit::Reset(index)));
                         }
+                    }
+                }
+            }
+            for (mut rect, level) in level_rows {
+                rect.y += shift;
+                if rect.bottom() > area.y && rect.y < area.bottom() {
+                    frame.levels.push((rect, level));
+                    let parts = level_parts(rect);
+                    if parts.slider.y >= area.y && parts.slider.bottom() <= area.bottom() {
+                        frame.hits.push((parts.slider, Hit::LevelAt(level)));
+                        frame.hits.push((parts.swatch, Hit::LevelColour(level)));
+                        frame.hits.push((parts.remove, Hit::LevelRemove(level)));
                     }
                 }
             }
@@ -1221,6 +1408,7 @@ impl Tileception {
     }
 
     pub fn settings_scroll(&mut self, amount: f64) {
+        self.settings.pressed = None;
         if self.settings.keymap.is_some() {
             self.keymap_scroll(amount);
             return;
@@ -1243,7 +1431,7 @@ impl Tileception {
         let frame = self.settings_frame();
         if let Some(config) = frame.config
             && config.h > 70.
-            && config.contains(Point::new(self.pointer.x, self.pointer.y))
+            && config.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1))
         {
             let count = self.settings_config_lines(true).len();
             let shown = config.h - 42.;
@@ -1256,85 +1444,58 @@ impl Tileception {
         self.schedule_render();
     }
 
-    pub fn settings_click(&mut self, point: Point) {
-        if self.settings.keymap.is_some() {
-            self.keymap_click(point);
-            return;
-        }
-        if self.settings.section.is_some() {
-            self.section_click(point);
-            return;
-        }
-        if self.settings.connect.is_some() {
-            self.settings_connect_click(point);
-            return;
-        }
-        if self.settings.editor.is_some() {
-            self.settings_editor_click(point);
-            return;
-        }
+    fn settings_page_click(&mut self, rect: Rect, hit: Hit, point: Point) {
         if self.settings.colour.is_some() {
-            if self.colour_press(point) {
-                return;
-            }
             // A press elsewhere closes the picker; on its own swatch that is all.
             let open = self.settings.colour.take().map(|picker| picker.index);
-            let frame = self.settings_frame();
-            if open.is_some_and(|index| {
-                frame.hits.iter().rev().find(|(rect, _)| rect.contains(point)).map(|(_, hit)| *hit)
-                    == Some(Hit::Swatch(index))
-            }) {
+            if open.is_some_and(|index| hit == Hit::Swatch(index)) {
                 self.schedule_render();
                 return;
             }
         }
-        let frame = self.settings_frame();
-        if let Some((rect, hit)) = frame.hits.iter().rev().find(|(rect, _)| rect.contains(point)) {
-            if let Hit::Field(index) = hit
-                && self.settings.editing == Some(*index)
-            {
-                let inset = if matches!(FIELDS[*index].control, Control::Colour) { 34. } else { 10. };
-                let cursor = self.text.borrow_mut().field_hit(
-                    &self.settings.input.text,
-                    &self.theme.font,
-                    11.,
-                    (rect.w - inset - 8.) as f32,
-                    self.settings.input.cursor,
-                    (point.x - rect.x - inset).max(0.) as f32,
-                );
-                self.settings.input.move_to(cursor, false);
-                self.schedule_render();
-                return;
-            }
-            if let Some((index, _)) = self.settings.dropdown
-                && !matches!(hit, Hit::Option(..))
-            {
-                self.settings.dropdown = None;
-                if *hit == Hit::Field(index) {
-                    self.schedule_render();
-                    return;
-                }
-            }
-            self.settings_activate(*hit, Some((point.x - rect.x) / rect.w));
-            if let Hit::Field(index) = hit
-                && matches!(FIELDS[*index].control, Control::Number(..))
-                && self.settings.editing.is_none()
-            {
-                self.settings.drag = Some((*index, *rect));
-            }
-        } else {
-            self.settings.dropdown = None;
-            // The header bar moves the window, like a title bar.
-            if point.y < frame.panel.y + 64.
-                && let Some(window) = self.settings.window
-            {
-                self.start_move_drag(window, self.pointer);
-            }
+        if let Hit::Field(index) = hit
+            && self.settings.editing == Some(index)
+        {
+            let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };
+            let cursor = self.text.borrow_mut().field_hit(
+                &self.settings.input.text,
+                &self.theme.font,
+                11.,
+                (rect.w - inset - 8.) as f32,
+                self.settings.input.cursor,
+                (point.x - rect.x - inset).max(0.) as f32,
+            );
+            self.settings.input.move_to(cursor, false);
             self.schedule_render();
+            return;
         }
+        if let Some((index, _)) = self.settings.dropdown
+            && !matches!(hit, Hit::Option(..))
+        {
+            self.settings.dropdown = None;
+            if hit == Hit::Field(index) {
+                self.schedule_render();
+                return;
+            }
+        }
+        self.settings_activate(hit, Some((point.x - rect.x) / rect.w));
+        if let Hit::LevelAt(level) = hit {
+            self.settings.level_drag = Some((level, rect));
+        }
+        if let Hit::Field(index) = hit
+            && matches!(FIELDS[index].control, Control::Number(..))
+            && self.settings.editing.is_none()
+        {
+            self.settings.drag = Some((index, rect));
+        }
+        self.schedule_render();
     }
 
     pub fn settings_motion(&mut self, point: Point) {
+        if self.settings.text_drag {
+            self.settings_text_caret(point, true);
+            return;
+        }
         if self.settings.colour.as_ref().is_some_and(|picker| picker.drag.is_some()) {
             self.colour_motion(point);
             return;
@@ -1346,14 +1507,20 @@ impl Tileception {
         if let Some((index, rect)) = self.settings.drag {
             self.settings_activate(Hit::Field(index), Some((point.x - rect.x) / rect.w));
         }
+        if let Some((level, rect)) = self.settings.level_drag {
+            self.settings_activate(Hit::LevelAt(level), Some((point.x - rect.x) / rect.w));
+        }
     }
 
     pub fn settings_release(&mut self) {
+        self.settings.pressed = None;
+        self.settings.text_drag = false;
         if let Some(picker) = &mut self.settings.colour {
             picker.drag = None;
         }
         self.section_map_release();
         self.settings.drag = None;
+        self.settings.level_drag = None;
     }
 
     fn settings_finish_edit(&mut self) -> bool {
@@ -1388,7 +1555,15 @@ impl Tileception {
         }
         match hit {
             Hit::Close => self.toggle_settings(),
-            Hit::Search => {}
+            Hit::Search => {
+                if self.settings.search_input.text != self.settings.query {
+                    self.settings.search_input = crate::text_input::TextInput {
+                        text: self.settings.query.clone(),
+                        cursor: self.settings.query.len(),
+                        anchor: None,
+                    };
+                }
+            }
             Hit::EditDocument => self.open_settings_editor(None, false),
             Hit::Reference => self.open_settings_editor(None, true),
             Hit::ReviewChanges => {
@@ -1447,9 +1622,11 @@ impl Tileception {
                     _ => None,
                 };
                 self.settings.query.clear();
+                self.settings.search_input.clear();
                 self.settings.scroll = 0.;
                 self.settings.config_scroll = 0.;
                 self.settings.colour = None;
+                self.open_settings_page_section();
             }
             Hit::Discard => {
                 self.settings.parked_sections.clear();
@@ -1571,6 +1748,30 @@ impl Tileception {
                 self.open_colour_picker(index);
                 self.settings.focus = Some(Hit::Field(index));
             }
+            Hit::LevelAdd => {
+                let mut levels = self.settings.levels();
+                let lowest = levels.iter().map(|(threshold, _)| *threshold).min();
+                levels.push((lowest.map_or(20, |threshold| (threshold - 10).clamp(1, 99)), "warning".into()));
+                self.settings.set_levels(&levels);
+            }
+            Hit::LevelRemove(level) => {
+                let mut levels = self.settings.levels();
+                if level < levels.len() {
+                    levels.remove(level);
+                    self.settings.set_levels(&levels);
+                }
+                self.settings.colour = None;
+            }
+            Hit::LevelColour(level) => self.open_level_picker(level),
+            Hit::LevelAt(level) => {
+                if let Some(fraction) = position {
+                    let mut levels = self.settings.levels();
+                    if let Some(entry) = levels.get_mut(level) {
+                        entry.0 = (fraction.clamp(0., 1.) * 100.).round() as i64;
+                        self.settings.set_levels(&levels);
+                    }
+                }
+            }
             Hit::Field(index) => {
                 let value = self.settings.draft[index].as_ref();
                 let next = match FIELDS[index].control {
@@ -1623,6 +1824,8 @@ impl Tileception {
     }
 
     pub fn settings_key(&mut self, sym: u32, mods: Mods) {
+        self.settings.pressed = None;
+        self.invalidate_settings_client();
         if self.settings.keymap.is_some() {
             self.keymap_key(sym, mods);
             return;
@@ -1663,13 +1866,14 @@ impl Tileception {
                 self.settings.message = "Text edit cancelled. Your draft is unchanged.".into();
             } else if !self.settings.query.is_empty() {
                 self.settings.query.clear();
+                self.settings.search_input.clear();
                 self.settings.scroll = 0.;
             } else {
                 self.toggle_settings();
             }
         } else if mods.ctrl && matches!(sym, keysyms::KEY_f | keysyms::KEY_F) {
             if self.settings_finish_edit() {
-                self.settings.focus = Some(Hit::Search);
+                self.settings_activate(Hit::Search, None);
             }
         } else if mods.ctrl && matches!(sym, keysyms::KEY_s | keysyms::KEY_S) {
             self.settings_activate(Hit::Apply, None);
@@ -1727,20 +1931,15 @@ impl Tileception {
                     }
                 }
             } else {
-                let target = &mut self.settings.query;
-                if sym == keysyms::KEY_BackSpace {
-                    target.pop();
-                } else if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) {
-                    target.clear();
-                } else if !mods.ctrl
-                    && !mods.alt
-                    && !mods.logo
-                    && let Some(character) =
-                        char::from_u32(xkb::keysym_to_utf32(sym.into())).filter(|character| !character.is_control())
-                    && target.len() < 128
-                {
-                    target.push(character);
+                if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
+                    self.copy_text(self.settings.search_input.text[self.settings.search_input.selection()].to_string());
+                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                        self.settings.search_input.delete(false, false);
+                    }
+                } else {
+                    sections::edit_key(&mut self.settings.search_input, sym, mods);
                 }
+                self.settings.query.clone_from(&self.settings.search_input.text);
                 self.settings.scroll = 0.;
             }
         } else if matches!(sym, keysyms::KEY_Return | keysyms::KEY_space) {
@@ -1779,7 +1978,7 @@ impl Tileception {
         let frame = self.settings_frame();
         let theme = &self.theme;
         let state = &self.settings;
-        let pointer = Point::new(self.pointer.x, self.pointer.y);
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         let compact = frame.body.h < 640.;
         let changes = state.changed();
         let mut painter = Painter::new(self, renderer);
@@ -1925,14 +2124,29 @@ impl Tileception {
                     );
                     painter.glyph(glyph::SEARCH, Rect::new(rect.x + 10., rect.y, 18., rect.h), 16, theme.muted);
                     let label = if state.query.is_empty() { "Search settings" } else { &state.query };
-                    let (text_width, _) = painter.text(
-                        label,
-                        Rect::new(rect.x + 35., rect.y, rect.w - 45., rect.h),
-                        Style::new(12., if state.query.is_empty() { theme.muted } else { theme.text }),
-                    );
-                    if focused {
-                        let left = rect.x + 35. + if state.query.is_empty() { 0. } else { text_width };
-                        painter.fill(Rect::new(left.min(rect.right() - 9.), rect.y + 10., 1., 15.), theme.text, 0.);
+                    if !focused || state.query.is_empty() {
+                        painter.text(
+                            label,
+                            Rect::new(rect.x + 35., rect.y, rect.w - 45., rect.h),
+                            Style::new(12., if state.query.is_empty() { theme.muted } else { theme.text }),
+                        );
+                    }
+                    if focused
+                        && let Some(image) = self.text.borrow_mut().field(
+                            &state.search_input.text,
+                            &theme.font,
+                            12.,
+                            theme.text,
+                            (rect.w - 45.) as f32,
+                            crate::text::Field {
+                                cursor: state.search_input.cursor,
+                                anchor: state.search_input.anchor,
+                                visible: true,
+                                accent: theme.accent.straight_rgba8(),
+                            },
+                        )
+                    {
+                        painter.image(&image.buffer, (rect.x + 35., rect.y + (rect.h - image.height) / 2.));
                     }
                 }
                 Hit::Close => {
@@ -2075,6 +2289,11 @@ impl Tileception {
             for (rect, index) in &frame.rows {
                 self.settings_row(painter, *rect, *index);
             }
+            let levels = state.levels();
+            for (rect, level) in &frame.levels {
+                let Some((threshold, colour)) = levels.get(*level) else { continue };
+                self.settings_level(painter, *rect, *level, *threshold, colour);
+            }
             if let Some(rect) = frame.advanced {
                 let hovered = rect.contains(pointer);
                 painter.shape(
@@ -2194,6 +2413,7 @@ impl Tileception {
         self.settings_draw_editor(&mut painter, &frame);
         self.settings_draw_connect(&mut painter);
         self.section_draw(&mut painter);
+        self.settings_pointer_feedback(&mut painter);
         self.draw_keymap_picker(&mut painter);
         painter.finish()
     }
@@ -2322,42 +2542,13 @@ impl Tileception {
                 ("Autostart", count("general.autostart", "command", "commands")),
                 ("Terminal", text("general.terminal", "System default")),
             ],
-            _ => vec![
+            8 => vec![
                 ("Displays", format!("{} connected", self.all_outputs().len())),
-                ("Sharing", switch("handoff.enabled")),
                 ("Full-edge crossing", switch("general.stretch_screen_edges")),
             ],
+            _ => vec![("Sharing", switch("handoff.enabled")), ("Computers", self.handoff.peers.len().to_string())],
         };
         lines.into_iter().map(|(label, value)| (label.to_string(), value)).collect()
-    }
-
-    /// Settings as a small picture: in Overview, while moving and in the
-    /// strip of minimized windows.
-    pub(crate) fn settings_card_elements(
-        &self,
-        renderer: &mut GlesRenderer,
-        rect: &Rect,
-        alpha: f32,
-    ) -> Vec<OutputElement> {
-        let theme = &self.theme;
-        let mut painter = Painter::new(self, renderer);
-        painter.shape(
-            *rect,
-            Shape {
-                border_width: 1.,
-                border: theme.border.alpha(alpha),
-                ..Shape::filled(theme.background.alpha(alpha), theme.radius)
-            },
-        );
-        let size = (rect.w.min(rect.h) * 0.3).clamp(12., 64.);
-        let label =
-            Style::new((size * 0.4).clamp(8., 18.) as f32, theme.text.alpha(alpha)).weight(500).align(Align::Centre);
-        let top = rect.y + (rect.h - size - size * 0.8) / 2.;
-        painter.glyph(glyph::SETTINGS, Rect::new(rect.x, top, rect.w, size), size as u32, theme.accent.alpha(alpha));
-        if rect.h > size * 2. {
-            painter.text("Settings", Rect::new(rect.x, top + size + 4., rect.w, size * 0.8), label);
-        }
-        painter.finish()
     }
 
     pub(crate) fn settings_identify_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
@@ -2458,8 +2649,25 @@ impl Tileception {
                     Style::new(11., theme.text),
                 );
             }
+            Control::Section if inline_levels(index, &state.query) => {
+                let hovered = control.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
+                painter.shape(
+                    control,
+                    Shape {
+                        border_width: 1.,
+                        border: if hovered { theme.muted } else { theme.border },
+                        ..Shape::filled(theme.surface_raised, 6.)
+                    },
+                );
+                painter.glyph(glyph::PLUS, Rect::new(control.x + 10., control.y, 16., control.h), 14, theme.text);
+                painter.text(
+                    "Add level",
+                    Rect::new(control.x + 34., control.y, control.w - 40., control.h),
+                    Style::new(11., theme.text).weight(500),
+                );
+            }
             Control::Section => {
-                let hovered = control.contains(Point::new(self.pointer.x, self.pointer.y));
+                let hovered = control.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
                 painter.shape(
                     control,
                     Shape {
@@ -2486,7 +2694,7 @@ impl Tileception {
             }
             _ => {
                 let editing = state.editing == Some(index);
-                let hovered = control.contains(Point::new(self.pointer.x, self.pointer.y));
+                let hovered = control.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
                 painter.shape(
                     control,
                     Shape {
@@ -2522,7 +2730,7 @@ impl Tileception {
                     _ => None,
                 };
                 if let Some(swatch) = swatch {
-                    let pointer = Point::new(self.pointer.x, self.pointer.y);
+                    let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
                     let active = state.colour.as_ref().is_some_and(|picker| picker.index == index)
                         || Rect::new(control.x, control.y, 36., control.h).contains(pointer);
                     painter.shape(
@@ -2579,7 +2787,7 @@ impl Tileception {
         }
         if state.draft[index] != state.defaults[index] {
             let reset = reset_rect(rect);
-            let hovered = reset.contains(Point::new(self.pointer.x, self.pointer.y));
+            let hovered = reset.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
             if hovered {
                 painter.fill(reset, theme.surface_raised, 6.);
             }
@@ -2607,6 +2815,54 @@ impl Tileception {
                 Shape { radius: 6., border_width: 1., border: theme.accent, ..Default::default() },
             );
         }
+    }
+
+    /// One battery colour threshold: the charge it starts at, its colour
+    /// and a button that removes it.
+    fn settings_level(&self, painter: &mut Painter, rect: Rect, level: usize, threshold: i64, colour: &str) {
+        let theme = &self.theme;
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
+        let parts = level_parts(rect);
+        painter.fill(Rect::new(rect.x + 34., rect.y, rect.w - 50., 1.), theme.border, 0.);
+        painter.fill(Rect::new(rect.x + 22., rect.y, 1., rect.h / 2.), theme.border, 0.);
+        painter.fill(Rect::new(rect.x + 22., rect.y + rect.h / 2., 6., 1.), theme.border, 0.);
+        painter.text(
+            &format!("At or below {threshold}%"),
+            Rect::new(rect.x + 36., rect.y + 7., rect.w - 260., 20.),
+            Style::new(12., theme.text),
+        );
+        let named = match colour {
+            "accent" => "Accent colour".to_string(),
+            "warning" => "Warning colour".to_string(),
+            "danger" => "Error colour".to_string(),
+            "muted" => "Secondary text colour".to_string(),
+            "text" => "Text colour".to_string(),
+            other => other.to_string(),
+        };
+        painter.text(&named, Rect::new(rect.x + 36., rect.y + 27., rect.w - 260., 18.), Style::new(11., theme.muted));
+        let active = self.settings.colour.as_ref().is_some_and(|picker| picker.level == Some(level))
+            || parts.swatch.contains(pointer);
+        painter.shape(
+            parts.swatch,
+            Shape {
+                border_width: if active { 2. } else { 1. },
+                border: if active { theme.text } else { theme.border },
+                ..Shape::filled(named_colour(theme, colour).unwrap_or(theme.warning), 6.)
+            },
+        );
+        let track = Rect::new(parts.slider.x, parts.slider.y + parts.slider.h / 2. - 1.5, parts.slider.w, 3.);
+        let fraction = (threshold as f64 / 100.).clamp(0., 1.);
+        painter.fill(track, theme.border, 2.);
+        painter.shape(
+            Rect::new(track.x, track.y, track.w * fraction, 3.),
+            Shape { fill: (theme.accent, theme.accent_end), radius: 2., ..Default::default() },
+        );
+        painter.fill(Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.), theme.text, 7.);
+        let hovered = parts.remove.contains(pointer);
+        if hovered {
+            painter.fill(parts.remove, theme.surface_raised, 6.);
+        }
+        painter.glyph(glyph::CLOSE, parts.remove, 14, if hovered { theme.text } else { theme.muted });
     }
 
     fn settings_preview(&self, painter: &mut Painter, rect: Rect) {

@@ -2,6 +2,45 @@
 use super::*;
 use crate::{greeter::keymap::Known, text_input::TextInput};
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Search,
+    Close,
+    Custom,
+    Choose { layout: String, variant: String },
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Search => state.keymap_text_caret(point, false),
+            Self::Close => state.settings.keymap = None,
+            Self::Custom => {
+                if let Some(picker) = state.settings.keymap.take() {
+                    let text = state.settings.draft[picker.index]
+                        .as_ref()
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    state.settings.input = TextInput { cursor: text.len(), text, anchor: None };
+                    state.settings.editing = Some(picker.index);
+                    state.settings.focus = Some(Hit::Field(picker.index));
+                }
+            }
+            Self::Choose { layout, variant } => {
+                let selected = state.settings.keymap.as_ref().and_then(|picker| {
+                    picker.filtered().iter().position(|entry| &entry.layout == layout && &entry.variant == variant)
+                });
+                if let Some(selected) = selected {
+                    state.choose_keymap(selected);
+                }
+            }
+        }
+        state.settings.editor_epoch = state.settings.editor_epoch.wrapping_add(1);
+        state.schedule_render();
+    }
+}
+
 pub(super) struct Picker {
     entries: Vec<Known>,
     search: TextInput,
@@ -23,6 +62,49 @@ impl Picker {
 }
 
 impl Tileception {
+    pub(super) fn keymap_text_caret(&mut self, point: Point, extend: bool) {
+        let (panel, _, _, _) = self.keymap_layout();
+        let search = Rect::new(panel.x + 16., panel.y + 54., panel.w - 32., 34.);
+        let Some(picker) = self.settings.keymap.as_mut() else { return };
+        let position = self.text.borrow_mut().field_hit(
+            &picker.search.text,
+            &self.theme.font,
+            12.,
+            (search.w - 48.) as f32,
+            picker.search.cursor,
+            (point.x - search.x - 36.).max(0.) as f32,
+        );
+        picker.search.move_to(position, extend);
+    }
+
+    pub(super) fn keymap_pointer_target(&self, point: Point) -> Option<interaction::Target> {
+        let (panel, list, close, custom) = self.keymap_layout();
+        for (rect, action) in [(close, PointerAction::Close), (custom, PointerAction::Custom)] {
+            if rect.contains(point) {
+                return Some(interaction::Target::button(rect, action));
+            }
+        }
+        let search = Rect::new(panel.x + 16., panel.y + 54., panel.w - 32., 34.);
+        if search.contains(point) {
+            return Some(interaction::Target::new(
+                search,
+                PointerAction::Search,
+                smithay::input::pointer::CursorIcon::Text,
+            ));
+        }
+        let picker = self.settings.keymap.as_ref()?;
+        for (offset, entry) in picker.filtered().iter().skip(picker.first).enumerate() {
+            let rect = Rect::new(list.x, list.y + offset as f64 * 38., list.w, 38.);
+            if rect.bottom() <= list.bottom() && rect.contains(point) {
+                return Some(interaction::Target::button(
+                    rect,
+                    PointerAction::Choose { layout: entry.layout.clone(), variant: entry.variant.clone() },
+                ));
+            }
+        }
+        None
+    }
+
     pub(super) fn open_keymap_picker(&mut self, index: usize) {
         let mut entries = crate::greeter::keymap::catalogue();
         entries.sort_by(|left, right| left.description.cmp(&right.description));
@@ -87,29 +169,6 @@ impl Tileception {
             if let Some(index) = FIELDS.iter().position(|field| field.key == "keyboard.variant") {
                 self.settings.draft[index] =
                     (!entry.variant.is_empty()).then(|| toml::Value::String(entry.variant.clone()));
-            }
-        }
-        self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-        self.schedule_render();
-    }
-
-    pub(super) fn keymap_click(&mut self, point: Point) {
-        let (_, list, close, custom) = self.keymap_layout();
-        if close.contains(point) {
-            self.settings.keymap = None;
-        } else if custom.contains(point) {
-            if let Some(picker) = self.settings.keymap.take() {
-                let text =
-                    self.settings.draft[picker.index].as_ref().and_then(toml::Value::as_str).unwrap_or("").to_string();
-                self.settings.input = TextInput { cursor: text.len(), text, anchor: None };
-                self.settings.editing = Some(picker.index);
-                self.settings.focus = Some(Hit::Field(picker.index));
-            }
-        } else if list.contains(point) {
-            let first = self.settings.keymap.as_ref().map_or(0, |picker| picker.first);
-            let offset = ((point.y - list.y) / 38.) as usize;
-            if (offset + 1) as f64 * 38. <= list.h {
-                self.choose_keymap(first + offset);
             }
         }
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);

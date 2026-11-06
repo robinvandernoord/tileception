@@ -113,6 +113,7 @@ pub fn apply_draft(changes: &[(&str, Option<toml::Value>, Option<toml::Value>)])
         };
         let mut value: Value = after.to_string().parse().map_err(|error| format!("{key}: {error}"))?;
         if let Some(old) = lookup(&doc, section, name) {
+            lay_out_like(&mut value, old);
             *value.decor_mut() = old.decor().clone();
         }
         table(&mut doc, section)?[name] = Item::Value(value);
@@ -193,6 +194,20 @@ pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, Strin
     Ok(doc.to_string())
 }
 
+/// A list written one entry per line stays that way when Settings changes it.
+fn lay_out_like(value: &mut Value, old: &Value) {
+    let (Value::Array(array), Value::Array(previous)) = (value, old) else { return };
+    if !previous.to_string().contains('\n') {
+        return;
+    }
+    for entry in array.iter_mut() {
+        entry.decor_mut().set_prefix("\n    ");
+        entry.decor_mut().set_suffix("");
+    }
+    array.set_trailing_comma(true);
+    array.set_trailing("\n");
+}
+
 fn replace_root(doc: &mut DocumentMut, key: &str, value: Option<&toml::Value>) -> Result<(), String> {
     if let Some(value) = value {
         let table = toml::Table::from_iter([(key.to_string(), value.clone())]);
@@ -217,7 +232,12 @@ pub fn draft_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result
                         .parse()
                         .map_err(|error| format!("{error}"))?;
                 let mut item = replacement.remove(name).ok_or("missing serialized setting")?;
+                if item.is_array_of_tables() {
+                    // Inline, as the config file writes lists of small tables.
+                    item = Item::Value(item.into_value().map_err(|_| "a list of tables did not convert")?);
+                }
                 if let (Some(old), Some(new)) = (lookup(&doc, section, name), item.as_value_mut()) {
+                    lay_out_like(new, old);
                     *new.decor_mut() = old.decor().clone();
                 }
                 table(&mut doc, section)?[name] = item;

@@ -5,7 +5,10 @@ impl Tileception {
         // A screen covers the page area next to the sidebar exactly, so it
         // reads as a page opened from Settings rather than a window over it.
         let frame = self.settings_frame();
-        let panel = Rect::new(frame.body.x, frame.panel.y, frame.panel.right() - frame.body.x, frame.panel.h);
+        let inline = self.section_is_page();
+        let panel_top = if inline { frame.body.y } else { frame.panel.y };
+        let panel =
+            Rect::new(frame.body.x, panel_top, frame.panel.right() - frame.body.x, frame.panel.bottom() - panel_top);
         let Some(screen) = self.settings.section.as_ref() else {
             return Layout {
                 panel,
@@ -19,27 +22,35 @@ impl Tileception {
         };
         let compact = panel.w < 900.;
         let list_width = if compact { 172. } else { 248. };
-        let map = (screen.kind == Kind::Displays && !screen.map_collapsed)
-            .then(|| Rect::new(panel.x + 24., panel.y + 96., panel.w - 48., if compact { 128. } else { 196. }));
-        let top = map.map_or(panel.y + 124., |rect| rect.bottom() + 48.);
+        let map = (screen.kind == Kind::Displays)
+            .then(|| Rect::new(panel.x + 24., panel.y + 132., (panel.w - 76.) * 0.6, (panel.h - 218.).max(160.)));
+        let top = if map.is_some() { panel.y + 166. } else { panel.y + 124. };
         let search_height = if screen.kind == Kind::Shortcuts { 40. } else { 0. };
-        let list = Rect::new(
+        let mut list = Rect::new(
             panel.x + 24.,
             top + search_height,
             list_width,
             (panel.bottom() - top - 112. - search_height).max(1.),
         );
-        let body = Rect::new(
+        let mut body = Rect::new(
             list.right() + 28.,
             top - 34.,
             (panel.right() - list.right() - 52.).max(1.),
             (panel.bottom() - top - 52.).max(1.),
         );
+        if let Some(map) = map {
+            let left = map.right() + 28.;
+            let width = (panel.right() - left - 24.).max(1.);
+            list = Rect::new(left, top, width, (screen.rows.len() as f64 * 52.).clamp(52., 156.));
+            body = Rect::new(left, list.bottom() + 24., width, (panel.bottom() - list.bottom() - 98.).max(1.));
+        }
         let mut hits = vec![
-            (Rect::new(panel.x + 24., panel.y + 18., 80., 30.), Action::Back),
             (Rect::new(panel.right() - 268., panel.bottom() - 52., 112., 34.), Action::Cancel),
             (Rect::new(panel.right() - 144., panel.bottom() - 52., 120., 34.), Action::Stage),
         ];
+        if !inline {
+            hits.push((Rect::new(panel.x + 24., panel.y + 18., 80., 30.), Action::Back));
+        }
         if screen.kind != Kind::Sharing {
             let button_width = (list.w - 8.) / 2.;
             hits.push((Rect::new(list.x, top - 34., button_width, 28.), Action::Add));
@@ -64,10 +75,10 @@ impl Tileception {
             }
         }
         if screen.kind == Kind::Displays {
-            hits.push((Rect::new(panel.right() - 560., panel.y + 60., 236., 28.), Action::Edges));
-            hits.push((Rect::new(panel.right() - 316., panel.y + 60., 80., 28.), Action::Identify));
-            hits.push((Rect::new(panel.right() - 228., panel.y + 60., 116., 28.), Action::Automatic));
-            hits.push((Rect::new(panel.right() - 104., panel.y + 60., 80., 28.), Action::Map));
+            hits.push((Rect::new(panel.x + 24., panel.y + 60., 236., 28.), Action::Edges));
+            hits.push((Rect::new(panel.x + 268., panel.y + 60., 80., 28.), Action::Identify));
+            hits.push((Rect::new(panel.x + 356., panel.y + 60., 116., 28.), Action::Automatic));
+            hits.push((Rect::new(panel.x + 480., panel.y + 60., 100., 28.), Action::Touchscreens));
         }
         let specs = screen.fields(&self.section_outputs(), &self.touch.devices);
         let mut fields = Vec::new();
@@ -162,18 +173,31 @@ impl Tileception {
         let Some(screen) = &self.settings.section else { return };
         let layout = self.section_layout();
         let theme = &self.theme;
-        painter.fill(self.settings_frame().panel, Colour([0., 0., 0., 0.5]), 10.);
+        let inline = self.section_is_page();
+        if !inline {
+            painter.fill(self.settings_frame().panel, Colour([0., 0., 0., 0.5]), 10.);
+        }
         painter.shape(
             layout.panel,
             Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, 10.) },
         );
         painter.text(
             FIELDS[screen.field].label,
-            Rect::new(layout.panel.x + 122., layout.panel.y + 16., layout.panel.w - 150., 36.),
+            Rect::new(
+                layout.panel.x + if inline { 24. } else { 122. },
+                layout.panel.y + 16.,
+                layout.panel.w - 150.,
+                36.,
+            ),
             Style::new(24., theme.text).weight(500),
         );
         let hint = match screen.kind {
-            Kind::Displays => "Drag monitors to match your desk. Apply saves the arrangement.",
+            Kind::Displays
+                if self.settings.draft[super::edges()].as_ref().and_then(toml::Value::as_bool).unwrap_or(false) =>
+            {
+                "Drag a display to a free edge. Equal rectangles show full-edge crossing."
+            }
+            Kind::Displays => "Drag a display to a free edge. Apply saves the arrangement.",
             Kind::Sharing => "Connect computers on the same network to share input and clipboard.",
             Kind::Touch => "Choose which display receives input from each touchscreen.",
             Kind::Shortcuts => {
@@ -190,8 +214,8 @@ impl Tileception {
             hint,
             Rect::new(
                 layout.panel.x + 24.,
-                layout.panel.y + 60.,
-                layout.panel.w - if screen.kind == Kind::Displays { 610. } else { 48. },
+                layout.panel.y + if screen.kind == Kind::Displays { 94. } else { 60. },
+                layout.panel.w - 48.,
                 32.,
             ),
             Style::new(12., theme.muted).lines(2),
@@ -229,7 +253,7 @@ impl Tileception {
                                 ..Shape::filled(theme.accent.alpha(0.08), 5.)
                             },
                         );
-                    } else if rect.contains(Point::new(self.pointer.x, self.pointer.y)) {
+                    } else if rect.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1)) {
                         painter.fill(rect, theme.surface, 5.);
                     }
                     if screen.kind == Kind::Shortcuts {
@@ -369,7 +393,7 @@ impl Tileception {
                         },
                     );
                     let width = control.w / options.len() as f64;
-                    let pointer = Point::new(self.pointer.x, self.pointer.y);
+                    let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
                     for (position, (label, option)) in options.iter().enumerate() {
                         let segment = Rect::new(control.x + position as f64 * width, control.y, width, control.h);
                         let chosen = *option == value || value.is_empty() && option == "inherit";
@@ -662,13 +686,6 @@ impl Tileception {
                     }
                 }
                 Action::Search => "Search",
-                Action::Map => {
-                    if screen.map_collapsed {
-                        "Show layout"
-                    } else {
-                        "Hide layout"
-                    }
-                }
                 Action::AddValue => match screen.kind {
                     Kind::Sharing => "Add manual computer",
                     Kind::Displays => "Add area",
@@ -676,6 +693,7 @@ impl Tileception {
                     _ => "Add argument",
                 },
                 Action::Identify => "Identify",
+                Action::Touchscreens => "Touchscreens",
                 Action::Automatic => "Automatic layout",
                 Action::Cancel => "Cancel",
                 Action::Back => "Back",
@@ -849,9 +867,10 @@ impl Tileception {
         let Some(screen) = &self.settings.section else { return };
         let theme = &self.theme;
         painter.shape(area, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 6.) });
-        let (origin, factor) = screen.display_map(area);
+        let equal = self.settings.draft[super::edges()].as_ref().and_then(toml::Value::as_bool).unwrap_or(false);
+        let (origin, factor) = screen.display_map(area, equal);
         painter.clipped(area, |painter| {
-            for (index, rect) in screen.display_rects() {
+            for (index, rect) in screen.display_map_rects(equal) {
                 let rect = Rect::new(
                     origin.x + rect.x * factor + 2.,
                     origin.y + rect.y * factor + 2.,

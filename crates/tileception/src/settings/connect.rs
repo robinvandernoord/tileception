@@ -27,6 +27,57 @@ const REGIONS: &[(&str, &str)] = &[
     ("sg", "Singapore"),
 ];
 
+#[derive(Clone, Copy, PartialEq)]
+enum PointerAction {
+    Cancel,
+    Submit,
+    Region(&'static str),
+    Dismiss,
+    ClientId,
+    Secret,
+    RegionMenu,
+    Sensors,
+    Refresh,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _: Rect, _: Point) {
+        match self {
+            Self::Cancel => state.cancel_settings_connect(),
+            Self::Submit => state.start_settings_connect(),
+            action => {
+                let Some(form) = state.settings.connect.as_mut().filter(|form| form.job.is_none()) else { return };
+                match action {
+                    Self::Region(region) => {
+                        if let Some(index) = REGIONS.iter().position(|(key, _)| key == region) {
+                            form.region = index;
+                        }
+                        form.menu = None;
+                    }
+                    Self::Dismiss => form.menu = None,
+                    Self::ClientId => form.focus = 0,
+                    Self::Secret => form.focus = 1,
+                    Self::RegionMenu => {
+                        form.focus = 2;
+                        form.menu = Some(form.region);
+                    }
+                    Self::Sensors => {
+                        form.sensors = !form.sensors;
+                        form.focus = 3;
+                    }
+                    Self::Refresh => {
+                        form.refresh = !form.refresh;
+                        form.focus = 4;
+                    }
+                    Self::Cancel | Self::Submit => unreachable!(),
+                }
+                state.settings.editor_epoch = state.settings.editor_epoch.wrapping_add(1);
+            }
+        }
+        state.schedule_render();
+    }
+}
+
 pub(super) struct Connect {
     client_id: TextInput,
     secret: SecretField,
@@ -74,6 +125,48 @@ fn inventory(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
 }
 
 impl Tileception {
+    pub(super) fn connect_pointer_target(&self, point: Point) -> Option<interaction::Target> {
+        let layout = self.connect_layout();
+        let form = self.settings.connect.as_ref()?;
+        if layout.cancel.contains(point) {
+            return Some(interaction::Target::button(layout.cancel, PointerAction::Cancel));
+        }
+        if form.job.is_some() {
+            return None;
+        }
+        if layout.submit.contains(point) {
+            return Some(interaction::Target::button(layout.submit, PointerAction::Submit));
+        }
+        if form.menu.is_some() {
+            let top = (layout.fields[2].bottom() + 4.).min(layout.cancel.y - REGIONS.len() as f64 * 28. - 8.);
+            for (index, (region, _)) in REGIONS.iter().enumerate() {
+                let rect = Rect::new(layout.body.x, top + index as f64 * 28., layout.body.w, 28.);
+                if rect.contains(point) {
+                    return Some(interaction::Target::button(rect, PointerAction::Region(region)));
+                }
+            }
+            return Some(interaction::Target::new(
+                layout.panel,
+                PointerAction::Dismiss,
+                smithay::input::pointer::CursorIcon::Default,
+            ));
+        }
+        for (rect, action) in
+            layout.fields.iter().zip([PointerAction::ClientId, PointerAction::Secret, PointerAction::RegionMenu])
+        {
+            if rect.contains(point) && rect.y >= layout.body.y && rect.bottom() <= layout.body.bottom() {
+                return Some(if action == PointerAction::RegionMenu {
+                    interaction::Target::button(*rect, action)
+                } else {
+                    interaction::Target::new(*rect, action, smithay::input::pointer::CursorIcon::Text)
+                });
+            }
+        }
+        layout.toggles.iter().zip([PointerAction::Sensors, PointerAction::Refresh]).find_map(|(rect, action)| {
+            (rect.contains(point) && layout.body.contains(point)).then(|| interaction::Target::button(*rect, action))
+        })
+    }
+
     pub(super) fn open_settings_connect(&mut self) {
         let devices = self.settings.value("home.devices").and_then(toml::Value::as_str).map(String::from);
         let config = crate::home::HomeConfig { enabled: true, devices: devices.clone() };
@@ -304,52 +397,6 @@ impl Tileception {
         if let Some(form) = self.settings.connect.as_mut() {
             form.scroll = (form.scroll + amount).clamp(0., (370. - layout.body.h).max(0.));
             form.menu = None;
-        }
-        self.schedule_render();
-    }
-
-    pub(super) fn settings_connect_click(&mut self, point: Point) {
-        let layout = self.connect_layout();
-        if layout.cancel.contains(point) {
-            self.cancel_settings_connect();
-            return;
-        }
-        if layout.submit.contains(point) {
-            self.start_settings_connect();
-            return;
-        }
-        let Some(form) = self.settings.connect.as_mut() else { return };
-        if form.job.is_some() {
-            return;
-        }
-        if form.menu.is_some() {
-            let top = (layout.fields[2].bottom() + 4.).min(layout.cancel.y - REGIONS.len() as f64 * 28. - 8.);
-            if point.x >= layout.body.x
-                && point.x <= layout.body.right()
-                && point.y >= top
-                && point.y < top + REGIONS.len() as f64 * 28.
-            {
-                form.region = ((point.y - top) / 28.) as usize;
-            }
-            form.menu = None;
-        } else if let Some(index) = layout
-            .fields
-            .iter()
-            .position(|rect| rect.contains(point) && rect.y >= layout.body.y && rect.bottom() <= layout.body.bottom())
-        {
-            form.focus = index;
-            self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-            if index == 2 {
-                form.menu = Some(form.region);
-            }
-        } else if layout.toggles[0].contains(point) && layout.body.contains(point) {
-            form.sensors = !form.sensors;
-            form.focus = 3;
-            self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-        } else if layout.toggles[1].contains(point) && layout.body.contains(point) {
-            form.refresh = !form.refresh;
-            form.focus = 4;
-            self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         }
         self.schedule_render();
     }

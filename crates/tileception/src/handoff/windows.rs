@@ -990,9 +990,6 @@ impl Tileception {
         if let Some(placed) = self.windows.get(&window) {
             return Some(placed.geometry());
         }
-        if self.is_settings_window(window) {
-            return Some(Rectangle::new((0, 0).into(), self.settings_geometry()));
-        }
         self.handoff.windows.remote.get(&window).map(|remote| Rectangle::new((0, 0).into(), remote.size()))
     }
 
