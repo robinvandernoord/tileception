@@ -101,6 +101,8 @@ back to the plugin icon, then a generic icon. This is per-result imagery,
 not an animation or a push-update API.
 `detail` and `actions` may be omitted. A row without actions is informational.
 Up to 64 rows and 16 actions per row are retained.
+Invalid rows and actions, including unknown action types, are skipped. Other
+results still appear.
 
 Every action has a `title` and one of these shapes:
 
@@ -128,13 +130,18 @@ while the compositor and built-in searches remain responsive.
 
 Editing or closing the launcher cancels its current generation. Queued stale
 searches are skipped and stale results never replace newer rows. An in-flight
-cancelled request receives `notifications/cancelled`; the host then terminates
-the isolated process group so an uncooperative server cannot hold later searches.
-Timeouts, broken pipes and protocol errors also terminate that group. The next
-request restarts the source after a one-second cooldown. A failed startup or
+cancelled request receives `notifications/cancelled`. The process stays running,
+and late responses are ignored by request id. If a request has not finished by
+its deadline, the plugin's isolated process group is terminated. Broken pipes
+and protocol errors also terminate that group. The next request restarts the
+source after a one-second cooldown. A failed startup or
 metadata call is reported in diagnostics and retried on configuration change or
 the next compositor startup. Processes are cleaned up during configuration
 replacement and normal compositor shutdown.
+
+Tool errors are displayed without restarting the plugin. Messages written to
+stderr appear in the compositor log with the plugin name. Newly started and
+restarted plugins receive DISPLAY once Xwayland is ready.
 
 The source for the complete runnable server is
 [`tileception-launcher-example.rs`](../crates/tileception/src/bin/tileception-launcher-example.rs).

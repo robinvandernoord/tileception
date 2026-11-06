@@ -436,6 +436,13 @@ impl Tileception {
         }
     }
 
+    /// Xwayland is ready: launcher plugins get its display from now on.
+    pub(crate) fn launcher_display_ready(&mut self, display: u32) {
+        if let Some(plugins) = &mut self.launcher.plugins {
+            plugins.set_display(display);
+        }
+    }
+
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<(Paste, Clip)>();
@@ -654,6 +661,17 @@ impl Tileception {
         self.launcher.first = 0;
     }
 
+    /// The list's caption for plugin results: the plugin's name, or the
+    /// result whose actions are listed.
+    fn plugin_caption(&self) -> Option<String> {
+        if let Some((_, row)) = &self.launcher.plugin_actions {
+            return Some(format!("ACTIONS FOR {}", row.title.to_uppercase()));
+        }
+        let (_, plugin_id) = self.launcher.plugin_query.as_ref()?;
+        let route = self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)?;
+        (!route.info.name.is_empty()).then(|| route.info.name.to_uppercase())
+    }
+
     fn launcher_entries(&self) -> Vec<Entry> {
         let text = self.launcher.input.text.trim();
         let launcher = &self.launcher;
@@ -664,6 +682,7 @@ impl Tileception {
                 .map(|action| {
                     let mut choice = row.clone();
                     choice.title = action.title.clone();
+                    choice.detail = plugin_action_detail(&action.kind);
                     choice.actions = vec![action.clone()];
                     Entry::Plugin { plugin: plugin.clone(), row: choice }
                 })
@@ -1587,7 +1606,8 @@ impl Tileception {
                 self.launcher.index.get(app).map(|app| format!("ABOUT {}", app.name.to_uppercase()))
             }
             _ => None,
-        };
+        }
+        .or_else(|| self.plugin_caption());
         let caption = if running {
             "COMMAND"
         } else if let Some(caption) = details_caption.as_deref() {
@@ -1835,16 +1855,23 @@ impl Tileception {
                         self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)
                     })
                     .and_then(|route| route.info.icon.as_deref());
-                if let Some(buffer) = row.icon.as_deref().or(fallback).and_then(|name| self.launcher.icon(name, 32)) {
+                // A result's actions show what each one does; results show
+                // their own icon, else the plugin's.
+                let action = row.actions.first().filter(|_| self.launcher.plugin_actions.is_some());
+                if let Some(action) = action {
+                    glyph_box(painter, plugin_action_glyph(&action.kind), theme.accent);
+                } else if let Some(buffer) =
+                    row.icon.as_deref().or(fallback).and_then(|name| self.launcher.icon(name, 32))
+                {
                     painter.image(&buffer, (icon.x, icon.y));
                 } else {
-                    glyph_box(painter, glyph::FILE, theme.accent);
+                    glyph_box(painter, glyph::PLUG, theme.accent);
                 }
                 copied = row.actions.iter().any(|action| matches!(&action.kind, crate::launcher_plugins::ActionKind::Copy { text } if self.launcher.just_copied(text)));
                 (row.title.clone(), Some(row.detail.clone()))
             }
             Entry::PluginStatus(message) => {
-                glyph_box(painter, glyph::FILE, theme.muted);
+                glyph_box(painter, glyph::PLUG, theme.muted);
                 (message.clone(), Some("Launcher plugins; type plugins to see discovery diagnostics".into()))
             }
             Entry::Ask(question) => {
@@ -2342,6 +2369,28 @@ fn usage_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
     root.join("tileception/launcher-usage.toml")
+}
+
+/// What a plugin action does, for its row in the list of a result's actions.
+fn plugin_action_detail(kind: &crate::launcher_plugins::ActionKind) -> String {
+    use crate::launcher_plugins::ActionKind;
+    match kind {
+        ActionKind::Copy { text } => format!("Copies \"{text}\""),
+        ActionKind::Open { target } => format!("Opens {target}"),
+        ActionKind::Run { command, args } if args.is_empty() => format!("Runs {command}"),
+        ActionKind::Run { command, args } => format!("Runs {command} {}", args.join(" ")),
+        ActionKind::Tool { .. } => "Asks the plugin to do it".into(),
+    }
+}
+
+fn plugin_action_glyph(kind: &crate::launcher_plugins::ActionKind) -> &'static str {
+    use crate::launcher_plugins::ActionKind;
+    match kind {
+        ActionKind::Copy { .. } => glyph::COPY,
+        ActionKind::Open { .. } => glyph::GLOBE,
+        ActionKind::Run { .. } => glyph::TERMINAL,
+        ActionKind::Tool { .. } => glyph::PLUG,
+    }
 }
 
 #[cfg(test)]
