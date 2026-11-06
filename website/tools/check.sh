@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../public"
 fail() { echo "check: $*" >&2; exit 1; }
 
 for f in index.html 404.html .htaccess install setup robots.txt sitemap.xml site.webmanifest \
-         favicon.svg favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og.png \
+         favicon.svg favicon.ico apple-touch-icon.png icon-192.png icon-512.png og.png \
          assets/site.css assets/zoom.js; do
   [ -s "$f" ] || fail "missing $f"
 done
