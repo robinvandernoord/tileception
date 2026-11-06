@@ -682,6 +682,12 @@ impl Tileception {
         self.doctor.menu = None;
         self.doctor.restore_model = true;
         self.doctor.takes_images = None;
+        // Its commands reach this session, without looking for the socket.
+        let env: tileception_acp::Env = self
+            .ipc_socket
+            .iter()
+            .map(|socket| ("TILECEPTION_SOCKET".to_string(), socket.to_string_lossy().into_owned()))
+            .collect();
         self.doctor.session = Some(match (test_agent, agent) {
             (Some(line), _) => {
                 let mut words = line.split_whitespace().map(str::to_string);
@@ -689,11 +695,11 @@ impl Tileception {
                 let program =
                     tileception_acp::install::Program { command, args: words.collect(), env: Default::default() };
                 self.doctor.agent.get_or_insert_with(|| "test agent".into());
-                Session::start_program("Test agent".into(), program, cwd, context, emit)
+                Session::start_program("Test agent".into(), program, cwd, context, env, emit)
             }
             (None, Some(agent)) => {
                 self.doctor.status = Status::Starting(format!("Starting {}\u{2026}", agent.name));
-                Session::start(agent, cwd, context, emit)
+                Session::start(agent, cwd, context, env, emit)
             }
             (None, None) => return,
         });

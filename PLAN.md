@@ -56,12 +56,6 @@ language as the bindings.
 - Frost on the lock screen and the login screen, so `[theme] frost = true`
   covers every panel Tileception draws. Part of `feature/frost`; finish it
   before that branch merges.
-- Doctor is missing commands for things the panels can do: asked to clear
-  notifications, it found no `tileception msg` command for it and pointed at
-  the panel's Clear all button instead. Add `msg` commands for the panel
-  actions (clear notifications, Do not disturb, and the like), and pass
-  `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
-  socket first.
 
 ### Later
 

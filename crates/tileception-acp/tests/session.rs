@@ -24,8 +24,14 @@ fn logs_in_streams_and_asks_permission() {
     });
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
     let program = Program { command: "python3".into(), args: vec![script.into()], env: Default::default() };
-    let session =
-        Session::start_program("Fake".into(), program, std::env::temp_dir(), "You help with Tileception.".into(), emit);
+    let session = Session::start_program(
+        "Fake".into(),
+        program,
+        std::env::temp_dir(),
+        "You help with Tileception.".into(),
+        Default::default(),
+        emit,
+    );
 
     // It wants a login first, then works.
     let Event::Status(Status::NeedsLogin(logins)) =

@@ -328,6 +328,18 @@ impl Tileception {
         }
     }
 
+    pub fn set_dnd(&mut self, on: bool) {
+        if let Some(service) = &self.notifications.service {
+            service.send(Request::SetDoNotDisturb(on));
+        }
+    }
+
+    /// Empties the history and dismisses every popup: the panel's Clear all.
+    pub fn clear_notifications(&mut self) {
+        self.notification_request(Request::ClearHistory);
+        self.notification_request(Request::DismissAll);
+    }
+
     pub fn notification_scroll(&mut self, delta: isize) {
         let len = self.notifications.history.len();
         self.notifications.offset = self.notifications.offset.saturating_add_signed(delta).min(len.saturating_sub(1));
@@ -480,8 +492,7 @@ impl Tileception {
         if self.notifications.open {
             let controls = self.panel_controls();
             if controls.clear.contains(point) {
-                self.notification_request(Request::ClearHistory);
-                self.notification_request(Request::DismissAll);
+                self.clear_notifications();
                 return;
             }
             if self.builtin_notifications() && controls.dnd.contains(point) {

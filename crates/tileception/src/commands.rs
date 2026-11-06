@@ -138,9 +138,10 @@ Views:
 Shell:
   launcher                  open the launcher
   notifications             open the notification list
+  notifications clear       clear the history and dismiss every popup
   answer-notification       give the newest popup with buttons the keyboard:
                             arrows or numbers and Enter choose, Esc gives it back
-  do-not-disturb            toggle do not disturb
+  do-not-disturb [on|off]   toggle do not disturb, or switch it on or off
   lock                      lock the screen (see lock_command)
   unlock                    end a lock whatever the locker does (from a console)
   power-menu                lock, log out, suspend, restart or power off
@@ -378,8 +379,17 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "lock" => Action::Lock,
         "power-menu" => Action::PowerMenu,
         "launcher" => Action::Launcher,
-        "notifications" => Action::Notifications,
-        "do-not-disturb" => Action::DoNotDisturb,
+        "notifications" => match args.first().copied() {
+            None => Action::Notifications,
+            Some("clear") => Action::ClearNotifications,
+            Some(other) => return Err(format!("notifications takes nothing or \"clear\", not {other:?}")),
+        },
+        "do-not-disturb" => match args.first().copied() {
+            None | Some("toggle") => Action::DoNotDisturb(None),
+            Some("on") => Action::DoNotDisturb(Some(true)),
+            Some("off") => Action::DoNotDisturb(Some(false)),
+            Some(other) => return Err(format!("do-not-disturb takes on, off or toggle, not {other:?}")),
+        },
         "minimap" => Action::Minimap,
         "group" => Action::Group,
         "minimize" => Action::Minimize,
@@ -544,6 +554,13 @@ mod tests {
         assert!(parse("doctor user").is_err());
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
+        assert_eq!(parse("notifications"), Ok(Command::Action(Action::Notifications)));
+        assert_eq!(parse("notifications clear"), Ok(Command::Action(Action::ClearNotifications)));
+        assert!(parse("notifications wipe").is_err());
+        assert_eq!(parse("do-not-disturb"), Ok(Command::Action(Action::DoNotDisturb(None))));
+        assert_eq!(parse("do-not-disturb on"), Ok(Command::Action(Action::DoNotDisturb(Some(true)))));
+        assert_eq!(parse("do-not-disturb off"), Ok(Command::Action(Action::DoNotDisturb(Some(false)))));
+        assert!(parse("do-not-disturb maybe").is_err());
         assert_eq!(parse("duck"), Ok(Command::Duck));
         assert!(parse("duck duck goose").is_err());
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));

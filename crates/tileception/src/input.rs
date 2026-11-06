@@ -72,7 +72,11 @@ pub enum Action {
     PowerMenu,
     Launcher,
     Notifications,
-    DoNotDisturb,
+    /// Clear the notification history and dismiss every popup, like the
+    /// panel's Clear all.
+    ClearNotifications,
+    /// Toggle Do not disturb (None), or switch it on or off.
+    DoNotDisturb(Option<bool>),
     /// Open or close the bar's minimap of the whole tree.
     Minimap,
     Group,
@@ -488,7 +492,8 @@ impl Tileception {
                 | Action::PowerMenu
                 | Action::Launcher
                 | Action::Notifications
-                | Action::DoNotDisturb
+                | Action::ClearNotifications
+                | Action::DoNotDisturb(_)
         );
         if let (Some(window_id), false) = (self.fullscreen, keeps_fullscreen) {
             self.set_fullscreen(window_id, false);
@@ -548,7 +553,9 @@ impl Tileception {
             Action::PowerMenu => self.shell_power_menu(),
             Action::Launcher => self.shell_launcher(),
             Action::Notifications => self.shell_notifications(),
-            Action::DoNotDisturb => self.toggle_dnd(),
+            Action::ClearNotifications => self.clear_notifications(),
+            Action::DoNotDisturb(None) => self.toggle_dnd(),
+            Action::DoNotDisturb(Some(on)) => self.set_dnd(on),
             Action::Minimap => self.toggle_minimap(),
             Action::Group => {}
             Action::Minimize => {

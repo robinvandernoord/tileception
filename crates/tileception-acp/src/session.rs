@@ -12,8 +12,8 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::{
-    Action, Agent, AgentCommand, Choice, Emit, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue, Request,
-    SessionOption, Status, install,
+    Action, Agent, AgentCommand, Choice, Emit, Env, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue,
+    Request, SessionOption, Status, install,
 };
 
 /// The protocol version spoken here.
@@ -46,8 +46,10 @@ pub struct Session {
 impl Session {
     /// Starts `agent` in `cwd`. `context` goes along with the first prompt,
     /// telling the agent what it is helping with.
-    pub fn start(agent: Agent, cwd: PathBuf, context: String, emit: Emit) -> Session {
-        Self::launch(agent.name.clone(), Source::Registry(agent), cwd, context, emit)
+    /// `env` is set for the agent program on top of the compositor's own,
+    /// such as the session's `TILECEPTION_SOCKET`.
+    pub fn start(agent: Agent, cwd: PathBuf, context: String, env: Env, emit: Emit) -> Session {
+        Self::launch(agent.name.clone(), Source::Registry(agent), cwd, context, env, emit)
     }
 
     /// Starts an agent program directly (tests, and agents already installed).
@@ -56,12 +58,13 @@ impl Session {
         program: install::Program,
         cwd: PathBuf,
         context: String,
+        env: Env,
         emit: Emit,
     ) -> Session {
-        Self::launch(name, Source::Program(program), cwd, context, emit)
+        Self::launch(name, Source::Program(program), cwd, context, env, emit)
     }
 
-    fn launch(name: String, source: Source, cwd: PathBuf, context: String, emit: Emit) -> Session {
+    fn launch(name: String, source: Source, cwd: PathBuf, context: String, env: Env, emit: Emit) -> Session {
         let (messages, incoming) = mpsc::channel();
         let sender = messages.clone();
         let installing = Arc::new(AtomicBool::new(true));
@@ -78,7 +81,7 @@ impl Session {
         let thread = thread::Builder::new()
             .name("tileception-acp".into())
             .spawn(move || {
-                let mut worker = Worker::new(name, source, cwd, context, emit.clone(), installed);
+                let mut worker = Worker::new(name, source, cwd, context, env, emit.clone(), installed);
                 if let Err(error) = worker.run(&sender, &incoming) {
                     emit(Event::Status(Status::Failed(error)));
                 }
@@ -139,6 +142,8 @@ struct Worker {
     generation: u64,
     /// Variables from an environment login, for every start from then on.
     login_env: std::collections::BTreeMap<String, String>,
+    /// Variables from the compositor for every start of the agent.
+    session_env: Env,
     sender: Option<mpsc::Sender<Msg>>,
     /// Sent along with the first prompt of every session.
     context_text: Option<String>,
@@ -165,10 +170,12 @@ impl Worker {
         source: Source,
         cwd: PathBuf,
         context: String,
+        session_env: Env,
         emit: Emit,
         installing: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            session_env,
             installing,
             name,
             source: Some(source),
@@ -260,6 +267,7 @@ impl Worker {
         let mut command = Command::new(&program.command);
         command.args(&program.args).current_dir(&self.cwd);
         crate::with_env(&mut command, &program.env);
+        crate::with_env(&mut command, &self.session_env);
         crate::with_env(&mut command, &self.login_env);
         let mut child = command
             .stdin(Stdio::piped())

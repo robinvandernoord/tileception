@@ -204,6 +204,11 @@ again, gives the keyboard back without answering.
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
 to silence ordinary notification popups.
 
+The panel's actions work from scripts and key bindings too:
+`tileception msg notifications clear` does what **Clear all** does, and
+`tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
+Do not disturb.
+
 In nested mode, notifications and media controls are handled by your host
 desktop by default.
 
