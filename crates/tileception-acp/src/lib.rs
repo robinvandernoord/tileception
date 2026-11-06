@@ -223,6 +223,9 @@ pub enum Request {
 
 pub type Emit = std::sync::Arc<dyn Fn(Event) + Send + Sync>;
 
+/// Environment variables for an agent program.
+pub type Env = BTreeMap<String, String>;
+
 /// Loads the registry on a worker thread, reporting [`Event::Registry`].
 pub fn fetch_registry(refresh: bool, emit: Emit) {
     let spawned = std::thread::Builder::new()

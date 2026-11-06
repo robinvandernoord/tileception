@@ -94,12 +94,6 @@ language as the bindings.
 - Frost on the lock screen and the login screen, so `[theme] frost = true`
   covers every panel Tileception draws. Part of `feature/frost`; finish it
   before that branch merges.
-- Doctor is missing commands for things the panels can do: asked to clear
-  notifications, it found no `tileception msg` command for it and pointed at
-  the panel's Clear all button instead. Add `msg` commands for the panel
-  actions (clear notifications, Do not disturb, and the like), and pass
-  `TILECEPTION_SOCKET` to Doctor's agent so it does not have to look for the
-  socket first.
 
 ### Later
 
@@ -214,12 +208,13 @@ language as the bindings.
   actions, with the rule-based parsing kept as the default.
 - A way to send feedback and feature requests from inside Tileception, for
   example from the launcher or Doctor.
-  - First version: "Send feedback" opens a pre-filled new-issue page on
-    GitHub (`github.com/robinvandernoord/tileception/issues/new` with title,
-    body and a `feedback` label in the query string) in the browser. No
-    infrastructure; the issue is filed under the user's own GitHub account,
-    so it needs one. The body holds the version; system details only if the
-    user ticks a box, shown before sending.
+  - Done: "Send feedback" in the launcher and `tileception msg feedback
+    [title]` open a pre-filled new-issue page on GitHub (title, body with
+    the version, `feedback` label) in the browser, filed under the user's
+    own account.
+  - Next: system details in the body only if the user ticks a box, shown
+    before sending. Needs a small confirmation view before the browser
+    opens.
   - Later, for people without a GitHub account: a small relay (OVH host or a
     serverless function) holding a GitHub App's key, which files the issue
     as the App's bot. The key never ships in Tileception. The relay needs

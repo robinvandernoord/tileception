@@ -27,6 +27,7 @@ mod doctor;
 mod doctor_policy;
 mod drag;
 mod duck;
+mod feedback;
 mod focus;
 mod frost;
 mod gestures;

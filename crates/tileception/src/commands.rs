@@ -71,6 +71,8 @@ pub enum Command {
     DoctorKey(u32, crate::config::Mods),
     /// Lets the rubber duck out, or puts it away.
     Duck,
+    /// Opens a pre-filled GitHub issue in the browser, with this title.
+    Feedback(String),
     /// A key pressed while the duck's question has the keyboard (not available as text).
     DuckKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
@@ -141,9 +143,10 @@ Shell:
   launcher                  open the launcher
   settings                  open or close Settings (drafts are kept)
   notifications             open the notification list
+  notifications clear       clear the history and dismiss every popup
   answer-notification       give the newest popup with buttons the keyboard:
                             arrows or numbers and Enter choose, Esc gives it back
-  do-not-disturb            toggle do not disturb
+  do-not-disturb [on|off]    toggle do not disturb, or switch it on or off
   lock                      lock the screen (see lock_command)
   unlock                    end a lock whatever the locker does (from a console)
   power-menu                lock, log out, suspend, restart or power off
@@ -158,6 +161,8 @@ Shell:
   doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
   doctor mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
+  feedback [title]          open a new GitHub issue for feedback or a feature
+                            request in the browser (needs a GitHub account)
   handoff                   machines sharing this mouse and keyboard
   handoff edge [machine] <output> <side>
                             place a machine at an edge (left, right, top,
@@ -339,6 +344,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
+        "feedback" => return Ok(Command::Feedback(rest.to_string())),
         "quit" => Action::Quit,
         "restart" => Action::Restart,
         "terminal" => Action::Spawn,
@@ -382,8 +388,17 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "lock" => Action::Lock,
         "power-menu" => Action::PowerMenu,
         "launcher" => Action::Launcher,
-        "notifications" => Action::Notifications,
-        "do-not-disturb" => Action::DoNotDisturb,
+        "notifications" => match args.first().copied() {
+            None => Action::Notifications,
+            Some("clear") => Action::ClearNotifications,
+            Some(other) => return Err(format!("notifications takes nothing or \"clear\", not {other:?}")),
+        },
+        "do-not-disturb" => match args.first().copied() {
+            None | Some("toggle") => Action::DoNotDisturb(None),
+            Some("on") => Action::DoNotDisturb(Some(true)),
+            Some("off") => Action::DoNotDisturb(Some(false)),
+            Some(other) => return Err(format!("do-not-disturb takes on, off or toggle, not {other:?}")),
+        },
         "minimap" => Action::Minimap,
         "group" => Action::Group,
         "minimize" => Action::Minimize,
@@ -475,6 +490,7 @@ impl Tileception {
             Command::Inject(input) => self.inject(input)?,
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
             Command::Duck => self.toggle_duck(),
+            Command::Feedback(title) => self.send_feedback(&title),
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
@@ -550,7 +566,16 @@ mod tests {
         assert!(parse("doctor user").is_err());
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
+        assert_eq!(parse("notifications"), Ok(Command::Action(Action::Notifications)));
+        assert_eq!(parse("notifications clear"), Ok(Command::Action(Action::ClearNotifications)));
+        assert!(parse("notifications wipe").is_err());
+        assert_eq!(parse("do-not-disturb"), Ok(Command::Action(Action::DoNotDisturb(None))));
+        assert_eq!(parse("do-not-disturb on"), Ok(Command::Action(Action::DoNotDisturb(Some(true)))));
+        assert_eq!(parse("do-not-disturb off"), Ok(Command::Action(Action::DoNotDisturb(Some(false)))));
+        assert!(parse("do-not-disturb maybe").is_err());
         assert_eq!(parse("duck"), Ok(Command::Duck));
+        assert_eq!(parse("feedback"), Ok(Command::Feedback(String::new())));
+        assert_eq!(parse("feedback zoom is slow"), Ok(Command::Feedback("zoom is slow".into())));
         assert!(parse("duck duck goose").is_err());
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());

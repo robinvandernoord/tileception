@@ -194,6 +194,12 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
+"Send feedback" in the launcher opens a new GitHub issue in your browser, with
+Tileception's version filled in, for a bug report or a feature request. It is
+filed under your own GitHub account, so you need one; nothing is sent until you
+submit the issue there. `tileception msg feedback <title>` does the same with a
+title filled in.
+
 Popups never take the keyboard by themselves. To answer one with buttons, such
 as the screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
 popup shows the hint): its buttons get numbers. Press a number, or choose with
@@ -203,6 +209,11 @@ again, gives the keyboard back without answering.
 **Super+N** opens notification history and sound controls, and your smart home
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
 to silence ordinary notification popups.
+
+The panel's actions work from scripts and key bindings too:
+`tileception msg notifications clear` does what **Clear all** does, and
+`tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
+Do not disturb.
 
 In nested mode, notifications and media controls are handled by your host
 desktop by default.

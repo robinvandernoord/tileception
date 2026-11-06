@@ -217,6 +217,12 @@ const COMMANDS: &[Builtin] = &[
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
+    builtin(
+        "Send feedback",
+        "feature request bug report issue github idea suggestion",
+        glyph::CHAT,
+        Does::Line("feedback"),
+    ),
     builtin("Default terminal", "terminal shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
@@ -1569,6 +1575,7 @@ impl Tileception {
                         format!("Tileception \u{b7} now {}", if enabled { "on" } else { "off" })
                     }
                     Does::Power(_) => "Tileception \u{b7} opens the power menu to confirm".into(),
+                    Does::Line("feedback") => "Opens a new GitHub issue in your browser".into(),
                     _ => "Tileception".into(),
                 };
                 (command.name.to_string(), Some(detail))
