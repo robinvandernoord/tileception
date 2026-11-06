@@ -66,6 +66,27 @@ language as the bindings.
 ### Later
 
 - A settings window instead of editing the config file.
+- Display settings in that window, like Cinnamon's: rotation, resolution and
+  refresh rate, scale, arrangement and turning screens off. Screens cannot be
+  rotated at all yet, not even through `[outputs]`; add `transform` there
+  first.
+- More launcher actions in plain words, such as "set a timer for 10 minutes"
+  or "remind me at 3", and better unit conversions. Optional: a tiny local
+  tool-calling model (Cactus Needle or similar) to map free text onto those
+  actions, with the rule-based parsing kept as the default.
+- A way to send feedback and feature requests from inside Tileception, for
+  example from the launcher or Doctor.
+  - First version: "Send feedback" opens a pre-filled new-issue page on
+    GitHub (`github.com/robinvandernoord/tileception/issues/new` with title,
+    body and a `feedback` label in the query string) in the browser. No
+    infrastructure; the issue is filed under the user's own GitHub account,
+    so it needs one. The body holds the version; system details only if the
+    user ticks a box, shown before sending.
+  - Later, for people without a GitHub account: a small relay (OVH host or a
+    serverless function) holding a GitHub App's key, which files the issue
+    as the App's bot. The key never ships in Tileception. The relay needs
+    rate limiting, a length cap and a spam check, and new issues should wait
+    in triage before they show publicly.
 - Smart home settings window integration: import devices, configure cloud
   sensors and switch `[home] enabled` from the settings window. Deferred to a
   future update; not a blocker for merging `feature/smart-home`.
