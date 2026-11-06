@@ -328,9 +328,9 @@ impl Tileception {
         }
     }
 
-    pub fn set_dnd(&mut self, on: bool) {
+    pub fn set_dnd(&mut self, enabled: bool) {
         if let Some(service) = &self.notifications.service {
-            service.send(Request::SetDoNotDisturb(on));
+            service.send(Request::SetDoNotDisturb(enabled));
         }
     }
 

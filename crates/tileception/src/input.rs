@@ -555,7 +555,7 @@ impl Tileception {
             Action::Notifications => self.shell_notifications(),
             Action::ClearNotifications => self.clear_notifications(),
             Action::DoNotDisturb(None) => self.toggle_dnd(),
-            Action::DoNotDisturb(Some(on)) => self.set_dnd(on),
+            Action::DoNotDisturb(Some(enabled)) => self.set_dnd(enabled),
             Action::Minimap => self.toggle_minimap(),
             Action::Group => {}
             Action::Minimize => {
