@@ -392,9 +392,9 @@ impl Worker {
             self.queued = Some((text, images));
             return Ok(());
         }
-        if !self.failed_settings.is_empty() {
+        if self.required_mode.as_ref().is_some_and(|(option_id, _)| self.failed_settings.contains(option_id)) {
             (self.emit)(Event::Note(
-                "Message not sent: retry the rejected session setting or restart the agent.".into(),
+                "Message not sent: the agent rejected its permission mode. Retry the message to sync it again, or restart the agent.".into(),
             ));
             (self.emit)(Event::TurnEnded("error".into()));
             return Ok(());
@@ -403,7 +403,7 @@ impl Worker {
             && !self.options.iter().any(|option| option.option_id == *mode_id && option.current == *wanted)
         {
             (self.emit)(Event::Note(
-                "Message not sent: the agent's permission mode changed or was not confirmed.".into(),
+                "Message not sent: the agent's permission mode changed or was not confirmed. Retry the message to sync it again, or restart the agent.".into(),
             ));
             (self.emit)(Event::TurnEnded("error".into()));
             return Ok(());
@@ -600,7 +600,7 @@ impl Worker {
                 if !self.options.iter().any(|option| option.option_id == option_id && option.current == value) {
                     self.failed_settings.insert(option_id);
                     (self.emit)(Event::Note(
-                        "The agent did not confirm the requested setting; message withheld.".into(),
+                        "The agent did not confirm the requested setting. A permission-mode failure blocks messages; retry the message or restart the agent.".into(),
                     ));
                 }
                 if let Some((text, images)) = self.queued.take() {
@@ -677,9 +677,8 @@ impl Worker {
             Pending::SetOption { id: option_id, .. } => {
                 self.failed_settings.insert(option_id);
                 (self.emit)(Event::Note(format!("The agent kept its setting: {text}")));
-                if self.queued.take().is_some() {
-                    (self.emit)(Event::Note("Message not sent because the agent rejected a session setting.".into()));
-                    (self.emit)(Event::TurnEnded("error".into()));
+                if let Some((text, images)) = self.queued.take() {
+                    self.prompt(text, images)?;
                 }
                 Ok(())
             }

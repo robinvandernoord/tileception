@@ -845,6 +845,12 @@ impl Tileception {
     }
 
     fn prompt_doctor(&mut self, text: String, attachments: Vec<Attachment>) {
+        // Confirm the mode again when the agent no longer reports it, for
+        // example after it switched by itself or rejected the last change.
+        if doctor_mode_target(&self.doctor).is_some_and(|(option, wanted)| option.current != wanted) {
+            self.doctor.agent_mode = None;
+        }
+        self.sync_agent_mode();
         let Some(session) = &self.doctor.session else { return };
         if std::mem::take(&mut self.doctor.restate_mode) {
             session.send(Request::Context(format!(
@@ -1059,8 +1065,14 @@ impl Tileception {
             Event::Note(text) => doctor.messages.push(Message::Note(text)),
             Event::Terminal(program) => self.run_login_terminal(&program),
             Event::Options(options) => {
+                let first_options = !doctor.options_ready;
                 doctor.options = options;
                 doctor.options_ready = true;
+                if let Some((option, _)) = doctor_mode_target(doctor)
+                    && doctor.agent_mode.as_deref().is_some_and(|confirmed| confirmed != option.current)
+                {
+                    doctor.agent_mode = None;
+                }
                 // The model chosen before, for a new session too.
                 let wanted = doctor.agent.as_ref().and_then(|agent| doctor.models.get(agent));
                 let model = doctor.options.iter().find(|option| option.is_model());
@@ -1071,7 +1083,9 @@ impl Tileception {
                 {
                     session.send(Request::SetOption { id: model.option_id.clone(), value: wanted.clone() });
                 }
-                self.sync_agent_mode();
+                if first_options {
+                    self.sync_agent_mode();
+                }
                 if (self.doctor.takes_images.is_some()
                     || self.doctor.waiting.as_ref().is_some_and(|(_, attachments)| attachments.is_empty()))
                     && let Some((text, attachments)) = self.doctor.waiting.take()
@@ -1268,8 +1282,7 @@ impl Tileception {
     fn sync_agent_mode(&mut self) {
         let doctor = &mut self.doctor;
         let Some((option, wanted)) = doctor_mode_target(doctor) else { return };
-        if wanted != option.current
-            && doctor.agent_mode.as_deref() != Some(wanted)
+        if doctor.agent_mode.as_deref() != Some(wanted)
             && let Some(session) = &doctor.session
         {
             session.send(Request::SetOption { id: option.option_id.clone(), value: wanted.into() });
