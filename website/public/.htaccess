@@ -6,6 +6,7 @@ AddDefaultCharset utf-8
 
 AddType font/woff2 .woff2
 AddType image/svg+xml .svg
+AddType image/x-icon .ico
 AddType application/manifest+json .webmanifest
 
 # /install is a shell script meant for `curl | sh`, and /setup the one it
