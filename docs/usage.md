@@ -236,7 +236,11 @@ usually `~/Pictures/Screenshots`.
 the pointer. Click, or press **Enter**, to copy the colour under it as hex,
 such as `#2acea2`. The arrow keys move a pixel at a time, ten with **Shift**;
 **Escape** or a right click cancels. A notification then offers the RGB and
-HSL notations and another pick, also from the launcher's top rows.
+HSL notations and another pick.
+
+The pick follows the pointer onto your other screens and, with handoff, onto
+other machines: the colour is picked and copied on the machine the pointer is
+on, and handoff shares that clipboard as usual.
 
 ### Password manager auto-type
 
