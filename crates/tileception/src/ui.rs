@@ -4,6 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use smithay::input::keyboard::xkb;
@@ -24,8 +25,180 @@ use crate::{
     theme::Colour,
 };
 
+/// A control's stable identity, bounds and pointer affordance. Buttons arm on
+/// press and only activate after release over the same target.
+#[derive(Clone)]
+pub(crate) struct PointerTarget {
+    pub rect: Rect,
+    pub cursor: smithay::input::pointer::CursorIcon,
+    on_press: bool,
+    action: Rc<dyn ErasedPointerAction>,
+}
+
+/// Components supply their own action type and activation handler.
+pub(crate) trait PointerAction: PartialEq + 'static {
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+}
+
+// Erasure lets the input stack hold a button from any component. Equality is
+// still checked using the concrete action type, never a string or numeric tag.
+trait ErasedPointerAction {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn same(&self, other: &dyn ErasedPointerAction) -> bool;
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+}
+
+impl<Action: PointerAction> ErasedPointerAction for Action {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn same(&self, other: &dyn ErasedPointerAction) -> bool {
+        other.as_any().downcast_ref::<Action>() == Some(self)
+    }
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) {
+        PointerAction::activate(self, state, rect, point);
+    }
+}
+
+impl PartialEq for PointerTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.rect == other.rect
+            && self.cursor == other.cursor
+            && self.on_press == other.on_press
+            && self.action.same(other.action.as_ref())
+    }
+}
+
+pub(crate) enum PointerEvent {
+    Press(PointerTarget),
+    Release(PointerTarget),
+    Captured,
+    Unrelated,
+}
+
+impl PointerTarget {
+    pub fn new(rect: Rect, action: impl PointerAction, cursor: smithay::input::pointer::CursorIcon) -> Self {
+        Self { rect, action: Rc::new(action), cursor, on_press: true }
+    }
+
+    pub fn button(rect: Rect, action: impl PointerAction) -> Self {
+        Self { rect, action: Rc::new(action), cursor: smithay::input::pointer::CursorIcon::Pointer, on_press: false }
+    }
+
+    pub fn on_press(&self) -> bool {
+        self.on_press
+    }
+
+    pub fn activate(&self, state: &mut Tileception, point: tileception_core::Point) {
+        self.action.activate(state, self.rect, point);
+    }
+
+    pub fn button_event(armed: &mut Option<Self>, target: Option<Self>, pressed: bool) -> PointerEvent {
+        if pressed {
+            *armed = None;
+            match target {
+                Some(target) if target.on_press => PointerEvent::Press(target),
+                Some(target) => {
+                    *armed = Some(target);
+                    PointerEvent::Captured
+                }
+                None => PointerEvent::Unrelated,
+            }
+        } else {
+            match armed.take() {
+                Some(pressed) if target.as_ref() == Some(&pressed) => PointerEvent::Release(pressed),
+                Some(_) => PointerEvent::Captured,
+                None => PointerEvent::Unrelated,
+            }
+        }
+    }
+}
+
+impl Tileception {
+    pub(crate) fn shell_pointer_target(&self, point: tileception_core::Point) -> Option<PointerTarget> {
+        if self.is_locked() || self.overlay_under(point) {
+            return None;
+        }
+        if self.power_menu.is_some() {
+            return self.power_pointer_target(point);
+        }
+        if let Some(target) = self.handoff_pointer_target(point) {
+            return Some(target);
+        }
+        if self.tray.open {
+            return self.tray_pointer_target(point);
+        }
+        if self.launcher.open && !self.launcher.home && self.launcher_takes(point) {
+            return self.launcher_pointer_target(point);
+        }
+        if self.doctor_contains(point) {
+            return self.doctor_pointer_target(point);
+        }
+        if self.notifications_contain(point) {
+            return self.notification_pointer_target(point);
+        }
+        if self.launcher.open && self.launcher_takes(point) {
+            return self.launcher_pointer_target(point);
+        }
+        if let Some(target) = self.duck_pointer_target(point) {
+            return Some(target);
+        }
+        if self.bar_takes(point) {
+            return self.bar_pointer_target(point);
+        }
+        if self.strip_takes(point) {
+            return self.strip_pointer_target(point);
+        }
+        None
+    }
+
+    pub(crate) fn shell_pointer_button(&mut self, pressed: bool) -> bool {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let target = self.shell_pointer_target(point);
+        match PointerTarget::button_event(&mut self.ui_pressed, target, pressed) {
+            PointerEvent::Release(target) => target.activate(self, point),
+            PointerEvent::Captured => {}
+            PointerEvent::Press(_) | PointerEvent::Unrelated => return false,
+        }
+        self.schedule_render();
+        true
+    }
+
+    pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if self.is_locked() || self.overlay_under(point) {
+            return None;
+        }
+        if let Some(target) = self.shell_pointer_target(point) {
+            return Some(target.cursor);
+        }
+        (self.power_menu.is_some()
+            || (self.launcher.open && self.launcher_takes(point))
+            || self.doctor_contains(point)
+            || self.notifications_contain(point)
+            || self.bar_takes(point))
+        .then_some(smithay::input::pointer::CursorIcon::Default)
+    }
+
+    pub(crate) fn shell_pointer_feedback(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let mut painter = Painter::new(self, renderer);
+        if let Some(target) = self.shell_pointer_target(point)
+            && !target.on_press()
+        {
+            painter.fill(
+                target.rect,
+                self.theme.text.alpha(if self.ui_pressed.as_ref() == Some(&target) { 0.12 } else { 0.04 }),
+                5.,
+            );
+        }
+        painter.finish()
+    }
+}
+
 /// Stroked line icons on a 24 by 24 grid (the Tide set from `docs/design.html`).
 pub mod glyph {
+    pub const SETTINGS: &str = r#"<path d="M10.1 5.1L10.2 2.7L13.8 2.7L13.9 5.1L15.5 5.7L17.3 4.1L19.9 6.7L18.3 8.5L18.9 10.1L21.3 10.2L21.3 13.8L18.9 13.9L18.3 15.5L19.9 17.3L17.3 19.9L15.5 18.3L13.9 18.9L13.8 21.3L10.2 21.3L10.1 18.9L8.5 18.3L6.7 19.9L4.1 17.3L5.7 15.5L5.1 13.9L2.7 13.8L2.7 10.2L5.1 10.1L5.7 8.5L4.1 6.7L6.7 4.1L8.5 5.7z"/><circle cx="12" cy="12" r="3"/>"#;
     pub const HOME: &str = r#"<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>"#;
     pub const BULB: &str = r#"<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>"#;
     pub const PLUG: &str = r#"<path d="M9 3v5M15 3v5"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v4"/>"#;
@@ -388,6 +561,15 @@ impl<'a> Painter<'a> {
         self.layers
     }
 
+    /// Clip a scrolling block, including its text and icons, to a viewport.
+    pub fn clipped(&mut self, rect: Rect, draw: impl FnOnce(&mut Painter<'_>)) {
+        let start = self.layers.len();
+        draw(self);
+        let elements = self.layers.split_off(start);
+        let clipped = crate::render::clip_elements(elements, &self.shifted(rect), self.state.scale);
+        self.layers.extend(clipped);
+    }
+
     fn shifted(&self, rect: Rect) -> Rect {
         Rect::new(rect.x + self.offset.0, rect.y + self.offset.1, rect.w, rect.h)
     }
@@ -479,10 +661,13 @@ impl<'a> Painter<'a> {
     /// Text inside `rect`, centred vertically and aligned horizontally.
     /// Returns its size, also when nothing could be drawn.
     pub fn text(&mut self, label: &str, rect: Rect, style: Style) -> (f64, f64) {
-        let theme = self.theme();
+        self.text_font(label, rect, style, &self.state.theme.font)
+    }
+
+    pub fn text_font(&mut self, label: &str, rect: Rect, style: Style, font: &str) -> (f64, f64) {
         let image = self.state.text.borrow_mut().styled(
             label,
-            &theme.font,
+            font,
             style.size,
             style.colour,
             rect.w.max(1.0) as f32,
@@ -501,11 +686,14 @@ impl<'a> Painter<'a> {
 
     /// The size text would take, without drawing it.
     pub fn measure(&self, label: &str, max_width: f64, style: Style) -> (f64, f64) {
-        let theme = self.theme();
+        self.measure_font(label, max_width, style, &self.state.theme.font)
+    }
+
+    pub fn measure_font(&self, label: &str, max_width: f64, style: Style, font: &str) -> (f64, f64) {
         self.state
             .text
             .borrow_mut()
-            .styled(label, &theme.font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
+            .styled(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
             .map(|rendered| (rendered.width, rendered.height))
             .unwrap_or((0.0, 0.0))
     }

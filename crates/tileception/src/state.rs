@@ -192,6 +192,8 @@ pub struct Tileception {
     /// A colour pick in progress, which takes the pointer and keyboard.
     pub colour_pick: Option<crate::colour_pick::ColourPick>,
     pub launcher: crate::launcher::Launcher,
+    pub settings: crate::settings::Settings,
+    pub(crate) ui_pressed: Option<crate::ui::PointerTarget>,
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
@@ -370,6 +372,8 @@ impl Tileception {
             power_menu: None,
             colour_pick: None,
             launcher: Default::default(),
+            settings: Default::default(),
+            ui_pressed: None,
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
@@ -431,6 +435,22 @@ impl Tileception {
     /// Seconds since start, the clock the layout engine runs on.
     pub fn now(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
+    }
+
+    /// Run a shell line in the configured terminal, keeping quoted arguments.
+    pub(crate) fn run_in_terminal(&self, line: &str) -> Result<(), String> {
+        if self.terminal.trim().is_empty() {
+            return Err("No terminal configured".into());
+        }
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+        let line_arg = quote(line);
+        let one_arg = quote(&format!("sh -c {}", line_arg));
+        let command = format!(
+            "set -- {}; case \"${{1##*/}}\" in lxterminal|xfce4-terminal) exec \"$@\" --command {} ;; gnome-terminal) exec \"$@\" -- sh -c {} ;; *) exec \"$@\" -e sh -c {} ;; esac",
+            self.terminal, one_arg, line_arg, line_arg
+        );
+        self.spawn("sh", &["-c".into(), command]);
+        Ok(())
     }
 
     pub fn spawn(&self, cmd: &str, args: &[String]) {
@@ -510,6 +530,7 @@ impl Tileception {
             pending.states.set(xdg_toplevel::State::TiledBottom);
         });
         let window_id = self.next_id();
+        self.settings_client_window(&toplevel, window_id);
         self.windows.insert(window_id, Window::new_wayland_window(toplevel));
     }
 
@@ -541,7 +562,7 @@ impl Tileception {
         }
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
-        let float = rule.float.unwrap_or_else(|| wants_float(window));
+        let float = rule.float.unwrap_or_else(|| self.is_settings_window(window_id) || wants_float(window));
         let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();

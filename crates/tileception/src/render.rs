@@ -207,6 +207,7 @@ impl Tileception {
 
     /// The whole frame: everything below plus the wallpaper at the bottom.
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+        self.update_settings_client(renderer);
         if let Some(shapes) = self.shapes.get() {
             shapes.next_frame();
         }
@@ -273,6 +274,7 @@ impl Tileception {
         let view = self.world.view(now);
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
+        elements.extend(self.settings_identify_elements(renderer));
         if active {
             elements.extend(self.colour_pick_elements(renderer));
             elements.extend(self.osd_elements(renderer));
@@ -283,6 +285,7 @@ impl Tileception {
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
         if active {
+            elements.extend(self.shell_pointer_feedback(renderer));
             elements.extend(self.tray_elements(renderer));
             // The welcome screen is part of the desktop: notifications go over it.
             if !self.launcher.home {
@@ -586,6 +589,7 @@ impl Tileception {
         }
         // Over another machine's window: the pointer its program chose.
         if !self.draws_lock_screen()
+            && self.shell_pointer_cursor().is_none()
             && let Some(elements) = self.remote_cursor_elements(renderer)
         {
             return elements;
@@ -601,7 +605,9 @@ impl Tileception {
             *cursor = Cursor::load(scale);
         }
         let mut next_frame = None;
-        let elements = match &self.cursor_status {
+        let status =
+            self.shell_pointer_cursor().map(CursorImageStatus::Named).unwrap_or_else(|| self.cursor_status.clone());
+        let elements = match &status {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
                 let hotspot = smithay::wayland::compositor::with_states(surface, |states| {
@@ -811,7 +817,7 @@ pub fn physical_point(point: (f64, f64), scale: f64) -> Point<i32, Physical> {
 }
 
 /// Elements cut to `rect` (logical pixels); those wholly outside it go.
-fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
+pub(crate) fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
     let crop = physical(rect, scale);
     elements
         .into_iter()

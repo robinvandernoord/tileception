@@ -40,6 +40,25 @@ impl SecretField {
         self.len == 0
     }
 
+    /// Paste directly into the wiped buffer, without putting a secret in a
+    /// rendered text cache. Multiline/control input is refused.
+    pub fn insert(&mut self, text: &str) -> bool {
+        let text = text.trim_end_matches(['\r', '\n']);
+        if text.chars().any(char::is_control) {
+            return false;
+        }
+        let current = if self.selected { 0 } else { self.len };
+        if current + text.len() > self.bytes.len() {
+            return false;
+        }
+        if self.selected {
+            self.clear();
+        }
+        self.bytes[self.len..self.len + text.len()].copy_from_slice(text.as_bytes());
+        self.len += text.len();
+        true
+    }
+
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.bytes[..self.len]).expect("typed UTF-8")
     }

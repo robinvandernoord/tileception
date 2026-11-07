@@ -162,6 +162,31 @@ type ShotReady = (u64, Option<Prepared>);
 /// Under or over, fill, border and width in pixels.
 type TailKey = (bool, [u8; 4], [u8; 4], u32);
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    OpenDoctor,
+    Close,
+    Bubble,
+    Drag,
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::OpenDoctor => {
+                state.close_duck_chat();
+                state.open_doctor();
+            }
+            Self::Close => state.close_duck_chat(),
+            Self::Bubble => {}
+            Self::Drag => {
+                state.duck.press =
+                    Some(Press { origin: point, grab: (point.x - state.duck.pos.0, point.y - state.duck.pos.1) })
+            }
+        }
+    }
+}
+
 /// A press on the duck that is a click until the pointer moves.
 #[derive(Debug, Clone, Copy)]
 struct Press {
@@ -810,32 +835,9 @@ impl Tileception {
             }
             return true;
         }
-        if let Some(bubble) = self.duck_bubble() {
-            if let Some((link, _)) = bubble.link
-                && link.contains(position)
-            {
-                if left {
-                    self.close_duck_chat();
-                    self.open_doctor();
-                }
-                return true;
-            }
-            if bubble.close.is_some_and(|close| close.contains(position)) {
-                if left {
-                    self.close_duck_chat();
-                }
-                return true;
-            }
-            if bubble.rect.contains(position) {
-                return true;
-            }
-        }
-        if self.duck_rect().contains(position) {
+        if let Some(target) = self.duck_pointer_target(position) {
             if left {
-                self.duck.press = Some(Press {
-                    origin: position,
-                    grab: (position.x - self.duck.pos.0, position.y - self.duck.pos.1),
-                });
+                target.activate(self, position);
             }
             return true;
         }
@@ -848,6 +850,31 @@ impl Tileception {
             self.close_duck_chat();
         }
         false
+    }
+
+    pub(crate) fn duck_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
+        use smithay::input::pointer::CursorIcon;
+        if !self.duck_shown() {
+            return None;
+        }
+        if let Some(bubble) = self.duck_bubble() {
+            if let Some((rect, _)) = bubble.link
+                && rect.contains(point)
+            {
+                return Some(PointerTarget::button(rect, PointerAction::OpenDoctor));
+            }
+            if let Some(rect) = bubble.close
+                && rect.contains(point)
+            {
+                return Some(PointerTarget::button(rect, PointerAction::Close));
+            }
+            if bubble.rect.contains(point) {
+                return Some(PointerTarget::new(bubble.rect, PointerAction::Bubble, CursorIcon::Default));
+            }
+        }
+        let rect = self.duck_rect();
+        rect.contains(point).then(|| PointerTarget::new(rect, PointerAction::Drag, CursorIcon::Grab))
     }
 
     fn duck_thrown(&mut self) {

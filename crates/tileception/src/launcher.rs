@@ -82,6 +82,7 @@ struct StoredUsage {
 pub enum Paste {
     Launcher(u64),
     Doctor,
+    Settings(u64),
     /// The rubber duck's question.
     Duck,
 }
@@ -125,6 +126,33 @@ enum Detail {
     Folder,
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerAction {
+    Search,
+    Settings,
+    Entry(Entry),
+}
+
+impl crate::ui::PointerAction for PointerAction {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Search => {
+                let extend = state.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
+                state.launcher_cursor_at(point, extend);
+                state.launcher.selecting = true;
+                state.launcher.input.anchor.get_or_insert(state.launcher.input.cursor);
+            }
+            Self::Settings => state.toggle_settings(),
+            Self::Entry(entry) => {
+                if let Some(index) = state.launcher.entries.iter().position(|candidate| candidate == entry) {
+                    state.select_launcher(index);
+                    state.launch_selected(crate::config::Mods::default());
+                }
+            }
+        }
+    }
+}
+
 /// What a command row does.
 #[derive(Debug, Clone, Copy)]
 enum Does {
@@ -150,6 +178,12 @@ const fn builtin(name: &'static str, words: &'static str, glyph: &'static str, d
 
 /// Tileception's own commands, found by typing their name.
 const COMMANDS: &[Builtin] = &[
+    builtin(
+        "Settings",
+        "preferences configuration appearance keyboard touchpad power",
+        glyph::CONTRAST,
+        Does::Line("settings"),
+    ),
     builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
     builtin("Minimap", "map tree where camera outline", glyph::MINIMAP, Does::Line("minimap")),
     builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
@@ -334,6 +368,10 @@ impl Launcher {
 }
 
 impl Tileception {
+    pub(crate) fn settings_applications(&self) -> Vec<tileception_apps::App> {
+        self.launcher.index.search("", &self.launcher.usage, usize::MAX).into_iter().cloned().collect()
+    }
+
     /// Puts a PNG file on the clipboard, owned by the compositor, so copying a
     /// screenshot needs no helper window.
     pub fn copy_image(&mut self, path: &std::path::Path) -> Result<(), String> {
@@ -397,6 +435,9 @@ impl Tileception {
                 self.launcher_insert_paste(&text);
             }
             (Paste::Doctor, Clip::Text(text)) if self.doctor.open => self.doctor_insert_paste(&text),
+            (Paste::Settings(epoch), Clip::Text(text)) if self.settings.open => {
+                self.settings_insert_paste(epoch, &text)
+            }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
             _ => return,
@@ -444,6 +485,7 @@ impl Tileception {
             && !self.is_locked()
             && self.power_menu.is_none()
             && !self.doctor.open
+            && !self.settings.open
         {
             self.open_launcher(true);
         }
@@ -730,7 +772,7 @@ impl Tileception {
         // copied image often also offers its address as text.
         let mime_types = match target {
             Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor | Paste::Launcher(_) | Paste::Duck => text.to_vec(),
+            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Duck => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
@@ -899,8 +941,9 @@ impl Tileception {
                 self.close_launcher();
                 // The terminal stays open on a shell afterwards, to read the output.
                 let script = format!("{line}; exec \"${{SHELL:-sh}}\"");
-                let command = format!("{} -e sh -c {}", self.terminal, shell_quote(&script));
-                self.spawn("sh", &["-c".into(), command]);
+                if let Err(error) = self.run_in_terminal(&script) {
+                    tracing::warn!("{error}");
+                }
             }
             Entry::Run(line) => self.start_run(line),
             Entry::Ask(question) => {
@@ -1169,6 +1212,30 @@ impl Tileception {
         layout.rows.iter().position(|row| row.contains(point)).map(|offset| layout.first + offset)
     }
 
+    pub(crate) fn launcher_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
+        let layout = self.launcher_layout();
+        if layout.field.contains(point) {
+            return Some(crate::ui::PointerTarget::new(
+                layout.field,
+                PointerAction::Search,
+                smithay::input::pointer::CursorIcon::Text,
+            ));
+        }
+        let settings = launcher_settings_button(layout.footer);
+        if settings.contains(point) {
+            return Some(crate::ui::PointerTarget::button(settings, PointerAction::Settings));
+        }
+        if let Some(card) = &layout.media
+            && let Some(target) = self.media_pointer_target(card, point)
+        {
+            return Some(target);
+        }
+        layout.rows.iter().enumerate().find_map(|(index, rect)| {
+            let entry = self.launcher.entries.get(layout.first + index)?;
+            rect.contains(point).then(|| crate::ui::PointerTarget::button(*rect, PointerAction::Entry(entry.clone())))
+        })
+    }
+
     pub fn launcher_motion(&mut self, point: Point) {
         if self.launcher.selecting {
             self.launcher_cursor_at(point, true);
@@ -1181,22 +1248,8 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
-        if layout.field.contains(point) {
-            let extend = self.seat.get_keyboard().expect("seat has a keyboard").modifier_state().shift;
-            self.launcher_cursor_at(point, extend);
-            self.launcher.selecting = true;
-            self.launcher.input.anchor.get_or_insert(self.launcher.input.cursor);
-            return;
-        }
-        if let Some(card) = &layout.media
-            && card.rect.contains(point)
-        {
-            self.media_card_press(card, point);
-            return;
-        }
-        if let Some(index) = self.launcher_at(point) {
-            self.select_launcher(index);
-            self.launch_selected(crate::config::Mods::default());
+        if let Some(target) = self.launcher_pointer_target(point) {
+            target.activate(self, point);
         } else if !layout.panel.contains(point) && !self.launcher.home {
             self.close_launcher();
         }
@@ -1430,7 +1483,20 @@ impl Tileception {
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
-        painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - 52.).max(1.), footer.h), |painter| {
+            painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
+        });
+        let settings = launcher_settings_button(footer);
+        let hovered = settings.contains(Point::new(self.pointer.x, self.pointer.y));
+        if hovered {
+            painter.fill(settings, theme.surface_raised, 5.);
+        }
+        painter.glyph(
+            glyph::SETTINGS,
+            Rect::new(settings.x + 6., settings.y + 6., 20., 20.),
+            18,
+            if hovered { theme.accent } else { theme.muted },
+        );
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
             painter.popup(card.rect);
@@ -1905,7 +1971,6 @@ fn clean_output(text: &str) -> String {
     out
 }
 
-/// A string as one shell word.
 /// The user's own copy of an app's desktop entry, made from the system one
 /// unless it is there already.
 fn own_copy(app: &tileception_apps::App) -> Result<PathBuf, String> {
@@ -1955,6 +2020,7 @@ fn jump_place(path: &std::path::Path, home: &std::path::Path) -> Place {
     }
 }
 
+/// A string as one shell word.
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -2034,6 +2100,10 @@ struct LauncherLayout {
     /// A `>` command's output, under its row.
     output: Option<Rect>,
     footer: Rect,
+}
+
+fn launcher_settings_button(footer: Rect) -> Rect {
+    Rect::new(footer.right() - 44., footer.y + (footer.h - 32.) / 2., 32., 32.)
 }
 
 fn usage_path() -> PathBuf {

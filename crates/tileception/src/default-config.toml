@@ -355,6 +355,7 @@ repeat_rate = 30
 "Super+N" = "notifications"
 "Super+Return" = "answer-notification"
 "Super+slash" = "doctor"
+"Super+comma" = "settings"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]

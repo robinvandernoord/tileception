@@ -20,8 +20,12 @@ impl TextInput {
     }
 
     pub fn insert(&mut self, value: &str) {
+        self.insert_with_limit(value, 4096);
+    }
+
+    pub fn insert_with_limit(&mut self, value: &str, limit: usize) {
         let range = self.selection();
-        if self.text.len() - range.len() + value.len() > 4096 {
+        if self.text.len() - range.len() + value.len() > limit {
             return;
         }
         self.cursor = range.start + value.len();
@@ -85,11 +89,15 @@ impl TextInput {
     }
 
     pub fn delete(&mut self, forward: bool, word: bool) {
+        self.delete_with_limit(forward, word, 4096);
+    }
+
+    pub fn delete_with_limit(&mut self, forward: bool, word: bool, limit: usize) {
         if self.selection().is_empty() {
             let position = if forward { self.next(word) } else { self.previous(word) };
             self.anchor = Some(position);
         }
-        self.insert("");
+        self.insert_with_limit("", limit);
     }
 
     pub fn select_all(&mut self) {

@@ -92,6 +92,23 @@ enum Page {
     Wake,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PointerItem {
+    Run(PowerAction),
+    Page(Page, usize),
+    SuspendUntil,
+}
+
+impl crate::ui::PointerAction for PointerItem {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: tileception_core::Point) {
+        match *self {
+            Self::Run(action) => state.run_power_action(action),
+            Self::Page(page, selected) => state.power_page(page, selected),
+            Self::SuspendUntil => state.suspend_until(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WakeStatus {
     Idle,
@@ -179,6 +196,13 @@ impl Tileception {
         self.power_items().iter().position(|rect| rect.contains(tileception_core::Point::new(x_pos, y_pos)))
     }
 
+    pub(crate) fn power_pointer_target(&self, point: tileception_core::Point) -> Option<crate::ui::PointerTarget> {
+        self.power_items().into_iter().enumerate().find_map(|(index, rect)| {
+            let action = self.power_item_action(index)?;
+            rect.contains(point).then(|| crate::ui::PointerTarget::button(rect, action))
+        })
+    }
+
     /// The six main tiles, or compact submenu rows.
     fn power_items(&self) -> Vec<Rect> {
         let Some(menu) = self.power_menu else { return Vec::new() };
@@ -202,17 +226,28 @@ impl Tileception {
     }
 
     pub fn activate_power_item(&mut self, index: usize) {
-        let Some(menu) = self.power_menu else { return };
+        if let Some(action) = self.power_item_action(index) {
+            crate::ui::PointerAction::activate(
+                &action,
+                self,
+                self.output_rect(),
+                tileception_core::Point::new(self.pointer.x, self.pointer.y),
+            );
+        }
+    }
+
+    fn power_item_action(&self, index: usize) -> Option<PointerItem> {
+        let menu = self.power_menu?;
         match (menu.page, index) {
-            (Page::Main, index) if index < PowerAction::ALL.len() => self.run_power_action(PowerAction::ALL[index]),
-            (Page::Main, index) if index == PowerAction::ALL.len() => self.power_page(Page::More, 0),
-            (Page::More, MORE_WAKE) if self.wake_enabled() => self.power_page(Page::Wake, 1),
-            (Page::More, MORE_UEFI) if menu.uefi_available => self.power_page(Page::ConfirmUefi, 0),
-            (Page::More, MORE_BACK) => self.power_page(Page::Main, PowerAction::ALL.len()),
-            (Page::ConfirmUefi, 0) => self.power_page(Page::More, MORE_UEFI),
-            (Page::ConfirmUefi, 1) => self.run_power_action(PowerAction::Uefi),
-            (Page::Wake, 1) => self.suspend_until(),
-            _ => {}
+            (Page::Main, index) if index < PowerAction::ALL.len() => Some(PointerItem::Run(PowerAction::ALL[index])),
+            (Page::Main, index) if index == PowerAction::ALL.len() => Some(PointerItem::Page(Page::More, 0)),
+            (Page::More, MORE_WAKE) if self.wake_enabled() => Some(PointerItem::Page(Page::Wake, 1)),
+            (Page::More, MORE_UEFI) if menu.uefi_available => Some(PointerItem::Page(Page::ConfirmUefi, 0)),
+            (Page::More, MORE_BACK) => Some(PointerItem::Page(Page::Main, PowerAction::ALL.len())),
+            (Page::ConfirmUefi, 0) => Some(PointerItem::Page(Page::More, MORE_UEFI)),
+            (Page::ConfirmUefi, 1) => Some(PointerItem::Run(PowerAction::Uefi)),
+            (Page::Wake, 1) => Some(PointerItem::SuspendUntil),
+            _ => None,
         }
     }
 

@@ -322,6 +322,17 @@ impl HomeService {
         self.shared.lock().snapshot.clone()
     }
 
+    /// Addresses heard by the running discovery listener, including devices
+    /// not yet present in the inventory. Importers can reuse its bound ports.
+    pub fn discovered(&self) -> Vec<(String, IpAddr, Option<Version>)> {
+        self.shared
+            .lock()
+            .heard
+            .iter()
+            .map(|(device_id, (host, version))| (device_id.clone(), *host, *version))
+            .collect()
+    }
+
     pub fn send(&self, request: Request) {
         match request {
             Request::Set { device_id, change } => {

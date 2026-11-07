@@ -15,7 +15,7 @@ mod accounts;
 mod card;
 mod draw;
 mod greetd;
-mod keymap;
+pub(crate) mod keymap;
 mod layout;
 mod sessions;
 mod settings;

@@ -84,6 +84,15 @@ pub enum Action {
 
 impl Tileception {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        if let InputEvent::DeviceAdded { device } = &event
+            && device.has_capability(smithay::backend::input::DeviceCapability::Touch)
+            && !self.touch.devices.contains(&device.name())
+        {
+            self.touch.devices.push(device.name());
+        }
+        if let InputEvent::DeviceRemoved { device } = &event {
+            self.touch.devices.retain(|name| name != &device.name());
+        }
         let touchscreen = match &event {
             InputEvent::TouchDown { event } => Some(event.device().name()),
             InputEvent::TouchMotion { event } => Some(event.device().name()),
@@ -92,6 +101,11 @@ impl Tileception {
             InputEvent::TouchFrame { event } => Some(event.device().name()),
             _ => None,
         };
+        if let Some(name) = &touchscreen
+            && !self.touch.devices.contains(name)
+        {
+            self.touch.devices.push(name.clone());
+        }
         if let Some(mapping) = touchscreen.as_ref().and_then(|name| self.config.file.touchscreens.get(name)) {
             // An explicitly mapped touchscreen never falls through to another
             // screen when its display is disconnected.
@@ -224,6 +238,7 @@ impl Tileception {
 
     /// A key, from a keyboard or from `tileception msg key` in tests.
     pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        self.ui_pressed = None;
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
@@ -279,6 +294,9 @@ impl Tileception {
             }
             // Applications' global shortcuts, and the question for their keys,
             // which takes every key press but modifiers.
+            if state.settings_record_key(pressed, raw_sym, Mods::from_state(mods)) {
+                return FilterResult::Intercept(Vec::new());
+            }
             let trigger = crate::global_shortcuts::Trigger::new(Mods::from_state(mods), raw_sym);
             let modifier = crate::config::modifier_of(raw_sym).is_some() || handle.modified_sym().is_modifier_key();
             if state.asking_for_shortcut() && pressed && !modifier {
@@ -778,6 +796,10 @@ impl Tileception {
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        if !self.is_locked() && button == BTN_LEFT && self.shell_pointer_button(state == ButtonState::Pressed) {
+            self.schedule_render();
+            return;
+        }
         // A held slider lets go wherever the button comes up.
         if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
             return;
@@ -1032,6 +1054,7 @@ impl Tileception {
     }
 
     pub(crate) fn on_axis(&mut self, event: &AxisInput) {
+        self.ui_pressed = None;
         if self.draws_lock_screen() {
             return;
         }

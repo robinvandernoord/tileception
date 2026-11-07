@@ -43,8 +43,7 @@ impl Slider {
 
     /// The value under the pointer, snapping to 100 when boosting is possible.
     fn value_at(&self, pointer_x: f64) -> u32 {
-        let value = ((pointer_x - self.track.x) / self.track.w).clamp(0.0, 1.0) * self.max as f64;
-        if self.max > 100 && (value - 100.0).abs() < SNAP { 100 } else { value.round() as u32 }
+        slider_value(self.track, self.max, pointer_x)
     }
 }
 
@@ -84,7 +83,94 @@ pub struct Controls {
     pub media: Option<MediaCard>,
 }
 
+#[derive(Clone, PartialEq)]
+enum PointerControl {
+    Devices,
+    Apps,
+    Mute(SliderId),
+    Slide { kind: SliderId, track: Rect, max: u32 },
+}
+
+impl crate::ui::PointerAction for Request {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
+        state.media_request(self.clone());
+    }
+}
+
+impl crate::ui::PointerAction for PointerControl {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+        match self {
+            Self::Devices => state.media.devices_open = !state.media.devices_open,
+            Self::Apps => state.media.apps_open = !state.media.apps_open,
+            Self::Mute(kind) => state.slider_mute(*kind),
+            Self::Slide { kind, track, max } => {
+                let value = slider_value(*track, *max, point.x);
+                state.media.drag = Some((*kind, Instant::now(), value));
+                state.slider_set(*kind, value);
+            }
+        }
+    }
+}
+
+fn slider_value(track: Rect, max: u32, pointer_x: f64) -> u32 {
+    let value = ((pointer_x - track.x) / track.w).clamp(0., 1.) * max as f64;
+    if max > 100 && (value - 100.).abs() < SNAP { 100 } else { value.round() as u32 }
+}
+
 impl Tileception {
+    pub(crate) fn media_pointer_target(&self, card: &MediaCard, point: Point) -> Option<crate::ui::PointerTarget> {
+        [
+            (card.previous, PlayerCommand::Previous),
+            (card.play, PlayerCommand::PlayPause),
+            (card.next, PlayerCommand::Next),
+        ]
+        .into_iter()
+        .find_map(|(rect, action)| {
+            rect.contains(point).then(|| crate::ui::PointerTarget::button(rect, Request::Player(action)))
+        })
+    }
+
+    pub(crate) fn controls_pointer_target(
+        &self,
+        controls: &Controls,
+        point: Point,
+    ) -> Option<crate::ui::PointerTarget> {
+        use crate::ui::PointerTarget;
+        if controls.choosable
+            && let Some(rect) = controls.device
+            && rect.contains(point)
+        {
+            return Some(PointerTarget::button(rect, PointerControl::Devices));
+        }
+        if let Some(rect) = controls.apps
+            && rect.contains(point)
+        {
+            return Some(PointerTarget::button(rect, PointerControl::Apps));
+        }
+        for slider in &controls.sliders {
+            if slider.button.contains(point) {
+                return Some(PointerTarget::button(slider.button, PointerControl::Mute(slider.kind)));
+            }
+            let rect = slider.grab_area();
+            if rect.contains(point) {
+                return Some(PointerTarget::new(
+                    rect,
+                    PointerControl::Slide { kind: slider.kind, track: slider.track, max: slider.max },
+                    smithay::input::pointer::CursorIcon::EwResize,
+                ));
+            }
+        }
+        for choice in &controls.choices {
+            if choice.rect.contains(point) && !choice.current {
+                return Some(PointerTarget::button(
+                    choice.rect,
+                    Request::Default { output: choice.output, name: choice.name.clone() },
+                ));
+            }
+        }
+        controls.media.as_ref().and_then(|card| self.media_pointer_target(card, point))
+    }
+
     /// The controls block with its top left at (x, y).
     pub fn controls_layout(&self, left: f64, top: f64, width: f64) -> Controls {
         if !self.shell().media() {
@@ -200,59 +286,6 @@ impl Tileception {
             sliders,
             apps,
             media,
-        }
-    }
-
-    /// A press in the panel; returns whether the controls took it.
-    pub fn controls_press(&mut self, controls: &Controls, point: Point) -> bool {
-        if !controls.rect.contains(point) {
-            return false;
-        }
-        if controls.choosable && controls.device.is_some_and(|rect| rect.contains(point)) {
-            self.media.devices_open = !self.media.devices_open;
-            return true;
-        }
-        if let Some(choice) = controls.choices.iter().find(|candidate| candidate.rect.contains(point)) {
-            if !choice.current {
-                self.media_request(Request::Default { output: choice.output, name: choice.name.clone() });
-            }
-            return true;
-        }
-        for slider in &controls.sliders {
-            if slider.button.contains(point) {
-                self.slider_mute(slider.kind);
-                return true;
-            }
-            if slider.grab_area().contains(point) {
-                let value = slider.value_at(point.x);
-                self.media.drag = Some((slider.kind, Instant::now(), value));
-                self.slider_set(slider.kind, value);
-                return true;
-            }
-        }
-        if controls.apps.is_some_and(|rect| rect.contains(point)) {
-            self.media.apps_open = !self.media.apps_open;
-            return true;
-        }
-        if let Some(card) = &controls.media {
-            self.media_card_press(card, point);
-        }
-        true
-    }
-
-    /// A press on a playback card's buttons.
-    pub fn media_card_press(&mut self, card: &MediaCard, point: Point) {
-        let command = if card.previous.contains(point) {
-            Some(PlayerCommand::Previous)
-        } else if card.play.contains(point) {
-            Some(PlayerCommand::PlayPause)
-        } else if card.next.contains(point) {
-            Some(PlayerCommand::Next)
-        } else {
-            None
-        };
-        if let Some(command) = command {
-            self.media_request(Request::Player(command));
         }
     }
 

@@ -58,6 +58,7 @@ pub fn validate(touchscreens: &std::collections::BTreeMap<String, TouchscreenCon
 /// What the fingers on the screen are doing.
 #[derive(Debug, Default)]
 pub struct Touch {
+    pub(crate) devices: Vec<String>,
     mode: Option<Mode>,
     fingers: HashMap<TouchSlot, Finger>,
     /// When the first finger of this touch went down.

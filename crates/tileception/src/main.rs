@@ -63,6 +63,7 @@ mod rules;
 mod scale;
 mod screensaver;
 mod selection;
+mod settings;
 mod shapes;
 mod shell;
 mod sleep;
