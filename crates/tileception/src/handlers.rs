@@ -542,16 +542,20 @@ impl Tileception {
             self.with_area(&area, |state| state.unconstrain_popup(popup));
             return;
         }
-        let Some(placement) =
-            self.world.placements(self.world.target_view()).into_iter().find(|candidate| candidate.window == window_id)
+        let Some(drawn) = self.drawn_windows(self.now()).into_iter().find(|candidate| candidate.window_id == window_id)
         else {
             return;
         };
         let screen = self.world.screen();
-        let mut target =
-            Rectangle::new((screen.x as i32, screen.y as i32).into(), (screen.w as i32, screen.h as i32).into());
+        let mut target = Rectangle::new(
+            (
+                ((screen.x - drawn.origin.x) / drawn.scale.0).floor() as i32,
+                ((screen.y - drawn.origin.y) / drawn.scale.1).floor() as i32,
+            )
+                .into(),
+            ((screen.w / drawn.scale.0) as i32, (screen.h / drawn.scale.1) as i32).into(),
+        );
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        target.loc -= (placement.rect.x as i32, placement.rect.y as i32).into();
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });

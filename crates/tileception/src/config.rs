@@ -27,6 +27,7 @@ pub const DEFAULT: &str = include_str!("default-config.toml");
 #[derive(Default)]
 pub struct ConfigFile {
     pub general: General,
+    pub launcher: crate::launcher_plugins::LauncherConfig,
     pub clipboard: crate::clipboard::ClipboardConfig,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
@@ -75,6 +76,8 @@ pub struct General {
     pub terminal: Option<String>,
     pub gap: f64,
     pub animation_ms: f64,
+    /// Smallest uniform window scale that still accepts pointer input.
+    pub min_live_scale: f64,
     pub drag_modifier: String,
     pub share_removed_space: bool,
     /// No longer used: floating windows hang above the layout. Still
@@ -105,6 +108,7 @@ impl Default for General {
             terminal: None,
             gap: 12.0,
             animation_ms: 280.0,
+            min_live_scale: 0.5,
             drag_modifier: "Alt".into(),
             share_removed_space: true,
             sole_float_takes_desktop: true,
@@ -244,6 +248,9 @@ impl Config {
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|error| format!("[theme] {error}"))?;
         file.shell.validate()?;
+        if !file.general.min_live_scale.is_finite() || !(0.1..=1.0).contains(&file.general.min_live_scale) {
+            return Err("general.min_live_scale must be finite and between 0.1 and 1.0".into());
+        }
         crate::rules::validate(&file.rules)?;
         crate::scale::validate(&file.outputs)?;
         file.touchpad.validate()?;
@@ -424,12 +431,13 @@ impl Tileception {
         let path = path();
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let config = Config::parse(&text)?;
-        self.apply_config(config);
+        self.apply_config(config)?;
         tracing::info!("config reloaded");
         Ok(())
     }
 
-    pub fn apply_config(&mut self, config: Config) {
+    pub fn apply_config(&mut self, config: Config) -> Result<(), String> {
+        self.cancel_output_preview();
         if self.config.file.touchscreens != config.file.touchscreens {
             self.touch_cancel((self.now() * 1000.0) as u32);
         }
@@ -464,7 +472,12 @@ impl Tileception {
         }
         self.configure_touchpads();
         // Also lays everything out again.
-        self.configure_outputs();
+        if let Err(error) = self.configure_outputs() {
+            self.config.file.outputs = old.outputs;
+            self.configure_output_layouts();
+            return Err(format!("reloaded, but outputs: {error}"));
+        }
+        Ok(())
     }
 }
 

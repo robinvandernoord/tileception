@@ -28,8 +28,12 @@ impl crate::ui::PointerAction for PageAction {
                     state.close_settings();
                     return;
                 }
-                if state.settings.section.is_some() && !state.section_stage(false) {
-                    return;
+                if state.settings.section.is_some() {
+                    if matches!(hit, Hit::Page(_) | Hit::Card(_)) {
+                        state.settings_leave_section();
+                    } else if !state.section_stage(false) {
+                        return;
+                    }
                 }
                 state.settings_page_click(rect, *hit, point);
             }
@@ -71,6 +75,9 @@ impl Tileception {
     }
 
     pub(super) fn settings_pointer_target(&self, point: Point) -> Option<Target> {
+        if let Some(target) = self.display_preview_pointer_target(point) {
+            return Some(target);
+        }
         if self.settings.keymap.is_some() {
             return self.keymap_pointer_target(point);
         }

@@ -7,20 +7,72 @@
 //! wallpaper, layers, fullscreen) stays shared. The same swapping as between
 //! outputs puts an area's world in `Tileception::world`.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use smithay::{
-    output::Output,
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point},
+    output::{Mode, Output},
+    reexports::calloop::timer::{TimeoutAction, Timer},
+    reexports::wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
+    utils::{Logical, Point, Transform},
     wayland::seat::WaylandFocus,
 };
 use tileception_core::{Placement, Rect, WindowId, World};
 
+use crate::scale::OutputConfig;
 use crate::{Tileception, capture::PendingCapture};
+
+#[derive(Debug, Clone)]
+pub struct ConnectedMonitor {
+    pub name: String,
+    pub enabled: bool,
+    pub modes: Vec<Mode>,
+    pub current_mode: Option<Mode>,
+    pub preferred_mode: Option<Mode>,
+    pub transform: Transform,
+}
+
+/// A monotonic deadline, shared by Settings and the backend's timeout source.
+#[derive(Debug, Clone, Copy)]
+pub struct OutputPreviewStatus {
+    pub token: u64,
+    pub deadline: Instant,
+}
+
+#[derive(Clone)]
+struct RuntimeOutput {
+    output: Output,
+    enabled: bool,
+    mode: Mode,
+    transform: Transform,
+}
+
+struct OutputPreview {
+    token: u64,
+    previous: BTreeMap<String, OutputConfig>,
+    runtime: Vec<RuntimeOutput>,
+    deadline: Instant,
+    homes: Vec<(WindowId, AreaId)>,
+    active: Option<AreaId>,
+    desktops: Vec<PreviewDesktop>,
+}
+
+struct PreviewDesktop {
+    area: AreaId,
+    world: World,
+    pointer: Point<f64, Logical>,
+    fullscreen: Option<WindowId>,
+}
 
 #[derive(Default)]
 pub struct Outputs {
+    connected: BTreeMap<String, Output>,
+    globals: BTreeMap<String, GlobalId>,
+    preview: Option<OutputPreview>,
+    generation: u64,
     pub active: Option<Output>,
     parked: BTreeMap<String, Desktop>,
     /// Split screens' areas, by connector name. Unsplit screens have none.
@@ -134,6 +186,329 @@ struct Desktop {
 }
 
 impl Tileception {
+    /// Includes connected but disabled monitors. Headless accepts custom modes
+    /// within the same bounds as configuration validation.
+    pub fn connected_monitors(&self) -> Vec<ConnectedMonitor> {
+        self.outputs
+            .connected
+            .values()
+            .map(|output| ConnectedMonitor {
+                name: output.name(),
+                enabled: self.output_named(&output.name()).is_some(),
+                modes: output.modes(),
+                current_mode: output.current_mode(),
+                preferred_mode: output.preferred_mode(),
+                transform: output.current_transform(),
+            })
+            .collect()
+    }
+
+    fn runtime_outputs(&self) -> Vec<RuntimeOutput> {
+        self.outputs
+            .connected
+            .values()
+            .filter_map(|output| {
+                Some(RuntimeOutput {
+                    output: output.clone(),
+                    enabled: self.output_named(&output.name()).is_some(),
+                    mode: output.current_mode()?,
+                    transform: output.current_transform(),
+                })
+            })
+            .collect()
+    }
+
+    fn proposed_outputs(
+        &self,
+        proposed: &BTreeMap<String, OutputConfig>,
+        allow_fallback: bool,
+    ) -> Result<Vec<RuntimeOutput>, String> {
+        crate::scale::validate(proposed)?;
+        let mut runtime = Vec::new();
+        for output in self.outputs.connected.values() {
+            let explicit = proposed.get(&output.name());
+            let mut setting = explicit.or_else(|| proposed.get("*")).cloned().unwrap_or_default();
+            if output.name() == "winit" && explicit.is_none() {
+                if setting.mode.parse()?.is_some() || setting.transform != Default::default() {
+                    tracing::debug!("ignoring wildcard mode and transform for nested output");
+                }
+                setting.mode = Default::default();
+                setting.transform = Default::default();
+            }
+            let requested = setting.mode.parse()?;
+            let mode = requested
+                .or(output.preferred_mode())
+                .or(output.current_mode())
+                .ok_or_else(|| format!("{} has no available mode", output.name()))?;
+            if output.name() == "winit" {
+                if !setting.enabled || requested.is_some() || setting.transform != Default::default() {
+                    return Err("nested backend does not support output mode, transform or enable changes".into());
+                }
+            } else if !output.name().starts_with("headless") && !output.modes().contains(&mode) {
+                return Err(format!(
+                    "{} does not support {}x{}@{}",
+                    output.name(),
+                    mode.size.w,
+                    mode.size.h,
+                    f64::from(mode.refresh) / 1000.0
+                ));
+            }
+            runtime.push(RuntimeOutput {
+                output: output.clone(),
+                enabled: setting.enabled,
+                mode,
+                transform: if output.name() == "winit" { output.current_transform() } else { setting.transform.into() },
+            });
+        }
+        if !runtime.is_empty() && !runtime.iter().any(|output| output.enabled) {
+            if !allow_fallback {
+                return Err("cannot disable every connected monitor".into());
+            }
+            let index = runtime
+                .iter()
+                .position(|target| ["eDP", "LVDS", "DSI"].iter().any(|prefix| target.output.name().starts_with(prefix)))
+                .unwrap_or(0);
+            runtime[index].enabled = true;
+            tracing::warn!(output = %runtime[index].output.name(), "configuration disables every connected monitor; enabling fallback");
+        }
+        Ok(runtime)
+    }
+
+    fn apply_runtime_outputs(&mut self, runtime: &[RuntimeOutput]) -> Result<(), String> {
+        // Configure and enable destinations before moving windows off disabled screens.
+        for target in runtime.iter().filter(|target| target.enabled) {
+            self.configure_drm_output(&target.output, target.mode, target.transform, true)?;
+            target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
+            if self.output_named(&target.output.name()).is_none() {
+                self.add_output(target.output.clone());
+                self.advertise_output(&target.output);
+            }
+        }
+        for target in runtime.iter().filter(|target| !target.enabled) {
+            self.configure_drm_output(&target.output, target.mode, target.transform, false)?;
+            if self.output_named(&target.output.name()).is_some() {
+                self.remove_output(&target.output);
+                self.withdraw_output(&target.output);
+            }
+            target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
+        }
+        self.configure_output_layouts();
+        self.schedule_render();
+        Ok(())
+    }
+
+    /// Applies only at runtime. Confirmation returns the map to persist.
+    pub fn preview_outputs(&mut self, proposed: BTreeMap<String, OutputConfig>) -> Result<u64, String> {
+        if self.outputs.preview.is_some() {
+            return Err("an output preview is already awaiting confirmation".into());
+        }
+        let runtime = self.proposed_outputs(&proposed, false)?;
+        if runtime.is_empty() {
+            return Err("no connected monitors".into());
+        }
+        let previous_runtime = self.runtime_outputs();
+        let homes: Vec<_> =
+            self.windows.keys().filter_map(|window| Some((*window, self.area_for_window(*window)?))).collect();
+        let active = self.active_area();
+        let desktops: Vec<_> = self
+            .all_areas()
+            .into_iter()
+            .filter_map(|area| {
+                self.with_area(&area, |state| PreviewDesktop {
+                    area: area.clone(),
+                    world: state.world.clone(),
+                    pointer: state.pointer,
+                    fullscreen: state.fullscreen,
+                })
+            })
+            .collect();
+        let focused = active.as_ref().and_then(|active| {
+            desktops.iter().find(|saved| &saved.area == active).and_then(|saved| saved.world.focus())
+        });
+        let previous = std::mem::replace(&mut self.config.file.outputs, proposed);
+        if let Err(error) = self.apply_runtime_outputs(&runtime) {
+            self.config.file.outputs = previous;
+            return match self.apply_runtime_outputs(&previous_runtime) {
+                Ok(()) => {
+                    self.restore_output_homes(&homes);
+                    self.restore_preview_desktops(desktops, active);
+                    Err(error)
+                }
+                Err(rollback) => Err(format!("{error}; restoring displays also failed: {rollback}")),
+            };
+        }
+        // Moving windows off a disabled screen must not steal the preview
+        // caller's keyboard focus, including when its own screen was disabled.
+        if let Some(focused) = focused
+            && let Some(area) = self.area_for_window(focused)
+            && self.activate_area(&area)
+        {
+            self.world.focus_window(focused, self.now());
+            self.apply_layout();
+            self.force_keyboard_focus_sync();
+        }
+        self.outputs.generation = self.outputs.generation.wrapping_add(1);
+        let token = self.outputs.generation;
+        self.outputs.preview = Some(OutputPreview {
+            token,
+            previous,
+            runtime: previous_runtime,
+            deadline: Instant::now() + Duration::from_secs(15),
+            homes,
+            active,
+            desktops,
+        });
+        if let Err(error) =
+            self.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(15)), move |_, _, state| {
+                if state.outputs.preview.as_ref().is_some_and(|preview| preview.token == token)
+                    && let Err(error) = state.revert_outputs(token)
+                {
+                    tracing::error!("output preview timeout recovery: {error}");
+                }
+                TimeoutAction::Drop
+            })
+        {
+            self.revert_outputs(token)?;
+            return Err(format!("could not schedule output preview timeout: {error}"));
+        }
+        Ok(token)
+    }
+
+    /// None also means the deadline passed, even before calloop dispatches its timer.
+    pub fn output_preview_status(&self) -> Option<OutputPreviewStatus> {
+        self.outputs
+            .preview
+            .as_ref()
+            .filter(|preview| Instant::now() < preview.deadline)
+            .map(|preview| OutputPreviewStatus { token: preview.token, deadline: preview.deadline })
+    }
+
+    fn check_output_preview(&mut self, token: u64) -> Result<(), String> {
+        if self.outputs.preview.as_ref().is_none_or(|preview| preview.token != token) {
+            return Err("output preview expired or was superseded".into());
+        }
+        if self.outputs.preview.as_ref().is_some_and(|preview| Instant::now() >= preview.deadline) {
+            self.revert_outputs(token)?;
+            return Err("output preview expired".into());
+        }
+        Ok(())
+    }
+
+    /// Call only after the user confirms. `persist` must write atomically: on
+    /// error it must leave the previous file intact. The callback runs once,
+    /// after checking the deadline, with no intervening event-loop dispatch.
+    /// Failed persistence restores runtime, config and window placement.
+    pub fn confirm_outputs_with_persistence(
+        &mut self,
+        token: u64,
+        persist: impl FnOnce(&BTreeMap<String, OutputConfig>) -> Result<(), String>,
+    ) -> Result<BTreeMap<String, OutputConfig>, String> {
+        self.check_output_preview(token)?;
+        let confirmed = self.config.file.outputs.clone();
+        if let Err(error) = persist(&confirmed) {
+            return match self.revert_outputs(token) {
+                Ok(()) => Err(format!("could not save output settings: {error}; preview reverted")),
+                Err(rollback) => {
+                    Err(format!("could not save output settings: {error}; restoring displays also failed: {rollback}"))
+                }
+            };
+        }
+        self.outputs.preview = None;
+        Ok(confirmed)
+    }
+
+    pub fn revert_outputs(&mut self, token: u64) -> Result<(), String> {
+        if self.outputs.preview.as_ref().is_none_or(|preview| preview.token != token) {
+            return Err("output preview expired or was superseded".into());
+        }
+        let preview = self.outputs.preview.take().expect("preview token was checked");
+        self.config.file.outputs = preview.previous.clone();
+        if let Err(error) = self.apply_runtime_outputs(&preview.runtime) {
+            // Keep the recovery snapshot so an explicit revert or reload can retry.
+            self.outputs.preview = Some(preview);
+            return Err(error);
+        }
+        self.restore_output_homes(&preview.homes);
+        self.restore_preview_desktops(preview.desktops, preview.active);
+        Ok(())
+    }
+
+    fn restore_preview_desktops(&mut self, desktops: Vec<PreviewDesktop>, active: Option<AreaId>) {
+        for saved in desktops {
+            self.with_area(&saved.area, |state| {
+                let now = state.now();
+                let extra: Vec<_> = state
+                    .windows
+                    .keys()
+                    .copied()
+                    .filter(|window| {
+                        (state.world.contains_window(*window) || state.world.is_minimized(*window))
+                            && !saved.world.contains_window(*window)
+                            && !saved.world.is_minimized(*window)
+                    })
+                    .map(|window| (window, state.world.is_minimized(window)))
+                    .collect();
+                state.world = saved.world;
+                let vanished: Vec<_> = remembered_windows(&state.world.snapshot().root)
+                    .into_iter()
+                    .chain(state.world.minimized())
+                    .filter(|window| !state.windows.contains_key(window))
+                    .collect();
+                for window in vanished {
+                    state.world.remove_window(window, now);
+                }
+                for (window, minimized) in extra {
+                    state.world.add_window(window, Placement::Dock, now);
+                    if minimized {
+                        state.world.minimize(window, now);
+                    }
+                }
+                state.pointer = saved.pointer;
+                state.fullscreen = saved.fullscreen.filter(|window| state.windows.contains_key(window));
+                state.apply_layout();
+            });
+        }
+        if let Some(active) = active {
+            self.activate_area(&active);
+        }
+        self.force_keyboard_focus_sync();
+    }
+
+    fn restore_output_homes(&mut self, homes: &[(WindowId, AreaId)]) {
+        for (window, area) in homes {
+            if self.windows.contains_key(window)
+                && self.area_for_window(*window).as_ref() != Some(area)
+                && let Err(error) = self.move_window_to_area(*window, area, true)
+            {
+                tracing::warn!("could not restore window after output preview: {error}");
+            }
+        }
+    }
+
+    /// Hotplug first restores a pending preview before changing the connector set.
+    pub fn cancel_output_preview(&mut self) {
+        if let Some(token) = self.outputs.preview.as_ref().map(|preview| preview.token)
+            && let Err(error) = self.revert_outputs(token)
+        {
+            tracing::error!("could not cancel output preview: {error}");
+        }
+    }
+
+    pub fn forget_connected_output(&mut self, output: &Output) {
+        self.withdraw_output(output);
+        self.outputs.connected.remove(&output.name());
+    }
+
+    pub fn advertise_output(&mut self, output: &Output) {
+        self.outputs.globals.entry(output.name()).or_insert_with(|| output.create_global::<Self>(&self.display_handle));
+    }
+
+    fn withdraw_output(&mut self, output: &Output) {
+        if let Some(global) = self.outputs.globals.remove(&output.name()) {
+            self.display_handle.remove_global::<Self>(global);
+        }
+    }
+
     pub fn all_outputs(&self) -> Vec<Output> {
         let mut outputs: Vec<_> = self.outputs.parked.values().map(|desktop| desktop.output.clone()).collect();
         outputs.extend(self.output.clone());
@@ -153,6 +528,7 @@ impl Tileception {
 
     /// Adds a fresh desktop, retaining the current desktop on first connection.
     pub fn add_output(&mut self, output: Output) {
+        self.outputs.connected.insert(output.name(), output.clone());
         if self.output.is_none() {
             self.output = Some(output.clone());
             self.outputs.active = Some(output);
@@ -443,6 +819,27 @@ impl Tileception {
         match self.hovered_area() {
             Some(index) => self.with_local_area(index, |state| state.surface_under(pos)).flatten(),
             None => self.surface_under(pos),
+        }
+    }
+
+    /// Hit testing and grab motion must use the same area's window scale.
+    pub(crate) fn pointer_scale_in_areas(&mut self, surface: &WlSurface) -> (f64, f64) {
+        self.all_areas()
+            .into_iter()
+            .find_map(|area| self.with_area(&area, |state| state.pointer_surface_scale(surface)).flatten())
+            .unwrap_or((1.0, 1.0))
+    }
+
+    /// Deliver pointer motion in the hovered area, retaining a grab's scale.
+    pub(crate) fn pointer_motion_in_area(&mut self, pos: Point<f64, Logical>) -> crate::input::ClientMotion {
+        let grabbed =
+            self.seat.get_pointer().and_then(|pointer| pointer.grab_start_data()).and_then(|start| start.focus);
+        let grab_scale = grabbed.map(|(surface, _)| self.pointer_scale_in_areas(&surface)).unwrap_or((1.0, 1.0));
+        match self.hovered_area() {
+            Some(index) => self
+                .with_local_area(index, |state| state.scaled_pointer_motion(pos, grab_scale))
+                .unwrap_or(crate::input::ClientMotion { focus: None, location: pos }),
+            None => self.scaled_pointer_motion(pos, grab_scale),
         }
     }
 
@@ -848,14 +1245,31 @@ impl Tileception {
             let configured = self.config.file.outputs.get(&output.name()).and_then(|entry| entry.position);
             let position = configured.unwrap_or([right, 0]);
             output.change_current_state(None, None, None, Some((position[0], position[1]).into()));
-            let width = output
-                .current_mode()
-                .map_or(0, |mode| (f64::from(mode.size.w) / output.current_scale().fractional_scale()).round() as i32);
+            let width = output.current_mode().map_or(0, |mode| {
+                (f64::from(output.current_transform().transform_size(mode.size).w)
+                    / output.current_scale().fractional_scale())
+                .round() as i32
+            });
             right = right.max(position[0].saturating_add(width));
         }
     }
 
-    pub fn configure_outputs(&mut self) {
+    pub fn configure_outputs(&mut self) -> Result<(), String> {
+        // A config reload supersedes any preview; its old timer must do nothing.
+        self.outputs.preview = None;
+        let proposed = self.config.file.outputs.clone();
+        let runtime = self.proposed_outputs(&proposed, true)?;
+        let previous = self.runtime_outputs();
+        if let Err(error) = self.apply_runtime_outputs(&runtime) {
+            return match self.apply_runtime_outputs(&previous) {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(format!("{error}; restoring displays also failed: {rollback}")),
+            };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn configure_output_layouts(&mut self) {
         for output in self.all_outputs() {
             self.with_output(&output, |state| {
                 for index in 0..state.area_count() {
@@ -869,6 +1283,7 @@ impl Tileception {
             });
         }
         self.arrange_outputs();
+        self.settings_fit_screen();
     }
 
     pub fn output_for_window(&self, window: WindowId) -> Option<Output> {
@@ -1231,7 +1646,8 @@ impl Tileception {
                 let mode = output.current_mode();
                 let position = output.current_location();
                 let scale = output.current_scale().fractional_scale();
-                let (mut width, height) = (mode.map_or(0, |mode| mode.size.w), mode.map_or(0, |mode| mode.size.h));
+                let size = mode.map(|mode| output.current_transform().transform_size(mode.size)).unwrap_or_default();
+                let (mut width, height) = (size.w, size.h);
                 let mut left = position.x;
                 if let Some(areas) = self.outputs.areas.get(&output.name()) {
                     let room = area_room(self.whole_output_rect(output), areas, area.index);

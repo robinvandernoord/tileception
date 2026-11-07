@@ -264,8 +264,10 @@ impl Tileception {
         out
     }
 
-    pub fn greeter_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        let Some(greeter) = self.greeter.as_deref() else { return Vec::new() };
+    /// The greeter, topmost first: the bar, tiles and palette, then the
+    /// backdrop between them, kept apart so frost can blur it.
+    pub fn greeter_elements(&self, renderer: &mut GlesRenderer) -> (Vec<OutputElement>, Vec<OutputElement>) {
+        let Some(greeter) = self.greeter.as_deref() else { return Default::default() };
         let mut out = Vec::new();
         // Leaving for the session: everything fades to black, which the
         // session's first frames fade in from.
@@ -281,8 +283,10 @@ impl Tileception {
         let accent =
             (greeter.previous_accent.0.mix(theme.accent, fade), greeter.previous_accent.1.mix(theme.accent_end, fade));
         let mut painter = Painter::new(self, renderer);
-
         self.greeter_draw_backdrop(&mut painter, greeter, scene.screen, accent);
+        let backdrop = painter.finish();
+
+        let mut painter = Painter::new(self, renderer);
         self.greeter_draw_bar(&mut painter, greeter, &scene);
         for (panel, rect) in &scene.panels {
             let focused = greeter.focus == *panel && greeter.palette.is_none();
@@ -303,7 +307,7 @@ impl Tileception {
             self.greeter_draw_palette(&mut painter, greeter, palette, accent);
         }
         out.extend(painter.finish());
-        out
+        (out, backdrop)
     }
 
     /// Between the tiles: a backdrop from the person's accent, or with
@@ -363,7 +367,7 @@ impl Tileception {
     fn greeter_draw_bar(&self, painter: &mut Painter, greeter: &Greeter, scene: &Scene) {
         let theme = &self.theme;
         let bar = scene.bar;
-        painter.fill(bar, theme.surface, 0.0);
+        painter.frosted(bar, Shape::filled(theme.surface, 0.0));
         painter.fill(Rect::new(bar.x, bar.bottom() - 1.0, bar.w, 1.0), theme.border, 0.0);
         // The Tide mark: a tall tile beside two small ones.
         let (left, top, size) = (bar.x + 14.0, bar.y + (BAR_H - 14.0) / 2.0, 6.0);
@@ -1046,11 +1050,13 @@ fn palette_first(greeter: &Greeter) -> usize {
 /// A tile, as windows are framed on the desktop.
 fn draw_frame(painter: &mut Painter, rect: Rect, focused: bool, accent: (Colour, Colour)) {
     let theme = painter.theme();
+    // Frosted, the shadow cannot be offset: it would show through.
+    let drop = if theme.frost { 0.0 } else { 4.0 };
     painter.shape(
-        Rect::new(rect.x, rect.y + 4.0, rect.w, rect.h),
+        Rect::new(rect.x, rect.y + drop, rect.w, rect.h),
         Shape { radius: theme.radius, glow_radius: 14.0, glow: Colour([0.0, 0.0, 0.0, 0.2]), ..Default::default() },
     );
-    painter.shape(
+    painter.frosted(
         rect,
         Shape {
             border_width: 1.0,

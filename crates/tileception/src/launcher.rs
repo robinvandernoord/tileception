@@ -83,6 +83,8 @@ pub enum Paste {
     Launcher(u64),
     Doctor,
     Settings(u64),
+    /// The feedback dialog epoch and whether the destination is its title.
+    Feedback(u64, bool),
     /// The rubber duck's question.
     Duck,
 }
@@ -93,7 +95,10 @@ enum Entry {
     /// A desktop entry, by id.
     App(String),
     /// One of an app's desktop actions, by app id and index.
-    Action { app: String, action: usize },
+    Action {
+        app: String,
+        action: usize,
+    },
     /// An open or minimized window: Enter flies there.
     Window(WindowId),
     /// One of [`COMMANDS`].
@@ -107,7 +112,15 @@ enum Entry {
     /// "Ask Tileception", with the question.
     Ask(String),
     /// One row of an app's details (Alt+Enter), by app id.
-    Detail { app: String, row: Detail },
+    Detail {
+        app: String,
+        row: Detail,
+    },
+    Plugin {
+        plugin: String,
+        row: crate::launcher_plugins::Row,
+    },
+    PluginStatus(String),
 }
 
 /// What an app's details show: where its desktop entry is and what it runs.
@@ -217,6 +230,12 @@ const COMMANDS: &[Builtin] = &[
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
+    builtin(
+        "Send feedback",
+        "feature request bug report issue github idea suggestion",
+        glyph::CHAT,
+        Does::Line("feedback"),
+    ),
     builtin("Default terminal", "terminal shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
@@ -289,6 +308,12 @@ pub struct Launcher {
     /// after opening.
     jumps: Option<Vec<crate::jumps::Folder>>,
     compose: Option<xkb::compose::State>,
+    plugins: Option<crate::launcher_plugins::Plugins>,
+    plugin_query: Option<(u64, String)>,
+    /// Retained results cannot activate until the current query finishes.
+    plugin_pending: bool,
+    plugin_rows: Vec<Entry>,
+    plugin_actions: Option<(String, crate::launcher_plugins::Row)>,
 }
 
 impl Default for Launcher {
@@ -319,6 +344,11 @@ impl Default for Launcher {
             compose: crate::ui::compose_state(),
             jumps: None,
             details: None,
+            plugins: None,
+            plugin_query: None,
+            plugin_pending: false,
+            plugin_rows: Vec::new(),
+            plugin_actions: None,
             usage: usage
                 .into_iter()
                 .map(|(app_id, value)| {
@@ -406,6 +436,13 @@ impl Tileception {
         }
     }
 
+    /// Xwayland is ready: launcher plugins get its display from now on.
+    pub(crate) fn launcher_display_ready(&mut self, display: u32) {
+        if let Some(plugins) = &mut self.launcher.plugins {
+            plugins.set_display(display);
+        }
+    }
+
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<(Paste, Clip)>();
@@ -426,6 +463,68 @@ impl Tileception {
                 }
             })
             .expect("command output event source");
+        let (sender, receiver) = channel::channel();
+        let environment = self
+            .command("", &[])
+            .get_envs()
+            .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
+            .collect();
+        self.launcher.plugins =
+            Some(crate::launcher_plugins::Plugins::start(self.config.file.launcher.clone(), sender, environment));
+        self.loop_handle
+            .insert_source(receiver, |event, _, state| {
+                if let channel::Event::Msg(event) = event {
+                    state.launcher_plugin_event(event);
+                }
+            })
+            .expect("launcher plugin event source");
+    }
+
+    pub fn stop_launcher_plugins(&mut self) {
+        self.launcher.plugins = None;
+    }
+
+    fn launcher_plugin_event(&mut self, event: crate::launcher_plugins::Event) {
+        use crate::launcher_plugins::Event;
+        match event {
+            Event::Ready { routes, diagnostics } => {
+                if let Some(plugins) = &mut self.launcher.plugins {
+                    plugins.routes = routes;
+                    plugins.diagnostics = diagnostics;
+                }
+                if self.launcher.open {
+                    self.refresh_launcher();
+                }
+            }
+            Event::Rows { generation, plugin, result } => {
+                if !self.launcher.open || self.launcher.plugin_query.as_ref() != Some(&(generation, plugin.clone())) {
+                    return;
+                }
+                self.launcher.plugin_pending = false;
+                self.launcher.plugin_rows = match result {
+                    Ok(rows) if rows.is_empty() => vec![Entry::PluginStatus("No plugin results".into())],
+                    Ok(rows) => rows.into_iter().map(|row| Entry::Plugin { plugin: plugin.clone(), row }).collect(),
+                    Err(error) => vec![Entry::PluginStatus(error)],
+                };
+                self.launcher.entries = self.launcher_entries();
+                self.launcher.selected = 0;
+                self.launcher.first = 0;
+            }
+            Event::Action { generation, result } => {
+                if !self.launcher.open
+                    || self.launcher.plugin_query.as_ref().map(|(current, _)| *current) != Some(generation)
+                {
+                    return;
+                }
+                self.launcher.plugin_rows = vec![Entry::PluginStatus(match result {
+                    Ok(()) => "Plugin action completed".into(),
+                    Err(error) => error,
+                })];
+                self.launcher.plugin_actions = None;
+                self.launcher.entries = self.launcher_entries();
+                self.launcher.selected = 0;
+            }
+        }
     }
 
     /// A paste arriving, if what it was meant for is still there.
@@ -440,6 +539,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
+            (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
         }
         self.schedule_render();
@@ -507,6 +607,10 @@ impl Tileception {
         self.launcher.run = None;
         self.launcher.jumps = None;
         self.launcher.details = None;
+        self.launcher.plugin_actions = None;
+        if let Some(plugins) = &mut self.launcher.plugins {
+            plugins.configure(&self.config.file.launcher);
+        }
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
@@ -519,6 +623,11 @@ impl Tileception {
     }
 
     pub fn close_launcher(&mut self) {
+        if let Some(plugins) = &self.launcher.plugins {
+            plugins.cancel();
+        }
+        self.launcher.plugin_query = None;
+        self.launcher.plugin_pending = false;
         self.launcher.open = false;
         self.launcher.home = false;
         self.launcher.selecting = false;
@@ -527,6 +636,22 @@ impl Tileception {
 
     /// Works out the rows for what is typed now.
     fn refresh_launcher(&mut self) {
+        self.launcher.plugin_actions = None;
+        let previous = self.launcher.plugin_query.take();
+        let query = self.launcher.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim()));
+        let retain =
+            previous.as_ref().zip(query.as_ref()).is_some_and(|((_, previous), (_, current))| previous == current)
+                && self.launcher.plugin_rows.iter().any(|entry| matches!(entry, Entry::Plugin { .. }));
+        self.launcher.plugin_pending = query.is_some();
+        self.launcher.plugin_query = query;
+        // Keep the result list steady while typing into the same source.
+        // Generation checks still discard superseded replies.
+        if !retain {
+            self.launcher.plugin_rows.clear();
+            if self.launcher.plugin_pending {
+                self.launcher.plugin_rows.push(Entry::PluginStatus("Searching plugin".into()));
+            }
+        }
         if self.launcher.jumps.is_none() && crate::jumps::query(&self.launcher.input.text).is_some() {
             let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             self.launcher.jumps = Some(crate::jumps::load(&home, unix_now()));
@@ -536,9 +661,54 @@ impl Tileception {
         self.launcher.first = 0;
     }
 
+    /// The list's caption for plugin results: the plugin's name, or the
+    /// result whose actions are listed.
+    fn plugin_caption(&self) -> Option<String> {
+        if let Some((_, row)) = &self.launcher.plugin_actions {
+            return Some(format!("ACTIONS FOR {}", row.title.to_uppercase()));
+        }
+        let (_, plugin_id) = self.launcher.plugin_query.as_ref()?;
+        let route = self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)?;
+        (!route.info.name.is_empty()).then(|| route.info.name.to_uppercase())
+    }
+
     fn launcher_entries(&self) -> Vec<Entry> {
         let text = self.launcher.input.text.trim();
         let launcher = &self.launcher;
+        if let Some((plugin, row)) = &launcher.plugin_actions {
+            return row
+                .actions
+                .iter()
+                .map(|action| {
+                    let mut choice = row.clone();
+                    choice.title = action.title.clone();
+                    choice.detail = plugin_action_detail(&action.kind);
+                    choice.actions = vec![action.clone()];
+                    Entry::Plugin { plugin: plugin.clone(), row: choice }
+                })
+                .collect();
+        }
+        if launcher.plugin_query.is_some() {
+            return launcher.plugin_rows.clone();
+        }
+        if text == "plugins" {
+            let Some(plugins) = &launcher.plugins else {
+                return Vec::new();
+            };
+            return plugins
+                .routes
+                .iter()
+                .map(|route| {
+                    Entry::PluginStatus(format!(
+                        "{}: {} ({})",
+                        route.info.name,
+                        route.info.description,
+                        route.prefixes.join(", ")
+                    ))
+                })
+                .chain(plugins.diagnostics.iter().cloned().map(Entry::PluginStatus))
+                .collect();
+        }
         if let Some(app) = launcher.details.as_ref().and_then(|app_id| launcher.index.get(app_id)) {
             let own = tileception_apps::user_applications_dir().is_some_and(|dir| app.source.starts_with(dir));
             let rows = [Detail::Command, Detail::File, Detail::Open, Detail::EditCopy, Detail::Folder];
@@ -669,6 +839,9 @@ impl Tileception {
             }
             return;
         }
+        if sym == keysyms::KEY_Escape && self.launcher.plugin_actions.is_some() {
+            return self.refresh_launcher();
+        }
         if sym == keysyms::KEY_Escape && self.launcher.details.is_some() {
             self.launcher.details = None;
             return self.refresh_launcher();
@@ -772,7 +945,9 @@ impl Tileception {
         // copied image often also offers its address as text.
         let mime_types = match target {
             Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Duck => text.to_vec(),
+            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Feedback(..) | Paste::Duck => {
+                text.to_vec()
+            }
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
@@ -924,8 +1099,7 @@ impl Tileception {
                 self.run_builtin(COMMANDS[index].does);
             }
             Entry::Answer(answer) => {
-                self.copy_text(answer.copy.clone());
-                self.launcher.copied = Some((answer.copy, Instant::now()));
+                self.launcher_action(None, crate::launcher_plugins::ActionKind::Copy { text: answer.copy });
             }
             // A folder opens in the terminal with Ctrl.
             Entry::Place(place) if place.folder && mods.ctrl => {
@@ -934,8 +1108,7 @@ impl Tileception {
                 self.spawn("sh", &["-c".into(), script]);
             }
             Entry::Place(place) => {
-                self.close_launcher();
-                self.spawn("xdg-open", &[place.target]);
+                self.launcher_action(None, crate::launcher_plugins::ActionKind::Open { target: place.target });
             }
             Entry::Run(line) if mods.ctrl => {
                 self.close_launcher();
@@ -951,6 +1124,52 @@ impl Tileception {
                 self.ask_doctor(&question);
             }
             Entry::Detail { app, row } => self.launch_detail(&app, row),
+            Entry::Plugin { plugin, row } => {
+                if self.launcher.plugin_pending {
+                    return;
+                }
+                if row.actions.len() > 1 && self.launcher.plugin_actions.is_none() {
+                    self.launcher.plugin_actions = Some((plugin, row));
+                    self.launcher.entries = self.launcher_entries();
+                    self.launcher.selected = 0;
+                    self.launcher.first = 0;
+                } else if let Some(action) = row.actions.first() {
+                    self.launcher_action(Some(plugin), action.kind.clone());
+                }
+            }
+            Entry::PluginStatus(_) => {}
+        }
+    }
+
+    /// Built-in answers and places share clipboard/open dispatch with plugins.
+    fn launcher_action(&mut self, plugin: Option<String>, action: crate::launcher_plugins::ActionKind) {
+        use crate::launcher_plugins::ActionKind;
+        match action {
+            ActionKind::Copy { text } => {
+                self.copy_text(text.clone());
+                self.launcher.copied = Some((text, Instant::now()));
+            }
+            ActionKind::Open { target } => {
+                self.close_launcher();
+                self.spawn("xdg-open", &[target]);
+            }
+            ActionKind::Run { command, args } => {
+                self.close_launcher();
+                self.spawn(&command, &args);
+            }
+            ActionKind::Tool { name, arguments } => {
+                let Some(plugin) = plugin else {
+                    return;
+                };
+                if let Some(plugins) = &self.launcher.plugins {
+                    let generation = plugins.tool(plugin.clone(), name, arguments);
+                    self.launcher.plugin_query = Some((generation, plugin));
+                    self.launcher.plugin_actions = None;
+                    self.launcher.plugin_rows = vec![Entry::PluginStatus("Running plugin action".into())];
+                    self.launcher.entries = self.launcher_entries();
+                    self.launcher.selected = 0;
+                }
+            }
         }
     }
 
@@ -1230,6 +1449,9 @@ impl Tileception {
         {
             return Some(target);
         }
+        if self.launcher.plugin_pending {
+            return None;
+        }
         layout.rows.iter().enumerate().find_map(|(index, rect)| {
             let entry = self.launcher.entries.get(layout.first + index)?;
             rect.contains(point).then(|| crate::ui::PointerTarget::button(*rect, PointerAction::Entry(entry.clone())))
@@ -1384,7 +1606,8 @@ impl Tileception {
                 self.launcher.index.get(app).map(|app| format!("ABOUT {}", app.name.to_uppercase()))
             }
             _ => None,
-        };
+        }
+        .or_else(|| self.plugin_caption());
         let caption = if running {
             "COMMAND"
         } else if let Some(caption) = details_caption.as_deref() {
@@ -1459,6 +1682,12 @@ impl Tileception {
             Some(Entry::Ask(_)) => "Ask",
             Some(Entry::Detail { row: Detail::Command | Detail::File, .. }) => "Copy",
             Some(Entry::Detail { .. }) => "Open",
+            Some(Entry::Plugin { row, .. }) if row.actions.len() > 1 && self.launcher.plugin_actions.is_none() => {
+                "Actions"
+            }
+            Some(Entry::Plugin { row, .. }) => {
+                row.actions.first().map(|action| action.title.as_str()).unwrap_or("Choose")
+            }
             _ => "Launch",
         };
         let close = if self.launcher.home { ("Esc", "Clear") } else { ("Esc", "Close") };
@@ -1476,7 +1705,7 @@ impl Tileception {
             ]
         } else if matches!(selected, Some(Entry::Place(place)) if place.completion.is_some()) {
             vec![("\u{2191}\u{2193}", "Choose"), ("Tab", "Complete"), ("Enter", "Open"), close]
-        } else if self.launcher.details.is_some() {
+        } else if self.launcher.details.is_some() || self.launcher.plugin_actions.is_some() {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), ("Esc", "Back")]
         } else if matches!(selected, Some(Entry::App(_))) {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), ("Alt+Enter", "Details"), close]
@@ -1569,6 +1798,7 @@ impl Tileception {
                         format!("Tileception \u{b7} now {}", if enabled { "on" } else { "off" })
                     }
                     Does::Power(_) => "Tileception \u{b7} opens the power menu to confirm".into(),
+                    Does::Line("feedback") => "Preview and confirm a new GitHub issue".into(),
                     _ => "Tileception".into(),
                 };
                 (command.name.to_string(), Some(detail))
@@ -1615,6 +1845,34 @@ impl Tileception {
             Entry::Run(line) => {
                 glyph_box(painter, glyph::TERMINAL, theme.accent);
                 (format!("Run {line}"), Some("Shows the output here; Ctrl+Enter runs it in a terminal".into()))
+            }
+            Entry::Plugin { row, .. } => {
+                let fallback = self
+                    .launcher
+                    .plugin_query
+                    .as_ref()
+                    .and_then(|(_, plugin_id)| {
+                        self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)
+                    })
+                    .and_then(|route| route.info.icon.as_deref());
+                // A result's actions show what each one does; results show
+                // their own icon, else the plugin's.
+                let action = row.actions.first().filter(|_| self.launcher.plugin_actions.is_some());
+                if let Some(action) = action {
+                    glyph_box(painter, plugin_action_glyph(&action.kind), theme.accent);
+                } else if let Some(buffer) =
+                    row.icon.as_deref().or(fallback).and_then(|name| self.launcher.icon(name, 32))
+                {
+                    painter.image(&buffer, (icon.x, icon.y));
+                } else {
+                    glyph_box(painter, glyph::PLUG, theme.accent);
+                }
+                copied = row.actions.iter().any(|action| matches!(&action.kind, crate::launcher_plugins::ActionKind::Copy { text } if self.launcher.just_copied(text)));
+                (row.title.clone(), Some(row.detail.clone()))
+            }
+            Entry::PluginStatus(message) => {
+                glyph_box(painter, glyph::PLUG, theme.muted);
+                (message.clone(), Some("Launcher plugins; type plugins to see discovery diagnostics".into()))
             }
             Entry::Ask(question) => {
                 glyph_box(painter, glyph::CHAT, theme.accent);
@@ -2111,6 +2369,28 @@ fn usage_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
     root.join("tileception/launcher-usage.toml")
+}
+
+/// What a plugin action does, for its row in the list of a result's actions.
+fn plugin_action_detail(kind: &crate::launcher_plugins::ActionKind) -> String {
+    use crate::launcher_plugins::ActionKind;
+    match kind {
+        ActionKind::Copy { text } => format!("Copies \"{text}\""),
+        ActionKind::Open { target } => format!("Opens {target}"),
+        ActionKind::Run { command, args } if args.is_empty() => format!("Runs {command}"),
+        ActionKind::Run { command, args } => format!("Runs {command} {}", args.join(" ")),
+        ActionKind::Tool { .. } => "Asks the plugin to do it".into(),
+    }
+}
+
+fn plugin_action_glyph(kind: &crate::launcher_plugins::ActionKind) -> &'static str {
+    use crate::launcher_plugins::ActionKind;
+    match kind {
+        ActionKind::Copy { .. } => glyph::COPY,
+        ActionKind::Open { .. } => glyph::GLOBE,
+        ActionKind::Run { .. } => glyph::TERMINAL,
+        ActionKind::Tool { .. } => glyph::PLUG,
+    }
 }
 
 #[cfg(test)]

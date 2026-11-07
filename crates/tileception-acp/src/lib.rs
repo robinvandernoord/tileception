@@ -188,6 +188,8 @@ pub struct Image {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::min_ident_chars, reason = "preserve existing enum fields")]
 pub enum Request {
+    /// Additional context for the next prompt, leaving the user's text intact.
+    Context(String),
     /// A message, with pictures for agents that take them ([`Event::Images`]).
     Prompt {
         text: String,
@@ -207,6 +209,8 @@ pub enum Request {
     },
     /// Restarts the agent after a terminal login, so it sees the new login.
     Retry,
+    /// Restarts with updated compositor environment, preserving login secrets.
+    RestartEnv(Env),
     /// Starts a fresh conversation with the same agent.
     NewSession,
     /// Changes a [`SessionOption`].
@@ -222,6 +226,9 @@ pub enum Request {
 }
 
 pub type Emit = std::sync::Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Environment variables for an agent program.
+pub type Env = BTreeMap<String, String>;
 
 /// Loads the registry on a worker thread, reporting [`Event::Registry`].
 pub fn fetch_registry(refresh: bool, emit: Emit) {

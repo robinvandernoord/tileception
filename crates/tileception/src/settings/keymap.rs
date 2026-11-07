@@ -202,6 +202,12 @@ impl Tileception {
             self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
             self.paste(crate::launcher::Paste::Settings(self.settings.editor_epoch));
+        } else if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
+            let text = picker.search.text[picker.search.selection()].to_string();
+            if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                picker.search.delete(false, false);
+            }
+            self.copy_text(text);
         } else if sym == keysyms::KEY_Return && count > 0 {
             let selected = picker.selected;
             self.choose_keymap(selected);
@@ -214,7 +220,7 @@ impl Tileception {
             let visible = (list.h / 38.).floor().max(1.) as usize;
             picker.first = picker.first.min(picker.selected).max(picker.selected.saturating_sub(visible - 1));
         } else {
-            super::sections::edit_key(&mut picker.search, sym, mods);
+            super::sections::edit_key(&mut picker.search, &mut self.settings.compose, sym, mods);
             picker.first = 0;
             picker.selected = 0;
         }

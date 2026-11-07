@@ -214,7 +214,7 @@ fn run(
     let toplevel = shell.get_toplevel(&queue_handle, ());
     toplevel.set_title("Settings".into());
     toplevel.set_app_id("tileception-settings".into());
-    toplevel.set_min_size(640, 480);
+    toplevel.set_min_size(480, 360);
     let viewport = viewporter.get_viewport(&surface, &queue_handle, ());
     let cursor_manager = globals.bind(&queue_handle, 1..=1, ()).map_err(|error| error.to_string())?;
     surface.commit();

@@ -27,6 +27,7 @@ mod doctor;
 mod doctor_policy;
 mod drag;
 mod duck;
+mod feedback;
 mod focus;
 mod frost;
 mod gestures;
@@ -43,6 +44,7 @@ mod ipc;
 mod jumps;
 mod key_repeat;
 mod launcher;
+mod launcher_plugins;
 mod layers;
 mod lock;
 mod markdown;
@@ -259,7 +261,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<Tileception> = Display::new()?;
     let mut state = Tileception::new(&mut event_loop, display, config, nested);
     state.init_idle();
-    state.init_launcher();
 
     if headless {
         headless::init(&mut event_loop, &mut state)?;
@@ -326,6 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.pending_autostart = tileception_apps::autostart_entries();
     }
     state.start_xwayland();
+    state.init_launcher();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);
@@ -338,6 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
+    state.stop_launcher_plugins();
     if state.restart {
         return Err(restart_in_place().into());
     }

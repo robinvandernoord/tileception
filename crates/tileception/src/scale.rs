@@ -23,14 +23,101 @@ use smithay::{
 use crate::Tileception;
 
 /// One screen's settings, under `[outputs."<connector>"]`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
+    pub enabled: bool,
+    pub transform: TransformSetting,
+    pub mode: ModeSetting,
     pub scale: ScaleSetting,
     /// Top-left corner in global logical pixels. Unset: automatic horizontal row.
     pub position: Option<[i32; 2]>,
     /// Side-by-side areas, each with its own tree and camera.
     pub split: Option<SplitSetting>,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            transform: Default::default(),
+            mode: Default::default(),
+            scale: Default::default(),
+            position: None,
+            split: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
+pub enum TransformSetting {
+    #[default]
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "90")]
+    Rotate90,
+    #[serde(rename = "180")]
+    Rotate180,
+    #[serde(rename = "270")]
+    Rotate270,
+    #[serde(rename = "flipped")]
+    Flipped,
+    #[serde(rename = "flipped-90")]
+    Flipped90,
+    #[serde(rename = "flipped-180")]
+    Flipped180,
+    #[serde(rename = "flipped-270")]
+    Flipped270,
+}
+
+impl From<TransformSetting> for Transform {
+    fn from(value: TransformSetting) -> Self {
+        match value {
+            TransformSetting::Normal => Self::Normal,
+            TransformSetting::Rotate90 => Self::_90,
+            TransformSetting::Rotate180 => Self::_180,
+            TransformSetting::Rotate270 => Self::_270,
+            TransformSetting::Flipped => Self::Flipped,
+            TransformSetting::Flipped90 => Self::Flipped90,
+            TransformSetting::Flipped180 => Self::Flipped180,
+            TransformSetting::Flipped270 => Self::Flipped270,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct ModeSetting(pub String);
+
+impl Default for ModeSetting {
+    fn default() -> Self {
+        Self("preferred".into())
+    }
+}
+
+impl ModeSetting {
+    /// Refresh is stored in millihertz, matching Wayland and DRM modes.
+    pub fn parse(&self) -> Result<Option<smithay::output::Mode>, String> {
+        if self.0 == "preferred" {
+            return Ok(None);
+        }
+        let invalid = || format!("invalid output mode {:?}; expected preferred or WIDTHxHEIGHT@HZ", self.0);
+        let (size, refresh) = self.0.split_once('@').ok_or_else(invalid)?;
+        let (width, height) = size.split_once('x').ok_or_else(invalid)?;
+        let width: i32 = width.parse().map_err(|_| invalid())?;
+        let height: i32 = height.parse().map_err(|_| invalid())?;
+        let refresh: f64 = refresh.parse().map_err(|_| invalid())?;
+        if !(1..=16384).contains(&width)
+            || !(1..=16384).contains(&height)
+            || !refresh.is_finite()
+            || refresh <= 0.0
+            || refresh * 1000.0 > f64::from(i32::MAX)
+            || (refresh * 1000.0).round() < 1.0
+        {
+            return Err(invalid());
+        }
+        Ok(Some(smithay::output::Mode { size: (width, height).into(), refresh: (refresh * 1000.0).round() as i32 }))
+    }
 }
 
 /// A number of equal areas, or their relative widths.
@@ -94,6 +181,7 @@ const MAX_SCALE: f64 = 4.0;
 /// Checks `[outputs]`: scales must be numbers in range, splits sensible.
 pub fn validate(outputs: &std::collections::BTreeMap<String, OutputConfig>) -> Result<(), String> {
     for (name, output) in outputs {
+        output.mode.parse().map_err(|error| format!("[outputs.{name:?}] {error}"))?;
         match &output.split {
             Some(SplitSetting::Count(count)) if !(1..=MAX_AREAS as u32).contains(count) => {
                 return Err(format!("[outputs.{name:?}] split must be from 1 to {MAX_AREAS}, not {count}"));
@@ -220,8 +308,11 @@ impl Tileception {
 
     /// The output's size in physical pixels.
     pub fn output_pixels(&self) -> (i32, i32) {
-        let size =
-            self.output.as_ref().and_then(|output| output.current_mode()).map(|mode| mode.size).unwrap_or_default();
+        let size = self
+            .output
+            .as_ref()
+            .and_then(|output| output.current_mode().map(|mode| output.current_transform().transform_size(mode.size)))
+            .unwrap_or_default();
         if size.w > 0 && size.h > 0 {
             (size.w, size.h)
         } else {

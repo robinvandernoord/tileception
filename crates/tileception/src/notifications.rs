@@ -79,10 +79,7 @@ enum PointerAction {
 impl crate::ui::PointerAction for PointerAction {
     fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
         match self {
-            Self::Clear => {
-                state.notification_request(Request::ClearHistory);
-                state.notification_request(Request::DismissAll);
-            }
+            Self::Clear => state.clear_notifications(),
             Self::Dnd => state.toggle_dnd(),
             Self::Close { identifier, kind: NotificationKind::Local, .. } => {
                 state.close_local_notification(*identifier)
@@ -376,6 +373,18 @@ impl Tileception {
         if let Some(service) = &self.notifications.service {
             service.send(Request::SetDoNotDisturb(!service.do_not_disturb()));
         }
+    }
+
+    pub fn set_dnd(&mut self, enabled: bool) {
+        if let Some(service) = &self.notifications.service {
+            service.send(Request::SetDoNotDisturb(enabled));
+        }
+    }
+
+    /// Empties the history and dismisses every popup: the panel's Clear all.
+    pub fn clear_notifications(&mut self) {
+        self.notification_request(Request::ClearHistory);
+        self.notification_request(Request::DismissAll);
     }
 
     pub fn notification_scroll(&mut self, delta: isize) {

@@ -41,7 +41,7 @@ python3 -m http.server -d website/public 8000
 Then open http://localhost:8000. You can also open `website/public/index.html`
 directly in your browser; its stylesheet and script use relative paths.
 
-After changing `tools/og.html` or `public/favicon.svg`:
+After changing `tools/og.html` or `public/favicon.svg` (the source of the PNG icons and `favicon.ico`):
 
 ```sh
 node website/tools/render-images.js

@@ -54,6 +54,7 @@ impl Tileception {
                     Ok(window_manager) => {
                         state.xwm = Some(window_manager);
                         state.xdisplay = Some(display_number);
+                        state.launcher_display_ready(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
                         // Only a real session speaks for the user's D-Bus and
                         // systemd; nested and headless ones would take it over.
@@ -94,6 +95,44 @@ impl Tileception {
     /// said at the map stands in until X reports a change.
     pub(crate) fn overlay_geometry(&self, overlay: &X11Surface) -> Rectangle<i32, Logical> {
         self.x11_overlay_geometry.get(&overlay.window_id()).copied().unwrap_or_else(|| overlay.geometry())
+    }
+
+    /// Place an X11 menu in the same scaled coordinates as its owning window.
+    /// Unrelated overlays keep their native screen coordinates.
+    pub(crate) fn overlay_transform(
+        &self,
+        overlay: &X11Surface,
+    ) -> Option<(smithay::utils::Point<f64, Logical>, (f64, f64))> {
+        let geometry = self.overlay_geometry(overlay);
+        let owner = self
+            .drawn_windows(self.now())
+            .into_iter()
+            .filter_map(|drawn| {
+                let window = self.windows.get(&drawn.window_id)?;
+                let x11 = window.x11_surface()?;
+                let same = overlay.is_transient_for().map_or_else(
+                    || {
+                        self.same_x11_client(x11.window_id(), overlay.window_id())
+                            .unwrap_or_else(|| overlay.pid().is_some() && overlay.pid() == x11.pid())
+                    },
+                    |parent| parent == x11.window_id(),
+                );
+                same.then_some((drawn, x11.geometry()))
+            })
+            .max_by_key(|(drawn, parent)| {
+                (parent.contains(geometry.loc), self.world.focus() == Some(drawn.window_id), drawn.live)
+            });
+        match owner {
+            Some((drawn, _)) if !drawn.live => None,
+            Some((drawn, parent)) => {
+                let offset = (geometry.loc - parent.loc).to_f64();
+                Some((
+                    (drawn.origin.x + offset.x * drawn.scale.0, drawn.origin.y + offset.y * drawn.scale.1).into(),
+                    drawn.scale,
+                ))
+            }
+            None => Some((geometry.loc.to_f64(), (1.0, 1.0))),
+        }
     }
 
     /// Our own connection to Xwayland, made when first needed, for asking:

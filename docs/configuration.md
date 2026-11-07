@@ -75,9 +75,27 @@ appearance you prefer, or `"default"` for no preference. The compositor's own
 colours are controlled by the other theme settings.
 
 Set `theme.frost = true` for frosted panels: the bar, launcher, notifications,
-power menu and cards turn translucent and blur what is behind them. Windows
-stay solid. Frost shows best over a colourful wallpaper. It costs a little GPU
-time when something changes behind a panel; a still screen costs nothing extra.
+power menu, cards and lock screen turn translucent and blur what is behind
+them. Windows stay solid. The login screen has its own `[theme]` in
+[its settings](greeter.md#settings), where `frost = true` does the same. Frost
+shows best over a colourful wallpaper. It costs a little GPU time when
+something changes behind a panel; a still screen costs nothing extra.
+
+## Windows larger than their tiles
+
+A window whose minimum size exceeds its tile is scaled down to fit. Once the
+camera settles, it remains interactive when its scale is at least
+`general.min_live_scale`:
+
+```toml
+[general]
+min_live_scale = 0.5
+```
+
+The default is `0.5`; finite values from `0.1` through `1.0` are accepted.
+Lower values keep smaller windows interactive. Below the threshold, and while
+the camera moves or Overview is open, windows use previews without direct
+pointer input. Display scaling is a separate setting.
 
 ## Display scaling
 
@@ -97,8 +115,6 @@ connector, use its name from the session log, for example:
 scale = 2
 ```
 
-Only one monitor is used for now; additional monitors stay inactive.
-
 Scales from 0.5 to 4 are accepted. Larger values make text and interface elements
 bigger. Use `scale = "auto"` to return to automatic selection.
 
@@ -113,6 +129,38 @@ TILECEPTION_SCALE=2 tileception --nested
 ```
 
 This overrides the output settings for that instance.
+
+## Display modes, rotation and arrangement
+
+Configure each monitor by its connector name from `tileception msg outputs`:
+
+```toml
+[outputs."DP-2"]
+enabled = true
+transform = "90"
+mode = "1920x1080@59.94"
+scale = "auto"
+position = [0, 0]
+```
+
+`enabled` defaults to `true`. `transform` defaults to `"normal"` and accepts
+`"90"`, `"180"`, `"270"`, `"flipped"`, `"flipped-90"`, `"flipped-180"` and
+`"flipped-270"`. `mode` defaults to `"preferred"`; explicit modes use
+`WIDTHxHEIGHT@HZ`, with refresh rate in hertz. Physical monitors must advertise
+the requested mode. Unsupported modes are rejected; startup falls back to a
+working configuration when the requested configuration cannot be applied.
+
+`position` is the top-left corner in global logical pixels. Without explicit
+positions, enabled monitors form a horizontal row using their rotated sizes
+and scales. Disabled connected monitors remain available for re-enabling.
+Disabling every connected monitor is rejected.
+
+Display changes made through Settings preview at runtime before saving.
+Choose **Keep changes** within 15 seconds to persist them, or **Revert** to
+restore the previous configuration. An expired preview or a failed save also
+restores the previous runtime state. Reloading configuration or changing the
+connected monitor set invalidates a pending preview. Nested mode explicitly
+rejects mode, rotation and enable/disable changes it cannot support.
 
 ## Splitting a wide screen
 
@@ -186,6 +234,27 @@ bar_minimap = false
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
 commands under `[binds]`.
+
+### Launcher plugins
+
+The built-in launcher supports executable MCP servers over stdio. Build the
+example with `cargo plane build -p tileception --bin tileception-launcher-example`,
+then enable it using the executable's absolute path:
+
+```toml
+[launcher.plugins.example]
+command = "/absolute/path/to/tileception-launcher-example"
+# prefixes = ["echo"]
+```
+
+Type `echo hello` in the launcher to try it. Omit `prefixes` to use those
+reported by the plugin; set `enabled = false` to disable a source. Plugins
+installed through manifests are also discovered in
+`~/.local/share/tileception/plugins/` and `/usr/share/tileception/plugins/`.
+Configuration overrides user manifests, which override system manifests.
+Only install plugins you trust, as with autostart commands. See
+[Launcher plugins](launcher-plugins.md) for installation, actions, diagnostics
+and the protocol.
 
 ### System tray
 

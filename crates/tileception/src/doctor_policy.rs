@@ -96,7 +96,10 @@ pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scop
     let allow = choices
         .iter()
         .find(|choice| choice.kind == "allow_once")
-        .or_else(|| choices.iter().find(|choice| choice.kind.starts_with("allow")))?;
+        // Tweak's automatic decision must not grant a conversation-wide rule.
+        .or_else(|| {
+            (mode == Mode::Yolo).then(|| choices.iter().find(|choice| choice.kind.starts_with("allow"))).flatten()
+        })?;
     let allowed = match mode {
         Mode::Yolo => true,
         Mode::Ask => false,

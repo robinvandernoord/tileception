@@ -119,6 +119,8 @@ pub struct Region {
     pub rect: Rect,
     pub radius: f32,
     pub alpha: f32,
+    /// A popup, which blurs the frosted panels it covers too.
+    pub over_panels: bool,
 }
 
 #[derive(Debug)]
@@ -298,7 +300,7 @@ impl Tileception {
         let regions = std::mem::take(&mut frost.regions);
         let scale = self.scale;
         // Where each backdrop goes: just beneath its panel's background.
-        let mut placed: Vec<(usize, Region, Rectangle<i32, Physical>)> = regions
+        let placed: Vec<Placed> = regions
             .into_iter()
             .filter_map(|region| {
                 let index =
@@ -310,30 +312,73 @@ impl Tileception {
         if placed.is_empty() {
             return;
         }
+        // A popup over another frosted panel would show a hole where that
+        // panel is: it blurs everything beneath it instead, panels included,
+        // from a second picture kept only while such a popup is open.
+        let covers = |(index, region, rect): &Placed| {
+            region.over_panels
+                && placed.iter().any(|(other, _, beneath)| other > index && rect.intersection(*beneath).is_some())
+        };
+        let (over, placed): (Vec<Placed>, Vec<Placed>) = placed.iter().cloned().partition(covers);
         let out = self.output_rect();
         let size: Size<i32, Physical> =
             ((out.w * scale).round().max(1.0) as i32, (out.h * scale).round().max(1.0) as i32).into();
         let name = self.output.as_ref().map(|output| output.name()).unwrap_or_default();
+        let over_name = format!("{name} over panels");
         if frost.programs(renderer).is_none() {
             return;
         }
-        let blurred = match frost.update(
-            renderer,
-            &name,
-            size,
-            self.clear_colour(),
-            &elements[scene.min(elements.len())..],
-            &placed,
-        ) {
+        let clear = self.clear_colour();
+        frost.backdrops(renderer, &name, size, clear, scale, elements, scene, placed);
+        if over.is_empty() {
+            frost.outputs.remove(&over_name);
+            return;
+        }
+        // Found again: the backdrops just added moved them.
+        let over: Vec<Placed> = over
+            .into_iter()
+            .filter_map(|(_, region, rect)| {
+                let index = elements.iter().position(|element| element.id() == &region.panel)?;
+                Some((index, region, rect))
+            })
+            .collect();
+        let Some(lowest) = over.iter().map(|(index, _, _)| *index).max() else { return };
+        frost.backdrops(renderer, &over_name, size, clear, scale, elements, lowest + 1, over);
+    }
+}
+
+/// A frosted panel's index in the frame, its region and its physical rectangle.
+type Placed = (usize, Region, Rectangle<i32, Physical>);
+
+impl Frost {
+    /// Blurs what lies from `start` on in `elements` into the picture named
+    /// `name`, and inserts a piece of it beneath each panel in `placed`.
+    #[allow(clippy::too_many_arguments, reason = "one frame's worth of state, passed along once")]
+    fn backdrops(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        name: &str,
+        size: Size<i32, Physical>,
+        clear: [f32; 4],
+        scale: f64,
+        elements: &mut Vec<OutputElement>,
+        start: usize,
+        mut placed: Vec<Placed>,
+    ) {
+        if placed.is_empty() {
+            return;
+        }
+        let start = start.min(elements.len());
+        let blurred = match self.update(renderer, name, size, clear, &elements[start..], &placed) {
             Ok(generation) => generation,
             Err(error) => {
                 tracing::warn!("frost: {error}");
                 return;
             }
         };
-        let Some(programs) = frost.programs.as_ref() else { return };
+        let Some(programs) = self.programs.as_ref() else { return };
         let program = programs.backdrop.clone();
-        let Some(cache) = frost.outputs.get_mut(&name) else { return };
+        let Some(cache) = self.outputs.get_mut(name) else { return };
         let (texture, level_size) = cache.levels[0].clone();
         let mut used = HashMap::new();
         // Insert from the bottom up so earlier indices stay valid.

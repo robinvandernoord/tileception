@@ -60,6 +60,9 @@ impl Tileception {
         };
         // Raw motion goes nowhere while the compositor's interface has the pointer.
         let focus = under.clone().filter(|_| self.constraints_apply());
+        let scale = focus.as_ref().and_then(|(surface, _)| self.pointer_surface_scale(surface)).unwrap_or((1.0, 1.0));
+        let delta = (delta.x / scale.0, delta.y / scale.1).into();
+        let delta_unaccel = (delta_unaccel.x / scale.0, delta_unaccel.y / scale.1).into();
         pointer.relative_motion(self, focus, &RelativeMotionEvent { delta, delta_unaccel, utime });
         match held {
             Held::Free => Some(target),
@@ -68,9 +71,11 @@ impl Tileception {
                 None
             }
             Held::Confined(surface, origin, region) => {
-                let leaves_surface =
-                    self.constraint_surface_under(target).is_none_or(|(target_surface, _)| target_surface != surface);
-                let leaves_region = region.is_some_and(|region| !region.contains((target - origin).to_i32_round()));
+                let target_under = self.constraint_surface_under(target);
+                let leaves_surface = target_under.as_ref().is_none_or(|(target_surface, _)| *target_surface != surface);
+                let target_origin = target_under.map(|(_, origin)| origin).unwrap_or(origin);
+                let leaves_region =
+                    region.is_some_and(|region| !region.contains((target - target_origin).to_i32_round()));
                 if leaves_surface || leaves_region {
                     pointer.frame(self);
                     None
@@ -117,10 +122,15 @@ impl Tileception {
         }
         // A window's main surface sits at the origin it is drawn at.
         let drawn = self.window_id(&root).and_then(|window_id| {
-            self.drawn_windows(self.now())
-                .into_iter()
-                .find(|drawn| drawn.window_id == window_id && drawn.live)
-                .map(|drawn| drawn.origin)
+            self.drawn_windows(self.now()).into_iter().find(|drawn| drawn.window_id == window_id && drawn.live).map(
+                |drawn| {
+                    let local = Point::from((
+                        (point.x - drawn.origin.x) / drawn.scale.0,
+                        (point.y - drawn.origin.y) / drawn.scale.1,
+                    ));
+                    point - local
+                },
+            )
         });
         Some(match drawn {
             Some(origin) => (root, origin),
@@ -151,7 +161,10 @@ impl PointerConstraintsHandler for Tileception {
         if let Some((_, origin)) =
             self.constraint_surface_under(self.pointer).filter(|(target_surface, _)| target_surface == surface)
         {
-            let position = origin + location;
+            let scale = self.pointer_surface_scale(surface).unwrap_or((1.0, 1.0));
+            let local = self.pointer - origin;
+            let position =
+                self.pointer + Point::from(((location.x - local.x) * scale.0, (location.y - local.y) * scale.1));
             self.pointer = position;
             pointer.set_location(position);
         }

@@ -107,16 +107,18 @@ impl Tileception {
         }
     }
 
-    pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+    /// The lock screen, topmost first: its panels, then the backdrop they
+    /// stand on (which frost blurs). A locker program's surface is all panel.
+    pub fn lock_elements(&self, renderer: &mut GlesRenderer) -> (Vec<OutputElement>, Vec<OutputElement>) {
         match self.lock {
             LockState::BuiltIn | LockState::Greeter if self.is_active_output() => {
                 return self.greeter_elements(renderer);
             }
             _ => {}
         }
-        let Some(surface) = self.lock_surface() else { return Vec::new() };
+        let Some(surface) = self.lock_surface() else { return Default::default() };
         let surfaces = render_elements_from_surface_tree(renderer, surface, (0, 0), 1.0, 1.0, Kind::Unspecified);
-        crate::render::enlarged(surfaces, (0, 0).into(), self.scale).collect()
+        (crate::render::enlarged(surfaces, (0, 0).into(), self.scale).collect(), Vec::new())
     }
 
     pub fn lock_surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {

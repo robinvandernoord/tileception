@@ -9,6 +9,7 @@ use tileception_core::{Point, Rect, WindowId};
 mod client;
 mod colour;
 mod connect;
+mod display_preview;
 mod editor;
 mod interaction;
 mod keymap;
@@ -102,7 +103,7 @@ const CATEGORIES: &[Category] = &[
         title: "Displays",
         summary: "Arrangement, scaling & touchscreens",
         description: "Display layout, scaling and input routing.",
-        icon: glyph::GLOBE,
+        icon: glyph::MONITOR,
     },
     Category {
         title: "Sharing",
@@ -495,10 +496,12 @@ pub struct Settings {
     page: Option<usize>,
     query: String,
     search_input: crate::text_input::TextInput,
+    compose: Option<xkb::compose::State>,
     before: Vec<Option<toml::Value>>,
     draft: Vec<Option<toml::Value>>,
     defaults: Vec<Option<toml::Value>>,
     scroll: f64,
+    nav_scroll: f64,
     focus: Option<Hit>,
     editing: Option<usize>,
     drag: Option<(usize, Rect)>,
@@ -526,6 +529,7 @@ pub struct Settings {
     colour: Option<colour::Picker>,
     /// Full-edge crossing as it was when the Displays screen opened, for its Cancel.
     edges_before: Option<Option<toml::Value>>,
+    display_preview: Option<display_preview::Preview>,
 }
 
 fn values(file: &ConfigFile) -> Result<Vec<Option<toml::Value>>, String> {
@@ -706,10 +710,10 @@ fn intersect(left: Rect, right: Rect) -> Option<Rect> {
 }
 
 fn control_rect(row: Rect) -> Rect {
-    Rect::new(row.right() - 194., row.y + (row.h - 36.) / 2., 150., 36.)
+    Rect::new(row.right() - 194., if row.h > 100. { row.bottom() - 44. } else { row.y + (row.h - 36.) / 2. }, 150., 36.)
 }
 fn reset_rect(row: Rect) -> Rect {
-    Rect::new(row.right() - 36., row.y + (row.h - 32.) / 2., 28., 32.)
+    Rect::new(row.right() - 36., control_rect(row).y + 2., 28., 32.)
 }
 
 fn levels_index() -> usize {
@@ -985,6 +989,7 @@ impl Tileception {
             return;
         }
         self.settings.open = true;
+        self.settings.compose = crate::ui::compose_state();
         self.power_menu = None;
         self.close_tray();
         self.close_launcher();
@@ -992,9 +997,7 @@ impl Tileception {
         if !self.settings.error {
             self.settings.message.clear();
         }
-        let screen = self.world.screen();
-        let size = ((screen.w - 96.).clamp(320., 1360.), (screen.h - 96.).clamp(240., 960.));
-        self.settings.size = size;
+        self.settings.size = settings_size(self.world.screen());
         self.open_settings_page_section();
         match client::Client::start(self) {
             Ok(client) => self.settings.client = Some(client),
@@ -1006,8 +1009,38 @@ impl Tileception {
         self.schedule_render();
     }
 
+    /// Fits the Settings window to its screen again when that screen changed
+    /// size or rotated, so every control, including a display confirmation,
+    /// stays reachable. A window that still fits keeps its place and size.
+    pub(crate) fn settings_fit_screen(&mut self) {
+        let Some(window) = self.settings.window else { return };
+        if let Some(area) = self.area_for_window(window)
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.settings_fit_screen());
+            return;
+        }
+        let screen = self.world.screen();
+        let Some(rect) = self.world.float_rect(window) else { return };
+        if screen.contains_rect(&rect) {
+            return;
+        }
+        let (width, height) = settings_size(screen);
+        let (width, height) = (width.min(screen.w), height.min(screen.h));
+        let fitted = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
+        self.world.set_float_rect(window, fitted);
+        self.settings.dropdown = None;
+        self.settings.colour = None;
+        self.apply_layout();
+        if let Some(toplevel) = self.windows.get(&window).and_then(|placed| placed.toplevel()) {
+            toplevel.send_configure();
+        }
+        self.schedule_render();
+    }
+
     /// Takes the Settings window away, wherever it is; the draft stays.
     pub(crate) fn close_settings(&mut self) {
+        self.settings_revert_displays();
         self.settings_release();
         self.settings.open = false;
         if let Some(client) = self.settings.client.take() {
@@ -1126,6 +1159,13 @@ impl Tileception {
     /// Service the client's drawing independently of screen captures and the
     /// window's visibility, in the output context that owns its UI model.
     pub(crate) fn update_settings_client(&mut self, renderer: &mut GlesRenderer) {
+        self.settings_sync_display_preview();
+        if self.settings.open
+            && let Some(mut screen) = self.settings.section.take()
+        {
+            self.section_detected_displays(&mut screen);
+            self.settings.section = Some(screen);
+        }
         if let Some(area) = self.settings.window.and_then(|window| self.area_for_window(window))
             && self.context_area().as_ref() != Some(&area)
         {
@@ -1188,12 +1228,14 @@ impl Tileception {
         let mut hits =
             vec![(search, Hit::Search), (Rect::new(panel.right() - 48., panel.y + 15., 34., 35.), Hit::Close)];
         hits.push((Rect::new(panel.x + 12., body.y + 20., sidebar - 24., 40.), Hit::Page(None)));
-        let nav_pitch = ((body.h - 196.) / CATEGORIES.len() as f64).clamp(26., 46.);
+        let nav = Rect::new(panel.x + 12., body.y + 70., sidebar - 24., (body.h - 166.).max(1.));
+        let nav_pitch = 40.;
+        let nav_scroll = self.settings.nav_scroll.min((CATEGORIES.len() as f64 * nav_pitch - nav.h).max(0.));
         for index in 0..CATEGORIES.len() {
-            hits.push((
-                Rect::new(panel.x + 12., body.y + 86. + index as f64 * nav_pitch, sidebar - 24., nav_pitch - 4.),
-                Hit::Page(Some(index)),
-            ));
+            let rect = Rect::new(nav.x, nav.y + index as f64 * nav_pitch - nav_scroll, nav.w, nav_pitch - 4.);
+            if let Some(rect) = intersect(rect, nav) {
+                hits.push((rect, Hit::Page(Some(index))));
+            }
         }
         hits.push((Rect::new(panel.x + 12., body.bottom() - 88., sidebar - 24., 36.), Hit::EditDocument));
         hits.push((Rect::new(panel.x + 12., body.bottom() - 48., sidebar - 24., 36.), Hit::Reference));
@@ -1284,7 +1326,13 @@ impl Tileception {
             if self.settings.query.is_empty() && self.settings.page.is_some() {
                 frame.hits.push((Rect::new(content.right() - 132., content.y + 4., 132., 30.), Hit::ResetSection));
             }
-            let row_height = if compact { 64. } else { 72. };
+            let row_height = if row_width < 480. {
+                112.
+            } else if compact {
+                64.
+            } else {
+                72.
+            };
             let advanced = self.settings.page == Some(0) && self.settings.query.is_empty();
             let scroll_top = frame.top;
             let mut offset = 0.;
@@ -1346,8 +1394,8 @@ impl Tileception {
             }
             for (mut rect, index) in rows {
                 rect.y += shift;
+                frame.rows.push((rect, index));
                 if rect.bottom() > area.y && rect.y < area.bottom() {
-                    frame.rows.push((rect, index));
                     let mut control = control_rect(rect);
                     if matches!(FIELDS[index].control, Control::Number(..)) {
                         control.w = 90.;
@@ -1408,7 +1456,18 @@ impl Tileception {
     }
 
     pub fn settings_scroll(&mut self, amount: f64) {
+        if self.settings.display_preview.is_some() {
+            return;
+        }
         self.settings.pressed = None;
+        let frame = self.settings_frame();
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
+        if pointer.x < frame.body.x && pointer.y >= frame.body.y + 70. && pointer.y < frame.body.bottom() - 96. {
+            let visible = (frame.body.h - 166.).max(1.);
+            self.settings.nav_scroll = (self.settings.nav_scroll + amount).clamp(0., (400. - visible).max(0.));
+            self.schedule_render();
+            return;
+        }
         if self.settings.keymap.is_some() {
             self.keymap_scroll(amount);
             return;
@@ -1657,6 +1716,16 @@ impl Tileception {
                     self.schedule_render();
                     return;
                 }
+                match self.settings_start_display_preview() {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.settings.message = error;
+                        self.settings.error = true;
+                        self.schedule_render();
+                        return;
+                    }
+                }
                 let changes: Vec<_> = FIELDS
                     .iter()
                     .enumerate()
@@ -1826,6 +1895,44 @@ impl Tileception {
     pub fn settings_key(&mut self, sym: u32, mods: Mods) {
         self.settings.pressed = None;
         self.invalidate_settings_client();
+        if self.settings_display_preview_key(sym, mods) {
+            return;
+        }
+        let page_navigation =
+            self.settings.editor.is_none() && self.settings.connect.is_none() && self.settings.keymap.is_none();
+        if !page_navigation && mods.alt && sym == keysyms::KEY_Up {
+            self.settings_key(keysyms::KEY_Escape, Mods::default());
+            return;
+        }
+        if page_navigation && mods.alt && sym == keysyms::KEY_Up {
+            if self.settings.section.is_some() && !self.section_is_page() {
+                self.section_keep_back();
+            } else {
+                self.settings_leave_section();
+                self.settings_activate(Hit::Page(None), None);
+            }
+            return;
+        }
+        if page_navigation && mods.ctrl && matches!(sym, keysyms::KEY_Page_Up | keysyms::KEY_Page_Down) {
+            if !self.settings_finish_edit() {
+                return;
+            }
+            self.settings_leave_section();
+            let page = self.settings.page.map_or(
+                if sym == keysyms::KEY_Page_Down { 0 } else { CATEGORIES.len() - 1 },
+                |page| {
+                    if sym == keysyms::KEY_Page_Down {
+                        (page + 1) % CATEGORIES.len()
+                    } else {
+                        (page + CATEGORIES.len() - 1) % CATEGORIES.len()
+                    }
+                },
+            );
+            self.settings.nav_scroll = (page as f64 * 40. - (self.settings_frame().body.h - 206.)).max(0.);
+            self.settings_activate(Hit::Page(Some(page)), None);
+            self.schedule_render();
+            return;
+        }
         if self.settings.keymap.is_some() {
             self.keymap_key(sym, mods);
             return;
@@ -1883,12 +1990,15 @@ impl Tileception {
             self.settings_scroll(if sym == keysyms::KEY_Page_Down { 162. } else { -162. });
         } else if sym == keysyms::KEY_Tab || sym == keysyms::KEY_ISO_Left_Tab {
             if self.settings_finish_edit() {
-                let hits: Vec<_> = self
-                    .settings_frame()
+                let frame = self.settings_frame();
+                let mut hits: Vec<_> = frame
                     .hits
-                    .into_iter()
+                    .iter()
+                    .copied()
+                    .filter(|(_, hit)| !matches!(hit, Hit::Field(_) | Hit::Swatch(_) | Hit::Reset(_)))
                     .filter(|(_, hit)| !matches!(hit, Hit::Apply | Hit::Discard) || self.settings.changed() > 0)
                     .collect();
+                hits.extend(frame.rows.iter().map(|(rect, index)| (control_rect(*rect), Hit::Field(*index))));
                 let current = hits.iter().position(|(_, hit)| Some(*hit) == self.settings.focus);
                 let next = if mods.shift || sym == keysyms::KEY_ISO_Left_Tab {
                     current.map_or(hits.len() - 1, |index| (index + hits.len() - 1) % hits.len())
@@ -1896,6 +2006,13 @@ impl Tileception {
                     current.map_or(0, |index| (index + 1) % hits.len())
                 };
                 self.settings.focus = Some(hits[next].1);
+                if matches!(hits[next].1, Hit::Field(_)) {
+                    let area = viewport(&frame);
+                    let rect = hits[next].0;
+                    self.settings.scroll = (self.settings.scroll
+                        + if rect.y < area.y { rect.y - area.y } else { (rect.bottom() - area.bottom()).max(0.) })
+                    .clamp(0., frame.max_scroll);
+                }
             }
         } else if self.settings.editing.is_some() || self.settings.focus == Some(Hit::Search) {
             if sym == keysyms::KEY_Return {
@@ -1908,27 +2025,7 @@ impl Tileception {
                         self.settings.input.delete(false, false);
                     }
                 } else {
-                    let input = &mut self.settings.input;
-                    match sym {
-                        keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => input.select_all(),
-                        keysyms::KEY_Left | keysyms::KEY_Right => {
-                            input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl, mods.shift)
-                        }
-                        keysyms::KEY_Home | keysyms::KEY_End => {
-                            input.move_to(if sym == keysyms::KEY_Home { 0 } else { input.text.len() }, mods.shift)
-                        }
-                        keysyms::KEY_BackSpace | keysyms::KEY_Delete => {
-                            input.delete(sym == keysyms::KEY_Delete, mods.ctrl)
-                        }
-                        _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                            if let Some(character) = char::from_u32(xkb::keysym_to_utf32(sym.into()))
-                                .filter(|character| !character.is_control())
-                            {
-                                input.insert(&character.to_string());
-                            }
-                        }
-                        _ => {}
-                    }
+                    sections::edit_key(&mut self.settings.input, &mut self.settings.compose, sym, mods);
                 }
             } else {
                 if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
@@ -1937,7 +2034,7 @@ impl Tileception {
                         self.settings.search_input.delete(false, false);
                     }
                 } else {
-                    sections::edit_key(&mut self.settings.search_input, sym, mods);
+                    sections::edit_key(&mut self.settings.search_input, &mut self.settings.compose, sym, mods);
                 }
                 self.settings.query.clone_from(&self.settings.search_input.text);
                 self.settings.scroll = 0.;
@@ -2034,6 +2131,18 @@ impl Tileception {
             Rect::new(frame.panel.x + 24., frame.body.y + 73., frame.body.x - frame.panel.x - 48., 1.),
             theme.border,
             0.,
+        );
+        sections::draw_scrollbar(
+            &mut painter,
+            Rect::new(
+                frame.panel.x + 8.,
+                frame.body.y + 70.,
+                frame.body.x - frame.panel.x - 12.,
+                (frame.body.h - 166.).max(1.),
+            ),
+            state.nav_scroll,
+            (400. - (frame.body.h - 166.).max(1.)).max(0.),
+            theme,
         );
         painter.clipped(viewport(&frame), |painter| {
             if let Some(card) = frame.home {
@@ -2415,6 +2524,7 @@ impl Tileception {
         self.section_draw(&mut painter);
         self.settings_pointer_feedback(&mut painter);
         self.draw_keymap_picker(&mut painter);
+        self.settings_draw_display_preview(&mut painter);
         painter.finish()
     }
 
@@ -2597,8 +2707,9 @@ impl Tileception {
         } else if state.draft[index] != state.before[index] {
             painter.fill(Rect::new(rect.x + 1., rect.y + 10., 3., rect.h - 20.), theme.accent, 1.);
         }
-        let padding = (rect.h - 42.) / 2.;
-        let label = Rect::new(rect.x + 18., rect.y + padding, rect.w - 250., 21.);
+        let stacked = rect.h > 100.;
+        let padding = if stacked { 10. } else { (rect.h - 42.) / 2. };
+        let label = Rect::new(rect.x + 18., rect.y + padding, rect.w - if stacked { 36. } else { 250. }, 21.);
         painter.text(field.label, label, Style::new(12., theme.text).weight(500));
         painter.text(
             field.description,
@@ -2610,6 +2721,11 @@ impl Tileception {
         match field.control {
             Control::Toggle => {
                 let enabled = value.and_then(toml::Value::as_bool).unwrap_or(false);
+                painter.text(
+                    if enabled { "On" } else { "Off" },
+                    Rect::new(control.x + 12., control.y, control.w - 60., control.h),
+                    Style::new(12., theme.text),
+                );
                 let switch = Rect::new(control.right() - 38., control.y + (control.h - 20.) / 2., 34., 20.);
                 painter.shape(
                     switch,
@@ -3060,4 +3176,13 @@ impl Tileception {
             });
         }
     }
+}
+
+/// The size Settings opens at: most of the screen, with a narrower margin on
+/// small screens, within readable limits.
+fn settings_size(screen: Rect) -> (f64, f64) {
+    (
+        (screen.w - if screen.w < 900. { 24. } else { 96. }).clamp(320., 1360.),
+        (screen.h - if screen.h < 700. { 48. } else { 96. }).clamp(240., 960.),
+    )
 }

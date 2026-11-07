@@ -116,6 +116,9 @@ impl PointerTarget {
 
 impl Tileception {
     pub(crate) fn shell_pointer_target(&self, point: tileception_core::Point) -> Option<PointerTarget> {
+        if !self.is_locked() && self.feedback.is_some() {
+            return self.feedback_pointer_target(point);
+        }
         if self.is_locked() || self.overlay_under(point) {
             return None;
         }
@@ -166,13 +169,14 @@ impl Tileception {
 
     pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if self.is_locked() || self.overlay_under(point) {
+        if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
         }
-        (self.power_menu.is_some()
+        (self.feedback.is_some()
+            || self.power_menu.is_some()
             || (self.launcher.open && self.launcher_takes(point))
             || self.doctor_contains(point)
             || self.notifications_contain(point)
@@ -258,6 +262,7 @@ pub mod glyph {
     pub const MINIMAP: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16M10 12h11"/><rect x="12.5" y="6.5" width="6" height="3" rx="0.5"/>"#;
     pub const CAMERA: &str = r#"<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>"#;
     pub const CONTRAST: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M12 3v18M12 7.5h5M12 12h6M12 16.5h5"/>"#;
+    pub const MONITOR: &str = r#"<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>"#;
     pub const WINDOW: &str = r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>"#;
     pub const ZOOM_IN: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>"#;
     pub const ZOOM_OUT: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>"#;
@@ -591,6 +596,12 @@ impl<'a> Painter<'a> {
     /// A panel background: with frost on, translucent over a blur of what
     /// is behind it.
     pub fn frosted(&mut self, rect: Rect, shape: Shape) {
+        self.frosted_over(rect, shape, false);
+    }
+
+    /// [`Painter::frosted`]; `over_panels` also blurs the frosted panels
+    /// it covers, for popups opened over them.
+    fn frosted_over(&mut self, rect: Rect, shape: Shape, over_panels: bool) {
         let theme = self.theme();
         let shape = Shape { fill: (theme.panel(shape.fill.0), theme.panel(shape.fill.1)), ..shape };
         let before = self.layers.len();
@@ -605,6 +616,7 @@ impl<'a> Painter<'a> {
                 rect: self.shifted(rect),
                 radius: shape.radius,
                 alpha: self.alpha,
+                over_panels,
             });
         }
     }
@@ -761,9 +773,10 @@ impl<'a> Painter<'a> {
                 ..Default::default()
             },
         );
-        self.frosted(
+        self.frosted_over(
             rect,
             Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.popup(), theme.popup_radius) },
+            true,
         );
     }
 

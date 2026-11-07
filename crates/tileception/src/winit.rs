@@ -31,10 +31,13 @@ pub fn init(
             model: "Winit".into(),
         },
     );
-    let _global = output.create_global::<Tileception>(&state.display_handle);
+    state.advertise_output(&output);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
     state.add_output(output.clone());
+    if let Err(error) = state.configure_outputs() {
+        tracing::error!("output configuration rejected; retaining nested display: {error}");
+    }
 
     // Render elements are made in physical pixels, so the tracker works at
     // scale 1 whatever the output's scale.
@@ -42,7 +45,9 @@ pub fn init(
 
     event_loop.handle().insert_source(winit, move |event, _, state| match event {
         WinitEvent::Resized { size, .. } => {
-            output.change_current_state(Some(Mode { size, refresh: REFRESH }), None, None, None);
+            let mode = Mode { size, refresh: REFRESH };
+            output.set_preferred(mode);
+            output.change_current_state(Some(mode), None, None, None);
             damage_tracker = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
             state.apply_output_scale();
         }
