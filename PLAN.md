@@ -62,61 +62,28 @@ Report testing in the conversation, the commit or the pull request instead.
 
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/launcher-plugins.md)). Decided:
-  - One plugin host for the whole compositor instead of the launcher's:
-    each place has its own cancellation, so a bar refresh never cancels a
-    launcher search; one slow plugin does not hold up the others (a worker
-    per plugin); the host keeps reading while idle, so plugins can send
-    notifications such as `notifications/resources/updated`; a crashed
-    plugin that serves the bar or panel restarts and re-subscribes at once.
-  - Manifests get a block per place with the user's options for it; the
-    plugin itself reports over MCP what it offers there:
-
-    ```toml
-    command = "tileception"
-    args = ["plugin", "home"]
-
-    [launcher]
-    prefixes = ["home"]
-
-    [bar]
-
-    [lock]   # opt-in: without this block, nothing on the lock screen
-    ```
-
-    Config overrides move to `[plugins.<id>]` with the same blocks
-    (`[plugins.home.lock]`). `[launcher.plugins.<id>]` stays accepted for
-    a while, with a warning in the log.
-  - Bundled plugins are subcommands of the `tileception` binary
-    (`tileception plugin home`) with compiled-in manifests, so they need no
-    extra packaging and work in nested and headless instances. Config can
-    change or disable them like any other plugin.
-  - Built-in launcher sources share one internal result interface with
-    plugins. `z` folders becomes a bundled launcher plugin; plugin rows gain
-    Tab completion and an alternate action (Ctrl+Enter) so it loses
-    nothing. The instant pure sources (calculations, conversions, times,
+  - New places are new `Place`s in the shared plugin host, like the
+    launcher, the panel and commands. Each place's content is a
+    `tileception://` resource the host subscribes to, as the panel's is.
+  - Each place gets a manifest block with the user's options for it, next
+    to `[launcher]`; the plugin itself reports over MCP what it offers
+    there. `[bar]` enables the bar; `[lock]` is opt-in: without it, nothing
+    on the lock screen. Config overrides use the same blocks
+    (`[plugins.home.lock]`).
+  - The instant pure launcher sources (calculations, conversions, times,
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
-  - The smart home becomes a bundled plugin and the first one in every
-    place, without losing anything: it may look slightly different, never
-    worse. Its simulator lets it be tried in headless instances.
-    - Panel: the current block. The block format has folding groups
-      (rooms), toggles, draggable level bars, steppers and modes (the
-      climate widget), readings and "last seen" times, plus an "active"
-      signal so the block unfolds itself when something turns on. Plugins
-      only describe blocks; Tileception draws them in its own style.
-    - Launcher: `home` rows such as "lights off", "AC 21°" and rooms.
-    - Bar: a chip while something is on; clicking it opens the block. Bar
-      items are MCP resources the bar subscribes to.
-    - Key bindings: `tileception msg plugin <name> <tool>`, replacing
-      `tileception msg home`.
+  - The bundled smart home plugin goes into the remaining places first:
+    - Bar: a chip while something is on; clicking it opens the block.
     - Lock screen: the indoor temperature, read-only, following the lock
       screen's privacy level, without input or actions. Never launcher
       plugins.
     - Doctor: plugins offered to Doctor's agent as MCP servers, under
       Doctor's policy for running tools.
-    - Importing devices in Settings and `tileception home` stay built in;
-      they write the device store and the plugin reloads when it changes.
+  - `tileception msg home` stays as a shorthand for the home plugin's
+    `command` tool until key bindings in existing configs have moved to
+    `tileception msg plugin home ...`.
   - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
@@ -165,6 +132,23 @@ Report testing in the conversation, the commit or the pull request instead.
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
+- Bluetooth, built on one BlueZ worker (`org.bluez` over zbus, like
+  `battery.rs`): a thread follows adapters and devices through
+  `ObjectManager` and `PropertiesChanged` and sends state to the compositor
+  thread over a calloop channel. On top of it:
+  - Reconnect trusted, paired devices that were connected before, after
+    resume and when the adapter powers on. When connecting fails, notify
+    with BlueZ's reason instead of failing silently.
+  - A Bluetooth control in the notification panel next to sound and
+    brightness: an on/off switch and the paired devices, which connect or
+    disconnect when clicked. A bar chip shows a connected device's charge
+    (`org.bluez.Battery1`), like the laptop battery.
+  - `tileception-media` makes a newly connected Bluetooth audio device the
+    default output and switches back when it disconnects, and shows the
+    active profile (A2DP or HFP).
+  - Launcher actions ("Connect <device>", "Bluetooth off") and Doctor checks:
+    `bluetooth.service` running, adapter not blocked by rfkill, adapter
+    powered.
 
 ### Maybe someday
 
