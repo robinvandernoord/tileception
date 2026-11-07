@@ -54,7 +54,7 @@ impl Tileception {
                     Ok(window_manager) => {
                         state.xwm = Some(window_manager);
                         state.xdisplay = Some(display_number);
-                        state.launcher_display_ready(display_number);
+                        state.plugins_display_ready(display_number);
                         tracing::info!("Xwayland ready on DISPLAY=:{display_number}");
                         // Only a real session speaks for the user's D-Bus and
                         // systemd; nested and headless ones would take it over.

@@ -118,7 +118,7 @@ enum Entry {
     },
     Plugin {
         plugin: String,
-        row: crate::launcher_plugins::Row,
+        row: crate::plugins::Row,
     },
     PluginStatus(String),
 }
@@ -308,12 +308,11 @@ pub struct Launcher {
     /// after opening.
     jumps: Option<Vec<crate::jumps::Folder>>,
     compose: Option<xkb::compose::State>,
-    plugins: Option<crate::launcher_plugins::Plugins>,
     plugin_query: Option<(u64, String)>,
     /// Retained results cannot activate until the current query finishes.
     plugin_pending: bool,
     plugin_rows: Vec<Entry>,
-    plugin_actions: Option<(String, crate::launcher_plugins::Row)>,
+    plugin_actions: Option<(String, crate::plugins::Row)>,
 }
 
 impl Default for Launcher {
@@ -344,7 +343,6 @@ impl Default for Launcher {
             compose: crate::ui::compose_state(),
             jumps: None,
             details: None,
-            plugins: None,
             plugin_query: None,
             plugin_pending: false,
             plugin_rows: Vec::new(),
@@ -436,13 +434,6 @@ impl Tileception {
         }
     }
 
-    /// Xwayland is ready: launcher plugins get its display from now on.
-    pub(crate) fn launcher_display_ready(&mut self, display: u32) {
-        if let Some(plugins) = &mut self.launcher.plugins {
-            plugins.set_display(display);
-        }
-    }
-
     pub fn init_launcher(&mut self) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<(Paste, Clip)>();
@@ -463,39 +454,19 @@ impl Tileception {
                 }
             })
             .expect("command output event source");
-        let (sender, receiver) = channel::channel();
-        let environment = self
-            .command("", &[])
-            .get_envs()
-            .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
-            .collect();
-        self.launcher.plugins =
-            Some(crate::launcher_plugins::Plugins::start(self.config.file.launcher.clone(), sender, environment));
-        self.loop_handle
-            .insert_source(receiver, |event, _, state| {
-                if let channel::Event::Msg(event) = event {
-                    state.launcher_plugin_event(event);
-                }
-            })
-            .expect("launcher plugin event source");
     }
 
-    pub fn stop_launcher_plugins(&mut self) {
-        self.launcher.plugins = None;
+    /// Plugins came, went or changed their prefixes.
+    pub(crate) fn launcher_routes_changed(&mut self) {
+        if self.launcher.open {
+            self.refresh_launcher();
+        }
     }
 
-    fn launcher_plugin_event(&mut self, event: crate::launcher_plugins::Event) {
-        use crate::launcher_plugins::Event;
+    /// Search results and action outcomes from launcher plugins.
+    pub(crate) fn launcher_plugin_event(&mut self, event: crate::plugins::Event) {
+        use crate::plugins::Event;
         match event {
-            Event::Ready { routes, diagnostics } => {
-                if let Some(plugins) = &mut self.launcher.plugins {
-                    plugins.routes = routes;
-                    plugins.diagnostics = diagnostics;
-                }
-                if self.launcher.open {
-                    self.refresh_launcher();
-                }
-            }
             Event::Rows { generation, plugin, result } => {
                 if !self.launcher.open || self.launcher.plugin_query.as_ref() != Some(&(generation, plugin.clone())) {
                     return;
@@ -510,7 +481,7 @@ impl Tileception {
                 self.launcher.selected = 0;
                 self.launcher.first = 0;
             }
-            Event::Action { generation, result } => {
+            Event::Action { place: crate::plugins::Place::Launcher, generation, result } => {
                 if !self.launcher.open
                     || self.launcher.plugin_query.as_ref().map(|(current, _)| *current) != Some(generation)
                 {
@@ -524,6 +495,7 @@ impl Tileception {
                 self.launcher.entries = self.launcher_entries();
                 self.launcher.selected = 0;
             }
+            _ => {}
         }
     }
 
@@ -608,9 +580,6 @@ impl Tileception {
         self.launcher.jumps = None;
         self.launcher.details = None;
         self.launcher.plugin_actions = None;
-        if let Some(plugins) = &mut self.launcher.plugins {
-            plugins.configure(&self.config.file.launcher);
-        }
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
@@ -623,8 +592,8 @@ impl Tileception {
     }
 
     pub fn close_launcher(&mut self) {
-        if let Some(plugins) = &self.launcher.plugins {
-            plugins.cancel();
+        if let Some(plugins) = &self.plugins {
+            plugins.cancel(crate::plugins::Place::Launcher);
         }
         self.launcher.plugin_query = None;
         self.launcher.plugin_pending = false;
@@ -638,7 +607,7 @@ impl Tileception {
     fn refresh_launcher(&mut self) {
         self.launcher.plugin_actions = None;
         let previous = self.launcher.plugin_query.take();
-        let query = self.launcher.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim()));
+        let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim()));
         let retain =
             previous.as_ref().zip(query.as_ref()).is_some_and(|((_, previous), (_, current))| previous == current)
                 && self.launcher.plugin_rows.iter().any(|entry| matches!(entry, Entry::Plugin { .. }));
@@ -668,7 +637,7 @@ impl Tileception {
             return Some(format!("ACTIONS FOR {}", row.title.to_uppercase()));
         }
         let (_, plugin_id) = self.launcher.plugin_query.as_ref()?;
-        let route = self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)?;
+        let route = self.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)?;
         (!route.info.name.is_empty()).then(|| route.info.name.to_uppercase())
     }
 
@@ -692,7 +661,7 @@ impl Tileception {
             return launcher.plugin_rows.clone();
         }
         if text == "plugins" {
-            let Some(plugins) = &launcher.plugins else {
+            let Some(plugins) = &self.plugins else {
                 return Vec::new();
             };
             return plugins
@@ -1099,7 +1068,7 @@ impl Tileception {
                 self.run_builtin(COMMANDS[index].does);
             }
             Entry::Answer(answer) => {
-                self.launcher_action(None, crate::launcher_plugins::ActionKind::Copy { text: answer.copy });
+                self.launcher_action(None, crate::plugins::ActionKind::Copy { text: answer.copy });
             }
             // A folder opens in the terminal with Ctrl.
             Entry::Place(place) if place.folder && mods.ctrl => {
@@ -1108,7 +1077,7 @@ impl Tileception {
                 self.spawn("sh", &["-c".into(), script]);
             }
             Entry::Place(place) => {
-                self.launcher_action(None, crate::launcher_plugins::ActionKind::Open { target: place.target });
+                self.launcher_action(None, crate::plugins::ActionKind::Open { target: place.target });
             }
             Entry::Run(line) if mods.ctrl => {
                 self.close_launcher();
@@ -1142,8 +1111,8 @@ impl Tileception {
     }
 
     /// Built-in answers and places share clipboard/open dispatch with plugins.
-    fn launcher_action(&mut self, plugin: Option<String>, action: crate::launcher_plugins::ActionKind) {
-        use crate::launcher_plugins::ActionKind;
+    fn launcher_action(&mut self, plugin: Option<String>, action: crate::plugins::ActionKind) {
+        use crate::plugins::ActionKind;
         match action {
             ActionKind::Copy { text } => {
                 self.copy_text(text.clone());
@@ -1161,8 +1130,8 @@ impl Tileception {
                 let Some(plugin) = plugin else {
                     return;
                 };
-                if let Some(plugins) = &self.launcher.plugins {
-                    let generation = plugins.tool(plugin.clone(), name, arguments);
+                if let Some(plugins) = &self.plugins {
+                    let generation = plugins.tool(crate::plugins::Place::Launcher, plugin.clone(), name, arguments);
                     self.launcher.plugin_query = Some((generation, plugin));
                     self.launcher.plugin_actions = None;
                     self.launcher.plugin_rows = vec![Entry::PluginStatus("Running plugin action".into())];
@@ -1852,7 +1821,7 @@ impl Tileception {
                     .plugin_query
                     .as_ref()
                     .and_then(|(_, plugin_id)| {
-                        self.launcher.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)
+                        self.plugins.as_ref()?.routes.iter().find(|route| &route.plugin_id == plugin_id)
                     })
                     .and_then(|route| route.info.icon.as_deref());
                 // A result's actions show what each one does; results show
@@ -1867,7 +1836,7 @@ impl Tileception {
                 } else {
                     glyph_box(painter, glyph::PLUG, theme.accent);
                 }
-                copied = row.actions.iter().any(|action| matches!(&action.kind, crate::launcher_plugins::ActionKind::Copy { text } if self.launcher.just_copied(text)));
+                copied = row.actions.iter().any(|action| matches!(&action.kind, crate::plugins::ActionKind::Copy { text } if self.launcher.just_copied(text)));
                 (row.title.clone(), Some(row.detail.clone()))
             }
             Entry::PluginStatus(message) => {
@@ -2372,8 +2341,8 @@ fn usage_path() -> PathBuf {
 }
 
 /// What a plugin action does, for its row in the list of a result's actions.
-fn plugin_action_detail(kind: &crate::launcher_plugins::ActionKind) -> String {
-    use crate::launcher_plugins::ActionKind;
+fn plugin_action_detail(kind: &crate::plugins::ActionKind) -> String {
+    use crate::plugins::ActionKind;
     match kind {
         ActionKind::Copy { text } => format!("Copies \"{text}\""),
         ActionKind::Open { target } => format!("Opens {target}"),
@@ -2383,8 +2352,8 @@ fn plugin_action_detail(kind: &crate::launcher_plugins::ActionKind) -> String {
     }
 }
 
-fn plugin_action_glyph(kind: &crate::launcher_plugins::ActionKind) -> &'static str {
-    use crate::launcher_plugins::ActionKind;
+fn plugin_action_glyph(kind: &crate::plugins::ActionKind) -> &'static str {
+    use crate::plugins::ActionKind;
     match kind {
         ActionKind::Copy { .. } => glyph::COPY,
         ActionKind::Open { .. } => glyph::GLOBE,

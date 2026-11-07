@@ -193,6 +193,8 @@ pub struct Tileception {
     /// A colour pick in progress, which takes the pointer and keyboard.
     pub colour_pick: Option<crate::colour_pick::ColourPick>,
     pub launcher: crate::launcher::Launcher,
+    /// Plugins, once started.
+    pub plugins: Option<crate::plugins::Host>,
     pub settings: crate::settings::Settings,
     pub(crate) ui_pressed: Option<crate::ui::PointerTarget>,
     /// Line icons for the compositor's own interface.
@@ -374,6 +376,7 @@ impl Tileception {
             feedback: None,
             colour_pick: None,
             launcher: Default::default(),
+            plugins: None,
             settings: Default::default(),
             ui_pressed: None,
             glyphs: Default::default(),

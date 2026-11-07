@@ -1,4 +1,6 @@
 # Opt-in example. Install the executable first, then copy this manifest to
 # ~/.local/share/tileception/plugins/example.toml.
 command = "tileception-launcher-example"
+
+[launcher]
 # prefixes = ["echo"]

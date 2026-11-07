@@ -27,7 +27,10 @@ pub const DEFAULT: &str = include_str!("default-config.toml");
 #[derive(Default)]
 pub struct ConfigFile {
     pub general: General,
-    pub launcher: crate::launcher_plugins::LauncherConfig,
+    /// Where plugins were configured before `[plugins]`.
+    pub launcher: crate::plugins::LauncherConfig,
+    /// Plugins by ID, overriding their manifests.
+    pub plugins: BTreeMap<String, crate::plugins::PluginConfig>,
     pub clipboard: crate::clipboard::ClipboardConfig,
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
@@ -466,6 +469,9 @@ impl Tileception {
         self.apply_handoff_config(&old.handoff);
         if old.home != self.config.file.home {
             self.apply_home();
+        }
+        if old.plugins != self.config.file.plugins || old.launcher != self.config.file.launcher {
+            self.apply_plugins();
         }
         if republish {
             self.publish_greeter_card();

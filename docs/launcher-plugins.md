@@ -28,13 +28,13 @@ leave the launcher open and show its usual Copied feedback.
 Alternatively, enable the example directly in `config.toml`:
 
 ```toml
-[launcher.plugins.example]
+[plugins.example]
 command = "/absolute/path/to/tileception-launcher-example"
+[plugins.example.launcher]
 prefixes = ["echo"]
 ```
 
-Changes to this config take effect when the launcher next opens after config
-reload. New or changed manifest files are read on compositor startup or when
+Changes to this config take effect when the config reloads. New or changed manifest files are read on compositor startup or when
 the plugin configuration changes. Type `plugins` to see loaded sources,
 their prefixes and discovery errors. Errors are also written to the session log.
 
@@ -45,12 +45,14 @@ and `$XDG_DATA_HOME/tileception/plugins/` (normally
 `~/.local/share/tileception/plugins/`). The filename stem is the plugin ID.
 A user manifest replaces the system manifest with the same ID.
 
-Manifest fields and `[launcher.plugins.<id>]` config fields are identical:
+Manifest fields and `[plugins.<id>]` config fields are identical (the older
+`[launcher.plugins.<id>]` and top-level `prefixes` still work, with a warning):
 
 ```toml
 command = "/path/to/executable"
 args = ["--stdio"]
 # enabled = false
+[launcher]
 # prefixes = ["weather", "w"]
 ```
 
@@ -123,10 +125,9 @@ TextInput, compose, selection, clipboard and word movement behaviour.
 
 ## Lifecycle and limits
 
-Discovery, process I/O and tool calls run on a worker, outside the compositor
-event loop. Each request has a three-second deadline and a 1 MiB message limit.
-The worker serializes requests. A slow discovery can delay other plugin sources,
-while the compositor and built-in searches remain responsive.
+Discovery, process I/O and tool calls run outside the compositor event loop,
+on a worker per plugin, so a slow plugin delays only itself. Each request has
+a three-second deadline and a 1 MiB message limit.
 
 Editing or closing the launcher cancels its current generation. Queued stale
 searches are skipped and stale results never replace newer rows. An in-flight

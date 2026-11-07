@@ -302,10 +302,11 @@ tray_max_icons = 3
 # Only install plugins you trust, as with autostart commands.
 # Build the opt-in example with:
 # cargo plane build -p tileception --bin tileception-launcher-example
-# [launcher.plugins.example]
+# [plugins.example]
 # command = "/absolute/path/to/tileception-launcher-example"
-# prefixes = ["echo"]
 # enabled = false
+# [plugins.example.launcher]
+# prefixes = ["echo"]
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

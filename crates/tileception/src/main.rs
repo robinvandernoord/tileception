@@ -44,7 +44,6 @@ mod ipc;
 mod jumps;
 mod key_repeat;
 mod launcher;
-mod launcher_plugins;
 mod layers;
 mod lock;
 mod markdown;
@@ -57,6 +56,7 @@ mod osd;
 mod outputs;
 mod password;
 mod persistence;
+mod plugins;
 mod pointer_lock;
 mod power;
 mod remote_desktop;
@@ -328,6 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.start_xwayland();
     state.init_launcher();
+    state.init_plugins();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);
@@ -340,7 +341,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
-    state.stop_launcher_plugins();
+    state.stop_plugins();
     if state.restart {
         return Err(restart_in_place().into());
     }

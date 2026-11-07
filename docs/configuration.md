@@ -242,8 +242,9 @@ example with `cargo plane build -p tileception --bin tileception-launcher-exampl
 then enable it using the executable's absolute path:
 
 ```toml
-[launcher.plugins.example]
+[plugins.example]
 command = "/absolute/path/to/tileception-launcher-example"
+[plugins.example.launcher]
 # prefixes = ["echo"]
 ```
 
