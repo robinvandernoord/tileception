@@ -2,6 +2,26 @@
 
 <!-- next-version-placeholder -->
 
+## v0.11.0 (2026-11-07)
+
+### Features
+* new `frost` theme
+* **handoff:** carry colour picks across screens and machines
+* **duck:** support copy, cut, and paste in the question field
+* **compositor:** add launcher tools and keyboard notification actions
+* **clipboard:** add configurable clipboard persistence
+* **home:** add Tuya smart home controls and diagnostics (#16)
+* **bar:** improve notification badge and calendar popup
+* **input:** add key repeat and greeter text selection
+
+### Fix
+* **setup:** detect config-capable tileception binary
+
+### Documentation
+* **usage:** describe colour pick handoff
+* **doctor:** document smart home approvals
+* **workflow:** document text fields and future plans
+
 ## v0.10.0 (2026-11-02)
 
 ### Features
