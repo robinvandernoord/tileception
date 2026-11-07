@@ -125,6 +125,20 @@ target your own instances with `TILECEPTION_SOCKET`: without it, `tileception
 msg` reaches the user's running desktop. Say plainly what was only built and
 what was tried.
 
+## PLAN.md
+
+[PLAN.md](PLAN.md) tracks future work only: what is still to be built and the
+decisions about how. Never use it for progress or status: no "done",
+"implemented", ticked checkboxes, dates of completion, test results, or notes
+on what was or was not tried. Report those in the conversation, commit or pull
+request. When you finish a roadmap item, remove it from PLAN.md, keeping only
+any part still to come; the code and documentation describe what exists.
+
+Commit changes to PLAN.md (and to this file) as `chore(plan): ...` or
+`chore(agents): ...`, never `docs(...)`. Vommit puts `docs` commits in the
+changelog, and these files mean nothing to users; `chore` is left out. Keep
+`docs` for user-facing documentation such as `docs/` and the README.
+
 ## Text fields
 
 Every field Tileception draws itself must edit the same way, so users can rely
