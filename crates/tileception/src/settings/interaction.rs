@@ -84,8 +84,12 @@ impl Tileception {
         if self.settings.section.is_some() {
             return self.section_pointer_target(point);
         }
-        if self.settings.connect.is_some() {
-            return self.connect_pointer_target(point);
+        // The credentials form is part of the Smart home page: what it does
+        // not take goes to the page.
+        if self.settings.connect.is_some()
+            && let Some(target) = self.connect_pointer_target(point)
+        {
+            return Some(target);
         }
         if self.settings.editor.is_some() {
             return self.editor_pointer_target(point);

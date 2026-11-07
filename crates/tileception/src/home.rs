@@ -91,11 +91,16 @@ pub enum Problem {
     Service,
 }
 
+/// Whether the panel's notice can lead to setting up in Settings.
+fn state_needs_setup(problem: Option<Problem>) -> bool {
+    problem == Some(Problem::NoDevices)
+}
+
 impl Problem {
     fn text(self) -> &'static str {
         match self {
             Problem::NoConfigDir => "No config directory for the device file",
-            Problem::NoDevices => "No devices yet: run `tileception home import` in a terminal",
+            Problem::NoDevices => "Not set up yet. Click to set it up in Settings.",
             Problem::Unreadable => "The device file could not be read",
             Problem::Service => "The smart home service did not start",
         }
@@ -160,16 +165,26 @@ enum PointerAction {
     View(bool),
     Fold,
     AllOff,
+    /// Opens Settings on the Smart home page, to set it up.
+    SetUp,
     Select(String),
     NextClimate(String),
-    Change { device: String, change: Change },
-    Dial { device: String, dial: Dial, track: Rect },
+    Change {
+        device: String,
+        change: Change,
+    },
+    Dial {
+        device: String,
+        dial: Dial,
+        track: Rect,
+    },
 }
 
 impl crate::ui::PointerAction for PointerAction {
     fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
         match self {
             Self::View(all) => state.home.all = *all,
+            Self::SetUp => state.open_settings_page(5),
             Self::Fold => state.home.fold = Some((!state.panel_controls().home.folded, state.home_lit())),
             Self::AllOff => {
                 if let Some(service) = &state.home.service {
@@ -674,6 +689,13 @@ impl Tileception {
         }
         if block.notice.is_none() {
             buttons.push((block.header, PointerAction::Fold));
+        } else if state_needs_setup(self.home.problem)
+            && let Some((rect, _)) = &block.notice
+        {
+            buttons.push((
+                Rect::new(block.rect.x, block.header.y, block.rect.w, rect.bottom() - block.header.y),
+                PointerAction::SetUp,
+            ));
         }
         if let Some((_, all_off)) = block.footer {
             buttons.push((all_off, PointerAction::AllOff));
@@ -1377,7 +1399,7 @@ impl Tileception {
 }
 
 /// What a row says under the name.
-fn device_detail(device: &Device) -> String {
+pub(crate) fn device_detail(device: &Device) -> String {
     if device.pending {
         return "Switching...".into();
     }

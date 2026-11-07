@@ -1,4 +1,7 @@
-//! Native Tuya setup. Network discovery stays off the compositor thread.
+//! The Tuya credentials form on the Smart home page, and the import it
+//! starts. The form is part of the page: it takes the keyboard once one of
+//! its fields is clicked, and gives it back with Escape or a click elsewhere.
+//! Network discovery stays off the compositor thread.
 
 use smithay::reexports::calloop::{RegistrationToken, channel};
 use std::{
@@ -47,6 +50,7 @@ impl crate::ui::PointerAction for PointerAction {
             Self::Submit => state.start_settings_connect(),
             action => {
                 let Some(form) = state.settings.connect.as_mut().filter(|form| form.job.is_none()) else { return };
+                form.active = true;
                 match action {
                     Self::Region(region) => {
                         if let Some(index) = REGIONS.iter().position(|(key, _)| key == region) {
@@ -86,13 +90,21 @@ pub(super) struct Connect {
     sensors: bool,
     refresh: bool,
     focus: usize,
-    scroll: f64,
+    /// The form has the keyboard.
+    active: bool,
     error: String,
     invalid: Option<usize>,
     progress: String,
     path: PathBuf,
     devices: Option<String>,
     job: Option<Job>,
+}
+
+impl Connect {
+    /// An import is running.
+    pub(super) fn busy(&self) -> bool {
+        self.job.is_some()
+    }
 }
 
 struct Job {
@@ -108,7 +120,6 @@ enum Event {
 }
 
 struct Layout {
-    panel: Rect,
     body: Rect,
     fields: [Rect; 3],
     toggles: [Rect; 2],
@@ -126,9 +137,9 @@ fn inventory(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
 
 impl Tileception {
     pub(super) fn connect_pointer_target(&self, point: Point) -> Option<interaction::Target> {
-        let layout = self.connect_layout();
+        let layout = self.connect_layout()?;
         let form = self.settings.connect.as_ref()?;
-        if layout.cancel.contains(point) {
+        if self.connect_cancellable() && layout.cancel.contains(point) {
             return Some(interaction::Target::button(layout.cancel, PointerAction::Cancel));
         }
         if form.job.is_some() {
@@ -146,7 +157,7 @@ impl Tileception {
                 }
             }
             return Some(interaction::Target::new(
-                layout.panel,
+                self.settings_frame().panel,
                 PointerAction::Dismiss,
                 smithay::input::pointer::CursorIcon::Default,
             ));
@@ -192,7 +203,7 @@ impl Tileception {
             sensors: cloud.as_ref().is_some_and(|access| access.poll_sensors),
             refresh: cloud.as_ref().is_some_and(|access| access.startup_refresh),
             focus: usize::from(cloud.is_some()),
-            scroll: 0.,
+            active: false,
             error: String::new(),
             invalid: None,
             progress: String::new(),
@@ -203,33 +214,38 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn connect_layout(&self) -> Layout {
-        let screen = self.settings_frame().panel;
-        let width = (screen.w - 48.).clamp(280., 720.).min(screen.w);
-        let height = (screen.h - 48.).clamp(240., 620.).min(screen.h);
-        let panel = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
-        let body = Rect::new(panel.x + 24., panel.y + 100., panel.w - 48., (panel.h - 172.).max(1.));
-        let scroll = self.settings.connect.as_ref().map_or(0., |form| form.scroll);
-        Layout {
-            panel,
+    /// The form's parts, inside the page's form area; `None` while the
+    /// page does not show the form.
+    fn connect_layout(&self) -> Option<Layout> {
+        let body = self.settings_frame().home.and_then(|home| home.form)?;
+        Some(Layout {
             body,
-            fields: std::array::from_fn(|index| {
-                Rect::new(body.x, body.y + index as f64 * 68. + 20. - scroll, body.w, 36.)
-            }),
-            toggles: std::array::from_fn(|index| {
-                Rect::new(body.x, body.y + 208. + index as f64 * 34. - scroll, body.w, 28.)
-            }),
-            submit: Rect::new(panel.right() - 136., panel.bottom() - 54., 112., 34.),
-            cancel: Rect::new(panel.right() - 260., panel.bottom() - 54., 112., 34.),
-        }
+            fields: std::array::from_fn(|index| Rect::new(body.x, body.y + 22. + index as f64 * 66., body.w, 36.)),
+            toggles: std::array::from_fn(|index| Rect::new(body.x, body.y + 202. + index as f64 * 34., body.w, 28.)),
+            submit: Rect::new(body.right() - 140., body.bottom() - 36., 140., 34.),
+            cancel: Rect::new(body.right() - 290., body.bottom() - 36., 140., 34.),
+        })
+    }
+
+    /// Cancel shows while importing, and when refreshing devices that were
+    /// set up before; the first setup has nothing to go back to.
+    fn connect_cancellable(&self) -> bool {
+        self.settings.home_ready || self.settings.connect.as_ref().is_some_and(Connect::busy)
     }
 
     fn cancel_settings_connect(&mut self) {
-        if let Some(mut form) = self.settings.connect.take()
+        let ready = self.settings.home_ready;
+        if let Some(form) = self.settings.connect.as_mut()
             && let Some(job) = form.job.take()
         {
             job.cancelled.store(true, Ordering::Relaxed);
             self.loop_handle.remove(job.token);
+            form.progress.clear();
+            form.error = "Stopped.".into();
+        }
+        // A first setup keeps its form on the page.
+        if ready {
+            self.settings.connect = None;
         }
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.schedule_render();
@@ -247,7 +263,7 @@ impl Tileception {
             form.invalid = Some(if form.client_id.text.trim().is_empty() { 0 } else { 1 });
             form.error = "Enter the Access ID and Access Secret from your Tuya project.".into();
             form.focus = form.invalid.unwrap_or(0);
-            form.scroll = 0.;
+            form.active = true;
             self.schedule_render();
             return;
         }
@@ -291,6 +307,7 @@ impl Tileception {
         let region = REGIONS[form.region].0.to_string();
         let (sensors, refresh) = (form.sensors, form.refresh);
         form.error.clear();
+        form.active = false;
         form.progress = "Connecting to Tuya...".into();
         form.job = Some(Job { token, cancelled, inventory: expected, home });
         let started = std::thread::Builder::new().name("home-connect".into()).spawn(move || {
@@ -382,23 +399,46 @@ impl Tileception {
             self.settings.error = false;
             Ok(())
         });
-        if let Err(error) = result {
-            form.error = error;
-            form.progress.clear();
-            form.focus = 1;
-            self.settings.connect = Some(form);
+        match result {
+            Ok(()) => self.settings_home_arrive(),
+            Err(error) => {
+                // Problems with the Tuya project have known fixes on the page.
+                let known = ["28841107", "data center", "permission", "inconsisten", "no devices are linked"];
+                let lower = error.to_lowercase();
+                if known.iter().any(|clue| lower.contains(clue)) {
+                    self.settings.home_trouble = true;
+                    form.error = format!("{error}. See Something went wrong? for how to fix this.");
+                } else {
+                    form.error = error;
+                }
+                form.progress.clear();
+                form.focus = 1;
+                form.active = true;
+                self.settings.connect = Some(form);
+            }
         }
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.schedule_render();
     }
 
-    pub(super) fn settings_connect_scroll(&mut self, amount: f64) {
-        let layout = self.connect_layout();
+    /// A click elsewhere on the page gives the keyboard back to the page.
+    pub(super) fn settings_connect_release(&mut self) {
         if let Some(form) = self.settings.connect.as_mut() {
-            form.scroll = (form.scroll + amount).clamp(0., (370. - layout.body.h).max(0.));
+            form.active = false;
             form.menu = None;
         }
-        self.schedule_render();
+    }
+
+    /// The form has the keyboard: page shortcuts wait.
+    pub(super) fn settings_connect_typing(&self) -> bool {
+        self.settings.connect.as_ref().is_some_and(|form| form.active && form.job.is_none())
+    }
+
+    /// Scrolling the page closes the data centre list.
+    pub(super) fn settings_connect_scrolled(&mut self) {
+        if let Some(form) = self.settings.connect.as_mut() {
+            form.menu = None;
+        }
     }
 
     pub(super) fn settings_connect_paste(&mut self, text: &str) {
@@ -416,13 +456,21 @@ impl Tileception {
         self.schedule_render();
     }
 
-    pub(super) fn settings_connect_key(&mut self, sym: u32, mods: Mods) {
-        let Some(form) = self.settings.connect.as_mut() else { return };
+    /// A key for the form; returns whether the form took it. It only takes
+    /// keys once one of its fields was clicked, or while importing (Escape
+    /// stops it).
+    pub(super) fn settings_connect_key(&mut self, sym: u32, mods: Mods) -> bool {
+        let cancellable = self.connect_cancellable();
+        let Some(form) = self.settings.connect.as_mut() else { return false };
         if form.job.is_some() {
             if sym == keysyms::KEY_Escape {
                 self.cancel_settings_connect();
+                return true;
             }
-            return;
+            return false;
+        }
+        if !form.active {
+            return false;
         }
         if let Some(selected) = form.menu {
             match sym {
@@ -436,16 +484,21 @@ impl Tileception {
                 _ => {}
             }
         } else if sym == keysyms::KEY_Escape {
-            self.cancel_settings_connect();
-            return;
+            // Gives the keyboard back to the page.
+            form.active = false;
         } else if mods.ctrl && sym == keysyms::KEY_Return {
             self.start_settings_connect();
-            return;
+            return true;
         } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
             self.paste(crate::launcher::Paste::Settings(self.settings.editor_epoch));
-            return;
+            return true;
         } else if sym == keysyms::KEY_Tab || sym == keysyms::KEY_ISO_Left_Tab {
-            form.focus = (form.focus + if mods.shift || sym == keysyms::KEY_ISO_Left_Tab { 6 } else { 1 }) % 7;
+            // Cancel is only there when it does something.
+            let stops: Vec<usize> = (0..7).filter(|stop| *stop != 5 || cancellable).collect();
+            let current = stops.iter().position(|stop| *stop == form.focus).unwrap_or(0);
+            let backwards = mods.shift || sym == keysyms::KEY_ISO_Left_Tab;
+            let next = if backwards { (current + stops.len() - 1) % stops.len() } else { (current + 1) % stops.len() };
+            form.focus = stops[next];
             self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         } else if sym == keysyms::KEY_Return || (sym == keysyms::KEY_space && form.focus >= 2) {
             match form.focus {
@@ -458,17 +511,22 @@ impl Tileception {
                 4 => form.refresh = !form.refresh,
                 5 => {
                     self.cancel_settings_connect();
-                    return;
+                    return true;
                 }
                 6 => {
                     self.start_settings_connect();
-                    return;
+                    return true;
                 }
                 _ => {}
             }
         } else if form.focus == 1 {
+            // Editing a field clears its error mark.
+            if form.invalid == Some(1) {
+                form.invalid = None;
+            }
             match sym {
                 keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => form.secret.select_all(),
+                keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => form.secret.clear(),
                 keysyms::KEY_BackSpace | keysyms::KEY_Delete => form.secret.backspace(),
                 _ if !mods.ctrl && !mods.alt && !mods.logo => {
                     form.secret.type_key(sym);
@@ -476,51 +534,31 @@ impl Tileception {
                 _ => {}
             }
         } else if form.focus == 0 {
-            match sym {
-                keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => form.client_id.select_all(),
-                keysyms::KEY_Left | keysyms::KEY_Right => {
-                    form.client_id.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl, mods.shift)
+            if form.invalid == Some(0) {
+                form.invalid = None;
+            }
+            if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
+                let text = form.client_id.text[form.client_id.selection()].to_string();
+                if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
+                    form.client_id.delete(false, false);
                 }
-                keysyms::KEY_Home | keysyms::KEY_End => form
-                    .client_id
-                    .move_to(if sym == keysyms::KEY_Home { 0 } else { form.client_id.text.len() }, mods.shift),
-                keysyms::KEY_BackSpace | keysyms::KEY_Delete => {
-                    form.client_id.delete(sym == keysyms::KEY_Delete, mods.ctrl)
-                }
-                _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                    if let Some(character) =
-                        char::from_u32(xkb::keysym_to_utf32(sym.into())).filter(|character| !character.is_control())
-                    {
-                        form.client_id.insert(&character.to_string());
-                    }
-                }
-                _ => {}
+                self.copy_text(text);
+            } else {
+                sections::edit_key(&mut form.client_id, &mut self.settings.compose, sym, mods);
             }
         }
         self.schedule_render();
+        true
     }
 
     pub(super) fn settings_draw_connect(&self, painter: &mut Painter<'_>) {
         let Some(form) = &self.settings.connect else { return };
-        let layout = self.connect_layout();
+        let Some(layout) = self.connect_layout() else { return };
         let theme = &self.theme;
         let busy = form.job.is_some();
-        painter.fill(self.settings_frame().panel, Colour([0., 0., 0., 0.55]), 10.);
-        painter.shape(
-            layout.panel,
-            Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.background, 8.) },
-        );
-        painter.text(
-            "Connect smart home",
-            Rect::new(layout.body.x, layout.panel.y + 20., layout.body.w, 32.),
-            Style::new(23., theme.text).weight(500),
-        );
-        painter.text(
-            "Use your Tuya IoT project's Access ID and Access Secret.",
-            Rect::new(layout.body.x, layout.panel.y + 60., layout.body.w, 32.),
-            Style::new(12., theme.muted).lines(2),
-        );
-        painter.clipped(layout.body, |painter| {
+        // The fields show focus only while the form has the keyboard.
+        let typing = form.active && !busy;
+        {
             for (index, rect) in layout.fields.iter().enumerate() {
                 painter.text(
                     ["Access ID", "Access Secret", "Data centre"][index],
@@ -533,7 +571,7 @@ impl Tileception {
                         border_width: 1.,
                         border: if form.invalid == Some(index) {
                             theme.danger
-                        } else if form.focus == index && !busy {
+                        } else if form.focus == index && typing {
                             theme.accent
                         } else {
                             theme.border
@@ -563,7 +601,7 @@ impl Tileception {
                     let field = crate::text::Field {
                         cursor,
                         anchor,
-                        visible: form.focus == index && !busy,
+                        visible: form.focus == index && typing,
                         accent: theme.accent.straight_rgba8(),
                     };
                     if let Some(image) =
@@ -587,7 +625,7 @@ impl Tileception {
                     theme.text,
                     7.,
                 );
-                if form.focus == index + 3 && !busy {
+                if form.focus == index + 3 && typing {
                     painter.shape(
                         Rect::new(switch.x - 4., switch.y - 4., 42., 28.),
                         Shape { border_width: 1., border: theme.accent, radius: 12., ..Default::default() },
@@ -596,22 +634,33 @@ impl Tileception {
             }
             painter.text(
                 if form.sensors || form.refresh {
-                    "These options store the Access Secret in your private device file."
+                    "Both options keep the Access Secret in your private device file, readable by you only."
                 } else {
-                    "Credentials are used for this connection only."
+                    "The Access Secret is used for this connection only and is not kept."
                 },
-                Rect::new(layout.body.x, layout.body.y + 280. - form.scroll, layout.body.w, 32.),
+                Rect::new(layout.body.x, layout.body.y + 270., layout.body.w, 32.),
                 Style::new(11., theme.muted).lines(2),
             );
             painter.text(
                 if form.error.is_empty() { &form.progress } else { &form.error },
-                Rect::new(layout.body.x, layout.body.y + 320. - form.scroll, layout.body.w, 44.),
+                Rect::new(layout.body.x, layout.body.y + 304., layout.body.w, 50.),
                 Style::new(12., if form.error.is_empty() { theme.accent } else { theme.danger }).lines(3),
             );
-        });
-        for (index, rect, label) in
-            [(5, layout.cancel, "Cancel"), (6, layout.submit, if busy { "Connecting..." } else { "Connect" })]
-        {
+        }
+        let cancel = if busy { "Stop" } else { "Cancel" };
+        let submit = if busy {
+            "Connecting..."
+        } else if self.settings.home_ready {
+            "Refresh"
+        } else {
+            "Connect"
+        };
+        let buttons: Vec<(usize, Rect, &str)> = if self.connect_cancellable() {
+            vec![(5, layout.cancel, cancel), (6, layout.submit, submit)]
+        } else {
+            vec![(6, layout.submit, submit)]
+        };
+        for (index, rect, label) in buttons {
             painter.shape(
                 rect,
                 Shape {
@@ -621,7 +670,7 @@ impl Tileception {
                     } else {
                         (theme.surface_raised, theme.surface_raised)
                     },
-                    border_width: if form.focus == index { 1. } else { 0. },
+                    border_width: if form.focus == index && typing { 1. } else { 0. },
                     border: theme.accent,
                     ..Default::default()
                 },

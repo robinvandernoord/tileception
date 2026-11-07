@@ -200,6 +200,9 @@ impl Tileception {
     }
 
     pub(super) fn open_settings_page_section(&mut self) {
+        if self.settings.page == Some(5) {
+            self.settings_home_arrive();
+        }
         if self.settings.section.is_some() {
             return;
         }

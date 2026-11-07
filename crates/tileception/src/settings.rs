@@ -11,6 +11,7 @@ mod colour;
 mod connect;
 mod display_preview;
 mod editor;
+mod home_page;
 mod interaction;
 mod keymap;
 mod sections;
@@ -480,9 +481,12 @@ enum Hit {
     Close,
     Option(usize, usize),
     EditDocument,
-    HomeConnect,
-    HomeDisconnect,
-    HomeImport,
+    /// Smart home: the how-to and troubleshooting, a link to Tuya's
+    /// platform, and fetching the devices again.
+    HomeGuide,
+    HomeTrouble,
+    HomeLink(usize),
+    HomeRefresh,
     HomeCloud(bool),
     Reference,
     AdvancedAppearance,
@@ -525,6 +529,16 @@ pub struct Settings {
     editor_epoch: u64,
     config_scroll: f64,
     home_cloud_labels: [String; 2],
+    /// Smart home: devices were imported, so the page shows them instead of
+    /// the setup steps.
+    home_ready: bool,
+    /// The how-to and the troubleshooting are unfolded.
+    home_guide: bool,
+    home_trouble: bool,
+    /// Names and places from the device file, while not connected.
+    home_listed: Vec<(String, String)>,
+    /// The device file keeps cloud access, so its options can change.
+    home_cloud_saved: bool,
     needs_reload: bool,
     connect: Option<connect::Connect>,
     section: Option<sections::model::Screen>,
@@ -692,8 +706,8 @@ struct Frame {
     /// Each group's heading and the card holding its rows.
     groups: Vec<(&'static str, Rect)>,
     advanced: Option<Rect>,
-    /// The card holding the smart-home connection controls.
-    home: Option<Rect>,
+    /// The Smart home page's steps or devices, below its rows.
+    home: Option<home_page::HomeFrame>,
     /// The battery colour thresholds, under their row on Power & battery.
     levels: Vec<(Rect, usize)>,
     max_scroll: f64,
@@ -813,6 +827,8 @@ impl Settings {
                     // Full-edge crossing lives in the Displays screen, beside the arrangement.
                     self.page == Some(field.category)
                         && (self.advanced_appearance || !advanced_appearance(field.key))
+                        // Smart home's rows wait until devices are set up.
+                        && (self.home_ready || !field.key.starts_with("home."))
                         && field.key != "general.stretch_screen_edges"
                 } else {
                     format!("{} {} {}", field.label, field.description, field.key).to_lowercase().contains(&query)
@@ -973,6 +989,23 @@ impl Tileception {
 
     /// Opens Settings in a floating window on the Desktop, or closes it.
     /// Drafts are kept while it is closed.
+    /// Opens Settings on one page, such as Smart home from the panel.
+    pub fn open_settings_page(&mut self, page: usize) {
+        if !self.settings.open {
+            self.toggle_settings();
+        }
+        if !self.settings.open {
+            return;
+        }
+        self.notifications.open = false;
+        self.settings.page = Some(page);
+        self.settings.query.clear();
+        self.settings.search_input.clear();
+        self.settings.scroll = 0.;
+        self.open_settings_page_section();
+        self.schedule_render();
+    }
+
     pub fn toggle_settings(&mut self) {
         self.section_cancel_recording();
         if self.is_locked() {
@@ -986,7 +1019,7 @@ impl Tileception {
             && self.settings.editor.is_none()
             && self.settings.editing.is_none()
             && self.settings.parked_editors.is_empty()
-            && self.settings.connect.is_none()
+            && self.settings.connect.as_ref().is_none_or(|form| !form.busy())
             && self.settings.section.is_none()
             && self.settings.parked_sections.is_empty()
             && self.settings.keymap.is_none()
@@ -1379,8 +1412,10 @@ impl Tileception {
                 offset += 62.;
             }
             if self.settings.page == Some(5) && self.settings.query.is_empty() {
-                frame.home = Some(Rect::new(content.x, offset + 44., row_width, 104.));
-                offset += 148.;
+                let gap = if rows.is_empty() { 0. } else { 20. };
+                let home = self.settings_home_layout(content.x, offset + gap, row_width);
+                offset += gap + home.height + 20.;
+                frame.home = Some(home);
             }
             frame.max_scroll = (offset - viewport(&frame).h + 20.).max(0.);
             let scroll = self.settings.scroll.min(frame.max_scroll);
@@ -1388,8 +1423,8 @@ impl Tileception {
             for (_, rect) in &mut frame.groups {
                 rect.y += shift;
             }
-            if let Some(card) = &mut frame.home {
-                card.y += shift;
+            if let Some(home) = &mut frame.home {
+                home.shift(shift);
             }
             let area = viewport(&frame);
             if let Some(top) = advanced_at {
@@ -1432,24 +1467,10 @@ impl Tileception {
                     }
                 }
             }
-            if let Some(card) = frame.home {
-                for (position, hit) in [
-                    if self.settings_home_connected() { Hit::HomeDisconnect } else { Hit::HomeConnect },
-                    Hit::HomeImport,
-                    Hit::HomeCloud(true),
-                    Hit::HomeCloud(false),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let rect = Rect::new(
-                        card.x + 16. + (position % 2) as f64 * 200.,
-                        card.y + 16. + (position / 2) as f64 * 40.,
-                        188.,
-                        32.,
-                    );
+            if let Some(home) = &frame.home {
+                for (rect, hit) in &home.buttons {
                     if rect.y >= area.y && rect.bottom() <= area.bottom() {
-                        frame.hits.push((rect, hit));
+                        frame.hits.push((*rect, *hit));
                     }
                 }
             }
@@ -1483,10 +1504,8 @@ impl Tileception {
             self.section_scroll(amount);
             return;
         }
-        if self.settings.connect.is_some() {
-            self.settings_connect_scroll(amount);
-            return;
-        }
+        // The page scrolls under the credentials form; its list closes.
+        self.settings_connect_scrolled();
         if self.settings.editor.is_some() {
             self.settings_editor_scroll(amount);
             return;
@@ -1610,6 +1629,7 @@ impl Tileception {
     }
 
     fn settings_activate(&mut self, hit: Hit, position: Option<f64>) {
+        self.settings_connect_release();
         if hit == Hit::Discard {
             self.settings.editing = None;
         } else if !self.settings_finish_edit() {
@@ -1637,21 +1657,18 @@ impl Tileception {
                 self.settings.config_scroll = 0.;
             }
             Hit::AdvancedAppearance => self.settings.advanced_appearance = !self.settings.advanced_appearance,
-            Hit::HomeConnect => {
-                if self.config.file.home.enabled {
-                    self.apply_home();
-                    self.settings.message = self.settings_home_status();
-                    self.settings.error = false;
-                } else {
-                    self.settings.message = "Enable smart home and apply first.".into();
+            Hit::HomeGuide => self.settings.home_guide = !self.settings.home_guide,
+            Hit::HomeTrouble => self.settings.home_trouble = !self.settings.home_trouble,
+            Hit::HomeLink(index) => {
+                if let Some((_, url)) = home_page::LINKS.get(index) {
+                    self.spawn("xdg-open", &[(*url).to_string()]);
                 }
             }
-            Hit::HomeDisconnect => {
-                self.stop_home();
-                self.settings.error = false;
-                self.settings.message = "Disconnected. Saved devices and credentials are kept.".into();
+            Hit::HomeRefresh => {
+                self.open_settings_connect();
+                // The form opens at the bottom of the page: bring it into view.
+                self.settings.scroll = self.settings_frame().max_scroll;
             }
-            Hit::HomeImport => self.open_settings_connect(),
             Hit::HomeCloud(sensors) => match self.settings_home_cloud(sensors) {
                 Ok(()) => {
                     self.settings.message = self.settings_home_cloud_label(sensors);
@@ -1906,7 +1923,7 @@ impl Tileception {
             return;
         }
         let page_navigation =
-            self.settings.editor.is_none() && self.settings.connect.is_none() && self.settings.keymap.is_none();
+            self.settings.editor.is_none() && !self.settings_connect_typing() && self.settings.keymap.is_none();
         if !page_navigation && mods.alt && sym == keysyms::KEY_Up {
             self.settings_key(keysyms::KEY_Escape, Mods::default());
             return;
@@ -1948,8 +1965,7 @@ impl Tileception {
             self.section_key(sym, mods);
             return;
         }
-        if self.settings.connect.is_some() {
-            self.settings_connect_key(sym, mods);
+        if self.settings_connect_key(sym, mods) {
             return;
         }
         if self.settings.editor.is_some() {
@@ -2121,6 +2137,8 @@ impl Tileception {
                 1 => format!("1 setting matches \"{}\".", state.query),
                 count => format!("{count} settings match \"{}\".", state.query),
             }
+        } else if state.page == Some(5) && !state.home_ready {
+            "Not set up yet: follow the three steps below.".into()
         } else if state.page == Some(5) {
             self.settings_home_status()
         } else {
@@ -2152,18 +2170,8 @@ impl Tileception {
             theme,
         );
         painter.clipped(viewport(&frame), |painter| {
-            if let Some(card) = frame.home {
-                painter.text(
-                    "CONNECTION",
-                    Rect::new(card.x + 2., card.y - 24., 200., 20.),
-                    Style::new(10., theme.muted).weight(600),
-                );
-                let note = "These take effect at once, without Apply.";
-                let style = Style::new(11., theme.muted);
-                let (width, _) = painter.measure(note, card.w, style);
-                painter.text(note, Rect::new(card.right() - width - 2., card.y - 24., width + 1., 20.), style);
-                painter
-                    .shape(card, Shape { border_width: 1., border: theme.border, ..Shape::filled(theme.surface, 8.) });
+            if let Some(home) = &frame.home {
+                self.settings_draw_home_page(painter, home);
             }
         });
         for (rect, hit) in &frame.hits {
@@ -2302,21 +2310,32 @@ impl Tileception {
                         7.,
                     );
                 }
-                Hit::HomeConnect | Hit::HomeDisconnect | Hit::HomeImport => {
-                    let label = match hit {
-                        Hit::HomeConnect => "Reconnect",
-                        Hit::HomeDisconnect => "Disconnect",
-                        _ => "Set up devices...",
-                    };
+                Hit::HomeGuide | Hit::HomeTrouble | Hit::HomeLink(_) | Hit::HomeRefresh => {
+                    let (label, unfolded) = self.settings_home_label(*hit);
+                    let primary = matches!(hit, Hit::HomeRefresh);
                     painter.shape(
                         *rect,
                         Shape {
                             border_width: 1.,
-                            border: if hovered { theme.muted } else { theme.border },
-                            ..Shape::filled(theme.surface_raised, 6.)
+                            border: if focused {
+                                theme.accent
+                            } else if hovered {
+                                theme.muted
+                            } else {
+                                theme.border
+                            },
+                            ..Shape::filled(if primary { theme.surface_raised } else { theme.surface }, 6.)
                         },
                     );
-                    painter.text(label, *rect, Style::new(11., theme.text).align(Align::Centre));
+                    let text = Rect::new(rect.x + 12., rect.y, rect.w - 36., rect.h);
+                    painter.text(&label, text, Style::new(11.5, theme.text));
+                    let icon = match unfolded {
+                        Some(true) => glyph::CHEVRON_UP,
+                        Some(false) => glyph::CHEVRON_DOWN,
+                        None if matches!(hit, Hit::HomeLink(_)) => glyph::ARROW_RIGHT,
+                        None => glyph::RESTART,
+                    };
+                    painter.glyph(icon, Rect::new(rect.right() - 28., rect.y, 20., rect.h), 13, theme.muted);
                 }
                 Hit::ReviewChanges if state.section.is_some() => {}
                 Hit::ReviewChanges => {
@@ -2433,7 +2452,7 @@ impl Tileception {
                 );
             }
         });
-        if (state.page.is_some() || !state.query.is_empty()) && state.selected().is_empty() {
+        if (state.page.is_some() || !state.query.is_empty()) && state.selected().is_empty() && frame.home.is_none() {
             painter.text(
                 "Try a word such as accent, gap, bar or battery.",
                 Rect::new(frame.content.x, frame.top + 8., frame.content.w, 30.),
@@ -2527,7 +2546,6 @@ impl Tileception {
         }
         self.draw_colour_picker(&mut painter, &frame);
         self.settings_draw_editor(&mut painter, &frame);
-        self.settings_draw_connect(&mut painter);
         self.section_draw(&mut painter);
         self.settings_pointer_feedback(&mut painter);
         self.draw_keymap_picker(&mut painter);
@@ -2647,7 +2665,10 @@ impl Tileception {
                 ("Screen off after", number("idle.off_after", "")),
                 ("Power saver at", number("battery.power_saver_at", "%")),
             ],
-            5 => vec![("In the panel", switch("home.enabled")), ("Status", self.settings_home_status())],
+            5 => vec![
+                ("In the panel", switch("home.enabled")),
+                ("Status", if self.settings_home_ready() { self.settings_home_status() } else { "Not set up".into() }),
+            ],
             6 => vec![
                 ("Locker", text("shell.lock", "Built-in")),
                 ("Suspend", if state.flag("general.suspend_enabled") { "Allowed" } else { "Hidden" }.into()),
