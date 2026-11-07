@@ -989,6 +989,14 @@ impl Tileception {
 
     /// Opens Settings in a floating window on the Desktop, or closes it.
     /// Drafts are kept while it is closed.
+    /// Opens Settings on the page with this title, as plugins ask.
+    pub fn open_settings_named(&mut self, title: &str) {
+        match CATEGORIES.iter().position(|category| category.title.eq_ignore_ascii_case(title.trim())) {
+            Some(page) => self.open_settings_page(page),
+            None => tracing::warn!("no Settings page called {title:?}"),
+        }
+    }
+
     /// Opens Settings on one page, such as Smart home from the panel.
     pub fn open_settings_page(&mut self, page: usize) {
         if !self.settings.open {
@@ -1666,6 +1674,10 @@ impl Tileception {
             }
             Hit::HomeRefresh => {
                 self.open_settings_connect();
+                // With a saved secret there is nothing to ask: refresh at once.
+                if self.settings.connect.as_ref().is_some_and(|form| form.has_stored_secret()) {
+                    self.start_settings_connect();
+                }
                 // The form opens at the bottom of the page: bring it into view.
                 self.settings.scroll = self.settings_frame().max_scroll;
             }

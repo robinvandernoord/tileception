@@ -570,7 +570,7 @@ impl Tileception {
                         );
                     }
                     let track = Rect::new(rect.x + 8.0, rect.y + (rect.h - 20.0) / 2.0, 36.0, 20.0);
-                    crate::home::draw_switch(&mut painter, track, feedback.details.is_some(), false, true);
+                    crate::panel::draw_switch(&mut painter, track, feedback.details.is_some(), false, true);
                     let label =
                         Rect::new(track.right() + 12.0, rect.y, (rect.right() - track.right() - 20.0).max(1.0), rect.h);
                     painter.text("Include system details", label, Style::new(theme.font_size, theme.text));

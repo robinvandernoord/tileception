@@ -39,11 +39,24 @@ pub type Environment = Vec<(OsString, Option<OsString>)>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
     Launcher,
+    /// The notification panel's blocks.
+    Panel,
+    /// `tileception msg plugin` and key bindings.
+    Command,
 }
 
-/// The current request generation of every place.
+impl Place {
+    /// Whether a new request cancels the place's earlier ones. The panel's
+    /// clicks and commands all go through; each gets its own number.
+    fn cancels(self) -> bool {
+        self == Place::Launcher
+    }
+}
+
+/// The current request generation of every place; for places that do not
+/// cancel, the last request's number.
 #[derive(Default)]
-struct Generations([AtomicU64; 1]);
+struct Generations([AtomicU64; 3]);
 
 impl Generations {
     fn get(&self, place: Place) -> &AtomicU64 {
@@ -84,6 +97,8 @@ pub struct LauncherConfig {
 pub struct Settings {
     plugins: BTreeMap<String, PluginConfig>,
     warnings: Vec<String>,
+    /// What the bundled plugins' manifests depend on.
+    pub bundled: crate::bundled::Options,
 }
 
 impl Settings {
@@ -98,7 +113,7 @@ impl Settings {
             let config = normalize(plugin_id, config.clone(), &mut warnings);
             overlay(merged.entry(plugin_id.clone()).or_default(), config);
         }
-        Self { plugins: merged, warnings }
+        Self { plugins: merged, warnings, bundled: crate::bundled::Options::default() }
     }
 }
 
@@ -136,6 +151,12 @@ pub struct Row {
     pub icon: Option<String>,
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// What Tab puts in the launcher's field.
+    #[serde(default)]
+    pub completion: Option<String>,
+    /// What Ctrl+Enter does instead of the first action.
+    #[serde(default)]
+    pub alternate: Option<Box<Action>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +185,15 @@ pub enum ActionKind {
         #[serde(default = "empty_object")]
         arguments: Value,
     },
+    /// Opens the user's terminal in a folder.
+    Terminal {
+        directory: String,
+    },
+    /// Opens a page of Tileception's Settings by its title, such as
+    /// "Smart home".
+    Settings {
+        page: String,
+    },
 }
 
 fn empty_object() -> Value {
@@ -177,6 +207,27 @@ pub struct Info {
     #[serde(default)]
     pub icon: Option<String>,
     pub prefixes: Vec<String>,
+}
+
+/// What a plugin offers, from `tools/list` and `resources/list`.
+#[derive(Debug, Clone, Default)]
+pub struct Described {
+    /// Its launcher source, when it has `launcher_info`.
+    pub launcher: Option<Info>,
+    /// The `tileception://` resources it offers, subscribed to.
+    pub resources: Vec<String>,
+}
+
+/// The resource holding a plugin's panel block.
+pub const PANEL: &str = "tileception://panel";
+
+/// What [`Host::handle`] changed.
+#[derive(Debug, Default)]
+pub struct Changed {
+    pub routes: bool,
+    pub panels: bool,
+    /// Other resources read anew, as (plugin, uri).
+    pub resources: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +248,14 @@ pub enum Event {
     Info {
         epoch: u64,
         plugin: String,
-        result: Result<Info, String>,
+        result: Result<Described, String>,
+    },
+    /// A subscribed resource was read, after starting or a change.
+    Resource {
+        epoch: u64,
+        plugin: String,
+        uri: String,
+        result: Result<Value, String>,
     },
     /// A message a plugin sent on its own.
     Notification {
@@ -213,7 +271,7 @@ pub enum Event {
     Action {
         place: Place,
         generation: u64,
-        result: Result<(), String>,
+        result: Result<Value, String>,
     },
 }
 
@@ -253,6 +311,8 @@ impl Worker {
             stopping: stopping.clone(),
             environment,
             wake: Arc::new(ear),
+            resources: Vec::new(),
+            dirty: std::collections::BTreeSet::new(),
         };
         let thread = std::thread::Builder::new()
             .name(format!("plugin {name}"))
@@ -288,7 +348,7 @@ pub struct Host {
     epoch: u64,
     /// Enabled plugins, highest priority first.
     order: Vec<(String, PluginConfig)>,
-    infos: BTreeMap<String, Result<Info, String>>,
+    infos: BTreeMap<String, Result<Described, String>>,
     /// Diagnostics from reading manifests and config.
     found: Vec<String>,
     workers: BTreeMap<String, Worker>,
@@ -296,6 +356,10 @@ pub struct Host {
     retired: Vec<JoinHandle<()>>,
     pub routes: Vec<Route>,
     pub diagnostics: Vec<String>,
+    /// Panel blocks by plugin.
+    panels: BTreeMap<String, crate::panel::block::Block>,
+    /// Other resources by (plugin, uri), as last read.
+    resources: BTreeMap<(String, String), Value>,
 }
 
 impl Host {
@@ -313,6 +377,8 @@ impl Host {
             retired: Vec::new(),
             routes: Vec::new(),
             diagnostics: Vec::new(),
+            panels: BTreeMap::new(),
+            resources: BTreeMap::new(),
         };
         host.reload();
         host
@@ -349,6 +415,8 @@ impl Host {
         self.found.clear();
         self.routes.clear();
         self.diagnostics.clear();
+        self.panels.clear();
+        self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
         let events = self.events.clone();
@@ -358,9 +426,66 @@ impl Host {
         });
     }
 
-    /// Takes in what discovery and the workers report. True when the
-    /// launcher's routes changed.
-    pub fn handle(&mut self, event: Event) -> bool {
+    /// Takes in what discovery and the workers report.
+    pub fn handle(&mut self, event: Event) -> Changed {
+        let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
+        let routes = self.handle_inner(event);
+        Changed { routes, panels: reloaded, resources: Vec::new() }
+    }
+
+    /// A resource was read: panels are kept parsed, others as they are.
+    pub fn handle_resource(
+        &mut self,
+        epoch: u64,
+        plugin: String,
+        uri: String,
+        result: Result<Value, String>,
+    ) -> Changed {
+        let mut changed = Changed::default();
+        if epoch != self.epoch || !self.workers.contains_key(&plugin) {
+            return changed;
+        }
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: could not read {uri}: {error}");
+                return changed;
+            }
+        };
+        if uri == PANEL {
+            match serde_json::from_value::<crate::panel::block::Block>(value) {
+                Ok(block) => {
+                    self.panels.insert(plugin, block);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid panel block: {error}");
+                    self.panels.remove(&plugin);
+                }
+            }
+            changed.panels = true;
+        } else {
+            self.resources.insert((plugin.clone(), uri.clone()), value);
+            changed.resources.push((plugin, uri));
+        }
+        changed
+    }
+
+    /// The panel blocks, highest priority first.
+    pub fn panels(&self) -> Vec<(&str, &crate::panel::block::Block)> {
+        self.order.iter().filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.panels.get(plugin_id)?))).collect()
+    }
+
+    /// A resource as last read.
+    pub fn resource(&self, plugin: &str, uri: &str) -> Option<&Value> {
+        self.resources.get(&(plugin.to_string(), uri.to_string()))
+    }
+
+    /// Whether a plugin is running.
+    pub fn running(&self, plugin: &str) -> bool {
+        self.workers.contains_key(plugin)
+    }
+
+    fn handle_inner(&mut self, event: Event) -> bool {
         match event {
             Event::Discovered { epoch, plugins, diagnostics } if epoch == self.epoch => {
                 self.found = diagnostics;
@@ -403,7 +528,7 @@ impl Host {
 
     /// Works out the launcher's routes from the plugins described so far,
     /// in priority order, so the outcome does not depend on who answered
-    /// first. Once all have, plugins without a route stop.
+    /// first. Once all have, plugins with neither a route nor resources stop.
     fn route(&mut self) {
         let mut diagnostics = self.found.clone();
         let mut routes = Vec::new();
@@ -415,7 +540,13 @@ impl Host {
                     diagnostics.push(format!("Plugin {plugin_id}: {error}"));
                     continue;
                 }
-                Some(Ok(info)) => info,
+                Some(Ok(Described { launcher: Some(info), .. })) => info,
+                Some(Ok(Described { launcher: None, resources })) => {
+                    if resources.is_empty() {
+                        diagnostics.push(format!("Plugin {plugin_id}: offers nothing Tileception uses"));
+                    }
+                    continue;
+                }
             };
             let mut prefixes = config
                 .launcher
@@ -448,6 +579,12 @@ impl Host {
                 .workers
                 .keys()
                 .filter(|plugin_id| !routes.iter().any(|route: &Route| &route.plugin_id == *plugin_id))
+                .filter(|plugin_id| {
+                    !self
+                        .infos
+                        .get(*plugin_id)
+                        .is_some_and(|info| info.as_ref().is_ok_and(|info| !info.resources.is_empty()))
+                })
                 .cloned()
                 .collect();
             for plugin_id in unused {
@@ -469,29 +606,28 @@ impl Host {
         generation
     }
 
+    /// The route for what is typed: a prefix and a space, so typing the
+    /// start of an app's name never switches to a plugin.
     pub fn matches(&self, text: &str) -> Option<(&Route, &str)> {
-        self.routes.iter().find_map(|route| {
-            route.prefixes.iter().find_map(|prefix| {
-                let rest = text.strip_prefix(prefix)?;
-                (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some((route, prefix.as_str()))
-            })
-        })
+        route_for(&self.routes, text)
     }
 
     pub fn search(&self, text: &str) -> Option<(u64, String)> {
         let generation = self.cancel(Place::Launcher);
         let (route, prefix) = self.matches(text)?;
         let worker = self.workers.get(&route.plugin_id)?;
-        worker.send(Request::Search {
-            generation,
-            prefix: prefix.into(),
-            query: text[prefix.len()..].trim_start().into(),
-        });
+        worker.send(Request::Search { generation, prefix: prefix.into(), query: text[prefix.len()..].trim().into() });
         Some((generation, route.plugin_id.clone()))
     }
 
+    /// Calls a plugin's tool from a place; the result comes back as
+    /// [`Event::Action`] with the returned number.
     pub fn tool(&self, place: Place, plugin: String, name: String, arguments: Value) -> u64 {
-        let generation = self.cancel(place);
+        let generation = if place.cancels() {
+            self.cancel(place)
+        } else {
+            self.generations.get(place).fetch_add(1, Ordering::Relaxed) + 1
+        };
         if let Some(worker) = self.workers.get(&plugin) {
             worker.send(Request::Tool { place, generation, name, arguments });
         } else {
@@ -499,6 +635,16 @@ impl Host {
         }
         generation
     }
+}
+
+/// See [`Host::matches`].
+fn route_for<'a>(routes: &'a [Route], text: &str) -> Option<(&'a Route, &'a str)> {
+    routes.iter().find_map(|route| {
+        route.prefixes.iter().find_map(|prefix| {
+            let rest = text.strip_prefix(prefix.as_str())?;
+            rest.starts_with(char::is_whitespace).then_some((route, prefix.as_str()))
+        })
+    })
 }
 
 impl Drop for Host {
@@ -531,7 +677,10 @@ impl Tileception {
     }
 
     pub fn plugin_settings(&self) -> Settings {
-        Settings::new(&self.config.file.plugins, &self.config.file.launcher)
+        let mut settings = Settings::new(&self.config.file.plugins, &self.config.file.launcher);
+        let home = &self.config.file.home;
+        settings.bundled = crate::bundled::Options { home: home.enabled.then(|| home.devices.clone()) };
+        settings
     }
 
     /// Picks up a changed config.
@@ -556,11 +705,58 @@ impl Tileception {
     fn plugin_event(&mut self, event: Event) {
         match event {
             Event::Rows { .. } | Event::Action { place: Place::Launcher, .. } => self.launcher_plugin_event(event),
-            event => {
-                if self.plugins.as_mut().is_some_and(|plugins| plugins.handle(event)) {
-                    self.launcher_routes_changed();
+            Event::Action { place: Place::Panel, result, .. } => {
+                if let Err(error) = result {
+                    tracing::warn!("Panel plugin action failed: {error}");
                 }
             }
+            Event::Action { place: Place::Command, generation, result } => {
+                self.plugin_command_reply(generation, result)
+            }
+            Event::Resource { epoch, plugin, uri, result } => {
+                let Some(plugins) = &mut self.plugins else { return };
+                let changed = plugins.handle_resource(epoch, plugin, uri, result);
+                self.plugins_changed(changed);
+            }
+            event => {
+                let Some(plugins) = &mut self.plugins else { return };
+                let changed = plugins.handle(event);
+                self.plugins_changed(changed);
+            }
+        }
+    }
+
+    /// `tileception msg plugin <id> <tool> [arguments]`: calls the tool; the
+    /// command is answered when the plugin is.
+    pub(crate) fn plugin_command(&mut self, plugin: &str, tool: &str, arguments: Value) -> Result<String, String> {
+        let plugins = self.plugins.as_ref().ok_or("plugins are not running")?;
+        if !plugins.running(plugin) {
+            return Err(format!("plugin {plugin} is not running; type plugins in the launcher to see why"));
+        }
+        let request = plugins.tool(Place::Command, plugin.into(), tool.into(), arguments);
+        self.defer_reply(request);
+        Ok(String::new())
+    }
+
+    /// A tool's answer for `tileception msg`: its `text`, else its JSON.
+    fn plugin_command_reply(&mut self, request: u64, result: Result<Value, String>) {
+        let reply = result.map(|value| match value["text"].as_str() {
+            Some(text) if text.is_empty() || text.ends_with('\n') => text.to_string(),
+            Some(text) => format!("{text}\n"),
+            None => format!("{value:#}\n"),
+        });
+        self.reply_later(request, reply);
+    }
+
+    fn plugins_changed(&mut self, changed: Changed) {
+        if changed.routes {
+            self.launcher_routes_changed();
+        }
+        if changed.panels {
+            self.panel_changed();
+        }
+        if !changed.resources.is_empty() && self.settings.open {
+            self.schedule_render();
         }
     }
 }
@@ -574,10 +770,15 @@ struct Source {
     stopping: Arc<AtomicBool>,
     environment: Arc<RwLock<Environment>>,
     wake: Arc<UnixDatagram>,
+    /// The resources subscribed to; a plugin with any is restarted at once
+    /// when it crashes, and subscribed again.
+    resources: Vec<String>,
+    /// Resources the plugin said changed, not yet read again.
+    dirty: std::collections::BTreeSet<String>,
 }
 
-/// A worker: describe the plugin, then serve requests and listen while idle
-/// until stopped.
+/// A worker: describe the plugin, then serve requests, read changed
+/// resources and listen while idle, until stopped.
 fn work(
     mut source: Source,
     epoch: u64,
@@ -585,16 +786,14 @@ fn work(
     events: &channel::Sender<Event>,
     generations: &Generations,
 ) {
-    let info = source
-        .connect()
-        .and_then(|session| session.tool("launcher_info", json!({}), None))
-        .and_then(|value| serde_json::from_value::<Info>(value).map_err(|error| PluginError::Tool(error.to_string())));
-    let failed = info.is_err();
+    let described = source.describe();
+    let failed = described.is_err();
     source.forward(events);
-    let result = info.map_err(|error| error.to_string());
+    let result = described.map_err(|error| error.to_string());
     if events.send(Event::Info { epoch, plugin: source.name.clone(), result }).is_err() || failed {
         return;
     }
+    source.read_all(epoch, events);
     loop {
         if source.stopping.load(Ordering::Relaxed) {
             return;
@@ -610,7 +809,16 @@ fn work(
                 }
             }
             Err(mpsc::TryRecvError::Disconnected) => return,
-            Err(mpsc::TryRecvError::Empty) => source.idle(),
+            Err(mpsc::TryRecvError::Empty) if !source.dirty.is_empty() && source.session.is_some() => {
+                source.read_dirty(epoch, events);
+            }
+            Err(mpsc::TryRecvError::Empty) if source.session.is_none() && !source.resources.is_empty() => {
+                source.restart(epoch, events);
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                source.idle();
+                source.forward(events);
+            }
         }
     }
 }
@@ -626,6 +834,66 @@ impl Source {
                 Some(Session::start(&self.name, &self.config, self.stopping.clone(), &environment, self.wake.clone())?);
         }
         self.session.as_mut().ok_or_else(|| "Plugin failed to start".into())
+    }
+
+    /// Starts the plugin and asks what it offers: its launcher source and
+    /// its `tileception://` resources, which it is subscribed to.
+    fn describe(&mut self) -> Result<Described, PluginError> {
+        let session = self.connect()?;
+        let tools = session.request("tools/list", json!({}), None)?;
+        let has_launcher =
+            tools["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "launcher_info"));
+        let launcher = if has_launcher {
+            let value = session.tool("launcher_info", json!({}), None)?;
+            Some(serde_json::from_value::<Info>(value).map_err(|error| PluginError::Tool(error.to_string()))?)
+        } else {
+            None
+        };
+        let resources = session.subscribe_all()?;
+        self.resources = resources.clone();
+        Ok(Described { launcher, resources })
+    }
+
+    /// Reads every subscribed resource.
+    fn read_all(&mut self, epoch: u64, events: &channel::Sender<Event>) {
+        self.dirty = self.resources.iter().cloned().collect();
+        self.read_dirty(epoch, events);
+    }
+
+    /// Reads the resources that changed, once each however often they did.
+    fn read_dirty(&mut self, epoch: u64, events: &channel::Sender<Event>) {
+        while let Some(uri) = self.dirty.pop_first() {
+            let Some(session) = &mut self.session else { return };
+            let result = session.read(&uri);
+            if matches!(result, Err(PluginError::Transport(_))) {
+                self.lost();
+            }
+            self.forward(events);
+            let result = result.map_err(|error| error.to_string());
+            let _ = events.send(Event::Resource { epoch, plugin: self.name.clone(), uri, result });
+        }
+    }
+
+    /// A plugin with resources crashed: starts it again after the cooldown,
+    /// subscribes again and reads everything.
+    fn restart(&mut self, epoch: u64, events: &channel::Sender<Event>) {
+        let wait = self.retry_after.saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            wait_for_bell_until(&self.wake, Some(wait));
+            return;
+        }
+        let subscribed = self.connect().and_then(Session::subscribe_all);
+        match subscribed {
+            Ok(resources) => {
+                tracing::info!("Plugin {}: restarted", self.name);
+                self.resources = resources;
+                self.read_all(epoch, events);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {}: could not restart: {error}", self.name);
+                self.lost();
+            }
+        }
     }
 
     /// Answers one request, unless its place has moved on.
@@ -645,22 +913,30 @@ impl Source {
                     result,
                 })
             }
+            Request::Tool { place, generation, name, arguments } if !place.cancels() => {
+                let result = self.call(&name, arguments, None);
+                Some(Event::Action { place, generation, result })
+            }
             Request::Tool { place, generation, name, arguments } => {
                 let current = generations.get(place);
                 if current.load(Ordering::Relaxed) != generation {
                     return None;
                 }
-                let result = self.invoke(&name, arguments, current, generation).map(|_| ());
+                let result = self.invoke(&name, arguments, current, generation);
                 (current.load(Ordering::Relaxed) == generation).then_some(Event::Action { place, generation, result })
             }
         }
     }
 
     fn invoke(&mut self, name: &str, arguments: Value, current: &AtomicU64, generation: u64) -> Result<Value, String> {
+        self.call(name, arguments, Some((current, generation)))
+    }
+
+    fn call(&mut self, name: &str, arguments: Value, cancel: Option<(&AtomicU64, u64)>) -> Result<Value, String> {
         if Instant::now() < self.retry_after {
             return Err("Plugin is restarting; try again shortly".into());
         }
-        let result = self.connect().and_then(|session| session.tool(name, arguments, Some((current, generation))));
+        let result = self.connect().and_then(|session| session.tool(name, arguments, cancel));
         if matches!(result, Err(PluginError::Transport(_))) {
             self.lost();
         }
@@ -689,35 +965,54 @@ impl Source {
         self.retry_after = Instant::now() + Duration::from_secs(1);
     }
 
-    /// Passes on what the plugin sent on its own.
+    /// Passes on what the plugin sent on its own; a subscribed resource
+    /// that changed is marked to be read again instead.
     fn forward(&mut self, events: &channel::Sender<Event>) {
         let Some(session) = &mut self.session else { return };
         for (method, params) in session.notifications.drain(..) {
+            if method == "notifications/resources/updated"
+                && let Some(uri) = params["uri"].as_str()
+                && self.resources.iter().any(|resource| resource == uri)
+            {
+                self.dirty.insert(uri.to_string());
+                continue;
+            }
             let _ = events.send(Event::Notification { plugin: self.name.clone(), method, params });
         }
     }
 }
 
 fn wait_for_bell(wake: &UnixDatagram) {
+    wait_for_bell_until(wake, None);
+}
+
+/// Waits for the bell, or at most `limit`.
+fn wait_for_bell_until(wake: &UnixDatagram, limit: Option<Duration>) {
+    let timeout = limit.map_or(-1, |limit| i32::try_from(limit.as_millis().saturating_add(1)).unwrap_or(i32::MAX));
     let mut descriptors = [libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
     #[allow(unsafe_code, reason = "poll waits on the owned wake descriptor")]
     // SAFETY: descriptors points to one initialized pollfd for a live descriptor.
     unsafe {
-        libc::poll(descriptors.as_mut_ptr(), 1, -1);
+        libc::poll(descriptors.as_mut_ptr(), 1, timeout);
     }
     let mut buffer = [0; 128];
     while wake.recv(&mut buffer).is_ok() {}
 }
 
 /// Highest-priority manifests are visited first so prefix collisions have a
-/// deterministic winner. Config overrides inherit unspecified manifest fields.
+/// deterministic winner: config, then user manifests, then system ones, then
+/// the bundled plugins. Config overrides inherit unspecified manifest fields.
 fn discover(settings: Settings) -> (Vec<(String, PluginConfig)>, Vec<String>) {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let user = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
     let mut manifests = BTreeMap::<String, (u8, PluginConfig)>::new();
     let mut diagnostics = settings.warnings;
+    match crate::bundled::manifests(&settings.bundled) {
+        Ok(bundled) => manifests.extend(bundled.into_iter().map(|(plugin_id, config)| (plugin_id, (0, config)))),
+        Err(error) => diagnostics.push(error),
+    }
     for (priority, directory) in
-        [(0, PathBuf::from("/usr/share/tileception/plugins")), (1, user.join("tileception/plugins"))]
+        [(1, PathBuf::from("/usr/share/tileception/plugins")), (2, user.join("tileception/plugins"))]
     {
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -750,7 +1045,7 @@ fn discover(settings: Settings) -> (Vec<(String, PluginConfig)>, Vec<String>) {
     }
     for (plugin_id, config) in settings.plugins {
         let (priority, base) = manifests.entry(plugin_id).or_default();
-        *priority = 2;
+        *priority = 3;
         overlay(base, config);
     }
     let mut values: Vec<_> = manifests.into_iter().collect();
@@ -789,14 +1084,21 @@ impl std::fmt::Display for PluginError {
     }
 }
 
-fn parse_rows(value: Value) -> Result<Vec<Row>, String> {
+pub fn parse_rows(value: Value) -> Result<Vec<Row>, String> {
     let rows = value["rows"].as_array().ok_or("Plugin result has no rows array")?;
     let mut parsed = Vec::new();
     for value in rows {
         let mut value = value.clone();
         let actions = value.as_object_mut().and_then(|row| row.remove("actions"));
+        let alternate = value.as_object_mut().and_then(|row| row.remove("alternate"));
         match serde_json::from_value::<Row>(value) {
             Ok(mut row) => {
+                if let Some(alternate) = alternate {
+                    match serde_json::from_value::<Action>(alternate) {
+                        Ok(action) => row.alternate = Some(Box::new(action)),
+                        Err(error) => tracing::warn!("Skipping invalid launcher plugin alternate action: {error}"),
+                    }
+                }
                 if let Some(actions) = actions {
                     if let Some(actions) = actions.as_array() {
                         for action in actions {
@@ -858,6 +1160,8 @@ struct Session {
     cancelled: BTreeMap<u64, Instant>,
     /// Notifications from the plugin, by method, not yet forwarded.
     notifications: Vec<(String, Value)>,
+    /// What the plugin said it supports when initialized.
+    capabilities: Value,
 }
 
 impl Session {
@@ -927,6 +1231,7 @@ impl Session {
             wake,
             cancelled: BTreeMap::new(),
             notifications: Vec::new(),
+            capabilities: Value::Null,
         };
         for descriptor in [session.input.as_raw_fd(), session.output.as_raw_fd()] {
             #[allow(unsafe_code, reason = "fcntl sets nonblocking mode on owned plugin pipes")]
@@ -949,7 +1254,42 @@ impl Session {
             return Err("Plugin must support MCP 2025-06-18 tools".into());
         }
         session.write(json!({"jsonrpc":"2.0","method":"notifications/initialized"}), Instant::now() + TIMEOUT, None)?;
+        session.capabilities = initialized["capabilities"].clone();
         Ok(session)
+    }
+
+    /// Subscribes to every `tileception://` resource the plugin lists, when
+    /// it supports subscriptions; returns their URIs.
+    fn subscribe_all(&mut self) -> Result<Vec<String>, PluginError> {
+        if self.capabilities["resources"]["subscribe"] != true {
+            return Ok(Vec::new());
+        }
+        let listed = self.request("resources/list", json!({}), None)?;
+        let uris: Vec<String> = listed["resources"]
+            .as_array()
+            .map(|resources| {
+                resources
+                    .iter()
+                    .filter_map(|resource| resource["uri"].as_str())
+                    .filter(|uri| uri.starts_with("tileception://"))
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for uri in &uris {
+            self.request("resources/subscribe", json!({ "uri": uri }), None)?;
+        }
+        Ok(uris)
+    }
+
+    /// A resource's JSON text, parsed.
+    fn read(&mut self, uri: &str) -> Result<Value, PluginError> {
+        let result = self.request("resources/read", json!({ "uri": uri }), None)?;
+        let text = result["contents"]
+            .as_array()
+            .and_then(|contents| contents.iter().find_map(|content| content["text"].as_str()))
+            .ok_or_else(|| PluginError::Tool(format!("{uri} has no text")))?;
+        serde_json::from_str(text).map_err(|error| PluginError::Tool(format!("{uri}: {error}")))
     }
 
     fn tool(&mut self, name: &str, arguments: Value, cancel: Option<(&AtomicU64, u64)>) -> Result<Value, PluginError> {
@@ -1198,6 +1538,29 @@ mod tests {
     }
 
     #[test]
+    fn a_prefix_needs_a_space() {
+        let info = Info { name: "Folders".into(), description: String::new(), icon: None, prefixes: vec![] };
+        let routes = [Route { plugin_id: "folders".into(), info, prefixes: vec!["z".into()] }];
+        assert_eq!(route_for(&routes, "z ").map(|(_, prefix)| prefix), Some("z"));
+        assert_eq!(route_for(&routes, "z proj web").map(|(_, prefix)| prefix), Some("z"));
+        assert!(route_for(&routes, "z").is_none());
+        assert!(route_for(&routes, "zoom").is_none());
+    }
+
+    #[test]
+    fn rows_keep_completion_and_skip_a_bad_alternate() {
+        let rows = parse_rows(json!({ "rows": [
+            { "title": "Good", "completion": "~/src/", "alternate": { "title": "Terminal", "type": "terminal", "directory": "/src" } },
+            { "title": "Bad alternate", "alternate": { "title": "Future", "type": "future" } }
+        ] }))
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].completion.as_deref(), Some("~/src/"));
+        assert_eq!(rows[0].alternate.as_ref().map(|action| action.title.as_str()), Some("Terminal"));
+        assert!(rows[1].alternate.is_none());
+    }
+
+    #[test]
     fn tool_error_is_a_normal_answer() {
         assert_eq!(
             tool_result(json!({
@@ -1292,6 +1655,8 @@ for line in sys.stdin:
             stopping: Arc::new(AtomicBool::new(false)),
             environment: Arc::new(RwLock::new(Vec::new())),
             wake: Arc::new(reader),
+            resources: Vec::new(),
+            dirty: std::collections::BTreeSet::new(),
         };
         let current = Arc::new(AtomicU64::new(0));
         assert_eq!(source.invoke("fail", json!({}), &current, 0), Err("Please sign in".into()));

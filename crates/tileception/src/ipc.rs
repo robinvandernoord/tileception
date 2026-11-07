@@ -2,13 +2,18 @@
 //! links. `tileception msg <command>` sends one command and prints the reply.
 
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     time::Duration,
 };
 
-use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic};
+use smithay::reexports::calloop::{
+    EventLoop, Interest, Mode, PostAction,
+    generic::Generic,
+    timer::{TimeoutAction, Timer},
+};
 use tileception_core::{Node, NodeId, World};
 
 use crate::Tileception;
@@ -36,15 +41,58 @@ pub fn listen(event_loop: &mut EventLoop<'static, Tileception>, path: &PathBuf) 
     Ok(())
 }
 
+/// Commands a plugin answers later.
+#[derive(Default)]
+pub struct Waiting {
+    /// Set while handling a command that will be answered later.
+    deferred: Option<u64>,
+    /// Connections waiting, by request number.
+    streams: HashMap<u64, UnixStream>,
+}
+
+/// How long a command waits for a plugin, beyond the plugin's own deadline.
+const PLUGIN_WAIT: Duration = Duration::from_secs(5);
+
+impl Tileception {
+    /// The command being handled is answered by [`Tileception::reply_later`]
+    /// with this number.
+    pub(crate) fn defer_reply(&mut self, request: u64) {
+        self.ipc.deferred = Some(request);
+    }
+
+    /// Answers a deferred command; nothing when it already timed out.
+    pub(crate) fn reply_later(&mut self, request: u64, reply: Result<String, String>) {
+        let Some(stream) = self.ipc.streams.remove(&request) else { return };
+        let text = match reply {
+            Ok(text) => text,
+            Err(err) => format!("error: {err}\n"),
+        };
+        if let Err(err) = (&stream).write_all(text.as_bytes()) {
+            tracing::warn!("ipc: {err}");
+        }
+    }
+}
+
 fn serve(state: &mut Tileception, stream: UnixStream) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut line = String::new();
     BufReader::new(&stream).take(4096).read_line(&mut line)?;
+    state.ipc.deferred = None;
     let reply = match handle(state, line.trim()) {
         Ok(text) => text,
         Err(err) => format!("error: {err}\n"),
     };
+    if let Some(request) = state.ipc.deferred.take() {
+        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+        state.ipc.streams.insert(request, stream);
+        let timer = Timer::from_duration(PLUGIN_WAIT);
+        let _ = state.loop_handle.insert_source(timer, move |_, _, state| {
+            state.reply_later(request, Err("the plugin did not answer".into()));
+            TimeoutAction::Drop
+        });
+        return Ok(());
+    }
     (&stream).write_all(reply.as_bytes())
 }
 

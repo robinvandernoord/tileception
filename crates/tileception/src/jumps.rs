@@ -1,5 +1,6 @@
-//! `z folder` in the launcher: often and recently visited folders from
-//! rupa's z (`~/.z`) and zoxide, ranked by their own frecency.
+//! Often and recently visited folders from rupa's z (`~/.z`) and zoxide,
+//! ranked by their own frecency, for the bundled folders plugin (`z words`
+//! in the launcher).
 
 use std::{
     collections::HashMap,
@@ -16,13 +17,6 @@ const ZOXIDE_TIMEOUT: Duration = Duration::from_millis(300);
 pub struct Folder {
     pub path: PathBuf,
     pub score: f64,
-}
-
-/// What `z words` is after, when that is what was typed: the words, which
-/// may be none to list the favourite folders.
-pub fn query(typed: &str) -> Option<Vec<&str>> {
-    let rest = typed.trim_start().strip_prefix("z ")?;
-    Some(rest.split_whitespace().collect())
 }
 
 /// Every folder z and zoxide know, best first. `now` is in seconds since
@@ -137,14 +131,6 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_792_152_000;
-
-    #[test]
-    fn only_z_and_a_space_asks() {
-        assert_eq!(query("z "), Some(vec![]));
-        assert_eq!(query("z proj  web"), Some(vec!["proj", "web"]));
-        assert_eq!(query("z"), None);
-        assert_eq!(query("zoom"), None);
-    }
 
     #[test]
     fn recent_visits_outrank_old_ones() {

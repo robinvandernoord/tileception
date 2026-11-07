@@ -85,6 +85,9 @@ impl crate::ui::PointerAction for PointerAction {
 pub(super) struct Connect {
     client_id: TextInput,
     secret: SecretField,
+    /// The Access Secret kept in the device file, used when the field is
+    /// left empty.
+    stored: Option<Zeroizing<String>>,
     region: usize,
     menu: Option<usize>,
     sensors: bool,
@@ -104,6 +107,11 @@ impl Connect {
     /// An import is running.
     pub(super) fn busy(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// The device file keeps the Access Secret, so refreshing needs no typing.
+    pub(super) fn has_stored_secret(&self) -> bool {
+        self.stored.is_some() && !self.client_id.text.trim().is_empty()
     }
 }
 
@@ -198,6 +206,10 @@ impl Tileception {
         self.settings.connect = Some(Connect {
             client_id: TextInput { text: client_id, cursor, anchor: None },
             secret: SecretField::default(),
+            stored: cloud
+                .as_ref()
+                .map(|access| Zeroizing::new(access.secret.clone()))
+                .filter(|secret| !secret.is_empty()),
             region: region.unwrap_or(0),
             menu: None,
             sensors: cloud.as_ref().is_some_and(|access| access.poll_sensors),
@@ -251,7 +263,7 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn start_settings_connect(&mut self) {
+    pub(super) fn start_settings_connect(&mut self) {
         let scan = !self.settings_home_connected();
         let Some(form) = self.settings.connect.as_mut() else { return };
         if form.job.is_some() {
@@ -259,7 +271,7 @@ impl Tileception {
         }
         form.menu = None;
         form.invalid = None;
-        if form.client_id.text.trim().is_empty() || form.secret.is_empty() {
+        if form.client_id.text.trim().is_empty() || (form.secret.is_empty() && form.stored.is_none()) {
             form.invalid = Some(if form.client_id.text.trim().is_empty() { 0 } else { 1 });
             form.error = "Enter the Access ID and Access Secret from your Tuya project.".into();
             form.focus = form.invalid.unwrap_or(0);
@@ -303,7 +315,10 @@ impl Tileception {
         let worker_cancelled = cancelled.clone();
         let path = form.path.clone();
         let client_id = form.client_id.text.trim().to_string();
-        let secret = form.secret.take();
+        let secret = match &form.stored {
+            Some(stored) if form.secret.is_empty() => stored.clone(),
+            _ => form.secret.take(),
+        };
         let region = REGIONS[form.region].0.to_string();
         let (sensors, refresh) = (form.sensors, form.refresh);
         form.error.clear();
@@ -383,12 +398,9 @@ impl Tileception {
                 ("home.devices", job.home.devices.clone().map(toml::Value::String), patches[1].1.clone()),
             ])
             .map_err(|error| format!("Devices imported, but could not enable the connection: {error}"))?;
-            let old_home = self.config.file.home.clone();
+            // The home plugin sees the new device file and connects to it.
             self.reload_config()
                 .map_err(|error| format!("Devices imported, but could not reload settings: {error}"))?;
-            if old_home == self.config.file.home {
-                self.apply_home();
-            }
             self.settings.before = before;
             self.settings.draft = draft_values;
             self.settings.document_before = new_before;
@@ -608,6 +620,13 @@ impl Tileception {
                         self.text.borrow_mut().field(text, &theme.font, 12., theme.text, (rect.w - 24.) as f32, field)
                     {
                         painter.image(&image.buffer, (rect.x + 12., rect.y + (rect.h - image.height) / 2.));
+                    }
+                    if index == 1 && form.secret.is_empty() && form.stored.is_some() {
+                        painter.text(
+                            "Saved. Leave empty to keep using it.",
+                            Rect::new(rect.x + 16., rect.y, rect.w - 28., rect.h),
+                            Style::new(12., theme.muted),
+                        );
                     }
                 }
             }

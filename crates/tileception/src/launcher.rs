@@ -1,8 +1,9 @@
 //! The launcher (tap Super) and the welcome screen: app search with a small
 //! persistent usage history, plus open windows, Tileception's own commands,
 //! desktop actions, instant answers (sums, conversions, times, colours,
-//! characters), paths and links, `z words` for often visited folders, and
-//! `>` to run a command and see its output.
+//! characters), paths and links, plugin results (such as `z words` for often
+//! visited folders, from the bundled folders plugin), and `>` to run a
+//! command and see its output.
 
 use std::{
     collections::HashMap,
@@ -304,9 +305,6 @@ pub struct Launcher {
     usage: HashMap<String, Usage>,
     /// The app whose details show instead of the results (Alt+Enter).
     details: Option<String>,
-    /// The folders z and zoxide know, read the first time `z ` is typed
-    /// after opening.
-    jumps: Option<Vec<crate::jumps::Folder>>,
     compose: Option<xkb::compose::State>,
     plugin_query: Option<(u64, String)>,
     /// Retained results cannot activate until the current query finishes.
@@ -341,7 +339,6 @@ impl Default for Launcher {
             lookup: IconLookup::new("hicolor", &IconLookup::default_dirs()),
             icons: Icons::default(),
             compose: crate::ui::compose_state(),
-            jumps: None,
             details: None,
             plugin_query: None,
             plugin_pending: false,
@@ -488,7 +485,7 @@ impl Tileception {
                     return;
                 }
                 self.launcher.plugin_rows = vec![Entry::PluginStatus(match result {
-                    Ok(()) => "Plugin action completed".into(),
+                    Ok(_) => "Plugin action completed".into(),
                     Err(error) => error,
                 })];
                 self.launcher.plugin_actions = None;
@@ -577,7 +574,6 @@ impl Tileception {
         self.launcher.opened = Instant::now();
         self.launcher.copied = None;
         self.launcher.run = None;
-        self.launcher.jumps = None;
         self.launcher.details = None;
         self.launcher.plugin_actions = None;
         if let Some(compose) = &mut self.launcher.compose {
@@ -607,7 +603,7 @@ impl Tileception {
     fn refresh_launcher(&mut self) {
         self.launcher.plugin_actions = None;
         let previous = self.launcher.plugin_query.take();
-        let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim()));
+        let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim_start()));
         let retain =
             previous.as_ref().zip(query.as_ref()).is_some_and(|((_, previous), (_, current))| previous == current)
                 && self.launcher.plugin_rows.iter().any(|entry| matches!(entry, Entry::Plugin { .. }));
@@ -620,10 +616,6 @@ impl Tileception {
             if self.launcher.plugin_pending {
                 self.launcher.plugin_rows.push(Entry::PluginStatus("Searching plugin".into()));
             }
-        }
-        if self.launcher.jumps.is_none() && crate::jumps::query(&self.launcher.input.text).is_some() {
-            let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-            self.launcher.jumps = Some(crate::jumps::load(&home, unix_now()));
         }
         self.launcher.entries = self.launcher_entries();
         self.launcher.selected = 0;
@@ -653,6 +645,8 @@ impl Tileception {
                     choice.title = action.title.clone();
                     choice.detail = plugin_action_detail(&action.kind);
                     choice.actions = vec![action.clone()];
+                    choice.completion = None;
+                    choice.alternate = None;
                     Entry::Plugin { plugin: plugin.clone(), row: choice }
                 })
                 .collect();
@@ -699,13 +693,6 @@ impl Tileception {
             return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
         }
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        if let Some(words) = crate::jumps::query(&launcher.input.text) {
-            let folders = launcher.jumps.as_deref().unwrap_or_default();
-            return crate::jumps::matching(folders, &words, MAX_ROWS)
-                .into_iter()
-                .map(|folder| Entry::Place(jump_place(&folder.path, &home)))
-                .collect();
-        }
         let found = answers::answers(text, unix_now());
         if text.starts_with(':') {
             return found.into_iter().map(Entry::Answer).collect();
@@ -889,6 +876,7 @@ impl Tileception {
     fn selected_completion(&self) -> Option<String> {
         match self.launcher.entries.get(self.launcher.selected) {
             Some(Entry::Place(place)) => place.completion.clone(),
+            Some(Entry::Plugin { row, .. }) if !self.launcher.plugin_pending => row.completion.clone(),
             _ => None,
         }
     }
@@ -1072,9 +1060,7 @@ impl Tileception {
             }
             // A folder opens in the terminal with Ctrl.
             Entry::Place(place) if place.folder && mods.ctrl => {
-                self.close_launcher();
-                let script = format!("cd {} && exec {}", shell_quote(&place.target), self.terminal);
-                self.spawn("sh", &["-c".into(), script]);
+                self.launcher_action(None, crate::plugins::ActionKind::Terminal { directory: place.target });
             }
             Entry::Place(place) => {
                 self.launcher_action(None, crate::plugins::ActionKind::Open { target: place.target });
@@ -1097,7 +1083,11 @@ impl Tileception {
                 if self.launcher.plugin_pending {
                     return;
                 }
-                if row.actions.len() > 1 && self.launcher.plugin_actions.is_none() {
+                if mods.ctrl
+                    && let Some(alternate) = row.alternate
+                {
+                    self.launcher_action(Some(plugin), alternate.kind);
+                } else if row.actions.len() > 1 && self.launcher.plugin_actions.is_none() {
                     self.launcher.plugin_actions = Some((plugin, row));
                     self.launcher.entries = self.launcher_entries();
                     self.launcher.selected = 0;
@@ -1125,6 +1115,15 @@ impl Tileception {
             ActionKind::Run { command, args } => {
                 self.close_launcher();
                 self.spawn(&command, &args);
+            }
+            ActionKind::Settings { page } => {
+                self.close_launcher();
+                self.open_settings_named(&page);
+            }
+            ActionKind::Terminal { directory } => {
+                self.close_launcher();
+                let script = format!("cd {} && exec {}", shell_quote(&directory), self.terminal);
+                self.spawn("sh", &["-c".into(), script]);
             }
             ActionKind::Tool { name, arguments } => {
                 let Some(plugin) = plugin else {
@@ -1674,6 +1673,20 @@ impl Tileception {
             ]
         } else if matches!(selected, Some(Entry::Place(place)) if place.completion.is_some()) {
             vec![("\u{2191}\u{2193}", "Choose"), ("Tab", "Complete"), ("Enter", "Open"), close]
+        } else if let Some(Entry::Plugin { row, .. }) = selected
+            && self.launcher.plugin_actions.is_none()
+            && (row.completion.is_some() || row.alternate.is_some())
+        {
+            let mut hints = vec![("\u{2191}\u{2193}", "Choose")];
+            if row.completion.is_some() {
+                hints.push(("Tab", "Complete"));
+            }
+            hints.push(("Enter", enter));
+            if let Some(alternate) = &row.alternate {
+                hints.push(("Ctrl+Enter", alternate.title.as_str()));
+            }
+            hints.push(close);
+            hints
         } else if self.launcher.details.is_some() || self.launcher.plugin_actions.is_some() {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), ("Esc", "Back")]
         } else if matches!(selected, Some(Entry::App(_))) {
@@ -1827,11 +1840,12 @@ impl Tileception {
                 // A result's actions show what each one does; results show
                 // their own icon, else the plugin's.
                 let action = row.actions.first().filter(|_| self.launcher.plugin_actions.is_some());
+                let named = row.icon.as_deref().or(fallback);
                 if let Some(action) = action {
                     glyph_box(painter, plugin_action_glyph(&action.kind), theme.accent);
-                } else if let Some(buffer) =
-                    row.icon.as_deref().or(fallback).and_then(|name| self.launcher.icon(name, 32))
-                {
+                } else if let Some(glyph) = named.and_then(glyph::named) {
+                    glyph_box(painter, glyph, theme.accent);
+                } else if let Some(buffer) = named.and_then(|name| self.launcher.icon(name, 32)) {
                     painter.image(&buffer, (icon.x, icon.y));
                 } else {
                     glyph_box(painter, glyph::PLUG, theme.accent);
@@ -1851,7 +1865,7 @@ impl Tileception {
             Entry::Detail { app, row } => {
                 let Some(app) = self.launcher.index.get(app) else { return };
                 let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-                let source = jump_place(&app.source, &home).detail;
+                let source = tilde(&app.source, &home);
                 let (glyph, title, detail) = match row {
                     Detail::Command => {
                         let command = self.app_command(app);
@@ -1865,7 +1879,7 @@ impl Tileception {
                     Detail::Open => (glyph::FILE, "Open the desktop file".into(), "In the text editor".into()),
                     Detail::EditCopy => {
                         let copy = tileception_apps::user_applications_dir()
-                            .map(|dir| jump_place(&dir.join(&app.id), &home).detail)
+                            .map(|dir| tilde(&dir.join(&app.id), &home))
                             .unwrap_or_default();
                         (glyph::COPY, "Edit a copy".into(), format!("As {copy}, which takes precedence"))
                     }
@@ -2229,21 +2243,12 @@ fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs() as i64)
 }
 
-/// A row for a folder from z: its name over where it is, with `~` for home.
-fn jump_place(path: &std::path::Path, home: &std::path::Path) -> Place {
-    let shown = match path.strip_prefix(home) {
+/// A path with `~` for home.
+fn tilde(path: &std::path::Path, home: &std::path::Path) -> String {
+    match path.strip_prefix(home) {
         Ok(rest) if !home.as_os_str().is_empty() && rest.as_os_str().is_empty() => "~".to_string(),
         Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
         _ => path.display().to_string(),
-    };
-    let title = path.file_name().map_or_else(|| shown.clone(), |name| name.to_string_lossy().into_owned());
-    Place {
-        title,
-        detail: shown.clone(),
-        target: path.to_string_lossy().into_owned(),
-        completion: Some(if shown.ends_with('/') { shown } else { format!("{shown}/") }),
-        folder: true,
-        link: false,
     }
 }
 
@@ -2349,6 +2354,8 @@ fn plugin_action_detail(kind: &crate::plugins::ActionKind) -> String {
         ActionKind::Run { command, args } if args.is_empty() => format!("Runs {command}"),
         ActionKind::Run { command, args } => format!("Runs {command} {}", args.join(" ")),
         ActionKind::Tool { .. } => "Asks the plugin to do it".into(),
+        ActionKind::Terminal { directory } => format!("Opens a terminal in {directory}"),
+        ActionKind::Settings { page } => format!("Opens {page} in Settings"),
     }
 }
 
@@ -2357,26 +2364,17 @@ fn plugin_action_glyph(kind: &crate::plugins::ActionKind) -> &'static str {
     match kind {
         ActionKind::Copy { .. } => glyph::COPY,
         ActionKind::Open { .. } => glyph::GLOBE,
-        ActionKind::Run { .. } => glyph::TERMINAL,
+        ActionKind::Run { .. } | ActionKind::Terminal { .. } => glyph::TERMINAL,
         ActionKind::Tool { .. } => glyph::PLUG,
+        ActionKind::Settings { .. } => glyph::SETTINGS,
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
-    use super::{RunStatus, capture, clean_output, combo_label, completion, jump_place, quality, question_in};
+    use super::{RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn folders_from_z_show_home_as_a_tilde() {
-        let home = std::path::Path::new("/home/me");
-        let place = jump_place(std::path::Path::new("/home/me/src/web"), home);
-        assert_eq!((place.title.as_str(), place.detail.as_str()), ("web", "~/src/web"));
-        assert_eq!(place.completion.as_deref(), Some("~/src/web/"));
-        assert_eq!(jump_place(home, home).completion.as_deref(), Some("~/"));
-        assert_eq!(jump_place(std::path::Path::new("/srv"), home).detail, "/srv");
-    }
 
     #[test]
     fn questions_go_to_the_doctor() {

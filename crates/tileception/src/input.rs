@@ -684,8 +684,8 @@ impl Tileception {
             self.controls_drag(pos.x);
             return;
         }
-        if self.home.drag.is_some() {
-            self.home_drag(pos.x);
+        if self.panel.drag.is_some() {
+            self.panel_drag(pos.x);
             return;
         }
         if self.duck_motion(point) || self.doctor_drag(point) {
@@ -851,7 +851,7 @@ impl Tileception {
             return;
         }
         // A held slider lets go wherever the button comes up.
-        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
+        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.panel_release()) {
             return;
         }
         if self.draws_lock_screen() {
@@ -912,7 +912,7 @@ impl Tileception {
         }
         let now = self.now();
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
-        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.home_release()) {
+        if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.panel_release()) {
             return;
         }
         // A held duck lets go wherever the button comes up.

@@ -6,7 +6,7 @@
 //! file exists the page shows the usual rows, the devices and their state,
 //! and Refresh devices, which opens the same form again.
 
-use tileception_home::{Reach, store};
+use tileception_home::store;
 
 use super::*;
 
@@ -149,19 +149,13 @@ impl Tileception {
     pub(super) fn settings_home_listed(&self) -> Vec<Listed> {
         if self.settings_home_connected() {
             return self
-                .home
-                .snapshot
-                .devices
-                .iter()
+                .settings_home_live()
+                .into_iter()
                 .map(|device| Listed {
-                    name: device.name.clone(),
-                    place: [device.home.clone(), device.room.clone()]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    status: crate::home::device_detail(device),
-                    answering: matches!(device.reach, Reach::Online | Reach::Cloud { updated: Some(_) }),
+                    name: device.name,
+                    place: device.place,
+                    status: device.status,
+                    answering: device.answering,
                 })
                 .collect();
         }
