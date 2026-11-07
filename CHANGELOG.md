@@ -2,6 +2,30 @@
 
 <!-- next-version-placeholder -->
 
+## v0.12.0 (2026-11-07)
+
+### Features
+* **feedback:** add issue preview and confirmation
+* **launcher:** add executable plugin support
+* **displays:** add output previews and responsive Settings
+* **doctor:** add permission modes and document export
+* **website:** improve metadata and favicon assets
+* **compositor:** add feedback and notification commands
+* **settings:** host Settings in an in-process Wayland client
+* **outputs:** add proportional screen-edge crossing
+* **settings:** add native settings screens
+* **settings:** add interactive settings panel
+
+### Fixes
+* **outputs:** improve display configuration and transformed input
+* **feedback:** improve form editing and review flow
+* **launcher:** improve plugin lifecycle and action results
+* **doctor:** resync agent permission mode before prompts
+* **displays:** handle output preview state
+
+### Documentation
+* **plan:** record settings panel progress
+
 ## v0.11.0 (2026-11-07)
 
 ### Features
