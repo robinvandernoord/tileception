@@ -399,6 +399,7 @@ natural_scroll = false
 disable_while_typing = true
 speed = 0
 swipe_distance = 60
+follow_fingers = true
 ```
 
 With tap-to-click enabled, one finger clicks left, two click right and three
@@ -407,7 +408,9 @@ fingers move. `disable_while_typing` suppresses touchpad input while typing.
 
 `speed` accepts values from -1 to 1; positive values make the pointer faster.
 `swipe_distance` is the distance in pixels before a swipe binding runs and must
-be greater than zero.
+be greater than zero. Swipes and pinches that move around move the view with
+your fingers, and letting go early cancels them; set `follow_fingers = false`
+to have them run all at once instead.
 
 For physical clicks, set `click_method = "areas"` to use button areas, or
 `click_method = "clickfinger"` to choose the button by finger count. Leaving it

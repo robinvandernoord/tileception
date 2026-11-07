@@ -29,6 +29,9 @@ pub struct TouchpadConfig {
     pub click_method: Option<String>,
     /// Pixels a swipe travels before its binding runs.
     pub swipe_distance: f64,
+    /// Swipes and pinches bound to navigation move the view with the
+    /// fingers, and letting go early goes back.
+    pub follow_fingers: bool,
 }
 
 impl Default for TouchpadConfig {
@@ -40,6 +43,7 @@ impl Default for TouchpadConfig {
             speed: 0.0,
             click_method: None,
             swipe_distance: 60.0,
+            follow_fingers: true,
         }
     }
 }
@@ -227,19 +231,42 @@ enum Owner {
     Nobody,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Gesture {
     pinch: bool,
     fingers: u32,
     mods: Mods,
     owner: Owner,
     travelled: Point<f64, Logical>,
+    /// The pinch's scale so far, 1 at the start.
+    scale: f64,
     fired: bool,
+    /// Set while the view follows the fingers (`follow_fingers`).
+    live: Option<Live>,
+}
+
+/// A navigation gesture moving the view with the fingers.
+#[derive(Debug, Clone)]
+struct Live {
+    motion: Motion,
+    /// Where navigation stood before, to go back to if let go early.
+    before: tileception_core::Navigation,
+    area: Option<crate::outputs::AreaId>,
 }
 
 /// How far a pinch goes, as a scale, before it counts.
 const PINCH_IN: f64 = 0.8;
 const PINCH_OUT: f64 = 1.25;
+/// Following the fingers, the scale at which a pinch has moved the view all
+/// the way.
+const PINCH_IN_FULL: f64 = 0.5;
+const PINCH_OUT_FULL: f64 = 2.0;
+/// Following the fingers, the part of `swipe_distance` (or of the way to
+/// `PINCH_IN` or `PINCH_OUT`) after which the direction is settled.
+const SETTLE: f64 = 0.25;
+/// Following the fingers, how many times `swipe_distance` a swipe travels to
+/// move the view all the way. Letting go after `swipe_distance` still counts.
+const SWIPE_FULL: f64 = 3.0;
 
 impl Tileception {
     /// A touchpad turned up: remembered, so a reload can set it again.
@@ -294,7 +321,16 @@ impl Tileception {
         } else {
             Owner::Client
         };
-        self.gesture = Some(Gesture { pinch, fingers, mods, owner, travelled: Point::default(), fired: false });
+        self.gesture = Some(Gesture {
+            pinch,
+            fingers,
+            mods,
+            owner,
+            travelled: Point::default(),
+            scale: 1.0,
+            fired: false,
+            live: None,
+        });
         if owner == Owner::Client {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             let serial = SERIAL_COUNTER.next_serial();
@@ -310,7 +346,7 @@ impl Tileception {
     /// Movement of a gesture; `scale` and `rotation` only mean something for
     /// pinches.
     pub(crate) fn gesture_update(&mut self, delta: Point<f64, Logical>, scale: f64, rotation: f64, time: u32) {
-        let Some(mut gesture) = self.gesture else {
+        let Some(mut gesture) = self.gesture.take() else {
             return;
         };
         match gesture.owner {
@@ -326,28 +362,113 @@ impl Tileception {
             }
             Owner::Bindings => {
                 gesture.travelled += delta;
-                let motion = if gesture.fired {
-                    None
-                } else if gesture.pinch {
-                    (scale <= PINCH_IN).then_some(Motion::In).or((scale >= PINCH_OUT).then_some(Motion::Out))
-                } else {
-                    let Point { x: delta_x, y: delta_y, .. } = gesture.travelled;
-                    (delta_x.hypot(delta_y) >= self.config.file.touchpad.swipe_distance).then(|| {
-                        match (delta_x.abs() > delta_y.abs(), delta_x > 0.0, delta_y > 0.0) {
-                            (true, true, _) => Motion::Right,
-                            (true, false, _) => Motion::Left,
-                            (false, _, true) => Motion::Down,
-                            (false, _, false) => Motion::Up,
+                gesture.scale = scale;
+                if let Some(live) = &gesture.live {
+                    let progress = self.live_progress(&gesture, live.motion);
+                    if self.active_area() == live.area {
+                        self.world.hold_camera(progress);
+                    }
+                } else if !gesture.fired {
+                    let (fingers, mods) = (gesture.fingers, gesture.mods);
+                    // Following the fingers, a navigation gesture starts as
+                    // soon as its direction is clear.
+                    let live = self.config.file.touchpad.follow_fingers
+                        && self
+                            .gesture_motion(&gesture, SETTLE)
+                            .is_some_and(|motion| self.gesture_navigates(fingers, motion, mods));
+                    let motion = self.gesture_motion(&gesture, if live { SETTLE } else { 1.0 });
+                    // One action per gesture: lift the fingers to do it again.
+                    gesture.fired = motion.is_some();
+                    if let Some(motion) = motion {
+                        let before = live.then(|| (self.world.navigation(), self.active_area()));
+                        self.gesture = Some(gesture.clone());
+                        self.run_gesture(fingers, motion, mods);
+                        if let Some((before, area)) = before {
+                            self.world.hold_camera(self.live_progress(&gesture, motion));
+                            gesture.live = Some(Live { motion, before, area });
                         }
-                    })
-                };
-                // One action per gesture: lift the fingers to do it again.
-                gesture.fired |= motion.is_some();
-                self.gesture = Some(gesture);
-                if let Some(motion) = motion {
-                    self.run_gesture(gesture.fingers, motion, gesture.mods);
+                    }
                 }
             }
+        }
+        self.gesture = Some(gesture);
+    }
+
+    /// Which way a gesture has gone once it has travelled `part` of the way a
+    /// binding needs.
+    fn gesture_motion(&self, gesture: &Gesture, part: f64) -> Option<Motion> {
+        if gesture.pinch {
+            let scale = gesture.scale;
+            return (scale <= 1.0 - (1.0 - PINCH_IN) * part)
+                .then_some(Motion::In)
+                .or((scale >= 1.0 + (PINCH_OUT - 1.0) * part).then_some(Motion::Out));
+        }
+        let Point { x: delta_x, y: delta_y, .. } = gesture.travelled;
+        (delta_x.hypot(delta_y) >= self.config.file.touchpad.swipe_distance * part).then(|| {
+            match (delta_x.abs() > delta_y.abs(), delta_x > 0.0, delta_y > 0.0) {
+                (true, true, _) => Motion::Right,
+                (true, false, _) => Motion::Left,
+                (false, _, true) => Motion::Down,
+                (false, _, false) => Motion::Up,
+            }
+        })
+    }
+
+    /// Whether every command bound to a gesture only moves the view, so the
+    /// view can follow the fingers and go back if let go early.
+    fn gesture_navigates(&self, fingers: u32, motion: Motion, mods: Mods) -> bool {
+        use crate::input::Action;
+        self.config.lookup(mods, key(fingers, motion)).is_some_and(|commands| {
+            !commands.is_empty()
+                && commands.iter().all(|command| {
+                    matches!(
+                        command,
+                        Command::Action(
+                            Action::Overview
+                                | Action::ExitOverview
+                                | Action::StepIn
+                                | Action::StepInPointer
+                                | Action::StepOut
+                                | Action::Neighbour(_)
+                                | Action::Back
+                                | Action::Forward
+                                | Action::Maximize
+                        )
+                    )
+                })
+        })
+    }
+
+    /// How far along `motion` the fingers are, from 0 to 1 (the whole move).
+    fn live_progress(&self, gesture: &Gesture, motion: Motion) -> f64 {
+        let progress = match motion {
+            Motion::In => (1.0 - gesture.scale) / (1.0 - PINCH_IN_FULL),
+            Motion::Out => (gesture.scale - 1.0) / (PINCH_OUT_FULL - 1.0),
+            swipe => self.swipe_along(gesture, swipe) / (self.config.file.touchpad.swipe_distance * SWIPE_FULL),
+        };
+        progress.clamp(0.0, 1.0)
+    }
+
+    /// How far a swipe has gone in the direction of `motion`; negative when
+    /// the fingers came back past where they started.
+    fn swipe_along(&self, gesture: &Gesture, motion: Motion) -> f64 {
+        let Point { x: across, y: down, .. } = gesture.travelled;
+        match motion {
+            Motion::Left => -across,
+            Motion::Right => across,
+            Motion::Up => -down,
+            Motion::Down => down,
+            Motion::In | Motion::Out => 0.0,
+        }
+    }
+
+    /// Whether a following gesture has gone as far as a binding needs, so
+    /// letting go now keeps the move.
+    fn live_counts(&self, gesture: &Gesture, motion: Motion) -> bool {
+        match motion {
+            Motion::In => gesture.scale <= PINCH_IN,
+            Motion::Out => gesture.scale >= PINCH_OUT,
+            swipe => self.swipe_along(gesture, swipe) >= self.config.file.touchpad.swipe_distance,
         }
     }
 
@@ -355,6 +476,17 @@ impl Tileception {
         let Some(gesture) = self.gesture.take() else {
             return;
         };
+        if let Some(live) = &gesture.live
+            && self.active_area() == live.area
+        {
+            let now = self.now();
+            if !cancelled && self.live_counts(&gesture, live.motion) {
+                self.world.release_camera(now);
+            } else {
+                self.world.restore_navigation(live.before.clone(), now);
+                self.apply_layout();
+            }
+        }
         if gesture.owner == Owner::Client {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             let serial = SERIAL_COUNTER.next_serial();
@@ -394,27 +526,51 @@ impl Tileception {
         }
     }
 
-    /// A whole gesture for scripted tests, taking the same path as a real one.
-    pub(crate) fn inject_gesture(&mut self, mods: Mods, fingers: u32, motion: Motion, time: u32) {
+    /// A gesture for scripted tests, taking the same path as a real one: the
+    /// fingers go `amount` times the distance a binding needs, in even steps.
+    /// Held, they stay down; the next call with the same fingers moves them on
+    /// from there instead of starting again.
+    pub(crate) fn inject_gesture(
+        &mut self,
+        mods: Mods,
+        fingers: u32,
+        motion: Motion,
+        amount: f64,
+        hold: bool,
+        time: u32,
+    ) {
         const STEPS: u32 = 8;
         let pinch = motion.is_pinch();
-        self.gesture_begin(pinch, fingers, Some(mods), time);
-        // Twice the distance a binding needs, in even steps.
-        let step = self.config.file.touchpad.swipe_distance * 2.0 / f64::from(STEPS);
-        let delta: Point<f64, Logical> = match motion {
-            Motion::Left => (-step, 0.0),
-            Motion::Right => (step, 0.0),
-            Motion::Up => (0.0, -step),
-            Motion::Down => (0.0, step),
+        let carries_on =
+            self.gesture.as_ref().is_some_and(|gesture| gesture.pinch == pinch && gesture.fingers == fingers);
+        if !carries_on {
+            self.gesture_end(true, time);
+            self.gesture_begin(pinch, fingers, Some(mods), time);
+        }
+        let (travelled, scale) =
+            self.gesture.as_ref().map_or((Point::default(), 1.0), |gesture| (gesture.travelled, gesture.scale));
+        let distance = self.config.file.touchpad.swipe_distance * amount;
+        let target: Point<f64, Logical> = match motion {
+            Motion::Left => (-distance, 0.0),
+            Motion::Right => (distance, 0.0),
+            Motion::Up => (0.0, -distance),
+            Motion::Down => (0.0, distance),
             Motion::In | Motion::Out => (0.0, 0.0),
         }
         .into();
-        let target = if motion == Motion::In { 0.6 } else { 1.6 };
+        let step = (target - travelled).downscale(f64::from(STEPS));
+        let target_scale = match motion {
+            Motion::In => (1.0 - (1.0 - PINCH_IN) * amount).max(0.05),
+            Motion::Out => 1.0 + (PINCH_OUT - 1.0) * amount,
+            _ => 1.0,
+        };
         for index in 1..=STEPS {
-            let scale = 1.0 + (target - 1.0) * f64::from(index) / f64::from(STEPS);
-            self.gesture_update(delta, scale, 0.0, time + index);
+            let along = scale + (target_scale - scale) * f64::from(index) / f64::from(STEPS);
+            self.gesture_update(step, along, 0.0, time + index);
         }
-        self.gesture_end(false, time + STEPS + 1);
+        if !hold {
+            self.gesture_end(false, time + STEPS + 1);
+        }
     }
 }
 

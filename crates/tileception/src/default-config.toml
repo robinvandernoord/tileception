@@ -117,6 +117,11 @@ speed = 0
 # click_method = "clickfinger"
 # How far, in pixels, fingers travel before a swipe binding runs.
 swipe_distance = 60
+# Swipes and pinches bound to moving around (focus, step-in, step-out,
+# overview, maximize, back, forward) move the view with your fingers. Let go
+# before swipe_distance (or a pinch's usual amount) to cancel. false runs
+# each gesture all at once when it has gone far enough.
+follow_fingers = true
 
 [greeter]
 # Show your accent colours and wallpaper on the Tileception login screen

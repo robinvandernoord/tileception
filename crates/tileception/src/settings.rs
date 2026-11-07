@@ -254,6 +254,13 @@ const FIELDS: &[Field] = &[
     ),
     field(3, "touchpad.speed", "Pointer speed", "From slower to faster.", Control::Number(-1., 1., 0.1, "")),
     field(
+        3,
+        "touchpad.follow_fingers",
+        "Gestures follow your fingers",
+        "Swipes and pinches move the view as you go; let go early to cancel.",
+        Control::Toggle,
+    ),
+    field(
         4,
         "idle.lock_after",
         "Lock after idle",

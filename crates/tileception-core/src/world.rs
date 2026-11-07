@@ -134,10 +134,16 @@ struct Camera {
     target: Rect,
     start: f64,
     duration: f64,
+    /// Held at this part of the move, 0 to 1, while fingers drive it.
+    held: Option<f64>,
 }
 
 impl Camera {
     fn rect_at(&self, now: f64) -> Rect {
+        if let Some(held) = self.held {
+            // Fingers move the view directly, without easing.
+            return self.from.zoom_lerp(&self.target, held);
+        }
         let progress = self.progress(now);
         // Ease out cubic: quick to respond, gentle to land.
         let eased = 1.0 - (1.0 - progress).powi(3);
@@ -145,8 +151,22 @@ impl Camera {
     }
 
     fn progress(&self, now: f64) -> f64 {
+        if let Some(held) = self.held {
+            return held;
+        }
         if self.duration <= 0.0 { 1.0 } else { ((now - self.start) / self.duration).clamp(0.0, 1.0) }
     }
+}
+
+/// Where navigation stood: what is framed, the history and focus. Taken
+/// before a gesture navigates, to go back there if the gesture is cancelled.
+#[derive(Debug, Clone)]
+pub struct Navigation {
+    framed: NodeId,
+    overview: bool,
+    history: Vec<NodeId>,
+    history_index: usize,
+    focus: Option<WindowId>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +281,7 @@ impl World {
             saved: Default::default(),
             focus: None,
             mru: Vec::new(),
-            camera: Camera { from: Rect::UNIT, target: Rect::UNIT, start: 0.0, duration: 0.0 },
+            camera: Camera { from: Rect::UNIT, target: Rect::UNIT, start: 0.0, duration: 0.0, held: None },
             floats: HashMap::new(),
             last_float: HashMap::new(),
             minimized: Vec::new(),
@@ -321,6 +341,54 @@ impl World {
     pub fn finish_animation(&mut self) {
         self.camera.from = self.camera.target;
         self.camera.duration = 0.0;
+        self.camera.held = None;
+    }
+
+    /// Holds the camera at `progress` (0 to 1) of its current move, for a
+    /// gesture that moves the view with the fingers.
+    pub fn hold_camera(&mut self, progress: f64) {
+        self.camera.held = Some(progress.clamp(0.0, 1.0));
+    }
+
+    /// Lets a held camera finish its move from where the fingers left it, in
+    /// the part of the animation time that is left.
+    pub fn release_camera(&mut self, now: f64) {
+        let Some(held) = self.camera.held else { return };
+        let from = self.view(now);
+        let duration = self.settings.animation * (1.0 - held);
+        self.camera = Camera { from, target: self.camera.target, start: now, duration, held: None };
+    }
+
+    /// Where navigation stands, to return to with `restore_navigation`.
+    pub fn navigation(&self) -> Navigation {
+        Navigation {
+            framed: self.framed,
+            overview: self.overview,
+            history: self.history.clone(),
+            history_index: self.history_index,
+            focus: self.focus,
+        }
+    }
+
+    /// Goes back to where navigation stood, moving the camera there from
+    /// wherever it is now. Windows closed since then are skipped.
+    pub fn restore_navigation(&mut self, navigation: Navigation, now: f64) {
+        let from = self.view(now);
+        self.framed = self.visible_ancestor(self.tree.resolve(navigation.framed));
+        self.overview = navigation.overview;
+        if !navigation.history.is_empty() {
+            self.history_index = navigation.history_index.min(navigation.history.len() - 1);
+            self.history = navigation.history;
+        }
+        if let Some(window) = navigation.focus.filter(|window| self.contains_window(*window)) {
+            self.set_focus(Some(window));
+            self.relayout();
+        }
+        let target = self.wanted_view();
+        let held = self.camera.held.unwrap_or(1.0);
+        // Back the way the fingers came: as long as they went.
+        let duration = self.settings.animation * held.max(0.25);
+        self.camera = Camera { from, target, start: now, duration, held: None };
     }
 
     /// The area the framed space fills: the screen less the outer half gap.
@@ -342,9 +410,9 @@ impl World {
         let target = self.wanted_view();
         let from = self.view(now);
         if from.approx_eq(&target, 1e-9) {
-            self.camera = Camera { from: target, target, start: now, duration: 0.0 };
+            self.camera = Camera { from: target, target, start: now, duration: 0.0, held: None };
         } else {
-            self.camera = Camera { from, target, start: now, duration: self.settings.animation };
+            self.camera = Camera { from, target, start: now, duration: self.settings.animation, held: None };
         }
     }
 
@@ -977,7 +1045,7 @@ impl World {
         self.relayout();
         // Keep the camera on the framed node, which may have changed size.
         let target = self.wanted_view();
-        self.camera = Camera { from: target, target, start: now, duration: 0.0 };
+        self.camera = Camera { from: target, target, start: now, duration: 0.0, held: None };
         true
     }
 
@@ -1584,6 +1652,49 @@ mod tests {
         world.neighbour(Dir::Left, 0.0);
         assert_eq!(world.framed(), first_tile);
         assert_eq!(world.focus(), Some(WindowId(1)));
+    }
+
+    #[test]
+    fn held_camera_follows_and_cancels() {
+        let mut world = World::new(
+            Settings { gap: 0.0, animation: 0.2, ..Settings::default() },
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+        );
+        world.add_window(WindowId(1), Placement::Dock, 0.0);
+        world.add_window(WindowId(2), Placement::Dock, 0.0);
+        let first_tile = world.tree().tile_of(WindowId(1)).unwrap();
+        let second_tile = world.tree().tile_of(WindowId(2)).unwrap();
+        world.frame(first_tile, 0.0);
+        world.finish_animation();
+        let start = world.view(1.0);
+        let before = world.navigation();
+
+        world.neighbour(Dir::Right, 1.0);
+        let target = world.target_view();
+        world.hold_camera(0.5);
+        // Held views do not move with time.
+        assert!(world.view(1.0).approx_eq(&world.view(5.0), 1e-9));
+        assert!(world.view(5.0).approx_eq(&start.zoom_lerp(&target, 0.5), 1e-9));
+        assert!(world.is_animating(5.0));
+
+        // Cancelled: framing and focus go back, the camera glides home.
+        world.restore_navigation(before.clone(), 5.0);
+        assert_eq!(world.framed(), first_tile);
+        assert_eq!(world.focus(), Some(WindowId(1)));
+        assert!(world.view(5.0).approx_eq(&start.zoom_lerp(&target, 0.5), 1e-9));
+        assert!(world.view(10.0).approx_eq(&start, 1e-9));
+        // History did not keep the abandoned step.
+        world.forward(10.0);
+        assert_eq!(world.framed(), first_tile);
+
+        // Let go far enough: the move finishes from where it was held.
+        world.neighbour(Dir::Right, 20.0);
+        world.hold_camera(0.75);
+        world.release_camera(20.0);
+        assert_eq!(world.framed(), second_tile);
+        assert!(world.view(20.0).approx_eq(&start.zoom_lerp(&target, 0.75), 1e-9));
+        assert!(world.is_animating(20.01));
+        assert!(world.view(20.0 + 0.05).approx_eq(&target, 1e-9));
     }
 
     #[test]

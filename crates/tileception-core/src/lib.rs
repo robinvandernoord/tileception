@@ -10,4 +10,4 @@ pub mod world;
 pub use geom::{Point, Rect, Xform};
 pub use layout::Layout;
 pub use tree::{Axis, Node, NodeId, Side, Tree, WindowId};
-pub use world::{Dir, DropTarget, Placement, Settings, TabStrip, WindowPlacement, WindowRole, World};
+pub use world::{Dir, DropTarget, Navigation, Placement, Settings, TabStrip, WindowPlacement, WindowRole, World};
