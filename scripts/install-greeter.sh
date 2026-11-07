@@ -22,16 +22,19 @@ if package_installed; then
     exit 1
 fi
 
-if [ ! -x target/release/tileception ] || [ "$1" != --files ]; then
+# install-session.sh passes the binary it just built as TILECEPTION_BUILD.
+build=${TILECEPTION_BUILD:-target/release/tileception}
+if [ ! -x "$build" ] || [ "$1" != --files ]; then
     cargo plane build --release -p tileception
+    build=target/release/tileception
 fi
 # The login screen depends on this binary: it must at least start.
-target/release/tileception --version >/dev/null
+"$build" --version >/dev/null
 
-if cmp -s target/release/tileception /usr/local/bin/tileception; then
+if cmp -s "$build" /usr/local/bin/tileception; then
     echo "The login screen's tileception is up to date"
 else
-    sudo install -D -m 755 target/release/tileception /usr/local/bin/tileception
+    sudo install -D -m 755 "$build" /usr/local/bin/tileception
     echo "Installed /usr/local/bin/tileception"
 fi
 if getent passwd "$greeter_user" >/dev/null; then

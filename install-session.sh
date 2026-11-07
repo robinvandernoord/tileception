@@ -35,9 +35,11 @@ flags=$(resources/tileception-setup --print-flags --non-interactive "$@") || exi
 sudo -v
 
 bindir="$HOME/.local/bin"
-cargo plane build --release -p tileception
+# dev-install (Cargo.toml) rebuilds faster after an edit than release.
+build=target/dev-install/tileception
+cargo plane build --profile dev-install -p tileception
 mkdir -p "$bindir"
-install -m 755 target/release/tileception "$bindir/tileception"
+install -m 755 "$build" "$bindir/tileception"
 install -m 755 resources/tileception-session "$bindir/tileception-session"
 install -m 755 resources/tileception-power "$bindir/tileception-power"
 install -m 755 resources/tileception-screenshot "$bindir/tileception-screenshot"
@@ -118,7 +120,7 @@ case " $flags " in
     *) greeter="" ;;
 esac
 if [ -n "$greeter" ] || [ -e /usr/local/bin/tileception ]; then
-    scripts/install-greeter.sh --files
+    TILECEPTION_BUILD="$build" scripts/install-greeter.sh --files
 fi
 
 eval "set -- $flags"

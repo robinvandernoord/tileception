@@ -21,9 +21,25 @@ allow_attributes_without_reason = "deny"
 
 [profile.dev]
 opt-level = 1
+# Above opt-level 0, rustc runs ThinLTO across each crate's codegen units by
+# default. For the large compositor crate that took about 60% of an incremental
+# rebuild. "off" (unlike `false`) disables it.
+lto = "off"
 
+# Dependencies keep line tables for backtraces but skip full debug info, which
+# made up most of a ~700 MB debug binary that cargo-plane copies back.
 [profile.dev.package."*"]
 opt-level = 2
+debug = "line-tables-only"
+
+# Installs from a checkout (`make install`). Release optimisation, but
+# incremental and without ThinLTO, so reinstalling after an edit rebuilds
+# quickly. Packaged builds use `dist` below.
+[profile.dev-install]
+inherits = "release"
+incremental = true
+lto = "off"
+codegen-units = 64
 
 # Packaged builds (`make deb`). Whole-program LTO and a single codegen unit
 # trade build time for a smaller, faster binary. Limited debug info is kept
