@@ -60,28 +60,68 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Later
 
-- Launcher plugins, next phases (the plugin conventions are in
+- Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/launcher-plugins.md)). Decided:
-  - Built-in sources share one internal result interface with plugins.
-    `z` folders, timers and the smart home become bundled plugins; the
-    instant pure ones (calculations, conversions, times, colours,
-    characters) and those needing compositor state (apps, windows, commands,
-    app details, `>`, the colour picker) stay built in.
+  - One plugin host for the whole compositor instead of the launcher's:
+    each place has its own cancellation, so a bar refresh never cancels a
+    launcher search; one slow plugin does not hold up the others (a worker
+    per plugin); the host keeps reading while idle, so plugins can send
+    notifications such as `notifications/resources/updated`; a crashed
+    plugin that serves the bar or panel restarts and re-subscribes at once.
+  - Manifests get a block per place with the user's options for it; the
+    plugin itself reports over MCP what it offers there:
+
+    ```toml
+    command = "tileception"
+    args = ["plugin", "home"]
+
+    [launcher]
+    prefixes = ["home"]
+
+    [bar]
+
+    [lock]   # opt-in: without this block, nothing on the lock screen
+    ```
+
+    Config overrides move to `[plugins.<id>]` with the same blocks
+    (`[plugins.home.lock]`). `[launcher.plugins.<id>]` stays accepted for
+    a while, with a warning in the log.
+  - Bundled plugins are subcommands of the `tileception` binary
+    (`tileception plugin home`) with compiled-in manifests, so they need no
+    extra packaging and work in nested and headless instances. Config can
+    change or disable them like any other plugin.
+  - Built-in launcher sources share one internal result interface with
+    plugins. `z` folders becomes a bundled launcher plugin; plugin rows gain
+    Tab completion and an alternate action (Ctrl+Enter) so it loses
+    nothing. The instant pure sources (calculations, conversions, times,
+    colours, characters) and those needing compositor state (apps, windows,
+    commands, app details, `>`, the colour picker) stay built in, as do the
+    capture, Do not disturb and media chips.
+  - The smart home becomes a bundled plugin and the first one in every
+    place, without losing anything: it may look slightly different, never
+    worse. Its simulator lets it be tried in headless instances.
+    - Panel: the current block. The block format has folding groups
+      (rooms), toggles, draggable level bars, steppers and modes (the
+      climate widget), readings and "last seen" times, plus an "active"
+      signal so the block unfolds itself when something turns on. Plugins
+      only describe blocks; Tileception draws them in its own style.
+    - Launcher: `home` rows such as "lights off", "AC 21°" and rooms.
+    - Bar: a chip while something is on; clicking it opens the block. Bar
+      items are MCP resources the bar subscribes to.
+    - Key bindings: `tileception msg plugin <name> <tool>`, replacing
+      `tileception msg home`.
+    - Lock screen: the indoor temperature, read-only, following the lock
+      screen's privacy level, without input or actions. Never launcher
+      plugins.
+    - Doctor: plugins offered to Doctor's agent as MCP servers, under
+      Doctor's policy for running tools.
+    - Importing devices in Settings and `tileception home` stay built in;
+      they write the device store and the plugin reloads when it changes.
+  - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
-  - The same plugins can be offered to Doctor's agent as MCP servers.
-  - Other places, through the same MCP plugin: each place only asks a
-    plugin for what it offers.
-    - Bar: small status items with a click action (CI status, VPN, timers),
-      as MCP resources the bar subscribes to. The strongest next place.
-    - Notification panel: blocks like the smart home one, which becomes the
-      first, bundled.
-    - Key bindings: `tileception msg plugin <name> <tool>`.
-    - Lock screen: only read-only status items from plugins explicitly
-      allowed there (`lock = true`), following the lock screen's privacy
-      level, without input or actions. Never launcher plugins.
-    - Not on the welcome screen or the login screen, not for events (window
-      opened, screen added), and not for layout, input or placement.
+  - Not on the welcome screen or the login screen, not for events (window
+    opened, screen added), and not for layout, input or placement.
 - Windows larger than their tiles: optionally draw a window only slightly
   too big (within 5 to 10 percent) 1:1 and cut it off instead of scaling
   it, so its text stays sharp.
@@ -128,8 +168,7 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Maybe someday
 
-- Touchpad gestures that follow the fingers: the camera tracking a pinch or
-  swipe live instead of one step per gesture, and window management gestures.
+- Window management gestures on the touchpad.
 - Top bar calendar events from an .ics file or URL.
 - Compare contents or hashes before exporting Doctor's bundled documentation
   and default config, writing only missing or changed files.
