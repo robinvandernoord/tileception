@@ -202,7 +202,11 @@ pub struct Tileception {
     pub notifications: crate::notifications::Notifications,
     /// Volume, media players and brightness.
     pub media: crate::media::Media,
-    pub home: crate::home::Home,
+    /// Plugin blocks in the notification panel.
+    pub panel: crate::panel::Panel,
+    /// Commands answered later, by plugins: the one just handled, and the
+    /// connections waiting for their answer.
+    pub ipc: crate::ipc::Waiting,
     /// The panel for asking an agent about the setup.
     pub doctor: crate::doctor::Doctor,
     /// The rubber duck on the bottom of the screen.
@@ -223,6 +227,7 @@ pub struct Tileception {
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
+    pub bluetooth: crate::bluetooth::Bluetooth,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -382,7 +387,8 @@ impl Tileception {
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),
-            home: Default::default(),
+            panel: Default::default(),
+            ipc: Default::default(),
             doctor: Default::default(),
             duck: Default::default(),
             session_services: false,
@@ -401,6 +407,7 @@ impl Tileception {
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             battery: Default::default(),
+            bluetooth: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,

@@ -40,6 +40,7 @@ pub struct ConfigFile {
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
+    pub bluetooth: crate::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
     /// What this session shows on the login screen.
@@ -467,10 +468,11 @@ impl Tileception {
         self.apply_shell(&old.shell);
         self.apply_clipboard();
         self.apply_handoff_config(&old.handoff);
-        if old.home != self.config.file.home {
-            self.apply_home();
-        }
-        if old.plugins != self.config.file.plugins || old.launcher != self.config.file.launcher {
+        // The smart home is a bundled plugin that runs while [home] is enabled.
+        if old.plugins != self.config.file.plugins
+            || old.launcher != self.config.file.launcher
+            || old.home != self.config.file.home
+        {
             self.apply_plugins();
         }
         if republish {

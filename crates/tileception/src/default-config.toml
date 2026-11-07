@@ -176,6 +176,13 @@ enabled = false
 # power_profiles = true
 # power_saver_at = 20
 
+[bluetooth]
+# Reconnect paired devices that were connected before the computer slept or
+# the adapter was switched off, a few seconds after it is back. Devices
+# switched off by hand beforehand are left alone. A notification says why
+# when one cannot be reconnected.
+# reconnect = true
+
 [shell]
 # Each part of the desktop is Tileception's own ("builtin"), switched off
 # ("none"), or a command that runs in its place. Changes apply on save.

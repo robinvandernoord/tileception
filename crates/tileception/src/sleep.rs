@@ -53,6 +53,7 @@ impl Tileception {
             Event::Inhibitor(descriptor) => self.sleep.inhibitor = Some(descriptor),
             Event::Preparing => {
                 tracing::info!("preparing for sleep");
+                self.bluetooth_sleeping();
                 let locking =
                     self.config.file.idle.lock_before_sleep && !matches!(self.shell().lock(), crate::shell::Part::Off);
                 if locking {
@@ -71,6 +72,7 @@ impl Tileception {
                 tracing::info!("woke from sleep");
                 self.release_sleep();
                 self.refresh_battery();
+                self.bluetooth_woke();
             }
         }
     }

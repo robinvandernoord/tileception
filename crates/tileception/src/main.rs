@@ -13,7 +13,9 @@ mod answers;
 mod appearance;
 mod bar;
 mod battery;
+mod bluetooth;
 mod builtin_lock;
+mod bundled;
 mod calc;
 mod capture;
 mod clipboard;
@@ -54,6 +56,7 @@ mod mirror;
 mod notifications;
 mod osd;
 mod outputs;
+mod panel;
 mod password;
 mod persistence;
 mod plugins;
@@ -99,13 +102,15 @@ Usage:
   tileception config get|set|add <section.key> [value]
   tileception setup [options]
   tileception pair [<passphrase words...> | --new | --off | --show]
+  tileception plugin <id>
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
 (`tileception config --help`). `setup` chooses the desktop's parts and the
 login screen again (`tileception setup --help`). `pair` shows or sets the
 passphrase that lets other computers share this mouse and keyboard
-(`tileception pair --help`).
+(`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
+Tileception starts these itself.
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -185,6 +190,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let error = run_setup(&argv[1..]);
         eprintln!("tileception setup: {error}");
         std::process::exit(1);
+    }
+    if argv.first().map(String::as_str) == Some("plugin") {
+        if let Err(err) = bundled::run(&argv[1..]) {
+            eprintln!("tileception plugin: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     if argv.first().map(String::as_str) == Some("home") {
         if let Err(err) = home::run(&argv[1..]) {
@@ -297,6 +309,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None if !nested && !headless => state.start_battery(None, true),
         None => {}
     }
+    // TILECEPTION_BLUETOOTH_BUS is a bus address with a stand-in for BlueZ, for
+    // tests. Nested instances follow the real BlueZ too, so it can be tried.
+    match std::env::var("TILECEPTION_BLUETOOTH_BUS").ok() {
+        Some(address) => state.start_bluetooth(Some(address)),
+        None if !headless => state.start_bluetooth(None),
+        None => {}
+    }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     state.notification_bus = notification_bus.clone();
     let builtin_notifications = state.shell().notifications().is_builtin();
@@ -311,8 +330,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.start_media(media_bus.filter(|bus| bus != "session"));
     }
     state.apply_tray();
-    state.apply_home();
-    state.refresh_home_at_startup();
     for line in state.config.file.general.autostart.clone() {
         // Old configs start swaync, which would fight the built-in service.
         if builtin_notifications && matches!(line.trim(), "swaync" | "sway-notification-center") {

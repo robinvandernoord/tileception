@@ -50,10 +50,18 @@ pub enum Command {
     Select(Vec<tileception_core::WindowId>),
     /// Volume, brightness and media players; these also work while locked.
     Media(crate::media::Control),
-    /// The smart home devices in the notification panel.
-    Home(crate::home::HomeCommand),
+    /// The smart home devices, with the command's text for the plugin.
+    Home(crate::home::HomeCommand, String),
+    /// Calls a plugin's tool with JSON arguments.
+    Plugin {
+        plugin: String,
+        tool: String,
+        arguments: serde_json::Value,
+    },
     /// Prints the battery's charge and the border colour it gives.
     Battery,
+    /// Prints adapters and paired devices; with true, reconnects the remembered ones.
+    Bluetooth(bool),
     /// Lists tray entries; debug entries can be added or replaced by count.
     Tray,
     /// Prints how much the image caches hold.
@@ -101,6 +109,8 @@ Inspecting:
   focus-output <name>       direct input and desktop bindings to this screen
   move-output <name>        move the focused/selected windows to this screen
   battery                   print the charge and the border colour it gives
+  bluetooth                 list Bluetooth adapters and paired devices
+  bluetooth reconnect       reconnect devices that were connected before
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
@@ -203,6 +213,11 @@ Smart home ([home] in config.toml):
   home fold|unfold|rooms|all  the panel block's folding and view
   home enable|disable       switch the [home] block on or off in config.toml
 
+Plugins:
+  plugin <id> <tool> [json] call a plugin's tool with a JSON object of
+                            arguments and print its answer, such as
+                            plugin home toggle {\"device\": \"Lamp\"}
+
 Pretend input (headless or nested only):
   pointer <x> <y>           move the pointer
   motion <dx> <dy>          move it by this much, like a mouse (crosses to
@@ -259,6 +274,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
+        "bluetooth" => return crate::bluetooth::parse(&args).map(Command::Bluetooth),
         "caches" => return Ok(Command::Caches),
         "tray" => {
             return match args.as_slice() {
@@ -286,7 +302,21 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return Ok(Command::Select(ids));
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
-        "home" => return crate::home::parse(rest).map(Command::Home),
+        "home" => return crate::home::parse(rest).map(|command| Command::Home(command, rest.trim().to_string())),
+        "plugin" => {
+            let mut parts = rest.trim().splitn(3, char::is_whitespace);
+            let plugin =
+                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin id and a tool")?;
+            let tool = parts.next().ok_or("plugin needs a tool after the plugin id")?;
+            let arguments = match parts.next().map(str::trim).filter(|json| !json.is_empty()) {
+                Some(json) => serde_json::from_str::<serde_json::Value>(json)
+                    .ok()
+                    .filter(serde_json::Value::is_object)
+                    .ok_or("plugin arguments must be a JSON object, such as {\"device\": \"Lamp\"}")?,
+                None => serde_json::json!({}),
+            };
+            return Ok(Command::Plugin { plugin: plugin.into(), tool: tool.into(), arguments });
+        }
         "settings" if rest.is_empty() => return Ok(Command::Settings),
         "doctor" => {
             // Whole words only: "doctor user" is not "doctor use r".
@@ -480,8 +510,10 @@ impl Tileception {
             Command::ReloadConfig => self.reload_config()?,
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
-            Command::Home(command) => return self.home_command(command),
+            Command::Home(command, text) => return self.home_command(command, &text),
+            Command::Plugin { plugin, tool, arguments } => return self.plugin_command(&plugin, &tool, arguments),
             Command::Battery => return Ok(self.battery_status()),
+            Command::Bluetooth(reconnect) => return Ok(self.bluetooth_command(reconnect)),
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
