@@ -1,6 +1,7 @@
 //! The desktops to choose from, from the session entries desktops install.
 
 use std::path::{Path, PathBuf};
+use tileception_apps::IconLookup;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -18,6 +19,10 @@ pub struct Session {
     pub kind: Kind,
     /// `DesktopNames`, for `XDG_CURRENT_DESKTOP`.
     pub desktop_names: Option<String>,
+    /// The `Icon` key: an icon name or an absolute path.
+    pub icon: Option<String>,
+    /// The picture to show beside the name, found by [`Session::find_logo`].
+    pub logo: Option<PathBuf>,
 }
 
 impl Session {
@@ -33,11 +38,44 @@ impl Session {
         }
         (vec![line], env)
     }
+
+    /// The session's logo: the badge another login screen (slick-greeter,
+    /// unity-greeter) shows for it, else its `Icon`, else an icon named
+    /// after the session or one of its desktop names.
+    fn find_logo(&self, lookup: &IconLookup, size: u32) -> Option<PathBuf> {
+        let mut ids = vec![self.session_id.clone()];
+        for name in self.desktop_names.iter().flat_map(|names| names.split(';')) {
+            let lowered = name.trim().to_lowercase();
+            if !lowered.is_empty() && !ids.contains(&lowered) {
+                ids.push(lowered);
+            }
+        }
+        let badges = ids.iter().flat_map(|name| {
+            [
+                format!("/usr/share/slick-greeter/badges/{name}.svg"),
+                format!("/usr/share/slick-greeter/badges/{name}.png"),
+                format!("/usr/share/unity-greeter/{name}_badge.png"),
+            ]
+        });
+        badges
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
+            .or_else(|| self.icon.as_deref().and_then(|icon| lookup.find(icon, size, 1)))
+            .or_else(|| ids.iter().find_map(|name| lookup.find(name, size, 1)))
+    }
 }
 
 /// The keys of a `[Desktop Entry]` group that matter here.
-fn parse_entry(text: &str) -> Option<(String, String, Option<String>, Option<String>)> {
-    let (mut name, mut exec, mut try_exec, mut names) = (None, None, None, None);
+struct Entry {
+    name: String,
+    exec: String,
+    try_exec: Option<String>,
+    desktop_names: Option<String>,
+    icon: Option<String>,
+}
+
+fn parse_entry(text: &str) -> Option<Entry> {
+    let (mut name, mut exec, mut try_exec, mut names, mut icon) = (None, None, None, None, None);
     let mut in_entry = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -54,11 +92,12 @@ fn parse_entry(text: &str) -> Option<(String, String, Option<String>, Option<Str
             "Exec" => exec = Some(value),
             "TryExec" => try_exec = Some(value),
             "DesktopNames" => names = Some(value),
+            "Icon" if !value.is_empty() => icon = Some(value),
             "Hidden" | "NoDisplay" if value == "true" => return None,
             _ => {}
         }
     }
-    Some((name?, strip_field_codes(&exec?), try_exec, names))
+    Some(Entry { name: name?, exec: strip_field_codes(&exec?), try_exec, desktop_names: names, icon })
 }
 
 /// Removes `%f`, `%U` and the like; `%%` stays a `%`.
@@ -99,11 +138,12 @@ pub fn scan(dirs: &[(PathBuf, Kind)], hidden: &[String]) -> Vec<Session> {
             .filter_map(|entry| {
                 let path = entry.path();
                 let session_id = path.file_name()?.to_str()?.strip_suffix(".desktop")?.to_string();
-                let (name, exec, try_exec, desktop_names) = parse_entry(&std::fs::read_to_string(&path).ok()?)?;
+                let Entry { name, exec, try_exec, desktop_names, icon } =
+                    parse_entry(&std::fs::read_to_string(&path).ok()?)?;
                 if try_exec.is_some_and(|program| !on_path(&program)) || exec.is_empty() {
                     return None;
                 }
-                Some(Session { session_id, name, exec, kind: *kind, desktop_names })
+                Some(Session { session_id, name, exec, kind: *kind, desktop_names, icon, logo: None })
             })
             .filter(|session| {
                 !hidden.iter().any(|hidden_name| *hidden_name == session.session_id || *hidden_name == session.name)
@@ -147,7 +187,12 @@ pub fn list(hidden: &[String], xsession_wrapper: &str) -> Vec<Session> {
             dirs
         }
     };
-    scan(&dirs, hidden)
+    let mut sessions = scan(&dirs, hidden);
+    let lookup = IconLookup::new("hicolor", &IconLookup::default_dirs());
+    for session in &mut sessions {
+        session.logo = session.find_logo(&lookup, 64);
+    }
+    sessions
 }
 
 #[cfg(test)]
@@ -157,10 +202,11 @@ mod tests {
     #[test]
     fn reads_entries() {
         let text = "[Desktop Entry]\nName=Sway\nName[nl]=Zwaai\nExec=sway --unsupported-gpu %U\nDesktopNames=sway;wlroots;\n\n[Desktop Action x]\nName=Other\n";
-        let (name, exec, _, names) = parse_entry(text).expect("parses");
-        assert_eq!(name, "Sway");
-        assert_eq!(exec, "sway --unsupported-gpu");
-        assert_eq!(names.as_deref(), Some("sway;wlroots;"));
+        let entry = parse_entry(text).expect("parses");
+        assert_eq!(entry.name, "Sway");
+        assert_eq!(entry.exec, "sway --unsupported-gpu");
+        assert_eq!(entry.desktop_names.as_deref(), Some("sway;wlroots;"));
+        assert!(entry.icon.is_none());
         assert!(parse_entry("[Desktop Entry]\nName=Gone\nExec=x\nHidden=true\n").is_none());
         assert_eq!(strip_field_codes("echo 100%% %f"), "echo 100%");
     }
@@ -173,6 +219,8 @@ mod tests {
             exec: "sway".into(),
             kind: Kind::Wayland,
             desktop_names: Some("sway;wlroots".into()),
+            icon: None,
+            logo: None,
         };
         let (cmd, env) = session.command("startx /usr/bin/env");
         assert_eq!(cmd, ["sway"]);

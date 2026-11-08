@@ -28,6 +28,9 @@ const PALETTE_ROWS: usize = 8;
 const SHAKE: f64 = 0.45;
 /// How long a change of person takes to crossfade, in seconds.
 const CROSSFADE: f64 = 0.3;
+/// Tileception's logo, made by `scripts/session-badge.sh`; shown for its
+/// sessions when no other login screen's badge is installed.
+const TILECEPTION_BADGE: &[u8] = include_bytes!("../../../../resources/session-badge.svg");
 
 /// What a click on a rectangle does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -898,11 +901,25 @@ impl Tileception {
                 );
             }
             let mark = Rect::new(row.x + 10.0, row.y + (row.h - 20.0) / 2.0, 20.0, 20.0);
-            if session.session_id.starts_with("tileception") {
-                painter.shape(mark, Shape { radius: 4.0, fill: accent, ..Default::default() });
-                painter.glyph(glyph::OVERVIEW, mark, 14, theme.on_accent);
+            let icons = &self.launcher.icons;
+            let logo = session.logo.as_deref().and_then(|path| icons.image(path, mark.w as u32)).or_else(|| {
+                session
+                    .session_id
+                    .starts_with("tileception")
+                    .then(|| icons.embedded("tileception-badge", TILECEPTION_BADGE, mark.w as u32))
+                    .flatten()
+            });
+            if let Some(logo) = logo {
+                painter.image(&logo, (mark.x, mark.y));
             } else {
+                // No logo installed: the name's initial.
                 painter.fill(mark, theme.surface_raised, 4.0);
+                let initial = session.name.chars().take(1).collect::<String>().to_uppercase();
+                painter.text(
+                    &initial,
+                    mark,
+                    Style::new(theme.font_size * 0.8, theme.muted).bold().align(Align::Centre),
+                );
             }
             let colour = if is_current { theme.text } else { theme.muted };
             let label = Rect::new(mark.right() + 10.0, row.y, row.w - 130.0, row.h);
@@ -1289,6 +1306,13 @@ mod tests {
         let mut datetime: libc::tm = unsafe { std::mem::zeroed() };
         (datetime.tm_year, datetime.tm_mon, datetime.tm_mday, datetime.tm_wday) = (year - 1900, month, mday, wday);
         datetime
+    }
+
+    #[test]
+    fn the_built_in_badge_is_the_generated_one() {
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/session-badge.sh");
+        let output = std::process::Command::new("sh").arg(script).output().expect("runs the badge script");
+        assert_eq!(output.stdout, TILECEPTION_BADGE, "regenerate resources/session-badge.svg with the script");
     }
 
     #[test]
