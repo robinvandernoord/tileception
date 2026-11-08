@@ -446,10 +446,11 @@ impl Tileception {
                         }
                     }
                 }
+                let terminal = self.terminal_prefix();
                 for app in &self.settings_applications() {
                     let value = match screen.kind {
-                        Kind::Startup => tileception_apps::command_line(app, &self.terminal),
-                        Kind::Shortcuts => format!("spawn {}", tileception_apps::command_line(app, &self.terminal)),
+                        Kind::Startup => tileception_apps::command_line(app, &terminal),
+                        Kind::Shortcuts => format!("spawn {}", tileception_apps::command_line(app, &terminal)),
                         Kind::Rules => {
                             app.wm_class.clone().unwrap_or_else(|| app.id.trim_end_matches(".desktop").into())
                         }

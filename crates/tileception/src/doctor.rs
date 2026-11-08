@@ -3422,7 +3422,7 @@ fn export_doctor_docs() -> std::io::Result<()> {
     for (name, content) in [
         ("usage.md", include_str!("../../../docs/usage.md")),
         ("configuration.md", include_str!("../../../docs/configuration.md")),
-        ("launcher-plugins.md", include_str!("../../../docs/launcher-plugins.md")),
+        ("plugins.md", include_str!("../../../docs/plugins.md")),
         ("installation.md", include_str!("../../../docs/installation.md")),
         ("greeter.md", include_str!("../../../docs/greeter.md")),
         ("doctor.md", include_str!("../../../docs/doctor.md")),

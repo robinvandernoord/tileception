@@ -260,10 +260,7 @@ impl Tileception {
             ActionKind::Copy { text } => self.copy_text(text),
             ActionKind::Open { target } => self.spawn("xdg-open", &[target]),
             ActionKind::Run { command, args } => self.spawn(&command, &args),
-            ActionKind::Terminal { directory } => {
-                let script = format!("cd '{}' && exec {}", directory.replace('\'', "'\\''"), self.terminal);
-                self.spawn("sh", &["-c".into(), script]);
-            }
+            ActionKind::Terminal { directory } => self.open_terminal_in(&directory),
         }
     }
 

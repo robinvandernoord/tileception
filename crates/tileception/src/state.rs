@@ -280,10 +280,11 @@ impl Tileception {
 
         let socket_name = Self::listen(display, event_loop);
 
+        let launcher = crate::launcher::Launcher::default();
         let terminal = std::env::var("TILECEPTION_TERMINAL")
             .ok()
             .or_else(|| config.file.general.terminal.clone())
-            .unwrap_or_else(default_terminal);
+            .unwrap_or_else(|| default_terminal(launcher.apps()));
         let settings = config.world_settings();
         let theme = config.theme.clone();
 
@@ -379,7 +380,7 @@ impl Tileception {
             power_menu: None,
             feedback: None,
             colour_pick: None,
-            launcher: Default::default(),
+            launcher,
             plugins: None,
             settings: Default::default(),
             ui_pressed: None,
@@ -447,20 +448,59 @@ impl Tileception {
         self.start.elapsed().as_secs_f64()
     }
 
+    /// How to start the configured terminal: the options its desktop entry
+    /// declares (`X-TerminalArgExec`, `X-TerminalArgDir`), else those of
+    /// well-known terminals.
+    pub(crate) fn terminal_args(&self) -> tileception_apps::TerminalArgs {
+        let program = self.terminal.split_whitespace().next().unwrap_or_default();
+        let declared = self
+            .launcher
+            .apps()
+            .by_program(std::path::Path::new(program))
+            .map(|app| app.terminal_args.clone())
+            .unwrap_or_default();
+        let known = known_terminal_args(terminal_name(&self.terminal));
+        tileception_apps::TerminalArgs { exec: declared.exec.or(known.exec), dir: declared.dir.or(known.dir) }
+    }
+
+    /// What goes before a command line to run it in the terminal, such as
+    /// `ghostty -e`.
+    pub(crate) fn terminal_prefix(&self) -> String {
+        let exec = self.terminal_args().exec.unwrap_or_else(|| "-e".into());
+        format!("{} {}", self.terminal.trim(), shell_word(&exec))
+    }
+
     /// Run a shell line in the configured terminal, keeping quoted arguments.
     pub(crate) fn run_in_terminal(&self, line: &str) -> Result<(), String> {
         if self.terminal.trim().is_empty() {
             return Err("No terminal configured".into());
         }
-        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
-        let line_arg = quote(line);
-        let one_arg = quote(&format!("sh -c {}", line_arg));
-        let command = format!(
-            "set -- {}; case \"${{1##*/}}\" in lxterminal|xfce4-terminal) exec \"$@\" --command {} ;; gnome-terminal) exec \"$@\" -- sh -c {} ;; *) exec \"$@\" -e sh -c {} ;; esac",
-            self.terminal, one_arg, line_arg, line_arg
-        );
+        let line = shell_word(line);
+        // LXTerminal takes the whole command as one string.
+        let command = if terminal_name(&self.terminal) == "lxterminal" {
+            format!("exec {} --command {}", self.terminal.trim(), shell_word(&format!("sh -c {line}")))
+        } else {
+            format!("exec {} sh -c {line}", self.terminal_prefix())
+        };
         self.spawn("sh", &["-c".into(), command]);
         Ok(())
+    }
+
+    /// Opens the configured terminal in a folder. Terminals get the folder
+    /// as their own option too: started without a terminal on stdin, some
+    /// (Ghostty) take it for a desktop launch, open in the home folder and
+    /// hand the window to an instance already running.
+    pub(crate) fn open_terminal_in(&self, directory: &str) {
+        let options = self
+            .terminal_args()
+            .dir_args(directory)
+            .unwrap_or_default()
+            .iter()
+            .map(|arg| shell_word(arg))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = format!("cd {} || exit; exec {} {options}", shell_word(directory), self.terminal.trim());
+        self.spawn("sh", &["-c".into(), command]);
     }
 
     pub fn spawn(&self, cmd: &str, args: &[String]) {
@@ -984,13 +1024,51 @@ fn watch_child(mut child: std::process::Child, name: String) {
 }
 
 /// The first installed terminal that runs natively on Wayland.
-fn default_terminal() -> String {
+/// The terminal program's file name, from the configured command.
+fn terminal_name(terminal: &str) -> &str {
+    let program = terminal.split_whitespace().next().unwrap_or_default();
+    program.rsplit('/').next().unwrap_or(program)
+}
+
+/// The options of well-known terminals, for those whose desktop entry does
+/// not declare them.
+fn known_terminal_args(name: &str) -> tileception_apps::TerminalArgs {
+    let exec = match name {
+        "gnome-terminal" => "--",
+        "xfce4-terminal" => "-x",
+        _ => "-e",
+    };
+    let dir = match name {
+        "ghostty" | "foot" | "alacritty" | "gnome-terminal" | "xfce4-terminal" | "lxterminal" => {
+            Some("--working-directory=")
+        }
+        "kitty" => Some("--directory="),
+        "konsole" => Some("--workdir"),
+        "wezterm" => Some("start --cwd"),
+        _ => None,
+    };
+    tileception_apps::TerminalArgs { exec: Some(exec.into()), dir: dir.map(Into::into) }
+}
+
+/// A string as one shell word.
+pub(crate) fn shell_word(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// The terminal when none is configured: the user's choice in
+/// `xdg-terminals.list`, else the first of these that is installed, else
+/// any installed terminal emulator.
+fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
+    if let Some(chosen) = apps.preferred_terminal() {
+        return chosen.exec.clone();
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
     ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "gnome-terminal"]
         .into_iter()
         .find(|terminal| std::env::split_paths(&path).any(|dir| dir.join(terminal).is_file()))
-        .unwrap_or("lxterminal")
-        .to_string()
+        .map(String::from)
+        .or_else(|| apps.terminal_emulators().next().map(|terminal| terminal.exec.clone()))
+        .unwrap_or_else(|| "lxterminal".into())
 }
 
 #[derive(Default)]

@@ -1,6 +1,7 @@
 //! Application discovery and search without a desktop-session dependency.
 
 mod autostart;
+mod defaults;
 mod desktop;
 mod icons;
 
@@ -34,8 +35,39 @@ pub struct App {
     pub hidden: bool,
     /// Extra entry points from `[Desktop Action ...]` groups, in `Actions=` order.
     pub actions: Vec<AppAction>,
+    /// For a terminal emulator, the options it declares for being started.
+    pub terminal_args: TerminalArgs,
+    /// The `MimeType=` types it opens.
+    pub mime_types: Vec<String>,
     /// The desktop file it was read from.
     pub source: PathBuf,
+}
+
+/// A terminal emulator's options from the proposed freedesktop Default
+/// Terminal Execution Specification (`X-TerminalArg*` keys), when its entry
+/// declares them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalArgs {
+    /// `X-TerminalArgExec`: what goes before a command to run, such as
+    /// `-e` or `--`.
+    pub exec: Option<String>,
+    /// `X-TerminalArgDir`: the option for the starting folder, such as
+    /// `--working-directory=` (the folder follows directly after `=`).
+    pub dir: Option<String>,
+}
+
+impl TerminalArgs {
+    /// The arguments that start a terminal in `directory`: the folder right
+    /// after an option ending in `=`, else as the next argument (an option
+    /// of several words, such as `start --cwd`, is split).
+    pub fn dir_args(&self, directory: &str) -> Option<Vec<String>> {
+        let option = self.dir.as_deref()?;
+        Some(if option.ends_with('=') {
+            vec![format!("{option}{directory}")]
+        } else {
+            option.split_whitespace().map(str::to_owned).chain([directory.to_owned()]).collect()
+        })
+    }
 }
 
 /// One desktop action, such as Firefox's "New Private Window".

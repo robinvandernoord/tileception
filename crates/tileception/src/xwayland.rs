@@ -85,7 +85,7 @@ impl Tileception {
     fn start_pending_autostart(&mut self) {
         for entry in std::mem::take(&mut self.pending_autostart) {
             tracing::info!(file = %entry.file.display(), "starting XDG autostart entry");
-            self.spawn("sh", &["-c".to_string(), entry.command_line(&format!("{} -e", self.terminal))]);
+            self.spawn("sh", &["-c".to_string(), entry.command_line(&self.terminal_prefix())]);
         }
     }
 

@@ -86,6 +86,29 @@ fn finds_apps_by_program() {
 }
 
 #[test]
+fn terminals_declare_how_to_start_them() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "apps/ghostty.desktop",
+        "[Desktop Entry]\nType=Application\nName=Ghostty\nExec=ghostty\nCategories=System;TerminalEmulator;\n\
+         X-TerminalArgExec=-e\nX-TerminalArgDir=--working-directory=\n",
+    );
+    fixture.write(
+        "apps/spaced.desktop",
+        "[Desktop Entry]\nType=Application\nName=Spaced\nExec=spaced\nX-TerminalArgDir=--dir\n",
+    );
+    fixture.write("apps/plain.desktop", "[Desktop Entry]\nType=Application\nName=Plain\nExec=plain\n");
+    let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
+    let ghostty = &index.by_program(Path::new("ghostty")).unwrap().terminal_args;
+    assert_eq!(ghostty.exec.as_deref(), Some("-e"));
+    assert_eq!(ghostty.dir_args("/srv/a b"), Some(vec!["--working-directory=/srv/a b".to_string()]));
+    let spaced = &index.by_program(Path::new("spaced")).unwrap().terminal_args;
+    assert_eq!(spaced.dir_args("/srv"), Some(vec!["--dir".to_string(), "/srv".to_string()]));
+    let plain = &index.by_program(Path::new("plain")).unwrap().terminal_args;
+    assert_eq!((plain.exec.clone(), plain.dir_args("/srv")), (None, None));
+}
+
+#[test]
 fn desktop_actions() {
     let fixture = Fixture::new();
     fixture.write(

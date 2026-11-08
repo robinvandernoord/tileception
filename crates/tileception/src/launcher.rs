@@ -355,6 +355,11 @@ impl Default for Launcher {
 }
 
 impl Launcher {
+    /// The desktop entries the launcher knows.
+    pub(crate) fn apps(&self) -> &AppIndex {
+        &self.index
+    }
+
     pub fn app_icon(
         &self,
         app_id: &str,
@@ -1041,7 +1046,7 @@ impl Tileception {
             Entry::Action { app, action } => {
                 let Some(command) = self.launcher.index.get(&app).and_then(|entry| {
                     let action = entry.actions.get(action)?;
-                    Some(tileception_apps::action_command_line(entry, action, &format!("{} -e", self.terminal)))
+                    Some(tileception_apps::action_command_line(entry, action, &self.terminal_prefix()))
                 }) else {
                     return;
                 };
@@ -1122,8 +1127,7 @@ impl Tileception {
             }
             ActionKind::Terminal { directory } => {
                 self.close_launcher();
-                let script = format!("cd {} && exec {}", shell_quote(&directory), self.terminal);
-                self.spawn("sh", &["-c".into(), script]);
+                self.open_terminal_in(&directory);
             }
             ActionKind::Tool { name, arguments } => {
                 let Some(plugin) = plugin else {
@@ -1144,7 +1148,7 @@ impl Tileception {
     /// The command line an app runs from the launcher, with `[launch_args]`.
     fn app_command(&self, app: &tileception_apps::App) -> String {
         let extra = self.config.launch_args(&app.id);
-        tileception_apps::command_line_with(app, &format!("{} -e", self.terminal), &extra)
+        tileception_apps::command_line_with(app, &self.terminal_prefix(), &extra)
     }
 
     fn launch_detail(&mut self, app_id: &str, row: Detail) {
@@ -1183,13 +1187,21 @@ impl Tileception {
         }
     }
 
-    /// Opens a file in the default text editor. A desktop file handed to
-    /// xdg-open could start the app instead.
+    /// Opens a file in the default text editor (`mimeapps.list`), a terminal
+    /// editor in the configured terminal; without one, its folder. A desktop
+    /// file handed to xdg-open could start the app instead.
     fn open_in_text_editor(&self, path: &std::path::Path) {
-        let script = "editor=$(xdg-mime query default text/plain); \
-            if [ -n \"$editor\" ] && gtk-launch \"$editor\" \"$1\"; then exit; fi; \
-            exec xdg-open \"$(dirname \"$1\")\"";
-        self.spawn("sh", &["-c".into(), script.into(), "sh".into(), path.to_string_lossy().into_owned()]);
+        let file = path.to_string_lossy().into_owned();
+        match self.launcher.apps().default_for("text/plain") {
+            Some(editor) => {
+                let line = tileception_apps::command_line_with(editor, &self.terminal_prefix(), &[file]);
+                self.spawn("sh", &["-c".into(), line]);
+            }
+            None => {
+                let folder = path.parent().map_or_else(|| file.clone(), |folder| folder.to_string_lossy().into_owned());
+                self.spawn("xdg-open", &[folder]);
+            }
+        }
     }
 
     /// Starts an app's command line and counts it towards its usage.
@@ -2250,11 +2262,6 @@ fn tilde(path: &std::path::Path, home: &std::path::Path) -> String {
         Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
         _ => path.display().to_string(),
     }
-}
-
-/// A string as one shell word.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// See [`Launcher::question`].
