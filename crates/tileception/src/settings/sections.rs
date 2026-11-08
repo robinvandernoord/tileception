@@ -203,6 +203,9 @@ impl Tileception {
         if self.settings.page == Some(5) {
             self.settings_home_arrive();
         }
+        if self.settings.page == Some(apps_page()) {
+            self.settings_load_apps();
+        }
         if self.settings.section.is_some() {
             return;
         }

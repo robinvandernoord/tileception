@@ -9,6 +9,7 @@ use tileception_core::{Point, Rect, WindowId};
 mod client;
 mod colour;
 mod connect;
+mod defaults_page;
 mod display_preview;
 mod editor;
 mod home_page;
@@ -112,7 +113,23 @@ const CATEGORIES: &[Category] = &[
         description: "Connections to other computers.",
         icon: glyph::GLOBE,
     },
+    Category {
+        title: defaults_page::TITLE,
+        summary: "Browser, files & file types",
+        description: "The applications that open links, folders and files.",
+        icon: glyph::FILE,
+    },
 ];
+
+/// The height of the sidebar's list of pages.
+fn nav_height() -> f64 {
+    CATEGORIES.len() as f64 * 40.
+}
+
+/// The Default apps page.
+fn apps_page() -> usize {
+    CATEGORIES.iter().position(|category| category.title == defaults_page::TITLE).expect("Default apps is a page")
+}
 
 const fn field(
     category: usize,
@@ -488,6 +505,11 @@ enum Hit {
     HomeLink(usize),
     HomeRefresh,
     HomeCloud(bool),
+    /// Default apps: an entry's application button, one of its menu's
+    /// applications, and showing all file types.
+    AppDefault(usize),
+    AppChoice(usize, usize),
+    AppsAll,
     Reference,
     AdvancedAppearance,
     ReviewChanges,
@@ -529,6 +551,13 @@ pub struct Settings {
     editor_epoch: u64,
     config_scroll: f64,
     home_cloud_labels: [String; 2],
+    /// Default apps: the entries as last read, whether every file type
+    /// shows, and the open menu with its highlighted application.
+    apps: Vec<defaults_page::Entry>,
+    apps_all: bool,
+    apps_menu: Option<(usize, usize)>,
+    /// Defaults chosen and not applied yet, part of the draft.
+    apps_pending: Vec<defaults_page::Pending>,
     /// Smart home: devices were imported, so the page shows them instead of
     /// the setup steps.
     home_ready: bool,
@@ -708,6 +737,8 @@ struct Frame {
     advanced: Option<Rect>,
     /// The Smart home page's steps or devices, below its rows.
     home: Option<home_page::HomeFrame>,
+    /// The Default apps page's rows.
+    apps: Option<defaults_page::AppsFrame>,
     /// The battery colour thresholds, under their row on Power & battery.
     levels: Vec<(Rect, usize)>,
     max_scroll: f64,
@@ -808,7 +839,8 @@ impl Settings {
         options
     }
     fn changed(&self) -> usize {
-        let count = self.draft.iter().zip(&self.before).filter(|(draft, before)| draft != before).count();
+        let count = self.draft.iter().zip(&self.before).filter(|(draft, before)| draft != before).count()
+            + self.apps_pending.len();
         count.max(usize::from(
             self.document_draft != self.document_before
                 || !self.parked_editors.is_empty()
@@ -1307,6 +1339,7 @@ impl Tileception {
             groups: Vec::new(),
             advanced: None,
             home: None,
+            apps: None,
             levels: Vec::new(),
             max_scroll: 0.,
         };
@@ -1371,7 +1404,9 @@ impl Tileception {
             if show_preview {
                 frame.preview = Some(Rect::new(content.right() - 260., frame.top + 26., 260., 178.));
             }
-            if self.settings.query.is_empty() && self.settings.page.is_some() {
+            // Default apps are not config.toml settings: nothing to restore.
+            if self.settings.query.is_empty() && self.settings.page.is_some() && self.settings.page != Some(apps_page())
+            {
                 frame.hits.push((Rect::new(content.right() - 132., content.y + 4., 132., 30.), Hit::ResetSection));
             }
             let row_height = if row_width < 480. {
@@ -1425,6 +1460,12 @@ impl Tileception {
                 offset += gap + home.height + 20.;
                 frame.home = Some(home);
             }
+            if self.settings.page == Some(apps_page()) && self.settings.query.is_empty() {
+                // Room for the first card's heading.
+                let apps = self.settings_apps_layout(content.x, offset + 24., row_width);
+                offset += 24. + apps.height + 20.;
+                frame.apps = Some(apps);
+            }
             frame.max_scroll = (offset - viewport(&frame).h + 20.).max(0.);
             let scroll = self.settings.scroll.min(frame.max_scroll);
             let shift = scroll_top - scroll;
@@ -1433,6 +1474,9 @@ impl Tileception {
             }
             if let Some(home) = &mut frame.home {
                 home.shift(shift);
+            }
+            if let Some(apps) = &mut frame.apps {
+                apps.shift(shift);
             }
             let area = viewport(&frame);
             if let Some(top) = advanced_at {
@@ -1482,10 +1526,30 @@ impl Tileception {
                     }
                 }
             }
+            if let Some(apps) = &frame.apps {
+                let mut hits = Vec::new();
+                for (row, index) in &apps.rows {
+                    let control = defaults_page::app_control(*row);
+                    let usable = self.settings.apps.get(*index).is_some_and(|entry| !entry.choices.is_empty());
+                    if usable && control.y >= area.y && control.bottom() <= area.bottom() {
+                        hits.push((control, Hit::AppDefault(*index)));
+                    }
+                }
+                if apps.toggle.y >= area.y && apps.toggle.bottom() <= area.bottom() {
+                    hits.push((apps.toggle, Hit::AppsAll));
+                }
+                frame.hits.extend(hits);
+            }
         }
         if let Some((index, _)) = self.settings.dropdown {
             for (position, rect) in self.settings_dropdown_rects(&frame, index).into_iter().enumerate() {
                 frame.hits.push((rect, Hit::Option(index, position)));
+            }
+        }
+        if let Some((entry, _)) = self.settings.apps_menu {
+            // Last, so the menu covers what is under it.
+            for (position, rect) in self.settings_apps_menu_rects(&frame, entry).into_iter().enumerate() {
+                frame.hits.push((rect, Hit::AppChoice(entry, position)));
             }
         }
         frame
@@ -1500,7 +1564,7 @@ impl Tileception {
         let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         if pointer.x < frame.body.x && pointer.y >= frame.body.y + 70. && pointer.y < frame.body.bottom() - 96. {
             let visible = (frame.body.h - 166.).max(1.);
-            self.settings.nav_scroll = (self.settings.nav_scroll + amount).clamp(0., (400. - visible).max(0.));
+            self.settings.nav_scroll = (self.settings.nav_scroll + amount).clamp(0., (nav_height() - visible).max(0.));
             self.schedule_render();
             return;
         }
@@ -1567,6 +1631,15 @@ impl Tileception {
         {
             self.settings.dropdown = None;
             if hit == Hit::Field(index) {
+                self.schedule_render();
+                return;
+            }
+        }
+        if let Some((entry, _)) = self.settings.apps_menu
+            && !matches!(hit, Hit::AppChoice(..))
+        {
+            self.settings.apps_menu = None;
+            if hit == Hit::AppDefault(entry) {
                 self.schedule_render();
                 return;
             }
@@ -1647,6 +1720,9 @@ impl Tileception {
         if !matches!(hit, Hit::Field(_) | Hit::Option(..)) {
             self.settings.dropdown = None;
         }
+        if !matches!(hit, Hit::AppDefault(_) | Hit::AppChoice(..)) {
+            self.settings.apps_menu = None;
+        }
         match hit {
             Hit::Close => self.toggle_settings(),
             Hit::Search => {
@@ -1680,6 +1756,25 @@ impl Tileception {
                 }
                 // The form opens at the bottom of the page: bring it into view.
                 self.settings.scroll = self.settings_frame().max_scroll;
+            }
+            Hit::AppDefault(entry) => {
+                if self.settings.apps_menu.is_some_and(|(open, _)| open == entry) {
+                    self.settings.apps_menu = None;
+                } else if let Some(data) = self.settings.apps.get(entry) {
+                    let (shown, _) = self.settings_shown_app(data);
+                    let current = shown
+                        .and_then(|(app_id, _)| data.choices.iter().position(|(choice, _)| *choice == app_id))
+                        .unwrap_or(0);
+                    self.settings.apps_menu = Some((entry, current));
+                }
+            }
+            Hit::AppChoice(entry, choice) => {
+                self.settings_choose_app(entry, choice);
+                self.settings.focus = Some(Hit::AppDefault(entry));
+            }
+            Hit::AppsAll => {
+                self.settings.apps_all = !self.settings.apps_all;
+                self.settings_load_apps();
             }
             Hit::HomeCloud(sensors) => match self.settings_home_cloud(sensors) {
                 Ok(()) => {
@@ -1726,6 +1821,7 @@ impl Tileception {
             Hit::Discard => {
                 self.settings.parked_sections.clear();
                 self.settings.parked_editors.clear();
+                self.settings_discard_apps();
                 match self.settings_load() {
                     Ok(()) => {
                         self.settings.message = "Draft discarded. Loaded current desktop settings.".into();
@@ -1751,6 +1847,20 @@ impl Tileception {
                     self.settings.message = "Finish the saved editor draft before applying.".into();
                     self.schedule_render();
                     return;
+                }
+                // Default apps go to mimeapps.list, before config.toml.
+                match self.settings_apply_apps() {
+                    Ok(0) => {}
+                    Ok(_) => {
+                        self.settings.message = "Default apps applied.".into();
+                        self.settings.error = false;
+                    }
+                    Err(error) => {
+                        self.settings.message = error;
+                        self.settings.error = true;
+                        self.schedule_render();
+                        return;
+                    }
                 }
                 match self.settings_start_display_preview() {
                     Ok(true) => return,
@@ -1990,6 +2100,20 @@ impl Tileception {
             self.schedule_render();
             return;
         }
+        if let Some((entry, selected)) = self.settings.apps_menu {
+            let count = self.settings.apps.get(entry).map_or(0, |data| data.choices.len()).max(1);
+            match sym {
+                keysyms::KEY_Escape | keysyms::KEY_Tab => self.settings.apps_menu = None,
+                keysyms::KEY_Up => self.settings.apps_menu = Some((entry, (selected + count - 1) % count)),
+                keysyms::KEY_Down => self.settings.apps_menu = Some((entry, (selected + 1) % count)),
+                keysyms::KEY_Return | keysyms::KEY_space => {
+                    self.settings_activate(Hit::AppChoice(entry, selected), None)
+                }
+                _ => {}
+            }
+            self.schedule_render();
+            return;
+        }
         if let Some((index, selected)) = self.settings.dropdown {
             let count = self.settings.options(index).len();
             match sym {
@@ -2178,12 +2302,15 @@ impl Tileception {
                 (frame.body.h - 166.).max(1.),
             ),
             state.nav_scroll,
-            (400. - (frame.body.h - 166.).max(1.)).max(0.),
+            (nav_height() - (frame.body.h - 166.).max(1.)).max(0.),
             theme,
         );
         painter.clipped(viewport(&frame), |painter| {
             if let Some(home) = &frame.home {
                 self.settings_draw_home_page(painter, home);
+            }
+            if let Some(apps) = &frame.apps {
+                self.settings_draw_apps_page(painter, apps, pointer);
             }
         });
         for (rect, hit) in &frame.hits {
@@ -2464,7 +2591,11 @@ impl Tileception {
                 );
             }
         });
-        if (state.page.is_some() || !state.query.is_empty()) && state.selected().is_empty() && frame.home.is_none() {
+        if (state.page.is_some() || !state.query.is_empty())
+            && state.selected().is_empty()
+            && frame.home.is_none()
+            && frame.apps.is_none()
+        {
             painter.text(
                 "Try a word such as accent, gap, bar or battery.",
                 Rect::new(frame.content.x, frame.top + 8., frame.content.w, 30.),
@@ -2556,6 +2687,7 @@ impl Tileception {
                 }
             }
         }
+        self.settings_draw_apps_menu(&mut painter, &frame, pointer);
         self.draw_colour_picker(&mut painter, &frame);
         self.settings_draw_editor(&mut painter, &frame);
         self.section_draw(&mut painter);
@@ -3171,10 +3303,21 @@ impl Tileception {
             }
             toml::to_string_pretty(&table).map_err(|error| error.to_string())
         })();
-        match result {
+        let mut lines: Vec<String> = match result {
             Ok(text) => text.lines().map(String::from).collect(),
             Err(error) => vec![error],
+        };
+        // Pending default apps, as mimeapps.list lines.
+        let apps = self.settings_apps_review(after);
+        if !apps.is_empty() {
+            if self.settings.draft == self.settings.before {
+                lines.clear();
+            } else {
+                lines.push(String::new());
+            }
+            lines.extend(apps);
         }
+        lines
     }
 
     fn settings_config(&self, painter: &mut Painter, rect: Rect) {

@@ -6,6 +6,7 @@ mod desktop;
 mod icons;
 
 pub use autostart::{autostart_entries, scan_autostart, AutostartEntry};
+pub use defaults::{set_default, Associations};
 pub use icons::IconLookup;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
