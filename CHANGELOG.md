@@ -2,6 +2,28 @@
 
 <!-- next-version-placeholder -->
 
+## v0.13.0 (2026-11-08)
+
+### Features
+* **settings:** manage default applications
+* **greeter:** show session logos
+* **plugins:** add bar chips and bundled Bluetooth controls
+* **bluetooth:** add device controls and reconnect support
+* **plugins:** add bundled plugins and panel resources
+* **plugins:** add shared plugin host
+* **smart-home:** add guided device setup in settings
+* **gestures:** make navigation follow touchpad input
+
+### Fixes
+* **terminal:** honor terminal and MIME application preferences
+* **session:** enable Secret Service integration for desktop apps
+
+### Performance
+* **build:** speed up development installs
+
+### Documentation
+* **plugins:** document bundled and panel plugins
+
 ## v0.12.0 (2026-11-07)
 
 ### Features
