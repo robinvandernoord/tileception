@@ -341,6 +341,13 @@ explains why one is unreachable, and commands such as
 control them from scripts and key bindings; `tileception msg --help` lists them
 all.
 
+### Bluetooth
+
+The notification panel's **Bluetooth** block lists paired devices with a switch
+to connect each. **Pair device** searches for 30 seconds; flip a nearby
+device's switch to pair it, and confirm the code when asked. Type `bt` in the
+launcher to connect, disconnect or (`bt forget`) unpair devices.
+
 ## Gestures
 
 ### Touchpad

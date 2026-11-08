@@ -73,8 +73,18 @@ pub struct PluginConfig {
     pub args: Option<Vec<String>>,
     pub enabled: Option<bool>,
     pub launcher: Option<LauncherOptions>,
+    /// Chips in the bar: only with this block, unless it says
+    /// `enabled = false`.
+    pub bar: Option<BarOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
+}
+
+impl PluginConfig {
+    /// Whether the plugin's chips show in the bar.
+    pub fn in_bar(&self) -> bool {
+        self.bar.as_ref().is_some_and(|bar| bar.enabled != Some(false))
+    }
 }
 
 /// A plugin's `[launcher]` block.
@@ -82,6 +92,13 @@ pub struct PluginConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LauncherOptions {
     pub prefixes: Option<Vec<String>>,
+}
+
+/// A plugin's `[bar]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BarOptions {
+    pub enabled: Option<bool>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -139,6 +156,12 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
     }
     if let Some(prefixes) = overlay.launcher.and_then(|launcher| launcher.prefixes) {
         base.launcher.get_or_insert_default().prefixes = Some(prefixes);
+    }
+    if let Some(bar) = overlay.bar {
+        let base = base.bar.get_or_insert_default();
+        if bar.enabled.is_some() {
+            base.enabled = bar.enabled;
+        }
     }
 }
 
@@ -220,12 +243,15 @@ pub struct Described {
 
 /// The resource holding a plugin's panel block.
 pub const PANEL: &str = "tileception://panel";
+/// The resource holding a plugin's bar chips.
+pub const BAR: &str = "tileception://bar";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
 pub struct Changed {
     pub routes: bool,
     pub panels: bool,
+    pub bar: bool,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -358,6 +384,8 @@ pub struct Host {
     pub diagnostics: Vec<String>,
     /// Panel blocks by plugin.
     panels: BTreeMap<String, crate::panel::block::Block>,
+    /// Bar chips by plugin.
+    bars: BTreeMap<String, crate::panel::block::Bar>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
 }
@@ -378,6 +406,7 @@ impl Host {
             routes: Vec::new(),
             diagnostics: Vec::new(),
             panels: BTreeMap::new(),
+            bars: BTreeMap::new(),
             resources: BTreeMap::new(),
         };
         host.reload();
@@ -416,6 +445,7 @@ impl Host {
         self.routes.clear();
         self.diagnostics.clear();
         self.panels.clear();
+        self.bars.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -430,7 +460,7 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, resources: Vec::new() }
+        Changed { routes, panels: reloaded, bar: reloaded, resources: Vec::new() }
     }
 
     /// A resource was read: panels are kept parsed, others as they are.
@@ -463,6 +493,17 @@ impl Host {
                 }
             }
             changed.panels = true;
+        } else if uri == BAR {
+            match serde_json::from_value::<crate::panel::block::Bar>(value) {
+                Ok(bar) => {
+                    self.bars.insert(plugin, bar);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid bar chips: {error}");
+                    self.bars.remove(&plugin);
+                }
+            }
+            changed.bar = true;
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -473,6 +514,16 @@ impl Host {
     /// The panel blocks, highest priority first.
     pub fn panels(&self) -> Vec<(&str, &crate::panel::block::Block)> {
         self.order.iter().filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.panels.get(plugin_id)?))).collect()
+    }
+
+    /// The bar chips of plugins with a `[bar]` block, highest priority first.
+    pub fn bar_chips(&self) -> Vec<(&str, &crate::panel::block::BarChip)> {
+        self.order
+            .iter()
+            .filter(|(_, config)| config.in_bar())
+            .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.bars.get(plugin_id)?)))
+            .flat_map(|(plugin_id, bar)| bar.chips.iter().map(move |chip| (plugin_id, chip)))
+            .collect()
     }
 
     /// A resource as last read.
@@ -679,7 +730,10 @@ impl Tileception {
     pub fn plugin_settings(&self) -> Settings {
         let mut settings = Settings::new(&self.config.file.plugins, &self.config.file.launcher);
         let home = &self.config.file.home;
-        settings.bundled = crate::bundled::Options { home: home.enabled.then(|| home.devices.clone()) };
+        settings.bundled = crate::bundled::Options {
+            home: home.enabled.then(|| home.devices.clone()),
+            bluetooth_no_reconnect: !self.config.file.bluetooth.reconnect,
+        };
         settings
     }
 
@@ -754,6 +808,9 @@ impl Tileception {
         }
         if changed.panels {
             self.panel_changed();
+        }
+        if changed.bar {
+            self.schedule_render();
         }
         if !changed.resources.is_empty() && self.settings.open {
             self.schedule_render();
@@ -1568,6 +1625,32 @@ mod tests {
             })),
             Err(PluginError::Tool("Please sign in".into()))
         );
+    }
+
+    #[test]
+    fn chips_need_a_bar_block() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.chips]
+            command = "chips"
+            [plugins.chips.bar]
+
+            [plugins.hidden.bar]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(!settings.plugins["plain"].in_bar());
+        assert!(settings.plugins["chips"].in_bar());
+        // A manifest's block, switched off in the config.
+        let mut manifest = PluginConfig { bar: Some(BarOptions::default()), ..PluginConfig::default() };
+        assert!(manifest.in_bar());
+        overlay(&mut manifest, settings.plugins["hidden"].clone());
+        assert!(!manifest.in_bar());
     }
 
     #[test]

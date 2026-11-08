@@ -40,7 +40,7 @@ pub struct ConfigFile {
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
-    pub bluetooth: crate::bluetooth::BluetoothConfig,
+    pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
     /// What this session shows on the login screen.

@@ -501,6 +501,12 @@ selection to other tools.
 These battery actions are inactive on computers without a battery. Run
 `tileception msg battery` to inspect the charge and current border colour.
 
+### Bluetooth
+
+Devices that were connected before the computer slept or Bluetooth was switched
+off reconnect a few seconds after it is back. Set `reconnect = false` under
+`[bluetooth]` to turn this off.
+
 ## Smart home
 
 The notification panel can show Tuya lights, plugs and air conditioners (sold

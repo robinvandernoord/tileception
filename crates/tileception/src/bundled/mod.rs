@@ -3,6 +3,7 @@
 //! packaging, work in nested and headless instances, and config changes or
 //! disables them like any other plugin (`[plugins.<id>]`).
 
+pub(crate) mod bluetooth;
 mod folders;
 pub(crate) mod home;
 
@@ -18,7 +19,7 @@ use serde_json::{Value, json};
 use crate::plugins::PluginConfig;
 
 /// The bundled plugins' ids.
-const IDS: &[&str] = &["home", "folders"];
+const IDS: &[&str] = &["home", "folders", "bluetooth"];
 
 /// What the bundled manifests depend on in the config.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -26,6 +27,8 @@ pub struct Options {
     /// The smart home, when `[home]` is enabled: its device file, when not
     /// the default one.
     pub home: Option<Option<String>>,
+    /// `[bluetooth] reconnect = false`.
+    pub bluetooth_no_reconnect: bool,
 }
 
 /// The compiled-in manifests: this very executable, started as
@@ -46,9 +49,15 @@ pub fn manifests(options: &Options) -> Result<Vec<(String, PluginConfig)>, Strin
     let mut manifests = Vec::new();
     if let Some(devices) = &options.home {
         let extra = devices.iter().flat_map(|path| ["--devices".to_string(), path.clone()]).collect();
-        manifests.push(manifest("home", extra));
+        let (plugin_id, mut config) = manifest("home", extra);
+        config.bar = Some(crate::plugins::BarOptions::default());
+        manifests.push((plugin_id, config));
     }
     manifests.push(manifest("folders", Vec::new()));
+    let no_reconnect = options.bluetooth_no_reconnect.then(|| "--no-reconnect".to_string());
+    let (plugin_id, mut config) = manifest("bluetooth", no_reconnect.into_iter().collect());
+    config.bar = Some(crate::plugins::BarOptions::default());
+    manifests.push((plugin_id, config));
     Ok(manifests)
 }
 
@@ -57,6 +66,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("folders") => serve(&mut folders::Folders::default()),
         Some("home") => serve(&mut home::HomePlugin::new(&args[1..])?),
+        Some("bluetooth") => serve(&mut bluetooth::BluetoothPlugin::new(&args[1..])),
         Some("-h" | "--help" | "help") | None => {
             println!(
                 "Usage: tileception plugin <id>\n\nServes a bundled plugin over MCP on stdin and stdout; Tileception starts these itself.\nBundled plugins: {}",
@@ -312,7 +322,16 @@ mod tests {
         assert_eq!(plugin_id, "folders");
         assert_eq!(config.args.as_deref(), Some(&["plugin".to_string(), "folders".to_string()][..]));
         assert!(config.command.as_deref().is_some_and(|command| !command.is_empty()));
-        let with_home = manifests(&Options { home: Some(Some("/tmp/devices.json".into())) }).unwrap();
+        assert_eq!(
+            without_home.last().unwrap().1.args.as_deref(),
+            Some(&["plugin", "bluetooth"].map(String::from)[..])
+        );
+        let with_home =
+            manifests(&Options { home: Some(Some("/tmp/devices.json".into())), bluetooth_no_reconnect: true }).unwrap();
+        assert_eq!(
+            with_home.last().unwrap().1.args.as_deref(),
+            Some(&["plugin", "bluetooth", "--no-reconnect"].map(String::from)[..])
+        );
         assert_eq!(with_home[0].0, "home");
         assert_eq!(
             with_home[0].1.args.as_deref(),

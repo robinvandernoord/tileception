@@ -212,6 +212,7 @@ pub mod glyph {
     pub const THERMOMETER: &str = r#"<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 11v6"/>"#;
     pub const FAN: &str = r#"<circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7 2 0 3 2 2 4-1 2-4 3-6 3zM14 12c4 0 7 1 7 4 0 2-2 3-4 2-2-1-3-4-3-6zM12 14c0 4-1 7-4 7-2 0-3-2-2-4 1-2 4-3 6-3zM10 12c-4 0-7-1-7-4 0-2 2-3 4-2 2 1 3 4 3 6z"/>"#;
     pub const WIFI_OFF: &str = r#"<path d="M2 9a15 15 0 0 1 6-3.4M22 9a15 15 0 0 0-9-3.9M5 12.5a10 10 0 0 1 4-2.3M8.5 16a5 5 0 0 1 7 0M3 3l18 18"/>"#;
+    pub const BLUETOOTH: &str = r#"<path d="M7 7l10 10-5 5V2l5 5L7 17"/>"#;
     pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
     pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
     pub const LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
@@ -287,6 +288,7 @@ pub mod glyph {
             "flame" => FLAME,
             "fan" => FAN,
             "wifi_off" => WIFI_OFF,
+            "bluetooth" => BLUETOOTH,
             "bell" => BELL,
             "lock" => LOCK,
             _ => PLUG,
@@ -370,6 +372,23 @@ impl Icons {
             return image.clone();
         }
         let image = load_icon(path, size);
+        let mut cache = self.cache.borrow_mut();
+        if cache.len() >= 512 {
+            cache.clear();
+        }
+        cache.insert(key, image.clone());
+        image
+    }
+
+    /// An SVG built into the program, `size` logical pixels square; `name`
+    /// keys it in the cache.
+    pub fn embedded(&self, name: &str, svg: &[u8], size: u32) -> Option<MemoryRenderBuffer> {
+        let size = self.pixels(size);
+        let key = (PathBuf::from(format!("embedded:{name}")), size);
+        if let Some(image) = self.cache.borrow().get(&key) {
+            return image.clone();
+        }
+        let image = render_svg(svg, None, size).map(|pixels| square_buffer(&pixels, size));
         let mut cache = self.cache.borrow_mut();
         if cache.len() >= 512 {
             cache.clear();
@@ -815,21 +834,28 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// An SVG fitted and centred in a square of `size` pixels, premultiplied RGBA.
+fn render_svg(data: &[u8], resources_dir: Option<PathBuf>, size: u32) -> Option<Vec<u8>> {
+    let options = resvg::usvg::Options { resources_dir, ..Default::default() };
+    let tree = resvg::usvg::Tree::from_data(data, &options).ok()?;
+    let mut pixels = resvg::tiny_skia::Pixmap::new(size, size)?;
+    let scale = (size as f32 / tree.size().width()).min(size as f32 / tree.size().height());
+    let transform = resvg::tiny_skia::Transform::from_translate(
+        (size as f32 - tree.size().width() * scale) / 2.0,
+        (size as f32 - tree.size().height() * scale) / 2.0,
+    )
+    .pre_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixels.as_mut());
+    Some(pixels.take())
+}
+
+fn square_buffer(pixels: &[u8], size: u32) -> MemoryRenderBuffer {
+    MemoryRenderBuffer::from_slice(pixels, Fourcc::Abgr8888, (size as i32, size as i32), 1, Transform::Normal, None)
+}
+
 fn load_icon(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
     let pixels = if path.extension().is_some_and(|extension| extension == "svg") {
-        let data = std::fs::read(path).ok()?;
-        let options =
-            resvg::usvg::Options { resources_dir: path.parent().map(Path::to_path_buf), ..Default::default() };
-        let tree = resvg::usvg::Tree::from_data(&data, &options).ok()?;
-        let mut pixels = resvg::tiny_skia::Pixmap::new(size, size)?;
-        let scale = (size as f32 / tree.size().width()).min(size as f32 / tree.size().height());
-        let transform = resvg::tiny_skia::Transform::from_translate(
-            (size as f32 - tree.size().width() * scale) / 2.0,
-            (size as f32 - tree.size().height() * scale) / 2.0,
-        )
-        .pre_scale(scale, scale);
-        resvg::render(&tree, transform, &mut pixels.as_mut());
-        pixels.take()
+        render_svg(&std::fs::read(path).ok()?, path.parent().map(Path::to_path_buf), size)?
     } else {
         let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
         let image = reader.decode().ok()?.resize(size, size, image::imageops::FilterType::Triangle).to_rgba8();
@@ -848,14 +874,7 @@ fn load_icon(path: &Path, size: u32) -> Option<MemoryRenderBuffer> {
         }
         canvas.into_raw()
     };
-    Some(MemoryRenderBuffer::from_slice(
-        &pixels,
-        Fourcc::Abgr8888,
-        (size as i32, size as i32),
-        1,
-        Transform::Normal,
-        None,
-    ))
+    Some(square_buffer(&pixels, size))
 }
 
 impl Tileception {

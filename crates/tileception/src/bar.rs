@@ -261,6 +261,7 @@ enum Hit {
     Slot(usize),
     Media,
     Dnd,
+    Plugin(usize),
     Clock,
     Battery,
     Notifications,
@@ -320,6 +321,8 @@ enum ChipKind {
     Media,
     Capture,
     Dnd,
+    /// A plugin's chip, by its place in [`Tileception::plugin_chips`].
+    Plugin(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -712,7 +715,33 @@ impl Tileception {
             };
             chips.push((ChipKind::Media, label));
         }
+        for (index, (_, chip)) in self.plugin_chips().into_iter().enumerate() {
+            chips.push((ChipKind::Plugin(index), chip.label.clone()));
+        }
         chips
+    }
+
+    /// Plugins' chips, after the built-in ones.
+    fn plugin_chips(&self) -> Vec<(&str, &crate::panel::block::BarChip)> {
+        self.plugins.as_ref().map(crate::plugins::Host::bar_chips).unwrap_or_default()
+    }
+
+    /// A plugin's chip was clicked: its action, else the panel with the
+    /// plugin's block unfolded.
+    fn plugin_chip_clicked(&mut self, index: usize) {
+        let Some((plugin, action)) =
+            self.plugin_chips().get(index).map(|(plugin, chip)| ((*plugin).to_string(), chip.action.clone()))
+        else {
+            return;
+        };
+        if let Some(action) = action {
+            self.panel_chip_action(&plugin, action);
+            return;
+        }
+        if !self.notifications.open {
+            self.shell_notifications();
+        }
+        let _ = self.panel_fold(&plugin, false);
     }
 
     fn bar_hit(&self, layout: &Layout, point: Point) -> Option<Hit> {
@@ -747,6 +776,7 @@ impl Tileception {
                 match chip.kind {
                     ChipKind::Media => Hit::Media,
                     ChipKind::Dnd => Hit::Dnd,
+                    ChipKind::Plugin(index) => Hit::Plugin(index),
                     ChipKind::Capture => Hit::Bar,
                 },
             )
@@ -898,6 +928,7 @@ impl Tileception {
                 }
             }
             Hit::Dnd => self.toggle_dnd(),
+            Hit::Plugin(index) => self.plugin_chip_clicked(index),
             Hit::Clock => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
             Hit::Tray(slot) => self.tray_slot_button(slot, crate::input::BTN_LEFT),
@@ -1151,9 +1182,20 @@ impl Tileception {
             }
         }
 
+        let plugin_chips = self.plugin_chips();
         for chip in &layout.chips {
-            let lit = matches!((chip.kind, hit), (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)));
+            let lit = match (chip.kind, hit) {
+                (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)) => true,
+                (ChipKind::Plugin(index), Some(Hit::Plugin(hovered))) => index == hovered,
+                _ => false,
+            };
             let (icon, tint) = match chip.kind {
+                ChipKind::Plugin(index) => {
+                    let chip = plugin_chips.get(index).map(|(_, chip)| *chip);
+                    let icon = chip.and_then(|chip| chip.icon.as_deref()).and_then(glyph::named).unwrap_or(glyph::PLUG);
+                    let tint = chip.map_or(crate::panel::block::Tint::Accent, |chip| chip.tint);
+                    (icon, crate::panel::tint(theme, tint).1)
+                }
                 ChipKind::Media => (
                     match self.media.snapshot.media.active().map(|player| player.status) {
                         Some(tileception_media::Status::Playing) => glyph::MUSIC,

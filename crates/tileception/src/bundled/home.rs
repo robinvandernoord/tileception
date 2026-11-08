@@ -23,10 +23,10 @@ use super::{Notifier, Plugin, tool};
 use crate::{
     home::{HomeCommand, Wanted},
     panel::block::{
-        Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Notice, Row, Stepper,
-        Switch, Tint, Trend, View,
+        Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Notice,
+        Row, Stepper, Switch, Tint, Trend, View,
     },
-    plugins::{ActionKind, PANEL},
+    plugins::{ActionKind, BAR, PANEL},
     ui::ago,
 };
 
@@ -115,6 +115,7 @@ impl HomePlugin {
         self.service = Some(HomeService::start(&file, options, move || {
             if let Some(notifier) = &notifier {
                 notifier.changed(PANEL);
+                notifier.changed(BAR);
                 notifier.changed(DEVICES);
             }
         }));
@@ -337,6 +338,42 @@ impl HomePlugin {
             }],
         });
         block
+    }
+
+    /// The bar chip, while a light, plug or climate device is on: the one
+    /// light's name or how many are on, and what the climate does.
+    fn bar(&mut self) -> Bar {
+        if self.problem.is_some() {
+            return Bar::default();
+        }
+        let devices = self.shown();
+        let lit: Vec<&Device> =
+            devices.iter().filter(|device| matches!(device.kind, Kind::Light | Kind::Plug) && is_on(device)).collect();
+        let climate = self.climate(&devices).filter(|climate| is_on(climate));
+        let mut parts = Vec::new();
+        match lit.as_slice() {
+            [] => {}
+            [only] => parts.push(only.name.clone()),
+            many => parts.push(format!("{} on", many.len())),
+        }
+        if let Some(climate) = climate {
+            let mode = climate.state.mode.as_deref().map_or_else(|| "On".into(), mode_label);
+            parts.push(match climate.state.target {
+                Some(target) => format!("{mode} to {}", degrees(target)),
+                None => mode,
+            });
+        }
+        if parts.is_empty() {
+            return Bar::default();
+        }
+        let (icon, tint) = match climate {
+            Some(climate) if lit.is_empty() => {
+                let card = climate_card(climate, &devices);
+                (card.icon, card.tint)
+            }
+            _ => (Some("glyph:bulb".into()), Tint::Warm),
+        };
+        Bar { chips: vec![BarChip { label: parts.join(" \u{b7} "), icon, tint, action: None }] }
     }
 
     /// Every device for Settings, with the addresses heard on the network.
@@ -664,6 +701,7 @@ impl Plugin for HomePlugin {
                 }
                 if let Some(notifier) = &self.notifier {
                     notifier.changed(PANEL);
+                    notifier.changed(BAR);
                 }
                 Ok(json!({ "ok": true }))
             }
@@ -673,13 +711,14 @@ impl Plugin for HomePlugin {
     }
 
     fn resources(&self) -> Vec<(&'static str, &'static str)> {
-        vec![(PANEL, "Smart home block"), (DEVICES, "Smart home devices")]
+        vec![(PANEL, "Smart home block"), (BAR, "Smart home chip"), (DEVICES, "Smart home devices")]
     }
 
     fn read(&mut self, uri: &str) -> Result<Value, String> {
         self.follow_file();
         match uri {
             PANEL => serde_json::to_value(self.block()).map_err(|error| error.to_string()),
+            BAR => serde_json::to_value(self.bar()).map_err(|error| error.to_string()),
             DEVICES => Ok(self.devices()),
             _ => Err(format!("no resource {uri}")),
         }
@@ -699,6 +738,7 @@ impl Plugin for HomePlugin {
                     if now != seen {
                         seen = now;
                         notifier.changed(PANEL);
+                        notifier.changed(BAR);
                         notifier.changed(DEVICES);
                     }
                 }
@@ -985,6 +1025,7 @@ mod tests {
         let notice = block.notice.unwrap();
         assert_eq!(notice.action, Some(ActionKind::Settings { page: "Smart home".into() }));
         assert!(plugin.call("toggle", &json!({ "device": "Lamp" })).is_err());
+        assert!(plugin.bar().chips.is_empty());
     }
 
     #[test]
@@ -1032,5 +1073,18 @@ mod tests {
         assert!(plugin.block().active > 0);
         let rows = plugin.search("");
         assert_eq!(rows["rows"][0]["title"], "All lights off");
+        // The chip names what is on and opens the block when clicked.
+        let chip = plugin.bar().chips.pop().expect("a chip while something is on");
+        assert!(chip.label.contains(" on") || chip.label.contains(&light.name), "{}", chip.label);
+        assert_eq!(chip.action, None);
+        plugin.all_off().unwrap();
+        for _ in 0..100 {
+            if plugin.shown().iter().all(|device| device.kind != Kind::Light || !is_on(device)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let left = plugin.bar().chips;
+        assert!(left.iter().all(|chip| !chip.label.contains(&light.name)), "{left:?}");
     }
 }

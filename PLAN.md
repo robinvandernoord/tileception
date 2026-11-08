@@ -60,6 +60,9 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Later
 
+- Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
+  binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
+  can answer what changed in a version and when something arrived.
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/launcher-plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the
@@ -67,15 +70,13 @@ Report testing in the conversation, the commit or the pull request instead.
     `tileception://` resource the host subscribes to, as the panel's is.
   - Each place gets a manifest block with the user's options for it, next
     to `[launcher]`; the plugin itself reports over MCP what it offers
-    there. `[bar]` enables the bar; `[lock]` is opt-in: without it, nothing
-    on the lock screen. Config overrides use the same blocks
-    (`[plugins.home.lock]`).
+    there. `[lock]` is opt-in: without it, nothing on the lock screen.
+    Config overrides use the same blocks (`[plugins.home.lock]`).
   - The instant pure launcher sources (calculations, conversions, times,
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
   - The bundled smart home plugin goes into the remaining places first:
-    - Bar: a chip while something is on; clicking it opens the block.
     - Lock screen: the indoor temperature, read-only, following the lock
       screen's privacy level, without input or actions. Never launcher
       plugins.
@@ -84,6 +85,10 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
+  - Plugins in a user-chosen order, ideally set by dragging their blocks
+    (smart home, Bluetooth) in the notification panel. The order is saved
+    and used for the panel and for the bar's chips; without one, the
+    priority order applies.
   - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
@@ -132,23 +137,6 @@ Report testing in the conversation, the commit or the pull request instead.
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
-- Bluetooth, built on one BlueZ worker (`org.bluez` over zbus, like
-  `battery.rs`): a thread follows adapters and devices through
-  `ObjectManager` and `PropertiesChanged` and sends state to the compositor
-  thread over a calloop channel. On top of it:
-  - Reconnect trusted, paired devices that were connected before, after
-    resume and when the adapter powers on. When connecting fails, notify
-    with BlueZ's reason instead of failing silently.
-  - A Bluetooth control in the notification panel next to sound and
-    brightness: an on/off switch and the paired devices, which connect or
-    disconnect when clicked. A bar chip shows a connected device's charge
-    (`org.bluez.Battery1`), like the laptop battery.
-  - `tileception-media` makes a newly connected Bluetooth audio device the
-    default output and switches back when it disconnects, and shows the
-    active profile (A2DP or HFP).
-  - Launcher actions ("Connect <device>", "Bluetooth off") and Doctor checks:
-    `bluetooth.service` running, adapter not blocked by rfkill, adapter
-    powered.
 
 ### Maybe someday
 

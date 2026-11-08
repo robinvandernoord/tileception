@@ -60,8 +60,9 @@ pub enum Command {
     },
     /// Prints the battery's charge and the border colour it gives.
     Battery,
-    /// Prints adapters and paired devices; with true, reconnects the remembered ones.
-    Bluetooth(bool),
+    /// For the bundled Bluetooth plugin: status, on, off, reconnect,
+    /// connect or disconnect.
+    Bluetooth(String),
     /// Lists tray entries; debug entries can be added or replaced by count.
     Tray,
     /// Prints how much the image caches hold.
@@ -110,6 +111,8 @@ Inspecting:
   move-output <name>        move the focused/selected windows to this screen
   battery                   print the charge and the border colour it gives
   bluetooth                 list Bluetooth adapters and paired devices
+  bluetooth on|off          switch Bluetooth on or off
+  bluetooth connect <name>  connect a paired device (also: disconnect)
   bluetooth reconnect       reconnect devices that were connected before
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
@@ -274,7 +277,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "reload" => return Ok(Command::ReloadConfig),
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
-        "bluetooth" => return crate::bluetooth::parse(&args).map(Command::Bluetooth),
+        "bluetooth" => return Ok(Command::Bluetooth(rest.to_string())),
         "caches" => return Ok(Command::Caches),
         "tray" => {
             return match args.as_slice() {
@@ -513,7 +516,9 @@ impl Tileception {
             Command::Home(command, text) => return self.home_command(command, &text),
             Command::Plugin { plugin, tool, arguments } => return self.plugin_command(&plugin, &tool, arguments),
             Command::Battery => return Ok(self.battery_status()),
-            Command::Bluetooth(reconnect) => return Ok(self.bluetooth_command(reconnect)),
+            Command::Bluetooth(text) => {
+                return self.plugin_command("bluetooth", "command", serde_json::json!({ "text": text }));
+            }
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),

@@ -154,7 +154,8 @@ impl crate::ui::PointerAction for PointerAction {
     }
 }
 
-fn tint(theme: &crate::theme::Theme, tint: Tint) -> (Colour, Colour) {
+/// A tint's badge fill and its icon colour; the bar's chips use these too.
+pub(crate) fn tint(theme: &crate::theme::Theme, tint: Tint) -> (Colour, Colour) {
     let warm = Colour([0.95, 0.71, 0.36, 1.0]);
     match tint {
         Tint::Accent => (theme.accent.alpha(0.14), theme.accent),
@@ -240,6 +241,11 @@ impl Tileception {
         self.panel.blocks.entry(plugin.into()).or_default().selected = Some(key);
         self.schedule_render();
         Ok(())
+    }
+
+    /// Does what a bar chip asks, as the panel does.
+    pub(crate) fn panel_chip_action(&mut self, plugin: &str, action: ActionKind) {
+        self.panel_action(plugin, action);
     }
 
     /// Does what a block asks: tools go to its plugin.

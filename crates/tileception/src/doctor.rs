@@ -3558,6 +3558,11 @@ fn doctor_context(mode: &str) -> String {
          unattended; `--cloud-sensors`/`--no-cloud-sensors` choose whether battery sensors are read from the cloud \
          every 10 minutes). Devices behind a Zigbee or Bluetooth gateway are not \
          supported yet and show as unavailable.\n\
+         - Bluetooth: `tileception msg bluetooth` lists adapters and paired devices with their state, and says \
+         what is wrong when Bluetooth cannot be used (bluetooth.service not running, no adapter, blocked by \
+         rfkill, switched off). `bluetooth on|off`, `connect|disconnect|forget <name>`, `search` and \
+         `pair <name>` act on it. Failed connections show a notification with the reason; sound output follows \
+         the sound server (PipeWire/WirePlumber).\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\

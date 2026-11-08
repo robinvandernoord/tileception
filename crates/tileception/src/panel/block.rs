@@ -8,6 +8,8 @@
 //! cards with a stepper, choices and a trend line. Actions are the
 //! launcher's action types; a level's action gets the chosen `value` added
 //! to its arguments.
+//!
+//! The bar's chips ([`Bar`]) use the same icons, tints and actions.
 
 use serde::{Deserialize, Serialize};
 
@@ -214,6 +216,25 @@ pub struct Footer {
 pub struct FooterAction {
     pub title: String,
     pub enabled: bool,
+    pub action: Option<ActionKind>,
+}
+
+/// What a plugin shows in the bar, read from its `tileception://bar`
+/// resource: chips that come and go, such as one while lights are on.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bar {
+    pub chips: Vec<BarChip>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BarChip {
+    pub label: String,
+    pub icon: Option<String>,
+    pub tint: Tint,
+    /// What clicking it does; without one, the panel opens with the
+    /// plugin's block unfolded.
     pub action: Option<ActionKind>,
 }
 

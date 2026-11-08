@@ -13,7 +13,6 @@ mod answers;
 mod appearance;
 mod bar;
 mod battery;
-mod bluetooth;
 mod builtin_lock;
 mod bundled;
 mod calc;
@@ -307,13 +306,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match std::env::var_os("TILECEPTION_POWER_SUPPLY") {
         Some(root) => state.start_battery(Some(root.into()), false),
         None if !nested && !headless => state.start_battery(None, true),
-        None => {}
-    }
-    // TILECEPTION_BLUETOOTH_BUS is a bus address with a stand-in for BlueZ, for
-    // tests. Nested instances follow the real BlueZ too, so it can be tried.
-    match std::env::var("TILECEPTION_BLUETOOTH_BUS").ok() {
-        Some(address) => state.start_bluetooth(Some(address)),
-        None if !headless => state.start_bluetooth(None),
         None => {}
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
