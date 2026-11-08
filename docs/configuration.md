@@ -235,11 +235,14 @@ bar_minimap = false
 set it to `"none"` and bind volume, brightness and playback keys to your own
 commands under `[binds]`.
 
-### Launcher plugins
+### Plugins
 
-The built-in launcher supports executable MCP servers over stdio. Build the
-example with `cargo plane build -p tileception --bin tileception-launcher-example`,
-then enable it using the executable's absolute path:
+Plugins are executable MCP servers over stdio that add launcher sources, panel
+blocks and bar chips. The smart home, Bluetooth and `z` folders are bundled
+plugins: `[plugins.bluetooth] enabled = false` switches one off, and
+`[plugins.home.bar] enabled = false` hides its bar chip. Build the example with
+`cargo plane build -p tileception --bin tileception-launcher-example`, then
+enable it using the executable's absolute path:
 
 ```toml
 [plugins.example]
@@ -248,14 +251,14 @@ command = "/absolute/path/to/tileception-launcher-example"
 # prefixes = ["echo"]
 ```
 
-Type `echo hello` in the launcher to try it. Omit `prefixes` to use those
+Type `echo hello` in the launcher to try it; a prefix needs the space after it. Omit `prefixes` to use those
 reported by the plugin; set `enabled = false` to disable a source. Plugins
 installed through manifests are also discovered in
 `~/.local/share/tileception/plugins/` and `/usr/share/tileception/plugins/`.
 Configuration overrides user manifests, which override system manifests.
 Only install plugins you trust, as with autostart commands. See
-[Launcher plugins](launcher-plugins.md) for installation, actions, diagnostics
-and the protocol.
+[Plugins](plugins.md) for installation, actions, diagnostics and the
+protocol.
 
 ### System tray
 
@@ -546,14 +549,17 @@ also refresh at startup and keep their sensor polling enabled. Re-run the
 import to change either choice, or to update devices manually when startup
 refresh is off. A manual refresh action in the settings screen is planned.
 
-Then switch the panel block on:
+Then switch it on:
 
 ```toml
 [home]
 enabled = true
 ```
 
-`tileception msg home enable` writes `enabled = true`.
+`tileception msg home enable` writes `enabled = true`. This starts the bundled
+`home` plugin, which shows the panel block, `home` in the launcher and a bar
+chip while something is on. It connects again when the device file changes, so
+a new import needs no restart.
 
 If your account has several homes, the panel shows the one whose devices answer
 on the network you are on. `devices` points to a different device file; see the

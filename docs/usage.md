@@ -332,8 +332,14 @@ brightness and colour sliders. **All** lists everything in one list instead,
 with what is on first, and **All off** switches off every light and plug.
 
 The block folds to one line while nothing is on and unfolds when something
-turns on; click its title to fold or unfold it yourself. Devices that are
-switched off at the wall show as unreachable at the bottom of their room.
+turns on; click its title to fold or unfold it yourself, or a room's name to
+fold that room. Devices that are switched off at the wall show as unreachable
+at the bottom of their room. While something is on, a chip in the bar says
+what; click it to open the block.
+
+In the launcher, type `home` and a space to switch devices and rooms:
+`home living` switches a room, `home airco 21` sets the air conditioner and
+`home desk 40` dims a light.
 
 `tileception msg home` lists the devices, `tileception msg home why <name>`
 explains why one is unreachable, and commands such as

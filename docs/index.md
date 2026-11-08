@@ -1,8 +1,8 @@
 # Tileception documentation
 
 - [Overview](../README.md): what Tileception does and the essential controls.
-- [Launcher plugins](launcher-plugins.md): executable search sources, actions,
-  installation and the MCP convention.
+- [Plugins](plugins.md): launcher sources, panel blocks, bar chips,
+  bundled plugins, installation and the MCP convention.
 - [Usage](usage.md): navigation, selections, window management, desktop controls
   and gestures.
 - [Configuration](configuration.md): shortcuts, appearance, scaling, desktop

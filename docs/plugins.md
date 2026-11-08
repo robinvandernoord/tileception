@@ -1,12 +1,23 @@
-# Launcher plugins
+# Plugins
 
-Launcher plugins are executable commands speaking MCP over stdio. They run
-as the session user, with the session's environment and permissions. Installing
-a manifest enables its executable. Only install plugins you trust.
+Plugins are executable commands speaking MCP over stdio. They can add launcher
+sources, a block in the notification panel, chips in the bar, and tools for
+`tileception msg plugin`. They run as the session user, with the session's
+environment and permissions. Installing a manifest enables its executable. Only
+install plugins you trust.
 
-The first release supports launcher search and actions. Existing built-in
-sources remain built in. Plugins have no bar, notification, lock-screen or
-Doctor integration.
+## Bundled plugins
+
+Some plugins ship inside the `tileception` binary and need no installation:
+
+- `home`: the [smart home](configuration.md#smart-home) block, `home` in the
+  launcher and its bar chip. It runs while `[home] enabled = true`.
+- `folders`: `z` in the launcher, for often visited folders.
+- `bluetooth`: the Bluetooth block and its bar chip.
+
+Tileception starts them as `tileception plugin <id>`. Change or disable them in
+`[plugins.<id>]` like any other plugin; a manifest with the same ID replaces
+one.
 
 ## Try the example
 
@@ -34,9 +45,10 @@ command = "/absolute/path/to/tileception-launcher-example"
 prefixes = ["echo"]
 ```
 
-Changes to this config take effect when the config reloads. New or changed manifest files are read on compositor startup or when
-the plugin configuration changes. Type `plugins` to see loaded sources,
-their prefixes and discovery errors. Errors are also written to the session log.
+Changes to this config take effect when the config reloads. New or changed
+manifest files are read on compositor startup or when the plugin configuration
+changes. Type `plugins` to see loaded sources, their prefixes and discovery
+errors. Errors are also written to the session log.
 
 ## Discovery and configuration
 
@@ -54,20 +66,28 @@ args = ["--stdio"]
 # enabled = false
 [launcher]
 # prefixes = ["weather", "w"]
+[bar]
+# enabled = false
 ```
 
 `command` names one executable, not a shell command line. Arguments are separate
 strings. Config fields overlay the matching manifest, so disabling an installed
-plugin only needs `enabled = false`. Omitted prefixes come from `launcher_info`.
-An explicit empty prefix list disables routing. Prefixes are nonempty words,
-matched case-sensitively at the start of the trimmed query, followed by whitespace
-or the end of the query. Plugins never receive unrelated queries.
+plugin only needs `enabled = false`, and hiding its bar chips only
+`[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
+block. A panel block shows whenever the plugin offers one.
 
-For conflicting prefixes, config overrides win over user manifests, which win
-over system manifests. Within the same priority, plugin IDs sort alphabetically.
-Every rejected prefix is logged and shown by `plugins`; a source can retain its
-other prefixes. A plugin overriding a built-in prefix takes precedence for that
-prefix. Reserve `plugins` for discovery diagnostics.
+Omitted prefixes come from `launcher_info`. An explicit empty prefix list
+disables routing. Prefixes are nonempty words, matched case-sensitively at the
+start of the query and followed by a space: `echo` alone still searches apps,
+`echo ` asks the plugin. Plugins never receive unrelated queries.
+
+Config overrides win over user manifests, which win over system manifests,
+which win over bundled plugins. Within the same priority, plugin IDs sort
+alphabetically. This order settles conflicting prefixes and orders the panel's
+blocks and the bar's chips. Every rejected prefix is logged and shown by
+`plugins`; a source can retain its other prefixes. A plugin overriding a
+built-in prefix takes precedence for that prefix. Reserve `plugins` for
+discovery diagnostics.
 
 ## MCP convention
 
@@ -76,7 +96,27 @@ and [stdio transport](https://modelcontextprotocol.io/specification/2025-06-18/b
 Messages are newline-delimited UTF-8 JSON-RPC 2.0. Send diagnostics to stderr,
 never stdout. The client initializes with an empty capability set, requires the
 server's `tools` capability, and sends `notifications/initialized` before
-calling tools. Client-side requests other than `ping` are unsupported.
+calling tools. Client-side requests other than `ping` are unsupported. After
+starting, Tileception calls `tools/list` and, with the `resources` capability
+and `subscribe`, `resources/list`. It subscribes to every listed
+`tileception://` resource and reads it again after
+`notifications/resources/updated`.
+
+Return tool results as `structuredContent` in a normal MCP tool result. For
+compatibility, a JSON object encoded in a text content block is also accepted.
+Set `isError: true` for tool failures. Resources are JSON text in
+`contents[0].text`.
+
+### Icons
+
+`icon` fields take an icon name from the desktop icon theme, an absolute path to
+a local image such as PNG or SVG, or `glyph:<name>` for Tileception's own
+symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
+`home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
+`wifi_off`, `bluetooth`, `bell` and `lock`. Panel blocks and bar chips only
+draw `glyph:` icons.
+
+### Launcher
 
 Implement these [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools):
 
@@ -93,15 +133,11 @@ Implement these [MCP tools](https://modelcontextprotocol.io/specification/2025-0
   {"rows":[{"title":"hello","detail":"Copy this text","icon":"edit-copy","actions":[{"title":"Copy","type":"copy","text":"hello"}]}]}
   ```
 
-Return these objects as `structuredContent` in a normal MCP tool result. For
-compatibility, a JSON object encoded in a text content block is also accepted.
-Set `isError: true` for tool failures. `icon` is optional: use an icon name from
-the desktop icon theme or an absolute path to a local image such as PNG or SVG.
-`launcher_info.icon` sets the source's default. Each search result can override
-it with its own `icon`, choosing a different icon for each query. A row falls
-back to the plugin icon, then a generic icon. This is per-result imagery,
-not an animation or a push-update API.
+`launcher_info.icon` sets the source's default; each row can override it with
+its own `icon`. A row falls back to the plugin icon, then a generic icon.
 `detail` and `actions` may be omitted. A row without actions is informational.
+`completion` is what Tab puts in the field, and `alternate` is an action for
+Ctrl+Enter; the footer shows both keys when a row has them.
 Up to 64 rows and 16 actions per row are retained.
 Invalid rows and actions, including unknown action types, are skipped. Other
 results still appear.
@@ -113,21 +149,86 @@ Every action has a `title` and one of these shapes:
 {"title":"Open","type":"open","target":"https://example.org"}
 {"title":"Run","type":"run","command":"printf","args":["%s\\n","hello"]}
 {"title":"Remember","type":"tool","name":"remember","arguments":{"text":"hello"}}
+{"title":"Terminal","type":"terminal","directory":"/home/me/src"}
+{"title":"Set up","type":"settings","page":"Smart home"}
 ```
 
 Copy uses the compositor clipboard. Open invokes `xdg-open` with the path or
 URL. Run starts an executable with literal arguments and closes the launcher.
-Tool invokes a tool on the same plugin, keeps the launcher open and displays
-completion or failure. Its result cannot request further compositor actions.
-One action runs directly on Enter; several actions open a keyboard and pointer
-accessible list in the existing launcher. Search-field editing keeps the usual
-TextInput, compose, selection, clipboard and word movement behaviour.
+Terminal opens the user's terminal in a folder. Settings opens the Settings
+page with that title. Tool invokes a tool on the same plugin, keeps the
+launcher open and displays completion or failure. Its result cannot request
+further compositor actions. One action runs directly on Enter; several actions
+open a keyboard and pointer accessible list in the existing launcher.
+
+### Panel block
+
+A `tileception://panel` resource is the plugin's block in the notification
+panel. The plugin describes it; Tileception lays it out and draws it, and keeps
+folding, the chosen view and the selected row across updates.
+
+```json
+{"title":"Home","icon":"glyph:home","summary":"all off","summary_open":"2 on",
+ "active":2,
+ "views":[{"title":"Rooms","items":[
+   {"type":"group","title":"Living room","detail":"21°","items":[
+     {"type":"row","id":"lamp","title":"Lamp","detail":"80%","icon":"glyph:bulb",
+      "tint":"warm","enabled":true,
+      "switch":{"on":true,"action":{"type":"tool","name":"toggle","arguments":{"device":"lamp"}}},
+      "levels":[{"title":"Brightness","value":80,"unit":"%",
+                 "action":{"type":"tool","name":"set","arguments":{"device":"lamp"}}}]}]}]}],
+ "footer":{"text":"2 of 3 reachable","good":true,
+           "actions":[{"title":"All off","enabled":true,"action":{"type":"tool","name":"all_off"}}]}}
+```
+
+- The header shows `title` and `summary`, or `summary_open` while unfolded. The
+  block starts folded while `active` is 0 and unfolds when it changes; folding
+  by hand holds until it does.
+- `notice` (`{"text","action"}`) replaces the items, such as a setup hint;
+  clicking the block runs its action.
+- Several `views` get a switch in the header.
+- Items are `group` (a heading that folds its items when clicked), `row` and
+  `card`. A row has an `id`, `title`, `detail`, `icon`, `tint`, `dim` (dimmer
+  title), `alert` (detail in the danger colour), `enabled`, an optional
+  `switch` (`on`, `pending`, `action`) and `levels`. Clicking a row with levels
+  selects it and shows them.
+- A level is a bar from 0 to 100 with `title`, `value`, `unit` or `steps`
+  (words spread over the range) and `look` (`plain` or `warmth`). Dragging
+  sends its tool action with `value` added to the arguments, up to eight times
+  a second and once more on release.
+- A card is a larger tile: `value` (a big reading), `title`, `detail`, `icon`,
+  `tint`, `lit`, `enabled`, `title_action`, a `stepper` (`value`, `minus`,
+  `plus`), a `switch`, rows of `choices` (`title` and `options` with `title`,
+  `selected`, `action`) and a `trend` (`span` in seconds and `lines` of
+  `[seconds ago, value]` points, `dashed` for a target).
+- Tints are `accent`, `cool`, `warm`, `danger`, `muted` and `faded`.
+- Actions are the launcher's. Panel tool calls never cancel each other.
+
+### Bar chips
+
+A `tileception://bar` resource holds the plugin's chips, shown left of the
+clock while it has any, for plugins with a `[bar]` block:
+
+```json
+{"chips":[{"label":"Floor lamp","icon":"glyph:bulb","tint":"warm"}]}
+```
+
+A chip with an `action` runs it when clicked. Without one, clicking opens the
+notification panel with the plugin's block unfolded. Return no chips to show
+nothing.
+
+### Commands
+
+`tileception msg plugin <id> <tool> [json]` calls a plugin's tool with a JSON
+object of arguments, for scripts and key bindings, and prints the answer: its
+`text` field, else the JSON. The command waits up to five seconds.
 
 ## Lifecycle and limits
 
 Discovery, process I/O and tool calls run outside the compositor event loop,
 on a worker per plugin, so a slow plugin delays only itself. Each request has
-a three-second deadline and a 1 MiB message limit.
+a three-second deadline and a 1 MiB message limit. An idle worker keeps
+reading, so notifications arrive at once and a crash shows without a request.
 
 Editing or closing the launcher cancels its current generation. Queued stale
 searches are skipped and stale results never replace newer rows. An in-flight
@@ -135,14 +236,16 @@ cancelled request receives `notifications/cancelled`. The process stays running,
 and late responses are ignored by request id. If a request has not finished by
 its deadline, the plugin's isolated process group is terminated. Broken pipes
 and protocol errors also terminate that group. The next request restarts the
-source after a one-second cooldown. A failed startup or
+source after a one-second cooldown; a plugin with resources restarts after the
+cooldown by itself, subscribes again and is read anew. A failed startup or
 metadata call is reported in diagnostics and retried on configuration change or
-the next compositor startup. Processes are cleaned up during configuration
+the next compositor startup. Plugins that offer neither launcher prefixes nor
+resources are stopped. Processes are cleaned up during configuration
 replacement and normal compositor shutdown.
 
 Tool errors are displayed without restarting the plugin. Messages written to
-stderr appear in the compositor log with the plugin name. Newly started and
-restarted plugins receive DISPLAY once Xwayland is ready.
+stderr appear in the compositor log with the plugin name. Plugins receive
+DISPLAY once Xwayland is ready; those already running start again then.
 
 The source for the complete runnable server is
 [`tileception-launcher-example.rs`](../crates/tileception/src/bin/tileception-launcher-example.rs).

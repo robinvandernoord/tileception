@@ -64,7 +64,7 @@ Report testing in the conversation, the commit or the pull request instead.
   binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
   can answer what changed in a version and when something arrived.
 - Plugins in more places (the launcher conventions are in
-  [the plugin guide](docs/launcher-plugins.md)). Decided:
+  [the plugin guide](docs/plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the
     launcher, the panel and commands. Each place's content is a
     `tileception://` resource the host subscribes to, as the panel's is.
@@ -137,6 +137,11 @@ Report testing in the conversation, the commit or the pull request instead.
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
+- Bluetooth device icons by type: the block, nearby list, launcher rows and
+  bar chip use one Bluetooth glyph for every device. Pick a glyph from BlueZ's
+  `Icon` property (`audio-headset`, `audio-headphones`, `input-mouse`,
+  `input-keyboard`, `phone`, ...), adding the few missing glyphs to `ui.rs`,
+  and keep the Bluetooth glyph for unknown types.
 
 ### Maybe someday
 
