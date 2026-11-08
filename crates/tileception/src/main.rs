@@ -428,8 +428,10 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
 /// gnome-terminal-server) find this session.
 fn export_session_environment(state: &Tileception) {
     let mut vars = vec!["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
-    if std::env::var_os("SSH_AUTH_SOCK").is_some() {
-        vars.push("SSH_AUTH_SOCK");
+    for var in ["SSH_AUTH_SOCK", "GNOME_DESKTOP_SESSION_ID"] {
+        if std::env::var_os(var).is_some() {
+            vars.push(var);
+        }
     }
     let status = std::process::Command::new("dbus-update-activation-environment")
         .env("WAYLAND_DISPLAY", &state.socket_name)

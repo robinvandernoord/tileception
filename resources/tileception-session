@@ -31,6 +31,11 @@ esac
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=Tileception
 export XDG_SESSION_DESKTOP=tileception
+# Chromium and Electron keep secrets in plain text on desktops they do not
+# know, and some (Signal) then refuse to open data set up under GNOME. They
+# check this old variable only when XDG_CURRENT_DESKTOP names nothing they
+# know, so it picks the Secret Service without changing anything else.
+export GNOME_DESKTOP_SESSION_ID=this-is-deprecated
 export MOZ_ENABLE_WAYLAND=1
 export ELECTRON_OZONE_PLATFORM_HINT=auto
 export QT_QPA_PLATFORM="wayland;xcb"
