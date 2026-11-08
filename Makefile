@@ -105,8 +105,9 @@ try-greeter: tools
 	@scripts/deps.sh check build
 	scripts/try-greeter.sh
 
+# The same build as `make install` (the dev-install profile), so one serves both.
 nested: tools
-	cargo plane run -p tileception -- --nested
+	cargo plane run --profile dev-install -p tileception -- --nested
 
 # The promo video: headless demo sessions recorded scene by scene, then cut
 # together. The duck scene asks a real agent (PROMO_AGENT, codex-acp by

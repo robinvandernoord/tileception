@@ -81,7 +81,7 @@ Prefer the Make targets, which use the selected cargo-plane builder:
 | Release compositor | `make build` | `cargo plane build --release -p tileception` |
 | All tests, including independent crates | `make test` | `cargo plane test --workspace`, plus independent crate tests |
 | Formatting and Clippy, including independent crates | `make lint` | `cargo plane fmt --all --check` and `cargo plane clippy --workspace --all-targets -- -D warnings`, plus independent crate checks |
-| Nested compositor | `make nested` | `cargo plane run -p tileception -- --nested` |
+| Nested compositor | `make nested` | `cargo plane run --profile dev-install -p tileception -- --nested` |
 | Quick check | | `cargo plane check --workspace` |
 | One crate's tests | | `cargo plane test -p tileception-core` |
 

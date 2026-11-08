@@ -32,14 +32,19 @@ lto = "off"
 opt-level = 2
 debug = "line-tables-only"
 
-# Installs from a checkout (`make install`). Release optimisation, but
-# incremental and without ThinLTO, so reinstalling after an edit rebuilds
-# quickly. Packaged builds use `dist` below.
+# Builds to run from a checkout (`make install` and `make nested` share it).
+# Release optimisation, but incremental and without ThinLTO, so rebuilding
+# after an edit is as quick as `dev`, with a binary a quarter of the size for
+# cargo-plane to copy back. Packaged builds use `dist` below.
 [profile.dev-install]
 inherits = "release"
 incremental = true
 lto = "off"
 codegen-units = 64
+
+# Line numbers in Tileception's own backtraces, for panics in the session log.
+[profile.dev-install.package.tileception]
+debug = "line-tables-only"
 
 # Packaged builds (`make deb`). Whole-program LTO and a single codegen unit
 # trade build time for a smaller, faster binary. Limited debug info is kept
