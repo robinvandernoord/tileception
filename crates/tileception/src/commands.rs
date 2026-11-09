@@ -35,6 +35,8 @@ pub enum Command {
     /// A key pressed while picking a colour (not available as text).
     ColourPickKey(u32, crate::config::Mods),
     ReloadConfig,
+    /// Rescans plugin manifests and restarts their workers without editing config.
+    ReloadPlugins,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
     Unlock,
@@ -217,6 +219,7 @@ Smart home ([home] in config.toml):
   home enable|disable       switch the [home] block on or off in config.toml
 
 Plugins:
+  plugins reload            rediscover manifests and restart plugins without changing config
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -275,6 +278,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "show-minimized" => return Ok(Command::ShowMinimized),
         "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
+        "plugins" => {
+            return match args.as_slice() {
+                ["reload"] => Ok(Command::ReloadPlugins),
+                _ => Err("plugins needs reload".into()),
+            };
+        }
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
         "bluetooth" => return Ok(Command::Bluetooth(rest.to_string())),
@@ -511,6 +520,10 @@ impl Tileception {
             Command::NotificationKey(sym, mods) => self.notification_key(sym, mods),
             Command::ColourPickKey(sym, mods) => self.colour_pick_key(sym, mods),
             Command::ReloadConfig => self.reload_config()?,
+            Command::ReloadPlugins => {
+                self.reload_plugins()?;
+                return Ok("Plugin rediscovery started\n".into());
+            }
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),

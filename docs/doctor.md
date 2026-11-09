@@ -49,8 +49,8 @@ Choose a mode below the input field, or use `/mode`:
 
 Ask is the initial default. Tweak can read Tileception's config and state
 folders, edit files in its config folder, and approve `tileception msg tree`,
-`reload`, `volume`, `mic`, `brightness`, `media` and `home` commands (which
-switch smart home devices), `tileception home status`, and
+`reload`, `plugins reload`, `volume`, `mic`, `brightness`, `media` and `home`
+commands (which switch smart home devices), `tileception home status`, and
 `tileception config set home.enabled true|false`. Other permission requests
 are shown for approval.
 

@@ -137,7 +137,8 @@ fn tileception_command(command: &str) -> bool {
         return false;
     }
     if let Some(tail) = command.strip_prefix("tileception msg ") {
-        return tail.split_whitespace().next().is_some_and(|verb| SAFE_VERBS.contains(&verb));
+        return tail.split_whitespace().eq(["plugins", "reload"])
+            || tail.split_whitespace().next().is_some_and(|verb| SAFE_VERBS.contains(&verb));
     }
     if command == "tileception home status" {
         return true;
