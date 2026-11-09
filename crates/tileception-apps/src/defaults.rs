@@ -41,18 +41,28 @@ impl AppIndex {
     /// [`AppIndex::default_for`] with files already read.
     pub fn default_with(&self, mime: &str, files: &Associations) -> Option<&App> {
         let mut removed = Vec::new();
+        // Chosen defaults come before applications merely added for the
+        // type, whatever the order of the groups in a file.
         let mut candidates = Vec::new();
+        let mut added = Vec::new();
         for text in &files.lists {
-            for (group, ids) in associations(text, mime) {
-                match group.as_str() {
-                    "Removed Associations" => removed.extend(ids),
-                    "Default Applications" | "Added Associations" => {
-                        candidates.extend(ids.into_iter().filter(|id| !removed.contains(id)));
-                    }
-                    _ => {}
+            let groups = associations(text, mime);
+            // A file's removals count for all of it, and for the files after it.
+            for (group, ids) in &groups {
+                if group == "Removed Associations" {
+                    removed.extend(ids.iter().cloned());
                 }
             }
+            for (group, ids) in groups {
+                let list = match group.as_str() {
+                    "Default Applications" => &mut candidates,
+                    "Added Associations" => &mut added,
+                    _ => continue,
+                };
+                list.extend(ids.into_iter().filter(|id| !removed.contains(id)));
+            }
         }
+        candidates.append(&mut added);
         for text in &files.caches {
             for (group, ids) in associations(text, mime) {
                 if group == "MIME Cache" {
@@ -329,6 +339,26 @@ mod tests {
         assert_eq!(index.opening(&["text/plain"]).len(), 2);
         assert!(index.mime_types().contains("text/markdown"));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_default_wins_wherever_its_group_is_in_the_file() {
+        let dir = folder("order");
+        let index = index(&dir);
+        let files = [dir.join("config/mimeapps.list")];
+        let default = |text: &str| {
+            fs::write(&files[0], text).unwrap();
+            index.default_with("text/plain", &Associations::from_files(&files, &[])).map(|app| app.id.clone())
+        };
+        // "Open with" wrote an association first; the chosen default still wins.
+        let added_first = "[Added Associations]\ntext/plain=other.desktop;\n\n\
+                           [Default Applications]\ntext/plain=editor.desktop;\n";
+        assert_eq!(default(added_first).as_deref(), Some("editor.desktop"));
+        // A removal counts for the whole file, also when it comes last.
+        let removed_last = "[Added Associations]\ntext/plain=other.desktop;editor.desktop;\n\n\
+                            [Removed Associations]\ntext/plain=other.desktop;\n";
+        assert_eq!(default(removed_last).as_deref(), Some("editor.desktop"));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
