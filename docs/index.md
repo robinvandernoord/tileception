@@ -15,3 +15,4 @@
   recovery, logs and bug reports.
 - [Development](development.md): repository structure, builds, checks, debugging
   and packaging.
+- [Changelog](../CHANGELOG.md): what changed in each release, and when.
