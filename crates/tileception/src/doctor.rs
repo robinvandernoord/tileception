@@ -187,7 +187,7 @@ struct SecretEntry {
 }
 
 /// One of the panel's own slash commands: name, argument, what it does.
-const COMMANDS: [(&str, &str, &str); 7] = [
+const COMMANDS: [(&str, &str, &str); 8] = [
     ("help", "", "Show these commands"),
     ("clear", "", "Start a new conversation"),
     ("model", "[name]", "Choose the agent's model"),
@@ -195,7 +195,38 @@ const COMMANDS: [(&str, &str, &str); 7] = [
     ("agent", "[id]", "Choose another agent"),
     ("restart", "", "Restart the agent, as after logging in elsewhere"),
     ("image", "<file>", "Send a picture with the next message"),
+    ("report", "[title]", "Report a problem on GitHub"),
 ];
+
+/// How much of the last question and answer `/report` offers to include,
+/// in characters, so the new-issue link stays short enough for browsers.
+const REPORT_QUESTION: usize = 1000;
+const REPORT_ANSWER: usize = 3000;
+
+/// The last question and the agent's answer to it, shortened to fit a
+/// new-issue link. None before the first question.
+fn last_exchange(messages: &[Message]) -> Option<String> {
+    let asked = messages.iter().rposition(|message| matches!(message, Message::User(_)))?;
+    let Message::User(question) = &messages[asked] else { return None };
+    let answer = messages[asked + 1..]
+        .iter()
+        .filter_map(|message| match message {
+            Message::Agent(text) => Some(text.trim()),
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let shorten = |text: &str, limit: usize| match text.char_indices().nth(limit) {
+        Some((end, _)) => format!("{}\n[shortened]", &text[..end]),
+        None => text.to_string(),
+    };
+    let mut text = format!("Last Doctor question:\n{}\n", shorten(question.trim(), REPORT_QUESTION));
+    if !answer.is_empty() {
+        text += &format!("\nDoctor's answer:\n{}\n", shorten(&answer, REPORT_ANSWER));
+    }
+    Some(text)
+}
 
 /// A slash command offered while typing one.
 #[derive(Debug, Clone, PartialEq)]
@@ -2089,6 +2120,10 @@ impl Tileception {
                     Err(error) => note(self, format!("{}: {error}", path.display())),
                 }
             }
+            "report" => {
+                let conversation = last_exchange(&self.doctor.messages);
+                self.open_feedback(arg, conversation);
+            }
             "restart" => match &self.doctor.session {
                 Some(session) => session.send(Request::Retry),
                 None => self.ensure_session(),
@@ -3666,4 +3701,30 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_the_last_question_and_answer() {
+        assert_eq!(last_exchange(&[Message::Note("Connected".into())]), None);
+        let messages = [
+            Message::User("old".into()),
+            Message::Agent("old answer".into()),
+            Message::User("Why is Wi-Fi off?".into()),
+            Message::Agent("Checking.".into()),
+            Message::Tool { tool_id: "1".into(), title: "nmcli".into(), status: "completed".into() },
+            Message::Agent("Airplane mode is on.".into()),
+        ];
+        assert_eq!(
+            last_exchange(&messages).expect("a question was asked"),
+            "Last Doctor question:\nWhy is Wi-Fi off?\n\nDoctor's answer:\nChecking.\n\nAirplane mode is on.\n"
+        );
+        let long = [Message::User("é".repeat(REPORT_QUESTION + 5))];
+        let text = last_exchange(&long).expect("a question was asked");
+        assert!(text.contains(&format!("{}\n[shortened]", "é".repeat(REPORT_QUESTION))));
+        assert!(!text.contains("answer"));
+    }
 }

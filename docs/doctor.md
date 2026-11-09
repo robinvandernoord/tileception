@@ -105,15 +105,16 @@ Doctor saves the image locally and includes its file path instead.
 
 ## Commands and settings
 
-| Command         | Action                                                    |
-|-----------------|-----------------------------------------------------------|
-| `/help`         | List panel and agent commands                             |
-| `/agent`        | Choose an agent                                           |
-| `/model`        | Choose a model offered by the agent                       |
-| `/mode <name>`  | Switch to `ask`, `tweak` or `yolo` mode                   |
-| `/image <file>` | Attach an image to the next message                       |
-| `/clear`        | Start a new conversation with the same agent              |
-| `/restart`      | Restart the agent, for example after signing in elsewhere |
+| Command           | Action                                                    |
+|-------------------|-----------------------------------------------------------|
+| `/help`           | List panel and agent commands                             |
+| `/agent`          | Choose an agent                                           |
+| `/model`          | Choose a model offered by the agent                       |
+| `/mode <name>`    | Switch to `ask`, `tweak` or `yolo` mode                   |
+| `/image <file>`   | Attach an image to the next message                       |
+| `/clear`          | Start a new conversation with the same agent              |
+| `/restart`        | Restart the agent, for example after signing in elsewhere |
+| `/report [title]` | Report a problem on GitHub; the title is optional         |
 
 Type `/` for suggestions. **Tab** completes a command; **Enter** runs it.
 
