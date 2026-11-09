@@ -228,6 +228,11 @@ word navigation and clipboard shortcuts work. Choose **Review** to see the
 exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
+Doctor's `/report` opens the same dialog over Doctor. The title is optional:
+`/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
+it in and starts in the feedback field. The dialog has one more option,
+"Include the last Doctor question and answer", also unchecked. Checking it
+adds your last question and the agent's answer, shortened if long.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the

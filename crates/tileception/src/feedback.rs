@@ -28,11 +28,15 @@ static NEXT_DIALOG: AtomicU64 = AtomicU64::new(0);
 /// applies for anyone; labels in the query only stick for people who may
 /// label issues.
 pub fn issue_url(title: &str) -> String {
-    issue_url_with_body(title, &issue_body("", None))
+    issue_url_with_body(title, &issue_body("", None, None))
 }
 
-fn issue_body(message: &str, details: Option<&str>) -> String {
+fn issue_body(message: &str, conversation: Option<&str>, details: Option<&str>) -> String {
     let mut body = format!("{}\n\n---\nTileception {}\n", message.trim_end(), env!("CARGO_PKG_VERSION"));
+    if let Some(conversation) = conversation {
+        body.push('\n');
+        body.push_str(conversation);
+    }
     if let Some(details) = details {
         body.push_str("\nSystem details:\n");
         body.push_str(details);
@@ -50,6 +54,10 @@ pub struct Feedback {
     title: crate::text_input::TextInput,
     message: crate::text_input::TextInput,
     details: Option<String>,
+    /// Doctor's last question and answer, when opened from Doctor; only
+    /// sent once the user checks it.
+    conversation: Option<String>,
+    with_conversation: bool,
     selected: Action,
     scroll: usize,
     edit_scroll: usize,
@@ -63,7 +71,11 @@ pub struct Feedback {
 
 impl Feedback {
     fn body(&self) -> String {
-        issue_body(&self.message.text, self.details.as_deref())
+        issue_body(
+            &self.message.text,
+            self.conversation.as_deref().filter(|_| self.with_conversation),
+            self.details.as_deref(),
+        )
     }
 }
 
@@ -71,6 +83,7 @@ impl Feedback {
 enum Action {
     Title,
     Message,
+    Conversation,
     Details,
     Cancel,
     Review,
@@ -119,6 +132,11 @@ fn encode(text: &str) -> String {
 impl Tileception {
     /// Shows the confirmation without collecting optional details or opening a browser.
     pub fn send_feedback(&mut self, title: &str) {
+        self.open_feedback(title, None);
+    }
+
+    /// Like [`Self::send_feedback`], offering to include `conversation`.
+    pub fn open_feedback(&mut self, title: &str, conversation: Option<String>) {
         if self.is_locked() {
             return;
         }
@@ -131,6 +149,8 @@ impl Tileception {
             title: crate::text_input::TextInput { text: title.into(), cursor: title.len(), anchor: None },
             message: Default::default(),
             details: None,
+            conversation,
+            with_conversation: false,
             selected: if title.is_empty() { Action::Title } else { Action::Message },
             scroll: 0,
             edit_scroll: 0,
@@ -158,13 +178,22 @@ impl Tileception {
             Action::Cancel => self.close_feedback(),
             Action::Open => {
                 let Some(feedback) = &self.feedback else { return };
-                let url = if feedback.details.is_none() && feedback.message.text.is_empty() {
-                    issue_url(&feedback.title.text)
-                } else {
-                    issue_url_with_body(&feedback.title.text, &feedback.body())
-                };
+                let url =
+                    if feedback.details.is_none() && !feedback.with_conversation && feedback.message.text.is_empty() {
+                        issue_url(&feedback.title.text)
+                    } else {
+                        issue_url_with_body(&feedback.title.text, &feedback.body())
+                    };
                 self.close_feedback();
                 self.spawn("xdg-open", &[url]);
+            }
+            Action::Conversation => {
+                if let Some(feedback) = &mut self.feedback {
+                    feedback.with_conversation = !feedback.with_conversation;
+                    feedback.selected = Action::Conversation;
+                    feedback.scroll = 0;
+                }
+                self.schedule_render();
             }
             Action::Details => {
                 let Some(feedback) = &self.feedback else { return };
@@ -245,10 +274,19 @@ impl Tileception {
         let bottom = panel.bottom() - if tight { 40.0 } else { 48.0 };
         let button_h = if tight { 28.0 } else { 36.0 };
         let details = Rect::new(left, bottom - 40.0, inner, 28.0);
+        let conversation = self
+            .feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.conversation.is_some())
+            .then(|| Rect::new(left, details.y - 32.0, inner, 28.0));
+        let switches = conversation.unwrap_or(details);
         let title = Rect::new(left, top + 16.0, inner, 28.0);
-        let message = Rect::new(left, title.bottom() + 30.0, inner, (details.y - title.bottom() - 42.0).max(1.0));
+        let message = Rect::new(left, title.bottom() + 30.0, inner, (switches.y - title.bottom() - 42.0).max(1.0));
         let review = self.feedback.as_ref().is_some_and(|feedback| feedback.review);
         let mut controls = if review { Vec::new() } else { vec![(Action::Title, title), (Action::Message, message)] };
+        if let Some(conversation) = conversation {
+            controls.push((Action::Conversation, conversation));
+        }
         controls.push((Action::Details, details));
         // Buttons sit together on the right, the step forward last, and
         // shrink alike when the screen is narrow.
@@ -270,7 +308,7 @@ impl Tileception {
             panel,
             title,
             message,
-            preview: Rect::new(left, top, inner, (details.y - top - 20.0).max(1.0)),
+            preview: Rect::new(left, top, inner, (switches.y - top - 20.0).max(1.0)),
             controls,
         }
     }
@@ -558,7 +596,7 @@ impl Tileception {
             let selected = feedback.selected == *action;
             match action {
                 Action::Title | Action::Message => {}
-                Action::Details => {
+                Action::Conversation | Action::Details => {
                     if selected {
                         painter.shape(
                             *rect,
@@ -570,10 +608,15 @@ impl Tileception {
                         );
                     }
                     let track = Rect::new(rect.x + 8.0, rect.y + (rect.h - 20.0) / 2.0, 36.0, 20.0);
-                    crate::panel::draw_switch(&mut painter, track, feedback.details.is_some(), false, true);
+                    let (checked, text) = if *action == Action::Conversation {
+                        (feedback.with_conversation, "Include the last Doctor question and answer")
+                    } else {
+                        (feedback.details.is_some(), "Include system details")
+                    };
+                    crate::panel::draw_switch(&mut painter, track, checked, false, true);
                     let label =
                         Rect::new(track.right() + 12.0, rect.y, (rect.right() - track.right() - 20.0).max(1.0), rect.h);
-                    painter.text("Include system details", label, Style::new(theme.font_size, theme.text));
+                    painter.text(text, label, Style::new(theme.font_size, theme.text));
                 }
                 _ => {
                     let primary = matches!(action, Action::Review | Action::Open);
@@ -746,5 +789,16 @@ mod tests {
         );
         assert!(url.contains(&encode(env!("CARGO_PKG_VERSION"))));
         assert!(!url.contains(' ') && !url.contains('\n'));
+    }
+
+    #[test]
+    fn adds_the_conversation_before_details() {
+        let body = issue_body("Broken", Some("Last Doctor question:\nWhy?\n"), Some("OS: test\n"));
+        let version = format!("Tileception {}\n", env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            body,
+            format!("Broken\n\n---\n{version}\nLast Doctor question:\nWhy?\n\nSystem details:\nOS: test\n")
+        );
+        assert_eq!(issue_body("Broken", None, None), format!("Broken\n\n---\n{version}"));
     }
 }

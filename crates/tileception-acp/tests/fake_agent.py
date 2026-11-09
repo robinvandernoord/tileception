@@ -1,5 +1,6 @@
 """A pretend ACP agent for tests: it wants a login, then streams an answer,
-reports a tool call and asks permission before finishing."""
+reports a tool call and asks permission before finishing. The prompt "hang"
+starts an answer that never ends, not even on session/cancel."""
 import json
 import os
 import sys
@@ -54,6 +55,8 @@ for line in sys.stdin:
         key = (params.get("_meta") or {}).get("api-key")
         logged_in = params.get("methodId") == "fake-login" or (params.get("methodId") == "fake-key" and key == "secret")
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif method == "session/prompt" and params["prompt"][-1]["text"] == "hang":
+        update("s1", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Working"}})
     elif method == "session/prompt" and params["prompt"][-1]["text"] == "edit":
         assert params.get("sessionId") == "s1"
         asked = (mid, 0)

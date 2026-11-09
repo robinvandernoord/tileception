@@ -22,7 +22,10 @@ API key in the panel. After signing in through a terminal, choose **I've logged
 in** in Doctor. If you signed in elsewhere, use `/restart`.
 
 Press **Enter** to send a message. While the agent is working, use the stop
-button or **Ctrl+C** to interrupt it.
+button or **Ctrl+C** to interrupt it. If the agent has not stopped after 8
+seconds, Doctor restarts it; press stop or **Ctrl+C** again to restart it right
+away. A restarted agent starts a new conversation; the panel keeps the earlier
+messages.
 
 ## Context
 
@@ -61,7 +64,8 @@ or `full-access` for Yolo. Claude uses `default` for Ask and Tweak, and
 acknowledged before sending a message. If the agent rejects a setting, the
 message is withheld; retry the setting or restart the agent.
 
-OpenCode starts with `OPENCODE_PERMISSION='{"edit":"ask","bash":"ask"}'`
+OpenCode (both the `opencode` and `opencode-v2` registry entries) starts with
+`OPENCODE_PERMISSION='{"edit":"ask","bash":"ask"}'`
 in Ask and Tweak, so its edits and commands reach Doctor for approval.
 For OpenCode 2, which no longer reads that variable, Doctor also merges those
 rules into the child process's `OPENCODE_CONFIG_CONTENT`. Other inline config
@@ -105,15 +109,16 @@ Doctor saves the image locally and includes its file path instead.
 
 ## Commands and settings
 
-| Command         | Action                                                    |
-|-----------------|-----------------------------------------------------------|
-| `/help`         | List panel and agent commands                             |
-| `/agent`        | Choose an agent                                           |
-| `/model`        | Choose a model offered by the agent                       |
-| `/mode <name>`  | Switch to `ask`, `tweak` or `yolo` mode                   |
-| `/image <file>` | Attach an image to the next message                       |
-| `/clear`        | Start a new conversation with the same agent              |
-| `/restart`      | Restart the agent, for example after signing in elsewhere |
+| Command           | Action                                                    |
+|-------------------|-----------------------------------------------------------|
+| `/help`           | List panel and agent commands                             |
+| `/agent`          | Choose an agent                                           |
+| `/model`          | Choose a model offered by the agent                       |
+| `/mode <name>`    | Switch to `ask`, `tweak` or `yolo` mode                   |
+| `/image <file>`   | Attach an image to the next message                       |
+| `/clear`          | Start a new conversation with the same agent              |
+| `/restart`        | Restart the agent, for example after signing in elsewhere |
+| `/report [title]` | Report a problem on GitHub; the title is optional         |
 
 Type `/` for suggestions. **Tab** completes a command; **Enter** runs it.
 

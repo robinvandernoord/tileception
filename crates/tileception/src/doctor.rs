@@ -76,6 +76,8 @@ const CODE_BAR: f64 = 28.0;
 const CODE_BUTTON: f64 = 24.0;
 /// How long a copied code block shows a check.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How long a stopped agent may take to end its turn before it is restarted.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// A small picture, premultiplied, ready to draw.
 #[derive(Debug, Clone)]
@@ -187,7 +189,7 @@ struct SecretEntry {
 }
 
 /// One of the panel's own slash commands: name, argument, what it does.
-const COMMANDS: [(&str, &str, &str); 7] = [
+const COMMANDS: [(&str, &str, &str); 8] = [
     ("help", "", "Show these commands"),
     ("clear", "", "Start a new conversation"),
     ("model", "[name]", "Choose the agent's model"),
@@ -195,7 +197,38 @@ const COMMANDS: [(&str, &str, &str); 7] = [
     ("agent", "[id]", "Choose another agent"),
     ("restart", "", "Restart the agent, as after logging in elsewhere"),
     ("image", "<file>", "Send a picture with the next message"),
+    ("report", "[title]", "Report a problem on GitHub"),
 ];
+
+/// How much of the last question and answer `/report` offers to include,
+/// in characters, so the new-issue link stays short enough for browsers.
+const REPORT_QUESTION: usize = 1000;
+const REPORT_ANSWER: usize = 3000;
+
+/// The last question and the agent's answer to it, shortened to fit a
+/// new-issue link. None before the first question.
+fn last_exchange(messages: &[Message]) -> Option<String> {
+    let asked = messages.iter().rposition(|message| matches!(message, Message::User(_)))?;
+    let Message::User(question) = &messages[asked] else { return None };
+    let answer = messages[asked + 1..]
+        .iter()
+        .filter_map(|message| match message {
+            Message::Agent(text) => Some(text.trim()),
+            _ => None,
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let shorten = |text: &str, limit: usize| match text.char_indices().nth(limit) {
+        Some((end, _)) => format!("{}\n[shortened]", &text[..end]),
+        None => text.to_string(),
+    };
+    let mut text = format!("Last Doctor question:\n{}\n", shorten(question.trim(), REPORT_QUESTION));
+    if !answer.is_empty() {
+        text += &format!("\nDoctor's answer:\n{}\n", shorten(&answer, REPORT_ANSWER));
+    }
+    Some(text)
+}
 
 /// A slash command offered while typing one.
 #[derive(Debug, Clone, PartialEq)]
@@ -264,6 +297,9 @@ pub struct Doctor {
     takes_images: Option<bool>,
     /// A message with pictures, sent once the agent says how it takes them.
     waiting: Option<(String, Vec<Attachment>)>,
+    /// When the agent was asked to stop, until its turn ends. Stopping again
+    /// meanwhile, or waiting [`STOP_WAIT`], restarts it.
+    stopping: Option<Instant>,
     /// Pictures in answers, by address.
     pictures: std::collections::HashMap<String, Picture>,
     loads: Option<(channel::Sender<Loaded>, RegistrationToken)>,
@@ -333,6 +369,7 @@ impl Default for Doctor {
             attachments: Vec::new(),
             takes_images: None,
             waiting: None,
+            stopping: None,
             pictures: Default::default(),
             loads: None,
             copied: None,
@@ -723,7 +760,7 @@ impl Tileception {
             .iter()
             .map(|socket| ("TILECEPTION_SOCKET".to_string(), socket.to_string_lossy().into_owned()))
             .collect();
-        if self.doctor.agent.as_deref() == Some("opencode") {
+        if is_opencode(self.doctor.agent.as_deref()) {
             match opencode_env(self.doctor.mode) {
                 Ok(permissions) => env.extend(permissions),
                 Err(error) => self.doctor.mode_env_warning = Some(error),
@@ -834,6 +871,7 @@ impl Tileception {
         self.doctor.view = View::Conversation;
         self.doctor.scroll = 0.0;
         self.doctor.busy = true;
+        self.doctor.stopping = None;
         self.doctor.approved.clear();
         // How pictures go depends on the agent, which may not have said yet.
         if starting || !self.doctor.options_ready || (self.doctor.takes_images.is_none() && !attachments.is_empty()) {
@@ -1050,6 +1088,7 @@ impl Tileception {
             Event::Permission { .. } | Event::File { .. } => {}
             Event::TurnEnded(reason) => {
                 doctor.busy = false;
+                doctor.stopping = None;
                 doctor.approved.clear();
                 let note = match reason.as_str() {
                     "refusal" => Some("The agent declined to answer."),
@@ -1248,7 +1287,7 @@ impl Tileception {
         self.doctor.agent_mode = None;
         self.doctor.approved.clear();
         self.save_doctor();
-        if self.doctor.agent.as_deref() == Some("opencode") && self.doctor.session.is_some() {
+        if is_opencode(self.doctor.agent.as_deref()) && self.doctor.session.is_some() {
             self.doctor_hit(Hit::Stop);
             self.doctor.busy = false;
             self.doctor.options_ready = false;
@@ -1994,6 +2033,7 @@ impl Tileception {
             }
             Hit::Run(command) => self.run_code(&command),
             Hit::Example(index) => self.send_to_doctor(EXAMPLES[index].to_string()),
+            Hit::Stop if self.doctor.busy && self.doctor.stopping.is_some() => self.restart_stuck_agent(),
             Hit::Stop => {
                 // Not sent yet: nothing to cancel but the wait.
                 if self.doctor.waiting.take().is_some() {
@@ -2001,6 +2041,19 @@ impl Tileception {
                 }
                 if let Some(session) = &self.doctor.session {
                     session.send(Request::Cancel);
+                    // An agent that never ends its turn would keep the panel
+                    // busy for ever.
+                    if self.doctor.busy {
+                        let asked = Instant::now();
+                        self.doctor.stopping = Some(asked);
+                        let timer = smithay::reexports::calloop::timer::Timer::from_duration(STOP_WAIT);
+                        let _ = self.loop_handle.insert_source(timer, move |_, _, state| {
+                            if state.doctor.busy && state.doctor.stopping == Some(asked) {
+                                state.restart_stuck_agent();
+                            }
+                            smithay::reexports::calloop::timer::TimeoutAction::Drop
+                        });
+                    }
                 }
                 // The agent's own questions are cancelled with the turn; its
                 // file requests still need an answer, or it waits for ever.
@@ -2018,6 +2071,21 @@ impl Tileception {
                 }
             }
         }
+        self.schedule_render();
+    }
+
+    /// Ends a turn the agent did not stop when asked, by restarting it.
+    fn restart_stuck_agent(&mut self) {
+        self.doctor.stopping = None;
+        self.doctor.busy = false;
+        self.doctor.approved.clear();
+        self.doctor.messages.push(Message::Note(
+            "The agent did not stop, so it was restarted. It no longer remembers this conversation.".into(),
+        ));
+        if let Some(session) = &self.doctor.session {
+            session.send(Request::Retry);
+        }
+        self.doctor.scroll = 0.0;
         self.schedule_render();
     }
 
@@ -2088,6 +2156,10 @@ impl Tileception {
                     Ok(bytes) => self.doctor_attach(bytes.into()),
                     Err(error) => note(self, format!("{}: {error}", path.display())),
                 }
+            }
+            "report" => {
+                let conversation = last_exchange(&self.doctor.messages);
+                self.open_feedback(arg, conversation);
             }
             "restart" => match &self.doctor.session {
                 Some(session) => session.send(Request::Retry),
@@ -2924,8 +2996,14 @@ impl Tileception {
         }
         if self.doctor.busy {
             // While answering, the button stops it.
-            painter.fill(frame.send, theme.surface_raised, theme.radius);
-            painter.glyph(glyph::STOP, frame.send, 14, theme.text);
+            // Once asked, pressing it again restarts the agent.
+            let (fill, colour) = if self.doctor.stopping.is_some() {
+                (theme.warning.alpha(0.25), theme.warning)
+            } else {
+                (theme.surface_raised, theme.text)
+            };
+            painter.fill(frame.send, fill, theme.radius);
+            painter.glyph(glyph::STOP, frame.send, 14, colour);
         } else {
             let can_send = !input.text.trim().is_empty() || !self.doctor.attachments.is_empty();
             if can_send {
@@ -2958,6 +3036,8 @@ impl Tileception {
                 &[("\u{2191}\u{2193}", "Choose"), ("Tab", "Fill in"), ("Enter", "Run")]
             } else if self.doctor.secret.is_some() {
                 &[("Ctrl+V", "Paste"), ("Enter", "Log in"), ("Esc", "Cancel")]
+            } else if self.doctor.busy && self.doctor.stopping.is_some() {
+                &[("Ctrl+C", "Force stop"), ("PgUp", "Earlier"), ("Esc", "Close")]
             } else if self.doctor.busy {
                 &[("Ctrl+C", "Stop"), ("PgUp", "Earlier"), ("Esc", "Close")]
             } else {
@@ -3461,6 +3541,12 @@ fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>)
     Ok(serde_json::json!({ "content": doctor_policy::read_lines(&text, line, limit) }))
 }
 
+/// OpenCode, under any of its registry ids (`opencode`, `opencode-v2`): the
+/// same program, which takes its permission rules from the environment.
+fn is_opencode(agent: Option<&str>) -> bool {
+    agent.is_some_and(|agent_id| agent_id == "opencode" || agent_id.starts_with("opencode-"))
+}
+
 fn opencode_permission(mode: Mode) -> &'static str {
     if mode == Mode::Yolo { r#"{"edit":"allow","bash":"allow"}"# } else { r#"{"edit":"ask","bash":"ask"}"# }
 }
@@ -3520,7 +3606,7 @@ fn doctor_mode_warning(doctor: &Doctor) -> Option<&str> {
     if let Some(warning) = &doctor.mode_env_warning {
         return Some(warning);
     }
-    if !doctor.options_ready || doctor.agent.as_deref() == Some("opencode") {
+    if !doctor.options_ready || is_opencode(doctor.agent.as_deref()) {
         return None;
     }
     match doctor_mode_target(doctor) {
@@ -3669,4 +3755,39 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_the_last_question_and_answer() {
+        assert_eq!(last_exchange(&[Message::Note("Connected".into())]), None);
+        let messages = [
+            Message::User("old".into()),
+            Message::Agent("old answer".into()),
+            Message::User("Why is Wi-Fi off?".into()),
+            Message::Agent("Checking.".into()),
+            Message::Tool { tool_id: "1".into(), title: "nmcli".into(), status: "completed".into() },
+            Message::Agent("Airplane mode is on.".into()),
+        ];
+        assert_eq!(
+            last_exchange(&messages).expect("a question was asked"),
+            "Last Doctor question:\nWhy is Wi-Fi off?\n\nDoctor's answer:\nChecking.\n\nAirplane mode is on.\n"
+        );
+        let long = [Message::User("é".repeat(REPORT_QUESTION + 5))];
+        let text = last_exchange(&long).expect("a question was asked");
+        assert!(text.contains(&format!("{}\n[shortened]", "é".repeat(REPORT_QUESTION))));
+        assert!(!text.contains("answer"));
+    }
+
+    #[test]
+    fn knows_opencode_by_any_registry_id() {
+        assert!(is_opencode(Some("opencode")));
+        assert!(is_opencode(Some("opencode-v2")));
+        assert!(!is_opencode(Some("opencoder")));
+        assert!(!is_opencode(Some("claude-acp")));
+        assert!(!is_opencode(None));
+    }
 }

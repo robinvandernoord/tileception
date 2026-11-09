@@ -1278,7 +1278,8 @@ impl Tileception {
                 renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
             {
                 let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                let mut damage = OutputDamageTracker::new(size, self.scale, Transform::Normal);
+                // The elements are in physical pixels already, as on outputs.
+                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
                 let result = damage
                     .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
                     .map_err(|error| format!("{error:?}"))?;
