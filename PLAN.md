@@ -90,8 +90,6 @@ Report testing in the conversation, the commit or the pull request instead.
     and used for the panel and for the bar's chips; without one, the
     priority order applies.
   - Timers come later, as a plugin of their own.
-  - Possibly: `tileception msg plugin add <command>` writes the config
-    entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
 - Windows larger than their tiles: optionally draw a window only slightly
