@@ -456,9 +456,11 @@ impl Tileception {
                 keyboard_config.repeat_delay.unwrap_or(400),
             );
         }
-        if let Some(terminal) = &config.file.general.terminal {
-            self.terminal = terminal.clone();
-        }
+        // As at startup, so removing `terminal` returns to the detected one.
+        self.terminal = std::env::var("TILECEPTION_TERMINAL")
+            .ok()
+            .or_else(|| config.file.general.terminal.clone())
+            .unwrap_or_else(|| crate::state::default_terminal(self.launcher.apps()));
         if self.theme != config.theme {
             self.theme = config.theme.clone();
             self.update_appearance();
