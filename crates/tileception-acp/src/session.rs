@@ -51,7 +51,7 @@ impl Session {
     /// `env` is set for the agent program on top of the compositor's own,
     /// such as the session's `TILECEPTION_SOCKET`.
     pub fn start(agent: Agent, cwd: PathBuf, context: String, env: Env, emit: Emit) -> Session {
-        Self::launch(agent.name.clone(), Source::Registry(agent), cwd, context, env, emit)
+        Self::launch(agent.name.clone(), Source::Registry(Box::new(agent)), cwd, context, env, emit)
     }
 
     /// Starts an agent program directly (tests, and agents already installed).
@@ -126,7 +126,7 @@ enum Pending {
 
 /// Where the agent program comes from.
 enum Source {
-    Registry(Agent),
+    Registry(Box<Agent>),
     Program(install::Program),
 }
 
@@ -277,6 +277,10 @@ impl Worker {
     fn spawn(&mut self, program: &install::Program) -> Result<(), String> {
         let mut command = Command::new(&program.command);
         command.args(&program.args).current_dir(&self.cwd);
+        // What the agent runs is found where the user's shell finds it.
+        if let Some(path) = crate::local::path_var() {
+            command.env("PATH", path);
+        }
         crate::with_env(&mut command, &program.env);
         crate::with_env(&mut command, &self.session_env);
         crate::with_env(&mut command, &self.login_env);

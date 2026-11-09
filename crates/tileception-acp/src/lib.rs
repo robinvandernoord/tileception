@@ -6,6 +6,7 @@
 //! [`Event`]s through a callback.
 
 pub mod install;
+pub mod local;
 pub mod registry;
 mod session;
 

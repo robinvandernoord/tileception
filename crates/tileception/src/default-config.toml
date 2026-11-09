@@ -330,6 +330,15 @@ tray_max_icons = 3
 # "com.spotify.Client" = ["--ozone-platform=wayland"]
 # firefox = ["-P", "work"]
 
+# Doctor's agents start from a copy already installed on this computer when
+# it finds one, else from the ACP Registry. To run a particular program
+# instead, give its command by registry id (as `doctor use` takes it): the
+# program, then its arguments, never through a shell. ~/ is your home folder.
+#
+# [doctor.agents]
+# opencode = ["~/.opencode/bin/opencode", "acp"]
+# gemini = ["/usr/local/bin/gemini", "--acp"]
+
 # Launcher plugins are executable MCP servers over stdio. Installing a
 # manifest in ~/.local/share/tileception/plugins/ enables its command.
 # Only install plugins you trust, as with autostart commands.

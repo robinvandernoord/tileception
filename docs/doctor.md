@@ -14,7 +14,33 @@ setup and making changes in plain language. Press **Super+/** to open it;
 The panel shows any missing tools before you select an agent. Depending on its
 distribution, an agent may need Bun (`bunx`) or Node.js (`npx`), uv (`uvx`),
 or tools for downloading and extracting a binary. Doctor starts or downloads
-the agent using its registry entry.
+the agent using its registry entry. With Bun installed, npm packages are
+fetched with `bunx`; they still run under Node.js when that is installed.
+Downloaded agents are kept under `~/.local/share/tileception/agents/`, one
+version each.
+
+### Agents you already installed
+
+Doctor uses a copy of an agent that is already on your computer, and says
+where it found it in the agent list:
+
+- npm packages installed globally with npm, Bun or pnpm, such as
+  `npm install -g @google/gemini-cli`;
+- Python packages installed with `uv tool install`;
+- other agents by the name of their program, such as `opencode` or `goose`.
+
+Programs are looked for in your shell's `PATH`, as an interactive login shell
+sets it, so folders that installers add in `~/.bashrc` (like
+`~/.opencode/bin`) count, and in common folders such as `~/.local/bin`,
+`~/.bun/bin` and `~/.cargo/bin`. The agent then runs with that `PATH` too.
+
+A program found only by its name may be a different program with the same
+name, so the first time Doctor asks whether to use it or download the agent.
+It remembers the answer for that program's path. When an installed package
+is older than the registry's version, the agent list shows both versions; the
+installed one is still used. To run a particular program for an agent, set its
+command under `[doctor.agents]` in the config (see
+[Configuration](configuration.md#doctor)).
 
 Accounts, API keys and available models depend on the agent and provider you
 choose. Some agents open a browser or terminal for sign-in; others ask for an

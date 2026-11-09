@@ -43,6 +43,7 @@ pub struct ConfigFile {
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
+    pub doctor: crate::doctor::DoctorConfig,
     /// What this session shows on the login screen.
     pub greeter: crate::greeter::ShareConfig,
     pub rules: Vec<crate::rules::WindowRule>,
@@ -252,6 +253,7 @@ impl Config {
             .ok_or_else(|| format!("unknown drag_modifier {:?}", file.general.drag_modifier))?;
         let theme = crate::theme::Theme::from_file(&file.theme).map_err(|error| format!("[theme] {error}"))?;
         file.shell.validate()?;
+        file.doctor.validate()?;
         if !file.general.min_live_scale.is_finite() || !(0.1..=1.0).contains(&file.general.min_live_scale) {
             return Err("general.min_live_scale must be finite and between 0.1 and 1.0".into());
         }

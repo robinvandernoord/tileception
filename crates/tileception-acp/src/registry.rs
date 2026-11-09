@@ -20,6 +20,9 @@ pub struct Agent {
     pub description: String,
     pub icon: Option<String>,
     pub launch: Launch,
+    /// A copy already on this machine, used in place of `launch`'s download
+    /// or package runner. Filled in by [`load`].
+    pub installed: Option<crate::local::Installed>,
 }
 
 /// How an agent is started.
@@ -48,12 +51,15 @@ pub enum Launch {
 impl Agent {
     /// What is missing to run this agent here, in words for the user.
     pub fn missing(&self) -> Option<String> {
+        if self.installed.is_some() {
+            return None;
+        }
         match &self.launch {
             Launch::Npx { .. } if npx().is_none() => Some("needs Node.js (npx) or Bun (bunx)".into()),
-            Launch::Uvx { .. } if !on_path("uvx") => Some("needs uv (uvx)".into()),
+            Launch::Uvx { .. } if crate::local::find("uvx").is_none() => Some("needs uv (uvx)".into()),
             Launch::Binary { archive, .. } => {
                 let tools: &[&str] = if archive.ends_with(".zip") { &["curl", "unzip"] } else { &["curl", "tar"] };
-                tools.iter().find(|tool| !on_path(tool)).map(|tool| format!("needs {tool}"))
+                tools.iter().find(|tool| crate::local::find(tool).is_none()).map(|tool| format!("needs {tool}"))
             }
             _ => None,
         }
@@ -160,6 +166,7 @@ pub fn parse(json: &str, platform: &str) -> Result<Vec<Agent>, String> {
                 description: entry.description,
                 icon: entry.icon,
                 launch,
+                installed: None,
             });
         }
     }
@@ -171,9 +178,12 @@ fn cache_file() -> PathBuf {
     crate::cache_dir().join("acp-registry.json")
 }
 
-/// The registry, from the cache when it is fresh, else downloaded. A stale
-/// cache still serves when the download fails (offline).
+/// The registry, from the cache when it is fresh, else downloaded, with the
+/// copies of its agents already installed here. A stale cache still serves
+/// when the download fails (offline). Blocks: call it off the main thread.
 pub fn load(refresh: bool) -> Result<Vec<Agent>, String> {
+    // Reads the login shell's PATH once, before anything looks for programs.
+    crate::local::search_path();
     let path = cache_file();
     let fresh = std::fs::metadata(&path)
         .and_then(|metadata| metadata.modified())
@@ -187,7 +197,11 @@ pub fn load(refresh: bool) -> Result<Vec<Agent>, String> {
         }
     }
     let json = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    parse(&json, &platform())
+    let mut agents = parse(&json, &platform())?;
+    for agent in &mut agents {
+        agent.installed = crate::local::installed(&agent.launch);
+    }
+    Ok(agents)
 }
 
 fn download(path: &Path) -> Result<(), String> {
@@ -199,24 +213,24 @@ fn download(path: &Path) -> Result<(), String> {
     std::fs::rename(&partial, path).map_err(|error| error.to_string())
 }
 
-/// The runner for npm packages and its arguments before the package: npx,
-/// or Bun's bunx when Node.js is not installed. Without Node.js, --bun runs
-/// packages whose scripts ask for node under Bun. Bun puts bunx in
-/// ~/.bun/bin, which a login session's PATH often leaves out.
+/// The runner for npm packages and its arguments before the package. Bun's
+/// bunx when it is installed, since it fetches and caches faster; packages
+/// still run under Node.js when that is installed too, as their scripts ask.
+/// Without Node.js, --bun runs them under Bun. npx otherwise.
 pub fn npx() -> Option<(PathBuf, &'static [&'static str])> {
-    if on_path("npx") {
-        return Some(("npx".into(), &["-y"]));
-    }
-    if on_path("bunx") {
-        return Some(("bunx".into(), &["--bun"]));
-    }
-    let bun = std::env::var_os("BUN_INSTALL")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".bun")))?;
-    let bunx = bun.join("bin").join("bunx");
-    bunx.is_file().then_some((bunx, &["--bun"]))
+    runner(crate::local::find("bunx"), crate::local::find("node").is_some(), crate::local::find("npx"))
 }
 
+fn runner(bunx: Option<PathBuf>, node: bool, npx: Option<PathBuf>) -> Option<(PathBuf, &'static [&'static str])> {
+    match (bunx, npx) {
+        (Some(bunx), _) if node => Some((bunx, &[])),
+        (Some(bunx), _) => Some((bunx, &["--bun"])),
+        (None, Some(npx)) => Some((npx, &["-y"])),
+        (None, None) => None,
+    }
+}
+
+/// Whether the program is on the compositor's own PATH.
 pub fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
@@ -263,5 +277,14 @@ mod tests {
         // No build for this machine: not offered.
         assert!(parse(SAMPLE, "linux-aarch64").expect("parses").iter().all(|agent| agent.agent_id != "goose"));
         assert!(parse("{", "linux-x86_64").is_err());
+    }
+
+    #[test]
+    fn prefers_bunx_and_node() {
+        let (bunx, npx) = (Some(PathBuf::from("/b/bunx")), Some(PathBuf::from("/n/npx")));
+        assert_eq!(runner(bunx.clone(), true, npx.clone()), Some((PathBuf::from("/b/bunx"), &[][..])));
+        assert_eq!(runner(bunx, false, npx.clone()), Some((PathBuf::from("/b/bunx"), &["--bun"][..])));
+        assert_eq!(runner(None, true, npx), Some((PathBuf::from("/n/npx"), &["-y"][..])));
+        assert_eq!(runner(None, true, None), None);
     }
 }

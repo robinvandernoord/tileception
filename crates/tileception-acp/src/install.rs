@@ -22,6 +22,18 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
     if let Some(missing) = agent.missing() {
         return Err(format!("{} {missing}", agent.name));
     }
+    if let Some(installed) = &agent.installed {
+        let (args, env) = match &agent.launch {
+            Launch::Npx { args, env, .. } | Launch::Uvx { args, env, .. } | Launch::Binary { args, env, .. } => {
+                (args, env)
+            }
+        };
+        return Ok(Program {
+            command: installed.command.clone(),
+            args: installed.prefix.iter().chain(args).cloned().collect(),
+            env: env.clone(),
+        });
+    }
     match &agent.launch {
         Launch::Npx { package, args, env } => {
             let (command, flags) = crate::registry::npx().ok_or_else(|| format!("{} needs Node.js", agent.name))?;
@@ -37,7 +49,7 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
             })
         }
         Launch::Uvx { package, args, env } => Ok(Program {
-            command: "uvx".into(),
+            command: crate::local::find("uvx").unwrap_or_else(|| "uvx".into()),
             args: std::iter::once(package.clone()).chain(args.iter().cloned()).collect(),
             env: env.clone(),
         }),
@@ -47,11 +59,27 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
             if !command.is_file() {
                 report(&format!("Downloading {} {}\u{2026}", agent.name, agent.version));
                 download(archive, sha256, cmd, &dir)?;
+                remove_other_versions(&dir);
             }
             if !command.is_file() {
                 return Err(format!("{} is not in the downloaded archive", cmd));
             }
             Ok(Program { command, args: args.clone(), env: env.clone() })
+        }
+    }
+}
+
+/// Earlier versions of a downloaded agent, and downloads that never
+/// finished, next to the version now in `dir`.
+fn remove_other_versions(dir: &Path) {
+    let (Some(parent), Some(keep)) = (dir.parent(), dir.file_name()) else { return };
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name() != keep
+            && entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && let Err(error) = std::fs::remove_dir_all(entry.path())
+        {
+            tracing::debug!("{}: {error}", entry.path().display());
         }
     }
 }
@@ -155,15 +183,38 @@ mod tests {
             description: String::new(),
             icon: None,
             launch: Launch::Uvx { package: "x-acp==1".into(), args: vec!["-x".into()], env: BTreeMap::new() },
+            installed: None,
         };
-        if crate::registry::on_path("uvx") {
+        if let Some(uvx) = crate::local::find("uvx") {
             let program = program(&agent, &|_| {}).expect("uvx agent");
-            assert_eq!(
-                (program.command, program.args),
-                (PathBuf::from("uvx"), vec!["x-acp==1".to_string(), "-x".to_string()])
-            );
+            assert_eq!((program.command, program.args), (uvx, vec!["x-acp==1".to_string(), "-x".to_string()]));
         } else {
             assert!(program(&agent, &|_| {}).is_err());
         }
+        // An installed copy runs with the registry's arguments instead.
+        let installed = Agent {
+            installed: Some(crate::local::Installed {
+                command: "/usr/bin/bun".into(),
+                prefix: vec!["--bun".into(), "/g/x/cli.js".into()],
+                version: None,
+                matched: crate::local::Match::Package,
+            }),
+            ..agent
+        };
+        let program = program(&installed, &|_| {}).expect("installed agent");
+        assert_eq!(program.command, PathBuf::from("/usr/bin/bun"));
+        assert_eq!(program.args, ["--bun", "/g/x/cli.js", "-x"]);
+    }
+
+    #[test]
+    fn keeps_only_the_current_version() {
+        let agents = std::env::temp_dir().join(format!("tileception-acp-versions-{}", std::process::id()));
+        for version in ["1.0", "1.1.part", "2.0"] {
+            std::fs::create_dir_all(agents.join(version)).expect("version dir");
+        }
+        remove_other_versions(&agents.join("2.0"));
+        let left: Vec<_> = std::fs::read_dir(&agents).expect("dir").flatten().map(|entry| entry.file_name()).collect();
+        assert_eq!(left, ["2.0"]);
+        let _ = std::fs::remove_dir_all(agents);
     }
 }

@@ -179,6 +179,47 @@ struct Saved {
     /// The model chosen per agent, by registry id.
     #[serde(default)]
     models: std::collections::BTreeMap<String, String>,
+    /// Programs found only by name that the user chose to use, by registry id.
+    #[serde(default)]
+    use_installed: std::collections::BTreeMap<String, PathBuf>,
+    /// Programs found only by name that the user chose not to use.
+    #[serde(default)]
+    skip_installed: std::collections::BTreeMap<String, PathBuf>,
+}
+
+/// The `[doctor]` section of the config.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DoctorConfig {
+    /// The command line for an agent, by registry id: the program and its
+    /// arguments, used in place of an installed copy or the registry's.
+    pub agents: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl DoctorConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        match self.agents.iter().find(|(_, command)| command.first().is_none_or(|program| program.trim().is_empty())) {
+            Some((agent_id, _)) => Err(format!("doctor.agents.{agent_id} needs a program to run")),
+            None => Ok(()),
+        }
+    }
+
+    /// The configured command for an agent, with `~/` expanded in the program.
+    fn program(&self, agent_id: &str, env: &tileception_acp::Env) -> Option<tileception_acp::install::Program> {
+        let (program, args) = self.agents.get(agent_id)?.split_first()?;
+        let command = match program.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+            None => PathBuf::from(program),
+        };
+        Some(tileception_acp::install::Program { command, args: args.to_vec(), env: env.clone() })
+    }
+}
+
+/// A program found only by its name, waiting for the user to say whether
+/// it is the agent.
+struct Unconfirmed {
+    agent_id: String,
+    path: PathBuf,
 }
 
 /// Typing a secret a login asks for, one at a time.
@@ -261,6 +302,10 @@ pub struct Doctor {
     loading: bool,
     /// The chosen agent's registry id.
     agent: Option<String>,
+    use_installed: std::collections::BTreeMap<String, PathBuf>,
+    skip_installed: std::collections::BTreeMap<String, PathBuf>,
+    /// Asking whether to use a program found by name before starting it.
+    unconfirmed: Option<Unconfirmed>,
     session: Option<Session>,
     status: Status,
     events: Option<(channel::Sender<Event>, RegistrationToken)>,
@@ -347,6 +392,9 @@ impl Default for Doctor {
             missing: Default::default(),
             loading: false,
             agent: saved.agent,
+            use_installed: saved.use_installed,
+            skip_installed: saved.skip_installed,
+            unconfirmed: None,
             session: None,
             status: Status::Starting(String::new()),
             events: None,
@@ -389,6 +437,8 @@ fn saved_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq)]
 enum Hit {
     Pick(String),
+    /// Whether to use the program found by name ([`Unconfirmed`]).
+    UseInstalled(bool),
     OpenPicker,
     ClosePicker,
     ReloadRegistry,
@@ -714,6 +764,25 @@ impl Tileception {
         }
     }
 
+    /// Where the agent comes from, for the picker, when not the registry.
+    fn agent_source(&self, agent: &Agent) -> Option<String> {
+        if let Some(command) = self.config.file.doctor.agents.get(&agent.agent_id) {
+            return Some(format!("From your config: {}", command.join(" ")));
+        }
+        let installed = agent.installed.as_ref()?;
+        let path = tilde(&installed.command);
+        Some(match &installed.version {
+            Some(version) if tileception_acp::local::older(version, &agent.version) => {
+                format!("Installed {version} (the registry has {}): {path}", agent.version)
+            }
+            Some(version) => format!("Installed {version}: {path}"),
+            None if self.doctor.skip_installed.get(&agent.agent_id) == Some(&installed.command) => {
+                return None;
+            }
+            None => format!("Installed: {path}"),
+        })
+    }
+
     fn chosen_agent(&self) -> Option<Agent> {
         let agent_id = self.doctor.agent.as_ref()?;
         self.doctor.registry.as_ref()?.as_ref().ok()?.iter().find(|agent| &agent.agent_id == agent_id).cloned()
@@ -725,10 +794,34 @@ impl Tileception {
             return;
         }
         let test_agent = test_agent();
-        let agent = self.chosen_agent();
+        let mut agent = self.chosen_agent();
         if agent.is_none() && test_agent.is_none() {
             return;
         }
+        let configured = agent.as_ref().and_then(|agent| {
+            let env = match &agent.launch {
+                tileception_acp::Launch::Npx { env, .. }
+                | tileception_acp::Launch::Uvx { env, .. }
+                | tileception_acp::Launch::Binary { env, .. } => env,
+            };
+            self.config.file.doctor.program(&agent.agent_id, env)
+        });
+        // A program found only by name may be another one: the user says once.
+        if test_agent.is_none()
+            && configured.is_none()
+            && let Some(agent) = &mut agent
+            && let Some(installed) = &agent.installed
+            && installed.matched == tileception_acp::local::Match::Name
+        {
+            let path = installed.command.clone();
+            if self.doctor.skip_installed.get(&agent.agent_id) == Some(&path) {
+                agent.installed = None;
+            } else if self.doctor.use_installed.get(&agent.agent_id) != Some(&path) {
+                self.doctor.unconfirmed = Some(Unconfirmed { agent_id: agent.agent_id.clone(), path });
+                return;
+            }
+        }
+        self.doctor.unconfirmed = None;
         let Some(emit) = self.doctor_emitter() else { return };
         // The documented defaults, for the agent to read.
         let defaults = state_dir().join("default-config.toml");
@@ -777,7 +870,10 @@ impl Tileception {
             }
             (None, Some(agent)) => {
                 self.doctor.status = Status::Starting(format!("Starting {}\u{2026}", agent.name));
-                Session::start(agent, cwd, context, env, emit)
+                match configured {
+                    Some(program) => Session::start_program(agent.name, program, cwd, context, env, emit),
+                    None => Session::start(agent, cwd, context, env, emit),
+                }
             }
             (None, None) => return,
         });
@@ -795,6 +891,7 @@ impl Tileception {
     fn pick_agent(&mut self, agent_id: String) {
         if self.doctor.agent.as_ref() != Some(&agent_id) {
             self.doctor.session = None;
+            self.doctor.unconfirmed = None;
             self.doctor.busy = false;
             self.doctor.agent = Some(agent_id);
             self.save_doctor();
@@ -854,7 +951,7 @@ impl Tileception {
         self.ensure_session();
         // Right after login the agent list may still be loading: keep the
         // question until the agent has started.
-        let starting = self.doctor.session.is_none() && self.doctor.loading;
+        let starting = self.doctor.session.is_none() && (self.doctor.loading || self.doctor.unconfirmed.is_some());
         if self.doctor.session.is_none() && !starting {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
             return false;
@@ -1330,8 +1427,13 @@ impl Tileception {
     }
 
     fn save_doctor(&self) {
-        let saved =
-            Saved { agent: self.doctor.agent.clone(), mode: self.doctor.mode, models: self.doctor.models.clone() };
+        let saved = Saved {
+            agent: self.doctor.agent.clone(),
+            mode: self.doctor.mode,
+            models: self.doctor.models.clone(),
+            use_installed: self.doctor.use_installed.clone(),
+            skip_installed: self.doctor.skip_installed.clone(),
+        };
         let path = saved_path();
         let written = path
             .parent()
@@ -1915,6 +2017,19 @@ impl Tileception {
     fn doctor_hit(&mut self, hit: Hit) {
         match hit {
             Hit::Pick(agent_id) => self.pick_agent(agent_id),
+            Hit::UseInstalled(choice) => {
+                if let Some(Unconfirmed { agent_id, path }) = self.doctor.unconfirmed.take() {
+                    let (chosen, other) = if choice {
+                        (&mut self.doctor.use_installed, &mut self.doctor.skip_installed)
+                    } else {
+                        (&mut self.doctor.skip_installed, &mut self.doctor.use_installed)
+                    };
+                    other.remove(&agent_id);
+                    chosen.insert(agent_id, path);
+                    self.save_doctor();
+                    self.ensure_session();
+                }
+            }
             Hit::OpenPicker => {
                 self.doctor.view = View::Picker;
                 self.doctor.scroll = 0.0;
@@ -2387,7 +2502,9 @@ impl Tileception {
 
     /// A login, a key being typed or a login in progress is on screen.
     fn login_showing(&self) -> bool {
-        self.doctor.secret.is_some() || matches!(self.doctor.status, Status::NeedsLogin(_) | Status::LoggingIn { .. })
+        self.doctor.unconfirmed.is_some()
+            || self.doctor.secret.is_some()
+            || matches!(self.doctor.status, Status::NeedsLogin(_) | Status::LoggingIn { .. })
     }
 
     fn doctor_frame(&self) -> Frame {
@@ -2493,11 +2610,13 @@ impl Tileception {
                 Some(Ok(agents)) => {
                     for agent in agents {
                         let missing = self.doctor.missing.get(&agent.agent_id).cloned();
-                        let detail = if agent.description.is_empty() {
-                            agent.kind().to_string()
-                        } else {
-                            agent.description.clone()
-                        };
+                        let detail = self.agent_source(agent).unwrap_or_else(|| {
+                            if agent.description.is_empty() {
+                                agent.kind().to_string()
+                            } else {
+                                agent.description.clone()
+                            }
+                        });
                         blocks.push(Block::Row {
                             rect: Rect::new(left, top, width, ROW_H),
                             title: agent.name.clone(),
@@ -2533,7 +2652,31 @@ impl Tileception {
             });
             *top += BUTTON_H + 2.0 * GAP;
         };
-        if let Some(secret) = &self.doctor.secret {
+        if let Some(Unconfirmed { agent_id, path }) = &self.doctor.unconfirmed {
+            let name = self.chosen_agent().map_or_else(|| agent_id.clone(), |agent| agent.name);
+            blocks
+                .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "INSTALLED AGENT".into() });
+            top += 28.0;
+            let text =
+                format!("{} is on this computer. Is it {name}? Another program can have the same name.", tilde(path));
+            push_note(&mut blocks, &mut top, &text);
+            let version = self.chosen_agent().map(|agent| agent.version).unwrap_or_default();
+            for (title, detail, choice) in [
+                ("Use the installed one".to_string(), tilde(path), true),
+                (format!("Download {name} {version}"), "From the ACP Registry, kept by Tileception".into(), false),
+            ] {
+                blocks.push(Block::Row {
+                    rect: Rect::new(left, top, width, ROW_H),
+                    title,
+                    detail,
+                    note: None,
+                    hit: Some(Hit::UseInstalled(choice)),
+                    current: false,
+                });
+                top += ROW_H + 4.0;
+            }
+            top += GAP;
+        } else if let Some(secret) = &self.doctor.secret {
             let label = secret.labels.get(secret.values.len()).map_or("key", String::as_str);
             blocks.push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "LOG IN".into() });
             top += 28.0;
@@ -3543,6 +3686,15 @@ fn read_for_agent(path: &std::path::Path, line: Option<u64>, limit: Option<u64>)
 
 /// OpenCode, under any of its registry ids (`opencode`, `opencode-v2`): the
 /// same program, which takes its permission rules from the environment.
+/// A path with the home folder shortened to ~.
+fn tilde(path: &std::path::Path) -> String {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    match path.strip_prefix(&home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    }
+}
+
 fn is_opencode(agent: Option<&str>) -> bool {
     agent.is_some_and(|agent_id| agent_id == "opencode" || agent_id.starts_with("opencode-"))
 }

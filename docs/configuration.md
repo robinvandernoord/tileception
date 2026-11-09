@@ -621,3 +621,15 @@ temperature and target under itself, sampled locally and kept in
 
 Doctor's agent, model and permission mode are managed in its panel, separately
 from `config.toml`. See the [Doctor guide](doctor.md) for setup and permissions.
+
+Doctor uses an agent already installed on your computer when it finds one. To
+run a particular program for an agent, give its command under
+`[doctor.agents]`, by registry id: the program, then its arguments. It is run
+directly, not through a shell; `~/` at the start of the program is your home
+folder.
+
+```toml
+[doctor.agents]
+opencode = ["~/.opencode/bin/opencode", "acp"]
+gemini = ["/usr/local/bin/gemini", "--acp"]
+```
