@@ -1668,7 +1668,10 @@ impl Tileception {
             if event.all_day {
                 when.push_str(", all day");
             } else if ongoing {
-                let end = LocalTime::at(event.end).map(|end| end.clock()).unwrap_or_default();
+                let end = LocalTime::at(event.end)
+                    .zip(LocalTime::at(now))
+                    .map(|(end, here)| ends_at(&end, &here))
+                    .unwrap_or_default();
                 when = format!("Now, until {end}");
             } else {
                 let end = LocalTime::at(event.end).filter(|_| event.end > event.start);
@@ -1743,15 +1746,20 @@ fn short_date(now: &LocalTime) -> String {
 /// 14:30  Review" for one on now, with the weekday when it ends on a later
 /// day.
 fn event_chip(summary: &str, ongoing: bool, start: &LocalTime, end: &LocalTime, now: &LocalTime) -> String {
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
     let summary = if summary.is_empty() { "Event".to_string() } else { summary };
-    if !ongoing {
-        format!("{}  {summary}", start.clock())
-    } else if (end.year, end.month, end.day) == (now.year, now.month, now.day) {
-        format!("until {}  {summary}", end.clock())
-    } else {
-        format!("until {} {}  {summary}", DAYS[end.weekday], end.clock())
+    if ongoing { format!("until {}  {summary}", ends_at(end, now)) } else { format!("{}  {summary}", start.clock()) }
+}
+
+/// When an event on now ends: its time today, with the weekday later this
+/// week, and with the date after that.
+fn ends_at(end: &LocalTime, now: &LocalTime) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let day = |time: &LocalTime| days_from_civil(time.year, time.month as i32 + 1, time.day);
+    match day(end) - day(now) {
+        ..=0 => end.clock(),
+        1..=6 => format!("{} {}", DAYS[end.weekday], end.clock()),
+        _ => format!("{} {}", short_date(end), end.clock()),
     }
 }
 
@@ -1857,5 +1865,7 @@ mod tests {
         assert_eq!(event_chip("", true, &start, &end, &now), "until 14:30  Event");
         // One ending on a later day names the day.
         assert_eq!(event_chip("Trip", true, &start, &local(10, 2, 9, 0), &now), "until Tue 09:00  Trip");
+        // The calendar names the date of one ending a week or more later.
+        assert_eq!(ends_at(&local(16, 1, 9, 0), &now), "Mon 16 Nov 09:00");
     }
 }
