@@ -44,8 +44,16 @@ pub(super) enum Event {
     Leave,
     Button(bool),
     Scroll(f64),
-    Key { sym: u32, mods: Mods, pressed: bool, code: u32 },
+    Key {
+        sym: u32,
+        mods: Mods,
+        pressed: bool,
+        code: u32,
+    },
     Unfocus,
+    /// The window was asked to close, as by a title bar or keybinding.
+    CloseRequested,
+    /// The client is gone.
     Closed,
 }
 
@@ -188,7 +196,6 @@ struct App {
     serial: u32,
     size: (i32, i32),
     configured: bool,
-    closed: bool,
 }
 
 fn run(
@@ -234,15 +241,11 @@ fn run(
         serial: 0,
         size: (size.0 as i32, size.1 as i32),
         configured: false,
-        closed: false,
     };
     let mut pending = None;
     wake.set_nonblocking(true).map_err(|error| error.to_string())?;
     loop {
         queue.dispatch_pending(&mut app).map_err(|error| error.to_string())?;
-        if app.closed {
-            return Ok(());
-        }
         loop {
             match requests.try_recv() {
                 Ok(Request::Frame(frame)) => pending = Some(frame),
@@ -384,7 +387,9 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for App {
                     app.size.1 = height;
                 }
             }
-            xdg_toplevel::Event::Close => app.closed = true,
+            xdg_toplevel::Event::Close => {
+                let _ = app.events.send(Event::CloseRequested);
+            }
             _ => {}
         }
     }
@@ -459,10 +464,15 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
             wl_keyboard::Event::Keymap {
                 format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
                 fd: descriptor,
-                ..
+                size,
             } => {
-                let mut text = String::new();
-                if File::from(descriptor).read_to_string(&mut text).is_ok() {
+                use std::os::unix::fs::FileExt;
+                // The compositor may hand every client the same file, whose
+                // offset an earlier Settings window already moved to its end.
+                let mut bytes = vec![0; size as usize];
+                if File::from(descriptor).read_exact_at(&mut bytes, 0).is_ok()
+                    && let Ok(text) = String::from_utf8(bytes)
+                {
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
                     app.keyboard = xkb::Keymap::new_from_string(
                         &context,

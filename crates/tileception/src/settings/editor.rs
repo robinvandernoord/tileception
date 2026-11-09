@@ -41,6 +41,8 @@ pub(super) struct Editor {
     first: usize,
     horizontal: usize,
     error: String,
+    /// The file changed on disk while this editor held edits.
+    notice: String,
     reference: bool,
     scroll_remainder: f64,
     original: String,
@@ -129,6 +131,7 @@ impl Tileception {
                     first: 0,
                     horizontal: 0,
                     error: String::new(),
+                    notice: String::new(),
                     reference,
                     scroll_remainder: 0.,
                 });
@@ -140,6 +143,57 @@ impl Tileception {
             }
         }
         self.schedule_render();
+    }
+
+    /// Brings the open and parked editors up to date after config.toml
+    /// changed on disk. Returns the editors whose edits were kept over it.
+    pub(super) fn settings_editors_refreshed(&mut self) -> Vec<&'static str> {
+        let Ok(document) = self.settings_document() else { return Vec::new() };
+        let mut kept = Vec::new();
+        for editor in self.settings.editor.iter_mut().chain(&mut self.settings.parked_editors) {
+            if editor.reference {
+                continue;
+            }
+            let source = match editor.field {
+                Some(index) => match crate::config_edit::section_text(&document, FIELDS[index].key) {
+                    Ok(source) => source,
+                    Err(_) => continue,
+                },
+                None => document.clone(),
+            };
+            if source == editor.original {
+                continue;
+            }
+            let mut text = std::mem::take(&mut editor.input.text);
+            if text != editor.original && super::refresh::same_toml(&editor.original, &source) {
+                // Only the layout around the edits changed; applying compares the text.
+                editor.original = source;
+            } else if super::refresh::merge_text(&mut editor.original, &mut text, &source) {
+                kept.push(editor.field.map_or("config.toml", |index| FIELDS[index].label));
+                editor.notice =
+                    "config.toml changed on disk. Your edits here are kept; applying them replaces the file's.".into();
+            }
+            super::refresh::replace_input(&mut editor.input, text);
+            editor.error.clear();
+        }
+        kept
+    }
+
+    /// Whether an editor holds text not yet in the draft.
+    pub(super) fn settings_editor_unsaved(&self) -> bool {
+        self.settings.editor.as_ref().is_some_and(|editor| !editor.reference && editor.input.text != editor.original)
+    }
+
+    /// Takes an open editor's text into the draft and applies it all.
+    pub(super) fn settings_editor_apply(&mut self) {
+        if self.settings.editor.as_ref().is_some_and(|editor| editor.reference) {
+            self.settings.editor = None;
+        }
+        if self.settings.editor.is_some() {
+            self.finish_settings_editor(true);
+        } else {
+            self.settings_activate(Hit::Apply, None);
+        }
     }
 
     fn finish_settings_editor(&mut self, apply: bool) {
@@ -432,15 +486,17 @@ impl Tileception {
                 offset = end + 1;
             }
         });
-        let hint = if editor.error.is_empty() {
-            "Ctrl+Enter: use draft   Ctrl+S: apply   Esc: keep for later"
+        let (hint, colour) = if !editor.error.is_empty() {
+            (editor.error.as_str(), theme.danger)
+        } else if !editor.notice.is_empty() {
+            (editor.notice.as_str(), theme.text)
         } else {
-            &editor.error
+            ("Ctrl+Enter: use draft   Ctrl+S: apply   Esc: keep for later", theme.muted)
         };
         painter.text(
             hint,
             Rect::new(area.x, frame.panel.bottom() - 61., area.w - 285., 52.),
-            Style::new(11., if editor.error.is_empty() { theme.muted } else { theme.danger }).lines(3),
+            Style::new(11., colour).lines(3),
         );
         for (rect, label, _) in buttons(frame, editor.reference) {
             painter.fill(rect, theme.surface_raised, 6.);

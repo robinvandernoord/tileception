@@ -158,7 +158,7 @@ Views:
 
 Shell:
   launcher                  open the launcher
-  settings                  open or close Settings (drafts are kept)
+  settings                  open or close Settings (asks about unapplied changes)
   notifications             open the notification list
   notifications clear       clear the history and dismiss every popup
   answer-notification       give the newest popup with buttons the keyboard:

@@ -25,7 +25,7 @@ impl crate::ui::PointerAction for PageAction {
             }
             Self::Hit(hit) => {
                 if *hit == Hit::Close {
-                    state.close_settings();
+                    state.request_close_settings();
                     return;
                 }
                 if state.settings.section.is_some() {
@@ -75,6 +75,9 @@ impl Tileception {
     }
 
     pub(super) fn settings_pointer_target(&self, point: Point) -> Option<Target> {
+        if let Some(target) = self.close_confirm_pointer_target(point) {
+            return Some(target);
+        }
         if let Some(target) = self.display_preview_pointer_target(point) {
             return Some(target);
         }
