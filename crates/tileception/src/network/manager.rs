@@ -11,7 +11,7 @@ use zbus::message::Type;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zeroize::Zeroizing;
 
-pub const NM: &str = "org.freedesktop.NetworkManager";
+pub const NETWORK_MANAGER: &str = "org.freedesktop.NetworkManager";
 const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 /// Where NetworkManager's ObjectManager is.
@@ -224,7 +224,7 @@ pub fn watch(bus: &Connection, inputs: &mpsc::Sender<Input>) -> zbus::Result<()>
             .msg_type(Type::Signal)
             .interface("org.freedesktop.DBus")?
             .member("NameOwnerChanged")?
-            .arg(0, NM)?
+            .arg(0, NETWORK_MANAGER)?
             .build(),
     )?;
     dbus.add_match_rule(rule(OBJECT_MANAGER, "InterfacesAdded")?)?;
@@ -254,7 +254,7 @@ pub fn watch(bus: &Connection, inputs: &mpsc::Sender<Input>) -> zbus::Result<()>
         let input = match (interface.as_str(), member.as_str()) {
             ("org.freedesktop.DBus", "NameOwnerChanged") => {
                 match message.body().deserialize::<(String, String, String)>() {
-                    Ok((name, _, _)) if name == NM => Input::Changed { settings: true },
+                    Ok((name, _, _)) if name == NETWORK_MANAGER => Input::Changed { settings: true },
                     _ => continue,
                 }
             }
@@ -350,7 +350,7 @@ impl Worker<'_> {
     where
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
-        self.bus.call_method(Some(NM), path, Some(interface), method, body)
+        self.bus.call_method(Some(NETWORK_MANAGER), path, Some(interface), method, body)
     }
 
     fn device(&self) -> Option<String> {
@@ -361,7 +361,7 @@ impl Worker<'_> {
         match request {
             Request::Wifi(enabled) => {
                 if let Err(error) =
-                    self.call(NM_PATH, PROPERTIES, "Set", &(NM, "WirelessEnabled", Value::from(enabled)))
+                    self.call(NM_PATH, PROPERTIES, "Set", &(NETWORK_MANAGER, "WirelessEnabled", Value::from(enabled)))
                 {
                     tracing::warn!("network: could not switch Wi-Fi: {error}");
                 }
@@ -447,12 +447,12 @@ impl Worker<'_> {
                 self.update_password(saved, security, password)?;
             }
             let connection = ObjectPath::try_from(saved)?;
-            let reply = self.call(NM_PATH, NM, "ActivateConnection", &(connection, device, specific))?;
+            let reply = self.call(NM_PATH, NETWORK_MANAGER, "ActivateConnection", &(connection, device, specific))?;
             let active: OwnedObjectPath = reply.body().deserialize()?;
             return Ok((active.to_string(), None));
         }
         let settings = new_connection(ssid, security, password.as_ref().map(|password| password.as_str()));
-        let reply = self.call(NM_PATH, NM, "AddAndActivateConnection", &(settings, device, specific))?;
+        let reply = self.call(NM_PATH, NETWORK_MANAGER, "AddAndActivateConnection", &(settings, device, specific))?;
         let (created, active): (OwnedObjectPath, OwnedObjectPath) = reply.body().deserialize()?;
         Ok((active.to_string(), Some(created.to_string())))
     }
@@ -470,7 +470,7 @@ impl Worker<'_> {
             wireless.insert("hidden", Value::from(true));
         }
         let specific = ObjectPath::from_static_str_unchecked("/");
-        let reply = self.call(NM_PATH, NM, "AddAndActivateConnection", &(settings, device, specific))?;
+        let reply = self.call(NM_PATH, NETWORK_MANAGER, "AddAndActivateConnection", &(settings, device, specific))?;
         let (created, active): (OwnedObjectPath, OwnedObjectPath) = reply.body().deserialize()?;
         Ok((active.to_string(), created.to_string()))
     }
@@ -514,8 +514,13 @@ impl Worker<'_> {
     /// Follows a connection being made, until it is up or has failed.
     fn check_pending(&mut self) {
         let Some(pending) = &self.pending else { return };
-        let state =
-            self.bus.call_method(Some(NM), pending.active.as_str(), Some(PROPERTIES), "Get", &(ACTIVE, "State"));
+        let state = self.bus.call_method(
+            Some(NETWORK_MANAGER),
+            pending.active.as_str(),
+            Some(PROPERTIES),
+            "Get",
+            &(ACTIVE, "State"),
+        );
         let state = state.ok().and_then(|reply| reply.body().deserialize::<OwnedValue>().ok());
         let elapsed = pending.since.elapsed();
         // Right after asking, the connection may not be there yet.
@@ -551,13 +556,14 @@ impl Worker<'_> {
     }
 
     fn read(&mut self) -> zbus::Result<Snapshot> {
-        let reply = self.bus.call_method(Some(NM), ROOT, Some(OBJECT_MANAGER), "GetManagedObjects", &())?;
+        let reply =
+            self.bus.call_method(Some(NETWORK_MANAGER), ROOT, Some(OBJECT_MANAGER), "GetManagedObjects", &())?;
         let objects: HashMap<OwnedObjectPath, HashMap<String, Properties>> = reply.body().deserialize()?;
         let objects: Objects = objects.into_iter().map(|(path, interfaces)| (path.to_string(), interfaces)).collect();
-        let manager = match objects.get(NM_PATH).and_then(|interfaces| interfaces.get(NM)) {
+        let manager = match objects.get(NM_PATH).and_then(|interfaces| interfaces.get(NETWORK_MANAGER)) {
             Some(manager) => manager.clone(),
             None => {
-                let reply = self.call(NM_PATH, PROPERTIES, "GetAll", &(NM,))?;
+                let reply = self.call(NM_PATH, PROPERTIES, "GetAll", &(NETWORK_MANAGER,))?;
                 reply.body().deserialize()?
             }
         };
@@ -624,7 +630,7 @@ fn saved_wifi(path: &str, settings: &HashMap<String, Properties>) -> Option<Save
     let ssid = bytes(settings.get("802-11-wireless")?.get("ssid")?)?;
     let name = connection
         .get("id")
-        .and_then(|id| <&str>::try_from(id).ok())
+        .and_then(|name| <&str>::try_from(name).ok())
         .map_or_else(|| String::from_utf8_lossy(&ssid).into_owned(), str::to_string);
     let autoconnect = connection.get("autoconnect").is_none_or(|value| bool::try_from(value).unwrap_or(true));
     Some(Saved { path: path.to_string(), name, ssid, autoconnect })
@@ -1084,14 +1090,14 @@ mod tests {
                 Device::device_state_changed(&emitter, super::STATE_FAILED, 50, 7).await?;
                 return Ok(path(GONE_PATH));
             }
-            let id = {
+            let name = {
                 let mut world = lock(world);
                 world.active = Some(saved.to_string());
                 world.connections.get(saved).map(|(ssid, _)| String::from_utf8_lossy(ssid).into_owned())
             };
             // There is none the first time.
             let _ = server.remove::<Active, _>(ACTIVE_PATH).await;
-            let active = Active { connection: saved.to_string(), id: id.unwrap_or_default() };
+            let active = Active { connection: saved.to_string(), name: name.unwrap_or_default() };
             server.at(ACTIVE_PATH, active).await?;
             Device::device_state_changed(&emitter, super::STATE_ACTIVATED, 50, 0).await?;
             Ok(path(ACTIVE_PATH))
@@ -1358,7 +1364,7 @@ mod tests {
 
         pub struct Active {
             connection: String,
-            id: String,
+            name: String,
         }
 
         #[interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
@@ -1373,9 +1379,9 @@ mod tests {
                 super::ACTIVE_ACTIVATED
             }
 
-            #[zbus(property)]
-            fn id(&self) -> String {
-                self.id.clone()
+            #[zbus(property, name = "Id")]
+            fn name(&self) -> String {
+                self.name.clone()
             }
         }
 
@@ -1389,7 +1395,7 @@ mod tests {
             }));
             let mut builder = zbus::blocking::connection::Builder::address(address)
                 .unwrap()
-                .name(super::NM)
+                .name(super::NETWORK_MANAGER)
                 .unwrap()
                 .serve_at(super::ROOT, zbus::fdo::ObjectManager)
                 .unwrap()

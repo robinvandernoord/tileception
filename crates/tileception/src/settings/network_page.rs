@@ -449,8 +449,8 @@ impl Tileception {
             return (input.text.clone(), input.cursor, input.anchor);
         }
         let dot = "\u{2022}";
-        let at = |offset: usize| input.text[..offset].chars().count() * dot.len();
-        (dot.repeat(input.text.chars().count()), at(input.cursor), input.anchor.map(at))
+        let dots_before = |offset: usize| input.text[..offset].chars().count() * dot.len();
+        (dot.repeat(input.text.chars().count()), dots_before(input.cursor), input.anchor.map(dots_before))
     }
 
     /// Places the caret where a field was pressed; `extend` selects.
