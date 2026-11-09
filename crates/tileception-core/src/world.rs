@@ -847,8 +847,12 @@ impl World {
         self.relayout();
         if self.focus == Some(win) {
             self.focus = None;
+            // Floating windows hang over whatever is framed, so they are in
+            // view too; the topmost one is the fallback when no tile is.
             let shown = self.tree.shown_windows_in(self.framed);
-            let next = self.mru.iter().rev().find(|window| shown.contains(window)).copied().or(shown.first().copied());
+            let floats = self.tree.floats();
+            let in_view = |window: &&WindowId| shown.contains(window) || floats.contains(window);
+            let next = self.mru.iter().rev().find(in_view).or(shown.first()).or(floats.last()).copied();
             self.set_focus(next);
         }
         self.retarget(now);
@@ -1833,6 +1837,26 @@ mod tests {
         assert!(rect_of(&world, WindowId(2)).approx_eq(&Rect::new(600.0, 300.0, 400.0, 300.0), 1e-6));
         let placements = world.placements(world.view(1.0));
         assert_eq!(placements.last().unwrap().window, WindowId(2), "floats come last, on top");
+    }
+
+    #[test]
+    fn closing_a_window_focuses_a_floating_one_left_in_view() {
+        // The last tile closes: the floating window still on screen takes focus.
+        let mut world = world();
+        world.add_window(WindowId(1), Placement::Dock, 0.0);
+        world.add_window(WindowId(2), Placement::Float, 0.0);
+        world.focus_window(WindowId(1), 0.0);
+        world.remove_window(WindowId(1), 0.0);
+        assert_eq!(world.focus(), Some(WindowId(2)));
+
+        // Closing a floating window returns to the one used before it, not
+        // to the tile underneath.
+        let mut world = self::world();
+        world.add_window(WindowId(1), Placement::Dock, 0.0);
+        world.add_window(WindowId(2), Placement::Float, 0.0);
+        world.add_window(WindowId(3), Placement::Float, 0.0);
+        world.remove_window(WindowId(3), 0.0);
+        assert_eq!(world.focus(), Some(WindowId(2)));
     }
 
     #[test]
