@@ -160,8 +160,9 @@ tileception msg doctor
 tileception msg doctor mode ask
 ```
 
-`tileception setup` asks which agent Doctor uses, listing those already
-installed first; `--doctor-agent <id>` answers up front. From a terminal,
+When you customize, `tileception setup` asks which agent Doctor uses, listing
+those already installed first; otherwise Doctor's own picker asks the first
+time you open it. `--doctor-agent <id>` answers up front. From a terminal,
 `tileception doctor` does the same:
 
 ```sh
