@@ -299,10 +299,10 @@ impl Tileception {
             return Some(connecting());
         }
         if snapshot.wifi_device.is_some() && !(snapshot.wifi_enabled && snapshot.wifi_hardware) {
-            return Some(("Wi-Fi off".into(), glyph::WIFI_OFF, false));
+            return Some(("Wi-Fi off".into(), glyph::WIFI_DISABLED, false));
         }
         (snapshot.wifi_device.is_some() || snapshot.wired.is_some())
-            .then(|| ("Offline".to_string(), glyph::WIFI_OFF, false))
+            .then(|| ("Offline".to_string(), glyph::WIFI_DISABLED, false))
     }
 
     /// The bar's network icon in `rect`: Wi-Fi with the strength it lacks

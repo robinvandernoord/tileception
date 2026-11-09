@@ -1267,7 +1267,7 @@ impl Tileception {
                     },
                     theme.accent,
                 ),
-                ChipKind::Network => (glyph::WIFI_OFF, theme.muted),
+                ChipKind::Network => (glyph::WIFI_DISABLED, theme.muted),
                 ChipKind::Capture => (SCREEN, theme.danger),
                 ChipKind::Dnd => (glyph::MOON, theme.warning),
             };
