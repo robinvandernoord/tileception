@@ -246,6 +246,9 @@ Options:
                            "swaylock -f -i {wallpaper}"
   --media <part>           builtin or none
   --doctor <part>          builtin or none
+  --doctor-agent <id>      the agent Doctor uses, by ACP Registry id (implies
+                           --doctor builtin); `tileception doctor agents`
+                           lists them, those already installed first
   --handoff <on|off>       share this mouse, keyboard and clipboard with other
                            Tileception computers on the network
   --handoff-passphrase <words>
@@ -263,6 +266,7 @@ Examples:
   tileception-setup
   tileception-setup --non-interactive --preset recommended --greeter keep
   tileception-setup --non-interactive --preset minimal --bar waybar
+  tileception-setup --non-interactive --doctor-agent claude-acp
 EOF
 }
 
@@ -313,6 +317,7 @@ user=""
 notification_daemon=""
 want_handoff=""
 handoff_passphrase=""
+doctor_agent=""
 for part in $parts bar_position; do
     eval "want_$part=''"
 done
@@ -350,6 +355,11 @@ while [ "$#" -gt 0 ]; do
             want_handoff=${want_handoff:-on}
             shift ;;
         --notification-daemon) need "$@"; notification_daemon=$2; shift ;;
+        --doctor-agent)
+            need "$@"
+            doctor_agent=$2
+            want_doctor=${want_doctor:-builtin}
+            shift ;;
         --bar-position)
             need "$@"
             case $2 in top | bottom) want_bar_position=$2 ;; *) fail "--bar-position is top or bottom" ;; esac
@@ -425,6 +435,36 @@ has_config=0
 if [ -n "$config" ] && [ -e "$config" ]; then
     has_config=1
 fi
+
+# Runs a command as the user whose config this is.
+as_user() {
+    if [ "$(id -un)" = "$user" ]; then
+        "$@"
+    else
+        $as_root runuser -u "$user" -- "$@"
+    fi
+}
+
+# Doctor's agent is remembered with its model and mode, apart from the
+# config. `tileception doctor` chooses it; builds from before it have none.
+doctor_file=""
+doctor_cli=""
+if [ -n "$user" ]; then
+    if [ "$(id -un)" = "$user" ]; then
+        doctor_file="${XDG_STATE_HOME:-$home/.local/state}/tileception/doctor.toml"
+    else
+        doctor_file="$home/.local/state/tileception/doctor.toml"
+    fi
+    if [ -n "$tileception_bin" ] && grep -qa "Usage: tileception doctor" "$tileception_bin"; then
+        doctor_cli=$tileception_bin
+    fi
+fi
+now_agent=""
+if [ -n "$doctor_cli" ]; then
+    now_agent=$("$doctor_cli" doctor --file "$doctor_file" agent 2>/dev/null || true)
+fi
+now_name=$now_agent
+doctor_agent_name=$doctor_agent
 
 # What the config says now, or the default.
 current_of() {
@@ -604,13 +644,103 @@ ask_doctor() {
     [ -n "$want_doctor" ] && return
     heading "Doctor"
     say "  A panel (Super+/) where an AI agent answers questions about your setup and"
-    say "  changes settings for you in plain language. Nothing is set up now: when you"
-    say "  first open it, you choose an agent from the ACP Registry and sign in with"
-    say "  that agent's provider, which may need an account or an API key and tools"
-    say "  such as npx or uvx. It asks before every change until you allow more."
+    say "  changes settings for you in plain language. It uses an agent from the ACP"
+    say "  Registry, or a copy already installed here; you sign in with that agent's"
+    say "  provider when you first open it, which may need an account or an API key."
+    say "  It asks before every change until you allow more."
     case $now_doctor in none) default=2 ;; *) default=1 ;; esac
-    choose "$default" "Available (choose an agent later)" "Turned off"
+    choose "$default" "Available" "Turned off"
     case $choice in 1) want_doctor=builtin ;; 2) want_doctor=none ;; esac
+}
+
+tab=$(printf '\t')
+
+# Field <field> of line <n> of a `tileception doctor agents` list.
+agent_field() { # <list> <n> <field>
+    printf '%s\n' "$1" | sed -n "$2p" | cut -f "$3"
+}
+
+# Which agent Doctor uses, those already installed first. Nothing is
+# installed now: Doctor fetches a registry agent when it first starts it.
+ask_doctor_agent() {
+    [ -n "$doctor_agent" ] && return
+    [ -n "$doctor_cli" ] || return
+    heading "Doctor's agent"
+    if ! agents=$(as_user "$doctor_cli" doctor agents 2>/dev/null) || [ -z "$agents" ]; then
+        say "  The ACP Registry could not be read (offline?). Doctor asks which agent"
+        say "  to use when you first open it."
+        return
+    fi
+    installed=$(printf '%s\n' "$agents" | grep "${tab}installed" || true)
+    others=$(printf '%s\n' "$agents" | grep -v "${tab}installed" || true)
+    if [ -n "$now_agent" ]; then
+        now_name=$(printf '%s\n' "$agents" | grep "^$now_agent$tab" | cut -f 2 || true)
+        now_name=${now_name:-$now_agent}
+    fi
+    if [ -n "$installed" ]; then
+        say "  Agents already installed here come first; Doctor runs that copy."
+    else
+        say "  No agent is installed here yet. Doctor fetches the one you choose when"
+        say "  you first open it, which may need tools such as npx or uvx."
+    fi
+    set --
+    default=""
+    count=0
+    if [ -n "$installed" ]; then
+        count=$(printf '%s\n' "$installed" | wc -l)
+        n=1
+        while [ "$n" -le "$count" ]; do
+            set -- "$@" "$(agent_field "$installed" "$n" 2) ($(agent_field "$installed" "$n" 3))"
+            if [ "$(agent_field "$installed" "$n" 1)" = "$now_agent" ]; then default=$n; fi
+            n=$((n + 1))
+        done
+    fi
+    keep=0
+    if [ -n "$now_agent" ] && [ -z "$default" ]; then
+        set -- "$@" "Keep $now_name"
+        keep=$#
+        default=$#
+    fi
+    another=0
+    if [ -n "$others" ]; then
+        set -- "$@" "Another agent from the ACP Registry"
+        another=$#
+    fi
+    later=0
+    if [ -z "$now_agent" ]; then
+        set -- "$@" "Choose later, in Doctor"
+        later=$#
+    fi
+    if [ -z "$default" ]; then
+        if [ "$count" -gt 0 ]; then default=1; else default=$later; fi
+    fi
+    choose "$default" "$@"
+    if [ "$choice" -le "$count" ]; then
+        doctor_agent=$(agent_field "$installed" "$choice" 1)
+        doctor_agent_name=$(agent_field "$installed" "$choice" 2)
+        return
+    fi
+    [ "$choice" = "$another" ] || return
+    heading "Agents in the ACP Registry"
+    total=$(printf '%s\n' "$others" | wc -l)
+    set --
+    default=""
+    n=1
+    while [ "$n" -le "$total" ]; do
+        set -- "$@" "$(agent_field "$others" "$n" 2) ($(agent_field "$others" "$n" 3))"
+        if [ "$(agent_field "$others" "$n" 1)" = "$now_agent" ]; then default=$n; fi
+        n=$((n + 1))
+    done
+    if [ -z "$now_agent" ]; then
+        set -- "$@" "Choose later, in Doctor"
+    elif [ -z "$default" ]; then
+        set -- "$@" "Keep $now_name"
+    fi
+    choose "${default:-$#}" "$@"
+    if [ "$choice" -le "$total" ]; then
+        doctor_agent=$(agent_field "$others" "$choice" 1)
+        doctor_agent_name=$(agent_field "$others" "$choice" 2)
+    fi
 }
 
 ask_handoff() {
@@ -712,7 +842,12 @@ if [ "$interactive" = 1 ]; then
     if [ "$preset" = customize ] && [ -n "$config" ]; then
         ask_customize
         ask_doctor
+        if [ "$want_doctor" = builtin ]; then
+            ask_doctor_agent
+        fi
         ask_handoff
+    elif [ "$preset" = recommended ] && [ -n "$config" ] && [ "$want_doctor" != none ]; then
+        ask_doctor_agent
     fi
     if [ "$preset" != minimal ]; then
         ask_greeter
@@ -773,7 +908,13 @@ summary() {
             say "    Started with the session: $notification_daemon"
         fi
         if [ "$want_doctor" = builtin ]; then
-            say "    Doctor asks which agent to use when you first open it (Super+/)."
+            if [ -n "$doctor_agent" ] && [ "$doctor_agent" != "$now_agent" ]; then
+                say "    Doctor's agent: $doctor_agent_name (changed)"
+            elif [ -n "$now_agent" ]; then
+                say "    Doctor's agent: $now_name"
+            else
+                say "    Doctor asks which agent to use when you first open it (Super+/)."
+            fi
         fi
         line="Sharing with other computers: $want_handoff"
         if [ "$want_handoff" = on ]; then
@@ -834,6 +975,9 @@ if [ "$print_flags" = 1 ]; then
     if [ -n "$given_handoff" ]; then
         flags="$flags --handoff $given_handoff"
     fi
+    if [ -n "$doctor_agent" ]; then
+        flags="$flags --doctor-agent $(quote "$doctor_agent")"
+    fi
     if [ -n "$handoff_passphrase" ]; then
         flags="$flags --handoff-passphrase $(quote "$handoff_passphrase")"
     fi
@@ -842,15 +986,6 @@ if [ "$print_flags" = 1 ]; then
 fi
 
 # ----------------------------------------------------------------- apply
-
-# Runs a command as the user whose config this is.
-as_user() {
-    if [ "$(id -un)" = "$user" ]; then
-        "$@"
-    else
-        $as_root runuser -u "$user" -- "$@"
-    fi
-}
 
 if [ -n "$config" ]; then
     if [ -z "$tileception_bin" ]; then
@@ -883,6 +1018,17 @@ if [ -n "$config" ]; then
     elif [ "$now_handoff" = on ]; then
         as_user "$tileception_bin" config --file "$config" set handoff.enabled false
         say "Turned handoff off"
+    fi
+    if [ -n "$doctor_agent" ] && [ "$doctor_agent" != "$now_agent" ]; then
+        if [ -z "$doctor_cli" ]; then
+            fail "this tileception cannot choose Doctor's agent; update it, or choose one in Doctor (Super+/)"
+        fi
+        as_user "$doctor_cli" doctor --file "$doctor_file" use "$doctor_agent"
+        say "Doctor uses $doctor_agent_name"
+        if [ -n "${TILECEPTION_SOCKET:-}" ]; then
+            say "Doctor in this session keeps its agent until you log in again;"
+            say "tileception msg doctor use $doctor_agent switches it now."
+        fi
     fi
 fi
 

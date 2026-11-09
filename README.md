@@ -61,9 +61,10 @@ curl -fsSL https://tileception.space/install | sh -s -- --greeter tileception
 
 Presets are `recommended`, `minimal`, `customize` and `keep`. `--bar`,
 `--launcher`, `--notifications`, `--power-menu` and `--lock` take `builtin`,
-`none` or a command; `--media` and `--doctor` take `builtin` or `none`. Run `tileception-setup --help`
-after installing for every option, or run `tileception-setup` again at any time
-to change your choices.
+`none` or a command; `--media` and `--doctor` take `builtin` or `none`.
+`--doctor-agent` picks Doctor's agent by its ACP Registry id, such as
+`claude-acp`. Run `tileception-setup --help` after installing for every option,
+or run `tileception-setup` again at any time to change your choices.
 
 </details>
 

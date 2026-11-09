@@ -433,6 +433,126 @@ fn saved_path() -> PathBuf {
     root.join("tileception/doctor.toml")
 }
 
+/// What `tileception doctor --help` prints.
+pub const HELP: &str = "\
+Usage: tileception doctor [--file <path>] <command>
+
+Chooses Doctor's agent without opening its panel; tileception-setup asks
+through this. The choice is kept in doctor.toml with the model and permission
+mode. A running Tileception reads it when it next starts: there, use
+`tileception msg doctor use <id>` instead.
+
+Commands:
+  agents      list the ACP Registry's agents, those already installed here
+              first: registry id, name and where it is installed, separated
+              by tabs (the registry is downloaded when the cached copy is
+              more than a day old)
+  agent       print the chosen agent's id; nothing when none is chosen
+  use <id>    choose an agent by its registry id, such as claude-acp
+  forget      choose none, so Doctor asks when it is next opened
+
+Options:
+  --file <path>   use this file instead of $XDG_STATE_HOME/tileception/doctor.toml
+";
+
+/// `tileception doctor`: the agent choice, for setup.
+pub fn run(args: &[String]) -> Result<(), String> {
+    let (file, args) = match args {
+        [flag, path, rest @ ..] if flag == "--file" => (PathBuf::from(path), rest),
+        _ => (saved_path(), args),
+    };
+    match args {
+        [] => {
+            print!("{HELP}");
+            Ok(())
+        }
+        [help] if matches!(help.as_str(), "-h" | "--help" | "help") => {
+            print!("{HELP}");
+            Ok(())
+        }
+        [cmd] if cmd == "agents" => {
+            for line in agent_lines(&tileception_acp::registry::load(false)?) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        [cmd] if cmd == "agent" => {
+            if let Some(agent) = read_saved(&file)?.agent {
+                println!("{agent}");
+            }
+            Ok(())
+        }
+        [cmd, agent_id] if cmd == "use" => {
+            // Without the registry (offline, nothing cached), Doctor says
+            // itself when the agent cannot be found.
+            if let Ok(agents) = tileception_acp::registry::load(false)
+                && !agents.iter().any(|agent| &agent.agent_id == agent_id)
+            {
+                return Err(format!(
+                    "the ACP Registry has no agent {agent_id:?}; `tileception doctor agents` lists them"
+                ));
+            }
+            choose_saved_agent(&file, Some(agent_id.clone()))
+        }
+        [cmd] if cmd == "forget" => choose_saved_agent(&file, None),
+        _ => Err(format!("unknown arguments {args:?}; see tileception doctor --help")),
+    }
+}
+
+/// The remembered choices in `file`; empty when it does not exist yet.
+fn read_saved(file: &std::path::Path) -> Result<Saved, String> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => toml::from_str(&text).map_err(|error| format!("{}: {error}", file.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Saved::default()),
+        Err(error) => Err(format!("{}: {error}", file.display())),
+    }
+}
+
+/// Changes only the agent in `file`, keeping the model and mode choices.
+fn choose_saved_agent(file: &std::path::Path, agent: Option<String>) -> Result<(), String> {
+    let mut saved = read_saved(file)?;
+    if saved.agent == agent && file.exists() {
+        return Ok(());
+    }
+    saved.agent = agent;
+    let text = toml::to_string(&saved).map_err(|error| error.to_string())?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    }
+    let tmp = file.with_extension("toml.new");
+    std::fs::write(&tmp, text).map_err(|error| format!("{}: {error}", tmp.display()))?;
+    std::fs::rename(&tmp, file).map_err(|error| format!("{}: {error}", file.display()))
+}
+
+/// `id<TAB>name<TAB>where`, installed agents first: those matched by their
+/// package before those found only by a program's name, then the rest.
+fn agent_lines(agents: &[Agent]) -> Vec<String> {
+    let mut agents: Vec<&Agent> = agents.iter().collect();
+    agents.sort_by_key(|agent| match &agent.installed {
+        Some(installed) if installed.matched == tileception_acp::local::Match::Package => 0,
+        Some(_) => 1,
+        None => 2,
+    });
+    agents
+        .iter()
+        .map(|agent| {
+            let place = match &agent.installed {
+                Some(installed) => {
+                    let version = installed.version.as_deref().map(|version| format!(" {version}")).unwrap_or_default();
+                    let guess =
+                        if installed.matched == tileception_acp::local::Match::Name { ", found by name" } else { "" };
+                    format!("installed{version}: {}{guess}", tilde(&installed.command))
+                }
+                None => match agent.missing() {
+                    Some(missing) => format!("{} from the registry; {missing}", agent.kind()),
+                    None => format!("{} from the registry", agent.kind()),
+                },
+            };
+            format!("{}\t{}\t{place}", agent.agent_id, agent.name.replace('\t', " "))
+        })
+        .collect()
+}
+
 /// What a click on a part of the panel does.
 #[derive(Debug, Clone, PartialEq)]
 enum Hit {
@@ -3910,6 +4030,7 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
 
@@ -3932,6 +4053,66 @@ mod tests {
         let text = last_exchange(&long).expect("a question was asked");
         assert!(text.contains(&format!("{}\n[shortened]", "é".repeat(REPORT_QUESTION))));
         assert!(!text.contains("answer"));
+    }
+
+    fn agent(agent_id: &str, name: &str, installed: Option<tileception_acp::local::Match>) -> Agent {
+        Agent {
+            agent_id: agent_id.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            icon: None,
+            launch: tileception_acp::Launch::Npx {
+                package: format!("{agent_id}@1.0.0"),
+                args: Vec::new(),
+                env: Default::default(),
+            },
+            installed: installed.map(|matched| tileception_acp::local::Installed {
+                command: PathBuf::from(format!("/opt/{agent_id}")),
+                prefix: Vec::new(),
+                version: (matched == tileception_acp::local::Match::Package).then(|| "0.9.0".into()),
+                matched,
+            }),
+        }
+    }
+
+    #[test]
+    fn lists_installed_agents_first() {
+        use tileception_acp::local::Match;
+        let agents = [
+            agent("auggie", "Auggie", None),
+            agent("goose", "Goose", Some(Match::Name)),
+            agent("opencode", "OpenCode", Some(Match::Package)),
+            agent("qwen", "Qwen\tCode", None),
+        ];
+        let lines = agent_lines(&agents);
+        let ids: Vec<&str> = lines.iter().map(|line| line.split('\t').next().unwrap()).collect();
+        assert_eq!(ids, ["opencode", "goose", "auggie", "qwen"]);
+        assert_eq!(lines[0], "opencode\tOpenCode\tinstalled 0.9.0: /opt/opencode");
+        assert_eq!(lines[1], "goose\tGoose\tinstalled: /opt/goose, found by name");
+        assert!(lines[2].starts_with("auggie\tAuggie\tnpx from the registry"));
+        assert_eq!(lines[3].split('\t').count(), 3);
+    }
+
+    #[test]
+    fn choosing_an_agent_keeps_the_other_choices() {
+        let dir = std::env::temp_dir().join(format!("tileception-doctor-saved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("tileception/doctor.toml");
+        choose_saved_agent(&file, Some("gemini".into())).unwrap();
+        assert_eq!(read_saved(&file).unwrap().agent.as_deref(), Some("gemini"));
+        std::fs::write(&file, "agent = \"gemini\"\nmode = \"yolo\"\n\n[models]\ngemini = \"pro\"\n").unwrap();
+        choose_saved_agent(&file, Some("claude-acp".into())).unwrap();
+        let saved = read_saved(&file).unwrap();
+        assert_eq!(saved.agent.as_deref(), Some("claude-acp"));
+        assert_eq!(saved.mode, Mode::Yolo);
+        assert_eq!(saved.models.get("gemini").map(String::as_str), Some("pro"));
+        choose_saved_agent(&file, None).unwrap();
+        assert_eq!(read_saved(&file).unwrap().agent, None);
+        std::fs::write(&file, "agent = [").unwrap();
+        assert!(choose_saved_agent(&file, Some("gemini".into())).is_err(), "a broken file is not overwritten");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "agent = [");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

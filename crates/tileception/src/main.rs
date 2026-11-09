@@ -99,13 +99,15 @@ Usage:
   tileception msg <command> [args...]
   tileception msg --help
   tileception config get|set|add <section.key> [value]
+  tileception doctor agents|agent|use <id>|forget
   tileception setup [options]
   tileception pair [<passphrase words...> | --new | --off | --show]
   tileception plugin <id>
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
-(`tileception config --help`). `setup` chooses the desktop's parts and the
+(`tileception config --help`). `doctor` lists agents and chooses Doctor's
+(`tileception doctor --help`). `setup` chooses the desktop's parts and the
 login screen again (`tileception setup --help`). `pair` shows or sets the
 passphrase that lets other computers share this mouse and keyboard
 (`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
@@ -200,6 +202,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if argv.first().map(String::as_str) == Some("home") {
         if let Err(err) = home::run(&argv[1..]) {
             eprintln!("tileception home: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("doctor") {
+        if let Err(err) = doctor::run(&argv[1..]) {
+            eprintln!("tileception doctor: {err}");
             std::process::exit(1);
         }
         return Ok(());

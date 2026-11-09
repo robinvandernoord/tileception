@@ -7,7 +7,8 @@ setup and making changes in plain language. Press **Super+/** to open it;
 ## Choose an agent and sign in
 
 1. Open Doctor and choose an agent from the
-   [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) registry.
+   [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) registry,
+   unless you chose one in `tileception setup` already.
 2. Follow the sign-in options offered by that agent.
 3. Make a request, such as "Please reduce the gaps between windows to 8 pixels."
 
@@ -158,6 +159,19 @@ Scripts can also open Doctor or change its mode:
 tileception msg doctor
 tileception msg doctor mode ask
 ```
+
+`tileception setup` asks which agent Doctor uses, listing those already
+installed first; `--doctor-agent <id>` answers up front. From a terminal,
+`tileception doctor` does the same:
+
+```sh
+tileception doctor agents         # registry id, name, where it is installed
+tileception doctor use claude-acp # remembered in doctor.toml
+```
+
+A running session reads `doctor.toml` only when it starts, and writes its own
+agent back when you change Doctor's mode or model. To switch agents in a
+running session, use `tileception msg doctor use <id>` instead.
 
 ## If it does not connect
 
