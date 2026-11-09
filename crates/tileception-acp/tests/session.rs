@@ -212,3 +212,32 @@ fn logs_in_streams_and_asks_permission() {
     );
     assert_eq!(next(&events, |event| matches!(event, Event::TurnEnded(_))), Event::TurnEnded("end_turn".into()));
 }
+
+#[test]
+fn restarting_ends_a_turn_the_agent_does_not_stop() {
+    let (sender, events) = mpsc::channel();
+    let sender = Arc::new(Mutex::new(sender));
+    let emit = Arc::new(move |event: Event| {
+        let _ = sender.lock().unwrap().send(event);
+    });
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
+    let env = [("FAKE_AGENT_NO_LOGIN".to_string(), "1".to_string())].into();
+    let program = Program { command: "python3".into(), args: vec![script.into()], env };
+    let session =
+        Session::start_program("Fake".into(), program, std::env::temp_dir(), String::new(), Default::default(), emit);
+    next(&events, |event| *event == Event::Status(Status::Ready));
+
+    session.send(Request::Prompt { text: "hang".into(), images: Vec::new() });
+    assert_eq!(next(&events, |event| matches!(event, Event::Text(_))), Event::Text("Working".into()));
+    // Asked to stop, it goes on: the turn does not end by itself.
+    session.send(Request::Cancel);
+    while let Ok(event) = events.recv_timeout(Duration::from_secs(1)) {
+        assert!(!matches!(event, Event::TurnEnded(_)), "the stuck agent ended its turn: {event:?}");
+    }
+    // Restarted, it answers the next prompt.
+    session.send(Request::Retry);
+    next(&events, |event| matches!(event, Event::Status(Status::Starting(_))));
+    next(&events, |event| *event == Event::Status(Status::Ready));
+    session.send(Request::Prompt { text: "hello".into(), images: Vec::new() });
+    assert_eq!(next(&events, |event| matches!(event, Event::Text(_))), Event::Text("You said ".into()));
+}

@@ -435,7 +435,10 @@ impl Worker {
             }
             Request::Prompt { text, images } => self.prompt(text, images)?,
             Request::Cancel => {
-                self.queued = None;
+                // A prompt not sent yet ends here; a sent one when the agent says.
+                if self.queued.take().is_some() {
+                    (self.emit)(Event::TurnEnded("cancelled".into()));
+                }
                 if let Some(session) = self.session.clone() {
                     self.notify("session/cancel", json!({ "sessionId": session }))?;
                 }
@@ -1132,5 +1135,28 @@ mod tests {
             "currentModelId": "b", "availableModels": [{ "modelId": "a", "name": "A" }, { "modelId": "b", "name": "B" }] } }));
         assert!(legacy);
         assert_eq!((options[0].option_id.as_str(), options[0].current_name()), (LEGACY_MODEL, "B"));
+    }
+    #[test]
+    fn stopping_an_unsent_prompt_ends_the_turn() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let emit: Emit = Arc::new(move |event| seen.lock().expect("events lock").push(event));
+        let program = install::Program { command: "agent".into(), args: Vec::new(), env: Default::default() };
+        let source = Source::Program(program);
+        let mut worker = Worker::new(
+            "Agent".into(),
+            source,
+            PathBuf::new(),
+            String::new(),
+            Env::default(),
+            emit,
+            Default::default(),
+        );
+        worker.queued = Some(("Why is Wi-Fi off?".into(), Vec::new()));
+        worker.user(Request::Cancel).expect("cancel without a session");
+        assert_eq!(*events.lock().expect("events lock"), [Event::TurnEnded("cancelled".into())]);
+        // Nothing waiting: the turn ends when the agent says.
+        worker.user(Request::Cancel).expect("cancel without a session");
+        assert_eq!(events.lock().expect("events lock").len(), 1);
     }
 }
