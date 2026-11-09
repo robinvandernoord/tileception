@@ -116,7 +116,7 @@ Report testing in the conversation, the commit or the pull request instead.
   - No buttons on the lock screen (they would run an app's action without
     unlocking), except Tileception's own. Do not disturb applies there too.
 - More launcher actions in plain words, such as "set a timer for 10 minutes"
-  or "remind me at 3", and better unit conversions. Optional: a tiny local
+  or "remind me at 3". Optional: a tiny local
   tool-calling model (Cactus Needle or similar) to map free text onto those
   actions, with the rule-based parsing kept as the default.
 - Feedback from inside Tileception:
