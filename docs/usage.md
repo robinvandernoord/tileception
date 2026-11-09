@@ -233,10 +233,10 @@ screenshot of the screen under the dialog, without the dialog, and shows a
 preview of it with its size; unchecking it removes the screenshot again. A
 GitHub link cannot carry a picture, so **Open in browser** copies the
 screenshot to the clipboard and saves it as
-`~/.cache/tileception/feedback-screenshot.png` (replacing the last one), and
-the issue body gets a hidden note where it belongs: press **Ctrl+V** there to
-attach it, or drag the file into the issue. Nothing is copied or saved before
-you open the issue.
+`tileception-feedback-screenshot-<uid>.png` in the temporary folder (usually
+`/tmp`, readable only by you, replacing the last one), and the issue body gets
+a hidden note where it belongs: press **Ctrl+V** there to attach it, or drag
+the file into the issue. Nothing is copied or saved before you open the issue.
 Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,

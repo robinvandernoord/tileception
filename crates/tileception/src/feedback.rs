@@ -51,17 +51,34 @@ pub fn issue_url(title: &str) -> String {
 }
 
 /// Where the screenshot is saved when the issue opens, for attaching it by
-/// hand if the clipboard has changed since.
+/// hand if the clipboard has changed since. Each opened issue replaces
+/// the last one's. The temporary folder may be shared, so the name carries
+/// the user id: another user's file there cannot be replaced or read.
 fn screenshot_path() -> PathBuf {
-    tileception_acp::cache_dir().join("feedback-screenshot.png")
+    std::env::temp_dir().join(screenshot_name(crate::greeter::current_uid()))
 }
 
-/// `path` with the home folder as `~`, as people write it.
-fn shown_path(path: &std::path::Path) -> String {
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .and_then(|home| path.strip_prefix(home).ok())
-        .map_or_else(|| path.display().to_string(), |rest| format!("~/{}", rest.display()))
+fn screenshot_name(uid: u32) -> String {
+    format!("tileception-feedback-screenshot-{uid}.png")
+}
+
+/// Writes `png` to `path` for this user's eyes only. It is written next to
+/// it first and renamed over it, which replaces a link there rather than
+/// following it, and fails on another user's file in a shared folder.
+fn save_screenshot(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let temporary = path.with_extension(format!("png.{}.new", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(png))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// A hidden note where the screenshot belongs: GitHub shows comments while
@@ -121,7 +138,7 @@ pub struct Feedback {
 
 impl Feedback {
     fn body(&self) -> String {
-        let screenshot = matches!(self.screenshot, Screenshot::Ready(_)).then(|| shown_path(&screenshot_path()));
+        let screenshot = matches!(self.screenshot, Screenshot::Ready(_)).then(|| screenshot_path().display().to_string());
         issue_body(
             &self.message.text,
             screenshot.as_deref(),
@@ -300,11 +317,7 @@ impl Tileception {
                 self.close_feedback();
                 if let Some(png) = png {
                     let path = screenshot_path();
-                    let saved = path
-                        .parent()
-                        .map_or(Ok(()), std::fs::create_dir_all)
-                        .and_then(|()| std::fs::write(&path, &png));
-                    if let Err(err) = saved {
+                    if let Err(err) = save_screenshot(&path, &png) {
                         tracing::warn!("could not save {}: {err}", path.display());
                     }
                     self.copy_png(png);
@@ -961,7 +974,7 @@ impl Tileception {
                      saves it as {}; paste it into the issue with Ctrl+V. Uncheck to remove it.",
                     shot.size.0,
                     shot.size.1,
-                    shown_path(&screenshot_path()),
+                    screenshot_path().display(),
                 )
             }
             Screenshot::Taking(_) => {
@@ -1071,10 +1084,36 @@ mod tests {
     #[test]
     fn notes_where_the_screenshot_goes() {
         let version = format!("Tileception {}\n", env!("CARGO_PKG_VERSION"));
-        let note = screenshot_note("~/shot.png");
-        assert!(note.starts_with("<!--") && note.ends_with("-->") && note.contains("~/shot.png"));
-        assert_eq!(issue_body("Broken", Some("~/shot.png"), None, None), format!("Broken\n\n{note}\n\n---\n{version}"));
-        assert_eq!(issue_body("", Some("~/shot.png"), None, None), format!("{note}\n\n---\n{version}"));
+        let path = "/tmp/shot.png";
+        let note = screenshot_note(path);
+        assert!(note.starts_with("<!--") && note.ends_with("-->") && note.contains(path));
+        assert_eq!(issue_body("Broken", Some(path), None, None), format!("Broken\n\n{note}\n\n---\n{version}"));
+        assert_eq!(issue_body("", Some(path), None, None), format!("{note}\n\n---\n{version}"));
+    }
+
+    #[test]
+    fn saves_the_screenshot_for_this_user_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(screenshot_name(1000), "tileception-feedback-screenshot-1000.png");
+        assert!(screenshot_path().starts_with(std::env::temp_dir()));
+        let dir = std::env::temp_dir().join(format!("tileception-feedback-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder");
+        let path = dir.join(screenshot_name(1000));
+        save_screenshot(&path, b"first").expect("saved");
+        save_screenshot(&path, b"second").expect("replaced");
+        assert_eq!(std::fs::read(&path).expect("read"), b"second");
+        assert_eq!(std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        // A link put there is replaced, not followed.
+        let elsewhere = dir.join("elsewhere");
+        std::fs::write(&elsewhere, b"keep").expect("written");
+        std::fs::remove_file(&path).expect("removed");
+        std::os::unix::fs::symlink(&elsewhere, &path).expect("linked");
+        save_screenshot(&path, b"third").expect("saved over the link");
+        assert_eq!(std::fs::read(&elsewhere).expect("read"), b"keep");
+        assert_eq!(std::fs::read(&path).expect("read"), b"third");
+        assert!(!std::fs::symlink_metadata(&path).expect("metadata").file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
