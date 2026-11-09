@@ -380,6 +380,8 @@ pub struct Host {
     epoch: u64,
     /// Enabled plugins, highest priority first.
     order: Vec<(String, PluginConfig)>,
+    /// The order the user chose for the panel and the bar, by plugin.
+    arrangement: Vec<String>,
     infos: BTreeMap<String, Result<Described, String>>,
     /// Diagnostics from reading manifests and config.
     found: Vec<String>,
@@ -405,6 +407,7 @@ impl Host {
             generations: Arc::default(),
             epoch: 0,
             order: Vec::new(),
+            arrangement: crate::panel::order::load(),
             infos: BTreeMap::new(),
             found: Vec::new(),
             workers: BTreeMap::new(),
@@ -517,19 +520,39 @@ impl Host {
         changed
     }
 
-    /// The panel blocks, highest priority first.
-    pub fn panels(&self) -> Vec<(&str, &crate::panel::block::Block)> {
-        self.order.iter().filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.panels.get(plugin_id)?))).collect()
+    /// Enabled plugins in the user's order, else highest priority first.
+    fn arranged(&self) -> Vec<&(String, PluginConfig)> {
+        let priority: Vec<&str> = self.order.iter().map(|(plugin_id, _)| plugin_id.as_str()).collect();
+        crate::panel::order::arrange(&priority, &self.arrangement)
+            .into_iter()
+            .filter_map(|plugin_id| self.order.iter().find(|(candidate, _)| candidate == plugin_id))
+            .collect()
     }
 
-    /// The bar chips of plugins with a `[bar]` block, highest priority first.
+    /// The panel blocks, in the user's order.
+    pub fn panels(&self) -> Vec<(&str, &crate::panel::block::Block)> {
+        self.arranged()
+            .into_iter()
+            .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.panels.get(plugin_id)?)))
+            .collect()
+    }
+
+    /// The bar chips of plugins with a `[bar]` block, in the user's order.
     pub fn bar_chips(&self) -> Vec<(&str, &crate::panel::block::BarChip)> {
-        self.order
-            .iter()
+        self.arranged()
+            .into_iter()
             .filter(|(_, config)| config.in_bar())
             .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.bars.get(plugin_id)?)))
             .flat_map(|(plugin_id, bar)| bar.chips.iter().map(move |chip| (plugin_id, chip)))
             .collect()
+    }
+
+    /// Puts the plugins with blocks in this order, keeping the others'
+    /// places, and saves it.
+    pub fn arrange_panels(&mut self, shown: &[&str]) {
+        let priority: Vec<&str> = self.order.iter().map(|(plugin_id, _)| plugin_id.as_str()).collect();
+        self.arrangement = crate::panel::order::rearrange(&priority, &self.arrangement, shown);
+        crate::panel::order::save(&self.arrangement);
     }
 
     /// A resource as last read.

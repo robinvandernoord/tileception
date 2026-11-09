@@ -688,6 +688,13 @@ impl Tileception {
             self.panel_drag(pos.x);
             return;
         }
+        if self.panel.reorder.is_some() {
+            // A held block header: dragged once past the threshold.
+            self.panel_reorder_motion(point);
+            if self.panel_reordering() {
+                return;
+            }
+        }
         if self.duck_motion(point) || self.doctor_drag(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });

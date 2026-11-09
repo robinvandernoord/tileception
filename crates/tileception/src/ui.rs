@@ -172,6 +172,9 @@ impl Tileception {
         if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
+        if self.panel_reordering() {
+            return Some(smithay::input::pointer::CursorIcon::Grabbing);
+        }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
         }
