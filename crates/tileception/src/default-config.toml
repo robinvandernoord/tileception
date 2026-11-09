@@ -1,7 +1,8 @@
 # Tileception configuration. Changes apply as soon as the file is saved.
 #
 # This file was written with the defaults on first run. Delete it to get the
-# defaults back.
+# defaults back. Commented examples can differ from the defaults; their
+# comments explain what happens when the setting is left unset.
 
 [general]
 # Command for the `terminal` action. Unset: the first of ghostty, foot,
@@ -27,6 +28,10 @@ drag_modifier = "Alt"
 # exactly undoes opening). Otherwise its next neighbour takes all of it.
 share_removed_space = true
 
+# Legacy compatibility setting, accepted but ignored. Its stored default is
+# true; floating windows always hang above the layout.
+# sole_float_takes_desktop = true
+
 # Height of the strip of tabs above a tile with several windows.
 tab_height = 28
 
@@ -49,10 +54,15 @@ autostart = []
 # On an empty desktop (after login, or after closing the last window) show the
 # launcher with a clock: type to search, tap Super for a plain desktop.
 # welcome = true
+# Map the whole edge proportionally when the pointer crosses to an adjacent
+# screen, including between screens of different sizes. Off: use their
+# positions in the desktop arrangement. Also called Full-edge pointer crossing
+# in Settings. Applies when saved; no special build is needed.
+# stretch_screen_edges = false
 
 [clipboard]
 # Keep the regular copy/paste clipboard after its source application closes.
-# Requires wl-clip-persist on PATH. Starts or stops when this file is saved.
+# Uses the helper shipped with Tileception. Starts or stops when saved.
 # Keeps only the latest copy in memory; no history or middle-click selection.
 persist = false
 
@@ -237,6 +247,12 @@ tray_max_icons = 3
 # [[rules]]
 # title = "Picture-in-Picture"
 # float = true
+# fullscreen = false
+# minimized = false
+# Every rule field is unset by default, but app_id or title is required.
+# Unset float/size leave earlier matching rules' values or the window's
+# request unchanged. Unset fullscreen/minimized leave earlier matching rules
+# unchanged, otherwise windows open neither fullscreen nor minimized.
 
 # Screens, by connector name as the log names them ("lit eDP-1 at ..."), or
 # "*" for any screen. scale is how many pixels make up one point: "auto"
@@ -272,6 +288,14 @@ tray_max_icons = 3
 # [outputs."*"]
 # scale = 1
 
+# Touchscreens, by exact device name as listed in Settings > Displays.
+# No mappings by default: touches use the currently active screen. Mapping a
+# device activates its screen for touch input. If that screen is disconnected,
+# touches from the mapped device are ignored until it returns.
+#
+# [touchscreens."Example touchscreen"]
+# output = "eDP-1"
+
 # Handoff: share this mouse, keyboard and clipboard with other Tileception
 # machines on the network that know the same passphrase. When one appears,
 # drag its card to the edge of the screen where it stands; the pointer then
@@ -280,6 +304,8 @@ tray_max_icons = 3
 # Pick several random words for the passphrase: guesses are slowed down, but
 # a short phrase can still be guessed. Nothing listens until this is enabled
 # with a passphrase. `tileception msg handoff` shows what is connected.
+# Defaults: enabled = false, no passphrase, the host name, port 24850,
+# discovery = true and peers = []. The following is an opt-in example.
 #
 # [handoff]
 # enabled = true
@@ -319,8 +345,12 @@ tray_max_icons = 3
 # US international unless set: AltGr gives accents and dead keys (AltGr+'
 # then e is é), while ' and " type straight away. Any xkb layout works.
 # layout = "nl"
+# Without an explicit layout, variant defaults to "altgr-intl"; with a layout,
+# it defaults to "". No extra XKB options are set unless specified.
 # variant = ""
 # options = "compose:ralt"
+# Unset uses XKB's default keyboard model; "" also selects that default.
+# model = ""
 repeat_delay = 400
 repeat_rate = 30
 

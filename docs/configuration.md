@@ -8,7 +8,9 @@ you save it.
 The examples below are partial configs. Merge them into the matching sections
 of your file instead of adding duplicate section headings. The
 [default configuration](../crates/tileception/src/default-config.toml) lists all
-available settings.
+non-plugin settings, including defaults and what leaving optional values unset
+means. Commented examples may use different values from the defaults.
+[Plugins](plugins.md) documents plugin settings separately.
 
 ## Shortcuts
 
@@ -97,6 +99,10 @@ Lower values keep smaller windows interactive. Below the threshold, and while
 the camera moves or Overview is open, windows use previews without direct
 pointer input. Display scaling is a separate setting.
 
+The legacy `general.sole_float_takes_desktop` option is still accepted so old
+configs load, but is ignored. Its stored default is `true`; floating windows
+always hang above the layout.
+
 ## Display scaling
 
 The default `"auto"` scale is chosen from the screen's physical size and
@@ -161,6 +167,35 @@ restore the previous configuration. An expired preview or a failed save also
 restores the previous runtime state. Reloading configuration or changing the
 connected monitor set invalidates a pending preview. Nested mode explicitly
 rejects mode, rotation and enable/disable changes it cannot support.
+
+### Full-edge pointer crossing
+
+To map the whole edge proportionally when the pointer crosses to an adjacent
+screen, including between screens of different sizes:
+
+```toml
+[general]
+stretch_screen_edges = true
+```
+
+The default is `false`, which uses the screens' positions in the desktop
+arrangement. Settings calls this **Full-edge pointer crossing**. It applies
+when you save and does not require a special build.
+
+### Touchscreen mapping
+
+Map an exact touchscreen device name from **Settings > Displays** to an output
+connector from `tileception msg outputs`:
+
+```toml
+[touchscreens."Example touchscreen"]
+output = "eDP-1"
+```
+
+There are no mappings by default; unmapped touches use the currently active
+screen. An explicit mapping activates that output for touch input. If its
+screen is disconnected, touches from that device are ignored until it returns.
+Mappings apply when you save.
 
 ## Splitting a wide screen
 
@@ -320,6 +355,12 @@ Use `tileception msg tree` to find application IDs for open windows.
 sets a floating window's width and height. You can also set `fullscreen = true`
 or `minimized = true` to open a window in that state.
 
+Every rule field is unset by default. A rule must specify `app_id` or `title`;
+leaving both unset is rejected. Unset `float` and `size` leave the application's
+request unchanged unless an earlier matching rule sets them. Unset `fullscreen`
+and `minimized` keep earlier matching rules' values; otherwise both are false.
+Set either explicitly to `false` to override an earlier matching rule.
+
 All matching rules apply in file order, with later values overriding earlier
 ones. Editing a rule affects newly opened windows.
 
@@ -332,8 +373,11 @@ Keep copied content available after the source application closes:
 persist = true
 ```
 
-The default is `false`. Install
-[wl-clip-persist](https://github.com/Linus789/wl-clip-persist) on `PATH` first.
+The default is `false`. Session installs and Debian packages include a pinned
+[wl-clip-persist](https://github.com/Linus789/wl-clip-persist) helper as
+`tileception-clip-persist`, next to the compositor. `make build` and `make nested`
+build it too; a bare Cargo build can use a separately installed `wl-clip-persist`
+on `PATH` instead.
 Tileception starts or stops its own helper when you save the config, including
 in nested and headless instances. It stops the helper on exit or restart.
 Do not also start it through autostart when using this setting.
@@ -384,8 +428,11 @@ repeat_delay = 400
 repeat_rate = 30
 ```
 
-Use XKB layout, variant and option names. `model` is also accepted if you need
-to specify a keyboard model. The example's repeat settings are the defaults:
+Use XKB layout, variant and option names. Without an explicit layout, `variant`
+defaults to `"altgr-intl"`; with a layout, it defaults to `""`. No extra XKB
+options are set unless specified. `model` is also accepted if you need to
+specify a keyboard model; unset or `model = ""` uses XKB's default model.
+The example's repeat settings are the defaults:
 wait 400 milliseconds before repeating, then repeat 30 times per second.
 
 Repeat settings apply when you save. Changes to `layout`, `variant`, `options`
