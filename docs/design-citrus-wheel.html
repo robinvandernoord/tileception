@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tileception: Citrus wheel</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: Tide reference sheet. One section per radial variant: a live 16:10 screen mockup beside its notes, then a comparison table. */
+  :root {
+    color-scheme: dark;
+    --page: #0b0c0e; --sheet: #15171a; --sheet-line: #23262b;
+    --wallpaper: #1c1f24; --surface: #24272e; --popup: #2a2e36; --tab-on: #2bd4a71a;
+    --text: #e8eaee; --muted: #8b919c; --faint: #5d636e; --line: #3a3f48; --border: #343842;
+    --teal: #2bd4a7; --blue: #5c8ff2; --on-accent: #0d1117; --warn: #e8b04a;
+    --accent-line: linear-gradient(90deg, var(--teal), var(--blue));
+    --glow: 0 0 0 1px var(--teal), 0 0 18px #2bd4a744;
+    --shadow-l: 0 8px 24px #0006;
+    --sans: Inter, Cantarell, Ubuntu, "Noto Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--page); color: #ccd; font: 14px/1.5 var(--sans);
+    padding-block: 32px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+  h1 { font-size: 24px; color: #fff; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; color: #fff; font-weight: 600; text-wrap: balance; }
+  h3 { font-size: 12px; color: #fff; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+  p { max-width: 68ch; }
+  .intro { color: #9aa1ab; display: flex; flex-direction: column; gap: 10px; }
+  code, kbd { font: 12px/1.4 var(--mono); }
+  code { color: #c9d1d9; background: #ffffff0d; padding: 1px 5px; border-radius: 4px; }
+  kbd { display: inline-block; padding: 0 6px; border-radius: 4px; color: var(--text); background: var(--popup); border: 1px solid var(--border); border-bottom-width: 2px; font-size: 11px; }
+  nav.jump { display: flex; flex-wrap: wrap; gap: 6px; }
+  nav.jump a { padding: 6px 12px; border-radius: 6px; background: var(--sheet); border: 1px solid var(--sheet-line); color: var(--text); text-decoration: none; font-size: 13px; }
+  nav.jump a span { color: var(--faint); font: 11px var(--mono); margin-right: 6px; }
+  nav.jump a:hover, nav.jump a:focus-visible { border-color: var(--teal); outline: none; }
+
+  section.v { padding: 20px; border-radius: 14px; background: var(--sheet); border: 1px solid var(--sheet-line); display: flex; flex-direction: column; gap: 16px; scroll-margin-top: 16px; }
+  .v header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .v header .tag { font: 11px var(--mono); color: var(--teal); }
+  .v header p { color: #9aa1ab; flex-basis: 100%; }
+  .body { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .notes { display: flex; flex-direction: column; gap: 14px; font-size: 13px; color: #b3b9c2; min-width: 0; }
+  .notes ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .notes li { padding-left: 14px; position: relative; }
+  .notes li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+  .notes .why li::before { background: var(--teal); }
+  .notes .cost li::before { background: var(--warn); }
+  .caption { font-size: 11px; color: var(--faint); margin-top: 6px; text-align: center; }
+
+  /* the Tide desktop behind each wheel */
+  .screen { position: relative; aspect-ratio: 16 / 10; max-width: 100%; overflow: hidden; border-radius: 8px; background: var(--wallpaper); color: var(--text); container-type: inline-size; font-size: clamp(9px, 1.45cqi, 13px); touch-action: none; }
+  .bar { position: absolute; left: 0; right: 0; top: 0; height: 5.2%; display: flex; align-items: center; gap: 1em; padding: 0 1.2%; font-size: 0.85em; color: var(--muted); background: #17191d; }
+  .bar .ws { display: flex; gap: 4px; } .bar .ws i { width: 0.6em; height: 0.6em; border-radius: 50%; background: var(--line); }
+  .bar .ws i.on { background: var(--teal); box-shadow: 0 0 6px var(--teal); }
+  .bar .clock { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+  .tiles { position: absolute; inset: 7% 1.2% 1.6%; display: grid; grid-template-columns: 1.1fr 1fr; gap: 1.2%; }
+  .tile { position: relative; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); padding: 1.6% 2%; overflow: hidden; color: var(--muted); min-width: 0; }
+  .tile .title { display: flex; align-items: center; gap: 0.5em; color: var(--text); font-weight: 600; margin-bottom: 0.7em; white-space: nowrap; }
+  .tile.focused { border-color: var(--teal); box-shadow: var(--glow); }
+  .tile.focused .title::before { content: ""; width: 0.5em; height: 0.5em; border-radius: 50%; background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+  .lines i { display: block; height: 0.5em; margin: 0.55em 0; border-radius: 3px; background: var(--line); }
+  .lines i:nth-child(2) { width: 70%; } .lines i:nth-child(3) { width: 85%; } .lines i:nth-child(4) { width: 45%; }
+  .files { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8em; }
+  .file { display: flex; flex-direction: column; align-items: center; gap: 0.3em; font-size: 0.82em; }
+  .file .thumb { width: 100%; aspect-ratio: 1; border-radius: 4px; background: #2e323a; }
+  .file.lifted .thumb { opacity: 0.35; outline: 1px dashed var(--line); }
+  .thumb.pic, .pic { background: linear-gradient(160deg, #f0a35e 0%, #d4586b 45%, #3b2a5a 100%); }
+  .thumb.pic2, .pic2 { background: linear-gradient(170deg, #9fd6e8, #3a7ca5 60%, #1f3a4d); }
+  .thumb.doc, .doc { background: linear-gradient(#e8eaee 0 18%, #c9cdd4 18% 22%, #e8eaee 22% 34%, #c9cdd4 34% 38%, #e8eaee 38%); }
+  .hint { position: absolute; left: 1.6%; bottom: 3%; z-index: 7; padding: 0.35em 0.7em; border-radius: 6px; font-size: 0.82em; color: var(--muted); background: #17191dee; border: 1px solid var(--border); white-space: nowrap; }
+  .hint kbd { font-size: 0.9em; padding: 0 0.4em; }
+  .overlay { position: absolute; inset: 0; z-index: 4; }
+  .overlay svg { position: absolute; overflow: visible; }
+
+  /* svg parts, shared by all five */
+  svg text { font-family: var(--sans); }
+  .seg path.shape { fill: #2a2e36f2; stroke: var(--wallpaper); stroke-width: 1.5; transition: fill .12s, opacity .15s; }
+  .seg { cursor: pointer; outline: none; }
+  .seg text { fill: var(--muted); font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .seg text.sub { font: 400 8.5px var(--mono); fill: var(--faint); }
+  .seg.on path.shape { fill: url(#tide); filter: drop-shadow(0 0 10px #2bd4a766); }
+  .seg.on text { fill: var(--on-accent); }
+  .seg.on text.sub { fill: #0d1117aa; }
+  .seg.off path.shape { fill: url(#hatch); }
+  .seg.off text { fill: var(--faint); }
+  .seg.group path.shape { fill: #30343df2; }
+  .seg.group.open path.shape { fill: #353a44; stroke: var(--wallpaper); }
+  .seg.group.open text { fill: var(--teal); }
+  .hub { fill: var(--popup); stroke: var(--border); }
+  .hubtxt { font-size: 11px; font-weight: 600; fill: var(--text); text-anchor: middle; }
+  .hubsub { font: 400 8.5px var(--mono); fill: var(--muted); text-anchor: middle; }
+  .hubacc { font: 500 8.5px var(--mono); fill: var(--teal); text-anchor: middle; }
+  .ringline { fill: none; stroke: var(--border); }
+  .modearc path { fill: #23262c; stroke: var(--wallpaper); stroke-width: 1.5; cursor: pointer; }
+  .modearc text { font-size: 9.5px; font-weight: 500; fill: var(--faint); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .modearc.on path { fill: #2bd4a722; stroke: #2bd4a766; }
+  .modearc.on text { fill: var(--teal); }
+  .trail { fill: none; stroke: var(--teal); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: .6; }
+  .band { stroke: url(#tideLine); stroke-width: 2.5; stroke-linecap: round; filter: drop-shadow(0 0 6px #2bd4a788); }
+  .pointer path { fill: #e8eaee; stroke: #0d1117; stroke-width: 1.2; }
+  .bubble circle.shape { fill: #2a2e36f2; stroke: var(--border); transition: r .14s, fill .12s; }
+  .bubble.on circle.shape { fill: url(#tide); stroke: transparent; filter: drop-shadow(0 0 10px #2bd4a766); }
+  .bubble.on text { fill: var(--on-accent); }
+  .bubble.on text.sub { fill: #0d1117aa; }
+  .compass text.dir { font: 400 8px var(--mono); fill: var(--faint); text-anchor: middle; dominant-baseline: middle; }
+  .flickchip rect { fill: var(--popup); stroke: var(--teal); }
+  .flickchip text { font-size: 11px; font-weight: 600; fill: var(--text); dominant-baseline: middle; }
+
+  .toggles { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 8px; }
+  .toggles button { all: unset; cursor: pointer; font-size: 12px; padding: 4px 10px; border-radius: 6px; color: var(--muted); background: var(--wallpaper); border: 1px solid var(--border); }
+  .toggles button[aria-pressed="true"] { color: var(--teal); background: var(--tab-on); border-color: #2bd4a766; }
+  .toggles button:focus-visible { outline: 1px solid var(--teal); }
+
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--sheet-line); vertical-align: top; }
+  th { color: var(--faint); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td:first-child { color: var(--muted); white-space: nowrap; }
+  td { color: #c7ccd4; }
+  td.best { color: var(--teal); }
+  .verdict { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; font-size: 13px; color: #b3b9c2; }
+  .verdict > div { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 10px; background: var(--wallpaper); border: 1px solid var(--border); }
+  .verdict > div.pick { border-color: var(--teal); box-shadow: var(--glow); }
+
+  @media (max-width: 860px) { .body, .verdict { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header class="intro">
+  <h1>Citrus wheel variants</h1>
+  <p>Five ways to keep Citrus's circle in Tileception. They all open the same way: drag a file and hold <kbd>Super</kbd>. Each takes on a different weakness of a plain ring: too few slots, too much aiming, trouble at screen edges.</p>
+  <p>Every mockup below is live. Hover or tap the slices.</p>
+  <nav class="jump" aria-label="Variants">
+    <a href="#ring"><span>A</span>Ring</a><a href="#sunburst"><span>B</span>Sunburst</a><a href="#fan"><span>C</span>Fan</a><a href="#orbit"><span>D</span>Orbit</a><a href="#flick"><span>E</span>Flick</a><a href="#compare"><span>→</span>Compare</a>
+  </nav>
+</header>
+
+<section class="v" id="ring">
+  <header><h2>A · Ring</h2><span class="tag">closest to Citrus</span>
+    <p>One ring of eight, with the three modes as tabs on an outer arc. Formats that need a missing helper stay in place, hatched, so the layout never shifts.</p></header>
+  <div class="body">
+    <div><div class="screen" data-scene="ring"></div><div class="caption">Click Convert, Tools or Send on the arc, or tap Super, to switch the ring.</div></div>
+    <div class="notes">
+      <div><h3>How it goes</h3><ul><li>Hold <kbd>Super</kbd> mid-drag: the ring opens with the drag card in the hub.</li><li>Tap <kbd>Super</kbd> to cycle modes. The tab on the arc lights up.</li><li>Release on a slice. The hub shows the result and its size before you let go.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Anyone who used Citrus can use it at once.</li><li>Fixed positions: WebP is always at two o'clock in Convert.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Eight per mode. Video formats will not fit.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="v" id="sunburst">
+  <header><h2>B · Sunburst</h2><span class="tag">nest it</span>
+    <p>The inner ring holds groups. Hover a group and its items fan out on an outer ring, right next to it. Click a group to zoom in: it becomes the whole wheel, the way a tile becomes the whole screen.</p></header>
+  <div class="body">
+    <div><div class="screen" data-scene="sunburst"></div><div class="caption">Hover a group, then an item. Click a group to zoom in; click the hub to zoom out.</div></div>
+    <div class="notes">
+      <div><h3>How it goes</h3><ul><li>Groups first: For the web, Lossless, Other, Tools, Send.</li><li>Moving outward over a group shows its items in the outer ring. No click needed.</li><li>Zooming in gives a group the full circle, for when it holds more than the outer ring can show.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Room for everything: five groups of up to eight is forty items, two moves away.</li><li>Zooming matches how Tileception already moves between levels.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Two rings are bigger. It needs about 260 px of screen around the pointer.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="v" id="fan">
+  <header><h2>C · Fan</h2><span class="tag">follows your hand</span>
+    <p>Half a wheel that opens in the direction you were dragging, so you keep moving forward instead of doubling back. Near an edge, it turns toward the middle of the screen.</p></header>
+  <div class="body">
+    <div><div class="screen" data-scene="fan"></div>
+      <div class="toggles" id="fan-toggles" role="group" aria-label="Where the drag is">
+        <button type="button" data-k="mid" aria-pressed="true">Middle, moving right</button>
+        <button type="button" data-k="edge" aria-pressed="false">At the right edge</button>
+        <button type="button" data-k="bottom" aria-pressed="false">At the bottom</button>
+      </div></div>
+    <div class="notes">
+      <div><h3>How it goes</h3><ul><li>The fan opens across the drag's last direction of travel, centred on the pointer.</li><li>Six slots over 160°. Each is wider than a ring slice at the same radius.</li><li>A screen edge rotates it toward the centre, so it never clips.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Shorter moves: the targets are already where your hand was going.</li><li>Works anywhere, including the corners where a full ring breaks.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Positions depend on direction, so it builds less muscle memory than a fixed ring. Keep the order the same and only rotate it.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="v" id="orbit">
+  <header><h2>D · Orbit</h2><span class="tag">learns with you</span>
+    <p>Round targets in orbit around the file, with gaps between them. The ones you choose most grow larger and easier to hit. Their positions never change.</p></header>
+  <div class="body">
+    <div><div class="screen" data-scene="orbit"></div><div class="caption">Size follows use: WebP, picked 41 times, is the largest. Hover to magnify it and its neighbours.</div></div>
+    <div class="notes">
+      <div><h3>How it goes</h3><ul><li>Same slots as the ring, drawn as circles on a faint orbit.</li><li>Hovering magnifies a target and, a little, its neighbours.</li><li>Use counts live with the launcher's history and decay over weeks.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>The gaps stop near-misses from landing on the neighbouring slice.</li><li>The wheel adapts without moving anything, so muscle memory survives.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Rarely used targets get small. Keep a floor of about 28 px.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="v" id="flick">
+  <header><h2>E · Flick</h2><span class="tag">wildest</span>
+    <p>A wheel you stop needing to see. Direction picks the item, not distance, so the whole screen is the target. Pause and the compass appears. Once you know it, hold Super and flick upward for WebP without waiting for anything to draw.</p></header>
+  <div class="body">
+    <div><div class="screen" data-scene="flick"></div>
+      <div class="toggles" id="flick-toggles" role="group" aria-label="Who is using it">
+        <button type="button" data-k="learn" aria-pressed="true">Learning: compass shown</button>
+        <button type="button" data-k="expert" aria-pressed="false">Expert: flick only</button>
+      </div></div>
+    <div class="notes">
+      <div><h3>How it goes</h3><ul><li>Move anywhere in the screen: the band from the hub points at the choice.</li><li>A pause of 300 ms shows the compass. Flicking sooner skips it, and a chip near the pointer confirms the pick.</li><li>The most used four sit on the cardinal directions, which are easiest to hit by feel.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>No aiming at all. A sloppy flick still lands in the right eighth.</li><li>Experts never wait for drawing; beginners see exactly the same layout.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Eight directions is the comfortable limit for flicks. A second flick could reach a nested level, but that's hard to learn.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="v" id="compare">
+  <header><h2>Side by side</h2></header>
+  <div class="tablewrap"><table>
+    <thead><tr><th></th><th>A · Ring</th><th>B · Sunburst</th><th>C · Fan</th><th>D · Orbit</th><th>E · Flick</th></tr></thead>
+    <tbody>
+      <tr><td>Options in reach</td><td>8 per mode</td><td class="best">about 40</td><td>7 per mode</td><td>8 per mode</td><td>8 per mode</td></tr>
+      <tr><td>Aiming</td><td>a slice</td><td>a group, then an item</td><td>a wide slice</td><td>a circle, with gaps</td><td class="best">a direction only</td></tr>
+      <tr><td>Screen edges</td><td>shifts away</td><td>shifts further</td><td class="best">turns to face inward</td><td>shifts away</td><td class="best">no space needed</td></tr>
+      <tr><td>Adapts to you</td><td>no</td><td>no</td><td>to drag direction</td><td class="best">to what you use</td><td>no</td></tr>
+      <tr><td>Muscle memory</td><td class="best">fixed</td><td class="best">fixed</td><td>rotates</td><td class="best">fixed</td><td class="best">fixed, by direction</td></tr>
+    </tbody>
+  </table></div>
+  <div class="verdict">
+    <div class="pick"><h3>Build: B with D's sizing</h3><span>The sunburst solves the slot limit, which is the ring's real problem once video and documents arrive. Its outer items can grow with use, as in Orbit.</span></div>
+    <div><h3>Borrow: Fan's edge rule</h3><span>Any of these can turn a half-wheel inward at a screen edge instead of shifting away from the pointer.</span></div>
+    <div><h3>Add later: Flick</h3><span>Flick is an extra way to use whichever wheel ships, not a different wheel. Keep the same directions and it comes for free.</span></div>
+  </div>
+</section>
+</div>
+
+<script>
+(() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (n, a = {}, parent) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); if (parent) parent.appendChild(e); return e; };
+  const pt = (r, a) => [r * Math.sin(a), -r * Math.cos(a)];
+  const deg = (d) => (d * Math.PI) / 180;
+  const sector = (r0, r1, a0, a1) => {
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const [x0, y0] = pt(r1, a0), [x1, y1] = pt(r1, a1), [x2, y2] = pt(r0, a1), [x3, y3] = pt(r0, a0);
+    return `M${x0} ${y0}A${r1} ${r1} 0 ${large} 1 ${x1} ${y1}L${x2} ${y2}A${r0} ${r0} 0 ${large} 0 ${x3} ${y3}Z`;
+  };
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const DESKTOP = `
+    <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Photos</span><span class="clock">14:32</span></div>
+    <div class="tiles">
+      <div class="tile focused"><div class="title">Files · Pictures/Lisbon</div>
+        <div class="files">
+          <div class="file lifted"><div class="thumb pic"></div>IMG_2041.heic</div>
+          <div class="file"><div class="thumb pic2"></div>IMG_2042.heic</div>
+          <div class="file"><div class="thumb"></div>IMG_2043.heic</div>
+          <div class="file"><div class="thumb doc"></div>route.pdf</div>
+        </div></div>
+      <div class="tile"><div class="title">Mail · Draft to Ana</div><div class="lines"><i></i><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div></div>
+    </div>
+    <div class="overlay"></div>`;
+
+  // one svg per scene, placed with its centre at (cx%, cy%) of the screen, sized relative to screen width
+  const makeSvg = (screen, cx, cy, sizePct, view = 300) => {
+    const ov = screen.querySelector('.overlay');
+    const svg = el('svg', { viewBox: `${-view / 2} ${-view / 2} ${view} ${view}`, role: 'img' }, ov);
+    svg.style.width = sizePct + '%'; svg.style.left = (cx - sizePct / 2) + '%';
+    svg.style.top = `calc(${cy}% - ${sizePct / 2 * 1.6}%)`; // screen is 16:10, so height% = width% * 1.6
+    const defs = el('defs', {}, svg);
+    const g = el('linearGradient', { id: 'tide', x1: 0, y1: 0, x2: 1, y2: 1 }, defs);
+    el('stop', { offset: 0, 'stop-color': '#2bd4a7' }, g); el('stop', { offset: 1, 'stop-color': '#5c8ff2' }, g);
+    const gl = el('linearGradient', { id: 'tideLine', gradientUnits: 'userSpaceOnUse', x1: -80, y1: 0, x2: 80, y2: 0 }, defs);
+    el('stop', { offset: 0, 'stop-color': '#2bd4a7' }, gl); el('stop', { offset: 1, 'stop-color': '#5c8ff2' }, gl);
+    const h = el('pattern', { id: 'hatch', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, defs);
+    el('rect', { width: 6, height: 6, fill: '#22252b' }, h); el('rect', { width: 2, height: 6, fill: '#2c3038' }, h);
+    const pg = el('linearGradient', { id: 'picg', x1: 0, y1: 0, x2: 0.4, y2: 1 }, defs);
+    [[0, '#f0a35e'], [0.45, '#d4586b'], [1, '#3b2a5a']].forEach(([o, c]) => el('stop', { offset: o, 'stop-color': c }, pg));
+    return svg;
+  };
+  const hint = (screen, html) => { const d = document.createElement('div'); d.className = 'hint'; d.innerHTML = html; screen.appendChild(d); };
+  const hubThumb = (parent, y = -26, s = 24) => el('rect', { x: -s / 2, y, width: s, height: s, rx: 4, fill: 'url(#picg)' }, parent);
+  const bindHover = (node, fn) => { node.setAttribute('tabindex', '0'); node.addEventListener('pointerenter', fn); node.addEventListener('focus', fn); };
+
+  const CONVERT = [['PNG', '≈ 6.8 MB'], ['WebP', '≈ 410 KB'], ['JPG', '≈ 1.4 MB'], ['AVIF', '≈ 290 KB'], ['PDF', 'one page'], ['TIFF', '≈ 22 MB'], ['GIF', '256 colours'], ['ICO', 'needs ImageMagick', true]];
+  const TOOLS = [['Compress', '≈ 1.1 MB'], ['Resize', '2048 px'], ['Rotate', '90° right'], ['No GPS', 'drop location'], ['OCR', 'text from it'], ['Crop', 'opens editor']];
+  const SEND = [['studio', 'handoff'], ['Phone', 'LocalSend'], ['Copy', 'to clipboard'], ['Path', 'copy path'], ['Move', 'to folder…'], ['Reveal', 'in Files'], ['Terminal', 'open here'], ['Trash', 'move to']];
+
+  /* ---------- A · Ring ---------- */
+  const ring = (screen) => {
+    const svg = makeSvg(screen, 52, 56, 46);
+    svg.setAttribute('aria-label', 'Ring with eight slices and three mode tabs');
+    const modes = [['Convert', CONVERT], ['Tools', TOOLS], ['Send', SEND]];
+    const R0 = 44, R1 = 108;
+    const tabs = el('g', {}, svg), ringG = el('g', {}, svg), hubG = el('g', {}, svg);
+    el('circle', { r: R0 - 5, class: 'hub' }, hubG); hubThumb(hubG);
+    const t1 = el('text', { y: 12, class: 'hubtxt' }, hubG); t1.textContent = 'IMG_2041';
+    const t2 = el('text', { y: 24, class: 'hubacc' }, hubG); const t3 = el('text', { y: 34, class: 'hubsub' }, hubG);
+    let mode = 0;
+    const draw = () => {
+      ringG.innerHTML = '';
+      const items = modes[mode][1], n = items.length, step = 2 * Math.PI / n, segs = [];
+      items.forEach(([name, sub, off], i) => {
+        const mid = i * step, s = el('g', { class: 'seg' + (off ? ' off' : ''), role: 'button', 'aria-label': name }, ringG);
+        el('path', { class: 'shape', d: sector(R0, R1, mid - step / 2 + 0.012, mid + step / 2 - 0.012) }, s);
+        const [x, y] = pt((R0 + R1) / 2, mid);
+        el('text', { x, y: y - 5 }, s).textContent = name;
+        el('text', { x, y: y + 8, class: 'sub' }, s).textContent = off ? 'needs helper' : sub;
+        segs.push(s);
+        bindHover(s, () => { segs.forEach((o) => o.classList.toggle('on', o === s && !off)); t2.textContent = off ? `${name} unavailable` : `→ ${name}`; t3.textContent = sub; });
+      });
+      const first = mode === 0 ? 1 : 0; segs[first].classList.add('on');
+      t2.textContent = `→ ${items[first][0]}`; t3.textContent = items[first][1];
+      tabs.innerHTML = '';
+      modes.forEach(([name], i) => {
+        const a = deg(-34 + i * 34), g = el('g', { class: 'modearc' + (i === mode ? ' on' : ''), role: 'button', 'aria-label': `${name} mode`, tabindex: '0' }, tabs);
+        el('path', { d: sector(R1 + 6, R1 + 24, a - deg(16.5), a + deg(16.5)) }, g);
+        const [x, y] = pt(R1 + 15, a); el('text', { x, y }, g).textContent = name;
+        const pick = () => { mode = i; draw(); };
+        g.addEventListener('click', pick); g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+      });
+    };
+    draw();
+    hint(screen, '<kbd>Super</kbd> next mode &nbsp; <kbd>Esc</kbd> drop normally');
+  };
+
+  /* ---------- B · Sunburst ---------- */
+  const sunburst = (screen) => {
+    const svg = makeSvg(screen, 53, 56, 52, 320);
+    svg.setAttribute('aria-label', 'Sunburst: groups on the inner ring, items on the outer ring');
+    const GROUPS = [
+      ['For the web', [['WebP', '≈ 410 KB'], ['JPG', '≈ 1.4 MB'], ['AVIF', '≈ 290 KB']]],
+      ['Lossless', [['PNG', '≈ 6.8 MB'], ['TIFF', '≈ 22 MB']]],
+      ['Other', [['PDF', 'one page'], ['GIF', '256 colours'], ['ICO', '256 px']]],
+      ['Tools', TOOLS.slice(0, 5)],
+      ['Send', SEND.slice(0, 4)],
+    ];
+    const root = el('g', {}, svg);
+    let zoomed = null;
+    const draw = () => {
+      root.innerHTML = '';
+      const hubG = el('g', { tabindex: '0', role: 'button', 'aria-label': 'Zoom out' }, root);
+      el('circle', { r: 36, class: 'hub' }, hubG);
+      if (zoomed === null) {
+        hubThumb(hubG, -24, 20);
+        el('text', { y: 8, class: 'hubtxt' }, hubG).textContent = 'IMG_2041';
+      } else {
+        el('text', { y: -6, class: 'hubsub' }, hubG).textContent = '‹ zoom out';
+        el('text', { y: 8, class: 'hubtxt' }, hubG).textContent = GROUPS[zoomed][0];
+        hubG.style.cursor = 'pointer';
+        const out = () => { zoomed = null; draw(); anim(0.7); };
+        hubG.addEventListener('click', out); hubG.addEventListener('keydown', (e) => { if (e.key === 'Enter') out(); });
+      }
+      const hubAcc = el('text', { y: 21, class: 'hubacc' }, hubG);
+      if (zoomed !== null) {
+        // the group owns the whole circle
+        const items = GROUPS[zoomed][1], n = items.length, step = 2 * Math.PI / n, segs = [];
+        items.forEach(([name, sub], i) => {
+          const mid = i * step, s = el('g', { class: 'seg', role: 'button', 'aria-label': name }, root);
+          el('path', { class: 'shape', d: sector(40, 118, mid - step / 2 + 0.012, mid + step / 2 - 0.012) }, s);
+          const [x, y] = pt(80, mid); el('text', { x, y: y - 5 }, s).textContent = name; el('text', { x, y: y + 8, class: 'sub' }, s).textContent = sub;
+          segs.push(s); bindHover(s, () => { segs.forEach((o) => o.classList.toggle('on', o === s)); hubAcc.textContent = `→ ${name}`; });
+        });
+        segs[0].classList.add('on'); hubAcc.textContent = `→ ${items[0][0]}`;
+        return;
+      }
+      const n = GROUPS.length, step = 2 * Math.PI / n;
+      const outer = el('g', {}, root), inner = el('g', {}, root), groupSegs = [];
+      const openGroup = (gi, pickFirst) => {
+        groupSegs.forEach((s, j) => s.classList.toggle('open', j === gi));
+        outer.innerHTML = '';
+        const items = GROUPS[gi][1], w = deg(30), mid = gi * step, start = mid - (w * items.length) / 2, segs = [];
+        items.forEach(([name, sub], i) => {
+          const a0 = start + i * w, s = el('g', { class: 'seg', role: 'button', 'aria-label': name }, outer);
+          el('path', { class: 'shape', d: sector(84, 140, a0 + 0.01, a0 + w - 0.01) }, s);
+          const [x, y] = pt(112, a0 + w / 2); el('text', { x, y: y - 5 }, s).textContent = name; el('text', { x, y: y + 8, class: 'sub' }, s).textContent = sub;
+          segs.push(s); bindHover(s, () => { segs.forEach((o) => o.classList.toggle('on', o === s)); hubAcc.textContent = `→ ${name}`; });
+        });
+        if (pickFirst) { segs[0].classList.add('on'); hubAcc.textContent = `→ ${items[0][0]}`; } else hubAcc.textContent = '';
+        if (!reduce) outer.animate?.([{ opacity: 0, transform: 'scale(.92)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 160, easing: 'ease-out' });
+      };
+      GROUPS.forEach(([name], gi) => {
+        const mid = gi * step, s = el('g', { class: 'seg group', role: 'button', 'aria-label': `${name}, click to zoom in` }, inner);
+        el('path', { class: 'shape', d: sector(40, 80, mid - step / 2 + 0.015, mid + step / 2 - 0.015) }, s);
+        const [x, y] = pt(60, mid); const t = el('text', { x, y }, s); t.textContent = name; t.style.fontSize = '9.5px';
+        groupSegs.push(s);
+        bindHover(s, () => openGroup(gi, false));
+        const zoom = () => { zoomed = gi; draw(); anim(1.35); };
+        s.addEventListener('click', zoom); s.addEventListener('keydown', (e) => { if (e.key === 'Enter') zoom(); });
+      });
+      openGroup(0, true);
+    };
+    const anim = (from) => { if (!reduce) root.animate?.([{ opacity: 0.2, transform: `scale(${from})` }, { opacity: 1, transform: 'scale(1)' }], { duration: 300, easing: 'cubic-bezier(.3,.7,.2,1)' }); };
+    draw();
+    hint(screen, 'Outward: items &nbsp; Click group: zoom in &nbsp; <kbd>Esc</kbd> back out');
+  };
+
+  /* ---------- C · Fan ---------- */
+  const fan = (screen) => {
+    const ov = screen.querySelector('.overlay');
+    const SCN = {
+      mid: { cx: 50, cy: 52, face: 90, trail: 'M -150 30 C -110 20 -60 10 -20 0', note: 'Opens to the right: you were dragging right.' },
+      edge: { cx: 84, cy: 50, face: 270, trail: 'M -150 40 C -110 30 -60 10 -20 0', note: 'Right edge: turned to face the centre.' },
+      bottom: { cx: 44, cy: 84, face: 0, trail: 'M -140 -10 C -100 -4 -60 0 -20 0', note: 'Bottom edge: opens upward.' },
+    };
+    const items = [['PNG', '≈ 6.8 MB'], ['WebP', '≈ 410 KB'], ['JPG', '≈ 1.4 MB'], ['AVIF', '≈ 290 KB'], ['PDF', 'one page'], ['More', 'GIF, TIFF, ICO']];
+    let svg, noteEl;
+    const draw = (k) => {
+      const c = SCN[k];
+      if (svg) svg.remove();
+      svg = makeSvg(screen, c.cx, c.cy, 50);
+      svg.setAttribute('aria-label', `Fan of seven formats. ${c.note}`);
+      const tr = el('path', { d: c.trail, class: 'trail' }, svg);
+      if (k === 'bottom') tr.setAttribute('d', 'M -150 -20 C -110 -12 -60 -4 -20 0');
+      const span = deg(160), n = items.length, w = span / n, start = deg(c.face) - span / 2, segs = [];
+      const fanG = el('g', {}, svg);
+      items.forEach(([name, sub], i) => {
+        const a0 = start + i * w, s = el('g', { class: 'seg', role: 'button', 'aria-label': name }, fanG);
+        el('path', { class: 'shape', d: sector(34, 132, a0 + 0.012, a0 + w - 0.012) }, s);
+        const [x, y] = pt(94, a0 + w / 2); el('text', { x, y: y - 5 }, s).textContent = name; el('text', { x, y: y + 8, class: 'sub' }, s).textContent = sub;
+        segs.push(s); bindHover(s, () => segs.forEach((o) => o.classList.toggle('on', o === s)));
+      });
+      segs[1].classList.add('on');
+      el('circle', { r: 28, class: 'hub' }, svg); hubThumb(svg, -12, 18);
+      const p = el('g', { class: 'pointer', transform: 'translate(2 4) scale(.9)' }, svg); el('path', { d: 'M0 0l15 9-6.5 1.6L4 17z' }, p);
+      if (!reduce) fanG.animate?.([{ opacity: 0, transform: 'scale(.85)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 200, easing: 'ease-out' });
+      noteEl.innerHTML = c.note;
+    };
+    const h = document.createElement('div'); h.className = 'hint'; screen.appendChild(h); noteEl = h;
+    if (ov) draw('mid');
+    document.querySelectorAll('#fan-toggles button').forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll('#fan-toggles button').forEach((o) => o.setAttribute('aria-pressed', String(o === b))); draw(b.dataset.k);
+    }));
+  };
+
+  /* ---------- D · Orbit ---------- */
+  const orbit = (screen) => {
+    const svg = makeSvg(screen, 52, 56, 48);
+    svg.setAttribute('aria-label', 'Orbit of round targets sized by use');
+    const items = [['PNG', '≈ 6.8 MB', 12], ['WebP', '≈ 410 KB', 41], ['JPG', '≈ 1.4 MB', 23], ['AVIF', '≈ 290 KB', 9], ['PDF', 'one page', 6], ['TIFF', '≈ 22 MB', 1], ['GIF', '256 colours', 3], ['ICO', '256 px', 1]];
+    const R = 96, n = items.length, step = 2 * Math.PI / n;
+    el('circle', { r: R, class: 'ringline', 'stroke-dasharray': '2 5' }, svg);
+    const base = (u) => 16 + Math.sqrt(u) * 2.7;
+    const bubbles = [];
+    items.forEach(([name, sub, used], i) => {
+      const [x, y] = pt(R, i * step), b = el('g', { class: 'seg bubble', role: 'button', 'aria-label': `${name}, picked ${used} times` }, svg);
+      const c = el('circle', { class: 'shape', cx: x, cy: y, r: base(used) }, b);
+      const fs = Math.max(9, Math.min(13, base(used) * 0.48));
+      const t = el('text', { x, y: y - 3 }, b); t.textContent = name; t.style.fontSize = fs + 'px';
+      el('text', { x, y: y + fs * 0.75, class: 'sub' }, b).textContent = `${used}×`;
+      bubbles.push([b, c, used, name, sub]);
+    });
+    el('circle', { r: 38, class: 'hub' }, svg); hubThumb(svg, -26, 22);
+    el('text', { y: 8, class: 'hubtxt' }, svg).textContent = 'IMG_2041';
+    const acc = el('text', { y: 20, class: 'hubacc' }, svg), sub = el('text', { y: 30, class: 'hubsub' }, svg);
+    const focus = (i) => bubbles.forEach(([b, c, used, name, s], j) => {
+      const d = Math.min(Math.abs(i - j), n - Math.abs(i - j));
+      c.setAttribute('r', base(used) * (d === 0 ? 1.25 : d === 1 ? 1.08 : 1));
+      b.classList.toggle('on', d === 0);
+      if (d === 0) { acc.textContent = `→ ${name}`; sub.textContent = s; }
+    });
+    bubbles.forEach(([b], i) => bindHover(b, () => focus(i)));
+    focus(1);
+    hint(screen, 'Sizes follow what you pick &nbsp; positions stay put');
+  };
+
+  /* ---------- E · Flick ---------- */
+  const flick = (screen) => {
+    const svg = makeSvg(screen, 50, 56, 60, 300);
+    svg.setAttribute('aria-label', 'Compass of eight directions; the pointer direction picks one');
+    // cardinals get the most used
+    const dirs = [['WebP', 'N'], ['AVIF', 'NE'], ['JPG', 'E'], ['TIFF', 'SE'], ['PNG', 'S'], ['GIF', 'SW'], ['PDF', 'W'], ['ICO', 'NW']];
+    const step = 2 * Math.PI / 8;
+    const comp = el('g', { class: 'compass' }, svg), segs = [];
+    dirs.forEach(([name, d], i) => {
+      const mid = i * step, s = el('g', { class: 'seg' }, comp);
+      el('path', { class: 'shape', d: sector(30, 70, mid - step / 2 + 0.02, mid + step / 2 - 0.02) }, s);
+      const [x, y] = pt(50, mid); el('text', { x, y: y - 3 }, s).textContent = name;
+      const [dx, dy] = pt(80, mid); el('text', { x: dx, y: dy, class: 'dir' }, comp).textContent = d;
+      el('text', { x, y: y + 9, class: 'sub' }, s).textContent = i % 2 ? '' : 'often';
+      segs.push(s);
+    });
+    el('circle', { r: 24, class: 'hub' }, svg); hubThumb(svg, -9, 18);
+    const band = el('line', { class: 'band', x1: 0, y1: 0, x2: 0, y2: 0 }, svg);
+    svg.insertBefore(band, comp);
+    const p = el('g', { class: 'pointer' }, svg); el('path', { d: 'M0 0l15 9-6.5 1.6L4 17z' }, p);
+    const chip = el('g', { class: 'flickchip' }, svg); const cr = el('rect', { rx: 6, height: 22, y: -11 }, chip); const ct = el('text', { x: 9, y: 0.5 }, chip);
+    let expert = false;
+    const aim = (x, y) => {
+      const len = Math.hypot(x, y) || 1, cap = Math.min(len, 135), ux = (x / len) * cap, uy = (y / len) * cap;
+      let a = Math.atan2(x, -y); if (a < 0) a += 2 * Math.PI;
+      const i = Math.round(a / step) % 8;
+      segs.forEach((s, j) => s.classList.toggle('on', j === i));
+      band.setAttribute('x2', ux); band.setAttribute('y2', uy);
+      p.setAttribute('transform', `translate(${ux} ${uy})`);
+      ct.textContent = `${dirs[i][0]}  ${dirs[i][1]}`;
+      const w = ct.getComputedTextLength ? ct.getComputedTextLength() + 18 : 70; cr.setAttribute('width', w);
+      chip.setAttribute('transform', `translate(${ux + (ux > 60 ? -w - 8 : 14)} ${uy + 22})`);
+    };
+    const toSvg = (e) => { const r = svg.getBoundingClientRect(); return [((e.clientX - r.left) / r.width - 0.5) * 300, ((e.clientY - r.top) / r.height - 0.5) * 300]; };
+    screen.addEventListener('pointermove', (e) => aim(...toSvg(e)));
+    const setMode = (k) => { expert = k === 'expert'; comp.style.opacity = expert ? 0.12 : 1; };
+    document.querySelectorAll('#flick-toggles button').forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll('#flick-toggles button').forEach((o) => o.setAttribute('aria-pressed', String(o === b))); setMode(b.dataset.k);
+    }));
+    aim(30, -130);
+    hint(screen, 'Move anywhere: direction picks &nbsp; pause 300 ms to see the compass');
+  };
+
+  const SCENES = { ring, sunburst, fan, orbit, flick };
+  document.querySelectorAll('.screen[data-scene]').forEach((s) => { s.innerHTML = DESKTOP; SCENES[s.dataset.scene](s); });
+})();
+</script>
+</body>
+</html>
