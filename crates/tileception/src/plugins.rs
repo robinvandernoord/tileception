@@ -294,6 +294,12 @@ pub enum Event {
         plugin: String,
         result: Result<Vec<Row>, String>,
     },
+    /// Additional rows for an already answered search, appended without moving selection.
+    MoreRows {
+        generation: u64,
+        plugin: String,
+        rows: Vec<Row>,
+    },
     Action {
         place: Place,
         generation: u64,
@@ -745,6 +751,13 @@ impl Tileception {
         }
     }
 
+    /// Explicitly rescans manifests even when the config has not changed.
+    pub(crate) fn reload_plugins(&mut self) -> Result<(), String> {
+        let plugins = self.plugins.as_mut().ok_or("Plugin host is not running")?;
+        plugins.reload();
+        Ok(())
+    }
+
     pub fn stop_plugins(&mut self) {
         self.plugins = None;
     }
@@ -758,7 +771,16 @@ impl Tileception {
 
     fn plugin_event(&mut self, event: Event) {
         match event {
-            Event::Rows { .. } | Event::Action { place: Place::Launcher, .. } => self.launcher_plugin_event(event),
+            Event::Rows { .. } | Event::MoreRows { .. } | Event::Action { place: Place::Launcher, .. } => {
+                self.launcher_plugin_event(event)
+            }
+            Event::Notification { plugin, method, params } if method == "notifications/tileception/launcher_append" => {
+                if let Some(generation) = params["generation"].as_u64()
+                    && let Ok(rows) = parse_rows(params)
+                {
+                    self.launcher_plugin_event(Event::MoreRows { generation, plugin, rows });
+                }
+            }
             Event::Action { place: Place::Panel, result, .. } => {
                 if let Err(error) = result {
                     tracing::warn!("Panel plugin action failed: {error}");
@@ -858,12 +880,12 @@ fn work(
         match requests.try_recv() {
             Ok(request) => {
                 let event = source.serve(request, generations);
-                source.forward(events);
                 if let Some(event) = event
                     && events.send(event).is_err()
                 {
                     return;
                 }
+                source.forward(events);
             }
             Err(mpsc::TryRecvError::Disconnected) => return,
             Err(mpsc::TryRecvError::Empty) if !source.dirty.is_empty() && source.session.is_some() => {
@@ -962,7 +984,12 @@ impl Source {
                     return None;
                 }
                 let result = self
-                    .invoke("launcher_search", json!({"query":query,"prefix":prefix}), current, generation)
+                    .invoke(
+                        "launcher_search",
+                        json!({"query":query,"prefix":prefix,"_meta":{"tileception/generation":generation}}),
+                        current,
+                        generation,
+                    )
                     .and_then(parse_rows);
                 (current.load(Ordering::Relaxed) == generation).then(|| Event::Rows {
                     generation,

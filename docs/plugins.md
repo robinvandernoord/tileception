@@ -31,7 +31,8 @@ cp resources/plugins/example.toml ~/.local/share/tileception/plugins/
 ```
 
 Ensure `~/.local/bin` is on the compositor's PATH, or put the executable's
-absolute path in the manifest. Restart Tileception after installing a manifest.
+absolute path in the manifest. Run `tileception msg plugins reload` after
+installing a manifest.
 Open the launcher and type `echo hello`. Enter shows the row's actions. Choose
 one with Up/Down and Enter. Escape returns to search results. Copy actions
 leave the launcher open and show its usual Copied feedback.
@@ -45,10 +46,14 @@ command = "/absolute/path/to/tileception-launcher-example"
 prefixes = ["echo"]
 ```
 
-Changes to this config take effect when the config reloads. New or changed
-manifest files are read on compositor startup or when the plugin configuration
-changes. Type `plugins` to see loaded sources, their prefixes and discovery
-errors. Errors are also written to the session log.
+Changes to this config take effect when the config reloads. After installing,
+changing or removing a manifest, run `tileception msg plugins reload` to rescan
+manifests and restart plugins without restarting Tileception or editing its
+configuration. Discovery runs asynchronously; the command returns when it has
+started. Manifests are also read on compositor startup or when plugin
+configuration changes. Type `plugins` in the launcher to see loaded sources,
+their prefixes and discovery errors. Errors are also written to the session log.
+You can ask Doctor to rediscover plugins; it can run this command directly.
 
 ## Discovery and configuration
 
@@ -160,6 +165,31 @@ page with that title. Tool invokes a tool on the same plugin, keeps the
 launcher open and displays completion or failure. Its result cannot request
 further compositor actions. One action runs directly on Enter; several actions
 open a keyboard and pointer accessible list in the existing launcher.
+
+#### Progressive launcher results
+
+The host includes `_meta: {"tileception/generation": 123}` in the arguments of
+each `launcher_search` call. A plugin can return inexpensive rows immediately,
+then send additional rows after completing local background work:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/tileception/launcher_append","params":{"generation":123,"rows":[{"title":"Later result","actions":[{"title":"Open","type":"open","target":"https://example.org"}]}]}}
+```
+
+Echo the generation unchanged. Rows append in notification order, up to 64
+total, using the same validation as the original response. Existing rows and
+the selected index and scroll position remain unchanged. Identical rows are
+ignored. Notifications for another query, a closed launcher, an outstanding
+initial response or an open action list are ignored. Return the initial result
+before sending additions. A new query invalidates earlier additions even when
+the query text is the same. Do not put private query text in diagnostics.
+
+This optional Tileception extension is separate from MCP request progress.
+Older hosts do not supply the generation token and ignore the notification;
+plugins should still return usable initial results. Cancellation of the initial
+request follows the normal MCP lifecycle. Once it has answered, a plugin should
+discard pending background work when a new search arrives. Background work
+does not extend the initial request's three-second deadline.
 
 ### Panel block
 

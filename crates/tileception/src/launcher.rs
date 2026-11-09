@@ -483,6 +483,37 @@ impl Tileception {
                 self.launcher.selected = 0;
                 self.launcher.first = 0;
             }
+            Event::MoreRows { generation, plugin, rows } => {
+                if !self.launcher.open
+                    || rows.is_empty()
+                    || self.launcher.plugin_pending
+                    || self.launcher.plugin_query.as_ref() != Some(&(generation, plugin.clone()))
+                    || self.launcher.plugin_actions.is_some()
+                {
+                    return;
+                }
+                // Existing rows, their indices and the scroll position stay unchanged.
+                // The empty-result placeholder has no action or selection to preserve.
+                if self.launcher.plugin_rows.len() == 1
+                    && matches!(self.launcher.plugin_rows.first(), Some(Entry::PluginStatus(_)))
+                {
+                    self.launcher.plugin_rows.clear();
+                }
+                for row in rows {
+                    if self.launcher.plugin_rows.len() >= 64 {
+                        break;
+                    }
+                    let duplicate = self
+                        .launcher
+                        .plugin_rows
+                        .iter()
+                        .any(|entry| matches!(entry, Entry::Plugin { row: existing, .. } if existing == &row));
+                    if !duplicate {
+                        self.launcher.plugin_rows.push(Entry::Plugin { plugin: plugin.clone(), row });
+                    }
+                }
+                self.launcher.entries = self.launcher_entries();
+            }
             Event::Action { place: crate::plugins::Place::Launcher, generation, result } => {
                 if !self.launcher.open
                     || self.launcher.plugin_query.as_ref().map(|(current, _)| *current) != Some(generation)
