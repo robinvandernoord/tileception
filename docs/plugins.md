@@ -94,6 +94,37 @@ blocks and the bar's chips. Every rejected prefix is logged and shown by
 built-in prefix takes precedence for that prefix. Reserve `plugins` for
 discovery diagnostics.
 
+### Adding a plugin from the command line
+
+`tileception msg plugin add <command> [args...]` writes a `[plugins.<id>]`
+entry with that command and its arguments to `config.toml`, keeping the rest
+of the file as it is. The config reload that follows starts the plugin. For
+example:
+
+```sh
+tileception msg plugin add python3 ~/plugins/weather.py
+tileception msg plugin add --bar --id lamps /opt/lamps/bin/lamps-mcp --stdio
+```
+
+The id comes from the executable's name, without its extension or a
+`tileception-` prefix, or from the script or package when the command is an
+interpreter or runner such as `python3`, `node`, `bash`, `npx` or `uvx`
+(`python3 ~/plugins/weather.py` becomes `weather`). Give another with
+`--id <id>`: lowercase letters, digits, `-` and `_`. Tileception does not start
+the plugin to ask for an id: MCP's server name is a display name, and the
+plugin should not run before it is set up. `--bar` adds the `[bar]` block, so
+the plugin's chips show. Options go before the command; everything after it is
+the plugin's arguments, split at spaces. For an argument containing spaces,
+edit `config.toml` instead. Plugins do not start in the folder you ran the
+command from, so name scripts by absolute path (the shell expands `~/`).
+Ask Doctor to set up a plugin and it can run this command once you approve it.
+
+The command must be an executable on the compositor's `PATH` or an absolute
+path. Adding is refused when the id is already in `config.toml`, used by an
+installed manifest or a bundled plugin, or reserved (`add`, `plugins`), and
+when the same command and arguments are already set up under another id. The
+id `add` cannot be called with `tileception msg plugin <id> <tool>`.
+
 ## MCP convention
 
 Tileception implements the [MCP 2025-06-18 lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)

@@ -704,6 +704,98 @@ fn route_for<'a>(routes: &'a [Route], text: &str) -> Option<(&'a Route, &'a str)
     })
 }
 
+/// `tileception msg plugin add [--id <id>] [--bar] <command> [args...]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Add {
+    /// Given with `--id`; otherwise made from the command.
+    pub plugin_id: Option<String>,
+    /// Writes a `[bar]` block, so the plugin's chips show.
+    pub bar: bool,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// Plugin ids that commands or the launcher use for something else.
+const RESERVED: [&str; 2] = ["add", "plugins"];
+
+/// Commands that run a script or package: its name is the plugin's.
+const RUNNERS: [&str; 11] = ["python", "python3", "node", "sh", "bash", "perl", "ruby", "deno", "bun", "npx", "uvx"];
+
+impl Add {
+    /// The words after `plugin add`; option words come before the command.
+    pub fn parse(args: &[&str]) -> Result<Self, String> {
+        const USAGE: &str = "plugin add needs a command: plugin add [--id <id>] [--bar] <command> [args...]";
+        let mut add = Self { plugin_id: None, bar: false, command: String::new(), args: Vec::new() };
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match *word {
+                "--id" => add.plugin_id = Some(words.next().ok_or("--id needs a plugin id")?.to_string()),
+                "--bar" => add.bar = true,
+                command => {
+                    add.command = command.to_string();
+                    add.args = words.map(ToString::to_string).collect();
+                    return Ok(add);
+                }
+            }
+        }
+        Err(USAGE.into())
+    }
+}
+
+/// Lowercase letters, digits, `-` and `_`, as manifest filenames are.
+fn valid_id(plugin_id: &str) -> bool {
+    !plugin_id.is_empty()
+        && plugin_id
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || "-_".contains(character))
+}
+
+/// The plugin's id from its executable's name, without an extension or a
+/// `tileception-` prefix; for an interpreter or package runner, from the
+/// script or package it runs. Plugins do not report an id of their own
+/// (MCP's `serverInfo.name` is a display name), and starting one just to
+/// ask would run it before it is set up.
+fn id_for(command: &str, args: &[String]) -> Option<String> {
+    let base = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+    let mut name = base(command);
+    if RUNNERS.contains(&name.as_str()) {
+        name = base(args.iter().find(|arg| !arg.starts_with('-'))?);
+        // A package's version: some-server@1.2.
+        if let Some((package, _)) = name.split_once('@').filter(|(package, _)| !package.is_empty()) {
+            name = package.to_string();
+        }
+    }
+    if let Some((stem, extension)) = name.rsplit_once('.')
+        && !stem.is_empty()
+        && !extension.chars().all(|character| character.is_ascii_digit())
+    {
+        name = stem.to_string();
+    }
+    let name = name.strip_prefix("tileception-").unwrap_or(&name).to_ascii_lowercase();
+    let mut plugin_id = String::new();
+    for character in name.chars() {
+        let character = if character.is_ascii_alphanumeric() || character == '_' { character } else { '-' };
+        if !(character == '-' && plugin_id.ends_with('-')) {
+            plugin_id.push(character);
+        }
+    }
+    let plugin_id = plugin_id.trim_matches('-').to_string();
+    valid_id(&plugin_id).then_some(plugin_id)
+}
+
+/// An executable file, or a command found on PATH.
+fn on_path(command: &str) -> bool {
+    let executable = |path: &std::path::Path| {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    if command.contains('/') {
+        return executable(std::path::Path::new(command));
+    }
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into());
+    std::env::split_paths(&path).any(|directory| executable(&directory.join(command)))
+}
+
 impl Drop for Host {
     fn drop(&mut self) {
         for (_, worker) in std::mem::take(&mut self.workers) {
@@ -756,6 +848,51 @@ impl Tileception {
         let plugins = self.plugins.as_mut().ok_or("Plugin host is not running")?;
         plugins.reload();
         Ok(())
+    }
+
+    /// `tileception msg plugin add`: writes `[plugins.<id>]` to config.toml;
+    /// the config watcher reloads it, which starts the plugin.
+    pub(crate) fn add_plugin(&mut self, add: Add) -> Result<String, String> {
+        let Add { plugin_id, bar, command, args } = add;
+        if command.contains('/') && !command.starts_with('/') {
+            return Err(format!("{command} is a relative path; give the plugin's absolute path"));
+        }
+        if !on_path(&command) {
+            return Err(format!("{command} is not an executable file or a command on PATH"));
+        }
+        let plugin_id = match plugin_id {
+            Some(plugin_id) => plugin_id,
+            None => id_for(&command, &args)
+                .ok_or_else(|| format!("cannot make a plugin id from {command}; give one with --id"))?,
+        };
+        if !valid_id(&plugin_id) {
+            return Err(format!("{plugin_id:?} is not a plugin id: use lowercase letters, digits, - and _"));
+        }
+        if crate::bundled::IDS.contains(&plugin_id.as_str()) || RESERVED.contains(&plugin_id.as_str()) {
+            return Err(format!("{plugin_id} is a built-in name; choose another id with --id"));
+        }
+        let (installed, _) = discover(self.plugin_settings());
+        for (other, config) in &installed {
+            let same_command = config.command.as_deref() == Some(command.as_str())
+                && config.args.as_deref().unwrap_or_default() == args.as_slice();
+            if same_command {
+                return Err(format!("this command is already set up as plugin {other}"));
+            }
+            if *other == plugin_id && !self.config.file.plugins.contains_key(&plugin_id) {
+                return Err(format!(
+                    "a plugin manifest already uses the id {plugin_id}; choose another id with --id, \
+                     or configure that plugin in [plugins.{plugin_id}]"
+                ));
+            }
+        }
+        let path = crate::config::path();
+        crate::config_edit::add_plugin(&path, &plugin_id, &command, &args, bar)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        Ok(format!(
+            "Added [plugins.{plugin_id}] to {}; it starts when the config reloads. \
+             Type plugins in the launcher to check it.\n",
+            path.display()
+        ))
     }
 
     pub fn stop_plugins(&mut self) {
@@ -1600,6 +1737,38 @@ impl Drop for Session {
 #[allow(clippy::unwrap_used, reason = "test setup and assertions")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_ids_come_from_the_command() {
+        let id =
+            |command: &str, args: &[&str]| id_for(command, &args.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(id("/usr/bin/weather", &[]).as_deref(), Some("weather"));
+        assert_eq!(id("/opt/bin/tileception-launcher-example", &["--stdio"]).as_deref(), Some("launcher-example"));
+        assert_eq!(id("python3", &["-u", "/home/me/My Block.py"]).as_deref(), Some("my-block"));
+        assert_eq!(id("npx", &["-y", "@acme/notes-server@1.2"]).as_deref(), Some("notes-server"));
+        assert_eq!(id("/usr/bin/Calendar_Sync.sh", &[]).as_deref(), Some("calendar_sync"));
+        assert_eq!(id("python3", &[]), None);
+        assert_eq!(id("/usr/bin/ü.ï", &[]), None);
+    }
+
+    #[test]
+    fn plugin_add_takes_options_before_the_command() {
+        assert_eq!(
+            Add::parse(&["--bar", "--id", "blocks", "python3", "block.py", "--id", "x"]),
+            Ok(Add {
+                plugin_id: Some("blocks".into()),
+                bar: true,
+                command: "python3".into(),
+                args: vec!["block.py".into(), "--id".into(), "x".into()],
+            })
+        );
+        assert!(Add::parse(&[]).is_err());
+        assert!(Add::parse(&["--bar"]).is_err());
+        assert!(Add::parse(&["--id"]).is_err());
+        assert!(valid_id("my-plugin_2"));
+        assert!(!valid_id("My plugin"));
+        assert!(!valid_id(""));
+    }
 
     #[test]
     fn skips_invalid_rows_and_actions_independently() {

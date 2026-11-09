@@ -86,6 +86,56 @@ pub fn set_value(file: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Adds `[plugins.<id>]` with this command, for `tileception msg plugin
+/// add`; refuses an ID the file already configures.
+pub fn add_plugin(file: &Path, plugin_id: &str, command: &str, args: &[String], bar: bool) -> Result<(), String> {
+    let mut doc = read(file)?;
+    insert_plugin(&mut doc, plugin_id, command, args, bar)?;
+    write(file, &doc)
+}
+
+/// Appends the plugin's table after everything else, leaving the rest of
+/// the file as it was.
+fn insert_plugin(
+    doc: &mut DocumentMut,
+    plugin_id: &str,
+    command: &str,
+    args: &[String],
+    bar: bool,
+) -> Result<(), String> {
+    let taken = [
+        ("plugins", doc.get("plugins")),
+        ("launcher.plugins", doc.get("launcher").and_then(|launcher| launcher.get("plugins"))),
+    ]
+    .into_iter()
+    .find_map(|(section, plugins)| plugins?.get(plugin_id).map(|_| section));
+    if let Some(section) = taken {
+        return Err(format!(
+            "[{section}.{plugin_id}] is already there; edit it, or add this one under another id with --id"
+        ));
+    }
+    let plugins = doc
+        .entry("plugins")
+        .or_insert_with(|| {
+            let mut plugins = toml_edit::Table::new();
+            plugins.set_implicit(true);
+            Item::Table(plugins)
+        })
+        .as_table_mut()
+        .ok_or("[plugins] is not a table")?;
+    let mut entry = toml_edit::Table::new();
+    entry["command"] = toml_edit::value(command);
+    if !args.is_empty() {
+        entry["args"] = toml_edit::value(args.iter().map(String::as_str).collect::<toml_edit::Array>());
+    }
+    if bar {
+        // An empty `[bar]` block is what shows a plugin's chips.
+        entry["bar"] = Item::Table(toml_edit::Table::new());
+    }
+    plugins.insert(plugin_id, Item::Table(entry));
+    Ok(())
+}
+
 /// Apply a panel draft in one validated write. Read the latest file so edits
 /// to unrelated settings are preserved; refuse conflicting changes.
 pub fn apply_draft(changes: &[(&str, Option<toml::Value>, Option<toml::Value>)]) -> Result<(), String> {
@@ -458,6 +508,48 @@ mod tests {
         assert!(!add(&mut file, "general.autostart", "swaync").unwrap());
         assert_eq!(get(&file, "general.autostart").unwrap(), "[\"swaync\"]");
         assert!(add(&mut file, "shell.bar", "x").is_err());
+    }
+
+    #[test]
+    fn insert_plugin_appends_its_table_and_keeps_the_rest() {
+        let original = "# Mine.\n[shell]\nbar = \"builtin\" # here\n";
+        let mut file = doc(original);
+        let args = vec!["/home/me/block.py".to_string(), "--stdio".to_string()];
+        insert_plugin(&mut file, "block", "python3", &args, false).unwrap();
+        assert_eq!(
+            file.to_string(),
+            format!(
+                "{original}\n[plugins.block]\ncommand = \"python3\"\nargs = [\"/home/me/block.py\", \"--stdio\"]\n"
+            )
+        );
+        insert_plugin(&mut file, "chips", "/usr/bin/chips", &[], true).unwrap();
+        assert!(file.to_string().ends_with("[plugins.chips]\ncommand = \"/usr/bin/chips\"\n\n[plugins.chips.bar]\n"));
+        let config = crate::config::Config::parse(&file.to_string()).unwrap();
+        let block = &config.file.plugins["block"];
+        assert_eq!(block.command.as_deref(), Some("python3"));
+        assert_eq!(block.args.as_deref(), Some(args.as_slice()));
+        assert!(!block.in_bar());
+        assert!(config.file.plugins["chips"].in_bar());
+    }
+
+    #[test]
+    fn insert_plugin_refuses_an_id_in_use() {
+        let original = "[plugins.block]\nenabled = false\n\n[launcher.plugins.old]\ncommand = \"/bin/old\"\n";
+        let mut file = doc(original);
+        let error = insert_plugin(&mut file, "block", "/bin/block", &[], false).unwrap_err();
+        assert!(error.contains("[plugins.block]"), "{error}");
+        let error = insert_plugin(&mut file, "old", "/bin/old", &[], false).unwrap_err();
+        assert!(error.contains("[launcher.plugins.old]"), "{error}");
+        assert_eq!(file.to_string(), original);
+    }
+
+    #[test]
+    fn insert_plugin_into_the_defaults() {
+        let mut file = defaults();
+        insert_plugin(&mut file, "block", "/bin/block", &[], false).unwrap();
+        let text = file.to_string();
+        assert!(text.starts_with(crate::config::DEFAULT.trim_end()));
+        assert!(crate::config::Config::parse(&text).unwrap().file.plugins.contains_key("block"));
     }
 
     #[test]
