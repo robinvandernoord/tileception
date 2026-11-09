@@ -75,6 +75,8 @@ const QUIET_FRAMES: u32 = 15;
 /// The same after a frame that was asked for (a commit, input): what it
 /// starts mostly asks again or shows at once, so it is looked after briefly.
 const ASKED_FRAMES: u32 = 3;
+/// The shortest wait for an animation's next change.
+const DUE_FLOOR: Duration = Duration::from_millis(4);
 /// How often a still screen is looked at for changes nothing asked to draw.
 const STILL_POLL: Duration = Duration::from_millis(100);
 
@@ -735,6 +737,9 @@ impl Tileception {
             return;
         }
         let now = self.now();
+        // The duck moves on before drawing, so a frame drawn for its next
+        // step shows that step.
+        self.update_duck();
         let mut queued = false;
         let mut gpus = std::mem::take(&mut udev.gpus);
         let Some(gbm) = gpus.first().map(|primary| primary.gbm.clone()) else {
@@ -815,7 +820,11 @@ impl Tileception {
         }
         udev.gpus = gpus;
         let asked = std::mem::take(&mut udev.asked);
+        let duck_changed = self.take_duck_changed();
         udev.quiet = match (queued, asked) {
+            // The duck's own steps come when duck_due says, not from looking
+            // every frame: they leave the count of still frames as it was.
+            (true, false) if duck_changed => udev.quiet,
             (true, false) => 0,
             (true, true) => QUIET_FRAMES - ASKED_FRAMES,
             (false, _) => udev.quiet.saturating_add(1),
@@ -825,6 +834,15 @@ impl Tileception {
             // less often once it has been still for a while. Input and
             // client commits ask for a frame themselves.
             let wait = if udev.quiet <= QUIET_FRAMES { FRAME } else { STILL_POLL };
+            let wait = match self.duck_due(Instant::now()) {
+                crate::duck::DuckDue::Never => wait,
+                crate::duck::DuckDue::Every => FRAME,
+                // Not sooner than a few milliseconds, should a due time
+                // stay in the past.
+                crate::duck::DuckDue::Due(due) => {
+                    wait.min(due.saturating_duration_since(Instant::now()).max(DUE_FLOOR))
+                }
+            };
             udev.poll = self
                 .loop_handle
                 .insert_source(Timer::from_duration(wait), |_, _, state| {

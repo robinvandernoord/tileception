@@ -7,7 +7,7 @@
 //! carries on with the same conversation in the panel.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     path::PathBuf,
     sync::Arc,
@@ -44,6 +44,11 @@ const WALK_SPEED: f64 = 42.0;
 /// How often a walking, sleeping or pointing duck changes on screen. Pixel
 /// art moves in steps anyway, and each change costs a frame.
 const STEPS_PER_SEC: f64 = 8.0;
+/// A standing duck blinks for BLINK_SHUT milliseconds of every BLINK_EVERY.
+const BLINK_EVERY: u128 = 3700;
+const BLINK_SHUT: u128 = 130;
+/// How long it squashes on landing.
+const SQUASH: Duration = Duration::from_millis(140);
 /// The fastest it can be thrown, in pixels per second.
 const MAX_THROW: f64 = 2600.0;
 /// How far the pointer moves on a press before it picks the duck up.
@@ -232,6 +237,25 @@ pub struct Duck {
     seed: u64,
     sprites: RefCell<HashMap<(Pose, bool, u32), Option<MemoryRenderBuffer>>>,
     tails: RefCell<HashMap<TailKey, Option<MemoryRenderBuffer>>>,
+    /// How the duck was last drawn, to tell its own steps from other changes.
+    drawn: Cell<Option<Look>>,
+    /// The duck looked different in the frame just drawn.
+    changed: Cell<bool>,
+}
+
+/// What the duck looks like on screen: pose, place in pixels, facing, and
+/// the step of its sleeping Zs.
+type Look = (Pose, i64, i64, bool, u64);
+
+/// When the duck next changes on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuckDue {
+    /// Not out: it needs no frames.
+    Never,
+    /// Falling, held or talking: every frame.
+    Every,
+    /// Its next step, blink or change of mind.
+    Due(Instant),
 }
 
 impl Default for Duck {
@@ -269,6 +293,8 @@ impl Default for Duck {
             seed,
             sprites: Default::default(),
             tails: Default::default(),
+            drawn: Cell::new(None),
+            changed: Cell::new(false),
         }
     }
 }
@@ -399,7 +425,9 @@ impl Tileception {
     /// screen. Called after each frame.
     pub fn update_duck(&mut self) {
         let now = Instant::now();
-        let delta = now.duration_since(self.duck.last_tick).as_secs_f64().min(0.05);
+        // Frames come only when something changes, so a walking duck may
+        // tick just a few times a second; falling takes smaller steps.
+        let delta = now.duration_since(self.duck.last_tick).as_secs_f64().min(0.25);
         self.duck.last_tick = now;
         if !self.duck.out || self.is_locked() {
             return;
@@ -415,6 +443,39 @@ impl Tileception {
             self.duck.placed = false;
         }
         self.duck_tick(delta, now);
+    }
+
+    /// Whether the last frame showed the duck changed, and forgets it. A
+    /// frame that only moved the duck needs no closer look afterwards: its
+    /// next change is [`Tileception::duck_due`].
+    pub fn take_duck_changed(&self) -> bool {
+        self.duck.changed.take()
+    }
+
+    /// When the duck next looks different, so the screen is drawn then
+    /// rather than looked at every frame in between.
+    pub fn duck_due(&self, now: Instant) -> DuckDue {
+        let duck = &self.duck;
+        if !duck.out || self.is_locked() || duck.hidden {
+            return DuckDue::Never;
+        }
+        if !duck.placed || duck.motion != Motion::Ground || duck.chat != Chat::Closed {
+            return DuckDue::Every;
+        }
+        let mut due = match duck.activity {
+            Activity::Walk { .. } => next_step(duck.since, now),
+            Activity::Sleep { until } => next_step(duck.since, now).min(until),
+            Activity::Idle { until } => {
+                until.max(now).min(now + until_blink(now.saturating_duration_since(self.start)))
+            }
+        };
+        if let Some(landed) = duck.landed {
+            let squashed = landed + SQUASH;
+            if squashed > now {
+                due = due.min(squashed);
+            }
+        }
+        DuckDue::Due(due)
     }
 
     fn duck_tick(&mut self, delta: f64, now: Instant) {
@@ -434,6 +495,7 @@ impl Tileception {
         match duck.motion {
             Motion::Held => {}
             Motion::Air => {
+                let delta = delta.min(0.05);
                 duck.vel.1 += GRAVITY * delta;
                 duck.pos.0 += duck.vel.0 * delta;
                 duck.pos.1 += duck.vel.1 * delta;
@@ -1024,7 +1086,7 @@ impl Tileception {
             Motion::Air => return Pose::Fall,
             Motion::Ground => {}
         }
-        if duck.landed.is_some_and(|landed_at| now.duration_since(landed_at) < Duration::from_millis(140)) {
+        if duck.landed.is_some_and(|landed_at| now.duration_since(landed_at) < SQUASH) {
             return Pose::Squash;
         }
         if let Activity::Walk { .. } = duck.activity {
@@ -1049,7 +1111,7 @@ impl Tileception {
             return Pose::Sleep;
         }
         // A blink now and then.
-        if (now.duration_since(self.start).as_millis() % 3700) < 130 { Pose::Blink } else { Pose::Stand }
+        if (now.duration_since(self.start).as_millis() % BLINK_EVERY) < BLINK_SHUT { Pose::Blink } else { Pose::Stand }
     }
 
     pub fn duck_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
@@ -1083,6 +1145,11 @@ impl Tileception {
 
         if let Some(sprite) = self.duck_sprite(pose) {
             painter.image(&sprite, (duck_x - size / 2.0, duck_y - size));
+        }
+        let z_step = if pose == Pose::Sleep { (stepped(self.duck.since.elapsed()) * STEPS_PER_SEC) as u64 } else { 0 };
+        let look = Some((pose, duck_x.round() as i64, duck_y.round() as i64, self.duck.left, z_step));
+        if self.duck.drawn.replace(look) != look {
+            self.duck.changed.set(true);
         }
 
         if pose == Pose::Sleep {
@@ -1266,6 +1333,19 @@ impl Tileception {
 }
 
 /// Seconds of `elapsed`, in whole steps.
+/// The next of the steps animations take from `from`, after `now`.
+fn next_step(from: Instant, now: Instant) -> Instant {
+    let steps = (now.saturating_duration_since(from).as_secs_f64() * STEPS_PER_SEC).floor() + 1.0;
+    from + Duration::from_secs_f64(steps / STEPS_PER_SEC)
+}
+
+/// How long until the eyes open or shut, `running` into the session.
+fn until_blink(running: Duration) -> Duration {
+    let into = running.as_millis() % BLINK_EVERY;
+    let left = if into < BLINK_SHUT { BLINK_SHUT - into } else { BLINK_EVERY - into };
+    Duration::from_millis(left as u64)
+}
+
 fn stepped(elapsed: Duration) -> f64 {
     (elapsed.as_secs_f64() * STEPS_PER_SEC).floor() / STEPS_PER_SEC
 }
@@ -1473,6 +1553,20 @@ fn prepare_shot(mut rgba: Vec<u8>, width: u32, height: u32) -> Option<Prepared> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changes_are_due_on_the_next_step_or_blink() {
+        let from = Instant::now();
+        let step = Duration::from_secs_f64(1.0 / STEPS_PER_SEC);
+        assert_eq!(next_step(from, from), from + step);
+        assert_eq!(next_step(from, from + step / 2), from + step);
+        assert_eq!(next_step(from, from + step), from + step * 2);
+        // Shut for BLINK_SHUT, then open until the next one.
+        assert_eq!(until_blink(Duration::ZERO), Duration::from_millis(130));
+        assert_eq!(until_blink(Duration::from_millis(100)), Duration::from_millis(30));
+        assert_eq!(until_blink(Duration::from_millis(130)), Duration::from_millis(3570));
+        assert_eq!(until_blink(Duration::from_millis(3700 * 2 + 3699)), Duration::from_millis(1));
+    }
 
     #[test]
     fn finds_the_point_line() {
