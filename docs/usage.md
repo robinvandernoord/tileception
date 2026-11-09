@@ -208,6 +208,12 @@ open the selected result. Use the arrow keys to choose another result and
 The launcher also handles calculations, unit conversions, file paths and URLs.
 Prefix a shell command with `>` to run it and see its output.
 
+Conversions work offline for length, area, volume, mass, temperature, time,
+speed, data, energy, power, pressure, angle and frequency. Write them as
+`5 ft in cm`, `convert 100 f to c` or `how many ml in a cup`. Amounts can come
+in parts, as in `5 ft 10 in in cm` or `1 h 30 min in s`, and so can results:
+`180 cm in ft and in` shows `5 ft 10.87 in`. **Enter** copies the result.
+
 Press **Alt+Enter** on an application to see its desktop entry: the command it
 runs (including `[launch_args]`), the `.desktop` file it comes from and
 whether that is a system, Flatpak or Snap entry or your own. From there you can

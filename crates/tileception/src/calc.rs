@@ -1,6 +1,7 @@
 //! The launcher's calculator: sums (`12*7+3`, `2^10`, `15% of 80`), number
 //! bases (`0xff`, `255 in hex`) and offline unit conversions (`5 km in mi`,
-//! `30 c in f`, `2 GiB in MB`). Everything is local and instant.
+//! `30 c in f`, `2 GiB in MB`, `5 ft 10 in in cm`, `180 cm in ft and in`,
+//! `how many ml in a cup`). Everything is local and instant.
 
 /// What a sum or conversion comes to.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,7 +15,7 @@ pub struct Answer {
 /// The answer to `input`, when it is a sum, a base conversion or a unit
 /// conversion. A plain number on its own is not a sum.
 pub fn answer(input: &str) -> Option<Answer> {
-    let input = input.trim();
+    let input = plain(input);
     if input.is_empty() {
         return None;
     }
@@ -36,10 +37,24 @@ pub fn answer(input: &str) -> Option<Answer> {
     Some(Answer { copy: shown.clone(), shown })
 }
 
+/// What was asked, without the words around it: `convert 5 ft to cm`,
+/// `what is 2+2?`.
+fn plain(input: &str) -> &str {
+    let input = input.trim().trim_end_matches('?').trim_end();
+    ["convert ", "what is ", "what's "]
+        .iter()
+        .find_map(|prefix| strip_prefix_ignoring_case(input, prefix))
+        .map_or(input, str::trim_start)
+}
+
+fn strip_prefix_ignoring_case<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
+    text.get(..prefix.len()).filter(|head| head.eq_ignore_ascii_case(prefix)).map(|_| &text[prefix.len()..])
+}
+
 /// `<left> in <right>` or `<left> to <right>`, at the last such word.
 fn split_conversion(input: &str) -> Option<(&str, &str)> {
     let lower = input.to_ascii_lowercase();
-    [" in ", " to ", " as "]
+    [" in ", " to ", " as ", " into "]
         .iter()
         .filter_map(|word| lower.rfind(word).map(|position| (position, word.len())))
         .max_by_key(|(position, _)| *position)
@@ -327,10 +342,17 @@ enum Dimension {
     Time,
     Speed,
     Volume,
+    Area,
+    Energy,
+    Power,
+    Pressure,
+    Angle,
+    Frequency,
 }
 
 /// A unit: what it measures, and its size in that dimension's base unit
-/// (metres, kilograms, kelvin, bytes, seconds, metres per second, litres).
+/// (metres, kilograms, kelvin, bytes, seconds, metres per second, litres,
+/// square metres, joules, watts, pascals, degrees, hertz).
 /// Temperatures also have an offset: kelvin = value * factor + offset.
 struct Unit {
     names: &'static [&'static str],
@@ -360,6 +382,7 @@ const UNITS: &[Unit] = &[
     unit(&["µm", "um", "micrometre", "micrometres", "micron", "microns"], "µm", Dimension::Length, 1e-6),
     unit(&["mm", "millimetre", "millimetres", "millimeter", "millimeters"], "mm", Dimension::Length, 1e-3),
     unit(&["cm", "centimetre", "centimetres", "centimeter", "centimeters"], "cm", Dimension::Length, 1e-2),
+    unit(&["dm", "decimetre", "decimetres", "decimeter", "decimeters"], "dm", Dimension::Length, 1e-1),
     unit(&["m", "metre", "metres", "meter", "meters"], "m", Dimension::Length, 1.0),
     unit(&["km", "kilometre", "kilometres", "kilometer", "kilometers"], "km", Dimension::Length, 1e3),
     unit(&["in", "inch", "inches", "\""], "in", Dimension::Length, 0.0254),
@@ -367,6 +390,13 @@ const UNITS: &[Unit] = &[
     unit(&["yd", "yard", "yards"], "yd", Dimension::Length, 0.9144),
     unit(&["mi", "mile", "miles"], "mi", Dimension::Length, 1609.344),
     unit(&["nmi", "nautical mile", "nautical miles"], "nmi", Dimension::Length, 1852.0),
+    unit(
+        &["ly", "light year", "light years", "lightyear", "lightyears"],
+        "ly",
+        Dimension::Length,
+        9_460_730_472_580_800.0,
+    ),
+    unit(&["µg", "ug", "mcg", "microgram", "micrograms"], "µg", Dimension::Mass, 1e-9),
     unit(&["mg", "milligram", "milligrams"], "mg", Dimension::Mass, 1e-6),
     unit(&["g", "gram", "grams"], "g", Dimension::Mass, 1e-3),
     unit(&["kg", "kilo", "kilos", "kilogram", "kilograms"], "kg", Dimension::Mass, 1.0),
@@ -375,7 +405,7 @@ const UNITS: &[Unit] = &[
     unit(&["lb", "lbs", "pound", "pounds"], "lb", Dimension::Mass, 0.453_592_37),
     unit(&["st", "stone", "stones"], "st", Dimension::Mass, 6.350_293_18),
     Unit {
-        names: &["c", "°c", "celsius", "degc"],
+        names: &["c", "°c", "celsius", "degc", "deg c", "degree c", "degrees c", "degree celsius", "degrees celsius"],
         symbol: "°C",
         dimension: Dimension::Temperature,
         factor: 1.0,
@@ -383,14 +413,24 @@ const UNITS: &[Unit] = &[
         exact_case: false,
     },
     Unit {
-        names: &["f", "°f", "fahrenheit", "degf"],
+        names: &[
+            "f",
+            "°f",
+            "fahrenheit",
+            "degf",
+            "deg f",
+            "degree f",
+            "degrees f",
+            "degree fahrenheit",
+            "degrees fahrenheit",
+        ],
         symbol: "°F",
         dimension: Dimension::Temperature,
         factor: 5.0 / 9.0,
         offset: 273.15 - 32.0 * 5.0 / 9.0,
         exact_case: false,
     },
-    unit(&["k", "kelvin"], "K", Dimension::Temperature, 1.0),
+    unit(&["k", "kelvin", "kelvins"], "K", Dimension::Temperature, 1.0),
     data(&["b", "bit", "bits"], "bit", 1.0 / 8.0),
     data(&["B", "byte", "bytes"], "B", 1.0),
     data(&["kb", "Kb", "kbit", "kilobit", "kilobits"], "kbit", 1e3 / 8.0),
@@ -405,6 +445,8 @@ const UNITS: &[Unit] = &[
     data(&["MiB", "mib", "mebibyte", "mebibytes"], "MiB", KIB * KIB),
     data(&["GiB", "gib", "gibibyte", "gibibytes"], "GiB", KIB * KIB * KIB),
     data(&["TiB", "tib", "tebibyte", "tebibytes"], "TiB", KIB * KIB * KIB * KIB),
+    unit(&["ns", "nanosecond", "nanoseconds"], "ns", Dimension::Time, 1e-9),
+    unit(&["µs", "us", "microsecond", "microseconds"], "µs", Dimension::Time, 1e-6),
     unit(&["ms", "millisecond", "milliseconds"], "ms", Dimension::Time, 1e-3),
     unit(&["s", "sec", "secs", "second", "seconds"], "s", Dimension::Time, 1.0),
     unit(&["min", "mins", "minute", "minutes"], "min", Dimension::Time, 60.0),
@@ -412,25 +454,113 @@ const UNITS: &[Unit] = &[
     unit(&["d", "day", "days"], "days", Dimension::Time, DAY),
     unit(&["wk", "week", "weeks"], "weeks", Dimension::Time, 7.0 * DAY),
     unit(&["month", "months"], "months", Dimension::Time, 30.436_875 * DAY),
-    unit(&["yr", "year", "years"], "years", Dimension::Time, 365.2425 * DAY),
-    unit(&["m/s", "mps"], "m/s", Dimension::Speed, 1.0),
-    unit(&["km/h", "kmh", "kph", "kmph"], "km/h", Dimension::Speed, 1.0 / 3.6),
-    unit(&["mph", "mi/h"], "mph", Dimension::Speed, 0.44704),
-    unit(&["ft/s", "fps"], "ft/s", Dimension::Speed, 0.3048),
+    unit(&["yr", "yrs", "year", "years"], "years", Dimension::Time, 365.2425 * DAY),
+    unit(&["decade", "decades"], "decades", Dimension::Time, 3652.425 * DAY),
+    unit(&["century", "centuries"], "centuries", Dimension::Time, 36_524.25 * DAY),
+    unit(&["m/s", "mps", "metres per second", "meters per second"], "m/s", Dimension::Speed, 1.0),
+    unit(
+        &["km/h", "kmh", "kph", "kmph", "kilometres per hour", "kilometers per hour"],
+        "km/h",
+        Dimension::Speed,
+        1.0 / 3.6,
+    ),
+    unit(&["km/s", "kilometres per second", "kilometers per second"], "km/s", Dimension::Speed, 1e3),
+    unit(&["mph", "mi/h", "miles per hour"], "mph", Dimension::Speed, 0.44704),
+    unit(&["ft/s", "fps", "feet per second"], "ft/s", Dimension::Speed, 0.3048),
     unit(&["kn", "kt", "knot", "knots"], "kn", Dimension::Speed, 1852.0 / 3600.0),
     unit(&["ml", "mL", "millilitre", "millilitres", "milliliter", "milliliters"], "ml", Dimension::Volume, 1e-3),
-    unit(&["cl", "cL", "centilitre", "centilitres"], "cl", Dimension::Volume, 1e-2),
-    unit(&["dl", "dL", "decilitre", "decilitres"], "dl", Dimension::Volume, 1e-1),
+    unit(&["cl", "cL", "centilitre", "centilitres", "centiliter", "centiliters"], "cl", Dimension::Volume, 1e-2),
+    unit(&["dl", "dL", "decilitre", "decilitres", "deciliter", "deciliters"], "dl", Dimension::Volume, 1e-1),
     unit(&["l", "L", "litre", "litres", "liter", "liters"], "l", Dimension::Volume, 1.0),
-    unit(&["m3", "m³", "cubic metre", "cubic metres"], "m³", Dimension::Volume, 1e3),
-    unit(&["cm3", "cm³", "cc"], "cm³", Dimension::Volume, 1e-3),
+    unit(&["m3", "m³", "cubic metre", "cubic metres", "cubic meter", "cubic meters"], "m³", Dimension::Volume, 1e3),
+    unit(
+        &["cm3", "cm³", "cc", "cubic centimetre", "cubic centimetres", "cubic centimeter", "cubic centimeters"],
+        "cm³",
+        Dimension::Volume,
+        1e-3,
+    ),
+    unit(&["ft3", "ft³", "cu ft", "cubic foot", "cubic feet"], "ft³", Dimension::Volume, 28.316_846_592),
+    unit(&["in3", "in³", "cu in", "cubic inch", "cubic inches"], "in³", Dimension::Volume, 0.016_387_064),
     unit(&["gal", "gallon", "gallons"], "gal", Dimension::Volume, 3.785_411_784),
     unit(&["qt", "quart", "quarts"], "qt", Dimension::Volume, 0.946_352_946),
     unit(&["pt", "pint", "pints"], "pt", Dimension::Volume, 0.473_176_473),
+    unit(
+        &["imp gal", "uk gal", "imperial gallon", "imperial gallons", "uk gallon", "uk gallons"],
+        "imp gal",
+        Dimension::Volume,
+        4.546_09,
+    ),
+    unit(
+        &["imp pt", "uk pt", "imperial pint", "imperial pints", "uk pint", "uk pints"],
+        "imp pt",
+        Dimension::Volume,
+        0.568_261_25,
+    ),
     unit(&["cup", "cups"], "cups", Dimension::Volume, 0.236_588_236_5),
     unit(&["floz", "fl oz", "fluid ounce", "fluid ounces"], "fl oz", Dimension::Volume, 0.029_573_529_562_5),
     unit(&["tbsp", "tablespoon", "tablespoons"], "tbsp", Dimension::Volume, 0.014_786_764_781_25),
     unit(&["tsp", "teaspoon", "teaspoons"], "tsp", Dimension::Volume, 0.004_928_921_593_75),
+    unit(
+        &["mm2", "mm²", "sq mm", "square millimetre", "square millimetres", "square millimeter", "square millimeters"],
+        "mm²",
+        Dimension::Area,
+        1e-6,
+    ),
+    unit(
+        &["cm2", "cm²", "sq cm", "square centimetre", "square centimetres", "square centimeter", "square centimeters"],
+        "cm²",
+        Dimension::Area,
+        1e-4,
+    ),
+    unit(
+        &["m2", "m²", "sq m", "square metre", "square metres", "square meter", "square meters"],
+        "m²",
+        Dimension::Area,
+        1.0,
+    ),
+    unit(&["ha", "hectare", "hectares"], "ha", Dimension::Area, 1e4),
+    unit(
+        &["km2", "km²", "sq km", "square kilometre", "square kilometres", "square kilometer", "square kilometers"],
+        "km²",
+        Dimension::Area,
+        1e6,
+    ),
+    unit(&["in2", "in²", "sq in", "square inch", "square inches"], "in²", Dimension::Area, 0.000_645_16),
+    unit(&["ft2", "ft²", "sq ft", "sqft", "square foot", "square feet"], "ft²", Dimension::Area, 0.092_903_04),
+    unit(&["yd2", "yd²", "sq yd", "square yard", "square yards"], "yd²", Dimension::Area, 0.836_127_36),
+    unit(&["ac", "acre", "acres"], "acres", Dimension::Area, 4_046.856_422_4),
+    unit(&["mi2", "mi²", "sq mi", "square mile", "square miles"], "mi²", Dimension::Area, 2_589_988.110_336),
+    unit(&["j", "joule", "joules"], "J", Dimension::Energy, 1.0),
+    unit(&["kj", "kilojoule", "kilojoules"], "kJ", Dimension::Energy, 1e3),
+    unit(&["mj", "megajoule", "megajoules"], "MJ", Dimension::Energy, 1e6),
+    unit(&["cal", "calorie", "calories"], "cal", Dimension::Energy, 4.184),
+    unit(&["kcal", "kilocalorie", "kilocalories"], "kcal", Dimension::Energy, 4184.0),
+    unit(&["wh", "watt hour", "watt hours"], "Wh", Dimension::Energy, 3600.0),
+    unit(&["kwh", "kilowatt hour", "kilowatt hours"], "kWh", Dimension::Energy, 3.6e6),
+    unit(&["btu"], "BTU", Dimension::Energy, 1_055.055_852_62),
+    unit(&["ev", "electronvolt", "electronvolts"], "eV", Dimension::Energy, 1.602_176_634e-19),
+    unit(&["w", "watt", "watts"], "W", Dimension::Power, 1.0),
+    unit(&["kw", "kilowatt", "kilowatts"], "kW", Dimension::Power, 1e3),
+    unit(&["mw", "megawatt", "megawatts"], "MW", Dimension::Power, 1e6),
+    unit(&["hp", "horsepower"], "hp", Dimension::Power, 745.699_871_582_270_2),
+    unit(&["pa", "pascal", "pascals"], "Pa", Dimension::Pressure, 1.0),
+    unit(&["hpa", "hectopascal", "hectopascals"], "hPa", Dimension::Pressure, 1e2),
+    unit(&["kpa", "kilopascal", "kilopascals"], "kPa", Dimension::Pressure, 1e3),
+    unit(&["mpa", "megapascal", "megapascals"], "MPa", Dimension::Pressure, 1e6),
+    unit(&["mbar", "millibar", "millibars"], "mbar", Dimension::Pressure, 1e2),
+    unit(&["bar", "bars"], "bar", Dimension::Pressure, 1e5),
+    unit(&["atm", "atmosphere", "atmospheres"], "atm", Dimension::Pressure, 101_325.0),
+    unit(&["psi"], "psi", Dimension::Pressure, 6_894.757_293_168),
+    unit(&["mmhg", "torr"], "mmHg", Dimension::Pressure, 133.322_387_415),
+    unit(&["deg", "°", "degree", "degrees"], "°", Dimension::Angle, 1.0),
+    unit(&["rad", "radian", "radians"], "rad", Dimension::Angle, 180.0 / std::f64::consts::PI),
+    unit(&["grad", "gon", "gradian", "gradians"], "grad", Dimension::Angle, 0.9),
+    unit(&["turn", "turns", "rev", "revolution", "revolutions"], "turns", Dimension::Angle, 360.0),
+    unit(&["hz", "hertz"], "Hz", Dimension::Frequency, 1.0),
+    unit(&["khz", "kilohertz"], "kHz", Dimension::Frequency, 1e3),
+    unit(&["mhz", "megahertz"], "MHz", Dimension::Frequency, 1e6),
+    unit(&["ghz", "gigahertz"], "GHz", Dimension::Frequency, 1e9),
+    unit(&["rpm"], "rpm", Dimension::Frequency, 1.0 / 60.0),
 ];
 
 fn find_unit(name: &str) -> Option<&'static Unit> {
@@ -444,34 +574,138 @@ fn find_unit(name: &str) -> Option<&'static Unit> {
     })
 }
 
-/// `<amount> <unit> in|to <unit>`, where the amount may be a sum.
+/// `<amount> <unit> in|to <unit>`, where the amount may be a sum (`2*3 km`)
+/// or parts that add up (`5 ft 10 in`), and the target may be parts too
+/// (`ft and in`). `how many <unit> in <amount> <unit>` asks the same.
 fn convert_units(input: &str) -> Option<Answer> {
-    let (left, target) = split_conversion(input)?;
-    let target = find_unit(target)?;
-    // The unit is whatever follows the amount: try the longest tail that names one.
-    let (amount, from) = left
-        .char_indices()
-        .filter(|(split, _)| *split > 0)
-        .map(|(split, _)| (&left[..split], &left[split..]))
-        .find_map(|(amount, unit)| Some((amount, find_unit(unit)?)))?;
-    if from.dimension != target.dimension {
+    let (left, target) = how_many(input).or_else(|| split_conversion(input))?;
+    let (base, dimension) = quantity(left)?;
+    if let Some(target) = find_unit(target) {
+        if target.dimension != dimension {
+            return None;
+        }
+        let value = (base - target.offset) / target.factor;
+        let copy = number(value)?;
+        let shown = format!("{copy} {}", symbol(target, &copy));
+        return Some(Answer { copy, shown });
+    }
+    let targets = units_in(target)?;
+    let fits = targets.len() > 1
+        && dimension != Dimension::Temperature
+        && targets.iter().all(|unit| unit.dimension == dimension)
+        && targets.windows(2).all(|pair| pair[0].factor > pair[1].factor);
+    if !fits {
         return None;
     }
-    let amount = Parser::new(amount).parse()?.value;
-    let base = amount * from.factor + from.offset;
-    let value = (base - target.offset) / target.factor;
-    let copy = number(value)?;
-    let shown = format!("{copy} {}", target.symbol);
-    Some(Answer { copy, shown })
+    let shown = in_parts(base, &targets)?;
+    Some(Answer { copy: shown.clone(), shown })
+}
+
+/// `how many <unit> in <amount> <unit>`, as the amount and the target.
+fn how_many(input: &str) -> Option<(&str, &str)> {
+    let rest = strip_prefix_ignoring_case(input, "how many ")?;
+    let lower = rest.to_ascii_lowercase();
+    let (position, len) = [" are in ", " is in ", " in "]
+        .iter()
+        .find_map(|word| lower.find(word).map(|position| (position, word.len())))?;
+    Some((rest[position + len..].trim(), rest[..position].trim()))
+}
+
+/// An amount and its unit, as a value in its dimension's base unit: `5 km`,
+/// `2*3 m`, `a foot`, or parts that add up: `5 ft 10 in`, `1 h 30 min`,
+/// `5 feet and 10 inches`, `5'10"`.
+fn quantity(text: &str) -> Option<(f64, Dimension)> {
+    if let Some((base, unit)) = one_quantity(text) {
+        return Some((base, unit.dimension));
+    }
+    // The first part ends where the next amount starts.
+    text.char_indices()
+        .filter(|&(split, character)| {
+            split > 0
+                && character.is_ascii_digit()
+                && !text[..split].ends_with(|before: char| before.is_ascii_digit() || before == '.' || before == '_')
+        })
+        .find_map(|(split, _)| {
+            let first = text[..split].trim_end();
+            let first = first.strip_suffix(',').or_else(|| first.strip_suffix(" and")).unwrap_or(first);
+            let (base, unit) = one_quantity(first)?;
+            let (rest, dimension) = quantity(&text[split..])?;
+            (unit.dimension == dimension && dimension != Dimension::Temperature).then_some((base + rest, dimension))
+        })
+}
+
+/// One amount and its unit: whatever follows the amount, the longest tail
+/// that names a unit.
+fn one_quantity(text: &str) -> Option<(f64, &'static Unit)> {
+    text.char_indices().filter(|(split, _)| *split > 0).find_map(|(split, _)| {
+        let unit = find_unit(&text[split..])?;
+        let amount = text[..split].trim();
+        let amount = if ["a", "an", "one"].iter().any(|word| amount.eq_ignore_ascii_case(word)) {
+            1.0
+        } else {
+            Parser::new(amount).parse()?.value
+        };
+        Some((amount * unit.factor + unit.offset, unit))
+    })
+}
+
+/// The units named one after another: `ft in`, `feet and inches`, `h, min`.
+fn units_in(text: &str) -> Option<Vec<&'static Unit>> {
+    let words: Vec<&str> = text
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter(|word| !word.is_empty() && !word.eq_ignore_ascii_case("and"))
+        .collect();
+    let mut units = Vec::new();
+    let mut start = 0;
+    while start < words.len() {
+        // The most words that still name a unit, for "fl oz" or "sq ft".
+        let (end, unit) =
+            (start + 1..=words.len()).rev().find_map(|end| Some((end, find_unit(&words[start..end].join(" "))?)))?;
+        units.push(unit);
+        start = end;
+    }
+    (!units.is_empty()).then_some(units)
+}
+
+/// `base` in whole larger units and what is left in the smallest, to two
+/// decimals: `5 ft 10.87 in`. Larger units that come to nothing are left out.
+fn in_parts(base: f64, units: &[&'static Unit]) -> Option<String> {
+    let (smallest, larger) = units.split_last()?;
+    let hundredths = |value: f64| (value * 100.0).round() / 100.0;
+    // Round once, in the smallest unit, so 72 in is 6 ft 0 in, not 5 ft 12 in.
+    let total = hundredths(base / smallest.factor);
+    let sign = if total < 0.0 { "-" } else { "" };
+    let mut rest = total.abs();
+    let mut parts = Vec::new();
+    for unit in larger {
+        let size = unit.factor / smallest.factor;
+        let count = (rest / size + 1e-9).floor();
+        rest = hundredths((rest - count * size).max(0.0));
+        if count > 0.0 || !parts.is_empty() {
+            let count = number(count)?;
+            parts.push(format!("{count} {}", symbol(unit, &count)));
+        }
+    }
+    let rest = number(rest)?;
+    parts.push(format!("{rest} {}", symbol(smallest, &rest)));
+    Some(format!("{sign}{}", parts.join(" ")))
+}
+
+/// The name a result shown as `amount` goes with: 1 day, 2 days.
+fn symbol(unit: &Unit, amount: &str) -> &'static str {
+    match unit.symbol.strip_suffix('s') {
+        Some(singular) if amount == "1" && unit.names.contains(&singular) => singular,
+        _ => unit.symbol,
+    }
 }
 
 /// Whether `input` reads as a unit or base conversion, even an unfinished
 /// one, so it is not mistaken for a question.
 pub fn looks_like_conversion(input: &str) -> bool {
-    split_conversion(input).is_some_and(|(left, right)| {
+    split_conversion(plain(input)).is_some_and(|(left, right)| {
         left.starts_with(|character: char| {
             character.is_ascii_digit() || character == '-' || character == '.' || character == '('
-        }) && (find_unit(right).is_some() || Base::named(right).is_some())
+        }) && (find_unit(right).is_some() || units_in(right).is_some() || Base::named(right).is_some())
     })
 }
 
@@ -564,9 +798,99 @@ mod tests {
     }
 
     #[test]
+    fn everyday_conversions() {
+        close("5 ft in cm", 152.4);
+        close("100 f to c", 37.777_777_8);
+        close("3 cups in ml", 709.764_709_5);
+        close("10 kilometers to miles", 6.213_711_92);
+        close("2 tablespoons in tsp", 6.0);
+        close("1 kilo in lbs", 2.204_622_62);
+        close("98.6 degrees fahrenheit in celsius", 37.0);
+        close("20 deg c to f", 68.0);
+        close("1 cubic foot in l", 28.316_846_592);
+        close("1 imperial gallon in l", 4.546_09);
+        close("500 mcg in mg", 0.5);
+        close("1 decade in years", 10.0);
+        close("1500 ms in s", 1.5);
+        close("50 miles per hour in km/h", 80.467_2);
+        close("5 ft into cm", 152.4);
+        assert_eq!(shown("1 week in days"), Some("7 days".into()));
+        assert_eq!(shown("24 h in days"), Some("1 day".into()), "one, not ones");
+        assert_eq!(shown("16 tbsp in cups"), Some("1 cup".into()));
+        assert_eq!(shown("1 min in s"), Some("60 s".into()));
+    }
+
+    #[test]
+    fn more_kinds_of_unit() {
+        close("1 acre in m2", 4_046.856_422_4);
+        close("100 sq ft in m²", 9.290_304);
+        close("1 square mile in km2", 2.589_988_110_336);
+        close("2 ha in acres", 4.942_108_16);
+        close("1 kwh in kj", 3600.0);
+        close("100 kcal in kj", 418.4);
+        close("1 btu in J", 1_055.055_852_62);
+        close("100 hp in kw", 74.569_987_16);
+        close("1 atm in psi", 14.695_948_8);
+        close("1013.25 hPa in atm", 1.0);
+        close("2 bar in kpa", 200.0);
+        close("180 degrees in rad", std::f64::consts::PI);
+        close("1 turn in deg", 360.0);
+        close("2.4 GHz in MHz", 2400.0);
+        close("3000 rpm in hz", 50.0);
+        assert_eq!(shown("1 acre in ha"), Some("0.4046856422 ha".into()));
+        assert_eq!(answer("1 kwh in kw"), None, "energy is not power");
+        assert_eq!(answer("30 degrees in f"), None, "an angle is not a temperature");
+    }
+
+    #[test]
+    fn amounts_in_parts() {
+        close("5 ft 10 in in cm", 177.8);
+        close("5'10\" in cm", 177.8);
+        close("5 feet and 10 inches to cm", 177.8);
+        close("1 h 30 min in min", 90.0);
+        close("1h30min in s", 5400.0);
+        close("6 lb 4 oz in kg", 2.834_951_562_5);
+        close("1 hour, 15 minutes in h", 1.25);
+        assert_eq!(answer("5 ft 10 kg in cm"), None, "parts measure the same thing");
+        assert_eq!(answer("20 c 5 f in k"), None, "temperatures do not add up");
+    }
+
+    #[test]
+    fn results_in_parts() {
+        assert_eq!(shown("180 cm in ft and in"), Some("5 ft 10.87 in".into()));
+        assert_eq!(shown("182.88 cm in feet and inches"), Some("6 ft 0 in".into()), "not 5 ft 12 in");
+        assert_eq!(shown("100 min in h min"), Some("1 h 40 min".into()));
+        assert_eq!(shown("30 cm in ft in"), Some("11.81 in".into()), "no 0 ft");
+        assert_eq!(shown("80 kg in st lb"), Some("12 st 8.37 lb".into()));
+        assert_eq!(shown("1 ft in ft in"), Some("1 ft 0 in".into()));
+        assert_eq!(answer("180 cm in in ft"), None, "largest first");
+        assert_eq!(answer("10 c in f k"), None);
+        assert_eq!(answer("5 km in mi kg"), None);
+        let answer = answer("100 min in h min").unwrap();
+        assert_eq!(answer.copy, answer.shown);
+    }
+
+    #[test]
+    fn conversions_in_words() {
+        close("convert 5 ft to cm", 152.4);
+        close("what is 5 km in mi?", 3.106_855_96);
+        close("how many cm in a foot", 30.48);
+        close("how many ml are in 3 cups", 709.764_709_5);
+        close("How many seconds in a day?", 86_400.0);
+        close("how many feet in one mile", 5280.0);
+        close("a mile in km", 1.609_344);
+        assert_eq!(shown("convert 255 to hex"), Some("0xff".into()));
+        assert_eq!(shown("what is 2+2?"), Some("4".into()));
+        assert_eq!(answer("how many apples in a basket"), None);
+        assert_eq!(answer("what is love"), None);
+    }
+
+    #[test]
     fn conversions_are_not_questions() {
         assert!(looks_like_conversion("5 km in mi"));
         assert!(looks_like_conversion("255 in hex"));
+        assert!(looks_like_conversion("convert 5 km in mi"));
+        assert!(looks_like_conversion("180 cm in ft and in"));
         assert!(!looks_like_conversion("what is in my home folder"));
         assert!(!looks_like_conversion("set gaps to 4"));
     }
