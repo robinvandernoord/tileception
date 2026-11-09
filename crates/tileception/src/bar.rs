@@ -1240,6 +1240,12 @@ impl Tileception {
 
         let plugin_chips = self.plugin_chips();
         for chip in &layout.chips {
+            if matches!(chip.kind, ChipKind::Network) {
+                // A plain icon like the bell's, not a pill.
+                hover_fill(painter, chip.rect, self.network.zoom.open || hit == Some(Hit::Network));
+                self.draw_network_icon(painter, chip.rect);
+                continue;
+            }
             let lit = match (chip.kind, hit) {
                 (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)) => true,
                 (ChipKind::Network, _) if self.network.zoom.open => true,
@@ -1261,11 +1267,7 @@ impl Tileception {
                     },
                     theme.accent,
                 ),
-                ChipKind::Network => match self.network_chip() {
-                    Some((_, icon, true)) => (icon, theme.accent),
-                    Some((_, icon, false)) => (icon, theme.muted),
-                    None => (glyph::WIFI_OFF, theme.muted),
-                },
+                ChipKind::Network => (glyph::WIFI_OFF, theme.muted),
                 ChipKind::Capture => (SCREEN, theme.danger),
                 ChipKind::Dnd => (glyph::MOON, theme.warning),
             };
@@ -1277,10 +1279,6 @@ impl Tileception {
                     ..Shape::filled(if lit { tint.alpha(0.22) } else { tint.alpha(0.1) }, chip.rect.h as f32 / 2.0)
                 },
             );
-            if matches!(chip.kind, ChipKind::Network) {
-                painter.glyph(icon, chip.rect, 14, tint);
-                continue;
-            }
             painter.glyph(icon, Rect::new(chip.rect.x + 4.0, chip.rect.y, 18.0, chip.rect.h), 13, tint);
             let text = Rect::new(chip.rect.x + 24.0, chip.rect.y, chip.rect.w - 30.0, chip.rect.h);
             painter.text(&chip.label, text, Style::new(theme.font_size * 0.8, theme.text.alpha(0.9)));

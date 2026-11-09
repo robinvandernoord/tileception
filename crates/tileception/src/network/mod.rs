@@ -305,6 +305,18 @@ impl Tileception {
             .then(|| ("Offline".to_string(), glyph::WIFI_OFF, false))
     }
 
+    /// The bar's network icon in `rect`: Wi-Fi with the strength it lacks
+    /// dimmed, the cable, or Wi-Fi off, in the bar's text colour.
+    pub(crate) fn draw_network_icon(&self, painter: &mut Painter, rect: Rect) {
+        let theme = &self.theme;
+        let Some((_, icon, lit)) = self.network_chip() else { return };
+        let colour = if lit { theme.text.alpha(0.86) } else { theme.muted };
+        if [glyph::WIFI_0, glyph::WIFI_1, glyph::WIFI_2, glyph::WIFI].contains(&icon) {
+            painter.glyph(glyph::WIFI, rect, 15, colour.alpha(0.3));
+        }
+        painter.glyph(icon, rect, 15, colour);
+    }
+
     /// What hovering the chip says: what the network is doing.
     pub(crate) fn network_tooltip(&self) -> (String, String) {
         let snapshot = &self.network.snapshot;
