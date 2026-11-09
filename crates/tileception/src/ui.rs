@@ -212,6 +212,14 @@ pub mod glyph {
     pub const THERMOMETER: &str = r#"<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 11v6"/>"#;
     pub const FAN: &str = r#"<circle cx="12" cy="12" r="2"/><path d="M12 10c0-4 1-7 4-7 2 0 3 2 2 4-1 2-4 3-6 3zM14 12c4 0 7 1 7 4 0 2-2 3-4 2-2-1-3-4-3-6zM12 14c0 4-1 7-4 7-2 0-3-2-2-4 1-2 4-3 6-3zM10 12c-4 0-7-1-7-4 0-2 2-3 4-2 2 1 3 4 3 6z"/>"#;
     pub const WIFI_OFF: &str = r#"<path d="M2 9a15 15 0 0 1 6-3.4M22 9a15 15 0 0 0-9-3.9M5 12.5a10 10 0 0 1 4-2.3M8.5 16a5 5 0 0 1 7 0M3 3l18 18"/>"#;
+    /// Wi-Fi at full strength; the others light fewer arcs.
+    pub const WIFI: &str =
+        r#"<path d="M1.5 8.5a15 15 0 0 1 21 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19.5h.01"/>"#;
+    pub const WIFI_2: &str = r#"<path d="M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19.5h.01"/>"#;
+    pub const WIFI_1: &str = r#"<path d="M8.5 15.5a5 5 0 0 1 7 0M12 19.5h.01"/>"#;
+    pub const WIFI_0: &str = r#"<path d="M12 19.5h.01"/>"#;
+    /// A wired network: three linked boxes.
+    pub const ETHERNET: &str = r#"<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="3" y="16" width="6" height="6" rx="1"/><rect x="15" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>"#;
     pub const BLUETOOTH: &str = r#"<path d="M7 7l10 10-5 5V2l5 5L7 17"/>"#;
     pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
     pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;

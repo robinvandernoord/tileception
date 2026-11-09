@@ -266,6 +266,15 @@ forward buttons; [Using Tileception](usage.md#minimap) describes it. To hide it:
 bar_minimap = false
 ```
 
+With NetworkManager running, the bar also shows a network chip that opens a
+card for joining Wi-Fi networks ([Using Tileception](usage.md#network)). To hide
+it:
+
+```toml
+[shell]
+bar_network = false
+```
+
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
 commands under `[binds]`.

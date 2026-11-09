@@ -359,6 +359,28 @@ to connect each. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 
+### Network
+
+With NetworkManager running, a chip in the bar shows the Wi-Fi network or the
+wired connection in use, or says Wi-Fi is off or you are offline. Click it, or
+type **Network** in the launcher, to open the network card:
+
+- The switch at the top turns Wi-Fi on or off.
+- Click a network to join it. Saved and open networks join at once; for a
+  secured one, type its password and press **Enter**. **Show** reveals what you
+  typed; copying works only while it shows.
+- **Disconnect** leaves the network you are on.
+
+While the card is open it has the keyboard: **Up** and **Down** choose a
+network, **Enter** joins it (or leaves the one you are on), and **Escape** goes
+back from the password or closes the card. If a password turns out wrong, the
+card asks for it again. Networks that need more than a password (enterprise
+Wi-Fi) are set up with **Network settings** at the bottom of the card, which
+opens `nm-connection-editor` when it is installed.
+
+`tileception msg network status` prints the same information, and
+`tileception msg network wifi off` switches Wi-Fi off from a script or binding.
+
 ## Gestures
 
 ### Touchpad

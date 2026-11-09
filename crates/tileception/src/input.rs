@@ -427,6 +427,23 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::DoctorKey(sym, Mods::from_state(mods))]);
             }
+            if panels && state.network.zoom.open {
+                // The network card has the keyboard while it is open; Super
+                // shortcuts and keys that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
+            }
             if sym == keysyms::KEY_Escape
                 && held == Mods::default()
                 && (state.close_calendar() || state.close_minimap())

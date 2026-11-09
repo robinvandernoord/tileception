@@ -226,6 +226,13 @@ const FIELDS: &[Field] = &[
     field(2, "shell.bar_minimap", "Layout minimap", "A small map of your window tree in the bar.", Control::Toggle),
     field(
         2,
+        "shell.bar_network",
+        "Network chip",
+        "Wi-Fi and wired status in the bar; click it to join a network.",
+        Control::Toggle,
+    ),
+    field(
+        2,
         "shell.tray_max_icons",
         "Tray slots",
         "Extra applications move into an overflow menu.",
@@ -625,7 +632,9 @@ fn show(value: Option<&toml::Value>) -> String {
 /// empty group open the page without a heading.
 fn group(key: &str) -> &'static str {
     match key {
-        "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.tray_max_icons" => "Bar",
+        "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.bar_network" | "shell.tray_max_icons" => {
+            "Bar"
+        }
         "shell.launcher" | "shell.notifications" | "shell.doctor" | "shell.power_menu" | "duck.size" => "Panels",
         "shell.media" => "Media keys",
         "shell.lock" | "general.lock_command" => "Lock screen",
