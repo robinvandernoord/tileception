@@ -244,7 +244,8 @@ impl Tileception {
         let mut elements: Vec<OutputElement> = Vec::new();
         elements.extend(self.settings_identify_elements(renderer));
         if active {
-            if self.feedback.is_some() {
+            // Hover highlights belong to the dialog, so its screenshot leaves them out too.
+            if self.feedback_visible() {
                 elements.extend(self.shell_pointer_feedback(renderer));
             }
             elements.extend(self.feedback_elements(renderer));

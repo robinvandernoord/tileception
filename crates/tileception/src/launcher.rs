@@ -413,15 +413,20 @@ impl Tileception {
         if png.len() as u64 > MAX_IMAGE || !png.starts_with(b"\x89PNG") {
             return Err(format!("{} is not a PNG of at most 64 MB", path.display()));
         }
+        self.copy_png(png.into());
+        Ok(())
+    }
+
+    /// Puts PNG data on the clipboard, owned by the compositor, for Wayland and X11.
+    pub(crate) fn copy_png(&mut self, png: std::sync::Arc<[u8]>) {
         let mime_types = vec!["image/png".to_string()];
-        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
+        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png)));
         self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
             tracing::warn!("could not offer the image to X11: {error:?}");
         }
-        Ok(())
     }
 
     /// Puts text on the clipboard, owned by the compositor, for Wayland and X11.
