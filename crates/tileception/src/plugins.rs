@@ -1740,15 +1740,15 @@ mod tests {
 
     #[test]
     fn plugin_ids_come_from_the_command() {
-        let id =
+        let derive =
             |command: &str, args: &[&str]| id_for(command, &args.iter().map(ToString::to_string).collect::<Vec<_>>());
-        assert_eq!(id("/usr/bin/weather", &[]).as_deref(), Some("weather"));
-        assert_eq!(id("/opt/bin/tileception-launcher-example", &["--stdio"]).as_deref(), Some("launcher-example"));
-        assert_eq!(id("python3", &["-u", "/home/me/My Block.py"]).as_deref(), Some("my-block"));
-        assert_eq!(id("npx", &["-y", "@acme/notes-server@1.2"]).as_deref(), Some("notes-server"));
-        assert_eq!(id("/usr/bin/Calendar_Sync.sh", &[]).as_deref(), Some("calendar_sync"));
-        assert_eq!(id("python3", &[]), None);
-        assert_eq!(id("/usr/bin/ü.ï", &[]), None);
+        assert_eq!(derive("/usr/bin/weather", &[]).as_deref(), Some("weather"));
+        assert_eq!(derive("/opt/bin/tileception-launcher-example", &["--stdio"]).as_deref(), Some("launcher-example"));
+        assert_eq!(derive("python3", &["-u", "/home/me/My Block.py"]).as_deref(), Some("my-block"));
+        assert_eq!(derive("npx", &["-y", "@acme/notes-server@1.2"]).as_deref(), Some("notes-server"));
+        assert_eq!(derive("/usr/bin/Calendar_Sync.sh", &[]).as_deref(), Some("calendar_sync"));
+        assert_eq!(derive("python3", &[]), None);
+        assert_eq!(derive("/usr/bin/ü.ï", &[]), None);
     }
 
     #[test]
