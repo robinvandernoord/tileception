@@ -70,6 +70,34 @@ independent crates carry the same policy in their own manifests.
 
 ## Repository structure
 
+### Clipboard persistence helper
+
+`scripts/build-clipboard-helper.sh` builds wl-clip-persist from an exact upstream
+Git revision with its lockfile. No upstream source is copied into this repo.
+Development builds use the selected cargo-plane builder and copy the helper
+back; Debian builds compile it inside their distribution build environment.
+`make build`, `make nested` and session installation put it beside the compositor
+as `tileception-clip-persist`. Debian packages install both in `/usr/bin`.
+
+When updating the revision, update the version and revision in
+`packaging/clipboard-helper-notices.hbs` too. Generate the committed notices
+with cargo-about (0.9.3 was used for the current notices), pointing at the
+upstream checkout for that exact revision:
+
+```sh
+cargo plane exec cargo about generate --locked --fail \
+  --manifest-path <upstream-checkout>/Cargo.toml \
+  --config packaging/clipboard-helper-about.toml \
+  packaging/clipboard-helper-notices.hbs \
+  --output-file packaging/clipboard-helper-NOTICES.txt
+```
+
+Run this on a builder with cargo-about installed; retrieve the resulting file
+when using a remote builder. The committed notices include the helper and its
+locked dependencies for all platforms, and ship with both installation paths.
+
+### Crates and resources
+
 | Crate                | Responsibility                                            |
 |----------------------|-----------------------------------------------------------|
 | `tileception-core`   | Layout tree, camera, focus, history and saved views       |

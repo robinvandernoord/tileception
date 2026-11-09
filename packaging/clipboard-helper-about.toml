@@ -1,0 +1,2 @@
+# cargo-about policy for the pinned helper and its locked dependencies.
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0"]

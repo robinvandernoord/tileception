@@ -38,7 +38,7 @@ if [ -e "$wake_unit" ]; then
 fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"
-for f in "$bindir/tileception" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$portals"; do
+for f in "$bindir/tileception" "$bindir/tileception-clip-persist" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt" "$portals"; do
     if [ -e "$f" ]; then
         rm -f "$f"
         echo "Removed $f"

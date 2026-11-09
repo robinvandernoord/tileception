@@ -38,8 +38,12 @@ bindir="$HOME/.local/bin"
 # dev-install (Cargo.toml) rebuilds faster after an edit than release.
 build=target/dev-install/tileception
 cargo plane build --profile dev-install -p tileception
+scripts/build-clipboard-helper.sh target/dev-install
 mkdir -p "$bindir"
 install -m 755 "$build" "$bindir/tileception"
+install -m 755 target/dev-install/tileception-clip-persist "$bindir/tileception-clip-persist"
+install -D -m 644 packaging/clipboard-helper-NOTICES.txt \
+    "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt"
 install -m 755 resources/tileception-session "$bindir/tileception-session"
 install -m 755 resources/tileception-power "$bindir/tileception-power"
 install -m 755 resources/tileception-screenshot "$bindir/tileception-screenshot"

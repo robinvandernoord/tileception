@@ -41,7 +41,7 @@ if [ "$arch" != "$native_arch" ]; then
     esac
 fi
 
-for tool in cargo dpkg-deb dpkg-shlibdeps "${binutils_prefix}objcopy" readelf; do
+for tool in cargo dpkg-deb dpkg-shlibdeps "${binutils_prefix}objcopy" "${binutils_prefix}strip" readelf; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build-deb: $tool is missing (dpkg-dev and binutils provide the non-cargo ones)" >&2
         exit 1
@@ -72,9 +72,11 @@ if [ -n "$cargo_target" ]; then
     export PKG_CONFIG_ALLOW_CROSS=1
     export PKG_CONFIG_LIBDIR="/usr/lib/$DEB_HOST_MULTIARCH/pkgconfig:/usr/share/pkgconfig"
     cargo build --locked --profile dist -p tileception --target "$cargo_target"
+    scripts/build-clipboard-helper.sh --package --target "$cargo_target"
     built="$target_dir/$cargo_target/dist/tileception"
 else
     cargo build --locked --profile dist -p tileception
+    scripts/build-clipboard-helper.sh --package
     built="$target_dir/dist/tileception"
 fi
 
@@ -86,6 +88,11 @@ mkdir -p "$root/DEBIAN" "$dbg/DEBIAN"
 
 # Files. The same set install-session.sh puts in ~/.local, at system paths.
 install -D -m 755 "$built" "$root/usr/bin/tileception"
+install -D -m 755 "$target_dir/clipboard-helper/bin/wl-clip-persist" \
+    "$root/usr/bin/tileception-clip-persist"
+"${binutils_prefix}strip" --strip-unneeded "$root/usr/bin/tileception-clip-persist"
+install -D -m 644 packaging/clipboard-helper-NOTICES.txt \
+    "$root/usr/share/doc/$package/clipboard-helper-NOTICES.txt"
 for helper in tileception-session tileception-power tileception-screenshot tileception-setup; do
     install -D -m 755 "resources/$helper" "$root/usr/bin/$helper"
 done
@@ -143,7 +150,8 @@ trap 'rm -rf "$shlibs_dir"' EXIT
 mkdir "$shlibs_dir/debian"
 printf 'Source: %s\n\nPackage: %s\nArchitecture: any\n' "$package" "$package" > "$shlibs_dir/debian/control"
 abs_bin=$(realpath "$bin")
-shlibs=$(cd "$shlibs_dir" && dpkg-shlibdeps -O "$abs_bin" | sed -n 's/^shlibs:Depends=//p')
+abs_helper=$(realpath "$root/usr/bin/tileception-clip-persist")
+shlibs=$(cd "$shlibs_dir" && dpkg-shlibdeps -O "$abs_bin" "$abs_helper" | sed -n 's/^shlibs:Depends=//p')
 
 # Companion programs, from deps/debian.txt: Xwayland is required, the rest of
 # the runtime group is recommended (apt installs it by default) and the

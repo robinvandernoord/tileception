@@ -62,6 +62,7 @@ check-deps:
 build: tools
 	cargo plane exec scripts/deps.sh check build
 	cargo plane build --release -p tileception
+	scripts/build-clipboard-helper.sh target/release
 
 clean:
 	rm -rf target crates/*/target
@@ -107,6 +108,7 @@ try-greeter: tools
 
 # The same build as `make install` (the dev-install profile), so one serves both.
 nested: tools
+	scripts/build-clipboard-helper.sh target/dev-install
 	cargo plane run --profile dev-install -p tileception -- --nested
 
 # The promo video: headless demo sessions recorded scene by scene, then cut

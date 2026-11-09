@@ -6,6 +6,15 @@ Files: *
 Copyright: 2026 Robin van der Noord
 License: MIT
 
+Files: usr/bin/tileception-clip-persist
+Copyright: 2021 Linus789
+License: MIT
+ Built from wl-clip-persist v0.5.0, revision
+ e26fde01c13922e3a65049dafb7d5adfbc52626e.
+ Source: https://github.com/Linus789/wl-clip-persist
+ The helper and its dependencies' notices are installed in
+ /usr/share/doc/tileception/clipboard-helper-NOTICES.txt.
+
 Files: crates/tileception/src/handoff/words.txt
 Copyright: 2016 Electronic Frontier Foundation
 License: CC-BY-3.0-US

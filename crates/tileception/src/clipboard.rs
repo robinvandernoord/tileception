@@ -71,13 +71,21 @@ impl Tileception {
         if self.greeter.is_some() || self.clipboard.child.is_some() {
             return;
         }
-        match self.command("wl-clip-persist", &["--clipboard".into(), "regular".into()]).spawn() {
+        // Installed next to the compositor, with a private name so installation
+        // never replaces a separately managed wl-clip-persist. Source-only
+        // development builds can still use an upstream helper from PATH.
+        let helper = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|directory| directory.join("tileception-clip-persist")))
+            .filter(|path| path.is_file());
+        let program = helper.as_deref().map_or_else(|| "wl-clip-persist".into(), |path| path.to_string_lossy());
+        match self.command(&program, &["--clipboard".into(), "regular".into()]).spawn() {
             Ok(child) => {
                 self.clipboard.child = Some(child);
                 tracing::info!("clipboard persistence started");
             }
             Err(err) => tracing::error!(
-                "could not start clipboard persistence: {err}; install wl-clip-persist and reload the config"
+                "could not start clipboard persistence ({program}): {err}; rebuild with make build or reinstall Tileception, then reload the config"
             ),
         }
     }
