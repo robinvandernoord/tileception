@@ -447,7 +447,8 @@ impl Tileception {
         }
         let network_unwanted = !matches!(mode, Mode::Full | Mode::Hairline)
             || self.is_locked()
-            || self.launcher.open
+            // The welcome screen is the launcher too, but it is the desktop.
+            || (self.launcher.open && !self.launcher.home)
             || self.power_menu.is_some()
             || !self.shell().bar_network;
         if network_unwanted && self.network.zoom.open {
@@ -628,7 +629,12 @@ impl Tileception {
         let tray = self.tray_slots(&mut right, top, height);
         let mut chips = Vec::new();
         for (kind, label) in self.chip_list() {
-            let width = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
+            // The network chip is only its icon; hovering it says the rest.
+            let width = if matches!(kind, ChipKind::Network) {
+                30.0
+            } else {
+                (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0)
+            };
             if right - width < left + 120.0 {
                 break;
             }
@@ -1271,6 +1277,10 @@ impl Tileception {
                     ..Shape::filled(if lit { tint.alpha(0.22) } else { tint.alpha(0.1) }, chip.rect.h as f32 / 2.0)
                 },
             );
+            if matches!(chip.kind, ChipKind::Network) {
+                painter.glyph(icon, chip.rect, 14, tint);
+                continue;
+            }
             painter.glyph(icon, Rect::new(chip.rect.x + 4.0, chip.rect.y, 18.0, chip.rect.h), 13, tint);
             let text = Rect::new(chip.rect.x + 24.0, chip.rect.y, chip.rect.w - 30.0, chip.rect.h);
             painter.text(&chip.label, text, Style::new(theme.font_size * 0.8, theme.text.alpha(0.9)));
@@ -1323,6 +1333,13 @@ impl Tileception {
         }
         if let Some(Hit::Slot(slot)) = hit {
             self.draw_slot_preview(painter, layout, slot);
+        }
+        if hit == Some(Hit::Network)
+            && !self.network.zoom.open
+            && let Some(chip) = layout.chips.iter().find(|chip| matches!(chip.kind, ChipKind::Network))
+        {
+            let (title, body) = self.network_tooltip();
+            self.bar_tooltip(painter, (chip.rect.x - 120.0).max(bar.x + 6.0), bar, &title, &body);
         }
         if let (Some(Hit::Battery), Some((rect, _)), Some(reading)) = (hit, &layout.battery, &self.battery.reading) {
             let left = (rect.x - 80.0).max(bar.x + 6.0);

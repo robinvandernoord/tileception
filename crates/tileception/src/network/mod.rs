@@ -76,6 +76,13 @@ struct Status {
     error: bool,
 }
 
+impl Network {
+    /// Whether this network was asked for and has not answered yet.
+    pub(crate) fn asked_for(&self, ssid: &[u8]) -> bool {
+        self.asked.as_deref() == Some(ssid)
+    }
+}
+
 impl Drop for Network {
     fn drop(&mut self) {
         if let Some(inputs) = self.inputs.take() {
@@ -143,7 +150,7 @@ struct Card {
 }
 
 /// The signal icon for a strength in percent.
-fn signal(strength: u8) -> &'static str {
+pub(crate) fn signal(strength: u8) -> &'static str {
     match strength {
         0..=24 => glyph::WIFI_0,
         25..=49 => glyph::WIFI_1,
@@ -159,7 +166,7 @@ pub(crate) fn valid_password(password: &str) -> bool {
 }
 
 /// What a network row says under the name.
-fn detail(network: &Wifi, asked: bool) -> &'static str {
+pub(crate) fn detail(network: &Wifi, asked: bool) -> &'static str {
     match network.link {
         Link::Connected => "Connected",
         Link::Connecting => "Connecting\u{2026}",
@@ -298,6 +305,22 @@ impl Tileception {
             .then(|| ("Offline".to_string(), glyph::WIFI_OFF, false))
     }
 
+    /// What hovering the chip says: what the network is doing.
+    pub(crate) fn network_tooltip(&self) -> (String, String) {
+        let snapshot = &self.network.snapshot;
+        let state = match self.network_chip() {
+            Some((label, _, true)) if label == "Wired" => "Connected by cable".to_string(),
+            Some((label, _, true)) => match snapshot.current() {
+                Some(network) => format!("Connected to {label}, {}% signal", network.strength),
+                None => format!("Connected to {label}"),
+            },
+            Some((label, ..)) => label,
+            None => String::new(),
+        };
+        let title = if snapshot.wifi_device.is_some() { "Wi-Fi" } else { "Network" };
+        (title.to_string(), format!("{state}. Click to choose a network."))
+    }
+
     /// The `network` command and the chip: opens the card or closes it.
     pub fn toggle_network(&mut self) {
         if self.network.zoom.open {
@@ -388,7 +411,7 @@ impl Tileception {
         self.network.prompt = Some(Prompt { network, input: TextInput::default(), reveal: false });
     }
 
-    fn network_connect(&mut self, network: Wifi, password: Option<Zeroizing<String>>) {
+    pub(crate) fn network_connect(&mut self, network: Wifi, password: Option<Zeroizing<String>>) {
         self.network.status = Some(Status { text: format!("Joining {}\u{2026}", network.name()), error: false });
         self.network.asked = Some(network.ssid.clone());
         self.network_request(Request::Connect {

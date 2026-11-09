@@ -527,6 +527,8 @@ enum Hit {
     /// Network: the Wi-Fi switch, a saved network's auto-join switch and
     /// Forget, the hidden network's fields and Join, and the editor.
     NetWifi,
+    /// A network in range: join it, or leave the one Wi-Fi is on.
+    NetVisible(usize),
     NetAuto(usize),
     NetForget(usize),
     NetName,
@@ -1827,6 +1829,7 @@ impl Tileception {
                 self.settings_load_apps();
             }
             Hit::NetWifi
+            | Hit::NetVisible(_)
             | Hit::NetAuto(_)
             | Hit::NetForget(_)
             | Hit::NetName

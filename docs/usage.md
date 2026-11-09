@@ -361,9 +361,9 @@ launcher to connect, disconnect or (`bt forget`) unpair devices.
 
 ### Network
 
-With NetworkManager running, a chip in the bar shows the Wi-Fi network or the
-wired connection in use, or says Wi-Fi is off or you are offline. Click it, or
-type **Network** in the launcher, to open the network card:
+With NetworkManager running, a Wi-Fi or cable icon in the bar shows how you
+are connected, with the signal strength; hover it for the network's name.
+Click it, or type **Network** in the launcher, to open the network card:
 
 - The switch at the top turns Wi-Fi on or off.
 - Click a network to join it. Saved and open networks join at once; for a
@@ -377,15 +377,17 @@ back from the password or closes the card. If a password turns out wrong, the
 card asks for it again. **Network settings** at the bottom of the card opens
 the Network page in Settings.
 
-The Network page holds what the card leaves out, and acts on NetworkManager at
-once rather than as part of the Settings draft:
+The Network page lists the same networks with a **Join** button each, and holds
+what the card leaves out. It acts on NetworkManager at once rather than as part
+of the Settings draft:
 
 - The connections that are up, with their addresses, gateway, DNS servers,
   interface and hardware address.
 - Saved Wi-Fi networks. The switch decides whether one joins by itself when in
   range; **Forget**, clicked twice, removes it with its password.
-- Joining a hidden network by its name, with a password or none for an open
-  one.
+- Joining a network by name: a secured one chosen above asks for its password
+  here, and a name that is not in the list joins as a hidden network. Leave the
+  password empty for an open network.
 - **Open editor** starts `nm-connection-editor`, when it is installed, for
   static addresses, VPNs and enterprise Wi-Fi.
 

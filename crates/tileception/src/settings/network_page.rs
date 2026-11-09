@@ -1,12 +1,13 @@
-//! The Network page: what the bar's network card leaves out. The
-//! connections that are up with their addresses, saved Wi-Fi networks to
-//! forget or stop joining by themselves, joining a hidden network, and
-//! NetworkManager's own editor for the rest.
+//! The Network page: the networks in range, as in the bar's card, and what
+//! the card leaves out. The connections that are up with their addresses,
+//! saved Wi-Fi networks to forget or stop joining by themselves, joining a
+//! network by name (also a hidden one), and NetworkManager's own editor for
+//! the rest.
 //!
 //! Unlike other pages these are not config.toml settings: they act on
 //! NetworkManager at once, outside the draft.
 
-use crate::network::manager::{Link, Request, Snapshot};
+use crate::network::manager::{Link, Request, Security, Snapshot};
 use crate::text_input::TextInput;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -30,8 +31,8 @@ pub(super) struct Page {
     name: TextInput,
     password: TextInput,
     reveal: bool,
-    /// The hidden network's field that has the keyboard: 0 for the name, 1
-    /// for the password.
+    /// The join form's field that has the keyboard: 0 for the name, 1 for
+    /// the password.
     typing: Option<usize>,
     /// The saved network whose Forget was clicked once: the next click forgets.
     forget: Option<usize>,
@@ -55,6 +56,9 @@ pub(super) struct NetworkFrame {
     pub cards: Vec<(Rect, &'static str)>,
     /// The switch for Wi-Fi.
     pub wifi: Option<Rect>,
+    /// Each network in range: its row, its button (none for networks joined
+    /// elsewhere) and its place in the list.
+    pub available: Vec<(Rect, Option<Rect>, usize)>,
     pub details: Vec<(Rect, usize)>,
     /// Each saved network's row, switch and Forget button.
     pub saved: Vec<(Rect, Rect, Rect, usize)>,
@@ -77,6 +81,12 @@ impl NetworkFrame {
         }
         for (rect, _) in &mut self.details {
             move_rect(rect);
+        }
+        for (row, button, _) in &mut self.available {
+            move_rect(row);
+            if let Some(button) = button {
+                move_rect(button);
+            }
         }
         for (row, switch, forget, _) in &mut self.saved {
             move_rect(row);
@@ -104,6 +114,9 @@ impl NetworkFrame {
     pub(super) fn hits(&self) -> Vec<(Rect, Hit)> {
         let mut hits = Vec::new();
         hits.extend(self.wifi.map(|rect| (rect, Hit::NetWifi)));
+        for (_, button, index) in &self.available {
+            hits.extend(button.map(|button| (button, Hit::NetVisible(*index))));
+        }
         for (_, switch, forget, index) in &self.saved {
             hits.push((*switch, Hit::NetAuto(*index)));
             hits.push((*forget, Hit::NetForget(*index)));
@@ -183,6 +196,7 @@ impl Tileception {
         let mut frame = NetworkFrame {
             cards: Vec::new(),
             wifi: None,
+            available: Vec::new(),
             details: Vec::new(),
             saved: Vec::new(),
             hidden: None,
@@ -210,6 +224,18 @@ impl Tileception {
         if snapshot.wifi_device.is_some() {
             let rect = card(&mut cursor, ROW, "WI-FI", &mut frame.cards);
             frame.wifi = Some(Rect::new(rect.right() - 58., rect.y + (ROW - 22.) / 2., 40., 22.));
+            if snapshot.wifi_enabled && snapshot.wifi_hardware {
+                let rows = snapshot.networks.len().max(1);
+                let rect = card(&mut cursor, rows as f64 * ROW, "AVAILABLE NETWORKS", &mut frame.cards);
+                for (index, network) in snapshot.networks.iter().enumerate() {
+                    let row = Rect::new(rect.x, rect.y + index as f64 * ROW, rect.w, ROW);
+                    let usable =
+                        !matches!(network.security, Security::Enterprise | Security::Wep) || network.link != Link::Idle;
+                    let button = usable
+                        .then(|| Rect::new(row.right() - BUTTON_W - 16., row.y + (ROW - 32.) / 2., BUTTON_W, 32.));
+                    frame.available.push((row, button, index));
+                }
+            }
         }
         let shown = snapshot.details.len().max(1);
         let rect = card(&mut cursor, shown as f64 * DETAILS_ROW, "CONNECTED", &mut frame.cards);
@@ -227,7 +253,7 @@ impl Tileception {
             }
             // A line of explanation, the two fields and the button.
             let height = 44. + 2. * (FIELD_H + 12.) + 32. + 16.;
-            let rect = card(&mut cursor, height, "HIDDEN NETWORK", &mut frame.cards);
+            let rect = card(&mut cursor, height, "JOIN A NETWORK", &mut frame.cards);
             frame.hidden = Some(rect);
             let field_x = rect.x + 140.;
             let field_w = (rect.w - 156.).max(120.);
@@ -253,6 +279,33 @@ impl Tileception {
         }
         match hit {
             Hit::NetWifi => self.network_set_wifi(None),
+            Hit::NetVisible(index) => {
+                let Some(network) = snapshot.networks.get(index).cloned() else { return };
+                let name = network.name();
+                if network.link != Link::Idle {
+                    self.network_request(Request::Disconnect);
+                } else if matches!(network.security, Security::Password { .. }) && network.saved.is_none() {
+                    // Its password goes in the form below.
+                    page.name = TextInput::default();
+                    page.name.insert(&name);
+                    page.password.text.zeroize();
+                    page.password.clear();
+                    page.typing = Some(1);
+                    self.settings.focus = Some(Hit::NetPassword);
+                    self.settings.message = format!("Type the password for {name} below, then press Join.");
+                    self.settings.error = false;
+                    let frame = self.settings_frame();
+                    if let Some(password) = frame.network.as_ref().and_then(|network| network.password) {
+                        let area = viewport(&frame);
+                        let below = (password.bottom() + 60. - area.bottom()).max(0.);
+                        self.settings.scroll = (self.settings.scroll + below).min(frame.max_scroll);
+                    }
+                } else {
+                    self.settings.message = format!("Joining {name}\u{2026}");
+                    self.settings.error = false;
+                    self.network_connect(network, None);
+                }
+            }
             Hit::NetAuto(index) => {
                 if let Some(saved) = snapshot.saved.get(index) {
                     let request = Request::Autoconnect(saved.path.clone(), !saved.autoconnect);
@@ -308,7 +361,11 @@ impl Tileception {
         page.password.clear();
         self.settings.message = format!("Joining {name}\u{2026}");
         self.settings.error = false;
-        self.network_request(Request::Hidden { ssid: name.into_bytes(), password });
+        let in_range = self.network.snapshot.networks.iter().find(|network| network.name() == name).cloned();
+        match in_range {
+            Some(network) => self.network_connect(network, password),
+            None => self.network_request(Request::Hidden { ssid: name.into_bytes(), password }),
+        }
     }
 
     /// Whether a hidden network's field has the keyboard: only while the
@@ -490,6 +547,39 @@ impl Tileception {
             }
         }
 
+        let available = frame.cards.iter().find(|(_, heading)| *heading == "AVAILABLE NETWORKS").map(|(rect, _)| *rect);
+        if snapshot.networks.is_empty()
+            && let Some(card) = available
+        {
+            painter.text("Looking for networks\u{2026}", Rect::new(card.x + 18., card.y, card.w - 36., card.h), small);
+        }
+        let last = frame.available.len().saturating_sub(1);
+        for (position, (row, join, index)) in frame.available.iter().enumerate() {
+            let Some(network) = snapshot.networks.get(*index) else { continue };
+            separator(painter, *row, position == last);
+            let lit = network.link == Link::Connected;
+            let badge = Rect::new(row.x + 16., row.y + 16., 28., 28.);
+            let colour = if lit { theme.accent } else { theme.muted };
+            painter.fill(badge, colour.alpha(0.14), 6.);
+            painter.glyph(glyph::WIFI, badge, 15, colour.alpha(0.3));
+            painter.glyph(crate::network::signal(network.strength), badge, 15, colour);
+            let text_x = badge.right() + 12.;
+            let text_w = join.map_or(row.right(), |join| join.x) - text_x - 34.;
+            let top = row.y + (ROW - 42.) / 2.;
+            painter.text(&network.name(), Rect::new(text_x, top, text_w, 21.), if lit { title.bold() } else { title });
+            let asked = self.network.asked_for(&network.ssid);
+            let detail = crate::network::detail(network, asked);
+            painter.text(detail, Rect::new(text_x, top + 22., text_w, 20.), small);
+            if network.security.secured() {
+                let lock = Rect::new(text_x + text_w + 4., row.y, 24., row.h);
+                painter.glyph(glyph::LOCK, lock, 13, theme.muted.alpha(0.8));
+            }
+            if let Some(join) = join {
+                let label = if network.link == Link::Idle { "Join" } else { "Disconnect" };
+                button(painter, *join, label, Hit::NetVisible(*index), false);
+            }
+        }
+
         let connected = frame.cards.iter().find(|(_, heading)| *heading == "CONNECTED").map(|(rect, _)| *rect);
         if snapshot.details.is_empty()
             && let Some(card) = connected
@@ -547,7 +637,7 @@ impl Tileception {
 
         if let Some(card) = frame.hidden {
             painter.text(
-                "For networks that do not show their name. Leave the password empty for an open network.",
+                "Choose a network above, or type the name of one that hides it. Leave the password empty for an open network.",
                 Rect::new(card.x + 18., card.y + 10., card.w - 36., 24.),
                 small,
             );

@@ -140,6 +140,10 @@ impl Tileception {
         if self.notifications_contain(point) {
             return self.notification_pointer_target(point);
         }
+        // The network card opens over the welcome screen.
+        if self.network.zoom.open {
+            return self.bar_pointer_target(point);
+        }
         if self.launcher.open && self.launcher_takes(point) {
             return self.launcher_pointer_target(point);
         }
