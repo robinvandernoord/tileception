@@ -267,8 +267,8 @@ bar_minimap = false
 ```
 
 With NetworkManager running, the bar also shows a network chip that opens a
-card for joining Wi-Fi networks ([Using Tileception](usage.md#network)). To hide
-it:
+card for joining Wi-Fi networks ([Using Tileception](usage.md#network)). Settings
+has the same switch on its Network page. To hide it:
 
 ```toml
 [shell]

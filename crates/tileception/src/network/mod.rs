@@ -36,8 +36,6 @@ const MESSAGE_H: f64 = 56.0;
 const PROMPT_H: f64 = 132.0;
 const FOOTER_H: f64 = 38.0;
 const PAD: f64 = 10.0;
-/// The program the card's "Network settings" opens, when installed.
-const EDITOR: &str = "nm-connection-editor";
 
 /// What the compositor knows about the network, and the card's state.
 #[derive(Default)]
@@ -58,8 +56,6 @@ pub struct Network {
     /// The network asked for, until NetworkManager says how it went.
     asked: Option<Vec<u8>>,
     compose: Option<xkb::compose::State>,
-    /// Whether [`EDITOR`] is installed, looked up when the card opens.
-    editor: bool,
 }
 
 /// Asking for a network's password.
@@ -122,7 +118,7 @@ impl crate::ui::PointerAction for Hit {
             Hit::Join => state.network_join(),
             Hit::Settings => {
                 state.close_network();
-                state.spawn(EDITOR, &[]);
+                state.open_settings_named("Network");
             }
         }
         state.schedule_render();
@@ -157,7 +153,7 @@ fn signal(strength: u8) -> &'static str {
 }
 
 /// WPA passwords have 8 to 63 characters, or are 64 hexadecimal digits.
-fn valid_password(password: &str) -> bool {
+pub(crate) fn valid_password(password: &str) -> bool {
     let length = password.chars().count();
     (8..=63).contains(&length) || (length == 64 && password.chars().all(|character| character.is_ascii_hexdigit()))
 }
@@ -172,7 +168,7 @@ fn detail(network: &Wifi, asked: bool) -> &'static str {
         Link::Idle => match network.security {
             Security::Open => "Open",
             Security::Password { .. } => "Secured",
-            Security::Enterprise => "Enterprise, set up in network settings",
+            Security::Enterprise => "Enterprise, set up in Settings",
             Security::Wep => "WEP, not supported",
         },
     }
@@ -224,7 +220,7 @@ impl Tileception {
         self.network.compose = crate::ui::compose_state();
     }
 
-    fn network_request(&self, request: Request) {
+    pub(crate) fn network_request(&self, request: Request) {
         if let Some(inputs) = &self.network.inputs {
             let _ = inputs.send(Input::Request(request));
         }
@@ -250,6 +246,7 @@ impl Tileception {
                 if !network.snapshot.running {
                     self.close_network();
                 }
+                self.settings_network_changed();
             }
             Event::Failed { ssid, reason, password } => {
                 self.network.asked = None;
@@ -267,6 +264,7 @@ impl Tileception {
                     self.notify_locally(&format!("Could not join {name}"), &body, tileception_notify::Urgency::Normal);
                 }
                 self.network.status = Some(Status { text: format!("{name}: {reason}"), error: true });
+                self.settings_network_failed(format!("Could not join {name}: {reason}"));
             }
         }
         self.schedule_render();
@@ -323,8 +321,6 @@ impl Tileception {
         self.network.selected = 0;
         self.network.first = 0;
         self.network.prompt = None;
-        self.network.editor = std::env::var_os("PATH")
-            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(EDITOR).is_file()));
         self.network_request(Request::Scan);
         self.force_keyboard_focus_sync();
     }
@@ -379,11 +375,7 @@ impl Tileception {
         }
         match network.security {
             Security::Enterprise | Security::Wep => {
-                let text = if self.network.editor {
-                    format!("Set {} up in network settings", network.name())
-                } else {
-                    format!("{} needs more than a password; set it up with nmcli", network.name())
-                };
+                let text = format!("{} needs more than a password: set it up in Settings, Network", network.name());
                 self.network.status = Some(Status { text, error: true });
             }
             Security::Password { .. } if network.saved.is_none() => self.network_prompt(network),
@@ -599,7 +591,7 @@ impl Tileception {
         });
         let footer = Rect::new(inner.x, card.bottom() - FOOTER_H, inner.w, FOOTER_H);
         let body = Rect::new(inner.x, top, inner.w, (footer.y - top).max(0.0));
-        let settings = self.network.editor.then(|| Rect::new(footer.right() - 124.0, footer.y + 5.0, 124.0, 28.0));
+        let settings = Some(Rect::new(footer.right() - 124.0, footer.y + 5.0, 124.0, 28.0));
         let mut layout = Card {
             switch,
             wired,

@@ -22,6 +22,8 @@ const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const CONNECTION: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+const IP4: &str = "org.freedesktop.NetworkManager.IP4Config";
+const IP6: &str = "org.freedesktop.NetworkManager.IP6Config";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
@@ -89,6 +91,31 @@ impl Wifi {
     }
 }
 
+/// A saved Wi-Fi connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub path: String,
+    /// The connection's name, usually the network's.
+    pub name: String,
+    pub ssid: Vec<u8>,
+    /// Joins by itself when in range.
+    pub autoconnect: bool,
+}
+
+/// A connection that is up: where it is and the addresses it got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Details {
+    pub wifi: bool,
+    /// The connection's name.
+    pub name: String,
+    pub interface: String,
+    pub hardware: String,
+    /// With their prefix length, IPv4 first.
+    pub addresses: Vec<String>,
+    pub gateway: Option<String>,
+    pub dns: Vec<String>,
+}
+
 /// What NetworkManager has, as one value so changes compare easily.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Snapshot {
@@ -103,6 +130,10 @@ pub struct Snapshot {
     pub wired: Option<Link>,
     /// Connected and connecting first, then strongest first.
     pub networks: Vec<Wifi>,
+    /// Saved Wi-Fi connections, by name.
+    pub saved: Vec<Saved>,
+    /// The connections that are up, wired first.
+    pub details: Vec<Details>,
 }
 
 impl Snapshot {
@@ -124,6 +155,16 @@ pub enum Request {
         password: Option<Zeroizing<String>>,
     },
     Disconnect,
+    /// Removes a saved connection.
+    Forget(String),
+    /// Whether a saved connection joins by itself.
+    Autoconnect(String, bool),
+    /// Joins a network that does not say its name; without a password it
+    /// is open.
+    Hidden {
+        ssid: Vec<u8>,
+        password: Option<Zeroizing<String>>,
+    },
 }
 
 /// What the compositor hears.
@@ -269,8 +310,8 @@ pub fn run(bus: &Connection, inputs: &mpsc::Receiver<Input>, events: &dyn Fn(Eve
 
 struct Worker<'a> {
     bus: &'a Connection,
-    /// Saved Wi-Fi connections' names by path; `None` for other kinds.
-    saved: HashMap<String, Option<Vec<u8>>>,
+    /// Saved Wi-Fi connections by path; `None` for other kinds.
+    saved: HashMap<String, Option<Saved>>,
     last: Option<Snapshot>,
     pending: Option<Pending>,
     events: &'a dyn Fn(Event) -> bool,
@@ -339,6 +380,38 @@ impl Worker<'_> {
                     tracing::warn!("network: could not disconnect: {error}");
                 }
             }
+            Request::Forget(saved) => {
+                if let Err(error) = self.call(&saved, CONNECTION, "Delete", &()) {
+                    tracing::warn!("network: could not forget a network: {error}");
+                }
+                self.saved.remove(&saved);
+            }
+            Request::Autoconnect(saved, autoconnect) => {
+                if let Err(error) = self.set_autoconnect(&saved, autoconnect) {
+                    tracing::warn!("network: could not change auto-join: {error}");
+                }
+                self.saved.remove(&saved);
+            }
+            Request::Hidden { ssid, password } => {
+                let Some(device) = self.device() else { return };
+                self.pending = None;
+                let security = if password.is_some() { Security::Password { sae: false } } else { Security::Open };
+                match self.connect_hidden(&device, &ssid, security, password) {
+                    Ok((active, created)) => {
+                        self.pending = Some(Pending {
+                            ssid,
+                            device,
+                            active,
+                            created: Some(created),
+                            since: Instant::now(),
+                            seen: false,
+                        });
+                    }
+                    Err(error) => {
+                        self.send(Event::Failed { ssid, reason: reason(&error), password: false });
+                    }
+                }
+            }
             Request::Connect { ssid, access_point, saved, security, password } => {
                 let Some(device) = self.device() else { return };
                 self.pending = None;
@@ -382,6 +455,35 @@ impl Worker<'_> {
         let reply = self.call(NM_PATH, NM, "AddAndActivateConnection", &(settings, device, specific))?;
         let (created, active): (OwnedObjectPath, OwnedObjectPath) = reply.body().deserialize()?;
         Ok((active.to_string(), Some(created.to_string())))
+    }
+
+    fn connect_hidden(
+        &self,
+        device: &str,
+        ssid: &[u8],
+        security: Security,
+        password: Option<Zeroizing<String>>,
+    ) -> zbus::Result<(String, String)> {
+        let device = ObjectPath::try_from(device)?;
+        let mut settings = new_connection(ssid, security, password.as_ref().map(|password| password.as_str()));
+        if let Some(wireless) = settings.get_mut("802-11-wireless") {
+            wireless.insert("hidden", Value::from(true));
+        }
+        let specific = ObjectPath::from_static_str_unchecked("/");
+        let reply = self.call(NM_PATH, NM, "AddAndActivateConnection", &(settings, device, specific))?;
+        let (created, active): (OwnedObjectPath, OwnedObjectPath) = reply.body().deserialize()?;
+        Ok((active.to_string(), created.to_string()))
+    }
+
+    /// Changes whether a saved connection joins by itself. NetworkManager
+    /// keeps the secrets an update leaves out.
+    fn set_autoconnect(&self, saved: &str, autoconnect: bool) -> zbus::Result<()> {
+        let reply = self.call(saved, CONNECTION, "GetSettings", &())?;
+        let mut settings: HashMap<String, HashMap<String, OwnedValue>> = reply.body().deserialize()?;
+        let value = OwnedValue::try_from(Value::from(autoconnect)).map_err(zbus::Error::from)?;
+        settings.entry("connection".into()).or_default().insert("autoconnect".into(), value);
+        self.call(saved, CONNECTION, "Update", &(settings,))?;
+        Ok(())
     }
 
     /// Stores a new password in a saved connection, kept by NetworkManager
@@ -467,12 +569,12 @@ impl Worker<'_> {
             if self.saved.contains_key(&path) {
                 continue;
             }
-            let ssid = self
+            let saved = self
                 .call(&path, CONNECTION, "GetSettings", &())
                 .and_then(|reply| reply.body().deserialize::<HashMap<String, Properties>>())
                 .ok()
-                .and_then(|settings| wifi_ssid(&settings));
-            self.saved.insert(path, ssid);
+                .and_then(|settings| saved_wifi(&path, &settings));
+            self.saved.insert(path, saved);
         }
         Ok(snapshot(&manager, &objects, &self.saved))
     }
@@ -513,13 +615,93 @@ fn key_management(security: Security) -> &'static str {
     }
 }
 
-/// A saved connection's network name, for Wi-Fi connections.
-fn wifi_ssid(settings: &HashMap<String, Properties>) -> Option<Vec<u8>> {
-    let kind = settings.get("connection")?.get("type")?;
-    if <&str>::try_from(kind).ok()? != "802-11-wireless" {
+/// A saved connection, for Wi-Fi connections.
+fn saved_wifi(path: &str, settings: &HashMap<String, Properties>) -> Option<Saved> {
+    let connection = settings.get("connection")?;
+    if <&str>::try_from(connection.get("type")?).ok()? != "802-11-wireless" {
         return None;
     }
-    bytes(settings.get("802-11-wireless")?.get("ssid")?)
+    let ssid = bytes(settings.get("802-11-wireless")?.get("ssid")?)?;
+    let name = connection
+        .get("id")
+        .and_then(|id| <&str>::try_from(id).ok())
+        .map_or_else(|| String::from_utf8_lossy(&ssid).into_owned(), str::to_string);
+    let autoconnect = connection.get("autoconnect").is_none_or(|value| bool::try_from(value).unwrap_or(true));
+    Some(Saved { path: path.to_string(), name, ssid, autoconnect })
+}
+
+fn text(properties: &Properties, name: &str) -> String {
+    properties.get(name).and_then(|value| <&str>::try_from(value).ok()).unwrap_or_default().to_string()
+}
+
+/// An entry of an `a{sv}` value.
+fn entry<'v>(dict: &'v zbus::zvariant::Dict<'_, '_>, name: &str) -> Option<&'v Value<'v>> {
+    let (_, value) = dict.iter().find(|(key, _)| matches!(key, Value::Str(key) if key.as_str() == name))?;
+    Some(match value {
+        Value::Value(inner) => inner,
+        other => other,
+    })
+}
+
+/// The "address" (and "prefix") of each entry of an `aa{sv}`, as text.
+fn address_data(value: Option<&OwnedValue>, prefix: bool) -> Vec<String> {
+    let Some(Value::Array(array)) = value.map(|value| &**value) else { return Vec::new() };
+    array
+        .iter()
+        .filter_map(|item| {
+            let Value::Dict(dict) = item else { return None };
+            let Some(Value::Str(address)) = entry(dict, "address") else { return None };
+            let length = entry(dict, "prefix").and_then(|length| u32::try_from(length).ok());
+            Some(match length {
+                Some(length) if prefix => format!("{address}/{length}"),
+                _ => address.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Where a connection that is up is, and the addresses it got.
+fn details(objects: &Objects, device: &Properties, wifi: bool, extra: Option<&Properties>) -> Details {
+    let config = |property: &str, interface: &str| {
+        object(device.get(property)).and_then(|path| objects.get(&path)?.get(interface).cloned())
+    };
+    let ip4 = config("Ip4Config", IP4);
+    let ip6 = config("Ip6Config", IP6);
+    let mut addresses = Vec::new();
+    let mut gateway = None;
+    let mut dns = Vec::new();
+    for (config, version) in [(&ip4, 4), (&ip6, 6)] {
+        let Some(config) = config else { continue };
+        addresses.extend(
+            address_data(config.get("AddressData"), true)
+                .into_iter()
+                .filter(|address| version == 4 || !address.starts_with("fe80")),
+        );
+        if gateway.is_none() {
+            gateway = Some(text(config, "Gateway")).filter(|gateway| !gateway.is_empty());
+        }
+        dns.extend(address_data(config.get("NameserverData"), false));
+        if version == 6
+            && let Some(Value::Array(servers)) = config.get("Nameservers").map(|value| &**value)
+        {
+            // IPv6 servers are byte arrays.
+            for server in servers.iter() {
+                let Value::Array(octets) = server else { continue };
+                let octets: Option<Vec<u8>> = octets.iter().map(|byte| u8::try_from(byte).ok()).collect();
+                if let Some(Ok(octets)) = octets.map(<[u8; 16]>::try_from) {
+                    dns.push(std::net::Ipv6Addr::from(octets).to_string());
+                }
+            }
+        }
+    }
+    let name = object(device.get("ActiveConnection"))
+        .and_then(|active| objects.get(&active)?.get(ACTIVE).map(|active| text(active, "Id")))
+        .unwrap_or_default();
+    let hardware = Some(text(device, "HwAddress"))
+        .filter(|address| !address.is_empty())
+        .or_else(|| extra.map(|extra| text(extra, "HwAddress")))
+        .unwrap_or_default();
+    Details { wifi, name, interface: text(device, "Interface"), hardware, addresses, gateway, dns }
 }
 
 /// What a device's failure reason means to someone connecting, and whether
@@ -608,7 +790,7 @@ fn flag(properties: &Properties, name: &str) -> bool {
 
 /// NetworkManager's objects as a snapshot. `saved` holds the saved Wi-Fi
 /// connections' network names by path.
-fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Option<Vec<u8>>>) -> Snapshot {
+fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Option<Saved>>) -> Snapshot {
     let mut snapshot = Snapshot {
         running: true,
         wifi_enabled: flag(manager, "WirelessEnabled"),
@@ -622,7 +804,16 @@ fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Opt
     for (path, interfaces) in devices {
         let device = &interfaces[DEVICE];
         let state = number(device, "State");
-        match number(device, "DeviceType") {
+        let kind = number(device, "DeviceType");
+        if state == STATE_ACTIVATED && matches!(kind, DEVICE_ETHERNET | DEVICE_WIFI) {
+            let extra = interfaces.get(if kind == DEVICE_WIFI {
+                WIRELESS
+            } else {
+                "org.freedesktop.NetworkManager.Device.Wired"
+            });
+            snapshot.details.push(details(objects, device, kind == DEVICE_WIFI, extra));
+        }
+        match kind {
             DEVICE_ETHERNET if snapshot.wired.is_none() && state > STATE_UNAVAILABLE => {
                 snapshot.wired = Some(link(state));
             }
@@ -633,6 +824,11 @@ fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Opt
             _ => {}
         }
     }
+    snapshot.details.sort_by_key(|details| details.wifi);
+    snapshot.saved = saved.values().flatten().cloned().collect();
+    snapshot.saved.sort_by(|left, right| {
+        left.name.to_lowercase().cmp(&right.name.to_lowercase()).then_with(|| left.path.cmp(&right.path))
+    });
     let Some((device_path, interfaces)) = wifi else { return snapshot };
     snapshot.wifi_device = Some(device_path);
     let device = &interfaces[DEVICE];
@@ -642,7 +838,7 @@ fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Opt
     let active_ssid = object(device.get("ActiveConnection"))
         .and_then(|active| objects.get(&active)?.get(ACTIVE)?.get("Connection").map(|value| object(Some(value))))
         .flatten()
-        .and_then(|connection| saved.get(&connection).cloned().flatten())
+        .and_then(|connection| saved.get(&connection).cloned().flatten().map(|saved| saved.ssid))
         .or_else(|| {
             let point = object(wireless.and_then(|wireless| wireless.get("ActiveAccessPoint")))?;
             bytes(objects.get(&point)?.get(ACCESS_POINT)?.get("Ssid")?)
@@ -669,7 +865,7 @@ fn snapshot(manager: &Properties, objects: &Objects, saved: &HashMap<String, Opt
             None => networks.push(Wifi {
                 saved: saved
                     .iter()
-                    .filter(|(_, saved)| saved.as_deref() == Some(&ssid[..]))
+                    .filter(|(_, saved)| saved.as_ref().is_some_and(|saved| saved.ssid == ssid))
                     .map(|(path, _)| path.clone())
                     .min(),
                 link: if active_ssid.as_deref() == Some(&ssid[..]) { state } else { Link::Idle },
@@ -770,7 +966,18 @@ mod tests {
         objects.insert("/ap/3".into(), point("Office", 55, 0x288));
         objects.insert("/ap/4".into(), point("Home", 60, 0x108));
         objects.insert("/ap/5".into(), point("", 90, 0));
-        let saved = HashMap::from([("/settings/home".to_string(), Some(b"Home".to_vec()))]);
+        let saved = HashMap::from([
+            (
+                "/settings/home".to_string(),
+                Some(Saved {
+                    path: "/settings/home".into(),
+                    name: "Home".into(),
+                    ssid: b"Home".to_vec(),
+                    autoconnect: true,
+                }),
+            ),
+            ("/settings/vpn".to_string(), None),
+        ]);
         let snapshot = snapshot(&manager, &objects, &saved);
         assert!(snapshot.running && snapshot.wifi_enabled && snapshot.wifi_hardware);
         assert_eq!(snapshot.wifi_device.as_deref(), Some(device));
@@ -814,6 +1021,7 @@ mod tests {
 
         pub const DEVICE_PATH: &str = "/org/freedesktop/NetworkManager/Devices/1";
         const ACTIVE_PATH: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
+        const IP4_PATH: &str = "/org/freedesktop/NetworkManager/IP4Config/1";
         /// What a failed activation returns: it never shows up.
         const GONE_PATH: &str = "/org/freedesktop/NetworkManager/ActiveConnection/99";
         const POINTS: [(&str, &str, u8); 2] = [
@@ -829,6 +1037,10 @@ mod tests {
             /// The connection Wi-Fi is on.
             pub active: Option<String>,
             pub scans: usize,
+            /// Saved connections that do not join by themselves.
+            pub manual: Vec<String>,
+            /// Networks joined as hidden ones.
+            pub hidden: Vec<Vec<u8>>,
             next: u32,
         }
 
@@ -846,8 +1058,13 @@ mod tests {
             OwnedValue::try_from(value).unwrap()
         }
 
-        fn right_password(ssid: &[u8]) -> &'static str {
-            if ssid == b"Home" { "home-password" } else { "cafe-password" }
+        /// The password a network takes; none for an open one.
+        fn right_password(ssid: &[u8]) -> Option<&'static str> {
+            match ssid {
+                b"Home" => Some("home-password"),
+                b"Attic" => None,
+                _ => Some("cafe-password"),
+            }
         }
 
         /// Turns the device on to `connection` when its password is right;
@@ -861,16 +1078,21 @@ mod tests {
             let right = lock(world)
                 .connections
                 .get(saved)
-                .is_some_and(|(ssid, password)| password.as_deref() == Some(right_password(ssid)));
+                .is_some_and(|(ssid, password)| password.as_deref() == right_password(ssid));
             let emitter = SignalEmitter::new(connection, DEVICE_PATH)?;
             if !right {
                 Device::device_state_changed(&emitter, super::STATE_FAILED, 50, 7).await?;
                 return Ok(path(GONE_PATH));
             }
-            lock(world).active = Some(saved.to_string());
+            let id = {
+                let mut world = lock(world);
+                world.active = Some(saved.to_string());
+                world.connections.get(saved).map(|(ssid, _)| String::from_utf8_lossy(ssid).into_owned())
+            };
             // There is none the first time.
             let _ = server.remove::<Active, _>(ACTIVE_PATH).await;
-            server.at(ACTIVE_PATH, Active { connection: saved.to_string() }).await?;
+            let active = Active { connection: saved.to_string(), id: id.unwrap_or_default() };
+            server.at(ACTIVE_PATH, active).await?;
             Device::device_state_changed(&emitter, super::STATE_ACTIVATED, 50, 0).await?;
             Ok(path(ACTIVE_PATH))
         }
@@ -908,8 +1130,15 @@ mod tests {
                     .and_then(|security| security.get("psk"))
                     .and_then(|psk| <&str>::try_from(psk).ok())
                     .map(str::to_string);
+                let hidden = settings
+                    .get("802-11-wireless")
+                    .and_then(|wireless| wireless.get("hidden"))
+                    .is_some_and(|hidden| bool::try_from(hidden).unwrap_or(false));
                 let saved = {
                     let mut world = lock(&self.0);
+                    if hidden {
+                        world.hidden.push(ssid.clone());
+                    }
                     world.next += 1;
                     let saved = format!("/org/freedesktop/NetworkManager/Settings/{}", world.next + 10);
                     world.connections.insert(saved.clone(), (ssid, password));
@@ -957,24 +1186,43 @@ mod tests {
         #[interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
         impl Saved {
             fn get_settings(&self) -> HashMap<String, HashMap<String, OwnedValue>> {
-                let ssid =
-                    lock(&self.world).connections.get(&self.path).map(|(ssid, _)| ssid.clone()).unwrap_or_default();
+                let world = lock(&self.world);
+                let ssid = world.connections.get(&self.path).map(|(ssid, _)| ssid.clone()).unwrap_or_default();
+                let autoconnect = !world.manual.contains(&self.path);
                 HashMap::from([
                     (
                         "connection".to_string(),
-                        HashMap::from([("type".to_string(), owned(Value::from("802-11-wireless")))]),
+                        HashMap::from([
+                            ("type".to_string(), owned(Value::from("802-11-wireless"))),
+                            ("id".to_string(), owned(Value::from(String::from_utf8_lossy(&ssid).into_owned()))),
+                            ("autoconnect".to_string(), owned(Value::from(autoconnect))),
+                        ]),
                     ),
                     ("802-11-wireless".to_string(), HashMap::from([("ssid".to_string(), owned(Value::from(ssid)))])),
                 ])
             }
 
             fn update(&self, settings: HashMap<String, HashMap<String, OwnedValue>>) {
+                let autoconnect = settings
+                    .get("connection")
+                    .and_then(|connection| connection.get("autoconnect"))
+                    .is_none_or(|value| bool::try_from(value).unwrap_or(true));
+                {
+                    let mut world = lock(&self.world);
+                    world.manual.retain(|saved| *saved != self.path);
+                    if !autoconnect {
+                        world.manual.push(self.path.clone());
+                    }
+                }
                 let password = settings
                     .get("802-11-wireless-security")
                     .and_then(|security| security.get("psk"))
                     .and_then(|psk| <&str>::try_from(psk).ok())
                     .map(str::to_string);
-                if let Some((_, saved)) = lock(&self.world).connections.get_mut(&self.path) {
+                // As NetworkManager does, an update without secrets keeps them.
+                if let Some((_, saved)) = lock(&self.world).connections.get_mut(&self.path)
+                    && password.is_some()
+                {
                     *saved = password;
                 }
             }
@@ -1015,6 +1263,44 @@ mod tests {
             #[zbus(property)]
             fn active_connection(&self) -> OwnedObjectPath {
                 path(if lock(&self.0).active.is_some() { ACTIVE_PATH } else { "/" })
+            }
+
+            #[zbus(property)]
+            fn ip4_config(&self) -> OwnedObjectPath {
+                path(if lock(&self.0).active.is_some() { IP4_PATH } else { "/" })
+            }
+
+            #[zbus(property)]
+            fn interface(&self) -> String {
+                "wlp2s0".into()
+            }
+
+            #[zbus(property)]
+            fn hw_address(&self) -> String {
+                "AA:BB:CC:DD:EE:FF".into()
+            }
+        }
+
+        pub struct Ip4;
+
+        #[interface(name = "org.freedesktop.NetworkManager.IP4Config")]
+        impl Ip4 {
+            #[zbus(property)]
+            fn address_data(&self) -> Vec<HashMap<String, OwnedValue>> {
+                vec![HashMap::from([
+                    ("address".to_string(), owned(Value::from("192.168.1.23"))),
+                    ("prefix".to_string(), owned(Value::from(24u32))),
+                ])]
+            }
+
+            #[zbus(property)]
+            fn gateway(&self) -> String {
+                "192.168.1.1".into()
+            }
+
+            #[zbus(property)]
+            fn nameserver_data(&self) -> Vec<HashMap<String, OwnedValue>> {
+                vec![HashMap::from([("address".to_string(), owned(Value::from("1.1.1.1")))])]
             }
         }
 
@@ -1072,6 +1358,7 @@ mod tests {
 
         pub struct Active {
             connection: String,
+            id: String,
         }
 
         #[interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
@@ -1084,6 +1371,11 @@ mod tests {
             #[zbus(property)]
             fn state(&self) -> u32 {
                 super::ACTIVE_ACTIVATED
+            }
+
+            #[zbus(property)]
+            fn id(&self) -> String {
+                self.id.clone()
             }
         }
 
@@ -1110,6 +1402,8 @@ mod tests {
                 .serve_at(DEVICE_PATH, Device(world.clone()))
                 .unwrap()
                 .serve_at(DEVICE_PATH, Wireless(world.clone()))
+                .unwrap()
+                .serve_at(IP4_PATH, Ip4)
                 .unwrap();
             for (point, ssid, strength) in POINTS {
                 builder = builder.serve_at(point, Point { ssid, strength }).unwrap();
@@ -1208,6 +1502,33 @@ mod tests {
         assert!(network(&joined, "Cafe").unwrap().saved.is_some());
         let Event::Snapshot(snapshot) = &joined else { unreachable!() };
         assert_eq!(snapshot.current().map(Wifi::name).as_deref(), Some("Cafe"));
+        assert_eq!(
+            snapshot.details,
+            [Details {
+                wifi: true,
+                name: "Cafe".into(),
+                interface: "wlp2s0".into(),
+                hardware: "AA:BB:CC:DD:EE:FF".into(),
+                addresses: vec!["192.168.1.23/24".into()],
+                gateway: Some("192.168.1.1".into()),
+                dns: vec!["1.1.1.1".into()],
+            }]
+        );
+        let names: Vec<&str> = snapshot.saved.iter().map(|saved| saved.name.as_str()).collect();
+        assert_eq!(names, ["Cafe", "Home"]);
+        let cafe_saved = snapshot.saved[0].clone();
+        assert!(cafe_saved.autoconnect);
+
+        // Settings: Cafe stops joining by itself, keeping its password.
+        inputs.send(Input::Request(Request::Autoconnect(cafe_saved.path.clone(), false))).unwrap();
+        until(
+            &events,
+            "Cafe joining only when chosen",
+            |event| matches!(event, Event::Snapshot(snapshot) if snapshot.saved.iter().any(|saved| saved.name == "Cafe" && !saved.autoconnect)),
+        );
+        let password =
+            world.lock().unwrap().connections.get(&cafe_saved.path).and_then(|(_, password)| password.clone());
+        assert_eq!(password.as_deref(), Some("cafe-password"));
 
         inputs.send(Input::Request(Request::Disconnect)).unwrap();
         until(
@@ -1246,6 +1567,21 @@ mod tests {
         until(&events, "joining Home", |event| {
             network(event, "Home").is_some_and(|network| network.link == Link::Connected)
         });
+
+        // Settings: forgetting Cafe, and joining a hidden open network.
+        inputs.send(Input::Request(Request::Forget(cafe_saved.path.clone()))).unwrap();
+        until(
+            &events,
+            "Cafe forgotten",
+            |event| matches!(event, Event::Snapshot(snapshot) if snapshot.saved.iter().all(|saved| saved.name != "Cafe")),
+        );
+        inputs.send(Input::Request(Request::Hidden { ssid: b"Attic".to_vec(), password: None })).unwrap();
+        until(
+            &events,
+            "joining the hidden Attic",
+            |event| matches!(event, Event::Snapshot(snapshot) if snapshot.details.iter().any(|details| details.name == "Attic")),
+        );
+        assert_eq!(world.lock().unwrap().hidden, [b"Attic".to_vec()]);
 
         inputs.send(Input::Request(Request::Wifi(false))).unwrap();
         until(&events, "Wi-Fi off", |event| matches!(event, Event::Snapshot(snapshot) if !snapshot.wifi_enabled));

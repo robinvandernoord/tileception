@@ -374,9 +374,20 @@ type **Network** in the launcher, to open the network card:
 While the card is open it has the keyboard: **Up** and **Down** choose a
 network, **Enter** joins it (or leaves the one you are on), and **Escape** goes
 back from the password or closes the card. If a password turns out wrong, the
-card asks for it again. Networks that need more than a password (enterprise
-Wi-Fi) are set up with **Network settings** at the bottom of the card, which
-opens `nm-connection-editor` when it is installed.
+card asks for it again. **Network settings** at the bottom of the card opens
+the Network page in Settings.
+
+The Network page holds what the card leaves out, and acts on NetworkManager at
+once rather than as part of the Settings draft:
+
+- The connections that are up, with their addresses, gateway, DNS servers,
+  interface and hardware address.
+- Saved Wi-Fi networks. The switch decides whether one joins by itself when in
+  range; **Forget**, clicked twice, removes it with its password.
+- Joining a hidden network by its name, with a password or none for an open
+  one.
+- **Open editor** starts `nm-connection-editor`, when it is installed, for
+  static addresses, VPNs and enterprise Wi-Fi.
 
 `tileception msg network status` prints the same information, and
 `tileception msg network wifi off` switches Wi-Fi off from a script or binding.
