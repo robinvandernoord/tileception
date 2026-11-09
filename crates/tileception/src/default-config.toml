@@ -166,8 +166,9 @@ enabled = false
 # the charge either way (hover it for the time left).
 #
 # The focus border shows the charge: this colour while charging, and at or
-# below each level while on battery. Colours are #rrggbb, or accent, warning
-# or danger from [theme]. Plugged in and not charging keeps the accent.
+# below each level while on battery. Colours are #rrggbb, or accent, warning,
+# danger, muted or text from [theme]. Plugged in and not charging keeps the
+# accent.
 # border = true
 # charging = "#8fd65a"
 # levels = [
