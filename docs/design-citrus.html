@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tileception: Citrus</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: a design reference sheet in Tide. One section per concept, ordered from expected to wild, each a 16:10 screen mockup beside its notes. */
+  :root {
+    color-scheme: dark;
+    --page: #0b0c0e; --sheet: #15171a; --sheet-line: #23262b;
+    --wallpaper: #1c1f24; --surface: #24272e; --popup: #2a2e36; --tab-on: #2bd4a71a;
+    --text: #e8eaee; --muted: #8b919c; --faint: #5d636e; --line: #3a3f48; --border: #343842;
+    --teal: #2bd4a7; --blue: #5c8ff2; --on-accent: #0d1117;
+    --accent-fill: linear-gradient(135deg, var(--teal), var(--blue));
+    --accent-line: linear-gradient(90deg, var(--teal), var(--blue));
+    --selected: linear-gradient(90deg, #2bd4a733, #5c8ff214);
+    --glow: 0 0 0 1px var(--teal), 0 0 18px #2bd4a744;
+    --shadow-l: 0 8px 24px #0006;
+    --warn: #e8b04a;
+    --sans: Inter, Cantarell, Ubuntu, "Noto Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--page); color: #ccd; font: 14px/1.5 var(--sans);
+    padding-block: 32px 56px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+  h1 { font-size: 24px; color: #fff; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; color: #fff; font-weight: 600; text-wrap: balance; }
+  h3 { font-size: 12px; color: #fff; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+  p { max-width: 66ch; }
+  .intro { color: #9aa1ab; display: flex; flex-direction: column; gap: 10px; }
+  code, kbd { font: 12px/1.4 var(--mono); }
+  code { color: #c9d1d9; background: #ffffff0d; padding: 1px 5px; border-radius: 4px; }
+  kbd {
+    display: inline-block; padding: 0 6px; border-radius: 4px; color: var(--text);
+    background: var(--popup); border: 1px solid var(--border); border-bottom-width: 2px; font-size: 11px;
+  }
+
+  /* spectrum: the order of the sections is real information */
+  .spectrum { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 6px; }
+  .spectrum a {
+    display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 8px; text-decoration: none;
+    background: var(--sheet); border: 1px solid var(--sheet-line); color: var(--muted); font-size: 12px;
+  }
+  .spectrum a b { color: var(--text); font-weight: 600; font-size: 13px; }
+  .spectrum a:hover, .spectrum a:focus-visible { border-color: var(--teal); outline: none; }
+  .spectrum-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); margin-top: 6px; }
+  .spectrum-scale span:last-child { color: var(--teal); }
+  .ramp { height: 3px; border-radius: 2px; margin-top: 4px; background: linear-gradient(90deg, var(--line), var(--teal) 70%, var(--blue)); }
+
+  section.concept {
+    padding: 20px; border-radius: 14px; background: var(--sheet); border: 1px solid var(--sheet-line);
+    display: flex; flex-direction: column; gap: 16px; scroll-margin-top: 16px;
+  }
+  .concept header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .concept header .tag { font: 11px var(--mono); color: var(--teal); }
+  .concept header p { color: #9aa1ab; flex-basis: 100%; }
+  .body { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .notes { display: flex; flex-direction: column; gap: 14px; font-size: 13px; color: #b3b9c2; min-width: 0; }
+  .notes ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .notes li { padding-left: 14px; position: relative; }
+  .notes li::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+  .notes .why li::before { background: var(--teal); }
+  .notes .cost li::before { background: var(--warn); }
+  .caption { font-size: 11px; color: var(--faint); margin-top: 6px; text-align: center; }
+
+  /* ---------- the screen: Tide desktop ---------- */
+  .screen {
+    position: relative; aspect-ratio: 16 / 10; max-width: 100%; overflow: hidden; border-radius: 8px;
+    background: var(--wallpaper); color: var(--text); container-type: inline-size;
+    font-size: clamp(9px, 1.45cqi, 13px);
+  }
+  .bar {
+    position: absolute; left: 0; right: 0; top: 0; height: 5.2%; display: flex; align-items: center; gap: 1em;
+    padding: 0 1.2%; font-size: 0.85em; color: var(--muted); background: #17191d;
+  }
+  .bar .ws { display: flex; gap: 4px; } .bar .ws i { width: 0.6em; height: 0.6em; border-radius: 50%; background: var(--line); }
+  .bar .ws i.on { background: var(--teal); box-shadow: 0 0 6px var(--teal); }
+  .bar .clock { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+  .bar .chip { padding: 0.1em 0.6em; border-radius: 4px; background: var(--surface); }
+  .bar .chip.live { color: var(--on-accent); background: var(--accent-fill); }
+  .tiles { position: absolute; inset: 7% 1.2% 1.6%; display: grid; gap: 1.2%; }
+  .tile {
+    position: relative; border-radius: 6px; background: var(--surface); border: 1px solid var(--border);
+    padding: 1.6% 2%; overflow: hidden; color: var(--muted); min-width: 0;
+  }
+  .tile .title { display: flex; align-items: center; gap: 0.5em; color: var(--text); font-weight: 600; margin-bottom: 0.7em; white-space: nowrap; }
+  .tile.focused { border-color: var(--teal); box-shadow: var(--glow); }
+  .tile.focused .title::before { content: ""; width: 0.5em; height: 0.5em; border-radius: 50%; background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+  .lines i { display: block; height: 0.5em; margin: 0.55em 0; border-radius: 3px; background: var(--line); }
+  .lines i:nth-child(2) { width: 70%; } .lines i:nth-child(3) { width: 85%; } .lines i:nth-child(4) { width: 45%; }
+  .files { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8em; }
+  .file { display: flex; flex-direction: column; align-items: center; gap: 0.3em; font-size: 0.82em; color: var(--muted); }
+  .file .thumb { width: 100%; aspect-ratio: 1; border-radius: 4px; background: #2e323a; }
+  .file.lifted .thumb { opacity: 0.35; outline: 1px dashed var(--line); }
+  .pic { background: linear-gradient(160deg, #f0a35e 0%, #d4586b 45%, #3b2a5a 100%); }
+  .pic2 { background: linear-gradient(170deg, #9fd6e8, #3a7ca5 60%, #1f3a4d); }
+  .doc { background: linear-gradient(#e8eaee 0 18%, #c9cdd4 18% 22%, #e8eaee 22% 34%, #c9cdd4 34% 38%, #e8eaee 38%); }
+  .popup {
+    border-radius: 10px; background: var(--popup); border: 1px solid var(--border); box-shadow: var(--shadow-l);
+  }
+  /* the drag card from drag.rs */
+  .dragcard {
+    position: absolute; display: flex; align-items: center; gap: 0.6em; padding: 0.45em 0.7em 0.45em 0.45em;
+    border-radius: 8px; background: var(--popup); border: 1px solid var(--border); box-shadow: var(--shadow-l);
+    font-size: 0.9em; white-space: nowrap; z-index: 5;
+  }
+  .dragcard .thumb { width: 2.4em; height: 2.4em; border-radius: 4px; flex: none; }
+  .dragcard b { display: block; color: var(--text); font-weight: 600; }
+  .dragcard small { color: var(--muted); font-size: 0.85em; }
+  .cursor { position: absolute; width: 1.3em; height: 1.3em; z-index: 6; pointer-events: none; }
+  .hint {
+    position: absolute; z-index: 7; padding: 0.35em 0.7em; border-radius: 6px; font-size: 0.82em; color: var(--muted);
+    background: #17191dee; border: 1px solid var(--border); white-space: nowrap;
+  }
+  .hint kbd { font-size: 0.9em; padding: 0 0.4em; }
+  .toast {
+    position: absolute; right: 1.6%; bottom: 3%; width: 34%; padding: 0.8em 0.9em 0.8em 1.2em; font-size: 0.9em; overflow: hidden; z-index: 8;
+  }
+  .toast::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-line); }
+  .toast b { display: block; color: var(--text); font-weight: 600; }
+  .toast span { color: var(--muted); }
+  .toast .acts { display: flex; gap: 0.5em; margin-top: 0.6em; }
+  .toast .acts em { font-style: normal; padding: 0.15em 0.6em; border-radius: 4px; background: var(--surface); color: var(--text); font-size: 0.9em; }
+  .toast .acts em:first-child { background: var(--tab-on); color: var(--teal); }
+  .toast .progress { height: 2px; margin-top: 0.6em; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .toast .progress i { display: block; height: 100%; width: 64%; background: var(--accent-line); }
+
+  /* ---------- 1. wheel ---------- */
+  .wheel { position: absolute; left: 54%; top: 56%; width: 40%; aspect-ratio: 1; transform: translate(-50%, -50%); z-index: 4; }
+  .wheel svg { width: 100%; height: 100%; overflow: visible; }
+  .wheel .slice path { fill: #2a2e36f2; stroke: var(--wallpaper); stroke-width: 1.5; transition: fill .12s; cursor: pointer; }
+  .wheel .slice text { fill: var(--muted); font: 600 12px var(--sans); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .wheel .slice text.sub { font: 400 8.5px var(--mono); fill: var(--faint); }
+  .wheel .slice.on path { fill: url(#tide); filter: drop-shadow(0 0 10px #2bd4a766); }
+  .wheel .slice.on text { fill: var(--on-accent); }
+  .wheel .slice.on text.sub { fill: #0d1117aa; }
+  .wheel .ringline { fill: none; stroke: var(--border); }
+  .wheel .modes text { font: 500 9.5px var(--sans); fill: var(--faint); text-anchor: middle; }
+  .wheel .modes text.on { fill: var(--teal); }
+  .wheel .hub { fill: var(--popup); stroke: var(--border); }
+  .wheel .hubtxt { font: 600 11px var(--sans); fill: var(--text); text-anchor: middle; }
+  .wheel .hubsub { font: 400 8.5px var(--mono); fill: var(--muted); text-anchor: middle; }
+  .wheel .huberr { fill: var(--teal); }
+
+  /* ---------- 2. palette ---------- */
+  .palette { position: absolute; left: 39%; top: 25%; width: 44%; padding: 0.8em; z-index: 4; }
+  .field {
+    display: flex; align-items: center; gap: 0.5em; padding: 0.5em 0.6em; border-radius: 6px; background: var(--surface);
+    border: 1px solid #2bd4a744; color: var(--text); margin-bottom: 0.6em; font-size: 1.05em;
+  }
+  .filechip {
+    display: inline-flex; align-items: center; gap: 0.4em; padding: 0.1em 0.5em 0.1em 0.15em; border-radius: 4px;
+    background: var(--tab-on); color: var(--teal); font-size: 0.85em; white-space: nowrap;
+  }
+  .filechip i { width: 1.2em; height: 1.2em; border-radius: 3px; }
+  .caret { display: inline-block; width: 1px; height: 1.1em; background: var(--teal); vertical-align: middle; animation: blink 1.1s steps(1) infinite; }
+  .field em { color: var(--faint); font-style: normal; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .group { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); padding: 0.5em 0.6em 0.2em; }
+  .row { display: flex; align-items: center; gap: 0.6em; padding: 0.42em 0.6em; border-radius: 6px; color: var(--muted); }
+  .row .ic { width: 1.25em; height: 1.25em; border-radius: 4px; background: #4a4f5a; flex: none; display: grid; place-items: center; font: 600 0.6em var(--mono); color: var(--text); }
+  .row b { font-weight: 500; color: inherit; }
+  .row small { margin-left: auto; font: 0.82em var(--mono); color: var(--faint); white-space: nowrap; }
+  .row.on { background: var(--selected); color: var(--text); }
+  .row.on .ic { background: var(--accent-fill); color: var(--on-accent); }
+  .row.on small { color: var(--muted); }
+  .row .match { color: var(--teal); }
+  .footer { display: flex; gap: 1em; padding: 0.5em 0.6em 0.1em; font-size: 0.78em; color: var(--faint); border-top: 1px solid var(--border); margin-top: 0.4em; }
+
+  /* ---------- 3. destination ---------- */
+  .dropzone {
+    position: absolute; inset: 0; border-radius: 6px; border: 1.5px dashed var(--teal);
+    background: linear-gradient(135deg, #2bd4a714, #5c8ff20d);
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8%; z-index: 2;
+  }
+  .arrive {
+    display: flex; align-items: center; gap: 0.6em; padding: 0.55em 0.8em; border-radius: 8px;
+    background: var(--popup); border: 1px solid var(--teal); box-shadow: var(--glow); white-space: nowrap;
+  }
+  .arrive .from { color: var(--faint); text-decoration: line-through; text-decoration-color: #ffffff44; }
+  .arrive .to { color: var(--text); font-weight: 600; }
+  .arrive small { color: var(--muted); font: 0.85em var(--mono); }
+  .arrive .arr { color: var(--teal); }
+  .ghostzone {
+    position: absolute; inset: 0; border-radius: 6px; z-index: 2; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8%;
+  }
+  .ghostzone span {
+    padding: 0.3em 0.6em; border-radius: 6px; font-size: 0.82em; color: var(--muted); background: #17191dcc; border: 1px solid var(--border);
+  }
+  .form .fld { height: 1.8em; border-radius: 4px; background: #1c1f24; border: 1px solid var(--border); margin: 0.5em 0 0.9em; }
+  .form .lab { font-size: 0.8em; color: var(--muted); }
+  .form .drop { height: 5.5em; border-radius: 6px; border: 1px dashed var(--line); display: grid; place-items: center; font-size: 0.82em; color: var(--faint); }
+  .term { font: 0.85em/1.6 var(--mono); color: var(--muted); }
+  .term .p { color: var(--teal); }
+
+  /* ---------- 4. peel ---------- */
+  .peel-stage { position: absolute; inset: 7% 1.2% 1.6%; }
+  .peel-frame {
+    position: absolute; inset: 0; border-radius: 8px; border: 1px solid var(--teal); box-shadow: var(--glow);
+    background: #1f2228; overflow: hidden; display: flex; flex-direction: column;
+  }
+  .crumbs { display: flex; align-items: center; gap: 0.45em; padding: 0.55em 0.8em; font-size: 0.9em; color: var(--muted); border-bottom: 1px solid var(--border); background: #1c1f24; flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+  .crumbs .thumb { width: 1.6em; height: 1.6em; border-radius: 3px; flex: none; }
+  .crumbs b { color: var(--text); font-weight: 600; }
+  .crumbs button { all: unset; cursor: pointer; color: var(--muted); padding: 0.1em 0.35em; border-radius: 4px; }
+  .crumbs button:hover, .crumbs button:focus-visible { color: var(--text); background: var(--surface); }
+  .crumbs .sep { color: var(--faint); }
+  .crumbs .depth { margin-left: auto; font: 0.85em var(--mono); color: var(--faint); }
+  .peel-tree { position: relative; flex: 1; padding: 1.2%; transform-origin: 0 0; }
+  .peel-tree.zooming { transition: transform .38s cubic-bezier(.3,.7,.2,1), opacity .38s; }
+  .ptree { position: absolute; inset: 1.2%; display: grid; gap: 1.2%; }
+  .ptile {
+    all: unset; box-sizing: border-box; position: relative; border-radius: 6px; background: var(--surface); border: 1px solid var(--border);
+    padding: 0.8em 0.9em; display: flex; flex-direction: column; gap: 0.3em; cursor: pointer; overflow: hidden; min-width: 0; min-height: 0;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .ptile:hover, .ptile:focus-visible { border-color: var(--teal); box-shadow: var(--glow); }
+  .ptile .k { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
+  .ptile b { color: var(--text); font-weight: 600; font-size: 1.15em; }
+  .ptile.big b { font-size: 1.6em; }
+  .ptile small { color: var(--muted); font: 0.82em var(--mono); }
+  .ptile .peek { margin-top: auto; display: flex; flex-wrap: wrap; gap: 0.3em; }
+  .ptile .peek span { font-size: 0.75em; padding: 0.05em 0.45em; border-radius: 3px; background: #1c1f24; color: var(--muted); }
+  .ptile.leaf { background: linear-gradient(160deg, #2a2e36, #24272e); }
+  .ptile.leaf:hover { background: var(--selected), var(--surface); }
+  .ptile.leaf .go { margin-top: auto; font-size: 0.8em; color: var(--faint); }
+  .ptile.leaf:hover .go { color: var(--teal); }
+  .peel-done { position: absolute; inset: 0; display: none; place-items: center; text-align: center; color: var(--muted); }
+  .peel-done b { display: block; color: var(--text); font-size: 1.3em; margin-bottom: 0.3em; }
+  .peel-done.show { display: grid; }
+
+  /* ---------- 5. duck ---------- */
+  .duck { position: absolute; left: 50%; bottom: 1.6%; width: 12%; z-index: 4; transform: translateX(-50%); }
+  .duck svg { width: 100%; display: block; overflow: visible; }
+  .duck .held { position: absolute; left: 62%; top: 26%; width: 34%; aspect-ratio: 1; border-radius: 3px; transform: rotate(-14deg); box-shadow: 0 2px 6px #0008; }
+  .bubble { position: absolute; left: 50%; bottom: 25%; transform: translateX(-62%); width: 40%; padding: 0.85em; z-index: 5; }
+  .bubble::after {
+    content: ""; position: absolute; left: 58%; bottom: -7px; width: 12px; height: 12px; background: var(--popup);
+    border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); transform: rotate(45deg);
+  }
+  .bubble p { color: var(--text); margin-bottom: 0.6em; }
+  .bubble p span { color: var(--muted); }
+  .choices { display: flex; flex-direction: column; gap: 0.3em; }
+  .choice { display: flex; align-items: center; gap: 0.6em; padding: 0.4em 0.6em; border-radius: 6px; background: var(--surface); color: var(--muted); }
+  .choice kbd { font-size: 0.8em; padding: 0 0.4em; }
+  .choice b { color: var(--text); font-weight: 500; }
+  .choice small { margin-left: auto; font: 0.8em var(--mono); color: var(--faint); }
+  .choice.on { background: var(--selected); outline: 1px solid #2bd4a755; }
+  .choice.more { background: none; color: var(--faint); }
+  .crumb-trail { position: absolute; left: 28%; top: 38%; width: 21%; height: 36%; z-index: 3; pointer-events: none; }
+
+  /* ---------- shared ---------- */
+  .shared { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .shared > div { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .mini { position: relative; padding: 1em 1.1em 1em 1.3em; font-size: 13px; overflow: hidden; }
+  .mini::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-line); }
+  .mini.warn::before { background: var(--warn); }
+  .mini b { display: block; color: var(--text); font-weight: 600; }
+  .mini span { color: var(--muted); }
+  .mini .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .mini .acts em { font-style: normal; font-size: 12px; padding: 2px 8px; border-radius: 4px; background: var(--surface); color: var(--text); }
+  .mini .acts em:first-child { background: var(--tab-on); color: var(--teal); }
+  .mini .progress { height: 2px; margin-top: 10px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .mini .progress i { display: block; height: 100%; width: 38%; background: var(--accent-line); }
+  pre.cli { font: 12px/1.6 var(--mono); color: #b3b9c2; background: var(--wallpaper); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  pre.cli .c { color: var(--faint); }
+  pre.cli .p { color: var(--teal); }
+
+  .verdict { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; font-size: 13px; color: #b3b9c2; }
+  .verdict > div { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; border-radius: 10px; background: var(--wallpaper); border: 1px solid var(--border); }
+  .verdict > div.pick { border-color: var(--teal); box-shadow: var(--glow); }
+
+  @media (max-width: 860px) {
+    .body, .shared, .verdict { grid-template-columns: 1fr; }
+    .spectrum { grid-template-columns: 1fr 1fr; }
+    .spectrum-scale, .ramp { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .caret { animation: none; }
+    .peel-tree.zooming { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="intro">
+  <h1>Citrus in Tileception</h1>
+  <p>Citrus converts and edits files while you drag them: pick up a file, press a key, release it on an option, and a new file appears beside the original. On most Linux desktops it has to guess at the drag from outside. Tileception doesn't have to guess. It already brokers every drag, reads the file list as the drag starts and draws a card for it (<code>drag.rs</code>). So Citrus can live inside the compositor rather than float above it.</p>
+  <p>Five ways to do that, all in Tide. They share one key: hold <kbd>Super</kbd> mid-drag. Citrus uses <kbd>Shift</kbd>, <kbd>Ctrl</kbd> and <kbd>Cmd</kbd> on macOS, but on Linux <kbd>Shift</kbd> and <kbd>Ctrl</kbd> already change a drag between move and copy, and <kbd>Super</kbd> is Tileception's own.</p>
+  <nav class="spectrum" aria-label="Concepts">
+    <a href="#wheel"><b>Wheel</b>Citrus as you know it</a>
+    <a href="#palette"><b>Drop palette</b>The launcher, mid-drag</a>
+    <a href="#arrive"><b>Arrive as</b>The window decides</a>
+    <a href="#peel"><b>Peel</b>Zoom into the file</a>
+    <a href="#duck"><b>Duck</b>Feed it to the duck</a>
+  </nav>
+  <div class="ramp" aria-hidden="true"></div>
+  <div class="spectrum-scale" aria-hidden="true"><span>Expected</span><span>Wild</span></div>
+</header>
+
+<!-- 1. WHEEL -->
+<section class="concept" id="wheel">
+  <header><h2>Wheel</h2><span class="tag">expected</span>
+    <p>Citrus's own radial wheel, redrawn in Tide. Graphite slices, the hovered one filled with the teal to blue gradient and glowing like a focused tile.</p></header>
+  <div class="body">
+    <div>
+      <div class="screen" id="wheel-screen">
+        <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Photos</span><span class="clock">14:32</span></div>
+        <div class="tiles" style="grid-template-columns: 1.1fr 1fr;">
+          <div class="tile focused"><div class="title">Files · Pictures/Lisbon</div>
+            <div class="files">
+              <div class="file lifted"><div class="thumb pic"></div>IMG_2041.heic</div>
+              <div class="file"><div class="thumb pic2"></div>IMG_2042.heic</div>
+              <div class="file"><div class="thumb"></div>IMG_2043.heic</div>
+              <div class="file"><div class="thumb doc"></div>route.pdf</div>
+            </div></div>
+          <div class="tile"><div class="title">Mail · Draft to Ana</div><div class="lines"><i></i><i></i><i></i><i></i></div></div>
+        </div>
+        <div class="wheel"><svg id="wheel-svg" viewBox="-130 -130 260 260" role="img" aria-label="Convert wheel with eight formats"></svg></div>
+        <div class="hint" style="left: 3%; bottom: 4%;"><kbd>Super</kbd> again: Tools · Send &nbsp; <kbd>Esc</kbd> drops normally</div>
+      </div>
+      <div class="caption">Mid-drag, Super held. Hover the slices.</div>
+    </div>
+    <div class="notes">
+      <div><h3>How it goes</h3>
+        <ul><li>Drag a file and hold <kbd>Super</kbd>. The drag card slides into the hub and the wheel opens around it.</li>
+          <li>Tap <kbd>Super</kbd> again to cycle Convert, Tools and Send, shown as the arc above the ring.</li>
+          <li>Release on a slice. The wheel stays until you let go of the file, like Citrus.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Anyone who knows Citrus already knows this. Nothing to learn.</li><li>Fixed slice positions build muscle memory: PNG is always at twelve o'clock.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Eight slices is the ceiling. Video and documents need more formats than fit.</li><li>Near a screen edge the wheel has to shift away from the pointer.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. PALETTE -->
+<section class="concept" id="palette">
+  <header><h2>Drop palette</h2><span class="tag">familiar, with a twist</span>
+    <p>Super mid-drag opens the launcher, already holding the file as a chip in its search field. Type to filter, then drop on a row or press Enter. It reads like an instant answer: the launcher already does <code>5 km in mi</code>, so <code>IMG_2041.heic in webp</code> fits right in.</p></header>
+  <div class="body">
+    <div>
+      <div class="screen">
+        <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Photos</span><span class="clock">14:32</span></div>
+        <div class="tiles" style="grid-template-columns: 1.1fr 1fr;">
+          <div class="tile"><div class="title">Files · Pictures/Lisbon</div>
+            <div class="files">
+              <div class="file lifted"><div class="thumb pic"></div>IMG_2041.heic</div>
+              <div class="file"><div class="thumb pic2"></div>IMG_2042.heic</div>
+              <div class="file"><div class="thumb"></div>IMG_2043.heic</div>
+              <div class="file"><div class="thumb doc"></div>route.pdf</div>
+            </div></div>
+          <div class="tile"><div class="title">Mail · Draft to Ana</div><div class="lines"><i></i><i></i><i></i><i></i></div></div>
+        </div>
+        <div class="palette popup" role="img" aria-label="Launcher holding a file, filtered to web formats">
+          <div class="field"><span class="filechip"><i class="pic"></i>IMG_2041.heic</span>web<span class="caret"></span><em>p</em></div>
+          <div class="group">Convert</div>
+          <div class="row on"><span class="ic">W</span><b><span class="match">Web</span>P</b><small>≈ 410 KB · Enter</small></div>
+          <div class="row"><span class="ic">J</span><b>JPG for the <span class="match">web</span></b><small>≈ 520 KB</small></div>
+          <div class="group">Tools</div>
+          <div class="row"><span class="ic">↘</span><b>Resize for <span class="match">web</span>, 2048 px</b><small>keeps HEIC</small></div>
+          <div class="row"><span class="ic">⌖</span><b>Remove location, then <span class="match">Web</span>P</b><small>chained</small></div>
+          <div class="footer"><span><kbd>Enter</kbd> run</span><span><kbd>Tab</kbd> chain another step</span><span><kbd>Esc</kbd> keep dragging</span></div>
+        </div>
+      </div>
+      <div class="caption">The launcher opens under the pointer, at the same spot the drag card was.</div>
+    </div>
+    <div class="notes">
+      <div><h3>How it goes</h3>
+        <ul><li>Drag, hold <kbd>Super</kbd>: the drag card turns into the file chip in a launcher field.</li>
+          <li>Type to filter. The field edits like every other Tileception field (word moves, Ctrl+U, compose keys).</li>
+          <li>Drop on a row, or let go and press <kbd>Enter</kbd>. <kbd>Tab</kbd> chains steps: strip location, then WebP.</li>
+          <li>No drag at all: select files, open the launcher, type <code>convert</code>.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>No limit on options. Video's forty formats are a few letters away.</li><li>Sizes are estimated before you commit, in the same quiet mono as other answers.</li><li>Reuses the launcher, its ranking and its history: the formats you pick often rise to the top.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Typing while holding a mouse button is awkward. Most will let go first, which is why Enter has to work after release.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. ARRIVE AS -->
+<section class="concept" id="arrive">
+  <header><h2>Arrive as</h2><span class="tag">contextual</span>
+    <p>Skip the menu. As you carry a file over a window, its tile says what the file will become when it lands there: a JPG for the upload form, a path for the terminal. Super opens the choices when the guess is wrong.</p></header>
+  <div class="body">
+    <div>
+      <div class="screen">
+        <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Trip admin</span><span class="clock">14:32</span></div>
+        <div class="tiles" style="grid-template-columns: 0.9fr 1.25fr; grid-template-rows: 1fr 0.8fr;">
+          <div class="tile" style="grid-row: span 2;"><div class="title">Files · Pictures/Lisbon</div>
+            <div class="files" style="grid-template-columns: repeat(2, 1fr);">
+              <div class="file lifted"><div class="thumb pic"></div>IMG_2041.heic</div>
+              <div class="file"><div class="thumb pic2"></div>IMG_2042.heic</div>
+              <div class="file"><div class="thumb"></div>IMG_2043.heic</div>
+              <div class="file"><div class="thumb doc"></div>route.pdf</div>
+            </div></div>
+          <div class="tile focused form"><div class="title">Browser · Expense claim</div>
+            <div class="lab">Description</div><div class="fld"></div>
+            <div class="lab">Receipt (JPG or PNG, max 2 MB)</div>
+            <div class="drop" style="margin-top: .5em;">Drop a file</div>
+            <div class="dropzone"><div class="arrive">
+              <span class="from">IMG_2041.heic</span><span class="arr">→</span><span class="to">JPG</span><small>3.1 MB → 1.4 MB</small>
+            </div></div>
+          </div>
+          <div class="tile"><div class="title">Terminal · ~/trip</div>
+            <div class="term"><span class="p">$</span> scp </div>
+            <div class="ghostzone"><span>Arrives as path</span></div>
+          </div>
+        </div>
+        <div class="dragcard" style="left: 62%; top: 27%;"><div class="thumb pic"></div><div><b>IMG_2041.heic</b><small>1 picture</small></div></div>
+        <svg class="cursor" style="left: 61%; top: 25%;" viewBox="0 0 24 24"><path d="M4 2l15 9-6.5 1.6L9 19z" fill="#e8eaee" stroke="#0d1117" stroke-width="1.2"/></svg>
+        <div class="hint" style="left: 3%; bottom: 4%;"><kbd>Super</kbd> choose another format</div>
+      </div>
+      <div class="caption">The upload form only takes JPG or PNG, so the file arrives as a JPG.</div>
+    </div>
+    <div class="notes">
+      <div><h3>How it goes</h3>
+        <ul><li>Drag over a window: the tile gets a dashed teal outline and a card naming what arrives.</li>
+          <li>Drop, and the window receives a fresh converted copy. The original never moves.</li>
+          <li>Tiles you pass but don't hover show their guess faintly, so you can pick the right target from afar.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Zero extra keys for the common case. The compositor sees the target's accepted types during the drag and can hand it a converted file instead.</li><li>Same idea across machines: a handoff drag to a Mac-less laptop can arrive as JPG.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Most apps accept <code>text/uri-list</code> and nothing more specific. Guesses then come from per-app rules, which need curating.</li><li>Silent conversion surprises people. The card has to be loud enough to read before the drop.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. PEEL -->
+<section class="concept" id="peel">
+  <header><h2>Peel</h2><span class="tag">on brand, wild</span>
+    <p>Tile it, nest it, zoom it, for files. Super mid-drag and the camera zooms into the drag card, which opens into its own little tree of tiles: Convert, Tools, Send. Hover a group and the camera flies one level deeper. Every choice is a big tile, never a sliver of a ring.</p></header>
+  <div class="body">
+    <div>
+      <div class="screen" id="peel-screen">
+        <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Photos</span><span class="chip live">IMG_2041.heic</span><span class="clock">14:32</span></div>
+        <div class="peel-stage">
+          <div class="peel-frame">
+            <div class="crumbs" id="peel-crumbs"></div>
+            <div class="peel-tree" id="peel-tree"></div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">Click a tile to zoom in (in Tileception, hovering for a moment does it). Click the path to zoom out.</div>
+    </div>
+    <div class="notes">
+      <div><h3>How it goes</h3>
+        <ul><li>Drag, hold <kbd>Super</kbd>: the camera zooms from the desktop into the card, the same flight as zooming into a tile.</li>
+          <li>Rest on a group to fly in. Move to the frame's edge, or scroll back, to fly out.</li>
+          <li>Drop on a leaf to run it. The camera flies back to where you were and the new file is selected.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>Uses the gesture Tileception users already have in their hands. The minimap even shows how deep you are.</li><li>Big targets at every depth, so it scales to video and archives without cramming.</li><li>Group sizes can follow use: the formats you pick most get the larger tiles.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>Hover-to-enter needs a careful dwell time, or crossing a tile on the way somewhere else zooms you in.</li><li>Changing tile sizes breaks muscle memory. Keep positions stable and only grow them.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- 5. DUCK -->
+<section class="concept" id="duck">
+  <header><h2>Duck</h2><span class="tag">wildest</span>
+    <p>The rubber duck already wanders the bottom of the screen. Drop a file on it and it holds it in its beak, then offers what it thinks you want, with the three likeliest options on number keys. It's the friendliest door for people who will never learn a modifier key.</p></header>
+  <div class="body">
+    <div>
+      <div class="screen">
+        <div class="bar"><span class="ws"><i class="on"></i><i></i><i></i></span><span>Thesis</span><span class="clock">14:32</span></div>
+        <div class="tiles" style="grid-template-columns: 1fr 1fr;">
+          <div class="tile"><div class="title">Files · Downloads</div>
+            <div class="files">
+              <div class="file"><div class="thumb doc"></div>notes.docx</div>
+              <div class="file lifted"><div class="thumb" style="background:#3a3f48"></div>lecture.mov</div>
+              <div class="file"><div class="thumb pic2"></div>scan.png</div>
+              <div class="file"><div class="thumb"></div>data.csv</div>
+            </div></div>
+          <div class="tile"><div class="title">Editor · chapter-3.md</div><div class="lines"><i></i><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div></div>
+        </div>
+        <div class="bubble popup">
+          <p>A 1.2 GB lecture. <span>Shall I…</span></p>
+          <div class="choices">
+            <div class="choice on"><kbd>1</kbd><b>Pull out the audio</b><small>M4A · ≈ 58 MB</small></div>
+            <div class="choice"><kbd>2</kbd><b>Shrink for sharing</b><small>MP4 · ≈ 180 MB</small></div>
+            <div class="choice"><kbd>3</kbd><b>Transcribe it</b><small>via Doctor</small></div>
+            <div class="choice more"><kbd>Space</kbd>Everything else</div>
+          </div>
+        </div>
+        <div class="duck" aria-hidden="true">
+          <svg viewBox="0 0 120 100">
+            <ellipse cx="60" cy="95" rx="40" ry="4" fill="#00000055"/>
+            <path d="M18 62c0-18 18-26 40-26 10 0 16-6 16-16 0-12 10-20 22-20s20 10 20 22c0 8-4 14-10 18 6 4 10 12 10 22 0 18-20 28-48 28C34 90 18 80 18 62z" fill="#f2c94c"/>
+            <path d="M18 62c6 8 22 14 40 14 20 0 36-6 46-16-2 18-22 30-46 30C34 90 18 80 18 62z" fill="#d9a93a"/>
+            <path d="M30 58c8 6 22 8 32 2" stroke="#d9a93a" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <circle cx="98" cy="18" r="4" fill="#1c1f24"/><circle cx="99.5" cy="16.5" r="1.3" fill="#fff"/>
+            <path d="M108 24c8 0 12 2 12 5s-5 5-12 5c-4 0-6-2-6-5s2-5 6-5z" fill="#f08a3c"/>
+          </svg>
+          <div class="held" style="background:#3a3f48; left: 88%; top: 18%; width: 22%;"></div>
+        </div>
+      </div>
+      <div class="caption">The duck reads the file type and size before it suggests anything.</div>
+    </div>
+    <div class="notes">
+      <div><h3>How it goes</h3>
+        <ul><li>Drop a file on the duck (it waddles toward a drag that comes close). It grabs the file and its bubble opens.</li>
+          <li>Press <kbd>1</kbd>–<kbd>3</kbd> or click. <kbd>Space</kbd> opens the full drop palette from concept 2.</li>
+          <li>While it works, the duck sits on the file. When it's done it drops the new file back into the folder it came from.</li></ul></div>
+      <div class="why"><h3>Why</h3><ul><li>No hidden key to discover: if you can see the duck, you can find this.</li><li>Suggestions come from local rules (file type, size, what you picked last time). Only "Transcribe" goes to Doctor's agent, and it says so.</li></ul></div>
+      <div class="cost"><h3>Watch out</h3><ul><li>The duck is off for many people. This can only be a second door, never the only one.</li><li>Personality wears thin. One short line, then options; no jokes on the tenth file.</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<!-- SHARED -->
+<section class="concept" id="shared">
+  <header><h2>What every concept shares</h2>
+    <p>The way in differs; what happens after the drop stays the same, so the concepts can be mixed.</p></header>
+  <div class="shared">
+    <div><h3>Working</h3>
+      <div class="mini popup"><b>Converting lecture.mov</b><span>Audio only, M4A · 38%</span><div class="progress"><i></i></div><div class="acts"><em>Cancel</em></div></div>
+      <p style="font-size:13px;color:#9aa1ab">Long jobs become a notification with progress. Short ones skip straight to done.</p></div>
+    <div><h3>Done</h3>
+      <div class="mini popup"><b>IMG_2041.webp saved</b><span>Beside IMG_2041.heic · 3.1 MB → 410 KB</span><div class="acts"><em>Open</em><em>Show in folder</em><em>Undo</em></div></div>
+      <p style="font-size:13px;color:#9aa1ab">The original is never touched. Undo deletes the new file.</p></div>
+    <div><h3>Missing helper</h3>
+      <div class="mini popup warn"><b>Video needs ffmpeg</b><span>It isn't installed on this computer.</span><div class="acts"><em>Install ffmpeg</em><em>Ask Doctor</em></div></div>
+      <p style="font-size:13px;color:#9aa1ab">Formats that need ffmpeg, pandoc or LibreOffice show dimmed, with the reason, rather than vanishing.</p></div>
+  </div>
+  <div class="body" style="grid-template-columns: minmax(0,1fr) minmax(0,1fr);">
+    <div class="notes"><h3>Same commands everywhere</h3>
+<pre class="cli"><span class="c"># bindings and scripts use the same language</span>
+<span class="p">$</span> tileception msg convert selected webp
+<span class="p">$</span> tileception msg convert ~/Pictures/IMG_2041.heic png
+
+<span class="c"># config.toml</span>
+[citrus]
+key = "Super"          <span class="c"># held mid-drag</span>
+style = "palette"      <span class="c"># wheel | palette | peel</span>
+arrive-as = true
+output = "beside"      <span class="c"># or a folder</span></pre></div>
+    <div class="notes"><h3>Where it plugs in</h3>
+      <ul>
+        <li><code>drag.rs</code> already reads the file list and draws the card. That's the hook for every concept.</li>
+        <li>The conversions themselves come from Citrus's own command line, run as a plugin over MCP, so Tileception doesn't grow its own converter. The plugin API needs one new hook: actions offered for a dragged file.</li>
+        <li>A missing Citrus means no wheel, no palette rows and no error. Drags behave as they do now.</li>
+      </ul></div>
+  </div>
+</section>
+
+<section class="concept">
+  <header><h2>My pick</h2></header>
+  <div class="verdict">
+    <div class="pick"><h3>Ship first: Drop palette</h3><span>It reuses the launcher and its text field, scales to every format and works without a drag. Lowest risk, most reach.</span></div>
+    <div><h3>Then: Peel</h3><span>The one only Tileception could make. Build it once the palette's actions exist, since it shows the same list as tiles.</span></div>
+    <div><h3>Later: Arrive as</h3><span>Great when it guesses right, so it needs per-app rules first. The duck can borrow the palette whenever someone wants it.</span></div>
+  </div>
+</section>
+
+</div>
+
+<script>
+(() => {
+  /* ---------- wheel ---------- */
+  const svg = document.getElementById('wheel-svg');
+  if (svg) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const el = (n, a = {}, parent = svg) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); parent.appendChild(e); return e; };
+    const defs = el('defs');
+    const g = el('linearGradient', { id: 'tide', x1: '0', y1: '0', x2: '1', y2: '1' }, defs);
+    el('stop', { offset: '0', 'stop-color': '#2bd4a7' }, g); el('stop', { offset: '1', 'stop-color': '#5c8ff2' }, g);
+
+    const formats = [
+      ['PNG', '≈ 6.8 MB'], ['JPG', '≈ 1.4 MB'], ['WebP', '≈ 410 KB'], ['AVIF', '≈ 290 KB'],
+      ['PDF', 'one page'], ['TIFF', '≈ 22 MB'], ['GIF', '256 colours'], ['ICO', '256 px']
+    ];
+    const R0 = 46, R1 = 112, gap = 0.012, n = formats.length;
+    const pt = (r, a) => [r * Math.sin(a), -r * Math.cos(a)];
+    const arc = (a0, a1) => {
+      const [x0, y0] = pt(R1, a0), [x1, y1] = pt(R1, a1), [x2, y2] = pt(R0, a1), [x3, y3] = pt(R0, a0);
+      return `M${x0} ${y0}A${R1} ${R1} 0 0 1 ${x1} ${y1}L${x2} ${y2}A${R0} ${R0} 0 0 0 ${x3} ${y3}Z`;
+    };
+    // mode arc above the ring
+    const modes = el('g', { class: 'modes' });
+    [['Convert', -0.38, true], ['Tools', 0, false], ['Send', 0.38, false]].forEach(([t, a, on]) => {
+      const [x, y] = pt(124, a); const tx = el('text', { x, y: y + 3, class: on ? 'on' : '' }, modes); tx.textContent = t;
+    });
+    el('circle', { r: R1 + 4, class: 'ringline', 'stroke-dasharray': '2 4' });
+
+    const slices = [];
+    formats.forEach(([name, sub], i) => {
+      const step = (2 * Math.PI) / n, a0 = i * step - step / 2 + gap, a1 = (i + 1) * step - step / 2 - gap, mid = i * step;
+      const s = el('g', { class: 'slice', tabindex: '0', role: 'button', 'aria-label': `Convert to ${name}` });
+      el('path', { d: arc(a0, a1) }, s);
+      const [lx, ly] = pt((R0 + R1) / 2, mid);
+      el('text', { x: lx, y: ly - 5 }, s).textContent = name;
+      el('text', { x: lx, y: ly + 8, class: 'sub' }, s).textContent = sub;
+      slices.push([s, name, sub]);
+    });
+    el('circle', { r: R0 - 5, class: 'hub' });
+    // thumbnail in the hub
+    const clip = el('clipPath', { id: 'hubclip' }, defs); el('rect', { x: -14, y: -30, width: 28, height: 28, rx: 4 }, clip);
+    const pg = el('linearGradient', { id: 'picg', x1: '0', y1: '0', x2: '0.4', y2: '1' }, defs);
+    [['0', '#f0a35e'], ['0.45', '#d4586b'], ['1', '#3b2a5a']].forEach(([o, c]) => el('stop', { offset: o, 'stop-color': c }, pg));
+    el('rect', { x: -14, y: -30, width: 28, height: 28, rx: 4, fill: 'url(#picg)' });
+    const t1 = el('text', { y: 12, class: 'hubtxt' }); t1.textContent = 'IMG_2041';
+    const t2 = el('text', { y: 25, class: 'hubsub' });
+    const set = (idx) => {
+      slices.forEach(([s], j) => s.classList.toggle('on', j === idx));
+      t2.textContent = `→ ${slices[idx][1]}`;
+    };
+    slices.forEach(([s], i) => { s.addEventListener('mouseenter', () => set(i)); s.addEventListener('focus', () => set(i)); });
+    set(2);
+  }
+
+  /* ---------- peel ---------- */
+  const tree = document.getElementById('peel-tree'), crumbs = document.getElementById('peel-crumbs');
+  if (tree && crumbs) {
+    const T = {
+      name: 'IMG_2041.heic', cols: '1.5fr 1fr', rows: '1fr 1fr',
+      kids: [
+        { name: 'Convert', k: 'group', sub: '9 formats', area: '1 / 1 / 3 / 2', big: true, peek: ['WebP', 'JPG', 'PNG', 'AVIF', 'PDF'],
+          cols: '1.3fr 1fr', rows: '1fr 1fr',
+          kids: [
+            { name: 'For the web', k: 'group', sub: 'small, widely read', area: '1 / 1 / 3 / 2', big: true, peek: ['WebP', 'JPG', 'AVIF'],
+              cols: '1fr 1fr', rows: '1fr 1fr',
+              kids: [
+                { name: 'WebP', k: 'leaf', sub: '≈ 410 KB', area: '1 / 1 / 3 / 2', big: true },
+                { name: 'JPG', k: 'leaf', sub: '≈ 1.4 MB' },
+                { name: 'AVIF', k: 'leaf', sub: '≈ 290 KB' } ] },
+            { name: 'Lossless', k: 'group', sub: 'PNG, TIFF', peek: ['PNG', 'TIFF'], cols: '1fr', rows: '1fr 1fr',
+              kids: [ { name: 'PNG', k: 'leaf', sub: '≈ 6.8 MB' }, { name: 'TIFF', k: 'leaf', sub: '≈ 22 MB' } ] },
+            { name: 'Other', k: 'group', sub: 'PDF, GIF, ICO', peek: ['PDF', 'GIF', 'ICO'], cols: '1fr 1fr 1fr', rows: '1fr',
+              kids: [ { name: 'PDF', k: 'leaf', sub: 'one page' }, { name: 'GIF', k: 'leaf', sub: '256 colours' }, { name: 'ICO', k: 'leaf', sub: '256 px' } ] } ] },
+        { name: 'Tools', k: 'group', sub: 'new file beside it', peek: ['Compress', 'Resize', 'Remove location', 'Text from image'],
+          cols: '1fr 1fr', rows: '1fr 1fr',
+          kids: [ { name: 'Compress', k: 'leaf', sub: '≈ 1.1 MB' }, { name: 'Resize', k: 'leaf', sub: '2048 px' },
+                  { name: 'Remove location', k: 'leaf', sub: 'GPS: Lisbon' }, { name: 'Text from image', k: 'leaf', sub: 'OCR' } ] },
+        { name: 'Send', k: 'group', sub: 'handoff, LocalSend', peek: ['studio', 'Phone', 'Copy path'],
+          cols: '1fr 1fr', rows: '1fr 1fr',
+          kids: [ { name: 'To studio', k: 'leaf', sub: 'handoff', area: '1 / 1 / 2 / 3', big: true }, { name: 'Phone', k: 'leaf', sub: 'LocalSend' }, { name: 'Copy path', k: 'leaf', sub: 'clipboard' } ] } ]
+    };
+    let path = [T];
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const renderCrumbs = () => {
+      crumbs.innerHTML = '<span class="thumb pic"></span>';
+      path.forEach((node, i) => {
+        if (i) { const s = document.createElement('span'); s.className = 'sep'; s.textContent = '›'; crumbs.appendChild(s); }
+        if (i === path.length - 1) { const b = document.createElement('b'); b.textContent = node.name; crumbs.appendChild(b); }
+        else { const btn = document.createElement('button'); btn.textContent = node.name; btn.onclick = () => zoomOut(i); crumbs.appendChild(btn); }
+      });
+      const d = document.createElement('span'); d.className = 'depth'; d.textContent = `depth ${path.length - 1}`; crumbs.appendChild(d);
+    };
+
+    const renderLevel = (node) => {
+      tree.innerHTML = '';
+      const grid = document.createElement('div'); grid.className = 'ptree';
+      grid.style.gridTemplateColumns = node.cols; grid.style.gridTemplateRows = node.rows;
+      node.kids.forEach((kid) => {
+        const t = document.createElement('button');
+        t.className = 'ptile' + (kid.k === 'leaf' ? ' leaf' : '') + (kid.big ? ' big' : '');
+        if (kid.area) t.style.gridArea = kid.area;
+        t.innerHTML = `<span class="k">${kid.k === 'leaf' ? 'drop here' : 'group'}</span><b>${kid.name}</b><small>${kid.sub}</small>` +
+          (kid.peek ? `<span class="peek">${kid.peek.map((p) => `<span>${p}</span>`).join('')}</span>` : '') +
+          (kid.k === 'leaf' ? '<span class="go">Release to run</span>' : '');
+        t.onclick = () => (kid.k === 'leaf' ? finish(kid) : zoomInto(kid, t));
+        grid.appendChild(t);
+      });
+      tree.appendChild(grid);
+      renderCrumbs();
+    };
+
+    const fly = (fromRect, done) => {
+      if (reduce) { done(); return; }
+      const box = tree.getBoundingClientRect();
+      const sx = box.width / fromRect.width, sy = box.height / fromRect.height;
+      const tx = -(fromRect.left - box.left) * sx, ty = -(fromRect.top - box.top) * sy;
+      tree.classList.add('zooming');
+      tree.style.transform = `translate(${tx}px, ${ty}px) scale(${sx}, ${sy})`;
+      tree.style.opacity = '0.2';
+      setTimeout(() => {
+        tree.classList.remove('zooming'); tree.style.transform = ''; tree.style.opacity = '';
+        done();
+        tree.animate?.([{ opacity: 0.2, transform: 'scale(1.04)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 200, easing: 'ease-out' });
+      }, 380);
+    };
+    const zoomInto = (kid, tileEl) => fly(tileEl.getBoundingClientRect(), () => { path.push(kid); renderLevel(kid); });
+    const zoomOut = (i) => {
+      path = path.slice(0, i + 1); renderLevel(path[i]);
+      if (!reduce) tree.animate?.([{ opacity: 0.3, transform: 'scale(1.25)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 320, easing: 'cubic-bezier(.3,.7,.2,1)', transformOrigin: 'center' });
+    };
+    const finish = (leaf) => {
+      tree.innerHTML = `<div class="peel-done show"><div><b>${leaf.name}</b>Released. The camera flies back to the folder, where the new file is selected.<br><br><span style="color:var(--teal)">Click the path above to try again.</span></div></div>`;
+    };
+    renderLevel(T);
+  }
+})();
+</script>
+</body>
+</html>
