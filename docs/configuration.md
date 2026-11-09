@@ -342,10 +342,16 @@ sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
 # refresh_minutes = 15
 ```
 
-Next to the clock, a chip names the next event today that has not started
-yet. Clicking it, or the clock, opens the calendar, which lists today's events
-and those of the coming week that have not ended. Sources are read again every
-`refresh_minutes`, and when the config changes. A source that cannot be read
+Next to the clock, a chip names the event on now and when it ends, such as
+"until 14:30 Review", or else the next event today and when it starts, such
+as "15:00 Standup". Of events on at the same time, it names the one that
+started last, such as a meeting within a longer block, and of those the one
+ending first. When it ends, the chip moves on to what is on then, or to the
+next event. All-day events, and timed ones lasting a day or more, stay out
+of the chip, which would otherwise name them all day. Clicking it, or the
+clock, opens the calendar, which lists today's events and those of the coming
+week that have not ended. Sources are read again every `refresh_minutes`, and
+when the config changes. A source that cannot be read
 is named in the calendar and the session log; the others still show. Without
 sources, which is the default, nothing is read and nothing shows.
 

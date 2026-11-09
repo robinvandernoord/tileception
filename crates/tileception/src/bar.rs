@@ -267,7 +267,7 @@ enum Hit {
     Media,
     Dnd,
     Plugin(usize),
-    /// The next calendar event's chip.
+    /// The calendar event's chip: the one on now, or the next today.
     Event,
     Clock,
     Battery,
@@ -330,7 +330,7 @@ enum ChipKind {
     Dnd,
     /// A plugin's chip, by its place in [`Tileception::plugin_chips`].
     Plugin(usize),
-    /// The next event today, from `[calendar]`.
+    /// The event on now, or else the next today, from `[calendar]`.
     Event,
 }
 
@@ -707,12 +707,11 @@ impl Tileception {
     /// clock first.
     fn chip_list(&self) -> Vec<(ChipKind, String)> {
         let mut chips = Vec::new();
-        if let Some(event) = self.calendar_next()
-            && let Some(start) = LocalTime::at(event.start)
+        if let Some((event, ongoing)) = self.calendar_chip()
+            && let (Some(start), Some(end), Some(now)) =
+                (LocalTime::at(event.start), LocalTime::at(event.end), LocalTime::now())
         {
-            let summary = event.summary.split_whitespace().collect::<Vec<_>>().join(" ");
-            let summary = if summary.is_empty() { "Event".to_string() } else { summary };
-            chips.push((ChipKind::Event, format!("{}  {summary}", start.clock())));
+            chips.push((ChipKind::Event, event_chip(&event.summary, ongoing, &start, &end, &now)));
         }
         if let Some((captured, sharing)) = self.bar.capture
             && captured.elapsed() < CAPTURE_LINGER
@@ -1740,6 +1739,22 @@ fn short_date(now: &LocalTime) -> String {
     format!("{} {} {}", DAYS[now.weekday], now.day, &MONTHS[now.month][..3])
 }
 
+/// The event chip's text: "14:00  Review" for the next event, "until
+/// 14:30  Review" for one on now, with the weekday when it ends on a later
+/// day.
+fn event_chip(summary: &str, ongoing: bool, start: &LocalTime, end: &LocalTime, now: &LocalTime) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = if summary.is_empty() { "Event".to_string() } else { summary };
+    if !ongoing {
+        format!("{}  {summary}", start.clock())
+    } else if (end.year, end.month, end.day) == (now.year, now.month, now.day) {
+        format!("until {}  {summary}", end.clock())
+    } else {
+        format!("until {} {}  {summary}", DAYS[end.weekday], end.clock())
+    }
+}
+
 /// A month `delta` months after `month` (1 to 12) of `year`.
 pub(crate) fn add_months(year: i32, month: i32, delta: i32) -> (i32, i32) {
     let index = year * 12 + (month - 1) + delta;
@@ -1821,5 +1836,26 @@ mod tests {
         assert_eq!(add_months(2026, 10, 3), (2027, 1));
         assert_eq!(add_months(2026, 1, -1), (2025, 12));
         assert_eq!(add_months(2026, 12, 0), (2026, 12));
+    }
+
+    #[test]
+    fn the_event_chip_says_when() {
+        // Monday 9 November 2026 and the days after.
+        let local = |day: i32, weekday: usize, hour: i32, minute: i32| LocalTime {
+            year: 2026,
+            hour,
+            minute,
+            second: 0,
+            weekday,
+            day,
+            month: 10,
+        };
+        let now = local(9, 1, 14, 5);
+        let (start, end) = (local(9, 1, 14, 0), local(9, 1, 14, 30));
+        assert_eq!(event_chip("Review", false, &start, &end, &now), "14:00  Review");
+        assert_eq!(event_chip(" Design\n review ", true, &start, &end, &now), "until 14:30  Design review");
+        assert_eq!(event_chip("", true, &start, &end, &now), "until 14:30  Event");
+        // One ending on a later day names the day.
+        assert_eq!(event_chip("Trip", true, &start, &local(10, 2, 9, 0), &now), "until Tue 09:00  Trip");
     }
 }

@@ -701,8 +701,19 @@ fn posix_time(text: &str) -> Option<(i64, &str)> {
     Some((sign * seconds, &rest[end..]))
 }
 
-/// The event to show in the bar: the next one today that has not started.
-/// All-day events are left to the calendar.
+/// The event on now, for the bar. Of several, the one that started last,
+/// such as a meeting within a longer block, then the one ending first.
+/// All-day events, and timed ones lasting a day or more, are left to the
+/// calendar: they would hold the bar all day.
+pub fn current(occurrences: &[Occurrence], now: i64) -> Option<&Occurrence> {
+    occurrences
+        .iter()
+        .filter(|event| !event.all_day && event.end - event.start < DAY && event.start <= now && now < event.end)
+        .max_by_key(|event| (event.start, std::cmp::Reverse(event.end)))
+}
+
+/// The event to show in the bar when none is on: the next one today that
+/// has not started. All-day events are left to the calendar.
 pub fn next_today(occurrences: &[Occurrence], now: i64, day_end: i64) -> Option<&Occurrence> {
     occurrences
         .iter()
@@ -905,5 +916,45 @@ mod tests {
         );
         assert_eq!(names(upcoming(&list, now, tomorrow, 2)), ["Holiday", "Running"]);
         assert_eq!(names(upcoming(&list, utc_at(2026, 11, 9, 12, 0), tomorrow + DAY, 10)), ["Holiday", "Tomorrow"]);
+    }
+
+    #[test]
+    fn the_bar_shows_the_event_on_now() {
+        let event = |start: i64, minutes: i64, all_day: bool, summary: &str| Occurrence {
+            start,
+            end: start + minutes * 60,
+            all_day,
+            summary: summary.into(),
+            location: String::new(),
+        };
+        let list = [
+            event(MONDAY, 24 * 60, true, "Holiday"),
+            event(utc_at(2026, 11, 9, 9, 0), 8 * 60, false, "Focus"),
+            event(utc_at(2026, 11, 9, 10, 0), 60, false, "Review"),
+            event(utc_at(2026, 11, 9, 10, 0), 30, false, "Call"),
+            event(utc_at(2026, 11, 9, 10, 30), 30, false, "Standup"),
+            event(utc_at(2026, 11, 9, 12, 0), 0, false, "Reminder"),
+            event(utc_at(2026, 11, 8, 18, 0), 3 * 24 * 60, false, "Conference"),
+            event(utc_at(2026, 11, 9, 22, 0), 8 * 60, false, "Night shift"),
+        ];
+        let on_at = |hour: i64, minute: i64| {
+            current(&list, utc_at(2026, 11, 9, hour, minute)).map(|found| found.summary.as_str())
+        };
+        // All-day events never count.
+        assert_eq!(on_at(8, 0), None);
+        assert_eq!(on_at(9, 30), Some("Focus"));
+        // The one that started last, then the one ending first.
+        assert_eq!(on_at(10, 0), Some("Call"));
+        assert_eq!(on_at(10, 29), Some("Call"));
+        // At its end the next one takes over, without a gap.
+        assert_eq!(on_at(10, 30), Some("Standup"));
+        // Then back to the longer block it was in.
+        assert_eq!(on_at(11, 0), Some("Focus"));
+        // An event without length is never on; it is only ever the next.
+        assert_eq!(on_at(12, 0), Some("Focus"));
+        // Neither does a timed event lasting days.
+        assert_eq!(on_at(17, 0), None);
+        // One running past midnight does.
+        assert_eq!(on_at(23, 0), Some("Night shift"));
     }
 }

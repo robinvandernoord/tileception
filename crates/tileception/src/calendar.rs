@@ -1,6 +1,7 @@
 //! `[calendar]`: events from .ics files and URLs, read again every few
-//! minutes on a thread of their own. The bar shows the next one today
-//! beside the clock, and the clock's calendar lists what is coming.
+//! minutes on a thread of their own. The bar shows the one on now, or else
+//! the next one today, beside the clock, and the clock's calendar lists what
+//! is coming.
 
 use std::{sync::mpsc, time::Duration};
 
@@ -104,10 +105,14 @@ impl Tileception {
         }
     }
 
-    /// The next event today that has not started yet, for the bar.
-    pub(crate) fn calendar_next(&self) -> Option<&Occurrence> {
+    /// The event for the bar, and whether it is on now: the one on now,
+    /// otherwise the next today that has not started yet.
+    pub(crate) fn calendar_chip(&self) -> Option<(&Occurrence, bool)> {
         let now = now();
-        crate::ics::next_today(&self.calendar.events, now, local_midnight(now, 1))
+        if let Some(event) = crate::ics::current(&self.calendar.events, now) {
+            return Some((event, true));
+        }
+        crate::ics::next_today(&self.calendar.events, now, local_midnight(now, 1)).map(|event| (event, false))
     }
 }
 
