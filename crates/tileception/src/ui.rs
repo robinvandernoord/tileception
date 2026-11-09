@@ -479,10 +479,16 @@ pub struct LocalTime {
 }
 
 impl LocalTime {
-    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    #[allow(unsafe_code, reason = "time accepts a null pointer and only returns the current time")]
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
+        Self::at(now)
+    }
+
+    /// The wall clock at a time in seconds since 1970.
+    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    pub fn at(now: libc::time_t) -> Option<LocalTime> {
         let mut calendar = std::mem::MaybeUninit::<libc::tm>::uninit();
         // SAFETY: localtime_r reads `now` and fills the caller-owned `calendar`, which lives past the call.
         let filled = unsafe { libc::localtime_r(&now, calendar.as_mut_ptr()) };

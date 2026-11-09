@@ -227,6 +227,8 @@ pub struct Tileception {
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
+    /// Events from `[calendar]`.
+    pub calendar: crate::calendar::Agenda,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -407,6 +409,7 @@ impl Tileception {
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             battery: Default::default(),
+            calendar: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,

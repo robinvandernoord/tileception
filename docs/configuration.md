@@ -330,6 +330,33 @@ run `tileception msg restart`) to start swaync through autostart. Super+N then o
 With `notifications = "none"`, Tileception's notification service is disabled,
 but Super+N still opens the built-in sound controls.
 
+### Calendar events
+
+The built-in bar can show events from calendars in iCalendar (.ics) format:
+files, and `https://`, `http://` or `webcal://` addresses, such as the secret
+address a calendar service gives for sharing a calendar.
+
+```toml
+[calendar]
+sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
+# refresh_minutes = 15
+```
+
+Next to the clock, a chip names the next event today that has not started
+yet. Clicking it, or the clock, opens the calendar, which lists today's events
+and those of the coming week that have not ended. Sources are read again every
+`refresh_minutes`, and when the config changes. A source that cannot be read
+is named in the calendar and the session log; the others still show. Without
+sources, which is the default, nothing is read and nothing shows.
+
+Recurring events repeat daily, weekly (also on several weekdays), monthly or
+yearly, with an interval, a count or an end date, skipping excluded dates and
+showing moved or changed occurrences in their place. A rule that also picks
+days in other ways, such as "the last Friday of the month", shows only its
+first occurrence. Times are UTC, local, or in a named zone (`TZID`) looked up
+in the system's time zone database; an unknown zone name, such as a Windows
+one, is taken as local time. Cancelled events are left out.
+
 ## Window rules
 
 Rules decide how newly opened windows are placed. Each `[[rules]]` entry adds
