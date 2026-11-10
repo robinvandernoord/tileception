@@ -312,6 +312,16 @@ pub mod glyph {
             "bluetooth" => BLUETOOTH,
             "bell" => BELL,
             "lock" => LOCK,
+            "play" => PLAY,
+            "pause" => PAUSE,
+            "stop" => STOP,
+            "next" => NEXT,
+            "previous" => PREVIOUS,
+            "clock" => CLOCK,
+            "plus" => PLUS,
+            "minus" => MINUS,
+            "check" => CHECK,
+            "close" => CLOSE,
             _ => PLUG,
         })
     }
@@ -504,6 +514,12 @@ impl LocalTime {
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
+        Self::at(now)
+    }
+
+    /// The local time at a Unix time in seconds.
+    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    pub fn at(now: libc::time_t) -> Option<LocalTime> {
         let mut calendar = std::mem::MaybeUninit::<libc::tm>::uninit();
         // SAFETY: localtime_r reads `now` and fills the caller-owned `calendar`, which lives past the call.
         let filled = unsafe { libc::localtime_r(&now, calendar.as_mut_ptr()) };

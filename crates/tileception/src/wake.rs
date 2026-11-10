@@ -150,7 +150,7 @@ pub fn resolve(wake: Wake, now: i64) -> Option<i64> {
 /// `hour`:`minute` on the local day `days` after `now`'s.
 #[allow(unsafe_code, reason = "local time comes from libc's localtime_r and mktime")]
 #[allow(clippy::useless_conversion, reason = "time_t is narrower than i64 on some targets")]
-fn at_clock(now: i64, hour: u32, minute: u32, days: i32) -> Option<i64> {
+pub(crate) fn at_clock(now: i64, hour: u32, minute: u32, days: i32) -> Option<i64> {
     let mut datetime = local(now)?;
     datetime.tm_mday += days;
     datetime.tm_hour = hour as i32;
