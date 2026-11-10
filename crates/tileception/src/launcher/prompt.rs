@@ -119,7 +119,7 @@ fn prompt_layout(view: &PromptView, area: Rect) -> PromptLayout {
     let step = view.current();
     let text = (!step.text.is_empty()).then(|| take(TEXT_H));
     let message = (!view.error.is_empty() || !view.notice.is_empty()).then(|| take(MESSAGE_H));
-    let fields = view
+    let mut fields: Vec<(Rect, Rect)> = view
         .inputs
         .iter()
         .map(|_| {
@@ -129,6 +129,24 @@ fn prompt_layout(view: &PromptView, area: Rect) -> PromptLayout {
             (label, input)
         })
         .collect();
+    // A lone field with nothing but a submit button shares its row with it.
+    if let ([(_, input)], Some(label), None) = (fields.as_mut_slice(), view.submit_label(), &step.alternate) {
+        let button = button_width(label);
+        input.w -= button + 10.0;
+        let submit = Rect::new(input.right() + 10.0, input.y, button, input.h);
+        return PromptLayout {
+            icon,
+            title,
+            detail,
+            text,
+            message,
+            fields,
+            busy: None,
+            submit: Some(submit),
+            alternate: None,
+            bottom: top + 2.0,
+        };
+    }
     let busy = matches!(step.kind, StepKind::Wait).then(|| take(BUSY_H));
     take(6.0);
     let row = take(BUTTON_H);
