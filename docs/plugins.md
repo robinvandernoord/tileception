@@ -13,6 +13,9 @@ Some plugins ship inside the `tileception` binary and need no installation:
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
   launcher and its bar chip. It runs while `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
+- `timers`: `timer` in the launcher, with a [card under the
+  launcher](#launcher-cards) per timer. [Using
+  Tileception](usage.md#launcher-and-notifications) describes it.
 - `bluetooth`: the Bluetooth block and its bar chip.
 
 Tileception starts them as `tileception plugin <id>`. Change or disable them in
@@ -261,7 +264,7 @@ nothing.
 ### Launcher cards
 
 A `tileception://launcher` resource holds cards shown under the launcher while
-it is open, such as one per running timer:
+it is open, such as the bundled timers plugin's card per timer:
 
 ```json
 {"cards":[{"id":"tea","title":"Tea","detail":"Timer running","value":"2:41",

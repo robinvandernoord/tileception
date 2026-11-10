@@ -222,6 +222,31 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
+Type `timer` and a space, then how long and what for: `timer 10m tea`,
+`timer 1h30m bread`, `timer 90s` or `timer 2:30 eggs`. A bare number is
+minutes, and the name is optional and may come first. **Enter** starts the
+timer.
+
+Each timer shows as a card under the launcher whenever it is open, with the
+time left, a bar for how far it is, and buttons to add a minute, pause or
+resume, and stop. `timer` and a space also lists the timers, where **Enter**
+offers the same actions. When the time is up, a notification says so and stays
+until you dismiss it; the card stays for ten minutes, or until its tick is
+clicked. Timers keep running while Tileception restarts, and one that ended
+meanwhile rings as soon as it is back. There can be 16 timers of up to a day;
+the launcher shows the cards of the four that end first.
+
+Scripts and key bindings use the same tools:
+
+```sh
+tileception msg plugin timers start '{"duration": "25m", "label": "focus"}'
+tileception msg plugin timers list
+tileception msg plugin timers pause '{"timer": "focus"}'
+tileception msg plugin timers stop '{"timer": "focus"}'
+```
+
+`[plugins.timers] enabled = false` switches timers off.
+
 "Send feedback" and `tileception msg feedback [title]` open editable title and
 feedback fields. Enter adds a line in the feedback field; the usual selection,
 word navigation and clipboard shortcuts work. Choose **Review** to see the

@@ -6,6 +6,7 @@
 pub(crate) mod bluetooth;
 mod folders;
 pub(crate) mod home;
+mod timers;
 
 use std::{
     collections::HashSet,
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use crate::plugins::PluginConfig;
 
 /// The bundled plugins' ids.
-const IDS: &[&str] = &["home", "folders", "bluetooth"];
+const IDS: &[&str] = &["home", "folders", "timers", "bluetooth"];
 
 /// What the bundled manifests depend on in the config.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -29,6 +30,9 @@ pub struct Options {
     pub home: Option<Option<String>>,
     /// `[bluetooth] reconnect = false`.
     pub bluetooth_no_reconnect: bool,
+    /// Timers are not kept in the state folder: nested and headless
+    /// instances share it with the desktop.
+    pub timers_unsaved: bool,
 }
 
 /// The compiled-in manifests: this very executable, started as
@@ -54,6 +58,8 @@ pub fn manifests(options: &Options) -> Result<Vec<(String, PluginConfig)>, Strin
         manifests.push((plugin_id, config));
     }
     manifests.push(manifest("folders", Vec::new()));
+    let unsaved = options.timers_unsaved.then(|| "--no-save".to_string());
+    manifests.push(manifest("timers", unsaved.into_iter().collect()));
     let no_reconnect = options.bluetooth_no_reconnect.then(|| "--no-reconnect".to_string());
     let (plugin_id, mut config) = manifest("bluetooth", no_reconnect.into_iter().collect());
     config.bar = Some(crate::plugins::BarOptions::default());
@@ -67,6 +73,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("folders") => serve(&mut folders::Folders::default()),
         Some("home") => serve(&mut home::HomePlugin::new(&args[1..])?),
         Some("bluetooth") => serve(&mut bluetooth::BluetoothPlugin::new(&args[1..])),
+        Some("timers") => serve(&mut timers::TimersPlugin::new(&args[1..])),
         Some("-h" | "--help" | "help") | None => {
             println!(
                 "Usage: tileception plugin <id>\n\nServes a bundled plugin over MCP on stdin and stdout; Tileception starts these itself.\nBundled plugins: {}",
@@ -326,8 +333,14 @@ mod tests {
             without_home.last().unwrap().1.args.as_deref(),
             Some(&["plugin", "bluetooth"].map(String::from)[..])
         );
-        let with_home =
-            manifests(&Options { home: Some(Some("/tmp/devices.json".into())), bluetooth_no_reconnect: true }).unwrap();
+        assert_eq!(without_home[1].1.args.as_deref(), Some(&["plugin", "timers"].map(String::from)[..]));
+        let with_home = manifests(&Options {
+            home: Some(Some("/tmp/devices.json".into())),
+            bluetooth_no_reconnect: true,
+            timers_unsaved: true,
+        })
+        .unwrap();
+        assert_eq!(with_home[2].1.args.as_deref(), Some(&["plugin", "timers", "--no-save"].map(String::from)[..]));
         assert_eq!(
             with_home.last().unwrap().1.args.as_deref(),
             Some(&["plugin", "bluetooth", "--no-reconnect"].map(String::from)[..])

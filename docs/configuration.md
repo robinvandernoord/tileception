@@ -273,8 +273,8 @@ commands under `[binds]`.
 ### Plugins
 
 Plugins are executable MCP servers over stdio that add launcher sources and
-cards under the launcher, panel blocks and bar chips. The smart home, Bluetooth
-and `z` folders are bundled plugins: `[plugins.bluetooth] enabled = false`
+cards under the launcher, panel blocks and bar chips. The smart home, Bluetooth,
+`z` folders and timers are bundled plugins: `[plugins.bluetooth] enabled = false`
 switches one off, `[plugins.home.bar] enabled = false` hides its bar chip, and
 `[plugins.<id>.launcher] cards = false` hides a plugin's cards under the
 launcher. Build the example with

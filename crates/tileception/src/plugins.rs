@@ -783,6 +783,7 @@ impl Tileception {
         settings.bundled = crate::bundled::Options {
             home: home.enabled.then(|| home.devices.clone()),
             bluetooth_no_reconnect: !self.config.file.bluetooth.reconnect,
+            timers_unsaved: self.nested || self.headless.is_some(),
         };
         settings
     }
