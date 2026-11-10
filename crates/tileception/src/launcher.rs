@@ -66,9 +66,29 @@ impl Clip {
                 Clip::Png(png) => png,
                 Clip::Remote(_) => return,
             };
-            let _ = std::fs::File::from(pipe).write_all(bytes);
+            let _ = paste_pipe(pipe).write_all(bytes);
         });
     }
+}
+
+/// Opens the pipe a pasting program gave us for writing, in blocking mode.
+/// Some programs (Chromium and Electron among them) create the pipe
+/// nonblocking, and its file status flags come along with the descriptor.
+/// Writing more than the pipe buffer (64 KiB) then fails with `WouldBlock`
+/// and the paste arrives cut off. Writers run on their own threads, so
+/// blocking until the reader catches up is what they should do.
+pub(crate) fn paste_pipe(pipe: std::os::fd::OwnedFd) -> std::fs::File {
+    use std::os::fd::AsRawFd;
+    let descriptor = pipe.as_raw_fd();
+    #[allow(unsafe_code, reason = "fcntl clears nonblocking mode on an owned paste pipe")]
+    // SAFETY: the descriptor belongs to `pipe`, which is alive for both calls.
+    unsafe {
+        let flags = libc::fcntl(descriptor, libc::F_GETFL);
+        if flags >= 0 && flags & libc::O_NONBLOCK != 0 {
+            libc::fcntl(descriptor, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+        }
+    }
+    std::fs::File::from(pipe)
 }
 
 #[derive(Default, Serialize, Deserialize)]

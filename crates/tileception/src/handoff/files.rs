@@ -186,7 +186,7 @@ impl Tileception {
             let drops = drops_folder();
             match receive_files(&drops, request, &receiver, &complete) {
                 Ok(uris) => {
-                    let _ = std::fs::File::from(pipe).write_all(list.write(&uris).as_bytes());
+                    let _ = crate::launcher::paste_pipe(pipe).write_all(list.write(&uris).as_bytes());
                 }
                 Err(error) => tracing::warn!("handoff: copied files: {error}"),
             }

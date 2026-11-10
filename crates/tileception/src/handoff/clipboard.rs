@@ -289,7 +289,7 @@ impl Tileception {
         let received = Arc::new(AtomicUsize::new(0));
         let progress = received.clone();
         let started = std::thread::Builder::new().name("tileception-handoff-paste".into()).spawn(move || {
-            let mut file = std::fs::File::from(pipe);
+            let mut file = crate::launcher::paste_pipe(pipe);
             let mut written = 0;
             let mut last_received = 0;
             loop {
