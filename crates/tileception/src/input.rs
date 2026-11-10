@@ -964,14 +964,26 @@ impl Tileception {
         if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(point) {
             return;
         }
-        if self.doctor_contains(point) {
-            return;
-        }
-        if self.notifications_contain(point) {
-            if state == ButtonState::Pressed && button == BTN_LEFT {
-                self.notification_click(point);
+        // A release over a panel still ends what began elsewhere: a drag of
+        // ours, or a press a program is waiting to see let go.
+        let ends_elsewhere = state == ButtonState::Released
+            && (self.selection.anchor.is_some()
+                || self.outputs.boundary_drag.is_some()
+                || self.gap_drag.is_some()
+                || self.resize_drag.is_some()
+                || self.move_drag.is_some()
+                || self.pending_press.is_some()
+                || pointer.is_grabbed());
+        if !ends_elsewhere {
+            if self.doctor_contains(point) {
+                return;
             }
-            return;
+            if self.notifications_contain(point) {
+                if state == ButtonState::Pressed && button == BTN_LEFT {
+                    self.notification_click(point);
+                }
+                return;
+            }
         }
         if self.move_drag.is_none() && self.duck_button(button == BTN_LEFT, state == ButtonState::Pressed, point) {
             return;
