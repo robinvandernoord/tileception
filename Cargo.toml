@@ -4,7 +4,7 @@ members = ["crates/tileception-core", "crates/tileception-handoff", "crates/tile
 exclude = ["crates/tileception-apps", "crates/tileception-auth", "crates/tileception-notify"]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 license = "MIT"
 
