@@ -222,6 +222,40 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
+Type `timer` and a space, then how long and what for: `timer 10m tea`,
+`timer 1h30m bread`, `timer 90s` or `timer 2:30 eggs`. A bare number is
+minutes, and the name is optional and may come first. **Enter** starts the
+timer. With `at` and a time of day it is an alarm: `timer at 15:30 call the
+dentist`, `timer at 7am` or `timer at noon`. A time such as `at 3`, without am
+or pm, is the next three o'clock, morning or afternoon; write `03:00` or
+`15:00` to say which.
+
+Plain sentences work too, without `timer` in front: "set a timer for 10
+minutes", "10 minute timer for tea", "set an alarm at 7", "remind me at 3 to
+call the dentist", "remind me to stretch in 20 minutes" or "wake me up at
+6:30". The first row says what Enter will start and when it rings.
+
+Each timer shows as a card under the launcher whenever it is open, with the
+time left, a bar for how far it is, and buttons to add a minute, pause or
+resume, and stop. `timer` and a space also lists the timers, where **Enter**
+offers the same actions. When the time is up, a notification says so and stays
+until you dismiss it; the card stays for ten minutes, or until its tick is
+clicked. An alarm or reminder rings with its name, and has no pause. Timers keep running while Tileception restarts, and one that ended
+meanwhile rings as soon as it is back. There can be 16 timers of up to a day;
+the launcher shows the cards of the four that end first.
+
+Scripts and key bindings use the same tools:
+
+```sh
+tileception msg plugin timers start '{"duration": "25m", "label": "focus"}'
+tileception msg plugin timers start '{"at": "17:00", "label": "leave"}'
+tileception msg plugin timers list
+tileception msg plugin timers pause '{"timer": "focus"}'
+tileception msg plugin timers stop '{"timer": "focus"}'
+```
+
+`[plugins.timers] enabled = false` switches timers off.
+
 "Send feedback" and `tileception msg feedback [title]` open editable title and
 feedback fields. Enter adds a line in the feedback field; the usual selection,
 word navigation and clipboard shortcuts work. Choose **Review** to see the

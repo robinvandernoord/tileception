@@ -1,8 +1,8 @@
 # Plugins
 
 Plugins are executable commands speaking MCP over stdio. They can add launcher
-sources, a block in the notification panel, chips in the bar, and tools for
-`tileception msg plugin`. They run as the session user, with the session's
+sources, cards under the launcher, a block in the notification panel, chips in
+the bar, and tools for `tileception msg plugin`. They run as the session user, with the session's
 environment and permissions. Installing a manifest enables its executable. Only
 install plugins you trust.
 
@@ -13,6 +13,11 @@ Some plugins ship inside the `tileception` binary and need no installation:
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
   launcher and its bar chip. It runs while `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
+- `timers`: `timer` in the launcher for timers and alarms, with a [card
+  under the launcher](#launcher-cards) for each. The launcher also reads
+  plain sentences such as "set a timer for 10 minutes" and hands them to
+  this plugin; plugins themselves only ever get what follows their prefix. [Using
+  Tileception](usage.md#launcher-and-notifications) describes it.
 - `bluetooth`: the Bluetooth block and its bar chip.
 
 Tileception starts them as `tileception plugin <id>`. Change or disable them in
@@ -35,7 +40,9 @@ absolute path in the manifest. Run `tileception msg plugins reload` after
 installing a manifest.
 Open the launcher and type `echo hello`. Enter shows the row's actions. Choose
 one with Up/Down and Enter. Escape returns to search results. Copy actions
-leave the launcher open and show its usual Copied feedback.
+leave the launcher open and show its usual Copied feedback. "Call remember
+tool" keeps the text on a [card under the launcher](#launcher-cards), with
+buttons to copy and to forget it.
 
 Alternatively, enable the example directly in `config.toml`:
 
@@ -71,6 +78,7 @@ args = ["--stdio"]
 # enabled = false
 [launcher]
 # prefixes = ["weather", "w"]
+# cards = false
 [bar]
 # enabled = false
 ```
@@ -79,7 +87,8 @@ args = ["--stdio"]
 strings. Config fields overlay the matching manifest, so disabling an installed
 plugin only needs `enabled = false`, and hiding its bar chips only
 `[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
-block. A panel block shows whenever the plugin offers one.
+block. A panel block shows whenever the plugin offers one, and so do its cards
+under the launcher unless `[launcher]` says `cards = false`.
 
 Omitted prefixes come from `launcher_info`. An explicit empty prefix list
 disables routing. Prefixes are nonempty words, matched case-sensitively at the
@@ -89,9 +98,9 @@ start of the query and followed by a space: `echo` alone still searches apps,
 Config overrides win over user manifests, which win over system manifests,
 which win over bundled plugins. Within the same priority, plugin IDs sort
 alphabetically. This order settles conflicting prefixes and orders the panel's
-blocks and the bar's chips until you choose another (see
-[Panel block](#panel-block)). Every rejected prefix is logged and shown by
-`plugins`; a source can retain its other prefixes. A plugin overriding a
+blocks, the bar's chips and the cards under the launcher until you choose
+another (see [Panel block](#panel-block)). Every rejected prefix is logged and
+shown by `plugins`; a source can retain its other prefixes. A plugin overriding a
 built-in prefix takes precedence for that prefix. Reserve `plugins` for
 discovery diagnostics.
 
@@ -119,8 +128,9 @@ Set `isError: true` for tool failures. Resources are JSON text in
 a local image such as PNG or SVG, or `glyph:<name>` for Tileception's own
 symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
 `home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
-`wifi_off`, `bluetooth`, `bell` and `lock`. Panel blocks and bar chips only
-draw `glyph:` icons.
+`wifi_off`, `bluetooth`, `bell`, `lock`, `clock`, `play`, `pause`, `stop`,
+`next`, `previous`, `plus`, `minus`, `check` and `close`. Panel blocks, launcher
+cards and bar chips only draw `glyph:` icons.
 
 ### Launcher
 
@@ -228,10 +238,16 @@ folding, the chosen view and the selected row across updates.
   sends its tool action with `value` added to the arguments, up to eight times
   a second and once more on release.
 - A card is a larger tile: `value` (a big reading), `title`, `detail`, `icon`,
-  `tint`, `lit`, `enabled`, `title_action`, a `stepper` (`value`, `minus`,
-  `plus`), a `switch`, rows of `choices` (`title` and `options` with `title`,
-  `selected`, `action`) and a `trend` (`span` in seconds and `lines` of
-  `[seconds ago, value]` points, `dashed` for a target).
+  `tint`, `lit`, `enabled`, `title_action`, `buttons`, a `stepper` (`value`,
+  `minus`, `plus`), a `switch`, rows of `choices` (`title` and `options` with
+  `title`, `selected`, `action`), a `trend` (`span` in seconds and `lines` of
+  `[seconds ago, value]` points, `dashed` for a target) and a `progress` bar
+  along the bottom (`value` from 0 to 100). Without a `value`, the title starts
+  where the reading would.
+- A button has a `title`, `icon`, `primary` (filled with the accent, for the
+  card's main button), `enabled` and `action`. It shows its `glyph:` icon, or
+  its title when it has none. Buttons sit right of the title, before the
+  stepper and the switch.
 - Tints are `accent`, `cool`, `warm`, `danger`, `muted` and `faded`.
 - Actions are the launcher's. Panel tool calls never cancel each other.
 
@@ -255,6 +271,34 @@ clock while it has any, for plugins with a `[bar]` block, in the panel's order:
 A chip with an `action` runs it when clicked. Without one, clicking opens the
 notification panel with the plugin's block unfolded. Return no chips to show
 nothing.
+
+### Launcher cards
+
+A `tileception://launcher` resource holds cards shown under the launcher while
+it is open, such as the bundled timers plugin's card per timer:
+
+```json
+{"cards":[{"id":"tea","title":"Tea","detail":"Timer running","value":"2:41",
+  "icon":"glyph:clock","tint":"accent","enabled":true,
+  "buttons":[
+    {"title":"Pause","icon":"glyph:pause","primary":true,"enabled":true,
+     "action":{"type":"tool","name":"pause","arguments":{"timer":"tea"}}},
+    {"title":"Stop","enabled":true,
+     "action":{"type":"tool","name":"stop","arguments":{"timer":"tea"}}}],
+  "progress":{"value":35}}]}
+```
+
+The cards are the panel block's `card` items, drawn the same way. They stack
+under what is playing, which keeps its place: first the built-in media card,
+then the plugins' cards in plugin order, up to four per plugin. Cards that do
+not fit above the bottom of the screen are left out, the last ones first, so a
+long list of results can hide them all. Return no cards to show nothing.
+
+Cards take the pointer only. A tool action runs like the panel's: the launcher
+stays open and what is typed and found stays as it is. Copy also leaves the
+launcher open; open, run, terminal and settings actions close it. Send
+`notifications/resources/updated` when a card changes, for instance each second
+for a countdown; Tileception reads the resource again and redraws.
 
 ### Commands
 
