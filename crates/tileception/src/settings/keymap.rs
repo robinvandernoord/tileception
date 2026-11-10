@@ -22,7 +22,7 @@ impl crate::ui::PointerAction for PointerAction {
                         .and_then(toml::Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    state.settings.input = TextInput { cursor: text.len(), text, anchor: None };
+                    state.settings.input = TextInput::new(text);
                     state.settings.editing = Some(picker.index);
                     state.settings.focus = Some(Hit::Field(picker.index));
                 }
@@ -66,15 +66,14 @@ impl Tileception {
         let (panel, _, _, _) = self.keymap_layout();
         let search = Rect::new(panel.x + 16., panel.y + 54., panel.w - 32., 34.);
         let Some(picker) = self.settings.keymap.as_mut() else { return };
-        let position = self.text.borrow_mut().field_hit(
-            &picker.search.text,
+        picker.search.click(
+            &mut self.text.borrow_mut(),
             &self.theme.font,
             12.,
             (search.w - 48.) as f32,
-            picker.search.cursor,
             (point.x - search.x - 36.).max(0.) as f32,
+            extend,
         );
-        picker.search.move_to(position, extend);
     }
 
     pub(super) fn keymap_pointer_target(&self, point: Point) -> Option<interaction::Target> {
@@ -186,7 +185,7 @@ impl Tileception {
 
     pub(super) fn keymap_paste(&mut self, text: &str) {
         if let Some(picker) = &mut self.settings.keymap {
-            picker.search.insert(text.trim());
+            picker.search.paste(text.trim());
             picker.selected = 0;
             picker.first = 0;
         }
@@ -200,14 +199,6 @@ impl Tileception {
         if sym == keysyms::KEY_Escape {
             self.settings.keymap = None;
             self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-        } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-            self.paste(crate::launcher::Paste::Settings(self.settings.editor_epoch));
-        } else if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-            let text = picker.search.text[picker.search.selection()].to_string();
-            if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                picker.search.delete(false, false);
-            }
-            self.copy_text(text);
         } else if sym == keysyms::KEY_Return && count > 0 {
             let selected = picker.selected;
             self.choose_keymap(selected);
@@ -220,9 +211,13 @@ impl Tileception {
             let visible = (list.h / 38.).floor().max(1.) as usize;
             picker.first = picker.first.min(picker.selected).max(picker.selected.saturating_sub(visible - 1));
         } else {
-            super::sections::edit_key(&mut picker.search, &mut self.settings.compose, sym, mods);
-            picker.first = 0;
-            picker.selected = 0;
+            let key = picker.search.key(&mut self.settings.compose, sym, mods);
+            // Other results: back to the first of them.
+            if key.changed {
+                picker.first = 0;
+                picker.selected = 0;
+            }
+            self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
         }
         self.schedule_render();
     }

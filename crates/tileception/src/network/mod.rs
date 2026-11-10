@@ -494,42 +494,17 @@ impl Tileception {
 
     /// A key for the password field: it edits like every other field.
     fn network_prompt_key(&mut self, sym: u32, mods: Mods) {
-        let word = mods.ctrl || mods.alt;
         let Some(prompt) = &mut self.network.prompt else { return };
         let input = &mut prompt.input;
         match sym {
             keysyms::KEY_Escape => self.network.prompt = None,
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.network_join(),
-            keysyms::KEY_Left => input.move_horizontal(false, word, mods.shift),
-            keysyms::KEY_Right => input.move_horizontal(true, word, mods.shift),
-            keysyms::KEY_Home => input.move_to(0, mods.shift),
-            keysyms::KEY_End => input.move_to(input.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => input.delete(false, word),
-            keysyms::KEY_Delete => input.delete(true, word),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => input.select_all(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
+            _ => {
                 // A hidden password stays on the card.
-                let range = input.selection();
-                if prompt.reveal && !range.is_empty() {
-                    let text = input.text[range].to_owned();
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        input.insert("");
-                    }
-                    self.copy_text(text);
-                }
+                input.hidden = !prompt.reveal;
+                let key = input.key(&mut self.network.compose, sym, mods);
+                self.field_clipboard(key.clipboard, crate::launcher::Paste::Network);
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
-                self.paste(crate::launcher::Paste::Network);
-            }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => input.clear(),
-            _ if !mods.ctrl && !mods.logo && !mods.alt => {
-                if let Some(text) = crate::ui::compose_text(&mut self.network.compose, sym)
-                    && let Some(prompt) = &mut self.network.prompt
-                {
-                    prompt.input.insert(&text);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -540,9 +515,8 @@ impl Tileception {
 
     /// Pasted text arriving for the password, as one line.
     pub(crate) fn network_insert_paste(&mut self, text: &str) {
-        let text: String = text.chars().filter(|character| !character.is_control()).collect();
         if let Some(prompt) = &mut self.network.prompt {
-            prompt.input.insert(&text);
+            prompt.input.paste(text);
         }
     }
 

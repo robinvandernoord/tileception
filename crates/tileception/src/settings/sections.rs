@@ -407,16 +407,7 @@ impl Tileception {
                             let value = screen.read(&field.path) != "true";
                             screen.write(&field.path, toml::Value::Boolean(value));
                         }
-                        _ => {
-                            screen.edit = Some((
-                                field.clone(),
-                                TextInput {
-                                    text: screen.read(&field.path),
-                                    cursor: screen.read(&field.path).len(),
-                                    anchor: None,
-                                },
-                            ))
-                        }
+                        _ => screen.edit = Some((field.clone(), TextInput::new(screen.read(&field.path)))),
                     }
                 }
             }
@@ -542,21 +533,16 @@ impl Tileception {
     }
 
     pub(super) fn section_paste(&mut self, text: &str) {
-        let text: String = text
-            .chars()
-            .map(|character| if matches!(character, '\n' | '\r' | '\t') { ' ' } else { character })
-            .filter(|character| !character.is_control())
-            .collect();
         if let Some(screen) = self.settings.section.as_mut() {
             if let Some(menu) = screen.menu.as_mut().filter(|menu| menu.picker) {
-                menu.filter.insert(text.trim());
+                menu.filter.paste(text.trim());
                 menu.first = 0;
                 menu.selected = 0;
             } else if screen.searching {
-                screen.search.insert(text.trim());
+                screen.search.paste(text.trim());
                 screen.filter_changed();
             } else if let Some((_, input)) = screen.edit.as_mut() {
-                input.insert(&text);
+                input.paste(text);
             }
         }
         self.schedule_render();
@@ -628,32 +614,7 @@ impl Tileception {
         let inline = self.section_is_page();
         let layout = self.section_layout();
         let Some(screen) = self.settings.section.as_mut() else { return };
-        if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-            self.paste(Paste::Settings(self.settings.editor_epoch));
-            return;
-        }
-        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-            let input = if let Some(menu) = screen.menu.as_mut().filter(|menu| menu.picker) {
-                Some(&mut menu.filter)
-            } else if screen.searching {
-                Some(&mut screen.search)
-            } else {
-                screen
-                    .edit
-                    .as_mut()
-                    .filter(|(field, _)| !matches!(field.form, Form::Secret) || screen.reveal)
-                    .map(|(_, input)| input)
-            };
-            if let Some(input) = input {
-                let text = input.text[input.selection()].to_string();
-                if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                    input.delete(false, false);
-                }
-                self.copy_text(text);
-            }
-            self.schedule_render();
-            return;
-        }
+        let target = Paste::Settings(self.settings.editor_epoch);
         if let Some(menu) = screen.menu.as_mut() {
             let count = menu.filtered().len();
             match sym {
@@ -676,9 +637,13 @@ impl Tileception {
                     self.section_choose(selected);
                 }
                 _ if menu.picker => {
-                    edit_key(&mut menu.filter, &mut self.settings.compose, sym, mods);
-                    menu.first = 0;
-                    menu.selected = 0;
+                    let key = menu.filter.key(&mut self.settings.compose, sym, mods);
+                    // Other values: back to the first of them.
+                    if key.changed {
+                        menu.first = 0;
+                        menu.selected = 0;
+                    }
+                    self.field_clipboard(key.clipboard, target);
                 }
                 _ => {}
             }
@@ -762,7 +727,7 @@ impl Tileception {
                             screen.scroll.min(top).max((top + 90. - layout.body.h).max(0.)).min(layout.max_scroll);
                         if !matches!(field.form, Form::Toggle | Form::Choice(_)) {
                             let text = screen.read(&field.path);
-                            screen.edit = Some((field.clone(), TextInput { cursor: text.len(), text, anchor: None }));
+                            screen.edit = Some((field.clone(), TextInput::new(text)));
                         }
                     }
                     self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
@@ -771,15 +736,21 @@ impl Tileception {
         } else if sym == keysyms::KEY_Page_Down || sym == keysyms::KEY_Page_Up {
             self.section_scroll(if sym == keysyms::KEY_Page_Down { 180. } else { -180. });
         } else if screen.searching {
-            edit_key(&mut screen.search, &mut self.settings.compose, sym, mods);
-            screen.filter_changed();
-        } else if let Some((_, input)) = screen.edit.as_mut() {
+            let key = screen.search.key(&mut self.settings.compose, sym, mods);
+            if key.changed {
+                screen.filter_changed();
+            }
+            self.field_clipboard(key.clipboard, target);
+        } else if let Some((field, input)) = screen.edit.as_mut() {
             if sym == keysyms::KEY_Return {
                 if let Err(error) = screen.finish_input() {
                     screen.error = error;
                 }
             } else {
-                edit_key(input, &mut self.settings.compose, sym, mods);
+                // A secret stays on the page until it is revealed.
+                input.hidden = matches!(field.form, Form::Secret) && !screen.reveal;
+                let key = input.key(&mut self.settings.compose, sym, mods);
+                self.field_clipboard(key.clipboard, target);
             }
         } else if matches!(sym, keysyms::KEY_Return | keysyms::KEY_space)
             && let Some(action) = screen.focus
@@ -804,24 +775,4 @@ impl Menu {
 /// The index of the full-edge crossing setting.
 pub(super) fn edges() -> usize {
     FIELDS.iter().position(|field| field.key == "general.stretch_screen_edges").expect("full-edge crossing is a field")
-}
-
-pub(crate) fn edit_key(input: &mut TextInput, compose: &mut Option<xkb::compose::State>, sym: u32, mods: Mods) {
-    match sym {
-        keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => input.select_all(),
-        keysyms::KEY_Left | keysyms::KEY_Right => {
-            input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl || mods.alt, mods.shift)
-        }
-        keysyms::KEY_Home | keysyms::KEY_End => {
-            input.move_to(if sym == keysyms::KEY_Home { 0 } else { input.text.len() }, mods.shift)
-        }
-        keysyms::KEY_BackSpace | keysyms::KEY_Delete => input.delete(sym == keysyms::KEY_Delete, mods.ctrl || mods.alt),
-        keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => input.clear(),
-        _ if !mods.ctrl && !mods.alt && !mods.logo => {
-            if let Some(text) = crate::ui::compose_text(compose, sym) {
-                input.insert(&text);
-            }
-        }
-        _ => {}
-    }
 }

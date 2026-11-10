@@ -8,9 +8,9 @@ use super::Task;
 use crate::{
     Tileception,
     config::Mods,
-    password::SecretField,
     render::OutputElement,
     shapes::Shape,
+    text_input::SecretField,
     theme::Colour,
     ui::{Align, Painter, PointerTarget, Style, glyph},
 };
@@ -47,7 +47,7 @@ impl Tileception {
         self.close_updates_popover();
         self.close_launcher();
         self.power_menu = None;
-        self.updates.prompt = Some(Prompt { task, secret: SecretField::default(), error });
+        self.updates.prompt = Some(Prompt { task, secret: SecretField::appending(), error });
         self.force_keyboard_focus_sync();
         self.schedule_render();
     }
@@ -80,13 +80,11 @@ impl Tileception {
         match sym {
             keysyms::KEY_Escape => return self.close_updates_prompt(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => return self.submit_updates_prompt(),
-            keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => prompt.secret.select_all(),
-            keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => prompt.secret.clear(),
-            keysyms::KEY_BackSpace | keysyms::KEY_Delete => prompt.secret.backspace(),
-            _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                prompt.secret.type_key(sym);
+            // The field shows no caret: its keys work at the end. A paste
+            // it asks for is not taken here.
+            _ => {
+                prompt.secret.key(sym, mods);
             }
-            _ => {}
         }
         prompt.error = None;
         self.schedule_render();

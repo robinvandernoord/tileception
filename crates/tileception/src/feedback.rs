@@ -146,8 +146,8 @@ impl Tileception {
         self.ui_pressed = None;
         self.stop_key_repeat();
         self.feedback = Some(Feedback {
-            title: crate::text_input::TextInput { text: title.into(), cursor: title.len(), anchor: None },
-            message: Default::default(),
+            title: crate::text_input::TextInput::new(title),
+            message: crate::text_input::TextInput::default().multiline(4096),
             details: None,
             conversation,
             with_conversation: false,
@@ -386,60 +386,17 @@ impl Tileception {
             feedback.selected = layout.controls[next].0;
         } else if !feedback.review && matches!(feedback.selected, Action::Title | Action::Message) {
             let title = feedback.selected == Action::Title;
-            if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-                let target = crate::launcher::Paste::Feedback(feedback.epoch, title);
-                self.paste(target);
-                return;
-            }
+            let target = crate::launcher::Paste::Feedback(feedback.epoch, title);
             let input = if title { &mut feedback.title } else { &mut feedback.message };
-            let word = mods.ctrl || mods.alt;
-            if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-                let selection = input.selection();
-                if !selection.is_empty() {
-                    let text = input.text[selection].to_string();
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        input.insert("");
-                    }
-                    self.copy_text(text);
+            match sym {
+                keysyms::KEY_Return | keysyms::KEY_KP_Enter if title => feedback.selected = Action::Message,
+                // Between the message's rows, which only its layout knows.
+                keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down if !title => {
+                    self.feedback_move_vertical(sym, mods.shift);
                 }
-            } else {
-                match sym {
-                    keysyms::KEY_Left | keysyms::KEY_Right => {
-                        input.move_horizontal(sym == keysyms::KEY_Right, word, mods.shift)
-                    }
-                    keysyms::KEY_BackSpace | keysyms::KEY_Delete => input.delete(sym == keysyms::KEY_Delete, word),
-                    keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => input.select_all(),
-                    keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => input.clear(),
-                    keysyms::KEY_Home | keysyms::KEY_End => {
-                        let start = if title || mods.ctrl {
-                            0
-                        } else {
-                            input.text[..input.cursor].rfind('\n').map_or(0, |offset| offset + 1)
-                        };
-                        let end = if title || mods.ctrl {
-                            input.text.len()
-                        } else {
-                            input.cursor
-                                + input.text[input.cursor..].find('\n').unwrap_or(input.text.len() - input.cursor)
-                        };
-                        input.move_to(if sym == keysyms::KEY_Home { start } else { end }, mods.shift);
-                    }
-                    keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
-                        if title {
-                            feedback.selected = Action::Message;
-                        } else {
-                            input.insert("\n");
-                        }
-                    }
-                    keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down if !title => {
-                        self.feedback_move_vertical(sym, mods.shift);
-                    }
-                    _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                        if let Some(text) = crate::ui::compose_text(&mut feedback.compose, sym) {
-                            input.insert(&text);
-                        }
-                    }
-                    _ => {}
+                _ => {
+                    let key = input.key(&mut feedback.compose, sym, mods);
+                    self.field_clipboard(key.clipboard, target);
                 }
             }
         } else {
@@ -516,9 +473,8 @@ impl Tileception {
         if feedback.epoch != epoch || feedback.review {
             return;
         }
-        let line: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
         let input = if title { &mut feedback.title } else { &mut feedback.message };
-        input.insert(&line);
+        input.paste(text);
         feedback.edited = Instant::now();
         self.feedback_keep_caret();
         self.schedule_render();

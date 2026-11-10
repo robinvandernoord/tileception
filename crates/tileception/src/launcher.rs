@@ -488,6 +488,16 @@ impl Tileception {
         Ok(())
     }
 
+    /// Does what a key in a text field asked of the clipboard: copies what
+    /// it cut or copied, or fetches a paste for `target`.
+    pub(crate) fn field_clipboard(&mut self, clipboard: Option<crate::text_input::Clipboard>, target: Paste) {
+        match clipboard {
+            Some(crate::text_input::Clipboard::Copy(text)) => self.copy_text(text),
+            Some(crate::text_input::Clipboard::Paste) => self.paste(target),
+            None => {}
+        }
+    }
+
     /// Puts text on the clipboard, owned by the compositor, for Wayland and X11.
     pub(crate) fn copy_text(&mut self, text: String) {
         self.copy_text_with(text, false);
@@ -937,7 +947,6 @@ impl Tileception {
         if self.launcher.prompt.is_some() {
             return self.prompt_key(sym, mods);
         }
-        let word = mods.ctrl || mods.alt;
         // Alt+Enter shows an app's desktop entry; Esc goes back to the results.
         let enter = matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter);
         if enter && mods.alt {
@@ -995,33 +1004,11 @@ impl Tileception {
             }
             keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.launcher_step(-1),
             keysyms::KEY_Down | keysyms::KEY_Tab => self.launcher_step(1),
-            keysyms::KEY_Left => self.launcher.input.move_horizontal(false, word, mods.shift),
-            keysyms::KEY_Right => self.launcher.input.move_horizontal(true, word, mods.shift),
-            keysyms::KEY_Home => self.launcher.input.move_to(0, mods.shift),
-            keysyms::KEY_End => self.launcher.input.move_to(self.launcher.input.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => self.launcher.input.delete(false, word),
-            keysyms::KEY_Delete => self.launcher.input.delete(true, word),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => self.launcher.input.select_all(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
-                let range = self.launcher.input.selection();
-                if !range.is_empty() {
-                    let text = self.launcher.input.text[range].to_owned();
-                    self.copy_text(text);
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        self.launcher.input.insert("");
-                    }
-                }
+            // Everything else is the search field's.
+            _ => {
+                let key = self.launcher.input.key(&mut self.launcher.compose, sym, mods);
+                self.field_clipboard(key.clipboard, Paste::Launcher(self.launcher.epoch));
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
-                self.paste(Paste::Launcher(self.launcher.epoch));
-            }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => self.launcher.input.clear(),
-            _ if !mods.ctrl && !mods.logo && !mods.alt => {
-                if let Some(text) = crate::ui::compose_text(&mut self.launcher.compose, sym) {
-                    self.launcher.input.insert(&text);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -1142,8 +1129,7 @@ impl Tileception {
         if self.launcher.prompt.is_some() {
             return;
         }
-        let text: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
-        self.launcher.input.insert(&text);
+        self.launcher.input.paste(text);
         self.launcher.edited = Instant::now();
         self.refresh_launcher();
     }
@@ -1824,16 +1810,14 @@ impl Tileception {
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
         let text = self.launcher_layout().text;
-        let input = &self.launcher.input;
-        let position = self.text.borrow_mut().field_hit(
-            &input.text,
+        self.launcher.input.click(
+            &mut self.text.borrow_mut(),
             &self.theme.font,
             self.theme.font_size * SEARCH_SCALE,
             text.w as f32,
-            input.cursor,
             (point.x - text.x) as f32,
+            extend,
         );
-        self.launcher.input.move_to(position, extend);
         self.launcher.edited = Instant::now();
     }
 

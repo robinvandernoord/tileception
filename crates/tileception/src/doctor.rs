@@ -1489,29 +1489,18 @@ impl Tileception {
         if self.doctor.menu.is_some() {
             return self.menu_key(sym, mods);
         }
-        // Copies what is selected in the field (unless it is a key being
-        // entered), or else in the conversation.
-        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C) {
-            let range = self.doctor.input.selection();
-            let field = (!range.is_empty() && self.doctor.secret.is_none())
-                .then(|| self.doctor.input.text.get(range).map(str::to_string))
-                .flatten();
-            if let Some(text) = field.or_else(|| self.doctor_selected_text()) {
-                self.copy_text(text);
-                return;
-            }
-        }
-        // Cuts what is selected in the field (never a key being entered).
-        if mods.ctrl && matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-            let range = self.doctor.input.selection();
-            if !range.is_empty() && self.doctor.secret.is_none() {
-                let text = self.doctor.input.text[range].to_owned();
-                self.doctor.input.insert("");
-                self.copy_text(text);
-            }
+        // A key being entered is masked, and so not copied or cut.
+        self.doctor.input.hidden = self.doctor.secret.is_some();
+        // With nothing to copy in the field, Ctrl+C copies what is selected
+        // in the conversation.
+        if mods.ctrl
+            && matches!(sym, keysyms::KEY_c | keysyms::KEY_C)
+            && (self.doctor.input.hidden || self.doctor.input.selection().is_empty())
+            && let Some(text) = self.doctor_selected_text()
+        {
+            self.copy_text(text);
             return;
         }
-        let word = mods.ctrl || mods.alt;
         // Slash command suggestions take the arrows, Enter and Tab.
         let rows = self.suggestions().len();
         if rows > 0 {
@@ -1565,21 +1554,11 @@ impl Tileception {
             }
             keysyms::KEY_Page_Up => self.doctor_scroll(-4.0),
             keysyms::KEY_Page_Down => self.doctor_scroll(4.0),
-            keysyms::KEY_Left => input.move_horizontal(false, word, mods.shift),
-            keysyms::KEY_Right => input.move_horizontal(true, word, mods.shift),
-            keysyms::KEY_Home => input.move_to(0, mods.shift),
-            keysyms::KEY_End => input.move_to(input.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => input.delete(false, word),
-            keysyms::KEY_Delete => input.delete(true, word),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => input.select_all(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => input.clear(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => self.paste(Paste::Doctor),
-            _ if !mods.ctrl && !mods.logo && !mods.alt => {
-                if let Some(text) = crate::ui::compose_text(&mut self.doctor.compose, sym) {
-                    self.doctor.input.insert(&text);
-                }
+            // Everything else is the message field's.
+            _ => {
+                let key = input.key(&mut self.doctor.compose, sym, mods);
+                self.field_clipboard(key.clipboard, Paste::Doctor);
             }
-            _ => {}
         }
         self.doctor.menu_selected = 0;
     }
@@ -1590,7 +1569,6 @@ impl Tileception {
         let rows = self.menu_values().len();
         let selected = self.doctor.menu_selected.min(rows.saturating_sub(1));
         let page = self.menu_layout(&self.doctor_frame()).map_or(1, |(_, rows)| rows.len().max(1));
-        let word = mods.ctrl || mods.alt;
         let before = self.doctor.menu_filter.text.clone();
         let filter = &mut self.doctor.menu_filter;
         match sym {
@@ -1605,31 +1583,10 @@ impl Tileception {
                 return self.schedule_render();
             }
             // The filter edits like every other field.
-            keysyms::KEY_Left => filter.move_horizontal(false, word, mods.shift),
-            keysyms::KEY_Right => filter.move_horizontal(true, word, mods.shift),
-            keysyms::KEY_Home => filter.move_to(0, mods.shift),
-            keysyms::KEY_End => filter.move_to(filter.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => filter.delete(false, word),
-            keysyms::KEY_Delete => filter.delete(true, word),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => filter.select_all(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
-                let range = filter.selection();
-                if !range.is_empty() {
-                    let text = filter.text[range].to_owned();
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        filter.insert("");
-                    }
-                    self.copy_text(text);
-                }
+            _ => {
+                let key = filter.key(&mut self.doctor.compose, sym, mods);
+                self.field_clipboard(key.clipboard, Paste::Doctor);
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => self.paste(Paste::Doctor),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => filter.clear(),
-            _ if !mods.ctrl && !mods.logo && !mods.alt => {
-                if let Some(text) = crate::ui::compose_text(&mut self.doctor.compose, sym) {
-                    self.doctor.menu_filter.insert(&text);
-                }
-            }
-            _ => {}
         }
         self.doctor.edited = Instant::now();
         if self.doctor.menu_filter.text != before {
@@ -1668,19 +1625,13 @@ impl Tileception {
     pub fn doctor_insert_paste(&mut self, text: &str) {
         // Into the open menu's filter, as a single line.
         if self.doctor.menu.is_some() {
-            let line: String =
-                text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
-            self.doctor.menu_filter.insert(line.trim());
+            self.doctor.menu_filter.paste(text.trim());
             self.doctor.edited = Instant::now();
             self.menu_filter_changed();
             return self.schedule_render();
         }
-        let text: String = if self.doctor.secret.is_some() {
-            text.trim().chars().filter(|character| !character.is_control()).collect()
-        } else {
-            text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect()
-        };
-        self.doctor.input.insert(&text);
+        // A key being entered comes without the space around it.
+        self.doctor.input.paste(if self.doctor.secret.is_some() { text.trim() } else { text });
         self.doctor.edited = Instant::now();
     }
 

@@ -1665,15 +1665,14 @@ impl Tileception {
             && self.settings.editing == Some(index)
         {
             let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };
-            let cursor = self.text.borrow_mut().field_hit(
-                &self.settings.input.text,
+            self.settings.input.click(
+                &mut self.text.borrow_mut(),
                 &self.theme.font,
                 11.,
                 (rect.w - inset - 8.) as f32,
-                self.settings.input.cursor,
                 (point.x - rect.x - inset).max(0.) as f32,
+                false,
             );
-            self.settings.input.move_to(cursor, false);
             self.schedule_render();
             return;
         }
@@ -1779,11 +1778,7 @@ impl Tileception {
             Hit::Close => self.toggle_settings(),
             Hit::Search => {
                 if self.settings.search_input.text != self.settings.query {
-                    self.settings.search_input = crate::text_input::TextInput {
-                        text: self.settings.query.clone(),
-                        cursor: self.settings.query.len(),
-                        anchor: None,
-                    };
+                    self.settings.search_input = crate::text_input::TextInput::new(self.settings.query.clone());
                 }
             }
             Hit::EditDocument => self.open_settings_editor(None, false),
@@ -1854,7 +1849,7 @@ impl Tileception {
                     if custom_command(index) && position + 1 == options.len() {
                         let text =
                             self.settings.draft[index].as_ref().and_then(toml::Value::as_str).unwrap_or("").to_string();
-                        self.settings.input = crate::text_input::TextInput { cursor: text.len(), text, anchor: None };
+                        self.settings.input = crate::text_input::TextInput::new(text);
                         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
                         self.settings.editing = Some(index);
                     } else if FIELDS[index].key == "touchpad.click_method" && position == 0 {
@@ -2086,7 +2081,7 @@ impl Tileception {
                     }
                     Control::Text | Control::Colour => {
                         let text = value.and_then(toml::Value::as_str).unwrap_or("").to_string();
-                        self.settings.input = crate::text_input::TextInput { cursor: text.len(), text, anchor: None };
+                        self.settings.input = crate::text_input::TextInput::new(text);
                         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
                         self.settings.editing = Some(index);
                         self.schedule_render();
@@ -2243,24 +2238,11 @@ impl Tileception {
             if sym == keysyms::KEY_Return {
                 self.settings_finish_edit();
             } else if self.settings.editing.is_some() {
-                if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-                    let text = self.settings.input.text[self.settings.input.selection()].to_string();
-                    self.copy_text(text);
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        self.settings.input.delete(false, false);
-                    }
-                } else {
-                    sections::edit_key(&mut self.settings.input, &mut self.settings.compose, sym, mods);
-                }
+                let key = self.settings.input.key(&mut self.settings.compose, sym, mods);
+                self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
             } else {
-                if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-                    self.copy_text(self.settings.search_input.text[self.settings.search_input.selection()].to_string());
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        self.settings.search_input.delete(false, false);
-                    }
-                } else {
-                    sections::edit_key(&mut self.settings.search_input, &mut self.settings.compose, sym, mods);
-                }
+                let key = self.settings.search_input.key(&mut self.settings.compose, sym, mods);
+                self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
                 self.settings.query.clone_from(&self.settings.search_input.text);
                 self.settings.scroll = 0.;
             }

@@ -147,17 +147,24 @@ changelog, and these files mean nothing to users; `chore` is left out. Keep
 Every field Tileception draws itself must edit the same way, so users can rely
 on their habits everywhere: the launcher, Doctor's message field and its model
 filter, the rubber duck's question, and any new field. Keep its text in
-`text_input::TextInput`, draw it with `text::field` (caret, selection and
-scrolling), and handle at least:
+`text_input::TextInput` (or `text_input::SecretField` for a secret) and draw
+it with `text::field` (caret, selection and scrolling).
 
-- Left and Right, by word with Ctrl or Alt, selecting with Shift; Home and End
-  (with Shift);
-- Backspace and Delete, by word with Ctrl or Alt;
-- Ctrl+A to select all, Ctrl+C and Ctrl+X to copy and cut the selection,
-  Ctrl+V to paste (text only, as one line), Ctrl+U to clear;
-- typing through `ui::compose_text`, so dead keys and compose sequences work.
+Give the field its keys through its `key` method and do what the returned
+`text_input::Key` says: pass `clipboard` to `Tileception::field_clipboard`,
+and use `changed` to refresh what depends on the text. A paste arrives through
+the field's `paste`, which makes it one line for a single-line field. Never
+match an editing key (arrows, Home, End, Backspace, Delete, Ctrl+A, C, X, V or
+U, typed characters) in a field's own handler, and never copy another field's
+handler: what a key means is decided once, in `Buffer::edit` in
+`text_input.rs`, and its tests list every key. A key that should work in
+fields is added there, with a test, so that every field gets it.
 
-A list attached to a field, such as a menu's values, takes Up, Down, Page Up
-and Page Down; it leaves the editing keys to the field. Copy the key handling
-of an existing field rather than writing a smaller one, and try the keys
-in a headless instance.
+A field handles only what is its own: Enter, Escape, Tab, and the keys of a
+list attached to it, such as a menu's values, which takes Up, Down, Page Up
+and Page Down. Handle those first and pass every other key to the field.
+Variants are settings of the same types, not separate code: `multiline` and
+`read_only` on `TextInput`, its `hidden` flag while a password is masked, and
+`SecretField::appending` for a row of dots without a caret. Place the caret
+from the pointer with `TextInput::click` (or `move_to` where the field lays
+out its own rows). Try the keys in a headless instance.

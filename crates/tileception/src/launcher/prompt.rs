@@ -11,10 +11,9 @@ use tileception_core::{Point, Rect};
 use super::PointerAction;
 use crate::{
     Tileception,
-    password::SecretField,
     plugins::{ActionKind, Arguments, Place, Prompt, Row, Step, StepKind},
     shapes::Shape,
-    text_input::TextInput,
+    text_input::{SecretField, TextInput},
     ui::{Align, Painter, Style, glyph},
 };
 
@@ -337,32 +336,17 @@ impl Tileception {
             keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab | keysyms::KEY_Up | keysyms::KEY_Down => {
                 view.focus = if backwards { (view.focus + count - 1) % count } else { (view.focus + 1) % count };
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
-                // For this field of this step only, however late it arrives.
+            _ => {
+                // A paste is for this field of this step only, however late
+                // it arrives. Copying and cutting are not among a secret's keys.
                 let target = super::Paste::Prompt(view.serial, view.focus);
-                self.paste(target);
+                let key = match view.inputs.get_mut(view.focus) {
+                    Some(Input::Secret(field)) => field.key(sym, mods),
+                    Some(Input::Text(input)) => input.key(&mut self.launcher.compose, sym, mods),
+                    None => return,
+                };
+                self.field_clipboard(key.clipboard, target);
             }
-            _ => match view.inputs.get_mut(view.focus) {
-                // Copying and cutting are not among a secret's keys.
-                Some(Input::Secret(field)) => {
-                    field.edit_key(sym, mods);
-                }
-                Some(Input::Text(input)) => {
-                    if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-                        let range = input.selection();
-                        if !range.is_empty() {
-                            let text = input.text[range].to_owned();
-                            if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                                input.insert("");
-                            }
-                            self.copy_text(text);
-                        }
-                    } else {
-                        crate::settings::sections::edit_key(input, &mut self.launcher.compose, sym, mods);
-                    }
-                }
-                None => {}
-            },
         }
     }
 
@@ -380,12 +364,7 @@ impl Tileception {
                 }
             }
             Some(Input::Text(input)) => {
-                let text: String = text
-                    .trim_end_matches(['\r', '\n'])
-                    .chars()
-                    .map(|character| if character.is_control() { ' ' } else { character })
-                    .collect();
-                input.insert(&text);
+                input.paste(text);
             }
             None => {}
         }

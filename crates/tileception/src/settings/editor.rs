@@ -47,8 +47,8 @@ pub(super) struct Editor {
 }
 
 impl Editor {
-    fn insert(&mut self, text: &str) {
-        self.input.insert_with_limit(text, LIMIT);
+    /// The text changed: what was wrong with it may be no longer.
+    fn changed(&mut self) {
         self.error.clear();
     }
 
@@ -122,9 +122,12 @@ impl Tileception {
         match result {
             Ok(text) => {
                 self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
+                let original = text.clone();
+                let mut input = TextInput::new(text).multiline(LIMIT).read_only(reference);
+                input.move_to(0, false);
                 self.settings.editor = Some(Editor {
-                    original: text.clone(),
-                    input: TextInput { text, ..Default::default() },
+                    original,
+                    input,
                     field,
                     first: 0,
                     horizontal: 0,
@@ -251,24 +254,19 @@ impl Tileception {
             return;
         }
         if let Some(editor) = self.settings.editor.as_mut().filter(|editor| !editor.reference) {
-            let text: String =
-                text.chars().filter(|character| !character.is_control() || matches!(character, '\n' | '\t')).collect();
-            editor.insert(&text);
+            if editor.input.paste(text) {
+                editor.changed();
+            }
             let visible = (body(&self.settings_frame()).h / LINE).max(1.) as usize;
             let columns = ((body(&self.settings_frame()).w - 70.) / 7.2).max(1.) as usize;
             if let Some(editor) = self.settings.editor.as_mut() {
                 editor.keep_caret(visible, columns);
             }
         } else if self.settings.editor.is_none() {
-            let text: String = text
-                .chars()
-                .map(|character| if matches!(character, '\n' | '\r' | '\t') { ' ' } else { character })
-                .filter(|character| !character.is_control())
-                .collect();
             if self.settings.editing.is_some() {
-                self.settings.input.insert(&text);
-            } else if self.settings.focus == Some(Hit::Search) && self.settings.query.len() + text.len() <= 4096 {
-                self.settings.search_input.insert(&text);
+                self.settings.input.paste(text);
+            } else if self.settings.focus == Some(Hit::Search) {
+                self.settings.search_input.paste(text);
                 self.settings.query.clone_from(&self.settings.search_input.text);
             }
         }
@@ -295,53 +293,17 @@ impl Tileception {
             self.finish_settings_editor(false);
             return;
         }
-        if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-            self.paste(Paste::Settings(self.settings.editor_epoch));
-            return;
-        }
         let visible = (body(&self.settings_frame()).h / LINE).max(1.) as usize;
         let columns = ((body(&self.settings_frame()).w - 70.) / 7.2).max(1.) as usize;
         let Some(editor) = self.settings.editor.as_mut() else { return };
-        if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-            let selection = editor.input.text[editor.input.selection()].to_string();
-            if !editor.reference && matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                editor.input.delete_with_limit(false, false, LIMIT);
-            }
-            self.copy_text(selection);
-            return;
-        }
-        if editor.reference {
-            self.settings_editor_scroll(if matches!(sym, keysyms::KEY_Down | keysyms::KEY_Page_Down) {
-                LINE * 5.
-            } else if matches!(sym, keysyms::KEY_Up | keysyms::KEY_Page_Up) {
-                -LINE * 5.
-            } else {
-                0.
-            });
-            return;
-        }
         match sym {
-            keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => editor.input.select_all(),
-            keysyms::KEY_Left | keysyms::KEY_Right => {
-                editor.input.move_horizontal(sym == keysyms::KEY_Right, mods.ctrl || mods.alt, mods.shift)
+            // The reference is only read: these scroll it.
+            keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down if editor.reference => {
+                let down = matches!(sym, keysyms::KEY_Down | keysyms::KEY_Page_Down);
+                self.settings_editor_scroll(if down { LINE * 5. } else { -LINE * 5. });
+                return;
             }
-            keysyms::KEY_BackSpace | keysyms::KEY_Delete => {
-                editor.input.delete_with_limit(sym == keysyms::KEY_Delete, mods.ctrl || mods.alt, LIMIT)
-            }
-            keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => editor.input.clear(),
-            keysyms::KEY_Home | keysyms::KEY_End => {
-                let position = if mods.ctrl {
-                    if sym == keysyms::KEY_Home { 0 } else { editor.input.text.len() }
-                } else if sym == keysyms::KEY_Home {
-                    editor.input.text[..editor.input.cursor].rfind('\n').map_or(0, |offset| offset + 1)
-                } else {
-                    editor.input.cursor
-                        + editor.input.text[editor.input.cursor..]
-                            .find('\n')
-                            .unwrap_or(editor.input.text.len() - editor.input.cursor)
-                };
-                editor.input.move_to(position, mods.shift);
-            }
+            // Between lines, keeping the column.
             keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down => {
                 let cursor = editor.input.cursor;
                 let row = editor.input.text[..cursor].bytes().filter(|byte| *byte == b'\n').count();
@@ -357,15 +319,24 @@ impl Tileception {
                 let byte = lines[next].char_indices().nth(column).map_or(lines[next].len(), |(byte, _)| byte);
                 editor.input.move_to(offset + byte, mods.shift);
             }
-            keysyms::KEY_Return => editor.insert("\n"),
-            keysyms::KEY_Tab => editor.insert("    "),
-            _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                if let Some(text) = crate::ui::compose_text(&mut self.settings.compose, sym) {
-                    editor.insert(&text);
+            keysyms::KEY_Tab if !editor.reference => {
+                if editor.input.insert("    ") {
+                    editor.changed();
                 }
             }
-            _ => {}
+            _ => {
+                let key = editor.input.key(&mut self.settings.compose, sym, mods);
+                if key.changed {
+                    editor.changed();
+                }
+                let reference = editor.reference;
+                self.field_clipboard(key.clipboard, Paste::Settings(self.settings.editor_epoch));
+                if reference {
+                    return self.schedule_render();
+                }
+            }
         }
+        let Some(editor) = self.settings.editor.as_mut() else { return };
         editor.keep_caret(visible, columns);
         self.schedule_render();
     }

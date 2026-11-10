@@ -18,7 +18,7 @@ use tileception_home::{
 use zeroize::Zeroizing;
 
 use super::*;
-use crate::{password::SecretField, text_input::TextInput};
+use crate::text_input::{SecretField, TextInput};
 
 const REGIONS: &[(&str, &str)] = &[
     ("eu", "Central Europe"),
@@ -196,7 +196,6 @@ impl Tileception {
         };
         let cloud = store::load(&path).ok().and_then(|file| file.cloud);
         let client_id = cloud.as_ref().map_or_else(String::new, |access| access.client_id.clone());
-        let cursor = client_id.len();
         let region = cloud.as_ref().and_then(|access| {
             REGIONS.iter().position(|(region, _)| {
                 tileception_home::cloud::host(region) == tileception_home::cloud::host(&access.region)
@@ -204,7 +203,7 @@ impl Tileception {
         });
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.settings.connect = Some(Connect {
-            client_id: TextInput { text: client_id, cursor, anchor: None },
+            client_id: TextInput::new(client_id),
             secret: SecretField::default(),
             stored: cloud
                 .as_ref()
@@ -461,8 +460,7 @@ impl Tileception {
                     form.invalid = Some(1);
                 }
             } else if form.focus == 0 {
-                let text: String = text.chars().filter(|character| !character.is_control()).collect();
-                form.client_id.insert(&text);
+                form.client_id.paste(text);
             }
         }
         self.schedule_render();
@@ -501,9 +499,6 @@ impl Tileception {
         } else if mods.ctrl && sym == keysyms::KEY_Return {
             self.start_settings_connect();
             return true;
-        } else if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) {
-            self.paste(crate::launcher::Paste::Settings(self.settings.editor_epoch));
-            return true;
         } else if sym == keysyms::KEY_Tab || sym == keysyms::KEY_ISO_Left_Tab {
             // Cancel is only there when it does something.
             let stops: Vec<usize> = (0..7).filter(|stop| *stop != 5 || cancellable).collect();
@@ -536,20 +531,14 @@ impl Tileception {
             if form.invalid == Some(1) {
                 form.invalid = None;
             }
-            form.secret.edit_key(sym, mods);
+            let key = form.secret.key(sym, mods);
+            self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
         } else if form.focus == 0 {
             if form.invalid == Some(0) {
                 form.invalid = None;
             }
-            if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) {
-                let text = form.client_id.text[form.client_id.selection()].to_string();
-                if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                    form.client_id.delete(false, false);
-                }
-                self.copy_text(text);
-            } else {
-                sections::edit_key(&mut form.client_id, &mut self.settings.compose, sym, mods);
-            }
+            let key = form.client_id.key(&mut self.settings.compose, sym, mods);
+            self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
         }
         self.schedule_render();
         true

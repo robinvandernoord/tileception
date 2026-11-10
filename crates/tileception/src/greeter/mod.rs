@@ -45,7 +45,7 @@ use self::{
     sessions::Session,
     settings::{Memory, Panel},
 };
-use crate::{Tileception, config::Mods, lock::LockState, password::SecretField, theme::Colour};
+use crate::{Tileception, config::Mods, lock::LockState, text_input::SecretField, theme::Colour};
 
 /// The password `--greeter` accepts when there is no greetd to ask.
 const DEMO_PASSWORD: &str = "tide";
@@ -238,9 +238,9 @@ impl Greeter {
             memory,
             memory_path,
             user,
-            name: SecretField::default(),
+            name: SecretField::appending(),
             named: false,
-            field: SecretField::default(),
+            field: SecretField::appending(),
             chosen: HashMap::new(),
             focus: Panel::Login,
             session_cursor: 0,
@@ -726,8 +726,12 @@ impl Tileception {
             match sym {
                 keysyms::KEY_u | keysyms::KEY_U => greeter.field.clear(),
                 // Words are not shown in a password, so Ctrl+Backspace takes all of it.
-                keysyms::KEY_BackSpace if !greeter.busy() => greeter.typing_into().clear(),
-                keysyms::KEY_a | keysyms::KEY_A => greeter.typing_into().select_all(),
+                keysyms::KEY_BackSpace if !greeter.busy() => {
+                    greeter.typing_into().key(sym, mods);
+                }
+                keysyms::KEY_a | keysyms::KEY_A => {
+                    greeter.typing_into().key(sym, mods);
+                }
                 keysyms::KEY_space if greeter.layouts.len() > 1 && greeter.keymap.is_none() => {
                     self.next_keyboard_layout();
                 }
@@ -764,23 +768,12 @@ impl Tileception {
             keysyms::KEY_BackSpace if !greeter.busy() => {
                 greeter.focus = Panel::Login;
                 greeter.typed_at = Instant::now();
-                if greeter.other() && !greeter.named {
-                    greeter.name.backspace();
-                } else {
-                    greeter.field.backspace();
-                }
+                greeter.typing_into().key(sym, mods);
             }
-            _ if !greeter.busy() => {
-                let typed = if greeter.other() && !greeter.named {
-                    greeter.name.type_key(sym)
-                } else {
-                    greeter.field.type_key(sym)
-                };
-                if typed {
-                    greeter.focus = Panel::Login;
-                    greeter.typed_at = Instant::now();
-                    greeter.failed_at = None;
-                }
+            _ if !greeter.busy() && greeter.typing_into().key(sym, mods).changed => {
+                greeter.focus = Panel::Login;
+                greeter.typed_at = Instant::now();
+                greeter.failed_at = None;
             }
             _ => {}
         }

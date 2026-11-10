@@ -57,7 +57,6 @@ mod notifications;
 mod osd;
 mod outputs;
 mod panel;
-mod password;
 mod persistence;
 mod plugins;
 mod pointer_lock;

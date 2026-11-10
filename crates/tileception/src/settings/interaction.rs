@@ -158,26 +158,24 @@ impl Tileception {
         if let Some(index) = self.settings.editing {
             let Some((rect, _)) = frame.hits.iter().find(|(_, hit)| *hit == Hit::Field(index)) else { return };
             let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };
-            let position = self.text.borrow_mut().field_hit(
-                &self.settings.input.text,
+            self.settings.input.click(
+                &mut self.text.borrow_mut(),
                 &self.theme.font,
                 11.,
                 (rect.w - inset - 8.) as f32,
-                self.settings.input.cursor,
                 (point.x - rect.x - inset).max(0.) as f32,
+                extend,
             );
-            self.settings.input.move_to(position, extend);
         } else if self.settings.focus == Some(Hit::Search) {
             let Some((rect, _)) = frame.hits.iter().find(|(_, hit)| *hit == Hit::Search) else { return };
-            let position = self.text.borrow_mut().field_hit(
-                &self.settings.search_input.text,
+            self.settings.search_input.click(
+                &mut self.text.borrow_mut(),
                 &self.theme.font,
                 12.,
                 (rect.w - 45.) as f32,
-                self.settings.search_input.cursor,
                 (point.x - rect.x - 35.).max(0.) as f32,
+                extend,
             );
-            self.settings.search_input.move_to(position, extend);
         }
     }
 

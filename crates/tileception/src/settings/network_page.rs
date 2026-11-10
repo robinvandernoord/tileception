@@ -405,25 +405,12 @@ impl Tileception {
                 self.settings.focus = Some(Hit::NetPassword);
             }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.settings_network_join(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
-                self.paste(crate::launcher::Paste::Settings(self.settings.editor_epoch));
-            }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
-                // A hidden password stays on the page.
-                let reveal = page.reveal;
-                let input = if field == 0 { &mut page.name } else { &mut page.password };
-                let range = input.selection();
-                if (field == 0 || reveal) && !range.is_empty() {
-                    let text = input.text[range].to_string();
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        input.insert("");
-                    }
-                    self.copy_text(text);
-                }
-            }
             _ => {
+                // A hidden password stays on the page.
+                page.password.hidden = !page.reveal;
                 let input = if field == 0 { &mut page.name } else { &mut page.password };
-                sections::edit_key(input, &mut self.settings.compose, sym, mods);
+                let key = input.key(&mut self.settings.compose, sym, mods);
+                self.field_clipboard(key.clipboard, crate::launcher::Paste::Settings(self.settings.editor_epoch));
             }
         }
         self.schedule_render();
@@ -437,8 +424,7 @@ impl Tileception {
         }
         let page = &mut self.settings.network;
         let Some(field) = page.typing else { return false };
-        let text: String = text.chars().filter(|character| !character.is_control()).collect();
-        if field == 0 { &mut page.name } else { &mut page.password }.insert(&text);
+        if field == 0 { &mut page.name } else { &mut page.password }.paste(text);
         true
     }
 

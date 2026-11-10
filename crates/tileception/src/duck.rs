@@ -798,7 +798,6 @@ impl Tileception {
     /// A key while the question field has the keyboard.
     pub fn duck_key(&mut self, sym: u32, mods: Mods) {
         self.duck.edited = Instant::now();
-        let word = mods.ctrl || mods.alt;
         let input = &mut self.duck.input;
         match sym {
             keysyms::KEY_Escape => self.close_duck_chat(),
@@ -812,41 +811,17 @@ impl Tileception {
                 self.force_keyboard_focus_sync();
                 self.duck_chat_tick();
             }
-            keysyms::KEY_Left => input.move_horizontal(false, word, mods.shift),
-            keysyms::KEY_Right => input.move_horizontal(true, word, mods.shift),
-            keysyms::KEY_Home => input.move_to(0, mods.shift),
-            keysyms::KEY_End => input.move_to(input.text.len(), mods.shift),
-            keysyms::KEY_BackSpace => input.delete(false, word),
-            keysyms::KEY_Delete => input.delete(true, word),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) => input.select_all(),
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_c | keysyms::KEY_C | keysyms::KEY_x | keysyms::KEY_X) => {
-                let range = input.selection();
-                if !range.is_empty() {
-                    let text = input.text[range].to_owned();
-                    if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        input.insert("");
-                    }
-                    self.copy_text(text);
-                }
+            _ => {
+                let key = input.key(&mut self.duck.compose, sym, mods);
+                self.field_clipboard(key.clipboard, crate::launcher::Paste::Duck);
             }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_v | keysyms::KEY_V) => {
-                self.paste(crate::launcher::Paste::Duck);
-            }
-            _ if mods.ctrl && matches!(sym, keysyms::KEY_u | keysyms::KEY_U) => input.clear(),
-            _ if !mods.ctrl && !mods.logo && !mods.alt => {
-                if let Some(text) = crate::ui::compose_text(&mut self.duck.compose, sym) {
-                    self.duck.input.insert(&text);
-                }
-            }
-            _ => {}
         }
         self.schedule_render();
     }
 
     /// Pasted text arriving for the question, as one line.
     pub fn duck_insert_paste(&mut self, text: &str) {
-        let text: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
-        self.duck.input.insert(&text);
+        self.duck.input.paste(text);
         self.duck.edited = Instant::now();
     }
 
