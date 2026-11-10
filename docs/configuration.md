@@ -543,6 +543,8 @@ On systems with APT, the bar shows a chip while updates wait; see
 enabled = true
 notify = true
 check_hours = 4
+remind_after_days = 0
+remind_security_only = false
 ```
 
 `enabled = false` switches the update manager off: no chip, no launcher rows
@@ -550,6 +552,12 @@ and no `tileception msg updates`. `notify = false` keeps the chip and drops the
 one notification when new updates arrive. `check_hours` is how often
 Tileception reads the package lists; the lists themselves are refreshed by the
 system's daily timer, or by **Check** in the Updates window.
+
+`remind_after_days` holds the notification back until updates have waited
+that many days; `0` says so at once. `remind_security_only = true` notifies
+for security updates only. The chip in the bar shows every update either way.
+The notification never comes over a fullscreen window or during Do not
+disturb: it follows within a minute of leaving those.
 
 ### Battery
 

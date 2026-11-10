@@ -197,6 +197,10 @@ enabled = false
 # Hours between looks at the package lists. The lists themselves are
 # refreshed by the system's own daily timer, or by "Check" in Updates.
 # check_hours = 4
+# Days updates wait before that notification: 0 says so at once.
+# remind_after_days = 0
+# Only security updates bring the notification.
+# remind_security_only = false
 
 [bluetooth]
 # Reconnect paired devices that were connected before the computer slept or

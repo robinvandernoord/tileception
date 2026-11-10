@@ -104,9 +104,103 @@ pub fn parse_uris(text: &str) -> HashMap<String, u64> {
         .collect()
 }
 
+/// What a transaction does besides the updates it installs, read from the
+/// lists `apt-get` prints before it starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Packages already installed that get a newer version.
+    pub upgraded: Vec<String>,
+    /// Packages the transaction brings in.
+    pub installed: Vec<String>,
+    /// Packages the transaction takes away.
+    pub removed: Vec<String>,
+    /// Updates apt leaves out because installing them needs more than an
+    /// upgrade may do.
+    pub kept_back: Vec<String>,
+    /// Updates the archive hands out to a share of the machines at a time.
+    pub phased: Vec<String>,
+    /// Installed as a dependency and needed by nothing any more: what
+    /// `autoremove` would take.
+    pub unneeded: Vec<String>,
+}
+
+impl Plan {
+    /// Whether the transaction does more than install what was asked for.
+    pub fn removes(&self) -> bool {
+        !self.removed.is_empty()
+    }
+
+    /// "installs 3, removes 1", for a line of status.
+    pub fn summary(&self) -> String {
+        let parts: Vec<String> = [
+            (&self.upgraded, "updates"),
+            (&self.installed, "installs"),
+            (&self.removed, "removes"),
+            (&self.kept_back, "keeps back"),
+            (&self.phased, "defers"),
+        ]
+        .iter()
+        .filter(|(names, _)| !names.is_empty())
+        .map(|(names, verb)| format!("{verb} {}", names.len()))
+        .collect();
+        if parts.is_empty() { "changes nothing".into() } else { parts.join(", ") }
+    }
+}
+
+/// The package lists of an `apt-get` run or simulation: each starts with a
+/// sentence ending in a colon and holds indented names. A purge marks what
+/// goes with a star.
+pub fn parse_plan(text: &str) -> Plan {
+    let mut plan = Plan::default();
+    let mut list: Option<&mut Vec<String>> = None;
+    for line in text.lines() {
+        if !line.starts_with(' ') {
+            list = if !line.ends_with(':') {
+                None
+            } else if line.contains("will be REMOVED") {
+                Some(&mut plan.removed)
+            } else if line.contains("NEW packages will be installed") {
+                Some(&mut plan.installed)
+            } else if line.contains("will be upgraded") {
+                Some(&mut plan.upgraded)
+            } else if line.contains("kept back") {
+                Some(&mut plan.kept_back)
+            } else if line.contains("deferred due to phasing") {
+                Some(&mut plan.phased)
+            } else if line.contains("no longer required") {
+                Some(&mut plan.unneeded)
+            } else {
+                None
+            };
+            continue;
+        }
+        if let Some(list) = list.as_deref_mut() {
+            list.extend(line.split_whitespace().map(|name| name.trim_end_matches('*').to_string()));
+        }
+    }
+    plan
+}
+
+/// Whether what `apt-get` or `dpkg` printed says the package system must be
+/// repaired before anything else can run.
+pub fn needs_repair(output: &str) -> bool {
+    ["dpkg --configure -a", "--fix-broken", "Unmet dependencies", "dpkg was interrupted"]
+        .iter()
+        .any(|sign| output.contains(sign))
+}
+
+/// The pending updates, and what installing all of them would do besides.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Listing {
+    /// Security first, then by name.
+    pub updates: Vec<Update>,
+    pub plan: Plan,
+}
+
 /// The pending updates: security first, then by name.
-pub fn list(runner: &dyn Runner) -> Result<Vec<Update>, String> {
+pub fn list(runner: &dyn Runner) -> Result<Listing, String> {
     let simulation = runner.run("apt-get", &["-s", "-o", "Debug::NoLocking=true", "dist-upgrade"])?;
+    let plan = parse_plan(&simulation);
     let mut updates = parse_simulation(&simulation);
     if !updates.is_empty() {
         // Sizes are a nicety: without them the list still stands.
@@ -119,7 +213,7 @@ pub fn list(runner: &dyn Runner) -> Result<Vec<Update>, String> {
         }
     }
     updates.sort_by(|left, right| right.security.cmp(&left.security).then_with(|| left.name.cmp(&right.name)));
-    Ok(updates)
+    Ok(Listing { updates, plan })
 }
 
 /// When the package lists were last refreshed: the newest of the marks
@@ -154,10 +248,17 @@ fn checked(names: &[String]) -> Result<(), String> {
 /// Keeps changed configuration files as they are, so nothing asks a question.
 const QUIET: [&str; 5] = ["-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"];
 
-/// `apt-get` arguments that install these updates, or all of them for none.
-pub fn upgrade_args(names: &[String]) -> Result<Vec<String>, String> {
+/// How `apt-get` arguments start: answering every question for a real run,
+/// or `-s` to only print what would happen.
+fn start(simulate: bool) -> Vec<String> {
+    if simulate { vec!["-s".into()] } else { QUIET.iter().map(|arg| (*arg).to_string()).collect() }
+}
+
+/// `apt-get` arguments that install these updates, or all of them for none;
+/// `simulate` only prints what would happen.
+pub fn upgrade_args(names: &[String], simulate: bool) -> Result<Vec<String>, String> {
     checked(names)?;
-    let mut args: Vec<String> = QUIET.iter().map(|arg| (*arg).to_string()).collect();
+    let mut args = start(simulate);
     if names.is_empty() {
         args.push("dist-upgrade".into());
     } else {
@@ -215,8 +316,7 @@ pub fn transaction_args(
     if installs.is_empty() && removals.is_empty() {
         return Err("nothing is queued".into());
     }
-    let mut args: Vec<String> =
-        if simulate { vec!["-s".into()] } else { QUIET.iter().map(|arg| (*arg).to_string()).collect() };
+    let mut args = start(simulate);
     args.push("install".into());
     if purge {
         args.push("--purge".into());
@@ -224,6 +324,20 @@ pub fn transaction_args(
     args.extend(installs.iter().cloned());
     args.extend(removals.iter().map(|name| format!("{name}-")));
     Ok(args)
+}
+
+/// `apt-get` arguments that remove the dependencies nothing needs any more.
+pub fn autoremove_args(simulate: bool) -> Vec<String> {
+    let mut args = start(simulate);
+    args.push("autoremove".into());
+    args
+}
+
+/// `apt-get` arguments that settle broken dependencies.
+pub fn repair_args(simulate: bool) -> Vec<String> {
+    let mut args = start(simulate);
+    args.extend(["--fix-broken".to_string(), "install".to_string()]);
+    args
 }
 
 /// A step `apt-get` reports while it works.
@@ -311,13 +425,17 @@ Inst tileception [0.12.0] (0.13.0 apt.tileception.space:stable [amd64])
 
     #[test]
     fn commands_refuse_what_is_not_a_package() {
-        assert!(upgrade_args(&["--allow-unauthenticated".into()]).is_err());
+        assert!(upgrade_args(&["--allow-unauthenticated".into()], false).is_err());
         assert!(purge_args(&["linux; rm".into()], true).is_err());
         assert!(purge_args(&[], false).is_err());
-        let all = upgrade_args(&[]).unwrap_or_default();
+        let all = upgrade_args(&[], false).unwrap_or_default();
         assert_eq!(all.last().map(String::as_str), Some("dist-upgrade"));
-        let some = upgrade_args(&["libssl3t64".into(), "g++-13".into()]).unwrap_or_default();
+        let some = upgrade_args(&["libssl3t64".into(), "g++-13".into()], false).unwrap_or_default();
         assert_eq!(&some[some.len() - 3..], ["install", "libssl3t64", "g++-13"]);
+        assert_eq!(upgrade_args(&["curl".into()], true).unwrap_or_default(), ["-s", "install", "curl"]);
+        assert_eq!(autoremove_args(true), ["-s", "autoremove"]);
+        assert_eq!(autoremove_args(false).last().map(String::as_str), Some("autoremove"));
+        assert_eq!(repair_args(true), ["-s", "--fix-broken", "install"]);
         let purge = purge_args(&["linux-image-6.8.0-85-generic".into()], true).unwrap_or_default();
         assert_eq!(purge, ["-s", "purge", "linux-image-6.8.0-85-generic"]);
         let both = transaction_args(
@@ -333,6 +451,54 @@ Inst tileception [0.12.0] (0.13.0 apt.tileception.space:stable [amd64])
         );
         assert!(transaction_args(&[], &[], false, true).is_err());
         assert!(transaction_args(&[], &["-oops".into()], false, true).is_err());
+    }
+
+    const PLAN: &str = "\
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages were automatically installed and are no longer required:
+  libllvm17t64 linux-headers-6.8.0-85
+  python3-netifaces
+Use 'apt autoremove' to remove them.
+The following packages will be REMOVED:
+  libfoo1* old-thing
+The following NEW packages will be installed:
+  linux-image-6.8.0-149-generic
+The following upgrades have been deferred due to phasing:
+  gnome-shell mutter-common
+The following packages have been kept back:
+  docker-ce
+The following packages will be upgraded:
+  apt libpcre2-dev
+2 upgraded, 1 newly installed, 2 to remove and 3 not upgraded.
+Inst apt [2.8.3] (2.8.4 Ubuntu:24.04/noble-updates [amd64])
+";
+
+    #[test]
+    fn a_simulation_says_everything_it_does() {
+        let plan = parse_plan(PLAN);
+        assert_eq!(plan.unneeded, ["libllvm17t64", "linux-headers-6.8.0-85", "python3-netifaces"]);
+        assert_eq!(plan.removed, ["libfoo1", "old-thing"]);
+        assert_eq!(plan.installed, ["linux-image-6.8.0-149-generic"]);
+        assert_eq!(plan.phased, ["gnome-shell", "mutter-common"]);
+        assert_eq!(plan.kept_back, ["docker-ce"]);
+        assert_eq!(plan.upgraded, ["apt", "libpcre2-dev"]);
+        assert!(plan.removes());
+        assert_eq!(plan.summary(), "updates 2, installs 1, removes 2, keeps back 1, defers 2");
+        let nothing = parse_plan(SIMULATION.replace("will be upgraded", "are fine").as_str());
+        assert_eq!(nothing, Plan::default());
+        assert_eq!(nothing.summary(), "changes nothing");
+    }
+
+    #[test]
+    fn broken_package_states_ask_for_repair() {
+        assert!(needs_repair(
+            "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem."
+        ));
+        assert!(needs_repair("E: Unmet dependencies. Try 'apt --fix-broken install' with no packages"));
+        assert!(!needs_repair("E: Unable to locate package nothing"));
     }
 
     #[test]
