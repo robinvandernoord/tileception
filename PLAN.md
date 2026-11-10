@@ -76,9 +76,6 @@ Report testing in the conversation, the commit or the pull request instead.
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
-  - Cards under the launcher, where the built-in media card is: a plugin
-    can show cards there, such as a running timer. Several cards stack, so
-    the media card stays visible next to them while something plays.
   - The bundled smart home plugin goes into the remaining places first:
     - Lock screen: the indoor temperature, read-only, following the lock
       screen's privacy level, without input or actions. Never launcher
@@ -90,8 +87,8 @@ Report testing in the conversation, the commit or the pull request instead.
     `tileception msg plugin home ...`.
   - Plugins in a user-chosen order, ideally set by dragging their blocks
     (smart home, Bluetooth) in the notification panel. The order is saved
-    and used for the panel and for the bar's chips; without one, the
-    priority order applies.
+    and used for the panel, for the bar's chips and for the cards under the
+    launcher; without one, the priority order applies.
   - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
