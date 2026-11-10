@@ -29,6 +29,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use smithay::reexports::calloop::channel;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::Tileception;
 
@@ -194,6 +195,10 @@ pub struct Action {
 pub enum ActionKind {
     Copy {
         text: String,
+        /// A password or code: offered with `x-kde-passwordManagerHint`,
+        /// kept out of clipboard persistence and handoff.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sensitive: bool,
     },
     Open {
         target: String,
@@ -217,10 +222,201 @@ pub enum ActionKind {
     Settings {
         page: String,
     },
+    /// Asks for input or waits in the launcher, in steps that call the
+    /// plugin's tools. Launcher only.
+    Prompt {
+        prompt: Box<Prompt>,
+    },
+}
+
+impl ActionKind {
+    /// What a prompt's tool may ask the launcher to do afterwards: what a
+    /// row may do, except calling tools or prompting again.
+    pub fn after_prompt(&self) -> bool {
+        !matches!(self, ActionKind::Tool { .. } | ActionKind::Prompt { .. })
+    }
 }
 
 fn empty_object() -> Value {
     json!({})
+}
+
+/// Steps and fields a prompt may have at most.
+pub const PROMPT_STEPS: usize = 8;
+/// Few enough fields that a prompt with its text and an error fits on a
+/// 768 pixel high screen.
+pub const PROMPT_FIELDS: usize = 4;
+
+/// A small dialog in the launcher for a plugin, such as unlocking a vault
+/// with a passphrase or a security key. It opens on its first step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PromptShape")]
+pub struct Prompt {
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub steps: Vec<Step>,
+}
+
+/// A prompt as sent, before it is checked.
+#[derive(Deserialize)]
+struct PromptShape {
+    title: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    icon: Option<String>,
+    steps: Vec<Step>,
+}
+
+impl TryFrom<PromptShape> for Prompt {
+    type Error = String;
+
+    fn try_from(shape: PromptShape) -> Result<Self, String> {
+        let PromptShape { title, detail, icon, steps } = shape;
+        if steps.is_empty() || steps.len() > PROMPT_STEPS {
+            return Err(format!("a prompt needs 1 to {PROMPT_STEPS} steps"));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for step in &steps {
+            if step.step_id.is_empty() || !ids.insert(step.step_id.as_str()) {
+                return Err("prompt step ids must be nonempty and unique".into());
+            }
+            if step.tool.is_empty() || !step.arguments.is_object() {
+                return Err(format!("prompt step {}: needs a tool and object arguments", step.step_id));
+            }
+            if let StepKind::Fields { fields, .. } = &step.kind {
+                let mut names = std::collections::BTreeSet::new();
+                if fields.is_empty() || fields.len() > PROMPT_FIELDS {
+                    return Err(format!("prompt step {}: needs 1 to {PROMPT_FIELDS} fields", step.step_id));
+                }
+                if fields.iter().any(|field| field.name.is_empty() || !names.insert(field.name.as_str())) {
+                    return Err(format!("prompt step {}: field names must be nonempty and unique", step.step_id));
+                }
+            }
+        }
+        for step in &steps {
+            if let Some(alternate) = &step.alternate
+                && !ids.contains(alternate.step.as_str())
+            {
+                return Err(format!("prompt step {}: no step {:?} to switch to", step.step_id, alternate.step));
+            }
+        }
+        Ok(Prompt { title, detail, icon, steps })
+    }
+}
+
+impl Prompt {
+    pub fn step_index(&self, step_id: &str) -> Option<usize> {
+        self.steps.iter().position(|step| step.step_id == step_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    #[serde(rename = "id")]
+    pub step_id: String,
+    /// Shown above the step's fields, or while waiting.
+    #[serde(default)]
+    pub text: String,
+    /// A second way through, such as a passphrase instead of a key.
+    #[serde(default)]
+    pub alternate: Option<Alternate>,
+    pub tool: String,
+    #[serde(default = "empty_object")]
+    pub arguments: Value,
+    /// Seconds the tool may take.
+    #[serde(default)]
+    pub timeout: Option<f64>,
+    #[serde(flatten)]
+    pub kind: StepKind,
+}
+
+impl Step {
+    /// How long the step's tool may take: its `timeout`, from 3 to 60
+    /// seconds; else 30 for a wait and the usual 3 for fields.
+    pub fn timeout(&self) -> Duration {
+        let default = match self.kind {
+            StepKind::Wait => Duration::from_secs(30),
+            StepKind::Fields { .. } => TIMEOUT,
+        };
+        let seconds = self.timeout.unwrap_or(default.as_secs_f64());
+        Duration::from_secs_f64(seconds.clamp(TIMEOUT.as_secs_f64(), 60.0))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StepKind {
+    /// Calls its tool on entering and waits for the answer, such as a
+    /// security key being touched.
+    Wait,
+    /// Fields to fill in; submitting calls the tool with their values.
+    Fields {
+        fields: Vec<PromptField>,
+        /// The submit button's label.
+        #[serde(default)]
+        submit: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptField {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    /// Masked, wiped from memory once sent, and never logged.
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alternate {
+    pub title: String,
+    pub step: String,
+}
+
+/// A tool call's arguments. Secret ones, such as a typed passphrase, are
+/// wiped from memory when dropped, however the call ends.
+pub struct Arguments {
+    value: Value,
+    secret: bool,
+}
+
+impl Arguments {
+    pub fn secret(value: Value) -> Self {
+        Self { value, secret: true }
+    }
+
+    pub fn value_mut(&mut self) -> &mut Value {
+        &mut self.value
+    }
+}
+
+impl From<Value> for Arguments {
+    fn from(value: Value) -> Self {
+        Self { value, secret: false }
+    }
+}
+
+impl Drop for Arguments {
+    fn drop(&mut self) {
+        if self.secret {
+            wipe(&mut self.value);
+        }
+    }
+}
+
+/// Overwrites every string in a JSON value.
+fn wipe(value: &mut Value) {
+    match value {
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(wipe),
+        Value::Object(map) => map.values_mut().for_each(wipe),
+        _ => {}
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -309,7 +505,25 @@ pub enum Event {
 
 enum Request {
     Search { generation: u64, prefix: String, query: String },
-    Tool { place: Place, generation: u64, name: String, arguments: Value },
+    Tool { place: Place, generation: u64, name: String, arguments: Arguments, terms: Terms },
+}
+
+/// How a request is made: its deadline, and whether a cancelled one is let
+/// go rather than awaited until its deadline.
+#[derive(Debug, Clone, Copy)]
+struct Terms {
+    timeout: Duration,
+    /// For the launcher's prompts: a plugin told to stop waiting for a
+    /// security key need not answer, and is not ended for that.
+    forget: bool,
+    /// The message holds a secret: serialized without spare copies and wiped.
+    secret: bool,
+}
+
+impl Default for Terms {
+    fn default() -> Self {
+        Self { timeout: TIMEOUT, forget: false, secret: false }
+    }
 }
 
 /// The compositor's end of one plugin's worker thread.
@@ -680,13 +894,24 @@ impl Host {
     /// Calls a plugin's tool from a place; the result comes back as
     /// [`Event::Action`] with the returned number.
     pub fn tool(&self, place: Place, plugin: String, name: String, arguments: Value) -> u64 {
+        self.send_tool(place, plugin, name, arguments.into(), Terms::default())
+    }
+
+    /// Calls a tool for a launcher prompt: within `timeout`, and when
+    /// cancelled the plugin is told so but not waited for.
+    pub fn prompt_tool(&self, plugin: String, name: String, arguments: Arguments, timeout: Duration) -> u64 {
+        let terms = Terms { timeout, forget: true, secret: false };
+        self.send_tool(Place::Launcher, plugin, name, arguments, terms)
+    }
+
+    fn send_tool(&self, place: Place, plugin: String, name: String, arguments: Arguments, terms: Terms) -> u64 {
         let generation = if place.cancels() {
             self.cancel(place)
         } else {
             self.generations.get(place).fetch_add(1, Ordering::Relaxed) + 1
         };
         if let Some(worker) = self.workers.get(&plugin) {
-            worker.send(Request::Tool { place, generation, name, arguments });
+            worker.send(Request::Tool { place, generation, name, arguments, terms });
         } else {
             let _ = self.events.send(Event::Action { place, generation, result: Err("Plugin is unavailable".into()) });
         }
@@ -923,7 +1148,7 @@ impl Source {
         let has_launcher =
             tools["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "launcher_info"));
         let launcher = if has_launcher {
-            let value = session.tool("launcher_info", json!({}), None)?;
+            let value = session.tool("launcher_info", json!({}).into(), None, Terms::default())?;
             Some(serde_json::from_value::<Info>(value).map_err(|error| PluginError::Tool(error.to_string()))?)
         } else {
             None
@@ -997,30 +1222,36 @@ impl Source {
                     result,
                 })
             }
-            Request::Tool { place, generation, name, arguments } if !place.cancels() => {
-                let result = self.call(&name, arguments, None);
+            Request::Tool { place, generation, name, arguments, terms } if !place.cancels() => {
+                let result = self.call(&name, arguments, None, terms);
                 Some(Event::Action { place, generation, result })
             }
-            Request::Tool { place, generation, name, arguments } => {
+            Request::Tool { place, generation, name, arguments, terms } => {
                 let current = generations.get(place);
                 if current.load(Ordering::Relaxed) != generation {
                     return None;
                 }
-                let result = self.invoke(&name, arguments, current, generation);
+                let result = self.call(&name, arguments, Some((current, generation)), terms);
                 (current.load(Ordering::Relaxed) == generation).then_some(Event::Action { place, generation, result })
             }
         }
     }
 
     fn invoke(&mut self, name: &str, arguments: Value, current: &AtomicU64, generation: u64) -> Result<Value, String> {
-        self.call(name, arguments, Some((current, generation)))
+        self.call(name, arguments.into(), Some((current, generation)), Terms::default())
     }
 
-    fn call(&mut self, name: &str, arguments: Value, cancel: Option<(&AtomicU64, u64)>) -> Result<Value, String> {
+    fn call(
+        &mut self,
+        name: &str,
+        arguments: Arguments,
+        cancel: Option<(&AtomicU64, u64)>,
+        terms: Terms,
+    ) -> Result<Value, String> {
         if Instant::now() < self.retry_after {
             return Err("Plugin is restarting; try again shortly".into());
         }
-        let result = self.connect().and_then(|session| session.tool(name, arguments, cancel));
+        let result = self.connect().and_then(|session| session.tool(name, arguments, cancel, terms));
         if matches!(result, Err(PluginError::Transport(_))) {
             self.lost();
         }
@@ -1337,7 +1568,11 @@ impl Session {
         if initialized["protocolVersion"] != "2025-06-18" || !initialized["capabilities"]["tools"].is_object() {
             return Err("Plugin must support MCP 2025-06-18 tools".into());
         }
-        session.write(json!({"jsonrpc":"2.0","method":"notifications/initialized"}), Instant::now() + TIMEOUT, None)?;
+        session.write(
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            Instant::now() + TIMEOUT,
+            None,
+        )?;
         session.capabilities = initialized["capabilities"].clone();
         Ok(session)
     }
@@ -1376,13 +1611,43 @@ impl Session {
         serde_json::from_str(text).map_err(|error| PluginError::Tool(format!("{uri}: {error}")))
     }
 
-    fn tool(&mut self, name: &str, arguments: Value, cancel: Option<(&AtomicU64, u64)>) -> Result<Value, PluginError> {
-        let result = self.request("tools/call", json!({ "name": name, "arguments": arguments }), cancel)?;
+    fn tool(
+        &mut self,
+        name: &str,
+        mut arguments: Arguments,
+        cancel: Option<(&AtomicU64, u64)>,
+        terms: Terms,
+    ) -> Result<Value, PluginError> {
+        // Moved, not copied as `json!` would, so a secret has one copy.
+        let mut params = serde_json::Map::new();
+        params.insert("name".into(), name.into());
+        params.insert("arguments".into(), std::mem::take(&mut arguments.value));
+        let terms = Terms { secret: arguments.secret, ..terms };
+        let result = self.request_with("tools/call", Value::Object(params), cancel, terms)?;
         tool_result(result)
     }
 
-    fn write(&mut self, value: Value, deadline: Instant, cancel: Option<(&AtomicU64, u64)>) -> Result<(), PluginError> {
-        let mut bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+    fn write(
+        &mut self,
+        value: &Value,
+        deadline: Instant,
+        cancel: Option<(&AtomicU64, u64)>,
+    ) -> Result<(), PluginError> {
+        self.write_with(value, deadline, cancel, false)
+    }
+
+    /// Writes one message. A secret one is serialized into a buffer of the
+    /// exact size, so growing it leaves no copies behind, and wiped after.
+    fn write_with(
+        &mut self,
+        value: &Value,
+        deadline: Instant,
+        cancel: Option<(&AtomicU64, u64)>,
+        secret: bool,
+    ) -> Result<(), PluginError> {
+        let capacity = if secret { serialized_len(value)? + 1 } else { 0 };
+        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+        serde_json::to_writer(&mut *bytes, value).map_err(|error| error.to_string())?;
         if bytes.len() > LIMIT {
             return Err("Plugin request exceeds 1 MiB".into());
         }
@@ -1411,12 +1676,45 @@ impl Session {
         params: Value,
         cancel: Option<(&AtomicU64, u64)>,
     ) -> Result<Value, PluginError> {
+        self.request_with(method, params, cancel, Terms::default())
+    }
+
+    fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<(&AtomicU64, u64)>,
+        terms: Terms,
+    ) -> Result<Value, PluginError> {
+        self.exchange(method, params, cancel, terms).map_err(|error| match error {
+            PluginError::Transport(message) if message == TIMED_OUT => {
+                format!("Plugin timed out after {} seconds", terms.timeout.as_secs()).into()
+            }
+            error => error,
+        })
+    }
+
+    fn exchange(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel: Option<(&AtomicU64, u64)>,
+        terms: Terms,
+    ) -> Result<Value, PluginError> {
         self.next_id += 1;
         let request_id = self.next_id;
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + terms.timeout;
+        let mut message = serde_json::Map::new();
+        message.insert("jsonrpc".into(), "2.0".into());
+        message.insert("id".into(), request_id.into());
+        message.insert("method".into(), method.into());
+        message.insert("params".into(), params);
+        // Wiped when it goes, if secret, whichever way this ends.
+        let message = Arguments { value: Value::Object(message), secret: terms.secret };
         check(deadline, cancel)?;
         // Finish the frame before observing cancellation so the stream stays valid.
-        self.write(json!({ "jsonrpc": "2.0", "id": request_id, "method": method, "params": params }), deadline, None)?;
+        self.write_with(&message.value, deadline, None, terms.secret)?;
+        drop(message);
         loop {
             if self.stopping.load(Ordering::Relaxed) {
                 return Err("Plugin host is stopping".into());
@@ -1424,7 +1722,7 @@ impl Session {
             if let Err(error) = check(deadline, cancel) {
                 if error == PluginError::Cancelled {
                     self.write(
-                        json!({
+                        &json!({
                             "jsonrpc": "2.0",
                             "method": "notifications/cancelled",
                             "params": { "requestId": request_id, "reason": error.to_string() }
@@ -1432,7 +1730,9 @@ impl Session {
                         deadline,
                         None,
                     )?;
-                    self.cancelled.insert(request_id, deadline);
+                    if !terms.forget {
+                        self.cancelled.insert(request_id, deadline);
+                    }
                 }
                 return Err(error);
             }
@@ -1505,7 +1805,7 @@ impl Session {
                     "error": { "code": -32601, "message": "Unsupported client method" }
                 })
             };
-            self.write(response, deadline, None)?;
+            self.write(&response, deadline, None)?;
         } else if let Some(method) = method.as_str()
             && self.notifications.len() < NOTIFICATIONS
         {
@@ -1577,9 +1877,29 @@ fn check(deadline: Instant, cancel: Option<(&AtomicU64, u64)>) -> Result<(), Plu
         return Err(PluginError::Cancelled);
     }
     if Instant::now() >= deadline {
-        return Err("Plugin timed out after 3 seconds".into());
+        return Err(TIMED_OUT.into());
     }
     Ok(())
+}
+
+/// What [`check`] says when time is up; [`Session::request_with`] adds how long.
+const TIMED_OUT: &str = "Plugin timed out";
+
+/// How many bytes a value serializes to.
+fn serialized_len(value: &Value) -> Result<usize, PluginError> {
+    struct Count(usize);
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).map_err(|error| error.to_string())?;
+    Ok(count.0)
 }
 
 impl Drop for Session {
@@ -1617,8 +1937,53 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].title, "First");
         assert_eq!(rows[0].actions.len(), 1);
-        assert_eq!(rows[0].actions[0].kind, ActionKind::Copy { text: "hello".into() });
+        assert_eq!(rows[0].actions[0].kind, ActionKind::Copy { text: "hello".into(), sensitive: false });
         assert_eq!(rows[1].title, "Last");
+    }
+
+    #[test]
+    fn prompts_are_checked_and_bad_ones_skipped() {
+        let prompt = |steps: Value| json!({ "title": "Prompt", "type": "prompt", "prompt": { "title": "Unlock", "steps": steps } });
+        let wait = json!({ "id": "key", "kind": "wait", "text": "Touch your security key", "tool": "unlock_key",
+            "timeout": 90, "alternate": { "title": "Use passphrase instead", "step": "password" } });
+        let fields = json!({ "id": "password", "kind": "fields", "submit": "Unlock", "tool": "unlock_password",
+            "fields": [{ "name": "passphrase", "label": "Passphrase", "secret": true }] });
+        let rows = parse_rows(json!({ "rows": [{ "title": "Vault", "actions": [
+            prompt(json!([wait, fields])),
+            // The alternate goes nowhere.
+            prompt(json!([wait])),
+            prompt(json!([fields, fields])),
+            prompt(json!([])),
+            prompt(json!([{ "id": "empty", "kind": "fields", "tool": "t", "fields": [] }])),
+            prompt(json!([{ "id": "many", "kind": "fields", "tool": "t",
+                "fields": (0..5).map(|index| json!({ "name": format!("f{index}") })).collect::<Vec<_>>() }])),
+            prompt(json!([{ "id": "odd", "kind": "dance", "tool": "t" }])),
+            prompt(json!((0..9).map(|index| json!({ "id": format!("s{index}"), "kind": "wait", "tool": "t" })).collect::<Vec<_>>())),
+            { "title": "Copy code", "type": "copy", "text": "123456", "sensitive": true }
+        ] }] }))
+        .unwrap();
+        let actions = &rows[0].actions;
+        assert_eq!(actions.len(), 2);
+        let ActionKind::Prompt { prompt } = &actions[0].kind else { panic!("a prompt") };
+        assert_eq!(prompt.steps.len(), 2);
+        assert_eq!(prompt.step_index("password"), Some(1));
+        assert_eq!(prompt.steps[0].kind, StepKind::Wait);
+        assert_eq!(prompt.steps[0].timeout(), Duration::from_secs(60), "clamped");
+        assert_eq!(prompt.steps[1].timeout(), TIMEOUT);
+        let StepKind::Fields { fields, submit } = &prompt.steps[1].kind else { panic!("fields") };
+        assert!(fields[0].secret);
+        assert_eq!(submit.as_deref(), Some("Unlock"));
+        assert_eq!(actions[1].kind, ActionKind::Copy { text: "123456".into(), sensitive: true });
+        assert!(!actions[0].kind.after_prompt() && actions[1].kind.after_prompt());
+    }
+
+    #[test]
+    fn secret_arguments_are_wiped() {
+        let mut value = json!({ "passphrase": "hunter2", "nested": ["one", { "two": "2" }], "count": 3 });
+        wipe(&mut value);
+        assert_eq!(value, json!({ "passphrase": "", "nested": ["", { "two": "" }], "count": 3 }));
+        let message = json!({ "jsonrpc": "2.0", "params": { "text": "caf\u{e9} \"quoted\"" } });
+        assert_eq!(serialized_len(&message), Ok(serde_json::to_vec(&message).unwrap().len()));
     }
 
     #[test]
@@ -1811,5 +2176,38 @@ for line in sys.stdin:
         source.retry_after = Instant::now();
         source.environment.write().unwrap().push(("DISPLAY".into(), Some(":42".into())));
         assert_eq!(source.invoke("display", json!({}), &current, 1), Ok(json!({ "display": ":42" })));
+
+        // A prompt's cancelled wait is let go: the plugin need not answer
+        // and keeps running past the request's deadline.
+        let pid = source.session.as_ref().unwrap().child.id();
+        let prompt = Terms { timeout: Duration::from_millis(300), forget: true, secret: false };
+        let generation = current.clone();
+        let bell = wake.clone();
+        let cancel = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            generation.store(2, Ordering::Relaxed);
+            bell.send(&[1]).unwrap();
+        });
+        assert_eq!(
+            source.call("slow", json!({}).into(), Some((&current, 1)), prompt),
+            Err("Plugin request cancelled".into())
+        );
+        cancel.join().unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        // Nothing is pending, so idling waits for the bell: ring it.
+        wake.send(&[1]).unwrap();
+        source.idle();
+        assert_eq!(source.session.as_ref().map(|session| session.child.id()), Some(pid));
+        // The late answer to it is ignored by request id.
+        assert_eq!(source.invoke("ok", json!({}), &current, 2), Ok(json!({ "ok": true })));
+
+        // A secret is sent like anything else.
+        let secret = Arguments::secret(json!({ "passphrase": "hunter2" }));
+        assert_eq!(source.call("ok", secret, None, Terms::default()), Ok(json!({ "ok": true })));
+
+        // A prompt's own deadline ends a plugin that never answers.
+        let result = source.call("slow", json!({}).into(), None, prompt);
+        assert!(result.as_ref().is_err_and(|error| error.starts_with("Plugin timed out")), "{result:?}");
+        assert!(source.session.is_none());
     }
 }

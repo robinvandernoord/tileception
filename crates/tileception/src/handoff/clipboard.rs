@@ -371,7 +371,7 @@ impl Tileception {
             SelectionTarget::Primary => current_primary_selection_userdata(&self.seat).and_then(|data| data.clone()),
         };
         if let Some(clip) = owned {
-            clip.send(writer.into());
+            clip.send(&mime_type, writer.into());
             return Some(reader);
         }
         let pipe: OwnedFd = writer.try_clone().ok()?.into();

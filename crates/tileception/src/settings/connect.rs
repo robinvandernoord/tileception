@@ -536,15 +536,7 @@ impl Tileception {
             if form.invalid == Some(1) {
                 form.invalid = None;
             }
-            match sym {
-                keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => form.secret.select_all(),
-                keysyms::KEY_u | keysyms::KEY_U if mods.ctrl => form.secret.clear(),
-                keysyms::KEY_BackSpace | keysyms::KEY_Delete => form.secret.backspace(),
-                _ if !mods.ctrl && !mods.alt && !mods.logo => {
-                    form.secret.type_key(sym);
-                }
-                _ => {}
-            }
+            form.secret.edit_key(sym, mods);
         } else if form.focus == 0 {
             if form.invalid == Some(0) {
                 form.invalid = None;
@@ -604,11 +596,14 @@ impl Tileception {
                         theme.muted,
                     );
                 } else {
-                    let mask = "*".repeat(form.secret.chars().min(64));
+                    // One mask character per secret character, so the caret
+                    // and selection line up; the field scrolls.
+                    let mask = "*".repeat(form.secret.chars());
                     let (text, cursor, anchor) = if index == 0 {
                         (form.client_id.text.as_str(), form.client_id.cursor, form.client_id.anchor)
                     } else {
-                        (mask.as_str(), mask.len(), form.secret.is_selected().then_some(0))
+                        let (cursor, anchor) = form.secret.caret();
+                        (mask.as_str(), cursor, anchor)
                     };
                     let field = crate::text::Field {
                         cursor,

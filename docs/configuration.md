@@ -383,7 +383,9 @@ in nested and headless instances. It stops the helper on exit or restart.
 Do not also start it through autostart when using this setting.
 
 Only the latest regular copy/paste clipboard is held in memory. This adds no
-history or disk storage and leaves the middle-click selection alone. Switching
+history or disk storage and leaves the middle-click selection alone. Copies
+marked as passwords (offering `x-kde-passwordManagerHint`, as password managers
+and sensitive plugin copies do) are not held. Switching
 persistence off discards the helper's retained clipboard. If the helper cannot
 start or exits, Tileception logs an error; reload the config after resolving
 the problem to retry.

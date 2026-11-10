@@ -79,7 +79,14 @@ impl Tileception {
             .and_then(|exe| exe.parent().map(|directory| directory.join("tileception-clip-persist")))
             .filter(|path| path.is_file());
         let program = helper.as_deref().map_or_else(|| "wl-clip-persist".into(), |path| path.to_string_lossy());
-        match self.command(&program, &["--clipboard".into(), "regular".into()]).spawn() {
+        // Sensitive copies (see `launcher::PASSWORD_HINT`) are left alone.
+        let arguments = [
+            "--clipboard".into(),
+            "regular".into(),
+            "--all-mime-type-regex".into(),
+            format!("^(?!{}$)", crate::launcher::PASSWORD_HINT),
+        ];
+        match self.command(&program, &arguments).spawn() {
             Ok(child) => {
                 self.clipboard.child = Some(child);
                 tracing::info!("clipboard persistence started");
