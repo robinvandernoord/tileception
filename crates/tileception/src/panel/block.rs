@@ -9,7 +9,8 @@
 //! launcher's action types; a level's action gets the chosen `value` added
 //! to its arguments.
 //!
-//! The bar's chips ([`Bar`]) use the same icons, tints and actions.
+//! The bar's chips ([`Bar`]) use the same icons, tints and actions, and the
+//! cards under the launcher ([`Launcher`]) are the block's cards.
 
 use serde::{Deserialize, Serialize};
 
@@ -137,8 +138,9 @@ impl Level {
     }
 }
 
-/// A larger tile, such as a thermostat: a big reading, a title and detail,
-/// a stepper, a switch, rows of choices and a trend line.
+/// A larger tile, such as a thermostat or a timer: a big reading, a title
+/// and detail, buttons, a stepper, a switch, rows of choices, a trend line
+/// and a progress bar.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Card {
@@ -156,10 +158,40 @@ pub struct Card {
     pub enabled: bool,
     /// Clicking the title, such as showing the next thermostat.
     pub title_action: Option<ActionKind>,
+    /// Beside the title, before the stepper, such as pause and stop.
+    pub buttons: Vec<Button>,
     pub stepper: Option<Stepper>,
     pub switch: Option<Switch>,
     pub choices: Vec<Choices>,
     pub trend: Option<Trend>,
+    /// A thin bar along the bottom, such as how far a timer is.
+    pub progress: Option<Progress>,
+}
+
+/// A button on a card: its icon, or its title when it has none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Button {
+    pub title: String,
+    pub icon: Option<String>,
+    /// The card's main button, filled with the accent.
+    pub primary: bool,
+    pub enabled: bool,
+    pub action: Option<ActionKind>,
+}
+
+/// How far something is, from 0 to 100.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Progress {
+    pub value: f64,
+}
+
+impl Progress {
+    /// The share done, from 0 to 1.
+    pub fn share(self) -> f64 {
+        if self.value.is_finite() { (self.value / 100.0).clamp(0.0, 1.0) } else { 0.0 }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -238,6 +270,18 @@ pub struct BarChip {
     pub action: Option<ActionKind>,
 }
 
+/// What a plugin shows under the launcher, read from its
+/// `tileception://launcher` resource: cards that come and go, such as one
+/// per running timer.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Launcher {
+    pub cards: Vec<Card>,
+}
+
+/// The most cards one plugin shows under the launcher.
+pub const LAUNCHER_CARDS: usize = 4;
+
 /// Colours from the theme for icons and badges.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -285,5 +329,24 @@ mod tests {
         let Item::Row(row) = &group.items[0] else { panic!("a row") };
         assert!(row.switch.as_ref().unwrap().checked);
         assert_eq!(block.active, 1);
+    }
+
+    #[test]
+    fn reads_launcher_cards() {
+        let launcher: Launcher = serde_json::from_str(
+            r#"{"cards":[{"id":"tea","title":"Tea","value":"2:41","enabled":true,
+                "buttons":[{"title":"Pause","icon":"glyph:pause","primary":true,"enabled":true,
+                            "action":{"type":"tool","name":"pause","arguments":{"timer":"tea"}}},
+                           {"title":"Stop"}],
+                "progress":{"value":35.5}}]}"#,
+        )
+        .unwrap();
+        let card = &launcher.cards[0];
+        assert_eq!(card.buttons.len(), 2);
+        assert!(card.buttons[0].primary && card.buttons[0].enabled);
+        assert!(!card.buttons[1].enabled && card.buttons[1].action.is_none());
+        assert!((card.progress.unwrap().share() - 0.355).abs() < 1e-9);
+        assert!((Progress { value: 250.0 }.share() - 1.0).abs() < 1e-9);
+        assert!(Progress { value: f64::NAN }.share().abs() < 1e-9);
     }
 }

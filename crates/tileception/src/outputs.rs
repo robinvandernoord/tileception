@@ -1220,6 +1220,7 @@ impl Tileception {
         self.power_menu = None;
         self.close_calendar();
         self.close_minimap();
+        self.close_network();
         self.close_tray();
         self.selection.anchor = None;
         self.resize_drag = None;

@@ -206,6 +206,9 @@ impl Tileception {
         if self.settings.page == Some(apps_page()) {
             self.settings_load_apps();
         }
+        if self.settings.page == Some(network_page::network_page()) {
+            self.network_request(crate::network::manager::Request::Scan);
+        }
         if self.settings.section.is_some() {
             return;
         }

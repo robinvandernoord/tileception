@@ -266,16 +266,27 @@ forward buttons; [Using Tileception](usage.md#minimap) describes it. To hide it:
 bar_minimap = false
 ```
 
+With NetworkManager running, the bar also shows a network chip that opens a
+card for joining Wi-Fi networks ([Using Tileception](usage.md#network)). Settings
+has the same switch on its Network page. To hide it:
+
+```toml
+[shell]
+bar_network = false
+```
+
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
 commands under `[binds]`.
 
 ### Plugins
 
-Plugins are executable MCP servers over stdio that add launcher sources, panel
-blocks and bar chips. The smart home, Bluetooth and `z` folders are bundled
-plugins: `[plugins.bluetooth] enabled = false` switches one off, and
-`[plugins.home.bar] enabled = false` hides its bar chip. Build the example with
+Plugins are executable MCP servers over stdio that add launcher sources and
+cards under the launcher, panel blocks and bar chips. The smart home, Bluetooth,
+`z` folders and timers are bundled plugins: `[plugins.bluetooth] enabled = false`
+switches one off, `[plugins.home.bar] enabled = false` hides its bar chip, and
+`[plugins.<id>.launcher] cards = false` hides a plugin's cards under the
+launcher. Build the example with
 `cargo plane build -p tileception --bin tileception-launcher-example`, then
 enable it using the executable's absolute path:
 
@@ -519,6 +530,24 @@ Suspend is available in the power menu by default. To disable that menu action:
 [general]
 suspend_enabled = false
 ```
+
+### Updates
+
+On systems with APT, the bar shows a chip while updates wait; see
+[Updates](usage.md#updates). These are the defaults:
+
+```toml
+[updates]
+enabled = true
+notify = true
+check_hours = 4
+```
+
+`enabled = false` switches the update manager off: no chip, no launcher rows
+and no `tileception msg updates`. `notify = false` keeps the chip and drops the
+one notification when new updates arrive. `check_hours` is how often
+Tileception reads the package lists; the lists themselves are refreshed by the
+system's daily timer, or by **Check** in the Updates window.
 
 ### Battery
 

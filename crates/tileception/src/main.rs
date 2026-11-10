@@ -52,6 +52,7 @@ mod media;
 mod minimap;
 mod minimized;
 mod mirror;
+mod network;
 mod notifications;
 mod osd;
 mod outputs;
@@ -82,6 +83,7 @@ mod tray_bus;
 mod udev;
 #[allow(clippy::min_ident_chars, reason = "ui is the established name for the interface drawing module")]
 mod ui;
+mod updates;
 mod wake;
 mod wallpaper;
 mod winit;
@@ -307,6 +309,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(root) => state.start_battery(Some(root.into()), false),
         None if !nested && !headless => state.start_battery(None, true),
         None => {}
+    }
+    // A nested or headless instance shares its system with the desktop it
+    // runs in, which already shows the updates: there, only on request.
+    if (!nested && !headless) || std::env::var_os("TILECEPTION_UPDATES").is_some() {
+        state.start_updates();
+    }
+    // TILECEPTION_NETWORK_BUS points at a stand-in for NetworkManager, for tests.
+    match std::env::var(crate::network::manager::BUS_VARIABLE) {
+        Ok(address) => state.start_network(Some(address)),
+        Err(_) if !headless => state.start_network(None),
+        Err(_) => {}
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     state.notification_bus = notification_bus.clone();

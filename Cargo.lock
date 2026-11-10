@@ -3428,6 +3428,7 @@ dependencies = [
  "tileception-home",
  "tileception-media",
  "tileception-notify",
+ "tileception-updates",
  "toml",
  "toml_edit",
  "tracing",
@@ -3523,6 +3524,10 @@ dependencies = [
  "serde",
  "zbus",
 ]
+
+[[package]]
+name = "tileception-updates"
+version = "0.14.1"
 
 [[package]]
 name = "time"

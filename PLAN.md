@@ -32,6 +32,7 @@ crates/
   tileception-media/   # volume (PulseAudio protocol), MPRIS, backlight
   tileception-acp/     # ACP Registry, agent installs and the ACP client
   tileception-handoff/ # handoff protocol: discovery, handshake, wire format
+  tileception-updates/ # pending APT updates, kernels, release checks, apt history
 resources/             # session launcher, login screen entry, power menu, portal config
 packaging/             # Debian packaging
 website/               # tileception.space and the /install script
@@ -60,6 +61,24 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Later
 
+- Update manager, beyond APT and kernels. Decided:
+  - Flatpak and Snap updates join the same list, each with its source; then
+    firmware through fwupd, never ticked by default.
+  - Root through polkit: a small helper with its own policy and Tileception
+    as the authentication agent, replacing the password passed to `sudo`.
+  - A changelog per update (`apt-get changelog`, Flatpak and Snap release
+    notes), and "skip this version" or "hold" for one package, shown as a
+    muted row.
+  - "Restart and install" as a second line under Restart in the power menu
+    while a kernel or firmware waits.
+  - No checks on a metered connection or below 30% battery, and no update
+    notification during Do not disturb or over a fullscreen window.
+  - A snapshot before kernel, Mesa and release upgrades where Timeshift or
+    a btrfs root is present.
+  - Doctor answers "what changed since Tuesday?" from the apt history.
+  - Updates of machines linked through handoff, in the same card.
+  - Possibly: the updates as a tile to zoom into, each source a nested tile
+    sized by its download.
 - Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
   binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
   can answer what changed in a version and when something arrived.
@@ -85,11 +104,6 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
-  - Plugins in a user-chosen order, ideally set by dragging their blocks
-    (smart home, Bluetooth) in the notification panel. The order is saved
-    and used for the panel and for the bar's chips; without one, the
-    priority order applies.
-  - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
@@ -112,10 +126,10 @@ Report testing in the conversation, the commit or the pull request instead.
     writes that exception, so opting in needs no config editing.
   - No buttons on the lock screen (they would run an app's action without
     unlocking), except Tileception's own. Do not disturb applies there too.
-- More launcher actions in plain words, such as "set a timer for 10 minutes"
-  or "remind me at 3", and better unit conversions. Optional: a tiny local
-  tool-calling model (Cactus Needle or similar) to map free text onto those
-  actions, with the rule-based parsing kept as the default.
+- Better unit conversions in the launcher.
+- Optional: a tiny local tool-calling model (Cactus Needle or similar) to
+  map free text in the launcher onto actions such as timers, with the
+  rule-based parsing kept as the default.
 - Feedback from inside Tileception:
   - Optional screenshot attachment: explicit opt-in, preview the captured
     image before including it, and allow removing it before opening the

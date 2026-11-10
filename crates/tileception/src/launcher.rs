@@ -120,6 +120,8 @@ pub enum Paste {
     /// A field of a launcher prompt: the prompt step's serial and the
     /// field, so a late paste never lands anywhere else.
     Prompt(u64, usize),
+    /// The network card's password field.
+    Network,
 }
 
 /// One row of results.
@@ -154,6 +156,20 @@ enum Entry {
         row: crate::plugins::Row,
     },
     PluginStatus(String),
+    /// Something the update manager can do, under `up`.
+    Update(UpdateRow),
+}
+
+/// The update manager's rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UpdateRow {
+    Install,
+    Security,
+    Choose,
+    Clean,
+    Release,
+    Restart,
+    Check,
 }
 
 /// What an app's details show: where its desktop entry is and what it runs.
@@ -178,6 +194,8 @@ enum PointerAction {
     Settings,
     Entry(Entry),
     Prompt(prompt::Target),
+    /// A control on a plugin's card under the launcher.
+    Card(String, crate::plugins::ActionKind),
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -197,6 +215,7 @@ impl crate::ui::PointerAction for PointerAction {
                 }
             }
             Self::Prompt(target) => state.prompt_activate(*target),
+            Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
         }
     }
 }
@@ -234,6 +253,7 @@ const COMMANDS: &[Builtin] = &[
     ),
     builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
     builtin("Minimap", "map tree where camera outline", glyph::MINIMAP, Does::Line("minimap")),
+    builtin("Network", "wifi wi-fi wireless internet ethernet wired join", glyph::WIFI, Does::Line("network")),
     builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
     builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
     builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),
@@ -271,6 +291,7 @@ const COMMANDS: &[Builtin] = &[
         glyph::CHAT,
         Does::Line("feedback"),
     ),
+    builtin("Updates", "upgrade packages apt kernel software release", glyph::ARROW_RIGHT, Does::Line("updates open")),
     builtin("Default terminal", "terminal shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
@@ -618,6 +639,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
+            (Paste::Network, Clip::Text(text)) if self.network_typing() => self.network_insert_paste(&text),
             (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
         }
@@ -804,6 +826,9 @@ impl Tileception {
                 .map(|app| Entry::App(app.id.clone()))
                 .collect();
         }
+        if let Some(rows) = self.update_rows(text) {
+            return rows;
+        }
         if let Some(line) = answers::command(text) {
             return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
         }
@@ -855,6 +880,7 @@ impl Tileception {
                     !matches!(command.does, Does::Suspend) || self.config.file.general.suspend_enabled
                 })
                 .filter(|(_, command)| !matches!(command.does, Does::Line("doctor")) || self.shell().doctor())
+                .filter(|(_, command)| !matches!(command.does, Does::Line("updates open")) || self.updates_available())
                 .filter_map(|(index, command)| {
                     let by_name = quality(&query, &command.name.to_lowercase());
                     let by_words = query
@@ -874,11 +900,19 @@ impl Tileception {
         // A stable sort keeps each kind's own order among equals.
         ranked.sort_by_key(|(quality, kind, _)| (*quality, *kind));
 
-        let mut entries: Vec<Entry> = found.into_iter().map(Entry::Answer).collect();
+        // A sentence such as "set a timer for 10 minutes" is the timers
+        // plugin's to carry out; plugins themselves only get their prefix.
+        let timer = self
+            .plugins
+            .as_ref()
+            .filter(|plugins| plugins.running(TIMERS))
+            .and_then(|_| crate::bundled::timers::understood(text, unix_now()))
+            .map(|row| Entry::Plugin { plugin: TIMERS.into(), row });
+        let mut entries: Vec<Entry> = timer.into_iter().chain(found.into_iter().map(Entry::Answer)).collect();
         let room = MAX_ROWS.saturating_sub(entries.len()).max(2);
         entries.extend(ranked.into_iter().take(room).map(|(_, _, entry)| entry));
         // Sums and conversions are answers, not questions for the doctor.
-        let answered = entries.iter().any(|entry| matches!(entry, Entry::Answer(_)));
+        let answered = entries.iter().any(|entry| matches!(entry, Entry::Answer(_) | Entry::Plugin { .. }));
         if !answered
             && !crate::calc::looks_like_conversion(text)
             && let Some(question) = question_in(text)
@@ -1025,7 +1059,8 @@ impl Tileception {
             | Paste::Settings(_)
             | Paste::Feedback(..)
             | Paste::Duck
-            | Paste::Prompt(..) => text.to_vec(),
+            | Paste::Prompt(..)
+            | Paste::Network => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
@@ -1239,7 +1274,160 @@ impl Tileception {
                 }
             }
             Entry::PluginStatus(_) => {}
+            Entry::Update(row) => {
+                self.close_launcher();
+                self.run_update_row(row);
+            }
         }
+    }
+
+    /// The update manager's rows for `up` (or the start of "updates"), while
+    /// it runs here.
+    fn update_rows(&self, text: &str) -> Option<Vec<Entry>> {
+        let query = text.to_lowercase();
+        let asked = query == "up" || query.starts_with("up ") || (query.len() >= 3 && "updates".starts_with(&query));
+        if !asked || !self.updates_available() {
+            return None;
+        }
+        let updates = &self.updates;
+        let totals = updates.snapshot.totals();
+        let mut rows = Vec::new();
+        if !updates.busy() {
+            if totals.count > 0 {
+                rows.push(UpdateRow::Install);
+            }
+            if totals.security > 0 && totals.security < totals.count {
+                rows.push(UpdateRow::Security);
+            }
+        }
+        rows.push(UpdateRow::Choose);
+        if updates.cleanup_summary().is_some() {
+            rows.push(UpdateRow::Clean);
+        }
+        if updates.release().is_some() {
+            rows.push(UpdateRow::Release);
+        }
+        if updates.snapshot.restart {
+            rows.push(UpdateRow::Restart);
+        }
+        if !updates.busy() {
+            rows.push(UpdateRow::Check);
+        }
+        Some(rows.into_iter().map(Entry::Update).collect())
+    }
+
+    /// The update rows follow the update manager while they show.
+    pub(crate) fn refresh_updates_rows(&mut self) {
+        if !self.launcher.entries.iter().any(|entry| matches!(entry, Entry::Update(_))) {
+            return;
+        }
+        self.launcher.entries = self.launcher_entries();
+        self.launcher.selected = self.launcher.selected.min(self.launcher.entries.len().saturating_sub(1));
+    }
+
+    fn run_update_row(&mut self, row: UpdateRow) {
+        use crate::updates::{Page, Task};
+        let result = match row {
+            UpdateRow::Install => self.updates_install(false),
+            UpdateRow::Security => self.updates_install(true),
+            UpdateRow::Check => self.updates_start(Task::Refresh),
+            UpdateRow::Choose => {
+                self.open_updates(Page::Available);
+                Ok(())
+            }
+            UpdateRow::Clean => {
+                self.open_updates(Page::Kernels);
+                self.updates_queue_suggested();
+                Ok(())
+            }
+            UpdateRow::Release => {
+                self.open_updates(Page::Release);
+                Ok(())
+            }
+            UpdateRow::Restart => {
+                self.run_builtin(Does::Power(PowerAction::Restart));
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            self.notify_locally("Updates", &error, tileception_notify::Urgency::Normal);
+        }
+    }
+
+    fn update_row_text(&self, row: UpdateRow) -> (&'static str, String, String) {
+        let updates = &self.updates;
+        let totals = updates.snapshot.totals();
+        let size = tileception_updates::human_size(totals.bytes);
+        match row {
+            UpdateRow::Install => {
+                let title = if totals.count == 1 {
+                    "Install 1 update".into()
+                } else {
+                    format!("Install all {} updates", totals.count)
+                };
+                let detail = match totals.security {
+                    0 => format!("{size} to download"),
+                    count => format!("{size} to download \u{b7} {count} for security"),
+                };
+                (glyph::ARROW_RIGHT, title, detail)
+            }
+            UpdateRow::Security => {
+                let names: Vec<&str> = updates
+                    .snapshot
+                    .updates
+                    .iter()
+                    .filter(|update| update.security)
+                    .take(3)
+                    .map(|update| update.name.as_str())
+                    .collect();
+                let title = if totals.security == 1 {
+                    "Install the security update".into()
+                } else {
+                    format!("Install the {} security updates", totals.security)
+                };
+                (glyph::ALERT, title, names.join(", "))
+            }
+            UpdateRow::Choose => {
+                let detail = match updates.progress() {
+                    Some((title, label, _)) => format!("{title} \u{b7} {label}"),
+                    None if totals.count == 0 => format!("Up to date \u{b7} {}", updates.checked()),
+                    None => "Pick packages in the Updates window".into(),
+                };
+                (glyph::WINDOW, if totals.count == 0 { "Open Updates" } else { "Choose updates" }.into(), detail)
+            }
+            UpdateRow::Clean => (
+                glyph::CLEAR,
+                "Clean up old kernels".into(),
+                format!("{} \u{b7} review the queue first", updates.cleanup_summary().unwrap_or_default()),
+            ),
+            UpdateRow::Release => (
+                glyph::GLOBE,
+                format!(
+                    "Upgrade to {} {}",
+                    updates.snapshot.system.pretty.split_whitespace().next().unwrap_or_default(),
+                    updates.release().unwrap_or_default()
+                ),
+                "Shows what to look at first".into(),
+            ),
+            UpdateRow::Restart => {
+                (glyph::RESTART, "Restart to finish updates".into(), "Opens the power menu to confirm".into())
+            }
+            UpdateRow::Check => (glyph::RESTART, "Check for updates now".into(), format!("Last {}", updates.checked())),
+        }
+    }
+
+    /// Does what a card under the launcher asks. A tool runs like the
+    /// panel's, so the typed search and its results stay as they are.
+    fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
+        match action {
+            crate::plugins::ActionKind::Tool { name, arguments } => {
+                if let Some(plugins) = &self.plugins {
+                    plugins.tool(crate::plugins::Place::Panel, plugin.into(), name, arguments);
+                }
+            }
+            action => self.launcher_action(None, action),
+        }
+        self.schedule_render();
     }
 
     /// Built-in answers and places share clipboard/open dispatch with plugins.
@@ -1529,15 +1717,27 @@ impl Tileception {
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
         let prompt = prompt_h.map(|height| Rect::new(panel.x + PAD, caption.bottom(), panel.w - 2.0 * PAD, height));
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
-        let media = self
-            .media
-            .snapshot
-            .media
-            .active()
-            .is_some()
+        // Under the panel: what is playing, then the plugins' cards, as far
+        // as the screen has room for them.
+        let lowest = screen.bottom() - 8.0;
+        let playing = self.media.snapshot.media.active().is_some();
+        let media = playing
             .then(|| crate::controls::media_card_layout(panel.x, panel.bottom() + 12.0, panel.w))
-            .filter(|card| card.rect.bottom() <= screen.bottom() - 8.0);
-        LauncherLayout { panel, field, text, caption, rows, first, output, prompt, footer, media }
+            .filter(|card| card.rect.bottom() <= lowest);
+        let mut cards = Vec::new();
+        if media.is_some() || !playing {
+            let mut top = media.as_ref().map_or(panel.bottom() + 12.0, |card| card.rect.bottom() + CARD_GAP);
+            let offered = self.plugins.as_ref().map(crate::plugins::Host::launcher_cards).unwrap_or_default();
+            for (plugin, card) in offered {
+                let laid = crate::panel::card_layout(card, panel.x, top, panel.w);
+                if laid.rect.bottom() > lowest {
+                    break;
+                }
+                top = laid.rect.bottom() + CARD_GAP;
+                cards.push((plugin.to_string(), card.clone(), laid));
+            }
+        }
+        LauncherLayout { panel, field, text, caption, rows, first, output, prompt, footer, media, cards }
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -1548,8 +1748,7 @@ impl Tileception {
     /// Whether the welcome screen takes the pointer here. Elsewhere the
     /// desktop (bars, the notification panel) gets it as usual.
     pub fn home_contains(&self, point: Point) -> bool {
-        let layout = self.launcher_layout();
-        layout.panel.contains(point) || layout.media.is_some_and(|card| card.rect.contains(point))
+        self.launcher_layout().covers(point)
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
@@ -1584,6 +1783,12 @@ impl Tileception {
         {
             return Some(target);
         }
+        for (plugin, card, laid) in &layout.cards {
+            if laid.rect.contains(point) {
+                let (rect, action) = crate::panel::card_action_at(card, laid, point)?;
+                return Some(crate::ui::PointerTarget::button(rect, PointerAction::Card(plugin.clone(), action)));
+            }
+        }
         if self.launcher.plugin_pending {
             return None;
         }
@@ -1607,7 +1812,8 @@ impl Tileception {
         let layout = self.launcher_layout();
         if let Some(target) = self.launcher_pointer_target(point) {
             target.activate(self, point);
-        } else if !layout.panel.contains(point) && !self.launcher.home {
+        } else if !layout.covers(point) && !self.launcher.home {
+            // A click beside a card's button is a miss, not a way out.
             self.close_launcher();
         }
     }
@@ -1886,6 +2092,11 @@ impl Tileception {
             let pointer = Point::new(self.pointer.x, self.pointer.y);
             self.draw_media_card(&mut painter, card, player, pointer);
         }
+        for (_, card, laid) in &layout.cards {
+            painter.popup(laid.rect);
+            let pointer = Point::new(self.pointer.x, self.pointer.y);
+            self.draw_plugin_card(&mut painter, card, laid, pointer, theme.surface);
+        }
         painter.finish()
     }
 
@@ -1940,6 +2151,11 @@ impl Tileception {
                     .get(&format!("{app}.desktop"))
                     .map_or(app.clone(), |desktop| desktop.name.clone());
                 (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Entry::Update(row) => {
+                let (icon, title, detail) = self.update_row_text(*row);
+                glyph_box(painter, icon, if *row == UpdateRow::Security { theme.warning } else { theme.accent });
+                (title, Some(detail))
             }
             Entry::Command(index) => {
                 let command = &COMMANDS[*index];
@@ -2467,6 +2683,10 @@ const FIELD_H: f64 = 52.0;
 const CAPTION_H: f64 = 32.0;
 const ROW_H: f64 = 54.0;
 const FOOTER_H: f64 = 44.0;
+/// The bundled plugin that plain sentences about timers go to.
+const TIMERS: &str = "timers";
+/// Between the cards under the launcher.
+const CARD_GAP: f64 = 8.0;
 /// Rows of results at most, besides "Ask Tileception".
 const MAX_ROWS: usize = 8;
 /// Tiles per row on the welcome screen.
@@ -2490,6 +2710,8 @@ struct LauncherLayout {
     panel: Rect,
     /// What is playing, under the launcher.
     media: Option<crate::controls::MediaCard>,
+    /// The plugins' cards under that: whose, the card and where it goes.
+    cards: Vec<(String, crate::panel::block::Card, crate::panel::CardLayout)>,
     field: Rect,
     /// Where the typed text goes inside the field.
     text: Rect,
@@ -2502,6 +2724,15 @@ struct LauncherLayout {
     /// A plugin's prompt, instead of the rows.
     prompt: Option<Rect>,
     footer: Rect,
+}
+
+impl LauncherLayout {
+    /// Whether the point is on the panel or on a card under it.
+    fn covers(&self, point: Point) -> bool {
+        self.panel.contains(point)
+            || self.media.as_ref().is_some_and(|card| card.rect.contains(point))
+            || self.cards.iter().any(|(_, _, laid)| laid.rect.contains(point))
+    }
 }
 
 fn launcher_settings_button(footer: Rect) -> Rect {

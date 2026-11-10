@@ -222,6 +222,40 @@ visit most, as [z](https://github.com/rupa/z) and
 **Ctrl+Enter** opens a terminal there and **Tab** completes its path. Folders
 from typed paths work the same way.
 
+Type `timer` and a space, then how long and what for: `timer 10m tea`,
+`timer 1h30m bread`, `timer 90s` or `timer 2:30 eggs`. A bare number is
+minutes, and the name is optional and may come first. **Enter** starts the
+timer. With `at` and a time of day it is an alarm: `timer at 15:30 call the
+dentist`, `timer at 7am` or `timer at noon`. A time such as `at 3`, without am
+or pm, is the next three o'clock, morning or afternoon; write `03:00` or
+`15:00` to say which.
+
+Plain sentences work too, without `timer` in front: "set a timer for 10
+minutes", "10 minute timer for tea", "set an alarm at 7", "remind me at 3 to
+call the dentist", "remind me to stretch in 20 minutes" or "wake me up at
+6:30". The first row says what Enter will start and when it rings.
+
+Each timer shows as a card under the launcher whenever it is open, with the
+time left, a bar for how far it is, and buttons to add a minute, pause or
+resume, and stop. `timer` and a space also lists the timers, where **Enter**
+offers the same actions. When the time is up, a notification says so and stays
+until you dismiss it; the card stays for ten minutes, or until its tick is
+clicked. An alarm or reminder rings with its name, and has no pause. Timers keep running while Tileception restarts, and one that ended
+meanwhile rings as soon as it is back. There can be 16 timers of up to a day;
+the launcher shows the cards of the four that end first.
+
+Scripts and key bindings use the same tools:
+
+```sh
+tileception msg plugin timers start '{"duration": "25m", "label": "focus"}'
+tileception msg plugin timers start '{"at": "17:00", "label": "leave"}'
+tileception msg plugin timers list
+tileception msg plugin timers pause '{"timer": "focus"}'
+tileception msg plugin timers stop '{"timer": "focus"}'
+```
+
+`[plugins.timers] enabled = false` switches timers off.
+
 "Send feedback" and `tileception msg feedback [title]` open editable title and
 feedback fields. Enter adds a line in the feedback field; the usual selection,
 word navigation and clipboard shortcuts work. Choose **Review** to see the
@@ -358,6 +392,124 @@ The notification panel's **Bluetooth** block lists paired devices with a switch
 to connect each. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
+
+### Arranging the panel's blocks
+
+Drag a block such as Home or Bluetooth by its title to move it above or below
+the others; a line shows where it will go. Tileception remembers the order and
+shows the bar's chips in the same order. See [the plugin guide](plugins.md#panel-block)
+for where it is kept.
+
+### Updates
+
+On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
+while updates wait. It counts security updates first: `3 +9` means three
+security updates and nine others. While updates install it shows progress,
+and it says **Restart** when earlier updates need one or names a newer Ubuntu
+release once one is out. With nothing to do there is no chip.
+
+Click the chip for a card with the updates by kind and three buttons:
+**Install all**, **Security only** and **Review**. Installing needs
+administrator rights. If `sudo` asks for a password, Tileception shows its own
+prompt and passes what you type to `sudo` for that one task.
+
+**Review** opens the Updates window, which also opens with
+`tileception msg updates open` or "Updates" in the launcher. It has four pages;
+**Tab** and **Shift+Tab** switch between them, the arrow keys move through the
+list, **Space** ticks a row and **Enter** runs the page's main button.
+
+| Page | What it does |
+| --- | --- |
+| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Check** refreshes the package lists. |
+| Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
+| Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
+| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. |
+
+The Kernels page lists kernels by series; click a series, or press **Space**
+on it, to fold it. It shows every installed kernel and every kernel apt offers
+for the flavour you are running, with unsigned and debug builds left out.
+**All variants** adds the other flavours and those builds, with only the series
+you have kernels of unfolded.
+
+The running kernel is protected and the newest other one is marked as the
+fallback. **Install** and **Remove** put a kernel on the queue instead of acting
+at once. Installing takes the matching headers along; removing takes the
+modules and headers that nothing else then uses. **Preview** shows what
+`apt-get` would do with the whole queue, **Apply queue** does it as one
+transaction and **Clear** empties it. **Purge: on** also removes the
+configuration of what goes; switch it off to keep that. **Queue old kernels**
+queues everything except the running kernel and the fallback. The page warns
+when no fallback is installed, and when the queue would leave none.
+
+Leftover headers, and leftover modules and tools, of kernels that are gone are
+listed apart and queued per kind. Nothing here runs `autoremove`.
+
+| Key | Action on the Kernels page |
+| --- | --- |
+| A | Switch between the recommended view and all variants |
+| Q, or Space | Queue the highlighted kernel, or take it off the queue |
+| I / D | Queue the highlighted kernel to install / to remove |
+| U | Tick or untick the leftovers |
+| P | Preview the queue, and go back |
+| C | Clear the queue |
+| R | Refresh the package lists |
+| Enter | Apply the queue |
+
+Type `up` in the launcher for the same actions as rows: install everything,
+install the security updates, choose updates, clean up old kernels, upgrade to
+the next release and check now.
+
+From scripts and key bindings:
+
+| Command | Action |
+| --- | --- |
+| `tileception msg updates` | List what is waiting |
+| `tileception msg updates check` | Refresh the package lists |
+| `tileception msg updates install` | Install every update |
+| `tileception msg updates install security` | Install the security updates |
+| `tileception msg updates install <package>...` | Install the named updates |
+| `tileception msg updates kernels` | List kernels: running, fallback, old, available |
+| `tileception msg updates clean` | Remove old kernels and leftover kernel packages |
+| `tileception msg updates upgrade` | Start the release upgrade in a terminal |
+
+Flatpak, Snap and firmware updates are not listed yet. See
+[Configuration](configuration.md#updates) to switch the chip or its
+notification off.
+
+### Network
+
+With NetworkManager running, a Wi-Fi or cable icon in the bar shows how you
+are connected, with the signal strength; hover it for the network's name.
+Click it, or type **Network** in the launcher, to open the network card:
+
+- The switch at the top turns Wi-Fi on or off.
+- Click a network to join it. Saved and open networks join at once; for a
+  secured one, type its password and press **Enter**. **Show** reveals what you
+  typed; copying works only while it shows.
+- **Disconnect** leaves the network you are on.
+
+While the card is open it has the keyboard: **Up** and **Down** choose a
+network, **Enter** joins it (or leaves the one you are on), and **Escape** goes
+back from the password or closes the card. If a password turns out wrong, the
+card asks for it again. **Network settings** at the bottom of the card opens
+the Network page in Settings.
+
+The Network page lists the same networks with a **Join** button each, and holds
+what the card leaves out. It acts on NetworkManager at once rather than as part
+of the Settings draft:
+
+- The connections that are up, with their addresses, gateway, DNS servers,
+  interface and hardware address.
+- Saved Wi-Fi networks. The switch decides whether one joins by itself when in
+  range; **Forget**, clicked twice, removes it with its password.
+- Joining a network by name: a secured one chosen above asks for its password
+  here, and a name that is not in the list joins as a hidden network. Leave the
+  password empty for an open network.
+- **Open editor** starts `nm-connection-editor`, when it is installed, for
+  static addresses, VPNs and enterprise Wi-Fi.
+
+`tileception msg network status` prints the same information, and
+`tileception msg network wifi off` switches Wi-Fi off from a script or binding.
 
 ## Gestures
 

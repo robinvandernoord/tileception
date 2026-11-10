@@ -243,6 +243,9 @@ impl Tileception {
             self.section_paste(text);
             return;
         }
+        if self.settings_network_paste(text) {
+            return;
+        }
         if self.settings.connect.is_some() {
             self.settings_connect_paste(text);
             return;

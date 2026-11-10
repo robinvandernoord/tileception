@@ -6,7 +6,7 @@ use smithay::{
 };
 use tileception_core::{Point, Rect, WindowId};
 
-mod client;
+pub(crate) mod client;
 mod colour;
 mod connect;
 mod defaults_page;
@@ -15,6 +15,7 @@ mod editor;
 mod home_page;
 mod interaction;
 mod keymap;
+mod network_page;
 pub(crate) mod sections;
 
 use crate::{
@@ -118,6 +119,12 @@ const CATEGORIES: &[Category] = &[
         summary: "Browser, files & file types",
         description: "The applications that open links, folders and files.",
         icon: glyph::FILE,
+    },
+    Category {
+        title: network_page::TITLE,
+        summary: "Wi-Fi, saved & hidden networks",
+        description: "Connections, saved Wi-Fi networks and hidden networks. Changes here apply at once.",
+        icon: glyph::WIFI,
     },
 ];
 
@@ -224,6 +231,13 @@ const FIELDS: &[Field] = &[
         Control::Choice(&["top", "bottom"]),
     ),
     field(2, "shell.bar_minimap", "Layout minimap", "A small map of your window tree in the bar.", Control::Toggle),
+    field(
+        11,
+        "shell.bar_network",
+        "Network chip",
+        "Wi-Fi and wired status in the bar; click it to join a network.",
+        Control::Toggle,
+    ),
     field(
         2,
         "shell.tray_max_icons",
@@ -510,6 +524,18 @@ enum Hit {
     AppDefault(usize),
     AppChoice(usize, usize),
     AppsAll,
+    /// Network: the Wi-Fi switch, a saved network's auto-join switch and
+    /// Forget, the hidden network's fields and Join, and the editor.
+    NetWifi,
+    /// A network in range: join it, or leave the one Wi-Fi is on.
+    NetVisible(usize),
+    NetAuto(usize),
+    NetForget(usize),
+    NetName,
+    NetPassword,
+    NetReveal,
+    NetJoin,
+    NetEditor,
     Reference,
     AdvancedAppearance,
     ReviewChanges,
@@ -558,6 +584,8 @@ pub struct Settings {
     apps_menu: Option<(usize, usize)>,
     /// Defaults chosen and not applied yet, part of the draft.
     apps_pending: Vec<defaults_page::Pending>,
+    /// Network: the hidden network's form.
+    network: network_page::Page,
     /// Smart home: devices were imported, so the page shows them instead of
     /// the setup steps.
     home_ready: bool,
@@ -625,7 +653,9 @@ fn show(value: Option<&toml::Value>) -> String {
 /// empty group open the page without a heading.
 fn group(key: &str) -> &'static str {
     match key {
-        "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.tray_max_icons" => "Bar",
+        "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.bar_network" | "shell.tray_max_icons" => {
+            "Bar"
+        }
         "shell.launcher" | "shell.notifications" | "shell.doctor" | "shell.power_menu" | "duck.size" => "Panels",
         "shell.media" => "Media keys",
         "shell.lock" | "general.lock_command" => "Lock screen",
@@ -739,6 +769,8 @@ struct Frame {
     home: Option<home_page::HomeFrame>,
     /// The Default apps page's rows.
     apps: Option<defaults_page::AppsFrame>,
+    /// The Network page's cards.
+    network: Option<network_page::NetworkFrame>,
     /// The battery colour thresholds, under their row on Power & battery.
     levels: Vec<(Rect, usize)>,
     max_scroll: f64,
@@ -753,7 +785,7 @@ fn viewport(frame: &Frame) -> Rect {
     )
 }
 
-fn intersect(left: Rect, right: Rect) -> Option<Rect> {
+pub(crate) fn intersect(left: Rect, right: Rect) -> Option<Rect> {
     let start_x = left.x.max(right.x);
     let start_y = left.y.max(right.y);
     let end_x = left.right().min(right.right());
@@ -1079,7 +1111,7 @@ impl Tileception {
         }
         self.settings.size = settings_size(self.world.screen());
         self.open_settings_page_section();
-        match client::Client::start(self) {
+        match client::Client::start(self, client::Kind::Settings) {
             Ok(client) => self.settings.client = Some(client),
             Err(error) => {
                 self.settings.open = false;
@@ -1341,6 +1373,7 @@ impl Tileception {
             advanced: None,
             home: None,
             apps: None,
+            network: None,
             levels: Vec::new(),
             max_scroll: 0.,
         };
@@ -1467,6 +1500,12 @@ impl Tileception {
                 offset += 24. + apps.height + 20.;
                 frame.apps = Some(apps);
             }
+            if self.settings.page == Some(network_page::network_page()) && self.settings.query.is_empty() {
+                let gap = if rows.is_empty() { 0. } else { 20. };
+                let network = self.settings_network_layout(content.x, offset + gap, row_width);
+                offset += gap + network.height + 20.;
+                frame.network = Some(network);
+            }
             frame.max_scroll = (offset - viewport(&frame).h + 20.).max(0.);
             let scroll = self.settings.scroll.min(frame.max_scroll);
             let shift = scroll_top - scroll;
@@ -1478,6 +1517,9 @@ impl Tileception {
             }
             if let Some(apps) = &mut frame.apps {
                 apps.shift(shift);
+            }
+            if let Some(network) = &mut frame.network {
+                network.shift(shift);
             }
             let area = viewport(&frame);
             if let Some(top) = advanced_at {
@@ -1539,6 +1581,14 @@ impl Tileception {
                 if apps.toggle.y >= area.y && apps.toggle.bottom() <= area.bottom() {
                     hits.push((apps.toggle, Hit::AppsAll));
                 }
+                frame.hits.extend(hits);
+            }
+            if let Some(network) = &frame.network {
+                let hits: Vec<_> = network
+                    .hits()
+                    .into_iter()
+                    .filter(|(rect, _)| rect.y >= area.y && rect.bottom() <= area.bottom())
+                    .collect();
                 frame.hits.extend(hits);
             }
         }
@@ -1712,6 +1762,7 @@ impl Tileception {
 
     fn settings_activate(&mut self, hit: Hit, position: Option<f64>) {
         self.settings_connect_release();
+        self.settings_network_release(hit);
         if hit == Hit::Discard {
             self.settings.editing = None;
         } else if !self.settings_finish_edit() {
@@ -1777,6 +1828,15 @@ impl Tileception {
                 self.settings.apps_all = !self.settings.apps_all;
                 self.settings_load_apps();
             }
+            Hit::NetWifi
+            | Hit::NetVisible(_)
+            | Hit::NetAuto(_)
+            | Hit::NetForget(_)
+            | Hit::NetName
+            | Hit::NetPassword
+            | Hit::NetReveal
+            | Hit::NetJoin
+            | Hit::NetEditor => self.settings_network_activate(hit),
             Hit::HomeCloud(sensors) => match self.settings_home_cloud(sensors) {
                 Ok(()) => {
                     self.settings.message = self.settings_home_cloud_label(sensors);
@@ -2045,8 +2105,10 @@ impl Tileception {
         if self.settings_display_preview_key(sym, mods) {
             return;
         }
-        let page_navigation =
-            self.settings.editor.is_none() && !self.settings_connect_typing() && self.settings.keymap.is_none();
+        let page_navigation = self.settings.editor.is_none()
+            && !self.settings_connect_typing()
+            && !self.settings_network_typing()
+            && self.settings.keymap.is_none();
         if !page_navigation && mods.alt && sym == keysyms::KEY_Up {
             self.settings_key(keysyms::KEY_Escape, Mods::default());
             return;
@@ -2089,6 +2151,9 @@ impl Tileception {
             return;
         }
         if self.settings_connect_key(sym, mods) {
+            return;
+        }
+        if self.settings_network_key(sym, mods) {
             return;
         }
         if self.settings.editor.is_some() {
@@ -2312,6 +2377,9 @@ impl Tileception {
             }
             if let Some(apps) = &frame.apps {
                 self.settings_draw_apps_page(painter, apps, pointer);
+            }
+            if let Some(network) = &frame.network {
+                self.settings_draw_network_page(painter, network, pointer);
             }
         });
         for (rect, hit) in &frame.hits {
@@ -2596,6 +2664,7 @@ impl Tileception {
             && state.selected().is_empty()
             && frame.home.is_none()
             && frame.apps.is_none()
+            && frame.network.is_none()
         {
             painter.text(
                 "Try a word such as accent, gap, bar or battery.",

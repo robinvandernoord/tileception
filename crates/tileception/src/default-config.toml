@@ -186,6 +186,18 @@ enabled = false
 # power_profiles = true
 # power_saver_at = 20
 
+[updates]
+# On systems with APT, the bar shows a count while updates wait: security
+# updates first, then the rest. Click it, type "up" in the launcher or run
+# `tileception msg updates open` to install them, clean up old kernels or
+# start a release upgrade. Installing asks for your password, as sudo does.
+# enabled = true
+# One notification when new updates arrive.
+# notify = true
+# Hours between looks at the package lists. The lists themselves are
+# refreshed by the system's own daily timer, or by "Check" in Updates.
+# check_hours = 4
+
 [bluetooth]
 # Reconnect paired devices that were connected before the computer slept or
 # the adapter was switched off, a few seconds after it is back. Devices
@@ -228,6 +240,10 @@ bar_position = "top"
 # screen marked. Click it to open a larger map: click a window there to fly
 # to it, drag to pan at the current zoom level. Also the `minimap` command.
 bar_minimap = true
+# A chip in the bar with the Wi-Fi network or wired connection in use, when
+# NetworkManager runs. Click it to switch Wi-Fi, join a network (secured ones
+# ask for their password) or disconnect. Also the `network` command.
+bar_network = true
 # Maximum tray slots, including the overflow button. With more than this
 # many applications, the last slot becomes (…) and opens the remaining items.
 # Must be at least 1; changes apply on save.
@@ -349,6 +365,7 @@ tray_max_icons = 3
 # enabled = false
 # [plugins.example.launcher]
 # prefixes = ["echo"]
+# cards = false  # hide its cards under the launcher
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

@@ -57,6 +57,7 @@ const STETHOSCOPE: &str =
     r#"<path d="M6 3v6a5 5 0 0 0 10 0V3"/><path d="M11 14v2a4 4 0 0 0 8 0v-3"/><circle cx="19" cy="11" r="2"/>"#;
 const LAYERS: &str = r#"<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>"#;
 const SCREEN: &str = r#"<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>"#;
+const UPDATES: &str = r#"<path d="M12 19V5M5 12l7-7 7 7"/>"#;
 const BOLT: &str = r#"<path d="M13 3L6 13h5l-1 8 7-10h-5z"/>"#;
 
 /// The last error in the log, for the health light. Filled from any thread
@@ -262,6 +263,8 @@ enum Hit {
     Media,
     Dnd,
     Plugin(usize),
+    Updates,
+    Network,
     Clock,
     Battery,
     Notifications,
@@ -318,11 +321,14 @@ struct Crumb {
 
 #[derive(Debug, Clone, Copy)]
 enum ChipKind {
+    /// Pending updates: opens the updates card.
+    Updates,
     Media,
     Capture,
     Dnd,
     /// A plugin's chip, by its place in [`Tileception::plugin_chips`].
     Plugin(usize),
+    Network,
 }
 
 #[derive(Debug, Clone)]
@@ -429,8 +435,13 @@ impl Tileception {
                 || self.bar.pressed
                 || self.tray.open
                 || self.bar.calendar.zoom.open
-                || self.bar.minimap.zoom.open);
+                || self.updates.popover.zoom.open
+                || self.bar.minimap.zoom.open
+                || self.network.zoom.open);
         self.bar.set_revealed(reveal);
+        if (!matches!(mode, Mode::Full | Mode::Hairline) || self.is_locked()) && self.updates.popover.zoom.open {
+            self.close_updates_popover();
+        }
         if mode != Mode::Full && mode != Mode::Hairline && self.bar.calendar.zoom.open {
             self.close_calendar();
         }
@@ -442,8 +453,19 @@ impl Tileception {
         if !matches!(mode, Mode::Full | Mode::Hairline) || self.is_locked() {
             self.close_tray();
         }
+        let network_unwanted = !matches!(mode, Mode::Full | Mode::Hairline)
+            || self.is_locked()
+            // The welcome screen is the launcher too, but it is the desktop.
+            || (self.launcher.open && !self.launcher.home)
+            || self.power_menu.is_some()
+            || !self.shell().bar_network;
+        if network_unwanted && self.network.zoom.open {
+            self.close_network();
+        }
         let blocked = self.tray.open
             || self.bar.calendar.zoom.open
+            || self.updates.popover.zoom.open
+            || self.network.zoom.open
             || self.is_locked()
             || !self.is_active_output()
             || self.launcher.open
@@ -616,7 +638,12 @@ impl Tileception {
         let tray = self.tray_slots(&mut right, top, height);
         let mut chips = Vec::new();
         for (kind, label) in self.chip_list() {
-            let width = (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0);
+            // The network chip is only its icon; hovering it says the rest.
+            let width = if matches!(kind, ChipKind::Network) {
+                30.0
+            } else {
+                (24.0 + self.bar_measure(&label, style, 200.0) + 10.0).min(230.0)
+            };
             if right - width < left + 120.0 {
                 break;
             }
@@ -698,6 +725,13 @@ impl Tileception {
     /// clock first.
     fn chip_list(&self) -> Vec<(ChipKind, String)> {
         let mut chips = Vec::new();
+        // Always there, so it stays in one place.
+        if let Some((label, ..)) = self.network_chip() {
+            chips.push((ChipKind::Network, label));
+        }
+        if let Some((label, _)) = self.updates.chip().filter(|_| self.updates_available()) {
+            chips.push((ChipKind::Updates, label));
+        }
         if let Some((captured, sharing)) = self.bar.capture
             && captured.elapsed() < CAPTURE_LINGER
         {
@@ -774,9 +808,11 @@ impl Tileception {
             (
                 chip.rect,
                 match chip.kind {
+                    ChipKind::Updates => Hit::Updates,
                     ChipKind::Media => Hit::Media,
                     ChipKind::Dnd => Hit::Dnd,
                     ChipKind::Plugin(index) => Hit::Plugin(index),
+                    ChipKind::Network => Hit::Network,
                     ChipKind::Capture => Hit::Bar,
                 },
             )
@@ -786,11 +822,17 @@ impl Tileception {
 
     pub(crate) fn bar_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
         use crate::ui::PointerTarget;
+        if self.network.zoom.open {
+            return self.network_pointer_target(point);
+        }
         if self.bar.calendar.zoom.open {
             return self
                 .calendar_controls()
                 .into_iter()
                 .find_map(|(rect, hit)| rect.contains(point).then(|| PointerTarget::button(rect, hit)));
+        }
+        if self.updates.popover.zoom.open {
+            return self.updates_popover_target(point);
         }
         if self.bar.minimap.zoom.open {
             return None;
@@ -817,6 +859,8 @@ impl Tileception {
         self.tray.open
             || self.bar.calendar.zoom.open
             || self.bar.minimap.zoom.open
+            || self.updates.popover.zoom.open
+            || self.network.zoom.open
             || self.bar_rect().is_some_and(|rect| rect.contains(point))
     }
 
@@ -868,6 +912,19 @@ impl Tileception {
             if button == crate::input::BTN_LEFT {
                 self.minimap_press(point);
             }
+            return true;
+        }
+        if self.updates.popover.zoom.open {
+            self.bar.pressed = true;
+            // Its buttons are pointer targets; a press beside the card closes it.
+            if !self.updates_popover_contains(point) {
+                self.close_updates_popover();
+            }
+            return true;
+        }
+        if self.network.zoom.open {
+            self.bar.pressed = true;
+            self.network_press(point);
             return true;
         }
         if self.bar.calendar.zoom.open {
@@ -929,6 +986,8 @@ impl Tileception {
             }
             Hit::Dnd => self.toggle_dnd(),
             Hit::Plugin(index) => self.plugin_chip_clicked(index),
+            Hit::Updates => self.toggle_updates_popover(),
+            Hit::Network => self.toggle_network(),
             Hit::Clock => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
             Hit::Tray(slot) => self.tray_slot_button(slot, crate::input::BTN_LEFT),
@@ -944,6 +1003,10 @@ impl Tileception {
         if !self.bar_takes(point) {
             return false;
         }
+        if self.network.zoom.open {
+            self.network_scroll(amount);
+            return true;
+        }
         if let Some(layout) = self.bar_layout() {
             let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
             if self.tray_scroll(&layout.tray, anchor, amount) {
@@ -956,6 +1019,8 @@ impl Tileception {
             self.bar.scroll -= self.bar.scroll.signum();
             if self.bar.calendar.zoom.open {
                 self.bar.calendar.offset += if down { 1 } else { -1 };
+            } else if self.updates.popover.zoom.open {
+                // The card does not scroll, and the tree stays put under it.
             } else {
                 self.run(if down { Action::StepOut } else { Action::StepIn });
             }
@@ -964,8 +1029,10 @@ impl Tileception {
     }
 
     pub fn open_calendar(&mut self) {
+        self.close_updates_popover();
         self.close_tray();
         self.close_minimap();
+        self.close_network();
         let duration = self.world.settings.animation;
         if self.bar.calendar.zoom.set(true, duration) {
             self.bar.calendar.offset = 0;
@@ -976,6 +1043,40 @@ impl Tileception {
     pub fn close_calendar(&mut self) -> bool {
         let duration = self.world.settings.animation;
         self.bar.calendar.zoom.set(false, duration)
+    }
+
+    /// Where the updates chip is, or the clock while the chip is not shown.
+    pub(crate) fn updates_chip_rect(&self) -> Rect {
+        let layout = self.bar_layout();
+        layout
+            .as_ref()
+            .and_then(|placed| placed.chips.iter().find(|chip| matches!(chip.kind, ChipKind::Updates)))
+            .map(|chip| chip.rect)
+            .unwrap_or_else(|| self.calendar_clock(layout.as_ref()))
+    }
+
+    /// A card of this size opening from a bar element: centred on it, kept
+    /// on the screen, below the bar (above a bottom bar).
+    pub(crate) fn bar_card(&self, anchor: Rect, width: f64, height: f64) -> Rect {
+        let out = self.output_rect();
+        let width = width.min(out.w - 16.0).max(1.0);
+        let height = height.min(out.h - BAR_H - 16.0).max(1.0);
+        let left = (anchor.center().x - width / 2.0).min(out.right() - width - 8.0).max(out.x + 8.0);
+        let edge = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
+        Rect::new(left, self.bar_popup_y(Rect::new(out.x, edge, out.w, BAR_H), height), width, height)
+    }
+
+    /// The network chip, or where it would be: the clock, when the chip did
+    /// not fit or the bar is hidden.
+    pub(crate) fn network_anchor(&self) -> Rect {
+        self.network_anchor_in(self.bar_layout().as_ref())
+    }
+
+    fn network_anchor_in(&self, layout: Option<&Layout>) -> Rect {
+        layout
+            .and_then(|placed| placed.chips.iter().find(|chip| matches!(chip.kind, ChipKind::Network)))
+            .map(|chip| chip.rect)
+            .unwrap_or_else(|| self.calendar_clock(layout))
     }
 
     /// The calendar card at its full size, below the clock (above it for a
@@ -1054,6 +1155,10 @@ impl Tileception {
             let clock = self.calendar_clock(layout.as_ref());
             self.draw_calendar(&mut painter, clock, level);
         }
+        let level = ease_out(self.updates.popover.zoom.level(duration));
+        if level > 0.001 {
+            self.draw_updates_popover(&mut painter, level);
+        }
         let level = ease_out(self.bar.minimap.zoom.level(duration));
         if level > 0.001 {
             let chip = layout.as_ref().and_then(|placed| placed.minimap).unwrap_or_else(|| {
@@ -1062,6 +1167,11 @@ impl Tileception {
                 Rect::new(out.x + 100.0, top, 40.0, BAR_H)
             });
             self.draw_minimap_card(&mut painter, chip, level);
+        }
+        let level = ease_out(self.network.zoom.level(duration));
+        if level > 0.001 {
+            let chip = self.network_anchor_in(layout.as_ref());
+            self.draw_network_card(&mut painter, chip, level);
         }
         painter.finish()
     }
@@ -1184,12 +1294,26 @@ impl Tileception {
 
         let plugin_chips = self.plugin_chips();
         for chip in &layout.chips {
+            if matches!(chip.kind, ChipKind::Network) {
+                // A plain icon like the bell's, not a pill.
+                hover_fill(painter, chip.rect, self.network.zoom.open || hit == Some(Hit::Network));
+                self.draw_network_icon(painter, chip.rect);
+                continue;
+            }
             let lit = match (chip.kind, hit) {
+                (ChipKind::Updates, hit) => hit == Some(Hit::Updates) || self.updates.popover.zoom.open,
                 (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)) => true,
+                (ChipKind::Network, _) if self.network.zoom.open => true,
+                (ChipKind::Network, Some(Hit::Network)) => true,
                 (ChipKind::Plugin(index), Some(Hit::Plugin(hovered))) => index == hovered,
                 _ => false,
             };
             let (icon, tint) = match chip.kind {
+                ChipKind::Updates => match self.updates.chip().map(|(_, tone)| tone) {
+                    Some(crate::updates::Tone::Warning) => (glyph::ALERT, theme.warning),
+                    Some(crate::updates::Tone::Busy) => (glyph::RESTART, theme.accent),
+                    _ => (UPDATES, theme.accent),
+                },
                 ChipKind::Plugin(index) => {
                     let chip = plugin_chips.get(index).map(|(_, chip)| *chip);
                     let icon = chip.and_then(|chip| chip.icon.as_deref()).and_then(glyph::named).unwrap_or(glyph::PLUG);
@@ -1203,6 +1327,7 @@ impl Tileception {
                     },
                     theme.accent,
                 ),
+                ChipKind::Network => (glyph::WIFI_DISABLED, theme.muted),
                 ChipKind::Capture => (SCREEN, theme.danger),
                 ChipKind::Dnd => (glyph::MOON, theme.warning),
             };
@@ -1266,6 +1391,13 @@ impl Tileception {
         }
         if let Some(Hit::Slot(slot)) = hit {
             self.draw_slot_preview(painter, layout, slot);
+        }
+        if hit == Some(Hit::Network)
+            && !self.network.zoom.open
+            && let Some(chip) = layout.chips.iter().find(|chip| matches!(chip.kind, ChipKind::Network))
+        {
+            let (title, body) = self.network_tooltip();
+            self.bar_tooltip(painter, (chip.rect.x - 120.0).max(bar.x + 6.0), bar, &title, &body);
         }
         if let (Some(Hit::Battery), Some((rect, _)), Some(reading)) = (hit, &layout.battery, &self.battery.reading) {
             let left = (rect.x - 80.0).max(bar.x + 6.0);

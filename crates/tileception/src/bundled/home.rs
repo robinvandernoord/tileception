@@ -900,6 +900,8 @@ fn climate_card(device: &Device, devices: &[Device]) -> Card {
             choices("Fan", &device.fan_speeds, device.state.fan.as_deref(), "fan"),
         ],
         trend,
+        buttons: Vec::new(),
+        progress: None,
     }
 }
 

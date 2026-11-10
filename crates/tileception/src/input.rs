@@ -344,6 +344,9 @@ impl Tileception {
             if state.feedback.is_some() {
                 return FilterResult::Intercept(vec![Command::FeedbackKey(sym, held)]);
             }
+            if state.updates.prompt.is_some() {
+                return FilterResult::Intercept(vec![Command::UpdatesKey(sym, held)]);
+            }
             if state.power_menu.is_some() {
                 // The menu takes every key while it is open.
                 return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
@@ -382,6 +385,24 @@ impl Tileception {
                     return FilterResult::Intercept(commands.to_vec());
                 }
                 return FilterResult::Intercept(vec![Command::DuckKey(sym, Mods::from_state(mods))]);
+            }
+            // Before the welcome screen, which is the launcher too.
+            if panels && state.network.zoom.open && (!state.launcher.open || state.launcher.home) {
+                // The network card has the keyboard while it is open; Super
+                // shortcuts and keys that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
             }
             if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
@@ -429,7 +450,7 @@ impl Tileception {
             }
             if sym == keysyms::KEY_Escape
                 && held == Mods::default()
-                && (state.close_calendar() || state.close_minimap())
+                && (state.close_calendar() || state.close_minimap() || state.close_updates_popover())
             {
                 return FilterResult::Intercept(Vec::new());
             }
@@ -650,6 +671,13 @@ impl Tileception {
             self.colour_pick_moved();
             return;
         }
+        if !self.is_locked() && self.updates.prompt.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.schedule_render();
+            return;
+        }
         if !self.is_locked() && self.power_menu.is_none() && self.handoff_prompt_motion(pos) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -687,6 +715,13 @@ impl Tileception {
         if self.panel.drag.is_some() {
             self.panel_drag(pos.x);
             return;
+        }
+        if self.panel.reorder.is_some() {
+            // A held block header: dragged once past the threshold.
+            self.panel_reorder_motion(point);
+            if self.panel_reordering() {
+                return;
+            }
         }
         if self.duck_motion(point) || self.doctor_drag(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -850,6 +885,10 @@ impl Tileception {
             }
             return;
         }
+        // The password prompt is modal: clicks beside its buttons do nothing.
+        if !self.is_locked() && self.updates.prompt.is_some() {
+            return;
+        }
         // A held slider lets go wherever the button comes up.
         if state == ButtonState::Released && button == BTN_LEFT && (self.controls_release() || self.panel_release()) {
             return;
@@ -886,7 +925,7 @@ impl Tileception {
             return;
         }
         if self.power_menu.is_none()
-            && (self.tray.open || state == ButtonState::Released)
+            && (self.tray.open || self.network.zoom.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
         {
             return;
@@ -1113,6 +1152,9 @@ impl Tileception {
             if amount != 0.0 {
                 self.feedback_scroll(if amount > 0.0 { 1 } else { -1 });
             }
+            return;
+        }
+        if !self.is_locked() && self.updates.prompt.is_some() {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {

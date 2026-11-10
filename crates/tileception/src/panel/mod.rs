@@ -3,8 +3,13 @@
 //! resource ([`block`]), in plugin priority order. Tileception lays them out
 //! and draws them in its own style; folding, the view, the selected row and
 //! a held level bar are kept here, so they survive the plugin's updates.
+//! Dragging a block by its header puts it elsewhere; that order ([`order`])
+//! is saved and used for the bar's chips and the launcher's cards too.
+//!
+//! The cards under the launcher are laid out and drawn here too.
 
 pub mod block;
+pub mod order;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -29,6 +34,11 @@ const SLIDER: f64 = 28.0;
 const HEADING: f64 = 24.0;
 const HEADER: f64 = 32.0;
 const CARD: f64 = 64.0;
+/// The width of a card's big reading.
+const VALUE: f64 = 84.0;
+/// A card's icon buttons, and its buttons with a title instead.
+const BUTTON: f64 = 30.0;
+const TEXT_BUTTON: f64 = 64.0;
 const CHOICES: f64 = 28.0;
 const FOOTER: f64 = 28.0;
 const TREND: f64 = 30.0;
@@ -42,6 +52,19 @@ const GAP: f64 = 10.0;
 pub struct Panel {
     blocks: HashMap<String, BlockState>,
     pub drag: Option<Drag>,
+    /// A block's header pressed, perhaps being dragged elsewhere.
+    pub reorder: Option<Reorder>,
+}
+
+/// A block's header held: a click when let go where it was, else a drag
+/// that moves the block once the pointer goes further than the threshold.
+#[derive(Clone)]
+pub struct Reorder {
+    plugin: String,
+    origin: Point,
+    /// Where in the header it was held, from the block's top.
+    grab: f64,
+    dragging: bool,
 }
 
 #[derive(Default)]
@@ -103,33 +126,43 @@ struct LevelLayout {
     value: u32,
 }
 
-struct CardLayout {
-    rect: Rect,
+/// Where a card's parts go; the launcher lays its cards out the same way.
+pub(crate) struct CardLayout {
+    pub rect: Rect,
     title: Rect,
+    /// One per button, left to right.
+    buttons: Vec<Rect>,
     minus: Rect,
     plus: Rect,
     switch: Rect,
     choices: Vec<Vec<Rect>>,
     trend: Option<Rect>,
+    progress: Option<Rect>,
 }
 
 #[derive(Clone, PartialEq)]
 enum PointerAction {
-    Fold(String),
+    /// A block's header: folds it when clicked, moves it when dragged.
+    Hold(String),
     View(String, usize),
     Group(String, String),
     Select(String, String),
     Act(String, ActionKind),
-    Level { plugin: String, row: String, level: usize, track: Rect },
+    Level {
+        plugin: String,
+        row: String,
+        level: usize,
+        track: Rect,
+    },
 }
 
 impl crate::ui::PointerAction for PointerAction {
-    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: Point) {
         match self {
-            Self::Fold(plugin) => {
-                let Some(block) = state.panel_block(plugin) else { return };
-                let (folded, active) = (state.panel_folded(plugin, block), block.active);
-                state.panel.blocks.entry(plugin.clone()).or_default().fold = Some((!folded, active));
+            Self::Hold(plugin) => {
+                // The header starts 4 below the block's top.
+                let grab = point.y - (rect.y - 4.0);
+                state.panel.reorder = Some(Reorder { plugin: plugin.clone(), origin: point, grab, dragging: false });
             }
             Self::View(plugin, view) => state.panel.blocks.entry(plugin.clone()).or_default().view = *view,
             Self::Group(plugin, title) => {
@@ -199,6 +232,9 @@ impl Tileception {
         self.panel.blocks.retain(|plugin, _| present.contains(plugin));
         if self.panel.drag.as_ref().is_some_and(|drag| !present.contains(&drag.plugin)) {
             self.panel.drag = None;
+        }
+        if self.panel.reorder.as_ref().is_some_and(|reorder| !present.contains(&reorder.plugin)) {
+            self.panel.reorder = None;
         }
         if self.notifications.open {
             self.schedule_render();
@@ -313,11 +349,70 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Lets go of a level bar, sending where it ended.
+    /// Lets go of a level bar, sending where it ended, or of a block's
+    /// header: a click folds it, a drag puts the block where it was dropped.
     pub fn panel_release(&mut self) -> bool {
+        if let Some(reorder) = self.panel.reorder.take() {
+            self.panel_reorder_release(&reorder);
+            self.schedule_render();
+            return true;
+        }
         let Some(drag) = self.panel.drag.take() else { return false };
         self.panel_send_level(&drag.plugin, &drag.row, drag.level, drag.value);
         true
+    }
+
+    /// Whether a block is being dragged elsewhere.
+    pub fn panel_reordering(&self) -> bool {
+        self.panel.reorder.as_ref().is_some_and(|reorder| reorder.dragging)
+    }
+
+    /// The pointer moved while a block's header is held.
+    pub fn panel_reorder_motion(&mut self, point: Point) {
+        let Some(reorder) = &mut self.panel.reorder else { return };
+        if !reorder.dragging
+            && (point.x - reorder.origin.x).hypot(point.y - reorder.origin.y) <= crate::input::DRAG_THRESHOLD
+        {
+            return;
+        }
+        reorder.dragging = true;
+        self.schedule_render();
+    }
+
+    fn panel_reorder_release(&mut self, reorder: &Reorder) {
+        if !self.notifications.open {
+            return;
+        }
+        let layout = self.panel_controls().plugins;
+        let point = Point::new(self.pointer.x, self.pointer.y);
+        if !reorder.dragging {
+            // A click, if it ends on the same header.
+            if layout.blocks.iter().any(|block| block.plugin == reorder.plugin && block.header.contains(point)) {
+                self.panel_header_clicked(&reorder.plugin);
+            }
+            return;
+        }
+        let shown: Vec<&str> = layout.blocks.iter().map(|block| block.plugin.as_str()).collect();
+        let Some((from, slot)) = drop_slot(&layout, &reorder.plugin, point.y) else { return };
+        let arranged = order::moved(&shown, from, slot);
+        if arranged != shown
+            && let Some(plugins) = &mut self.plugins
+        {
+            plugins.arrange_panels(&arranged);
+        }
+    }
+
+    /// A header clicked: runs a notice's action, else folds or unfolds.
+    fn panel_header_clicked(&mut self, plugin: &str) {
+        let Some(block) = self.panel_block(plugin) else { return };
+        if let Some(notice) = &block.notice {
+            if let Some(action) = notice.action.clone() {
+                self.panel_action(plugin, action);
+            }
+            return;
+        }
+        let (folded, active) = (self.panel_folded(plugin, block), block.active);
+        self.panel.blocks.entry(plugin.into()).or_default().fold = Some((!folded, active));
     }
 
     /// The blocks with their top left at (left, top).
@@ -450,48 +545,9 @@ impl Tileception {
                 }
             }
             Item::Card(card) => {
-                let rect_top = *cursor + 2.0;
-                let mut inside = rect_top + 8.0;
-                let main = Rect::new(inner.x, inside, inner.w, CARD - 16.0);
-                let switch = Rect::new(main.right() - 46.0, main.y + (main.h - 22.0) / 2.0, 38.0, 22.0);
-                let plus = Rect::new(switch.x - 40.0, main.y + (main.h - 28.0) / 2.0, 28.0, 28.0);
-                let minus = Rect::new(plus.x - 78.0, plus.y, 28.0, 28.0);
-                let right = if card.stepper.is_some() {
-                    minus.x
-                } else if card.switch.is_some() {
-                    switch.x
-                } else {
-                    main.right()
-                };
-                let title = Rect::new(main.x + 124.0, main.y + 4.0, (right - main.x - 128.0).max(20.0), 38.0);
-                inside = main.bottom() + 4.0;
-                let mut choices = Vec::new();
-                for row in &card.choices {
-                    if row.options.is_empty() {
-                        choices.push(Vec::new());
-                        continue;
-                    }
-                    let strip = Rect::new(inner.x + 8.0, inside, inner.w - 16.0, CHOICES - 4.0);
-                    let label_w = 44.0;
-                    let each = (strip.w - label_w) / row.options.len() as f64;
-                    choices.push(
-                        (0..row.options.len())
-                            .map(|index| Rect::new(strip.x + label_w + each * index as f64, strip.y, each, strip.h))
-                            .collect(),
-                    );
-                    inside += CHOICES;
-                }
-                let trend =
-                    card.trend.as_ref().filter(|trend| trend.lines.iter().any(|line| line.points.len() >= 2)).map(
-                        |_| {
-                            let rect = Rect::new(inner.x + 8.0, inside, inner.w - 16.0, TREND);
-                            inside += TREND + 2.0;
-                            rect
-                        },
-                    );
-                let rect = Rect::new(inner.x, rect_top, inner.w, inside + 4.0 - rect_top);
-                *cursor = rect.bottom() + 6.0;
-                laid.cards.push(((**card).clone(), CardLayout { rect, title, minus, plus, switch, choices, trend }));
+                let card_layout = card_layout(card, inner.x, *cursor + 2.0, inner.w);
+                *cursor = card_layout.rect.bottom() + 6.0;
+                laid.cards.push(((**card).clone(), card_layout));
             }
         }
     }
@@ -504,17 +560,22 @@ impl Tileception {
         let act = |rect: Rect, action: &Option<ActionKind>| {
             action.clone().map(|action| PointerTarget::button(rect, PointerAction::Act(plugin.clone(), action)))
         };
-        if let Some(notice) = &block.notice {
-            let area = Rect::new(laid.rect.x, laid.header.y, laid.rect.w, laid.rect.bottom() - laid.header.y);
-            return act(area, &notice.action);
-        }
         for (index, tab) in laid.tabs.iter().enumerate() {
             if tab.contains(point) {
                 return Some(PointerTarget::button(*tab, PointerAction::View(plugin, index)));
             }
         }
         if laid.header.contains(point) {
-            return Some(PointerTarget::button(laid.header, PointerAction::Fold(plugin)));
+            // Held on press so it can be dragged; a click acts on release.
+            return Some(PointerTarget::new(
+                laid.header,
+                PointerAction::Hold(plugin),
+                smithay::input::pointer::CursorIcon::Pointer,
+            ));
+        }
+        if let Some(notice) = &block.notice {
+            let below = laid.header.bottom();
+            return act(Rect::new(laid.rect.x, below, laid.rect.w, laid.rect.bottom() - below), &notice.action);
         }
         if let (Some((_, rects)), Some(footer)) = (&laid.footer, &block.footer) {
             for (rect, action) in rects.iter().zip(&footer.actions) {
@@ -569,44 +630,64 @@ impl Tileception {
         laid: &CardLayout,
         point: Point,
     ) -> Option<crate::ui::PointerTarget> {
-        let target = |rect: Rect, action: Option<&ActionKind>| {
-            action
-                .map(|action| crate::ui::PointerTarget::button(rect, PointerAction::Act(plugin.into(), action.clone())))
-        };
-        if laid.title.contains(point) {
-            return target(laid.title, card.title_action.as_ref());
-        }
-        if !card.enabled {
-            return None;
-        }
-        if let Some(switch) = &card.switch {
-            let area = grown(laid.switch, 6.0, 8.0);
-            if area.contains(point) {
-                return target(area, switch.action.as_ref());
-            }
-        }
-        if let Some(stepper) = &card.stepper {
-            for (rect, action) in [(laid.minus, &stepper.minus), (laid.plus, &stepper.plus)] {
-                if rect.contains(point) {
-                    return target(rect, action.as_ref());
-                }
-            }
-        }
-        for (row, rects) in card.choices.iter().zip(&laid.choices) {
-            for (choice, rect) in row.options.iter().zip(rects) {
-                if rect.contains(point) {
-                    return target(*rect, choice.action.as_ref());
-                }
-            }
-        }
-        None
+        let (rect, action) = card_action_at(card, laid, point)?;
+        Some(crate::ui::PointerTarget::button(rect, PointerAction::Act(plugin.into(), action)))
     }
 
     pub fn draw_panel_blocks(&self, painter: &mut Painter, layout: &PanelLayout, pointer: Point) {
+        let reorder = self.panel.reorder.as_ref().filter(|reorder| reorder.dragging);
+        // While a block is dragged, nothing under the pointer lights up.
+        let hover = if reorder.is_some() { Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY) } else { pointer };
         for laid in &layout.blocks {
             if let Some(block) = self.panel_block(&laid.plugin) {
-                self.panel_draw_block(painter, block, laid, pointer);
+                self.panel_draw_block(painter, block, laid, hover);
             }
+        }
+        if let Some(reorder) = reorder {
+            self.panel_draw_reorder(painter, layout, reorder, pointer);
+        }
+    }
+
+    /// A dragged block stays faded where it was, a line shows where it
+    /// would go and its header follows the pointer.
+    fn panel_draw_reorder(&self, painter: &mut Painter, layout: &PanelLayout, reorder: &Reorder, pointer: Point) {
+        let Some(dragged) = layout.blocks.iter().find(|laid| laid.plugin == reorder.plugin) else { return };
+        let Some(block) = self.panel_block(&reorder.plugin) else { return };
+        let theme = &self.theme;
+        painter.fill(dragged.rect, theme.background.alpha(0.55), theme.radius);
+        let top = pointer.y - reorder.grab;
+        let header = Rect::new(dragged.header.x, top + 4.0, dragged.header.w, HEADER);
+        painter.shape(
+            header,
+            Shape {
+                border_width: 1.0,
+                border: theme.accent.alpha(0.6),
+                glow_radius: 12.0,
+                glow: theme.background.alpha(0.5),
+                ..Shape::filled(theme.surface_raised, theme.radius)
+            },
+        );
+        painter.glyph(
+            icon(block.icon.as_deref()),
+            Rect::new(header.x + 8.0, header.y, 24.0, header.h),
+            16,
+            theme.accent,
+        );
+        painter.text(
+            &block.title,
+            Rect::new(header.x + 38.0, header.y, header.w - 46.0, header.h),
+            Style::new(theme.font_size, theme.text).bold(),
+        );
+        // Over the header, which would hide it when dropping close by.
+        if let Some((from, slot)) = drop_slot(layout, &reorder.plugin, pointer.y)
+            && slot != from
+            && slot != from + 1
+        {
+            let line_y = match slot.checked_sub(1).and_then(|above| layout.blocks.get(above)) {
+                Some(above) => above.rect.bottom() + GAP / 2.0,
+                None => layout.rect.y - GAP / 2.0,
+            };
+            painter.fill(Rect::new(layout.rect.x + 4.0, line_y - 1.5, layout.rect.w - 8.0, 3.0), theme.accent, 1.5);
         }
     }
 
@@ -786,23 +867,32 @@ impl Tileception {
     }
 
     fn panel_draw_card(&self, painter: &mut Painter, card: &Card, laid: &CardLayout, pointer: Point) {
+        self.draw_plugin_card(painter, card, laid, pointer, self.theme.surface_raised.alpha(0.5));
+    }
+
+    /// A card on a surface of its own colour: the panel's lie on their
+    /// block, the launcher's on the desktop.
+    pub(crate) fn draw_plugin_card(
+        &self,
+        painter: &mut Painter,
+        card: &Card,
+        laid: &CardLayout,
+        pointer: Point,
+        fill: Colour,
+    ) {
         let theme = &self.theme;
-        painter.shape(
-            laid.rect,
-            Shape {
-                border_width: 1.0,
-                border: theme.border,
-                ..Shape::filled(theme.surface_raised.alpha(0.5), theme.radius)
-            },
-        );
+        painter
+            .shape(laid.rect, Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, theme.radius) });
         let main = Rect::new(laid.rect.x, laid.title.y - 4.0, laid.rect.w, CARD - 16.0);
         let (_, colour) = tint(theme, card.tint);
         painter.glyph(icon(card.icon.as_deref()), Rect::new(main.x + 6.0, main.y, 28.0, main.h), 20, colour);
-        painter.text(
-            &card.value,
-            Rect::new(main.x + 38.0, main.y + 2.0, 84.0, 30.0),
-            Style::new(theme.font_size * 1.8, theme.text).weight(300),
-        );
+        if !card.value.is_empty() {
+            painter.text(
+                &card.value,
+                Rect::new(main.x + 38.0, main.y + 2.0, VALUE, 30.0),
+                Style::new(theme.font_size * 1.8, theme.text).weight(300),
+            );
+        }
         let hover_title = card.title_action.is_some() && laid.title.contains(pointer);
         let title_colour = if hover_title { theme.text } else { theme.text.alpha(0.85) };
         painter.text(
@@ -816,6 +906,35 @@ impl Tileception {
                 Rect::new(laid.title.x, main.y + 22.0, laid.title.w, 20.0),
                 Style::new(theme.font_size * 0.8, theme.muted),
             );
+        }
+        for (button, rect) in card.buttons.iter().zip(&laid.buttons) {
+            let usable = card.enabled && button.enabled && button.action.is_some();
+            let hover = usable && rect.contains(pointer);
+            let alpha = if usable { 1.0 } else { 0.4 };
+            let glyph = button.icon.as_deref().and_then(glyph::named);
+            let radius = if glyph.is_some() { rect.h as f32 / 2.0 } else { theme.radius };
+            let colour = if button.primary {
+                painter.shape(
+                    *rect,
+                    Shape {
+                        radius,
+                        fill: (theme.accent.alpha(alpha), theme.accent_end.alpha(alpha)),
+                        ..Default::default()
+                    },
+                );
+                theme.on_accent.alpha(alpha)
+            } else {
+                if hover {
+                    painter.fill(*rect, theme.surface_raised, radius);
+                }
+                if usable { theme.text } else { theme.muted.alpha(0.5) }
+            };
+            match glyph {
+                Some(glyph) => painter.glyph(glyph, *rect, if button.primary { 14 } else { 15 }, colour),
+                None => {
+                    painter.text(&button.title, *rect, Style::new(theme.font_size * 0.82, colour).align(Align::Centre));
+                }
+            }
         }
         if let Some(stepper) = &card.stepper {
             for (rect, sign, action) in
@@ -871,7 +990,118 @@ impl Tileception {
         if let (Some(rect), Some(trend)) = (laid.trend, &card.trend) {
             draw_trend(painter, rect, trend);
         }
+        if let (Some(rect), Some(progress)) = (laid.progress, card.progress) {
+            painter.fill(rect, theme.border, 1.5);
+            let done = Rect::new(rect.x, rect.y, (rect.w * progress.share()).max(3.0), rect.h);
+            painter.shape(done, Shape { radius: 1.5, fill: (theme.accent, theme.accent_end), ..Default::default() });
+        }
     }
+}
+
+/// A card with its top left at (left, top).
+pub(crate) fn card_layout(card: &Card, left: f64, top: f64, width: f64) -> CardLayout {
+    let mut inside = top + 8.0;
+    let main = Rect::new(left, inside, width, CARD - 16.0);
+    let switch = Rect::new(main.right() - 46.0, main.y + (main.h - 22.0) / 2.0, 38.0, 22.0);
+    let plus = Rect::new(switch.x - 40.0, main.y + (main.h - 28.0) / 2.0, 28.0, 28.0);
+    let minus = Rect::new(plus.x - 78.0, plus.y, 28.0, 28.0);
+    let mut right = if card.stepper.is_some() {
+        minus.x
+    } else if card.switch.is_some() {
+        switch.x
+    } else {
+        main.right()
+    };
+    // Buttons end where the stepper or the switch starts.
+    let mut buttons = Vec::new();
+    let mut edge = right - 10.0;
+    for button in card.buttons.iter().rev() {
+        let button_w = if button.icon.as_deref().and_then(glyph::named).is_some() { BUTTON } else { TEXT_BUTTON };
+        edge -= button_w;
+        buttons.push(Rect::new(edge, main.y + (main.h - BUTTON) / 2.0, button_w, BUTTON));
+        edge -= 4.0;
+    }
+    buttons.reverse();
+    if let Some(first) = buttons.first() {
+        right = first.x;
+    }
+    // Without a reading, the title takes its place.
+    let title_x = main.x + if card.value.is_empty() { 40.0 } else { 40.0 + VALUE };
+    let title = Rect::new(title_x, main.y + 4.0, (right - title_x - 4.0).max(20.0), 38.0);
+    inside = main.bottom() + 4.0;
+    let mut choices = Vec::new();
+    for row in &card.choices {
+        if row.options.is_empty() {
+            choices.push(Vec::new());
+            continue;
+        }
+        let strip = Rect::new(left + 8.0, inside, width - 16.0, CHOICES - 4.0);
+        let label_w = 44.0;
+        let each = (strip.w - label_w) / row.options.len() as f64;
+        choices.push(
+            (0..row.options.len())
+                .map(|index| Rect::new(strip.x + label_w + each * index as f64, strip.y, each, strip.h))
+                .collect(),
+        );
+        inside += CHOICES;
+    }
+    let trend = card.trend.as_ref().filter(|trend| trend.lines.iter().any(|line| line.points.len() >= 2)).map(|_| {
+        let rect = Rect::new(left + 8.0, inside, width - 16.0, TREND);
+        inside += TREND + 2.0;
+        rect
+    });
+    let progress = card.progress.map(|_| {
+        let rect = Rect::new(left + 12.0, inside + 2.0, width - 24.0, 3.0);
+        inside += 10.0;
+        rect
+    });
+    let rect = Rect::new(left, top, width, inside + 4.0 - top);
+    CardLayout { rect, title, buttons, minus, plus, switch, choices, trend, progress }
+}
+
+/// What a click on a card does, and the control's rectangle.
+pub(crate) fn card_action_at(card: &Card, laid: &CardLayout, point: Point) -> Option<(Rect, ActionKind)> {
+    let found = |rect: Rect, action: Option<&ActionKind>| action.map(|action| (rect, action.clone()));
+    if laid.title.contains(point) {
+        return found(laid.title, card.title_action.as_ref());
+    }
+    if !card.enabled {
+        return None;
+    }
+    for (button, rect) in card.buttons.iter().zip(&laid.buttons) {
+        if rect.contains(point) {
+            return if button.enabled { found(*rect, button.action.as_ref()) } else { None };
+        }
+    }
+    if let Some(switch) = &card.switch {
+        let area = grown(laid.switch, 6.0, 8.0);
+        if area.contains(point) {
+            return found(area, switch.action.as_ref());
+        }
+    }
+    if let Some(stepper) = &card.stepper {
+        for (rect, action) in [(laid.minus, &stepper.minus), (laid.plus, &stepper.plus)] {
+            if rect.contains(point) {
+                return found(rect, action.as_ref());
+            }
+        }
+    }
+    for (row, rects) in card.choices.iter().zip(&laid.choices) {
+        for (choice, rect) in row.options.iter().zip(rects) {
+            if rect.contains(point) {
+                return found(*rect, choice.action.as_ref());
+            }
+        }
+    }
+    None
+}
+
+/// The dragged block's place among the blocks, and the gap nearest the
+/// pointer, judged by the blocks' middles.
+fn drop_slot(layout: &PanelLayout, plugin: &str, pointer_y: f64) -> Option<(usize, usize)> {
+    let from = layout.blocks.iter().position(|block| block.plugin == plugin)?;
+    let middles: Vec<f64> = layout.blocks.iter().map(|block| block.rect.y + block.rect.h / 2.0).collect();
+    Some((from, order::slot(&middles, pointer_y)))
 }
 
 /// Every row in some items, groups opened.
@@ -971,4 +1201,68 @@ pub(crate) fn draw_switch(painter: &mut Painter, track: Rect, lit: bool, pending
     let knob_x = if lit { track.right() - knob - 3.0 } else { track.x + 3.0 };
     let colour = if pending || !lit { theme.muted } else { theme.on_accent };
     painter.fill(Rect::new(knob_x, track.y + 3.0, knob, knob), colour.alpha(alpha), (knob / 2.0) as f32);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test assertions")]
+mod tests {
+    use super::*;
+    use block::{Button, Progress, Stepper, Switch};
+
+    fn action() -> Option<ActionKind> {
+        Some(ActionKind::Copy { text: "x".into(), sensitive: false })
+    }
+
+    fn button(icon: Option<&str>, enabled: bool) -> Button {
+        Button { title: "Stop".into(), icon: icon.map(String::from), enabled, action: action(), ..Button::default() }
+    }
+
+    #[test]
+    fn buttons_sit_between_the_title_and_the_switch() {
+        let card = Card {
+            value: "2:41".into(),
+            enabled: true,
+            buttons: vec![button(Some("glyph:pause"), true), button(None, true)],
+            switch: Some(Switch::default()),
+            ..Card::default()
+        };
+        let laid = card_layout(&card, 10.0, 20.0, 400.0);
+        let [icon, text] = laid.buttons[..] else { panic!("two buttons") };
+        assert!(laid.title.right() <= icon.x);
+        assert!(icon.right() <= text.x);
+        assert!(text.right() <= laid.switch.x);
+        assert!((icon.w - BUTTON).abs() < 1e-9 && (text.w - TEXT_BUTTON).abs() < 1e-9);
+        assert!(laid.rect.contains(Point::new(icon.x + 1.0, icon.y + 1.0)));
+    }
+
+    #[test]
+    fn a_card_without_extras_is_as_tall_as_before() {
+        let plain = card_layout(&Card { value: "21".into(), ..Card::default() }, 0.0, 0.0, 300.0);
+        assert!((plain.rect.h - CARD).abs() < 1e-9);
+        assert!((plain.title.x - 124.0).abs() < 1e-9);
+        let stepped = Card { stepper: Some(Stepper::default()), value: "21".into(), ..Card::default() };
+        let laid = card_layout(&stepped, 0.0, 0.0, 400.0);
+        assert!((laid.title.right() - (laid.minus.x - 4.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn progress_adds_a_bar_and_no_reading_moves_the_title() {
+        let card = Card { progress: Some(Progress { value: 50.0 }), ..Card::default() };
+        let laid = card_layout(&card, 0.0, 0.0, 300.0);
+        let bar = laid.progress.unwrap();
+        assert!(laid.rect.h > CARD && bar.bottom() < laid.rect.bottom());
+        assert!((laid.title.x - 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn only_usable_buttons_act() {
+        let mut card =
+            Card { enabled: true, buttons: vec![button(None, true), button(None, false)], ..Card::default() };
+        let laid = card_layout(&card, 0.0, 0.0, 300.0);
+        let inside = |rect: Rect| Point::new(rect.x + 2.0, rect.y + 2.0);
+        assert_eq!(card_action_at(&card, &laid, inside(laid.buttons[0])), Some((laid.buttons[0], action().unwrap())));
+        assert_eq!(card_action_at(&card, &laid, inside(laid.buttons[1])), None);
+        card.enabled = false;
+        assert_eq!(card_action_at(&card, &laid, inside(laid.buttons[0])), None);
+    }
 }
