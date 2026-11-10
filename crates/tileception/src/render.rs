@@ -323,7 +323,7 @@ impl Tileception {
             if let Some(preview) = drag.target.and_then(|target| self.world.drop_preview(target, view)) {
                 let shape = Shape {
                     radius: theme.radius,
-                    fill: (theme.accent.alpha(0.16), theme.accent_end.alpha(0.16)),
+                    fill: (theme.accent.alpha(0.16), theme.accent.alpha(0.16)),
                     border_width: 2.0,
                     border: theme.accent,
                     ..Default::default()
@@ -449,6 +449,9 @@ impl Tileception {
             radius: theme.radius,
             border_width: 1.0,
             border: if focused { accent } else { theme.border },
+            // The focused window's border runs to the accent's end colour,
+            // unless it shows the battery.
+            border_end: (focused && accent == theme.accent).then_some(theme.accent_end),
             glow_radius: if focused { theme.glow } else { 0.0 },
             glow: accent.alpha(0.27),
             corner_mask: if mask_corners { theme.background } else { Colour::TRANSPARENT },
@@ -463,6 +466,7 @@ impl Tileception {
         Shape {
             border_width: 1.5,
             border: if focused { guest } else { guest.alpha(0.55) },
+            border_end: None,
             glow_radius: if focused { self.theme.glow } else { 0.0 },
             glow: guest.alpha(0.27),
             ..self.frame(focused, mask_corners)
@@ -513,7 +517,7 @@ impl Tileception {
             }
             drop(text);
             let mark_shape = if active {
-                Shape { radius: 2.0, fill: (theme.accent, theme.accent_end), ..Default::default() }
+                Shape { radius: 2.0, fill: theme.accent_fill(), ..Default::default() }
             } else {
                 Shape::filled(theme.muted.alpha(0.5), 2.0)
             };
@@ -532,7 +536,7 @@ impl Tileception {
             if active {
                 // The shown tab: tinted, with an accent line along the bottom.
                 let underline = Rect::new(tab.x + 2.0, tab.bottom() - 2.0, tab.w - 4.0, 2.0);
-                let line = Shape { radius: 1.0, fill: (theme.accent, theme.accent_end), ..Default::default() };
+                let line = Shape { radius: 1.0, fill: theme.accent_line(), ..Default::default() };
                 push_shape(&mut out, shapes, &underline, line);
                 let tint = if focused { theme.accent.alpha(0.12) } else { theme.surface_raised };
                 push_shape(&mut out, shapes, &tab, Shape::filled(tint, 4.0));

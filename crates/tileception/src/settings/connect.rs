@@ -679,19 +679,24 @@ impl Tileception {
         } else {
             vec![(6, layout.submit, submit)]
         };
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         for (index, rect, label) in buttons {
+            let focused = form.focus == index && typing;
             painter.shape(
                 rect,
-                Shape {
-                    radius: 5.,
-                    fill: if index == 6 && !busy {
-                        (theme.accent, theme.accent_end)
-                    } else {
-                        (theme.surface_raised, theme.surface_raised)
-                    },
-                    border_width: if form.focus == index && typing { 1. } else { 0. },
-                    border: theme.accent,
-                    ..Default::default()
+                if index == 6 && !busy {
+                    // On the accent itself, the focus ring is in the text colour.
+                    Shape {
+                        border_width: if focused { 1. } else { 0. },
+                        border: theme.text,
+                        ..Shape::accent_button(theme, 5., rect.contains(pointer))
+                    }
+                } else {
+                    Shape {
+                        border_width: if focused { 1. } else { 0. },
+                        border: theme.accent,
+                        ..Shape::filled(theme.surface_raised, 5.)
+                    }
                 },
             );
             painter.text(

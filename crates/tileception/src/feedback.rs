@@ -623,12 +623,6 @@ impl Tileception {
                     painter.shape(
                         *rect,
                         Shape {
-                            fill: if primary {
-                                (theme.accent, theme.accent_end)
-                            } else {
-                                (theme.surface_raised, theme.surface_raised)
-                            },
-                            radius: 6.0,
                             border_width: if selected {
                                 2.0
                             } else if primary {
@@ -641,7 +635,11 @@ impl Tileception {
                             } else {
                                 theme.border
                             },
-                            ..Default::default()
+                            ..if primary {
+                                Shape::accent_button(theme, 6.0, false)
+                            } else {
+                                Shape::filled(theme.surface_raised, 6.0)
+                            }
                         },
                     );
                     let text = match action {

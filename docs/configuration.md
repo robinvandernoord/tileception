@@ -63,8 +63,10 @@ wallpaper_fit = "fill"
 `gap` sets the spacing between windows and around the screen edge.
 `animation_ms` sets the duration of zoom and move animations in milliseconds.
 
-Colours accept `#rrggbb` or `#rrggbbaa`. `accent` and `accent_end` are the two
-ends of the accent gradient. Set them to the same colour for a solid accent.
+Colours accept `#rrggbb` or `#rrggbbaa`. Buttons, switches and other
+filled controls use `accent`. Thin lines, such as the shown tab's underline, and
+the focused window's border run from `accent` to `accent_end`. Set both to the
+same colour for a solid accent.
 `guest` (violet by default) borders windows that come from another computer
 through handoff, brighter and glowing when they have the keyboard.
 

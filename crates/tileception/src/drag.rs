@@ -202,7 +202,7 @@ fn draw_card(painter: &mut Painter, card: &Card, (left, top): (f64, f64)) {
         let style = Style::new(theme.font_size * 0.8, theme.on_accent).bold();
         let width = (painter.measure(&count, 60.0, style).0 + 12.0).max(22.0);
         let badge = Rect::new(rect.right() - width + 6.0, rect.y - 8.0, width, 22.0);
-        painter.shape(badge, Shape { radius: 11.0, fill: (theme.accent, theme.accent_end), ..Default::default() });
+        painter.shape(badge, Shape { radius: 11.0, fill: theme.accent_fill(), ..Default::default() });
         painter.text(&count, badge, style.align(Align::Centre));
     }
 }

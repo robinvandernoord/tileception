@@ -491,10 +491,7 @@ impl Tileception {
         let button = |painter: &mut Painter, rect: Rect, icon: &'static str, enabled: bool, primary: bool| {
             let hover = enabled && rect.contains(pointer);
             if primary {
-                painter.shape(
-                    rect,
-                    Shape { radius: rect.h as f32 / 2.0, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                );
+                painter.shape(rect, Shape::accent_button(theme, rect.h as f32 / 2.0, hover));
                 painter.glyph(icon, rect, 14, theme.on_accent);
                 return;
             }
@@ -520,7 +517,7 @@ impl Tileception {
             let share = (position.as_secs_f64() / length.as_secs_f64().max(1.0)).clamp(0.0, 1.0);
             painter.fill(card.progress, theme.border, 1.5);
             let done = Rect::new(card.progress.x, card.progress.y, (card.progress.w * share).max(3.0), card.progress.h);
-            painter.shape(done, Shape { radius: 1.5, fill: (theme.accent, theme.accent_end), ..Default::default() });
+            painter.shape(done, Shape { radius: 1.5, fill: theme.accent_line(), ..Default::default() });
         }
     }
 
@@ -673,8 +670,7 @@ pub fn level_bar(painter: &mut Painter, area: Rect, value: u32, max: u32, muted:
     }
     let value = value as f64;
     let normal = value.min(100.0);
-    let (start, end) =
-        if muted { (theme.muted.alpha(0.6), theme.muted.alpha(0.6)) } else { (theme.accent, theme.accent_end) };
+    let (start, end) = if muted { (theme.muted.alpha(0.6), theme.muted.alpha(0.6)) } else { theme.accent_fill() };
     if normal > 0.0 {
         painter.shape(
             Rect::new(bar.x, bar.y, (x_of(normal) - bar.x).max(4.0), bar.h),

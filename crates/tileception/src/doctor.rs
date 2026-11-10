@@ -3150,10 +3150,7 @@ impl Tileception {
         } else {
             let can_send = !input.text.trim().is_empty() || !self.doctor.attachments.is_empty();
             if can_send {
-                painter.shape(
-                    frame.send,
-                    Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                );
+                painter.shape(frame.send, Shape::accent_button(theme, theme.radius, frame.send.contains(pointer)));
             }
             painter.glyph(
                 glyph::ARROW_RIGHT,
@@ -3342,7 +3339,7 @@ impl Tileception {
                 let shape = if *user {
                     Shape {
                         radius: theme.popup_radius,
-                        fill: (theme.accent.alpha(0.22), theme.accent_end.alpha(0.16)),
+                        fill: (theme.accent.alpha(0.18), theme.accent.alpha(0.18)),
                         ..Default::default()
                     }
                 } else {
@@ -3429,10 +3426,7 @@ impl Tileception {
             Block::Button { rect, label, primary, .. } => {
                 let hover = rect.contains(pointer);
                 if *primary {
-                    painter.shape(
-                        *rect,
-                        Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                    );
+                    painter.shape(*rect, Shape::accent_button(theme, theme.radius, hover));
                 } else {
                     let fill = if hover { theme.surface_raised } else { theme.surface };
                     painter.shape(

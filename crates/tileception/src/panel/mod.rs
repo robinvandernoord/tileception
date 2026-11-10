@@ -949,7 +949,7 @@ pub(crate) fn draw_switch(painter: &mut Painter, track: Rect, lit: bool, pending
             track,
             Shape {
                 radius,
-                fill: (theme.accent.alpha(alpha), theme.accent_end.alpha(alpha)),
+                fill: (theme.accent.alpha(alpha), theme.accent.alpha(alpha)),
                 glow_radius: if pending || !usable { 0.0 } else { 8.0 },
                 glow: theme.accent.alpha(0.25),
                 ..Default::default()

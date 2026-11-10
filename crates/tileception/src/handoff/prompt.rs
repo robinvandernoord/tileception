@@ -257,7 +257,7 @@ impl Tileception {
         painter.glyph(glyph::CLOSE, layout.close, 13, if on_close { theme.text } else { theme.muted });
         if card == Card::Paused {
             let hover = layout.resume.contains(point);
-            painter.fill(layout.resume, if hover { theme.accent_end } else { theme.accent }, 8.0);
+            painter.shape(layout.resume, Shape::accent_button(theme, 8.0, hover));
             painter.text(
                 "Resume",
                 layout.resume,

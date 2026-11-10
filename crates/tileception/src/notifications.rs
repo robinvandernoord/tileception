@@ -713,8 +713,7 @@ impl Tileception {
                 let style = Style::new(theme.font_size * 0.8, theme.on_accent).bold().align(Align::Centre);
                 let width = (painter.measure(&label, 100.0, style).0 + 14.0).max(22.0);
                 let chip = Rect::new(panel.x + 18.0 + title_w + 10.0, panel.y + 20.0, width, 20.0);
-                painter
-                    .shape(chip, Shape { radius: 10.0, fill: (theme.accent, theme.accent_end), ..Default::default() });
+                painter.shape(chip, Shape { radius: 10.0, fill: theme.accent_fill(), ..Default::default() });
                 painter.text(&label, chip, style);
             }
             if count > 0 {
@@ -775,7 +774,7 @@ impl Tileception {
                         track,
                         Shape {
                             radius: 12.0,
-                            fill: (theme.accent, theme.accent_end),
+                            fill: theme.accent_fill(),
                             glow_radius: 10.0,
                             glow: theme.accent.alpha(0.25),
                             ..Default::default()
@@ -861,8 +860,7 @@ impl Tileception {
         }
         // The accent stripe on the left edge; red for critical notifications.
         let stripe = Rect::new(rect.x + 5.0, rect.y + 14.0, 3.0, rect.h - 28.0);
-        let (stripe_start, stripe_end) =
-            if critical { (theme.danger, theme.danger) } else { (theme.accent, theme.accent_end) };
+        let (stripe_start, stripe_end) = if critical { (theme.danger, theme.danger) } else { theme.accent_fill() };
         painter.shape(stripe, Shape { radius: 1.5, fill: (stripe_start, stripe_end), ..Default::default() });
 
         // Header: app icon, app name and how long ago.
@@ -931,7 +929,7 @@ impl Tileception {
                     *action,
                     Shape {
                         radius: theme.radius,
-                        fill: (theme.accent.alpha(alpha), theme.accent_end.alpha(alpha * 0.6)),
+                        fill: (theme.accent.alpha(alpha), theme.accent.alpha(alpha * 0.6)),
                         border_width: 1.0,
                         border: theme.accent.alpha(0.5),
                         ..Default::default()

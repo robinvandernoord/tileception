@@ -142,8 +142,20 @@ const fn field(
 }
 
 const FIELDS: &[Field] = &[
-    field(0, "theme.accent", "Accent colour", "The start of the focused window's gradient.", Control::Colour),
-    field(0, "theme.accent_end", "Accent end", "Use the same colour for a solid accent.", Control::Colour),
+    field(
+        0,
+        "theme.accent",
+        "Accent colour",
+        "Buttons and switches, and the start of the focused window's border.",
+        Control::Colour,
+    ),
+    field(
+        0,
+        "theme.accent_end",
+        "Accent end",
+        "Where the focused window's border ends. The same colour makes it solid.",
+        Control::Colour,
+    ),
     field(
         0,
         "theme.font_size",
@@ -2321,14 +2333,7 @@ impl Tileception {
                 Hit::Page(page) if rect.x < frame.body.x => {
                     let active = state.page == page && state.query.is_empty();
                     if active {
-                        painter.shape(
-                            *rect,
-                            Shape {
-                                fill: (theme.accent.alpha(0.18), theme.accent_end.alpha(0.07)),
-                                radius: 6.,
-                                ..Default::default()
-                            },
-                        );
+                        painter.shape(*rect, Shape { fill: theme.selected(), radius: 6., ..Default::default() });
                     } else if hovered {
                         painter.fill(*rect, theme.surface, 6.);
                     }
@@ -2437,7 +2442,7 @@ impl Tileception {
                         Shape {
                             radius: 10.,
                             fill: if enabled {
-                                (theme.accent, theme.accent_end)
+                                theme.accent_fill()
                             } else {
                                 (theme.surface_raised, theme.surface_raised)
                             },
@@ -2446,7 +2451,7 @@ impl Tileception {
                     );
                     painter.fill(
                         Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
-                        theme.text,
+                        if enabled { theme.on_accent } else { theme.muted },
                         7.,
                     );
                 }
@@ -2498,7 +2503,7 @@ impl Tileception {
                     let enabled = *hit == Hit::ResetSection || changes > 0;
                     let primary = *hit == Hit::Apply && enabled;
                     let fill = if primary {
-                        (theme.accent, theme.accent_end)
+                        theme.accent_fill()
                     } else if *hit == Hit::ResetSection && !hovered {
                         (Colour::TRANSPARENT, Colour::TRANSPARENT)
                     } else {
@@ -2506,12 +2511,16 @@ impl Tileception {
                     };
                     painter.shape(
                         *rect,
-                        Shape {
-                            fill,
-                            radius: 6.,
-                            border_width: if primary { 0. } else { 1. },
-                            border: if hovered && enabled { theme.muted } else { theme.border },
-                            ..Default::default()
+                        if primary {
+                            Shape::accent_button(theme, 6., hovered)
+                        } else {
+                            Shape {
+                                fill,
+                                radius: 6.,
+                                border_width: 1.,
+                                border: if hovered && enabled { theme.muted } else { theme.border },
+                                ..Default::default()
+                            }
                         },
                     );
                     let label = match hit {
@@ -2717,7 +2726,7 @@ impl Tileception {
         );
         painter.shape(
             Rect::new(rect.x + 16., rect.y + 16., 36., 36.),
-            Shape { fill: (theme.accent.alpha(0.16), theme.accent_end.alpha(0.08)), radius: 8., ..Default::default() },
+            Shape { fill: (theme.accent.alpha(0.16), theme.accent.alpha(0.16)), radius: 8., ..Default::default() },
         );
         painter.glyph(category.icon, Rect::new(rect.x + 16., rect.y + 16., 36., 36.), 20, theme.accent);
         painter.text(
@@ -2904,11 +2913,7 @@ impl Tileception {
                     switch,
                     Shape {
                         radius: 10.,
-                        fill: if enabled {
-                            (theme.accent, theme.accent_end)
-                        } else {
-                            (theme.surface_raised, theme.surface_raised)
-                        },
+                        fill: if enabled { theme.accent_fill() } else { (theme.surface_raised, theme.surface_raised) },
                         border_width: if enabled { 0. } else { 1. },
                         border: theme.border,
                         ..Default::default()
@@ -2916,7 +2921,7 @@ impl Tileception {
                 );
                 painter.fill(
                     Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
-                    if enabled { theme.text } else { theme.muted },
+                    if enabled { theme.on_accent } else { theme.muted },
                     7.,
                 );
             }
@@ -2929,9 +2934,11 @@ impl Tileception {
                 let fraction = ((number - min) / (max - min)).clamp(0., 1.);
                 painter.shape(
                     Rect::new(track.x, track.y, track.w * fraction, 3.),
-                    Shape { fill: (theme.accent, theme.accent_end), radius: 2., ..Default::default() },
+                    Shape { fill: theme.accent_fill(), radius: 2., ..Default::default() },
                 );
-                painter.fill(Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.), theme.text, 7.);
+                let knob = Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.);
+                painter.fill(knob.inset(-3.), theme.accent.alpha(0.2), 10.);
+                painter.fill(knob, theme.text, 7.);
                 painter.text(
                     &number_label(field.key, number, unit),
                     Rect::new(control.x + 102., control.y, 56., control.h),
@@ -3144,9 +3151,11 @@ impl Tileception {
         painter.fill(track, theme.border, 2.);
         painter.shape(
             Rect::new(track.x, track.y, track.w * fraction, 3.),
-            Shape { fill: (theme.accent, theme.accent_end), radius: 2., ..Default::default() },
+            Shape { fill: theme.accent_fill(), radius: 2., ..Default::default() },
         );
-        painter.fill(Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.), theme.text, 7.);
+        let knob = Rect::new(track.x + track.w * fraction - 6., track.y - 5., 13., 13.);
+        painter.fill(knob.inset(-3.), theme.accent.alpha(0.2), 10.);
+        painter.fill(knob, theme.text, 7.);
         let hovered = parts.remove.contains(pointer);
         if hovered {
             painter.fill(parts.remove, theme.surface_raised, 6.);
