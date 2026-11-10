@@ -124,6 +124,20 @@ enum Entry {
         row: crate::plugins::Row,
     },
     PluginStatus(String),
+    /// Something the update manager can do, under `up`.
+    Update(UpdateRow),
+}
+
+/// The update manager's rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UpdateRow {
+    Install,
+    Security,
+    Choose,
+    Clean,
+    Release,
+    Restart,
+    Check,
 }
 
 /// What an app's details show: where its desktop entry is and what it runs.
@@ -240,6 +254,7 @@ const COMMANDS: &[Builtin] = &[
         glyph::CHAT,
         Does::Line("feedback"),
     ),
+    builtin("Updates", "upgrade packages apt kernel software release", glyph::ARROW_RIGHT, Does::Line("updates open")),
     builtin("Default terminal", "terminal shell console", glyph::TERMINAL, Does::Line("terminal")),
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
@@ -729,6 +744,9 @@ impl Tileception {
                 .map(|app| Entry::App(app.id.clone()))
                 .collect();
         }
+        if let Some(rows) = self.update_rows(text) {
+            return rows;
+        }
         if let Some(line) = answers::command(text) {
             return if line.is_empty() { Vec::new() } else { vec![Entry::Run(line.to_string())] };
         }
@@ -780,6 +798,7 @@ impl Tileception {
                     !matches!(command.does, Does::Suspend) || self.config.file.general.suspend_enabled
                 })
                 .filter(|(_, command)| !matches!(command.does, Does::Line("doctor")) || self.shell().doctor())
+                .filter(|(_, command)| !matches!(command.does, Does::Line("updates open")) || self.updates_available())
                 .filter_map(|(index, command)| {
                     let by_name = quality(&query, &command.name.to_lowercase());
                     let by_words = query
@@ -1140,6 +1159,145 @@ impl Tileception {
                 }
             }
             Entry::PluginStatus(_) => {}
+            Entry::Update(row) => {
+                self.close_launcher();
+                self.run_update_row(row);
+            }
+        }
+    }
+
+    /// The update manager's rows for `up` (or the start of "updates"), while
+    /// it runs here.
+    fn update_rows(&self, text: &str) -> Option<Vec<Entry>> {
+        let query = text.to_lowercase();
+        let asked = query == "up" || query.starts_with("up ") || (query.len() >= 3 && "updates".starts_with(&query));
+        if !asked || !self.updates_available() {
+            return None;
+        }
+        let updates = &self.updates;
+        let totals = updates.snapshot.totals();
+        let mut rows = Vec::new();
+        if !updates.busy() {
+            if totals.count > 0 {
+                rows.push(UpdateRow::Install);
+            }
+            if totals.security > 0 && totals.security < totals.count {
+                rows.push(UpdateRow::Security);
+            }
+        }
+        rows.push(UpdateRow::Choose);
+        if updates.cleanup_summary().is_some() {
+            rows.push(UpdateRow::Clean);
+        }
+        if updates.release().is_some() {
+            rows.push(UpdateRow::Release);
+        }
+        if updates.snapshot.restart {
+            rows.push(UpdateRow::Restart);
+        }
+        if !updates.busy() {
+            rows.push(UpdateRow::Check);
+        }
+        Some(rows.into_iter().map(Entry::Update).collect())
+    }
+
+    /// The update rows follow the update manager while they show.
+    pub(crate) fn refresh_updates_rows(&mut self) {
+        if !self.launcher.entries.iter().any(|entry| matches!(entry, Entry::Update(_))) {
+            return;
+        }
+        self.launcher.entries = self.launcher_entries();
+        self.launcher.selected = self.launcher.selected.min(self.launcher.entries.len().saturating_sub(1));
+    }
+
+    fn run_update_row(&mut self, row: UpdateRow) {
+        use crate::updates::{Page, Task};
+        let result = match row {
+            UpdateRow::Install => self.updates_install(false),
+            UpdateRow::Security => self.updates_install(true),
+            UpdateRow::Check => self.updates_start(Task::Refresh),
+            UpdateRow::Choose => {
+                self.open_updates(Page::Available);
+                Ok(())
+            }
+            UpdateRow::Clean => {
+                self.open_updates(Page::Kernels);
+                self.updates_queue_suggested();
+                Ok(())
+            }
+            UpdateRow::Release => {
+                self.open_updates(Page::Release);
+                Ok(())
+            }
+            UpdateRow::Restart => {
+                self.run_builtin(Does::Power(PowerAction::Restart));
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            self.notify_locally("Updates", &error, tileception_notify::Urgency::Normal);
+        }
+    }
+
+    fn update_row_text(&self, row: UpdateRow) -> (&'static str, String, String) {
+        let updates = &self.updates;
+        let totals = updates.snapshot.totals();
+        let size = tileception_updates::human_size(totals.bytes);
+        match row {
+            UpdateRow::Install => {
+                let title = if totals.count == 1 {
+                    "Install 1 update".into()
+                } else {
+                    format!("Install all {} updates", totals.count)
+                };
+                let detail = match totals.security {
+                    0 => format!("{size} to download"),
+                    count => format!("{size} to download \u{b7} {count} for security"),
+                };
+                (glyph::ARROW_RIGHT, title, detail)
+            }
+            UpdateRow::Security => {
+                let names: Vec<&str> = updates
+                    .snapshot
+                    .updates
+                    .iter()
+                    .filter(|update| update.security)
+                    .take(3)
+                    .map(|update| update.name.as_str())
+                    .collect();
+                let title = if totals.security == 1 {
+                    "Install the security update".into()
+                } else {
+                    format!("Install the {} security updates", totals.security)
+                };
+                (glyph::ALERT, title, names.join(", "))
+            }
+            UpdateRow::Choose => {
+                let detail = match updates.progress() {
+                    Some((title, label, _)) => format!("{title} \u{b7} {label}"),
+                    None if totals.count == 0 => format!("Up to date \u{b7} {}", updates.checked()),
+                    None => "Pick packages in the Updates window".into(),
+                };
+                (glyph::WINDOW, if totals.count == 0 { "Open Updates" } else { "Choose updates" }.into(), detail)
+            }
+            UpdateRow::Clean => (
+                glyph::CLEAR,
+                "Clean up old kernels".into(),
+                format!("{} \u{b7} review the queue first", updates.cleanup_summary().unwrap_or_default()),
+            ),
+            UpdateRow::Release => (
+                glyph::GLOBE,
+                format!(
+                    "Upgrade to {} {}",
+                    updates.snapshot.system.pretty.split_whitespace().next().unwrap_or_default(),
+                    updates.release().unwrap_or_default()
+                ),
+                "Shows what to look at first".into(),
+            ),
+            UpdateRow::Restart => {
+                (glyph::RESTART, "Restart to finish updates".into(), "Opens the power menu to confirm".into())
+            }
+            UpdateRow::Check => (glyph::RESTART, "Check for updates now".into(), format!("Last {}", updates.checked())),
         }
     }
 
@@ -1818,6 +1976,11 @@ impl Tileception {
                     .get(&format!("{app}.desktop"))
                     .map_or(app.clone(), |desktop| desktop.name.clone());
                 (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Entry::Update(row) => {
+                let (icon, title, detail) = self.update_row_text(*row);
+                glyph_box(painter, icon, if *row == UpdateRow::Security { theme.warning } else { theme.accent });
+                (title, Some(detail))
             }
             Entry::Command(index) => {
                 let command = &COMMANDS[*index];

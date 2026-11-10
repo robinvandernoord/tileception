@@ -359,6 +359,82 @@ to connect each. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 
+### Updates
+
+On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
+while updates wait. It counts security updates first: `3 +9` means three
+security updates and nine others. While updates install it shows progress,
+and it says **Restart** when earlier updates need one or names a newer Ubuntu
+release once one is out. With nothing to do there is no chip.
+
+Click the chip for a card with the updates by kind and three buttons:
+**Install all**, **Security only** and **Review**. Installing needs
+administrator rights. If `sudo` asks for a password, Tileception shows its own
+prompt and passes what you type to `sudo` for that one task.
+
+**Review** opens the Updates window, which also opens with
+`tileception msg updates open` or "Updates" in the launcher. It has four pages;
+**Tab** and **Shift+Tab** switch between them, the arrow keys move through the
+list, **Space** ticks a row and **Enter** runs the page's main button.
+
+| Page | What it does |
+| --- | --- |
+| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Check** refreshes the package lists. |
+| Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
+| Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
+| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. |
+
+The Kernels page lists kernels by series; click a series, or press **Space**
+on it, to fold it. It shows every installed kernel and every kernel apt offers
+for the flavour you are running, with unsigned and debug builds left out.
+**All variants** adds the other flavours and those builds, with only the series
+you have kernels of unfolded.
+
+The running kernel is protected and the newest other one is marked as the
+fallback. **Install** and **Remove** put a kernel on the queue instead of acting
+at once. Installing takes the matching headers along; removing takes the
+modules and headers that nothing else then uses. **Preview** shows what
+`apt-get` would do with the whole queue, **Apply queue** does it as one
+transaction and **Clear** empties it. **Purge: on** also removes the
+configuration of what goes; switch it off to keep that. **Queue old kernels**
+queues everything except the running kernel and the fallback. The page warns
+when no fallback is installed, and when the queue would leave none.
+
+Leftover headers, and leftover modules and tools, of kernels that are gone are
+listed apart and queued per kind. Nothing here runs `autoremove`.
+
+| Key | Action on the Kernels page |
+| --- | --- |
+| A | Switch between the recommended view and all variants |
+| Q, or Space | Queue the highlighted kernel, or take it off the queue |
+| I / D | Queue the highlighted kernel to install / to remove |
+| U | Tick or untick the leftovers |
+| P | Preview the queue, and go back |
+| C | Clear the queue |
+| R | Refresh the package lists |
+| Enter | Apply the queue |
+
+Type `up` in the launcher for the same actions as rows: install everything,
+install the security updates, choose updates, clean up old kernels, upgrade to
+the next release and check now.
+
+From scripts and key bindings:
+
+| Command | Action |
+| --- | --- |
+| `tileception msg updates` | List what is waiting |
+| `tileception msg updates check` | Refresh the package lists |
+| `tileception msg updates install` | Install every update |
+| `tileception msg updates install security` | Install the security updates |
+| `tileception msg updates install <package>...` | Install the named updates |
+| `tileception msg updates kernels` | List kernels: running, fallback, old, available |
+| `tileception msg updates clean` | Remove old kernels and leftover kernel packages |
+| `tileception msg updates upgrade` | Start the release upgrade in a terminal |
+
+Flatpak, Snap and firmware updates are not listed yet. See
+[Configuration](configuration.md#updates) to switch the chip or its
+notification off.
+
 ### Network
 
 With NetworkManager running, a Wi-Fi or cable icon in the bar shows how you

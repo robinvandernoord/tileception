@@ -186,6 +186,18 @@ enabled = false
 # power_profiles = true
 # power_saver_at = 20
 
+[updates]
+# On systems with APT, the bar shows a count while updates wait: security
+# updates first, then the rest. Click it, type "up" in the launcher or run
+# `tileception msg updates open` to install them, clean up old kernels or
+# start a release upgrade. Installing asks for your password, as sudo does.
+# enabled = true
+# One notification when new updates arrive.
+# notify = true
+# Hours between looks at the package lists. The lists themselves are
+# refreshed by the system's own daily timer, or by "Check" in Updates.
+# check_hours = 4
+
 [bluetooth]
 # Reconnect paired devices that were connected before the computer slept or
 # the adapter was switched off, a few seconds after it is back. Devices

@@ -1,0 +1,9 @@
+[package]
+name = "tileception-updates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pending APT updates, kernel clean-up and release upgrades for Tileception"
+
+[lints]
+workspace = true

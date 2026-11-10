@@ -107,6 +107,7 @@ locked dependencies for all platforms, and ship with both installation paths.
 | `tileception-notify` | D-Bus notification service                                |
 | `tileception-media`  | Audio, media playback and backlight controls              |
 | `tileception-acp`    | Agent registry, installation and ACP client               |
+| `tileception-updates` | Pending APT updates, kernels, release checks, apt history |
 
 The layout engine has no Smithay dependency or I/O. The compositor drives it
 with window and input events, then renders the resulting layout. DRM/KMS runs
@@ -148,6 +149,13 @@ Use the `TILECEPTION_SOCKET` path printed at startup to target that instance
 with `tileception msg`, especially if your desktop is also running Tileception.
 The command interface supports screenshots and input injection in headless and
 nested instances. `tileception msg --help` lists the commands.
+
+A nested or headless instance leaves updates to the desktop it runs in. Set
+`TILECEPTION_UPDATES=1` to start the update manager there too. It runs
+`apt-get`, `dpkg-query`, `apt-cache`, `uname`, `do-release-upgrade` and `sudo`
+from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
+release offer or a `sudo` that asks for a password, without changing the
+system.
 
 Headless instances run Xwayland too, so X11 programs can be tried the same way.
 Start programs inside an instance with `tileception msg spawn <command line>`,

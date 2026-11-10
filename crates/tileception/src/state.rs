@@ -227,6 +227,7 @@ pub struct Tileception {
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
+    pub updates: crate::updates::Updates,
     pub network: crate::network::Network,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
@@ -408,6 +409,7 @@ impl Tileception {
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             battery: Default::default(),
+            updates: Default::default(),
             network: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
@@ -583,6 +585,7 @@ impl Tileception {
         });
         let window_id = self.next_id();
         self.settings_client_window(&toplevel, window_id);
+        self.updates_client_window(&toplevel, window_id);
         self.windows.insert(window_id, Window::new_wayland_window(toplevel));
     }
 
@@ -614,7 +617,9 @@ impl Tileception {
         }
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
-        let float = rule.float.unwrap_or_else(|| self.is_settings_window(window_id) || wants_float(window));
+        let float = rule.float.unwrap_or_else(|| {
+            self.is_settings_window(window_id) || self.is_updates_window(window_id) || wants_float(window)
+        });
         let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
         let now = self.now();
@@ -765,6 +770,7 @@ impl Tileception {
         } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
         } else if self.feedback.is_some()
+            || self.updates.prompt.is_some()
             || self.power_menu.is_some()
             || self.colour_pick.is_some()
             || self.notifications.answering.is_some()

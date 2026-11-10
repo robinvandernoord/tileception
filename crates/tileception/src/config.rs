@@ -40,6 +40,7 @@ pub struct ConfigFile {
     pub idle: crate::idle::IdleConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
+    pub updates: crate::updates::UpdatesConfig,
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,

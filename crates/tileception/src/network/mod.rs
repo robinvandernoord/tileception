@@ -350,6 +350,7 @@ impl Tileception {
         self.close_calendar();
         self.close_minimap();
         self.close_tray();
+        self.close_updates_popover();
         self.notifications.open = false;
         let duration = self.world.settings.animation;
         self.network.zoom.set(true, duration);

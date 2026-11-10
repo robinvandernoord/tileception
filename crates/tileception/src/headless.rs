@@ -117,6 +117,7 @@ impl Tileception {
     fn headless_tick(&mut self) {
         let Some(mut headless) = self.headless.take() else { return };
         self.update_settings_client(&mut headless.renderer);
+        self.update_updates_client(&mut headless.renderer);
         let elapsed = self.start.elapsed();
         self.process_streams(&mut headless.renderer);
         for output in &headless.outputs {

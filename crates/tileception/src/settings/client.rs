@@ -1,4 +1,4 @@
-//! A real xdg-shell client for Settings. Only its UI model lives in the
+//! A real xdg-shell client for Settings and Updates. Only the UI model lives in the
 //! compositor; buffers and input travel through the regular Wayland protocols.
 
 use std::{
@@ -38,7 +38,7 @@ use wayland_protocols::{
 
 use super::{Mods, Point};
 
-pub(super) enum Event {
+pub(crate) enum Event {
     Resize(i32, i32),
     Motion(Point),
     Leave,
@@ -49,7 +49,23 @@ pub(super) enum Event {
     Closed,
 }
 
-pub(super) struct Frame {
+/// Which built-in window a client shows: its title, and where its input goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Settings,
+    Updates,
+}
+
+impl Kind {
+    fn title(self) -> (&'static str, &'static str) {
+        match self {
+            Kind::Settings => ("Settings", "tileception-settings"),
+            Kind::Updates => ("Updates", "tileception-updates"),
+        }
+    }
+}
+
+pub(crate) struct Frame {
     pub pixels: Vec<u8>,
     pub width: i32,
     pub height: i32,
@@ -62,7 +78,7 @@ enum Request {
     Cursor(wp_cursor_shape_device_v1::Shape),
 }
 
-pub(super) struct Client {
+pub(crate) struct Client {
     requests: mpsc::Sender<Request>,
     wake: Mutex<UnixStream>,
     pub client_id: smithay::reexports::wayland_server::backend::ClientId,
@@ -74,7 +90,7 @@ pub(super) struct Client {
 }
 
 impl Client {
-    pub fn start(state: &mut super::Tileception) -> Result<Self, String> {
+    pub fn start(state: &mut super::Tileception, kind: Kind) -> Result<Self, String> {
         let (server, socket) = UnixStream::pair().map_err(|error| error.to_string())?;
         let client = state
             .display_handle
@@ -85,20 +101,27 @@ impl Client {
         let source = state
             .loop_handle
             .insert_source(receive, move |event, _, state| {
-                if state.settings.client.as_ref().is_some_and(|client| client.client_id == client_id)
-                    && let channel::Event::Msg(event) = event
-                {
-                    state.settings_client_event(event);
+                let channel::Event::Msg(event) = event else { return };
+                match kind {
+                    Kind::Settings => {
+                        if state.settings.client.as_ref().is_some_and(|client| client.client_id == client_id) {
+                            state.settings_client_event(event);
+                        }
+                    }
+                    Kind::Updates => state.updates_client_event(&client_id, event),
                 }
             })
             .map_err(|error| error.to_string())?;
         let (requests, receiver) = mpsc::channel();
         let (wake, reader) = UnixStream::pair().map_err(|error| error.to_string())?;
         wake.set_nonblocking(true).map_err(|error| error.to_string())?;
-        let size = state.settings.size;
+        let size = match kind {
+            Kind::Settings => state.settings.size,
+            Kind::Updates => state.updates.window.size,
+        };
         std::thread::spawn(move || {
-            if let Err(error) = run(socket, reader, receiver, send.clone(), size) {
-                tracing::warn!("Settings client: {error}");
+            if let Err(error) = run(socket, reader, receiver, send.clone(), size, kind) {
+                tracing::warn!("{} client: {error}", kind.title().0);
             }
             let _ = send.send(Event::Closed);
         });
@@ -197,6 +220,7 @@ fn run(
     requests: mpsc::Receiver<Request>,
     events: channel::Sender<Event>,
     size: (f64, f64),
+    kind: Kind,
 ) -> Result<(), String> {
     let connection = Connection::from_socket(socket).map_err(|error| error.to_string())?;
     let (globals, mut queue) = registry_queue_init::<App>(&connection).map_err(|error| error.to_string())?;
@@ -212,8 +236,9 @@ fn run(
     let surface = compositor.create_surface(&queue_handle, ());
     let shell = shell_base.get_xdg_surface(&surface, &queue_handle, ());
     let toplevel = shell.get_toplevel(&queue_handle, ());
-    toplevel.set_title("Settings".into());
-    toplevel.set_app_id("tileception-settings".into());
+    let (title, app_id) = kind.title();
+    toplevel.set_title(title.into());
+    toplevel.set_app_id(app_id.into());
     toplevel.set_min_size(480, 360);
     let viewport = viewporter.get_viewport(&surface, &queue_handle, ());
     let cursor_manager = globals.bind(&queue_handle, 1..=1, ()).map_err(|error| error.to_string())?;

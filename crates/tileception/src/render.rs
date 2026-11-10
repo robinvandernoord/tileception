@@ -190,6 +190,7 @@ impl Tileception {
     /// The whole frame: everything below plus the wallpaper at the bottom.
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
         self.update_settings_client(renderer);
+        self.update_updates_client(renderer);
         if let Some(shapes) = self.shapes.get() {
             shapes.next_frame();
         }
@@ -266,6 +267,7 @@ impl Tileception {
             elements.extend(self.feedback_elements(renderer));
             elements.extend(self.colour_pick_elements(renderer));
             elements.extend(self.osd_elements(renderer));
+            elements.extend(self.updates_prompt_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
             elements.extend(self.handoff_elements(renderer));
         }

@@ -108,6 +108,10 @@ pub enum Command {
     ColourScheme(crate::theme::ColourScheme),
     /// Sharing with other machines.
     Handoff(crate::handoff::HandoffCommand),
+    /// Pending updates, kernels and release upgrades.
+    Updates(crate::updates::UpdatesCommand),
+    /// A key pressed in the password prompt or the Updates window (not available as text).
+    UpdatesKey(u32, crate::config::Mods),
 }
 
 /// What `tileception msg --help` prints. Every verb here must parse (a test
@@ -208,6 +212,17 @@ Shell:
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
   handoff reclaim [machine] bring this machine's windows back from others
+  updates                   list pending updates and what else waits
+  updates check             refresh the package lists (asks for your password)
+  updates install [security|package...]
+                            install every update, the security updates or
+                            the named ones
+  updates open [page]       open the Updates window: available, kernels,
+                            release or history
+  updates show              open or close the card under the bar's chip
+  updates kernels           list kernels: running, fallback, old, available
+  updates clean             remove old kernels and leftover kernel packages
+  updates upgrade           start the release upgrade in a terminal
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
@@ -305,6 +320,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "unlock" => return Ok(Command::Unlock),
         "battery" => return Ok(Command::Battery),
+        "updates" => return crate::updates::parse(&args).map(Command::Updates),
         "bluetooth" => return Ok(Command::Bluetooth(rest.to_string())),
         "network" => {
             return match args.as_slice() {
@@ -582,6 +598,14 @@ impl Tileception {
             Command::Settings => self.toggle_settings(),
             Command::SettingsKey(sym, mods) => self.settings_key(sym, mods),
             Command::Handoff(command) => return self.handoff_command(command),
+            Command::Updates(command) => return self.updates_command(command),
+            Command::UpdatesKey(sym, mods) => {
+                if self.updates.prompt.is_some() {
+                    self.updates_prompt_key(sym, mods);
+                } else if self.updates_window_focused() {
+                    self.updates_window_key(sym, mods);
+                }
+            }
             Command::ColourScheme(scheme) => {
                 self.theme.colour_scheme = scheme;
                 self.update_appearance();
