@@ -375,7 +375,10 @@ pub fn characters(query: &str, limit: usize) -> Vec<Answer> {
 /// Paths under `~/` or `/` that start with what was typed, folders first,
 /// or a web address to open.
 pub fn places(text: &str, home: &Path) -> Vec<Place> {
-    let text = text.trim();
+    // A bare "~" is the home folder: list it, as "~/" does, and let Tab
+    // write the slash.
+    let bare_home = text.trim() == "~";
+    let text = if bare_home { "~/" } else { text.trim() };
     if text.contains(char::is_whitespace) && !text.starts_with(['/', '~']) {
         return Vec::new();
     }
@@ -422,7 +425,7 @@ pub fn places(text: &str, home: &Path) -> Vec<Place> {
             title: shown_dir.to_string(),
             detail: "Open folder".into(),
             target: dir.to_string_lossy().into_owned(),
-            completion: None,
+            completion: bare_home.then(|| text.to_string()),
             folder: true,
             link: false,
         });
@@ -560,6 +563,10 @@ mod tests {
         std::fs::write(root.join(".hidden"), "").unwrap();
         let titles = |text: &str| places(text, &root).into_iter().map(|place| place.title).collect::<Vec<_>>();
         assert_eq!(titles("~/"), ["~/", "Documents/", "Downloads/", "dotfile"]);
+        assert_eq!(titles("~"), ["~/", "Documents/", "Downloads/", "dotfile"]);
+        assert_eq!(places("~", &root)[0].completion.as_deref(), Some("~/"));
+        assert_eq!(places("~/", &root)[0].completion, None);
+        assert_eq!(places("~", &root)[1].completion.as_deref(), Some("~/Documents/"));
         assert_eq!(titles("~/do"), ["Documents/", "Downloads/", "dotfile"]);
         assert_eq!(titles("~/.h"), [".hidden"]);
         let doc = &places("~/Docu", &root)[0];
