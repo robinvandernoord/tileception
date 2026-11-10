@@ -109,8 +109,24 @@ impl Tileception {
         {
             let geo = window.geometry();
             let out = self.output_rect();
-            let content = Rect::new(out.x, out.y, geo.size.w as f64, geo.size.h as f64);
-            let origin = (content.x - geo.loc.x as f64, content.y - geo.loc.y as f64).into();
+            let (width, height) = (geo.size.w.max(1) as f64, geo.size.h.max(1) as f64);
+            // A window that cannot grow to the screen (a browser's picture in
+            // picture caps itself) is enlarged to fit; others are only shrunk,
+            // so one a pixel short stays sharp. Either way, in the middle.
+            let capped = match crate::state::max_size(window) {
+                (Some(max_width), _) if f64::from(max_width) < out.w => true,
+                (_, Some(max_height)) => f64::from(max_height) < out.h,
+                _ => false,
+            };
+            let fit = (out.w / width).min(out.h / height);
+            let scale = if capped { fit } else { fit.min(1.0) };
+            let content = Rect::new(
+                out.x + (out.w - width * scale) / 2.0,
+                out.y + (out.h - height * scale) / 2.0,
+                width * scale,
+                height * scale,
+            );
+            let origin = (content.x - geo.loc.x as f64 * scale, content.y - geo.loc.y as f64 * scale).into();
             let leaf = self.world.tree().leaf_of(window_id).unwrap_or(self.world.tree().root());
             return vec![Drawn {
                 window_id,
@@ -119,7 +135,7 @@ impl Tileception {
                 slot: out,
                 content,
                 origin,
-                scale: (1.0, 1.0),
+                scale: (scale, scale),
                 live: true,
             }];
         }
@@ -293,7 +309,7 @@ impl Tileception {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                         window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-                    elements.extend(enlarged(surfaces, origin, self.scale));
+                    elements.extend(enlarged(surfaces, origin, self.scale * drawn.scale.0));
                 }
             }
             return (elements, scene);
