@@ -89,7 +89,6 @@ Report testing in the conversation, the commit or the pull request instead.
     (smart home, Bluetooth) in the notification panel. The order is saved
     and used for the panel, for the bar's chips and for the cards under the
     launcher; without one, the priority order applies.
-  - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
