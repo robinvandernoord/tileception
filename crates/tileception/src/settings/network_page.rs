@@ -501,22 +501,8 @@ impl Tileception {
         };
         let focused = |hit: Hit| self.settings.focus == Some(hit);
         let button = |painter: &mut Painter<'_>, rect: Rect, label: &str, hit: Hit, primary: bool| {
-            let hovered = rect.contains(pointer);
-            let fill = match () {
-                _ if primary => theme.accent,
-                _ if hovered => theme.surface_raised,
-                _ => theme.background.alpha(0.4),
-            };
-            painter.shape(
-                rect,
-                Shape {
-                    border_width: 1.,
-                    border: if focused(hit) { theme.accent } else { theme.border },
-                    ..Shape::filled(fill, 6.)
-                },
-            );
-            let colour = if primary { theme.on_accent } else { theme.text };
-            painter.text(label, rect, Style::new(12., colour).align(Align::Centre));
+            let look = if primary { Look::Primary } else { Look::Plain };
+            painter.button(rect, Button::new(label, look).focused(focused(hit)), rect.contains(pointer));
         };
 
         if let Some(rect) = frame.missing {

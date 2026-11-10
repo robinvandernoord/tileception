@@ -15,7 +15,7 @@ use crate::{
     plugins::{ActionKind, Arguments, Place, Prompt, Row, Step, StepKind},
     shapes::Shape,
     text_input::TextInput,
-    ui::{Align, Painter, Style, glyph},
+    ui::{Button, Look, Painter, Style, glyph},
 };
 
 pub(super) struct PromptView {
@@ -554,13 +554,10 @@ impl Tileception {
         ];
         for (rect, label, primary) in buttons {
             let (Some(rect), Some(label)) = (rect, label) else { continue };
-            let lit = primary && typing;
-            let fill =
-                if lit { (theme.accent, theme.accent_end) } else { (theme.surface_raised, theme.surface_raised) };
-            painter.shape(rect, Shape { radius: theme.radius, fill, ..Default::default() });
             let label = if primary && !typing { "Working..." } else { label };
-            let colour = if lit { theme.on_accent } else { theme.text };
-            painter.text(label, rect, Style::new(size * 0.92, colour).align(Align::Centre));
+            let look = if primary { Look::Primary } else { Look::Plain };
+            let hover = rect.contains(Point::new(self.pointer.x, self.pointer.y));
+            painter.button(rect, Button::new(label, look).enabled(typing || !primary), hover);
         }
     }
 }

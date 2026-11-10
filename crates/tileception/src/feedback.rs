@@ -17,7 +17,7 @@ use crate::{
     config::Mods,
     render::OutputElement,
     shapes::Shape,
-    ui::{Align, Painter, PointerAction, PointerTarget, Style},
+    ui::{Button, Look, Painter, PointerAction, PointerTarget, Style},
 };
 
 const NEW_ISSUE: &str = "https://github.com/robinvandernoord/tileception/issues/new";
@@ -620,43 +620,15 @@ impl Tileception {
                 }
                 _ => {
                     let primary = matches!(action, Action::Review | Action::Open);
-                    painter.shape(
-                        *rect,
-                        Shape {
-                            fill: if primary {
-                                (theme.accent, theme.accent_end)
-                            } else {
-                                (theme.surface_raised, theme.surface_raised)
-                            },
-                            radius: 6.0,
-                            border_width: if selected {
-                                2.0
-                            } else if primary {
-                                0.0
-                            } else {
-                                1.0
-                            },
-                            border: if selected {
-                                if primary { theme.text } else { theme.accent }
-                            } else {
-                                theme.border
-                            },
-                            ..Default::default()
-                        },
-                    );
                     let text = match action {
                         Action::Cancel => "Cancel",
                         Action::Review => "Review",
                         Action::Edit => "Edit",
                         _ => "Open in browser",
                     };
-                    painter.text(
-                        text,
-                        *rect,
-                        Style::new(theme.font_size, if primary { theme.on_accent } else { theme.text })
-                            .weight(if primary { 600 } else { 400 })
-                            .align(Align::Centre),
-                    );
+                    let look = if primary { Look::Primary } else { Look::Plain };
+                    let hover = rect.contains(Point::new(self.pointer.x, self.pointer.y));
+                    painter.button(*rect, Button::new(text, look).focused(selected), hover);
                 }
             }
         }

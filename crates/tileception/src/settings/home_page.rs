@@ -341,8 +341,7 @@ impl Tileception {
             let mut title_x = card.rect.x + PAD;
             if let Some(step) = card.step {
                 let badge = Rect::new(card.rect.x + PAD, card.rect.y + 18., 26., 26.);
-                painter
-                    .shape(badge, Shape { radius: 13., fill: (theme.accent, theme.accent_end), ..Default::default() });
+                painter.shape(badge, Shape { radius: 13., fill: theme.accent_fill(), ..Default::default() });
                 let label = if card.done { "\u{2713}".to_string() } else { step.to_string() };
                 painter.text(&label, badge, Style::new(12., theme.on_accent).weight(700).align(Align::Centre));
                 title_x = badge.right() + 12.;

@@ -619,6 +619,75 @@ impl Style {
     }
 }
 
+/// How much a button asks for attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// The one that carries the accent: what the surface is for.
+    Primary,
+    /// An outlined button beside it.
+    Plain,
+    /// [`Look::Plain`], for something to be careful with.
+    Warning,
+    /// Bare until the pointer is over it, for buttons inside a row or card.
+    Quiet,
+}
+
+/// A button: what it shows and the state it is in. [`Painter::button`] turns
+/// that into its shape, colours and text, so every button looks alike and a
+/// change of style is made in one place.
+#[derive(Debug, Clone, Copy)]
+pub struct Button<'a> {
+    label: &'a str,
+    glyph: Option<&'static str>,
+    look: Look,
+    enabled: bool,
+    focused: bool,
+    round: bool,
+}
+
+impl<'a> Button<'a> {
+    pub fn new(label: &'a str, look: Look) -> Button<'a> {
+        Button { label, glyph: None, look, enabled: true, focused: false, round: false }
+    }
+    pub fn primary(label: &'a str) -> Button<'a> {
+        Button::new(label, Look::Primary)
+    }
+    pub fn plain(label: &'a str) -> Button<'a> {
+        Button::new(label, Look::Plain)
+    }
+    pub fn quiet(label: &'a str) -> Button<'a> {
+        Button::new(label, Look::Quiet)
+    }
+    /// A button that shows a line icon instead of a label.
+    pub fn glyph(glyph: &'static str, look: Look) -> Button<'static> {
+        Button { glyph: Some(glyph), ..Button::new("", look) }
+    }
+    /// One that cannot be pressed now is drawn faint and ignores the pointer.
+    pub fn enabled(self, enabled: bool) -> Button<'a> {
+        Button { enabled, ..self }
+    }
+    /// Whether the keyboard is on it, which draws a ring.
+    pub fn focused(self, focused: bool) -> Button<'a> {
+        Button { focused, ..self }
+    }
+    /// Fully rounded ends, for icon buttons.
+    pub fn round(self) -> Button<'a> {
+        Button { round: true, ..self }
+    }
+}
+
+/// The fill of a button that carries the accent: one hue with a line of
+/// light along the top, brighter and glowing under the pointer.
+fn accent_button(theme: &crate::theme::Theme, radius: f32, hover: bool) -> Shape {
+    let fill = if hover { theme.accent.mix(Colour([1.0; 4]), 0.14) } else { theme.accent };
+    Shape {
+        highlight: 0.28,
+        glow_radius: if hover { theme.glow * 0.75 } else { 0.0 },
+        glow: theme.accent.alpha(0.33),
+        ..Shape::filled(fill, radius)
+    }
+}
+
 /// Draws the compositor's own interface back to front (in painting order),
 /// optionally faded and shifted as a whole for animations.
 pub struct Painter<'a> {
@@ -798,6 +867,47 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// A button filling `rect`; `hover` is whether the pointer is over it.
+    /// Every button is drawn here: see the Buttons section of AGENTS.md.
+    pub fn button(&mut self, rect: Rect, button: Button<'_>, hover: bool) {
+        let theme = self.theme();
+        let Button { label, glyph, look, enabled, focused, round } = button;
+        let hover = hover && enabled;
+        let radius = if round { rect.h as f32 / 2.0 } else { theme.radius };
+        let outlined = |fill: Colour| Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, radius) };
+        let (shape, colour) = match (look, enabled) {
+            (Look::Quiet, false) => (None, theme.muted.alpha(0.5)),
+            (_, false) => (Some(outlined(Colour::TRANSPARENT)), theme.muted),
+            (Look::Primary, true) => (Some(accent_button(theme, radius, hover)), theme.on_accent),
+            (Look::Quiet, true) => (hover.then(|| Shape::filled(theme.surface_raised, radius)), theme.text),
+            (Look::Plain | Look::Warning, true) => (
+                Some(outlined(if hover { theme.border } else { theme.surface_raised })),
+                if look == Look::Warning { theme.warning } else { theme.text },
+            ),
+        };
+        // On the accent itself, the focus ring is in the text colour.
+        let ring = if look == Look::Primary && enabled { theme.text } else { theme.accent };
+        let shape = match (shape, focused) {
+            (shape, true) => Some(Shape {
+                border_width: 2.0,
+                border: ring,
+                ..shape.unwrap_or_else(|| Shape::filled(Colour::TRANSPARENT, radius))
+            }),
+            (shape, false) => shape,
+        };
+        if let Some(shape) = shape {
+            self.shape(rect, shape);
+        }
+        let primary = look == Look::Primary;
+        match glyph {
+            Some(glyph) => self.glyph(glyph, rect, if primary { 14 } else { 15 }, colour),
+            None => {
+                let style = Style::new(theme.font_size * 0.88, colour).weight(if primary { 600 } else { 500 });
+                self.text(label, rect, style.align(Align::Centre));
+            }
+        }
+    }
+
     fn keycap_style(&self) -> Style {
         let theme = self.theme();
         Style::new(theme.font_size * 0.8, theme.text).bold()
@@ -958,5 +1068,45 @@ impl crate::Tileception {
         let total: usize = rows.iter().map(|(_, (_, bytes))| bytes).sum();
         out.push_str(&format!("{:<11} {:>4}        {:>8.1} MiB", "total", "", mib(total)));
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs, path::Path};
+
+    /// The accent gradient written out by hand is how a button ends up
+    /// looking unlike the others. These are the marks that keep it; anything
+    /// new takes `Painter::button`, or a named fill of `Theme`.
+    #[test]
+    fn the_accent_gradient_is_not_drawn_by_hand() {
+        fn count(folder: &Path, needle: &str, found: &mut BTreeMap<String, usize>) {
+            for entry in fs::read_dir(folder).expect("the source folder can be read").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    count(&path, needle, found);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let uses = fs::read_to_string(&path).expect("a source file is text").matches(needle).count();
+                    if uses > 0 {
+                        found.insert(path.display().to_string(), uses);
+                    }
+                }
+            }
+        }
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let needle = ["(theme.accent, ", "theme.accent_end)"].concat();
+        let mut found = BTreeMap::new();
+        count(&source, &needle, &mut found);
+        let allowed = [
+            ("bar.rs", 1),
+            ("greeter/mod.rs", 2),
+            ("launcher.rs", 2),
+            ("panel/mod.rs", 1),
+            ("updates/popover.rs", 1),
+            ("updates/window.rs", 2),
+        ];
+        let allowed: BTreeMap<String, usize> =
+            allowed.into_iter().map(|(file, uses)| (source.join(file).display().to_string(), uses)).collect();
+        assert_eq!(found, allowed);
     }
 }

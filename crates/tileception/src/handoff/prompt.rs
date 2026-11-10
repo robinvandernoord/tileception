@@ -16,7 +16,7 @@ use crate::{
     Tileception,
     render::OutputElement,
     shapes::Shape,
-    ui::{Painter, Style, glyph},
+    ui::{Button, Painter, Style, glyph},
 };
 
 const BTN_LEFT: u32 = 0x110;
@@ -256,13 +256,7 @@ impl Tileception {
         }
         painter.glyph(glyph::CLOSE, layout.close, 13, if on_close { theme.text } else { theme.muted });
         if card == Card::Paused {
-            let hover = layout.resume.contains(point);
-            painter.fill(layout.resume, if hover { theme.accent_end } else { theme.accent }, 8.0);
-            painter.text(
-                "Resume",
-                layout.resume,
-                Style::new(theme.font_size, theme.on_accent).bold().align(crate::ui::Align::Centre),
-            );
+            painter.button(layout.resume, Button::primary("Resume"), layout.resume.contains(point));
         }
         painter.finish()
     }

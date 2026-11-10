@@ -1,5 +1,6 @@
 //! Tide, the look of Tileception: flat graphite surfaces, small radii and a
-//! teal to blue accent with a soft glow. Colours can be overridden in the
+//! teal accent with a soft glow, running to blue along thin lines and the
+//! focused window's border. Colours can be overridden in the
 //! `[theme]` section of the config.
 
 use serde::{Deserialize, Serialize};
@@ -189,6 +190,24 @@ impl Theme {
     /// Popups (launcher, notifications, menus) sit a step above tiles.
     pub fn popup(&self) -> Colour {
         self.surface.mix(self.surface_raised, 0.5)
+    }
+
+    /// The fill of a control that carries the accent, such as a switch that
+    /// is on or a badge: one hue, so small and large controls match.
+    pub fn accent_fill(&self) -> (Colour, Colour) {
+        (self.accent, self.accent)
+    }
+
+    /// The fill of a thin accent line, such as the shown tab's underline:
+    /// from the accent to its end colour.
+    pub fn accent_line(&self) -> (Colour, Colour) {
+        (self.accent, self.accent_end)
+    }
+
+    /// The fill behind the selected row of a list: the accent, fading out to
+    /// the right.
+    pub fn selected(&self) -> (Colour, Colour) {
+        (self.accent.alpha(0.18), self.accent.alpha(0.04))
     }
 
     /// A panel background: translucent when frosted.

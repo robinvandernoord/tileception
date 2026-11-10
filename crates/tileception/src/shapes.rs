@@ -1,6 +1,7 @@
 //! Rounded rectangles drawn by one small pixel shader: an optional gradient
-//! fill, a border, a soft outer glow, and a corner mask in the background
-//! colour that makes square client windows look rounded.
+//! fill, a line of light along the top, a border (which can be a gradient
+//! too), a soft outer glow, and a corner mask in the background colour that
+//! makes square client windows look rounded.
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -13,7 +14,7 @@ use smithay::{
 };
 use tileception_core::Rect;
 
-use crate::theme::Colour;
+use crate::theme::{Colour, Theme};
 
 const SHADER: &str = r#"
 precision mediump float;
@@ -28,6 +29,8 @@ uniform vec4 u_fill_a;
 uniform vec4 u_fill_b;
 uniform float u_border_w;
 uniform vec4 u_border;
+uniform vec4 u_border_b;
+uniform float u_highlight;
 uniform float u_glow_r;
 uniform vec4 u_glow;
 uniform vec4 u_mask;
@@ -47,6 +50,14 @@ void main() {
     float t = clamp(p.x / max(u_rect_size.x, 1.0), 0.0, 1.0);
     vec4 c = mix(u_fill_a, u_fill_b, t) * inside;
 
+    if (u_highlight > 0.0) {
+        // The pixels inside the shape whose neighbour above is outside it:
+        // a line of light that follows the top edge and its corners.
+        float above = rounded_box(p - vec2(0.0, 1.0) - half_size, half_size, u_radius);
+        float line = inside * (1.0 - clamp(0.5 - above, 0.0, 1.0)) * u_highlight;
+        c = vec4(line) + c * (1.0 - line);
+    }
+
     // The corners of the box outside the rounded shape, painted over the
     // window underneath so it looks rounded.
     float in_box = step(0.0, p.x) * step(0.0, p.y) * step(p.x, u_rect_size.x) * step(p.y, u_rect_size.y);
@@ -60,7 +71,8 @@ void main() {
     }
     if (u_border_w > 0.0) {
         float ring = inside - clamp(0.5 - (d + u_border_w), 0.0, 1.0);
-        c = u_border * ring + c * (1.0 - u_border.a * ring);
+        vec4 border = mix(u_border, u_border_b, t);
+        c = border * ring + c * (1.0 - border.a * ring);
     }
     gl_FragColor = c * alpha;
 }
@@ -74,6 +86,11 @@ pub struct Shape {
     pub fill: (Colour, Colour),
     pub border_width: f32,
     pub border: Colour,
+    /// The border's colour at the right, for one that runs left to right from
+    /// `border` to this.
+    pub border_end: Option<Colour>,
+    /// How bright the line of light along the top edge is; 0 for none.
+    pub highlight: f32,
     pub glow_radius: f32,
     pub glow: Colour,
     /// Painted in the corners outside the rounding, over what is underneath.
@@ -87,6 +104,8 @@ impl Default for Shape {
             fill: (Colour::TRANSPARENT, Colour::TRANSPARENT),
             border_width: 0.0,
             border: Colour::TRANSPARENT,
+            border_end: None,
+            highlight: 0.0,
             glow_radius: 0.0,
             glow: Colour::TRANSPARENT,
             corner_mask: Colour::TRANSPARENT,
@@ -97,6 +116,18 @@ impl Default for Shape {
 impl Shape {
     pub fn filled(colour: Colour, radius: f32) -> Shape {
         Shape { fill: (colour, colour), radius, ..Default::default() }
+    }
+
+    /// The chosen one among several, drawn like the focused window: `base`
+    /// tinted with the accent, an accent border and its glow.
+    pub fn halo(theme: &Theme, base: Colour, radius: f32) -> Shape {
+        Shape {
+            border_width: 1.0,
+            border: theme.accent,
+            glow_radius: theme.glow,
+            glow: theme.accent.alpha(0.27),
+            ..Shape::filled(base.mix(theme.accent, 0.16), radius)
+        }
     }
 }
 
@@ -111,7 +142,7 @@ pub struct Shapes {
 
 /// Where a shape is and how it looks, as exact bits: the same key draws the
 /// same pixels.
-type Key = ([i32; 4], [u32; 28]);
+type Key = ([i32; 4], [u32; 33]);
 
 /// The elements of the last frame and of this one. Each new element gets a
 /// new id, which the damage tracker takes for something that changed, so a
@@ -133,6 +164,8 @@ impl Shapes {
             ("u_fill_b", UniformType::_4f),
             ("u_border_w", UniformType::_1f),
             ("u_border", UniformType::_4f),
+            ("u_border_b", UniformType::_4f),
+            ("u_highlight", UniformType::_1f),
             ("u_glow_r", UniformType::_1f),
             ("u_glow", UniformType::_4f),
             ("u_mask", UniformType::_4f),
@@ -185,14 +218,17 @@ impl Shapes {
         let rgba = |colour: Colour| colour.0;
         let (size, fill_a, fill_b) = ((rect.w as f32, rect.h as f32), rgba(shape.fill.0), rgba(shape.fill.1));
         let (border, glow, mask) = (rgba(shape.border), rgba(shape.glow), rgba(shape.corner_mask));
-        let mut bits = [0u32; 28];
-        let floats = [size.0, size.1, offset.0, offset.1, radius, shape.border_width, shape.glow_radius, alpha]
-            .into_iter()
-            .chain(fill_a)
-            .chain(fill_b)
-            .chain(border)
-            .chain(glow)
-            .chain(mask);
+        let border_end = rgba(shape.border_end.unwrap_or(shape.border));
+        let mut bits = [0u32; 33];
+        let floats =
+            [size.0, size.1, offset.0, offset.1, radius, shape.border_width, shape.glow_radius, alpha, shape.highlight]
+                .into_iter()
+                .chain(fill_a)
+                .chain(fill_b)
+                .chain(border)
+                .chain(border_end)
+                .chain(glow)
+                .chain(mask);
         for (bit, float) in bits.iter_mut().zip(floats) {
             *bit = float.to_bits();
         }
@@ -206,6 +242,8 @@ impl Shapes {
                 Uniform::new("u_fill_b", fill_b),
                 Uniform::new("u_border_w", shape.border_width),
                 Uniform::new("u_border", border),
+                Uniform::new("u_border_b", border_end),
+                Uniform::new("u_highlight", shape.highlight),
                 Uniform::new("u_glow_r", shape.glow_radius),
                 Uniform::new("u_glow", glow),
                 Uniform::new("u_mask", mask),

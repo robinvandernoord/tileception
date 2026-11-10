@@ -35,7 +35,7 @@ use crate::{
     text::{RichImage, RichStyle, TextImage},
     text_input::TextInput,
     theme::Colour,
-    ui::{Align, Painter, Style, ease_out, glyph},
+    ui::{Align, Button, Look, Painter, Style, ease_out, glyph},
 };
 
 pub(crate) const PANEL_W: f64 = 480.0;
@@ -3140,26 +3140,14 @@ impl Tileception {
         if self.doctor.busy {
             // While answering, the button stops it.
             // Once asked, pressing it again restarts the agent.
-            let (fill, colour) = if self.doctor.stopping.is_some() {
-                (theme.warning.alpha(0.25), theme.warning)
-            } else {
-                (theme.surface_raised, theme.text)
-            };
-            painter.fill(frame.send, fill, theme.radius);
-            painter.glyph(glyph::STOP, frame.send, 14, colour);
+            let look = if self.doctor.stopping.is_some() { Look::Warning } else { Look::Plain };
+            painter.button(frame.send, Button::glyph(glyph::STOP, look), frame.send.contains(pointer));
         } else {
             let can_send = !input.text.trim().is_empty() || !self.doctor.attachments.is_empty();
-            if can_send {
-                painter.shape(
-                    frame.send,
-                    Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                );
-            }
-            painter.glyph(
-                glyph::ARROW_RIGHT,
+            painter.button(
                 frame.send,
-                16,
-                if can_send { theme.on_accent } else { theme.muted.alpha(0.6) },
+                Button::glyph(glyph::ARROW_RIGHT, Look::Primary).enabled(can_send),
+                frame.send.contains(pointer),
             );
         }
 
@@ -3342,7 +3330,7 @@ impl Tileception {
                 let shape = if *user {
                     Shape {
                         radius: theme.popup_radius,
-                        fill: (theme.accent.alpha(0.22), theme.accent_end.alpha(0.16)),
+                        fill: (theme.accent.alpha(0.18), theme.accent.alpha(0.18)),
                         ..Default::default()
                     }
                 } else {
@@ -3427,21 +3415,8 @@ impl Tileception {
                 }
             }
             Block::Button { rect, label, primary, .. } => {
-                let hover = rect.contains(pointer);
-                if *primary {
-                    painter.shape(
-                        *rect,
-                        Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                    );
-                } else {
-                    let fill = if hover { theme.surface_raised } else { theme.surface };
-                    painter.shape(
-                        *rect,
-                        Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, theme.radius) },
-                    );
-                }
-                let colour = if *primary { theme.on_accent } else { theme.text };
-                painter.text(label, *rect, Style::new(theme.font_size * 0.9, colour).bold().align(Align::Centre));
+                let look = if *primary { Look::Primary } else { Look::Plain };
+                painter.button(*rect, Button::new(label, look), rect.contains(pointer));
             }
             Block::Diff { rect, lines } => {
                 painter.shape(

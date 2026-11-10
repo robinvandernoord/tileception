@@ -9,7 +9,7 @@ use crate::{
     Tileception,
     bar::Zoom,
     shapes::Shape,
-    ui::{Align, Painter, PointerTarget, Style, glyph},
+    ui::{Align, Button, Look, Painter, PointerTarget, Style, glyph},
 };
 
 #[derive(Default)]
@@ -297,25 +297,12 @@ impl Tileception {
         let small = Style::new(theme.font_size * 0.84, theme.muted);
         let body = Style::new(theme.font_size * 0.92, theme.text);
         let button = |painter: &mut Painter, rect: Rect, label: &str, primary: bool, warning: bool| {
-            let hovered = rect.contains(pointer);
-            let shape = if primary {
-                Shape { fill: (theme.accent, theme.accent_end), ..Shape::filled(theme.accent, theme.radius) }
-            } else {
-                Shape {
-                    border_width: 1.0,
-                    border: theme.border,
-                    ..Shape::filled(if hovered { theme.border } else { theme.surface_raised }, theme.radius)
-                }
+            let look = match (primary, warning) {
+                (true, _) => Look::Primary,
+                (false, true) => Look::Warning,
+                (false, false) => Look::Plain,
             };
-            painter.shape(rect, shape);
-            let colour = if primary {
-                theme.on_accent
-            } else if warning {
-                theme.warning
-            } else {
-                theme.text
-            };
-            painter.text(label, rect, Style::new(theme.font_size * 0.88, colour).bold().align(Align::Centre));
+            painter.button(rect, Button::new(label, look), rect.contains(pointer));
         };
         for (rect, part) in &parts {
             let rect = *rect;

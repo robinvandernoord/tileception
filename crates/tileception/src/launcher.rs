@@ -2105,14 +2105,7 @@ impl Tileception {
     fn draw_entry(&self, painter: &mut Painter, entry: &Entry, row: Rect, selected: bool) {
         let theme = &self.theme;
         if selected {
-            painter.shape(
-                row,
-                Shape {
-                    radius: theme.radius,
-                    fill: (theme.accent.alpha(0.20), theme.accent_end.alpha(0.06)),
-                    ..Default::default()
-                },
-            );
+            painter.shape(row, Shape { radius: theme.radius, fill: theme.selected(), ..Default::default() });
             painter.shape(Rect::new(row.x, row.y + 12.0, 3.0, row.h - 24.0), Shape::filled(theme.accent, 1.5));
         }
         let icon = Rect::new(row.x + 14.0, row.y + (row.h - 32.0) / 2.0, 32.0, 32.0);
@@ -2393,7 +2386,7 @@ impl Tileception {
                 tile,
                 Shape {
                     radius: theme.radius,
-                    fill: (theme.accent.alpha(0.20), theme.accent_end.alpha(0.08)),
+                    fill: theme.selected(),
                     border_width: 1.0,
                     border: theme.accent.alpha(0.35),
                     ..Default::default()

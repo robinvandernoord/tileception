@@ -22,7 +22,7 @@ use crate::{
     config::Mods,
     shapes::Shape,
     text_input::TextInput,
-    ui::{Align, Painter, PointerTarget, Style, glyph},
+    ui::{Align, Button, Look, Painter, PointerTarget, Style, glyph},
 };
 use manager::{Event, Input, Link, Request, Security, Snapshot, Wifi};
 
@@ -879,18 +879,8 @@ impl Tileception {
     }
 
     fn draw_network_button(&self, painter: &mut Painter, rect: Rect, label: &str, primary: bool, hovered: bool) {
-        let theme = &self.theme;
-        if primary {
-            painter.shape(
-                rect,
-                Shape { radius: theme.radius, fill: (theme.accent, theme.accent_end), ..Default::default() },
-            );
-        } else {
-            let fill = if hovered { theme.surface_raised } else { theme.surface_raised.alpha(0.5) };
-            painter.shape(rect, Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, theme.radius) });
-        }
-        let colour = if primary { theme.on_accent } else { theme.text };
-        painter.text(label, rect, Style::new(theme.font_size * 0.82, colour).align(Align::Centre));
+        let look = if primary { Look::Primary } else { Look::Plain };
+        painter.button(rect, Button::new(label, look), hovered);
     }
 
     fn draw_network_prompt(&self, painter: &mut Painter, layout: &Card, prompt: &Prompt, pointer: Point) {

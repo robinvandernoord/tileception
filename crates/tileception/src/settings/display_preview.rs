@@ -215,15 +215,8 @@ impl Tileception {
         painter.text(&format!("Reverting in {seconds} seconds. Nothing is saved until Keep changes. Escape reverts and keeps your draft."), Rect::new(rect.x + 16., rect.y + 58., rect.w - 32., 72.), Style::new(12., theme.muted).lines(3));
         for (button, action, label) in self.display_confirmation_buttons() {
             let focused = preview.keep_focused == (action == Action::Keep);
-            painter.shape(
-                button,
-                Shape {
-                    border_width: 1.,
-                    border: if focused { theme.accent } else { theme.border },
-                    ..Shape::filled(theme.surface, 5.)
-                },
-            );
-            painter.text(label, button, Style::new(12., theme.text).align(Align::Centre));
+            let hover = button.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
+            painter.button(button, Button::plain(label).focused(focused), hover);
         }
     }
 }
