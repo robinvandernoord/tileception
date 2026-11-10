@@ -291,6 +291,16 @@ pub mod glyph {
             "bluetooth" => BLUETOOTH,
             "bell" => BELL,
             "lock" => LOCK,
+            "play" => PLAY,
+            "pause" => PAUSE,
+            "stop" => STOP,
+            "next" => NEXT,
+            "previous" => PREVIOUS,
+            "clock" => CLOCK,
+            "plus" => PLUS,
+            "minus" => MINUS,
+            "check" => CHECK,
+            "close" => CLOSE,
             _ => PLUG,
         })
     }

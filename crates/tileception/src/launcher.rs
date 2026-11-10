@@ -145,6 +145,8 @@ enum PointerAction {
     Search,
     Settings,
     Entry(Entry),
+    /// A control on a plugin's card under the launcher.
+    Card(String, crate::plugins::ActionKind),
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -163,6 +165,7 @@ impl crate::ui::PointerAction for PointerAction {
                     state.launch_selected(crate::config::Mods::default());
                 }
             }
+            Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
         }
     }
 }
@@ -1136,6 +1139,20 @@ impl Tileception {
         }
     }
 
+    /// Does what a card under the launcher asks. A tool runs like the
+    /// panel's, so the typed search and its results stay as they are.
+    fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
+        match action {
+            crate::plugins::ActionKind::Tool { name, arguments } => {
+                if let Some(plugins) = &self.plugins {
+                    plugins.tool(crate::plugins::Place::Panel, plugin.into(), name, arguments);
+                }
+            }
+            action => self.launcher_action(None, action),
+        }
+        self.schedule_render();
+    }
+
     /// Built-in answers and places share clipboard/open dispatch with plugins.
     fn launcher_action(&mut self, plugin: Option<String>, action: crate::plugins::ActionKind) {
         use crate::plugins::ActionKind;
@@ -1414,15 +1431,27 @@ impl Tileception {
         });
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
-        let media = self
-            .media
-            .snapshot
-            .media
-            .active()
-            .is_some()
+        // Under the panel: what is playing, then the plugins' cards, as far
+        // as the screen has room for them.
+        let lowest = screen.bottom() - 8.0;
+        let playing = self.media.snapshot.media.active().is_some();
+        let media = playing
             .then(|| crate::controls::media_card_layout(panel.x, panel.bottom() + 12.0, panel.w))
-            .filter(|card| card.rect.bottom() <= screen.bottom() - 8.0);
-        LauncherLayout { panel, field, text, caption, rows, first, output, footer, media }
+            .filter(|card| card.rect.bottom() <= lowest);
+        let mut cards = Vec::new();
+        if media.is_some() || !playing {
+            let mut top = media.as_ref().map_or(panel.bottom() + 12.0, |card| card.rect.bottom() + CARD_GAP);
+            let offered = self.plugins.as_ref().map(crate::plugins::Host::launcher_cards).unwrap_or_default();
+            for (plugin, card) in offered {
+                let laid = crate::panel::card_layout(card, panel.x, top, panel.w);
+                if laid.rect.bottom() > lowest {
+                    break;
+                }
+                top = laid.rect.bottom() + CARD_GAP;
+                cards.push((plugin.to_string(), card.clone(), laid));
+            }
+        }
+        LauncherLayout { panel, field, text, caption, rows, first, output, footer, media, cards }
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -1433,8 +1462,7 @@ impl Tileception {
     /// Whether the welcome screen takes the pointer here. Elsewhere the
     /// desktop (bars, the notification panel) gets it as usual.
     pub fn home_contains(&self, point: Point) -> bool {
-        let layout = self.launcher_layout();
-        layout.panel.contains(point) || layout.media.is_some_and(|card| card.rect.contains(point))
+        self.launcher_layout().covers(point)
     }
 
     pub fn launcher_at(&self, point: Point) -> Option<usize> {
@@ -1460,6 +1488,12 @@ impl Tileception {
         {
             return Some(target);
         }
+        for (plugin, card, laid) in &layout.cards {
+            if laid.rect.contains(point) {
+                let (rect, action) = crate::panel::card_action_at(card, laid, point)?;
+                return Some(crate::ui::PointerTarget::button(rect, PointerAction::Card(plugin.clone(), action)));
+            }
+        }
         if self.launcher.plugin_pending {
             return None;
         }
@@ -1483,7 +1517,8 @@ impl Tileception {
         let layout = self.launcher_layout();
         if let Some(target) = self.launcher_pointer_target(point) {
             target.activate(self, point);
-        } else if !layout.panel.contains(point) && !self.launcher.home {
+        } else if !layout.covers(point) && !self.launcher.home {
+            // A click beside a card's button is a miss, not a way out.
             self.close_launcher();
         }
     }
@@ -1756,6 +1791,11 @@ impl Tileception {
             painter.popup(card.rect);
             let pointer = Point::new(self.pointer.x, self.pointer.y);
             self.draw_media_card(&mut painter, card, player, pointer);
+        }
+        for (_, card, laid) in &layout.cards {
+            painter.popup(laid.rect);
+            let pointer = Point::new(self.pointer.x, self.pointer.y);
+            self.draw_plugin_card(&mut painter, card, laid, pointer, theme.surface);
         }
         painter.finish()
     }
@@ -2337,6 +2377,8 @@ const FIELD_H: f64 = 52.0;
 const CAPTION_H: f64 = 32.0;
 const ROW_H: f64 = 54.0;
 const FOOTER_H: f64 = 44.0;
+/// Between the cards under the launcher.
+const CARD_GAP: f64 = 8.0;
 /// Rows of results at most, besides "Ask Tileception".
 const MAX_ROWS: usize = 8;
 /// Tiles per row on the welcome screen.
@@ -2360,6 +2402,8 @@ struct LauncherLayout {
     panel: Rect,
     /// What is playing, under the launcher.
     media: Option<crate::controls::MediaCard>,
+    /// The plugins' cards under that: whose, the card and where it goes.
+    cards: Vec<(String, crate::panel::block::Card, crate::panel::CardLayout)>,
     field: Rect,
     /// Where the typed text goes inside the field.
     text: Rect,
@@ -2370,6 +2414,15 @@ struct LauncherLayout {
     /// A `>` command's output, under its row.
     output: Option<Rect>,
     footer: Rect,
+}
+
+impl LauncherLayout {
+    /// Whether the point is on the panel or on a card under it.
+    fn covers(&self, point: Point) -> bool {
+        self.panel.contains(point)
+            || self.media.as_ref().is_some_and(|card| card.rect.contains(point))
+            || self.cards.iter().any(|(_, _, laid)| laid.rect.contains(point))
+    }
 }
 
 fn launcher_settings_button(footer: Rect) -> Rect {
