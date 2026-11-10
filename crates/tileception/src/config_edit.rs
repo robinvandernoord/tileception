@@ -170,7 +170,8 @@ pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, Strin
         if !edited.is_empty() {
             return Err(format!("Edit only {key} here; use the full-file editor for other settings."));
         }
-        if let Some(item) = item {
+        if let Some(mut item) = item {
+            keep_place(&mut item, doc.get(section).and_then(|item| item.get(name)));
             table(&mut doc, section)?[name] = item;
         } else {
             table(&mut doc, section)?.remove(name);
@@ -180,7 +181,8 @@ pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, Strin
         if !edited.is_empty() {
             return Err(format!("Edit only {key} here; use the full-file editor for other settings."));
         }
-        if let Some(item) = item {
+        if let Some(mut item) = item {
+            keep_place(&mut item, doc.get(key));
             doc[key] = item;
         } else {
             doc.remove(key);
@@ -192,6 +194,32 @@ pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, Strin
     }
     crate::config::Config::parse(&doc.to_string())?;
     Ok(doc.to_string())
+}
+
+/// Gives the tables of an edited item the place in the file their
+/// counterparts in `old` have. The edited item was parsed from an excerpt, so
+/// its tables carry positions in that excerpt; printed as they are, the
+/// section would move to the top of the file. A table without a counterpart
+/// follows the one before it.
+fn keep_place(item: &mut Item, old: Option<&Item>) {
+    fn table(edited: &mut toml_edit::Table, old: Option<&toml_edit::Table>, fallback: Option<isize>) {
+        edited.set_position(old.and_then(toml_edit::Table::position).or(fallback));
+        for (key, child) in edited.iter_mut() {
+            keep_place(child, old.and_then(|old| old.get(key.get())));
+        }
+    }
+    match item {
+        Item::Table(edited) => table(edited, old.and_then(Item::as_table), None),
+        Item::ArrayOfTables(edited) => {
+            let old = old.and_then(Item::as_array_of_tables);
+            // Entries beyond the old ones stay with the last of them.
+            let last = old.and_then(|old| old.iter().last()).and_then(toml_edit::Table::position);
+            for (index, entry) in edited.iter_mut().enumerate() {
+                table(entry, old.and_then(|old| old.get(index)), last);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A list written one entry per line stays that way when Settings changes it.
@@ -416,6 +444,28 @@ mod tests {
 
     fn doc(text: &str) -> DocumentMut {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn splicing_a_section_keeps_the_file_in_order() {
+        let base = "[general]\ngap = 12\n\n[[rules]]\napp_id = \"a\"\n\n[theme]\naccent = \"#ffffff\"\n\n\
+                    [[rules]]\napp_id = \"b\"\n\n# Keys.\n[binds]\n\"Super+T\" = \"terminal\"\n\n[idle]\nlock_after = 0\n";
+        // Unchanged excerpts go back where they came from.
+        for key in ["binds", "rules", "theme"] {
+            let excerpt = section_text(base, key).unwrap();
+            assert_eq!(splice_section(base, key, &excerpt).unwrap(), base, "{key}");
+        }
+        // One changed value changes one line.
+        let excerpt = section_text(base, "binds").unwrap().replace("terminal", "launcher");
+        assert_eq!(splice_section(base, "binds", &excerpt).unwrap(), base.replace("terminal", "launcher"));
+        // A new entry follows the last of its kind; a new section ends the file.
+        let excerpt = format!("{}\n[[rules]]\napp_id = \"z\"\n", section_text(base, "rules").unwrap());
+        let more = base.replace("# Keys.", "[[rules]]\napp_id = \"z\"\n\n# Keys.");
+        assert_eq!(splice_section(base, "rules", &excerpt).unwrap(), more);
+        let added = splice_section(base, "touchpad", "[touchpad]\nnatural_scroll = true\n").unwrap();
+        assert_eq!(added, format!("{base}[touchpad]\nnatural_scroll = true\n"));
+        let excerpt = section_text(base, "rules").unwrap().replace("\"b\"", "\"c\"");
+        assert_eq!(splice_section(base, "rules", &excerpt).unwrap(), base.replace("\"b\"", "\"c\""));
     }
 
     #[test]

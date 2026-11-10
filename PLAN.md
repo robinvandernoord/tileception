@@ -126,7 +126,6 @@ Report testing in the conversation, the commit or the pull request instead.
     writes that exception, so opting in needs no config editing.
   - No buttons on the lock screen (they would run an app's action without
     unlocking), except Tileception's own. Do not disturb applies there too.
-- Better unit conversions in the launcher.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.

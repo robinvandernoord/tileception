@@ -144,8 +144,6 @@ pub struct Handoff {
     pub(crate) held: Held,
     pub(crate) prompt: prompt::Prompt,
     pub(crate) clipboard: clipboard::Clipboard,
-    /// Whether sharing has been paused for a lock that has not been resumed.
-    locked: bool,
     /// Windows shown on other machines, and theirs shown here.
     pub(crate) windows: windows::Windows,
     /// Machines that know the passphrase but run another protocol, by name.
@@ -440,6 +438,7 @@ impl Tileception {
     }
 
     fn handoff_message(&mut self, peer: PeerId, message: Message) {
+        let session_locked = self.is_locked();
         let Some(entry) = self.handoff.peers.get_mut(&peer) else { return };
         match message {
             Message::Arranged => match &mut entry.link {
@@ -473,7 +472,11 @@ impl Tileception {
                 self.pause_streams(Some(peer));
             }
             Message::Resumed => {
-                if self.handoff.locked {
+                // Still paused from here: locked now, or locked before and
+                // not yet resumed for this machine. A lock that paused
+                // nobody leaves nothing to wait for.
+                let ours = matches!(entry.link, Link::Linked { paused: Some(Pause::Ours), .. });
+                if session_locked || ours {
                     self.handoff.send(peer, Message::Paused);
                 } else if let Link::Linked { paused, .. } = &mut entry.link {
                     *paused = None;
@@ -580,12 +583,10 @@ impl Tileception {
 
     /// Called whenever the session locks or unlocks.
     pub fn handoff_lock_changed(&mut self) {
-        let locked = self.is_locked();
-        if !locked || self.handoff.locked {
+        if !self.is_locked() {
             // Unlocking leaves sharing paused; the card offers to resume.
             return;
         }
-        self.handoff.locked = true;
         if self.handoff.forwarding.is_some() {
             self.stop_forwarding(forward::Back::Home);
         }
@@ -606,7 +607,6 @@ impl Tileception {
         if self.is_locked() {
             return Err("the session is locked".into());
         }
-        self.handoff.locked = false;
         let mut resumed = false;
         for (peer, entry) in &mut self.handoff.peers {
             if let Link::Linked { paused: paused @ Some(Pause::Ours), .. } = &mut entry.link {

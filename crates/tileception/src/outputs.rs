@@ -884,6 +884,9 @@ impl Tileception {
         if self.fullscreen.is_some() || pos.y < areas.usable.y || pos.y >= areas.usable.bottom() {
             return None;
         }
+        if self.float_covers(tileception_core::Point::new(pos.x, pos.y)) {
+            return None;
+        }
         let reach = self.world.settings.gap / 2.0 + 4.0;
         (0..areas.shares.len() - 1).find(|index| {
             let edge = slice(areas.usable, &areas.shares, index + 1).x;
