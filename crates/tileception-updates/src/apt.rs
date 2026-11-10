@@ -1,7 +1,7 @@
 //! Pending updates, read from an `apt-get` simulation, and the commands that
 //! install them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
 use crate::{Files, Runner};
@@ -168,6 +168,15 @@ pub fn upgrade_args(names: &[String]) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+/// The packages among `names` to mark as automatically installed again after
+/// `apt-get install` named them, which marks each as installed by hand:
+/// those `apt-mark showmanual` does not list. Otherwise ticking an update
+/// would keep a dependency out of every later `autoremove`.
+pub fn automatic(names: &[String], manual: &str) -> Vec<String> {
+    let manual: HashSet<&str> = manual.lines().map(str::trim).collect();
+    names.iter().filter(|name| !manual.contains(name.as_str())).cloned().collect()
+}
+
 /// `apt-get` arguments that install packages not installed yet.
 pub fn install_args(names: &[String]) -> Result<Vec<String>, String> {
     checked(names)?;
@@ -324,6 +333,12 @@ Inst tileception [0.12.0] (0.13.0 apt.tileception.space:stable [amd64])
         );
         assert!(transaction_args(&[], &[], false, true).is_err());
         assert!(transaction_args(&[], &["-oops".into()], false, true).is_err());
+    }
+
+    #[test]
+    fn dependencies_stay_automatic() {
+        let names = ["libssl3t64".to_string(), "firefox".to_string(), "linux-image-6.8.0-50-generic".to_string()];
+        assert_eq!(automatic(&names, "firefox\nvim\n"), ["libssl3t64", "linux-image-6.8.0-50-generic"]);
     }
 
     #[test]
