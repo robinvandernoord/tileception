@@ -197,6 +197,9 @@ pub struct Tileception {
     pub plugins: Option<crate::plugins::Host>,
     pub settings: crate::settings::Settings,
     pub(crate) ui_pressed: Option<crate::ui::PointerTarget>,
+    /// A middle click pasted into one of the compositor's own fields: its
+    /// release is not for anything else.
+    pub(crate) middle_pasted: bool,
     /// Line icons for the compositor's own interface.
     pub glyphs: crate::ui::Glyphs,
     pub notifications: crate::notifications::Notifications,
@@ -386,6 +389,7 @@ impl Tileception {
             plugins: None,
             settings: Default::default(),
             ui_pressed: None,
+            middle_pasted: false,
             glyphs: Default::default(),
             notifications: Default::default(),
             media: Default::default(),

@@ -445,25 +445,27 @@ impl Tileception {
         let Some(field) = self.settings.network.typing else { return false };
         let Some(network) = &frame.network else { return false };
         let Some(rect) = (if field == 0 { network.name } else { network.password }) else { return false };
-        let (shown, cursor, _) = self.settings_network_shown(field);
-        let position = self.text.borrow_mut().field_hit(
-            &shown,
+        let width = (rect.w - if field == 0 { 20. } else { 76. }) as f32;
+        let page = &mut self.settings.network;
+        // A hidden password stays on the page.
+        page.password.hidden = !page.reveal;
+        let input = if field == 0 { &mut page.name } else { &mut page.password };
+        input.click_masked(
+            &mut self.text.borrow_mut(),
+            "\u{2022}",
             &self.theme.font,
             12.,
-            (rect.w - if field == 0 { 20. } else { 76. }) as f32,
-            cursor,
+            width,
             (point.x - rect.x - 10.).max(0.) as f32,
+            extend,
         );
-        let page = &mut self.settings.network;
-        let input = if field == 0 { &mut page.name } else { &mut page.password };
-        let position = if field == 0 || page.reveal {
-            position
-        } else {
-            let characters = shown[..position.min(shown.len())].chars().count();
-            input.text.char_indices().nth(characters).map_or(input.text.len(), |(offset, _)| offset)
-        };
-        input.move_to(position, extend);
         true
+    }
+
+    /// What is selected in the field that has the keyboard, for a middle click.
+    pub(super) fn settings_network_selected_text(&self) -> Option<String> {
+        let page = &self.settings.network;
+        if page.typing? == 0 { page.name.selected_text() } else { page.password.selected_text() }
     }
 
     pub(super) fn settings_draw_network_page(&self, painter: &mut Painter<'_>, frame: &NetworkFrame, pointer: Point) {

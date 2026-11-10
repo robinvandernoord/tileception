@@ -105,6 +105,15 @@ enum Hit {
 }
 
 impl crate::ui::PointerAction for Hit {
+    fn middle_click(&self, state: &mut Tileception, rect: Rect, point: Point) -> bool {
+        if *self != Hit::Field {
+            return false;
+        }
+        state.network_caret(rect, point);
+        state.paste_primary(crate::launcher::Paste::Network);
+        true
+    }
+
     fn activate(&self, state: &mut Tileception, rect: Rect, point: Point) {
         match self {
             Hit::Switch => state.network_set_wifi(None),
@@ -523,22 +532,19 @@ impl Tileception {
     /// Places the caret where the password field was clicked.
     fn network_caret(&mut self, field: Rect, point: Point) {
         let Some(prompt) = &mut self.network.prompt else { return };
-        let (shown, cursor) = shown(prompt);
-        let position = self.text.borrow_mut().field_hit(
-            &shown,
+        // A hidden password stays on the card.
+        prompt.input.hidden = !prompt.reveal;
+        prompt.input.click_masked(
+            &mut self.text.borrow_mut(),
+            "\u{2022}",
             &self.theme.font,
             self.theme.font_size * 0.92,
             (field.w - 70.0) as f32,
-            cursor,
             (point.x - field.x - 10.0).max(0.0) as f32,
+            false,
         );
-        let position = if prompt.reveal {
-            position
-        } else {
-            let characters = shown[..position.min(shown.len())].chars().count();
-            prompt.input.text.char_indices().nth(characters).map_or(prompt.input.text.len(), |(offset, _)| offset)
-        };
-        prompt.input.move_to(position, false);
+        let selected = prompt.input.selected_text();
+        self.offer_primary(selected);
     }
 
     /// Scrolling over the open card, in wheel notches (positive is down).

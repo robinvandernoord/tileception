@@ -14,9 +14,10 @@ enum PointerAction {
 }
 
 impl crate::ui::PointerAction for PointerAction {
-    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
         match self {
-            Self::Text => state.settings_editor_caret(point, false),
+            // The press that got here places the caret, as `settings_text_caret`.
+            Self::Text => {}
             Self::Cancel => state.settings_editor_key(keysyms::KEY_Escape, Mods::default()),
             Self::Apply => state.finish_settings_editor(true),
         }
@@ -123,8 +124,7 @@ impl Tileception {
             Ok(text) => {
                 self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
                 let original = text.clone();
-                let mut input = TextInput::new(text).multiline(LIMIT).read_only(reference);
-                input.move_to(0, false);
+                let input = TextInput::new(text).multiline(LIMIT).code().read_only(reference).at_start();
                 self.settings.editor = Some(Editor {
                     original,
                     input,
@@ -229,8 +229,13 @@ impl Tileception {
             0,
             (point.x - area.x - 48.).max(0.) as f32,
         );
-        editor.input.move_to(offset + hidden + byte, extend);
+        editor.input.press(offset + hidden + byte, extend);
         self.schedule_render();
+    }
+
+    /// What is selected in the editor, for a middle click.
+    pub(super) fn settings_editor_selected_text(&self) -> Option<String> {
+        self.settings.editor.as_ref()?.input.selected_text()
     }
 
     pub fn settings_insert_paste(&mut self, epoch: u64, text: &str) {
@@ -274,6 +279,8 @@ impl Tileception {
     }
 
     pub(super) fn settings_editor_key(&mut self, sym: u32, mods: Mods) {
+        // The keypad's arrows move between lines too.
+        let sym = crate::text_input::plain(sym);
         if sym == keysyms::KEY_Escape {
             if let Some(editor) = self.settings.editor.take()
                 && !editor.reference
@@ -318,11 +325,6 @@ impl Tileception {
                 let offset: usize = lines.iter().take(next).map(|line| line.len() + 1).sum();
                 let byte = lines[next].char_indices().nth(column).map_or(lines[next].len(), |(byte, _)| byte);
                 editor.input.move_to(offset + byte, mods.shift);
-            }
-            keysyms::KEY_Tab if !editor.reference => {
-                if editor.input.insert("    ") {
-                    editor.changed();
-                }
             }
             _ => {
                 let key = editor.input.key(&mut self.settings.compose, sym, mods);

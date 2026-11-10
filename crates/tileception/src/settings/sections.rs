@@ -89,36 +89,57 @@ struct Menu {
 }
 
 impl Tileception {
+    /// Places the caret in the field that was pressed: a picker's filter,
+    /// the search, or the value being edited. `extend` selects.
     pub(super) fn section_text_caret(&mut self, point: Point, extend: bool) {
         let layout = self.section_layout();
+        let menu = self.section_menu_rect(&layout);
         let Some(screen) = self.settings.section.as_mut() else { return };
-        let Some((field, input)) = &mut screen.edit else { return };
-        let Some((rect, _)) =
-            layout.fields.iter().find(|(_, candidate)| candidate.path == field.path && candidate.label == field.label)
-        else {
-            return;
-        };
-        let secret = matches!(field.form, Form::Secret) && !screen.reveal;
-        let shown = if secret { "•".repeat(input.text.chars().count()) } else { input.text.clone() };
-        let cursor = if secret { input.text[..input.cursor].chars().count() * "•".len() } else { input.cursor };
-        let position = self.text.borrow_mut().field_hit(
-            &shown,
-            &self.theme.font,
-            11.,
-            (rect.w - 20.) as f32,
-            cursor,
-            (point.x - rect.x - 10.).max(0.) as f32,
-        );
-        let position = if secret {
-            input
-                .text
-                .char_indices()
-                .nth(shown[..position].chars().count())
-                .map_or(input.text.len(), |(offset, _)| offset)
-        } else {
-            position
-        };
-        input.move_to(position, extend);
+        let mut text = self.text.borrow_mut();
+        let font = &self.theme.font;
+        // As each is drawn in `section_draw`.
+        if let Some(open) = screen.menu.as_mut() {
+            if open.picker {
+                let search = Rect::new(menu.x + 8., menu.y + 7., menu.w - 16., 30.);
+                let x_pos = (point.x - search.x - 32.).max(0.) as f32;
+                open.filter.click(&mut text, font, 12., (search.w - 44.) as f32, x_pos, extend);
+            }
+        } else if screen.searching {
+            let Some((rect, _)) = layout.hits.iter().find(|(_, action)| *action == Action::Search) else { return };
+            let x_pos = (point.x - rect.x - 10.).max(0.) as f32;
+            screen.search.click(&mut text, font, 11., (rect.w - 20.) as f32, x_pos, extend);
+        } else if let Some((field, input)) = &mut screen.edit {
+            let Some((rect, _)) = layout
+                .fields
+                .iter()
+                .find(|(_, candidate)| candidate.path == field.path && candidate.label == field.label)
+            else {
+                return;
+            };
+            let width = rect.w - draw::field_extra(field, screen.kind) - 24.;
+            // A secret stays masked until it is revealed.
+            input.hidden = matches!(field.form, Form::Secret) && !screen.reveal;
+            input.click_masked(
+                &mut text,
+                "*",
+                font,
+                12.,
+                width as f32,
+                (point.x - rect.x - 12.).max(0.) as f32,
+                extend,
+            );
+        }
+    }
+
+    /// What is selected in the field the pointer was in, for a middle click.
+    pub(super) fn section_selected_text(&self) -> Option<String> {
+        let screen = self.settings.section.as_ref()?;
+        match (&screen.menu, &screen.edit) {
+            (Some(menu), _) => menu.filter.selected_text(),
+            (None, _) if screen.searching => screen.search.selected_text(),
+            (None, Some((_, input))) => input.selected_text(),
+            (None, None) => None,
+        }
     }
 
     pub(super) fn section_pointer_target(&self, point: Point) -> Option<interaction::Target> {
@@ -368,6 +389,19 @@ impl Tileception {
                     smithay::reexports::calloop::timer::TimeoutAction::Drop
                 },
             );
+            self.schedule_render();
+            return;
+        }
+        // A press in the value being edited only places the caret there:
+        // the edit goes on, with what it can undo.
+        if let Action::Field(index) = action
+            && let Some(screen) = self.settings.section.as_ref()
+            && let Some((editing, _)) = &screen.edit
+            && screen
+                .fields(&self.section_outputs(), &self.touch.devices)
+                .get(index)
+                .is_some_and(|field| field.path == editing.path && field.label == editing.label)
+        {
             self.schedule_render();
             return;
         }

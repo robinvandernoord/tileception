@@ -452,6 +452,37 @@ impl Tileception {
         }
     }
 
+    /// Places the caret in the Access ID or Access Secret that was pressed;
+    /// `extend` selects. Returns whether the form's field took it.
+    pub(super) fn settings_connect_caret(&mut self, point: Point, extend: bool) -> bool {
+        let Some(layout) = self.connect_layout() else { return false };
+        let Some(form) = self.settings.connect.as_mut().filter(|form| form.active && form.job.is_none()) else {
+            return false;
+        };
+        let Some(rect) =
+            layout.fields.get(form.focus).filter(|rect| form.focus < 2 && (extend || rect.contains(point)))
+        else {
+            return false;
+        };
+        // As drawn in `settings_draw_connect`.
+        let (width, x_pos) = ((rect.w - 24.) as f32, (point.x - rect.x - 12.).max(0.) as f32);
+        let mut text = self.text.borrow_mut();
+        if form.focus == 0 {
+            form.client_id.click(&mut text, &self.theme.font, 12., width, x_pos, extend);
+        } else {
+            // One mask character for each of the secret's.
+            let mask = "*".repeat(form.secret.chars());
+            let character = text.field_hit(&mask, &self.theme.font, 12., width, form.secret.caret().0, x_pos);
+            form.secret.press(character, extend);
+        }
+        true
+    }
+
+    /// What is selected in the Access ID, for a middle click: never the secret.
+    pub(super) fn settings_connect_selected_text(&self) -> Option<String> {
+        self.settings.connect.as_ref().filter(|form| form.active && form.focus == 0)?.client_id.selected_text()
+    }
+
     pub(super) fn settings_connect_paste(&mut self, text: &str) {
         if let Some(form) = self.settings.connect.as_mut().filter(|form| form.job.is_none()) {
             if form.focus == 1 {

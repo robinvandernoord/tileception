@@ -370,16 +370,60 @@ impl Tileception {
         }
     }
 
-    pub(super) fn prompt_activate(&mut self, target: Target) {
+    pub(super) fn prompt_activate(&mut self, target: Target, point: Point) {
         match target {
             Target::Field(index) => {
                 if let Some(view) = self.launcher.prompt.as_mut().filter(|view| view.pending.is_none()) {
                     view.focus = index.min(view.inputs.len().saturating_sub(1));
-                    self.launcher.edited = std::time::Instant::now();
+                    // The press places the caret, and a drag on from it selects.
+                    let extend = self.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
+                    self.launcher.selecting = true;
+                    self.prompt_caret(point, extend);
                 }
             }
             Target::Submit => self.prompt_submit(),
             Target::Alternate => self.prompt_alternate(),
+        }
+    }
+
+    /// Gives a field the keyboard, unless the prompt is busy. Returns where
+    /// a paste for it goes.
+    pub(super) fn prompt_focus(&mut self, index: usize) -> Option<super::Paste> {
+        let view = self.launcher.prompt.as_mut().filter(|view| view.pending.is_none())?;
+        view.focus = index.min(view.inputs.len().saturating_sub(1));
+        Some(super::Paste::Prompt(view.serial, view.focus))
+    }
+
+    /// Places the caret where the field that has the keyboard was pressed;
+    /// `extend` selects.
+    pub(super) fn prompt_caret(&mut self, point: Point, extend: bool) {
+        let Some(area) = self.launcher_layout().prompt else { return };
+        let Some(view) = self.launcher.prompt.as_mut().filter(|view| view.pending.is_none()) else { return };
+        let Some((_, rect)) = prompt_layout(view, area).fields.get(view.focus).copied() else { return };
+        // As drawn in `draw_prompt`.
+        let (font, size) = (&self.theme.font, self.theme.font_size);
+        let (width, x_pos) = ((rect.w - 24.0) as f32, (point.x - rect.x - 12.0).max(0.0) as f32);
+        let mut text = self.text.borrow_mut();
+        match view.inputs.get_mut(view.focus) {
+            Some(Input::Text(input)) => input.click(&mut text, font, size, width, x_pos, extend),
+            Some(Input::Secret(secret)) => {
+                // One mask character for each of the secret's.
+                let mask = "*".repeat(secret.chars());
+                let character = text.field_hit(&mask, font, size, width, secret.caret().0, x_pos);
+                secret.press(character, extend);
+            }
+            None => {}
+        }
+        self.launcher.edited = std::time::Instant::now();
+    }
+
+    /// What is selected in the field that has the keyboard, for a middle
+    /// click: never of a secret.
+    pub(super) fn prompt_selected_text(&self) -> Option<String> {
+        let view = self.launcher.prompt.as_ref()?;
+        match view.inputs.get(view.focus)? {
+            Input::Text(input) => input.selected_text(),
+            Input::Secret(_) => None,
         }
     }
 

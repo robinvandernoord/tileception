@@ -27,6 +27,10 @@ use smithay::wayland::selection::{
         SelectionRequestError, current_data_device_selection_userdata, request_data_device_client_selection,
         set_data_device_selection,
     },
+    primary_selection::{
+        SelectionRequestError as PrimaryRequestError, current_primary_selection_userdata,
+        request_primary_client_selection, set_primary_selection,
+    },
 };
 
 use crate::{
@@ -214,9 +218,23 @@ impl crate::ui::PointerAction for PointerAction {
                     state.launch_selected(crate::config::Mods::default());
                 }
             }
-            Self::Prompt(target) => state.prompt_activate(*target),
+            Self::Prompt(target) => state.prompt_activate(*target, point),
             Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
         }
+    }
+
+    fn middle_click(&self, state: &mut Tileception, _rect: Rect, point: Point) -> bool {
+        let target = match self {
+            Self::Search => Paste::Launcher(state.launcher.epoch),
+            Self::Prompt(prompt::Target::Field(index)) => {
+                let Some(target) = state.prompt_focus(*index) else { return false };
+                target
+            }
+            _ => return false,
+        };
+        state.launcher_cursor_at(point, false);
+        state.paste_primary(target);
+        true
     }
 }
 
@@ -489,12 +507,38 @@ impl Tileception {
     }
 
     /// Does what a key in a text field asked of the clipboard: copies what
-    /// it cut or copied, or fetches a paste for `target`.
-    pub(crate) fn field_clipboard(&mut self, clipboard: Option<crate::text_input::Clipboard>, target: Paste) {
-        match clipboard {
-            Some(crate::text_input::Clipboard::Copy(text)) => self.copy_text(text),
-            Some(crate::text_input::Clipboard::Paste) => self.paste(target),
-            None => {}
+    /// it cut or copied, fetches a paste for `target`, and offers what it
+    /// selected to a middle click.
+    pub(crate) fn field_clipboard(&mut self, clipboard: crate::text_input::Clipboard, target: Paste) {
+        if let Some(text) = clipboard.copy {
+            self.copy_text(text);
+        }
+        if clipboard.paste {
+            self.paste(target);
+        }
+        self.offer_primary(clipboard.selected);
+    }
+
+    /// Makes text selected in a field the primary selection, which a middle
+    /// click pastes, here and in programs. `None` (nothing selected, or
+    /// nothing that may leave its field) keeps what was offered before.
+    pub(crate) fn offer_primary(&mut self, text: Option<String>) {
+        let Some(text) = text else { return };
+        let mime_types = vec!["text/plain;charset=utf-8".to_string(), "text/plain".to_string()];
+        // While a field's text is the selection already, only what it holds
+        // changes: programs and linked machines fetch it when they paste, so
+        // a growing selection is not announced again at every step.
+        let ours =
+            current_primary_selection_userdata(&self.seat).is_some_and(|data| matches!(*data, Some(Clip::Text(_))));
+        set_primary_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
+        if ours {
+            return;
+        }
+        self.selection_offered(SelectionTarget::Primary, Some(mime_types.clone()));
+        if let Some(xwm) = self.xwm.as_mut()
+            && let Err(error) = xwm.new_selection(SelectionTarget::Primary, Some(mime_types))
+        {
+            tracing::warn!("could not offer the selected text to X11: {error:?}");
         }
     }
 
@@ -998,8 +1042,7 @@ impl Tileception {
             // Tab completes a path; otherwise it moves like the arrows.
             keysyms::KEY_Tab if !mods.shift && self.selected_completion().is_some() => {
                 if let Some(completion) = self.selected_completion() {
-                    self.launcher.input.clear();
-                    self.launcher.input.insert(&completion);
+                    self.launcher.input.set(&completion);
                 }
             }
             keysyms::KEY_Up | keysyms::KEY_ISO_Left_Tab => self.launcher_step(-1),
@@ -1023,8 +1066,22 @@ impl Tileception {
     /// Pastes the clipboard's text into the launcher's or the doctor's
     /// field, or a picture into the doctor's next message.
     pub fn paste(&mut self, target: Paste) {
+        self.paste_from(target, SelectionTarget::Clipboard);
+    }
+
+    /// Pastes the primary selection, what was last selected anywhere, as a
+    /// middle click does.
+    pub(crate) fn paste_primary(&mut self, target: Paste) {
+        self.paste_from(target, SelectionTarget::Primary);
+    }
+
+    fn paste_from(&mut self, target: Paste, selection: SelectionTarget) {
         use std::os::unix::net::UnixStream;
-        let owned = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+        let owned = match selection {
+            SelectionTarget::Clipboard => current_data_device_selection_userdata(&self.seat),
+            SelectionTarget::Primary => current_primary_selection_userdata(&self.seat),
+        }
+        .and_then(|data| data.clone());
         if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
             self.insert_paste(target, clip.clone());
             return;
@@ -1063,7 +1120,18 @@ impl Tileception {
         for mime_type in mime_types {
             wanted = mime_type;
             let Ok(pipe) = writer.try_clone() else { return };
-            match request_data_device_client_selection(&self.seat, mime_type.into(), pipe.into()) {
+            let request = match selection {
+                SelectionTarget::Clipboard => {
+                    request_data_device_client_selection(&self.seat, mime_type.into(), pipe.into())
+                }
+                SelectionTarget::Primary => request_primary_client_selection(&self.seat, mime_type.into(), pipe.into())
+                    .map_err(|error| match error {
+                        PrimaryRequestError::InvalidMimetype => SelectionRequestError::InvalidMimetype,
+                        PrimaryRequestError::ServerSideSelection => SelectionRequestError::ServerSideSelection,
+                        PrimaryRequestError::NoSelection => SelectionRequestError::NoSelection,
+                    }),
+            };
+            match request {
                 Ok(()) => {
                     requested = true;
                     break;
@@ -1074,12 +1142,7 @@ impl Tileception {
                 Err(SelectionRequestError::ServerSideSelection) => {
                     if let Some(xwm) = self.xwm.as_mut() {
                         requested = xwm
-                            .send_selection(
-                                SelectionTarget::Clipboard,
-                                mime_type.into(),
-                                writer.into(),
-                                self.loop_handle.clone(),
-                            )
+                            .send_selection(selection, mime_type.into(), writer.into(), self.loop_handle.clone())
                             .is_ok();
                     }
                     // This writer is transferred to Xwayland or dropped here.
@@ -1805,10 +1868,19 @@ impl Tileception {
     }
 
     pub fn launcher_release(&mut self) {
-        self.launcher.selecting = false;
+        if std::mem::take(&mut self.launcher.selecting) {
+            let selected = match &self.launcher.prompt {
+                Some(_) => self.prompt_selected_text(),
+                None => self.launcher.input.selected_text(),
+            };
+            self.offer_primary(selected);
+        }
     }
 
     fn launcher_cursor_at(&mut self, point: Point, extend: bool) {
+        if self.launcher.prompt.is_some() {
+            return self.prompt_caret(point, extend);
+        }
         let text = self.launcher_layout().text;
         self.launcher.input.click(
             &mut self.text.borrow_mut(),

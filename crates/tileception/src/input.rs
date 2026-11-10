@@ -25,6 +25,7 @@ use crate::{
 
 pub(crate) const BTN_LEFT: u32 = 0x110;
 pub(crate) const BTN_RIGHT: u32 = 0x111;
+pub(crate) const BTN_MIDDLE: u32 = 0x112;
 /// Pixels the pointer must travel before a press becomes a drag.
 pub(crate) const DRAG_THRESHOLD: f64 = 6.0;
 /// Largest share of the screen a dragged window's picture takes.
@@ -867,6 +868,9 @@ impl Tileception {
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        if !self.is_locked() && button == BTN_MIDDLE && self.shell_middle_button(state == ButtonState::Pressed) {
+            return;
+        }
         if !self.is_locked() && button == BTN_LEFT && self.shell_pointer_button(state == ButtonState::Pressed) {
             self.schedule_render();
             return;

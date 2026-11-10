@@ -356,6 +356,8 @@ impl Tileception {
                 self.updates.window.pressed = None;
             }
             client::Event::Button(pressed) => self.updates_window_button(pressed),
+            // The updates window has no text to paste into.
+            client::Event::MiddleClick => {}
             client::Event::Scroll(amount) => {
                 self.updates.window.scroll += amount * 3.0;
                 self.updates_clamp_scroll();

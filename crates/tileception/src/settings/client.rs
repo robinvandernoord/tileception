@@ -43,8 +43,15 @@ pub(crate) enum Event {
     Motion(Point),
     Leave,
     Button(bool),
+    /// The middle button went down: it pastes into a text field.
+    MiddleClick,
     Scroll(f64),
-    Key { sym: u32, mods: Mods, pressed: bool, code: u32 },
+    Key {
+        sym: u32,
+        mods: Mods,
+        pressed: bool,
+        code: u32,
+    },
     Unfocus,
     Closed,
 }
@@ -462,6 +469,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for App {
                 app.serial = serial;
                 Event::Button(state == wl_pointer::ButtonState::Pressed)
             }
+            wl_pointer::Event::Button {
+                button: 0x112, state: WEnum::Value(wl_pointer::ButtonState::Pressed), ..
+            } => Event::MiddleClick,
             wl_pointer::Event::Axis { axis: WEnum::Value(wl_pointer::Axis::VerticalScroll), value, .. } => {
                 Event::Scroll(value)
             }

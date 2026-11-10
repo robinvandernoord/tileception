@@ -326,6 +326,9 @@ pub struct Doctor {
     menu_selected: usize,
     /// What is typed to narrow down the open menu's values.
     menu_filter: crate::text_input::TextInput,
+    /// The field the pointer is selecting in while its button is down: the
+    /// open menu's filter (true), or else the message.
+    field_drag: Option<bool>,
     /// The open menu's first shown value, when it has more than fit.
     menu_first: usize,
     /// The remembered model per agent; put back on every new session.
@@ -407,6 +410,7 @@ impl Default for Doctor {
             menu: None,
             menu_selected: 0,
             menu_filter: Default::default(),
+            field_drag: None,
             menu_first: 0,
             models: saved.models,
             restore_model: false,
@@ -470,7 +474,12 @@ enum Hit {
 enum PointerAction {
     Hit(Hit),
     Send,
+    /// Text of the conversation.
     Text,
+    /// The message field.
+    Field,
+    /// The filter of a setting's open menu.
+    Filter,
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -487,7 +496,23 @@ impl crate::ui::PointerAction for PointerAction {
             Self::Send if state.doctor.busy => state.doctor_hit(Hit::Stop),
             Self::Send => state.doctor_key(keysyms::KEY_Return, Mods::default()),
             Self::Text => state.doctor_select_from(point),
+            Self::Field => state.doctor_field_press(point, false),
+            Self::Filter => state.doctor_field_press(point, true),
         }
+    }
+
+    fn middle_click(&self, state: &mut Tileception, _rect: Rect, point: Point) -> bool {
+        let filter = match self {
+            Self::Field => false,
+            Self::Filter => true,
+            _ => return false,
+        };
+        state.doctor.focused = true;
+        state.force_keyboard_focus_sync();
+        state.doctor.selected = None;
+        state.doctor_field_caret(point, filter, false);
+        state.paste_primary(Paste::Doctor);
+        true
     }
 }
 
@@ -1709,7 +1734,7 @@ impl Tileception {
         }
         let target = self.doctor_pointer_target(point);
         if self.doctor.menu.is_some() && target.is_none() {
-            // Clicking the filter row or the menu's edges keeps it open.
+            // Clicking the menu's edges keeps it open.
             if self.menu_layout(&frame).is_some_and(|(outline, _)| outline.contains(point)) {
                 return true;
             }
@@ -1729,13 +1754,18 @@ impl Tileception {
         use crate::ui::PointerTarget;
         use smithay::input::pointer::CursorIcon;
         let frame = self.doctor_frame();
-        if let Some((_, rows)) = self.menu_layout(&frame) {
+        if let Some((outline, rows)) = self.menu_layout(&frame) {
+            // A setting's menu has its filter at the foot.
+            let filter = self.menu_filter_layout(outline).0;
+            if self.doctor.menu.is_some() && filter.contains(point) {
+                return Some(PointerTarget::new(filter, PointerAction::Filter, CursorIcon::Text));
+            }
             return rows.iter().find_map(|row| {
                 row.rect.contains(point).then(|| PointerTarget::button(row.rect, PointerAction::Hit(row.hit.clone())))
             });
         }
         if frame.field.contains(point) {
-            return Some(PointerTarget::new(frame.field, PointerAction::Text, CursorIcon::Text));
+            return Some(PointerTarget::new(frame.field, PointerAction::Field, CursorIcon::Text));
         }
         let mut buttons = vec![
             (frame.send, PointerAction::Send),
@@ -1864,8 +1894,46 @@ impl Tileception {
         self.schedule_render();
     }
 
+    /// The pointer pressed in the message field, or with `filter` in the
+    /// open menu's: it places the caret there, and a drag on from it selects.
+    fn doctor_field_press(&mut self, point: Point, filter: bool) {
+        self.doctor.selected = None;
+        self.doctor.field_drag = Some(filter);
+        let extend = self.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
+        self.doctor_field_caret(point, filter, extend);
+    }
+
+    fn doctor_field_caret(&mut self, point: Point, filter: bool, extend: bool) {
+        let frame = self.doctor_frame();
+        // As each is drawn, in `draw_menu_filter` and `doctor_elements`.
+        let area = if filter {
+            let Some((outline, _)) = self.menu_layout(&frame) else { return };
+            self.menu_filter_layout(outline).1
+        } else {
+            frame.text
+        };
+        let (font, size) = (&self.theme.font, self.theme.font_size);
+        let (width, x_pos) = (area.w as f32, (point.x - area.x).max(0.0) as f32);
+        let mut text = self.text.borrow_mut();
+        if filter {
+            self.doctor.menu_filter.click(&mut text, font, size, width, x_pos, extend);
+        } else {
+            // A key being entered is masked, a star for each byte.
+            let input = &mut self.doctor.input;
+            input.hidden = self.doctor.secret.is_some();
+            input.click_masked(&mut text, "*", font, size * 1.08, width, x_pos, extend);
+        }
+        drop(text);
+        self.doctor.edited = Instant::now();
+        self.schedule_render();
+    }
+
     /// Pointer motion while selecting text. True when it took it.
     pub fn doctor_drag(&mut self, point: Point) -> bool {
+        if let Some(filter) = self.doctor.field_drag {
+            self.doctor_field_caret(point, filter, true);
+            return true;
+        }
         if !self.doctor_here() || !self.doctor.selected.as_ref().is_some_and(|selected| selected.dragging) {
             return false;
         }
@@ -1882,6 +1950,11 @@ impl Tileception {
 
     /// The button coming up after selecting text. True when it was selecting.
     pub fn doctor_release(&mut self) -> bool {
+        if let Some(filter) = self.doctor.field_drag.take() {
+            let input = if filter { &self.doctor.menu_filter } else { &self.doctor.input };
+            self.offer_primary(input.selected_text());
+            return true;
+        }
         let Some(selected) = self.doctor.selected.as_mut().filter(|selected| selected.dragging) else { return false };
         selected.dragging = false;
         if selected.anchor == selected.head {
@@ -3142,8 +3215,8 @@ impl Tileception {
         // Menus lie over everything else.
         if let Some((outline, rows)) = self.menu_layout(&frame) {
             painter.popup(outline);
-            if let Some(option_id) = &self.doctor.menu {
-                self.draw_menu_filter(&mut painter, outline, option_id);
+            if self.doctor.menu.is_some() {
+                self.draw_menu_filter(&mut painter, outline);
             }
             for row in rows {
                 let hover = row.rect.contains(pointer);
@@ -3177,26 +3250,46 @@ impl Tileception {
         painter.finish()
     }
 
-    /// The foot of a setting's menu: what is typed to filter it, and how
-    /// many values match.
-    fn draw_menu_filter(&self, painter: &mut Painter, outline: Rect, option_id: &str) {
-        let theme = &self.theme;
+    /// The foot of a setting's menu, the part of it the filter is typed in,
+    /// and how many values match.
+    fn menu_filter_layout(&self, outline: Rect) -> (Rect, Rect, String) {
         let row = Rect::new(outline.x + 4.0, outline.bottom() - 4.0 - MENU_ROW_H, outline.w - 8.0, MENU_ROW_H);
-        painter.fill(Rect::new(row.x + 6.0, row.y, row.w - 12.0, 1.0), theme.border, 0.0);
-        painter.glyph(glyph::SEARCH, Rect::new(row.x + 4.0, row.y, 20.0, row.h), 12, theme.muted);
         let all = self
             .doctor
             .options
             .iter()
-            .find(|option| option.option_id == option_id)
+            .find(|option| Some(&option.option_id) == self.doctor.menu.as_ref())
             .map_or(0, |option| option.values.len());
         let matching = self.menu_values().len();
-        let filter = &self.doctor.menu_filter;
-        let count = if filter.text.is_empty() { format!("{all}") } else { format!("{matching} of {all}") };
+        let count =
+            if self.doctor.menu_filter.text.is_empty() { format!("{all}") } else { format!("{matching} of {all}") };
+        let count_w = self
+            .text
+            .borrow_mut()
+            .styled(
+                &count,
+                &self.theme.font,
+                self.theme.font_size * 0.88,
+                self.theme.muted,
+                (row.w / 3.0).max(1.0) as f32,
+                400,
+                0,
+            )
+            .map_or(0.0, |rendered| rendered.width);
+        (row, Rect::new(row.x + 30.0, row.y, row.w - 50.0 - count_w, row.h), count)
+    }
+
+    /// The foot of a setting's menu: what is typed to filter it, and how
+    /// many values match.
+    fn draw_menu_filter(&self, painter: &mut Painter, outline: Rect) {
+        let theme = &self.theme;
+        let (row, text, count) = self.menu_filter_layout(outline);
+        painter.fill(Rect::new(row.x + 6.0, row.y, row.w - 12.0, 1.0), theme.border, 0.0);
+        painter.glyph(glyph::SEARCH, Rect::new(row.x + 4.0, row.y, 20.0, row.h), 12, theme.muted);
         let count_style = Style::new(theme.font_size * 0.88, theme.muted);
-        let count_w = painter.measure(&count, row.w / 3.0, count_style).0;
-        painter.text(&count, Rect::new(row.right() - 10.0 - count_w, row.y, count_w + 1.0, row.h), count_style);
-        let text = Rect::new(row.x + 30.0, row.y, row.w - 50.0 - count_w, row.h);
+        let count_x = text.right() + 10.0;
+        painter.text(&count, Rect::new(count_x, row.y, row.right() - 9.0 - count_x, row.h), count_style);
+        let filter = &self.doctor.menu_filter;
         if filter.text.is_empty() {
             painter.text("Type to filter", text, Style::new(theme.font_size, theme.muted).lines(1));
         }

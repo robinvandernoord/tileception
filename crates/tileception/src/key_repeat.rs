@@ -45,13 +45,14 @@ impl Repeat {
     }
 }
 
-/// Whether holding the key keeps editing or moving: deleting, the arrows, and
-/// typing without Ctrl, Alt or Super. Enter, Esc and Tab act only once.
+/// Whether holding the key keeps editing or moving: deleting, the arrows
+/// (also the keypad's), undoing and redoing, and typing without Ctrl, Alt or
+/// Super. Enter, Esc and Tab act only once.
 pub fn edits(sym: u32, mods: Mods) -> bool {
-    const EDITING: [u32; 9] = [
+    let sym = crate::text_input::plain(sym);
+    const EDITING: [u32; 8] = [
         keysyms::KEY_BackSpace,
         keysyms::KEY_Delete,
-        keysyms::KEY_KP_Delete,
         keysyms::KEY_Left,
         keysyms::KEY_Right,
         keysyms::KEY_Up,
@@ -59,7 +60,12 @@ pub fn edits(sym: u32, mods: Mods) -> bool {
         keysyms::KEY_Page_Up,
         keysyms::KEY_Page_Down,
     ];
+    let undo = mods.ctrl
+        && !mods.alt
+        && !mods.logo
+        && matches!(sym, keysyms::KEY_z | keysyms::KEY_Z | keysyms::KEY_y | keysyms::KEY_Y);
     EDITING.contains(&sym)
+        || undo
         || (!mods.ctrl
             && !mods.alt
             && !mods.logo

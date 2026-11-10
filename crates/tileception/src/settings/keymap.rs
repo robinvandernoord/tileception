@@ -11,9 +11,10 @@ enum PointerAction {
 }
 
 impl crate::ui::PointerAction for PointerAction {
-    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+    fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
         match self {
-            Self::Search => state.keymap_text_caret(point, false),
+            // The press that got here places the caret, as `settings_text_caret`.
+            Self::Search => {}
             Self::Close => state.settings.keymap = None,
             Self::Custom => {
                 if let Some(picker) = state.settings.keymap.take() {
@@ -74,6 +75,11 @@ impl Tileception {
             (point.x - search.x - 36.).max(0.) as f32,
             extend,
         );
+    }
+
+    /// What is selected in the search, for a middle click.
+    pub(super) fn keymap_selected_text(&self) -> Option<String> {
+        self.settings.keymap.as_ref()?.search.selected_text()
     }
 
     pub(super) fn keymap_pointer_target(&self, point: Point) -> Option<interaction::Target> {

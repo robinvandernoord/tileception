@@ -105,6 +105,19 @@ impl PointerAction for Action {
             state.feedback_activate(*self);
         }
     }
+
+    fn middle_click(&self, state: &mut Tileception, _rect: Rect, point: Point) -> bool {
+        let Some(epoch) = state.feedback.as_ref().filter(|feedback| !feedback.review).map(|feedback| feedback.epoch)
+        else {
+            return false;
+        };
+        if !matches!(self, Self::Title | Self::Message) {
+            return false;
+        }
+        state.feedback_cursor_at(*self, point, false);
+        state.paste_primary(crate::launcher::Paste::Feedback(epoch, *self == Self::Title));
+        true
+    }
 }
 
 struct Layout {
@@ -366,6 +379,8 @@ impl Tileception {
     }
 
     pub(crate) fn feedback_key(&mut self, sym: u32, mods: Mods) {
+        // The keypad's arrows move between the message's rows too.
+        let sym = crate::text_input::plain(sym);
         let layout = self.feedback_layout();
         let Some(feedback) = &mut self.feedback else { return };
         feedback.edited = Instant::now();
@@ -510,7 +525,7 @@ impl Tileception {
             feedback.selected = action;
             feedback.edited = Instant::now();
             let input = if title { &mut feedback.title } else { &mut feedback.message };
-            input.move_to(range.start + byte, extend);
+            input.press(range.start + byte, extend);
         }
         self.feedback_keep_caret();
         self.schedule_render();
@@ -523,9 +538,13 @@ impl Tileception {
     }
 
     pub(crate) fn feedback_release(&mut self) {
-        if let Some(feedback) = &mut self.feedback {
-            feedback.selecting = None;
-        }
+        let Some(feedback) = &mut self.feedback else { return };
+        let selected = match feedback.selecting.take() {
+            Some(Action::Title) => feedback.title.selected_text(),
+            Some(_) => feedback.message.selected_text(),
+            None => None,
+        };
+        self.offer_primary(selected);
     }
 
     pub(crate) fn feedback_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {

@@ -172,6 +172,8 @@ enum PointerAction {
     OpenDoctor,
     Close,
     Bubble,
+    /// The question's field.
+    Field,
     Drag,
 }
 
@@ -184,11 +186,25 @@ impl crate::ui::PointerAction for PointerAction {
             }
             Self::Close => state.close_duck_chat(),
             Self::Bubble => {}
+            Self::Field => {
+                let extend = state.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
+                state.duck.selecting = true;
+                state.duck_field_caret(point, extend);
+            }
             Self::Drag => {
                 state.duck.press =
                     Some(Press { origin: point, grab: (point.x - state.duck.pos.0, point.y - state.duck.pos.1) })
             }
         }
+    }
+
+    fn middle_click(&self, state: &mut Tileception, _rect: Rect, point: Point) -> bool {
+        if *self != Self::Field {
+            return false;
+        }
+        state.duck_field_caret(point, false);
+        state.paste_primary(crate::launcher::Paste::Duck);
+        true
     }
 }
 
@@ -224,6 +240,8 @@ pub struct Duck {
     trail: [(Point, Instant); 2],
     chat: Chat,
     input: TextInput,
+    /// The pointer is selecting in the question while its button is down.
+    selecting: bool,
     compose: Option<xkb::compose::State>,
     edited: Instant,
     shot: Option<Shot>,
@@ -283,6 +301,7 @@ impl Default for Duck {
             trail: [(Point::new(0.0, 0.0), now); 2],
             chat: Chat::Closed,
             input: TextInput::default(),
+            selecting: false,
             compose: crate::ui::compose_state(),
             edited: now,
             shot: None,
@@ -827,11 +846,31 @@ impl Tileception {
 
     /// The duck is pressed or held.
     pub fn duck_pressed(&self) -> bool {
-        self.duck.press.is_some()
+        self.duck.press.is_some() || self.duck.selecting
+    }
+
+    /// Places the caret where the question was pressed; `extend` selects.
+    fn duck_field_caret(&mut self, point: Point, extend: bool) {
+        let Some(field) = self.duck_bubble().and_then(|bubble| bubble.field) else { return };
+        // As it is drawn in `duck_elements`.
+        self.duck.input.click(
+            &mut self.text.borrow_mut(),
+            &self.theme.font,
+            self.theme.font_size,
+            field.w as f32,
+            (point.x - field.x).max(0.0) as f32,
+            extend,
+        );
+        self.duck.edited = Instant::now();
+        self.schedule_render();
     }
 
     /// Pointer motion while the duck is pressed or held. True when it took it.
     pub fn duck_motion(&mut self, position: Point) -> bool {
+        if self.duck.selecting {
+            self.duck_field_caret(position, true);
+            return true;
+        }
         let Some(press) = self.duck.press else { return false };
         let now = Instant::now();
         if self.duck.motion != Motion::Held {
@@ -860,6 +899,10 @@ impl Tileception {
         if !self.duck_shown() {
             self.duck.press = None;
             return false;
+        }
+        if !pressed && left && std::mem::take(&mut self.duck.selecting) {
+            self.offer_primary(self.duck.input.selected_text());
+            return true;
         }
         if !pressed {
             if self.duck.press.take().filter(|_| left).is_none() {
@@ -905,6 +948,11 @@ impl Tileception {
                 && rect.contains(point)
             {
                 return Some(PointerTarget::button(rect, PointerAction::Close));
+            }
+            if let Some(field) = bubble.field.map(|field| Rect::new(field.x, field.y, field.w, 26.0))
+                && field.contains(point)
+            {
+                return Some(PointerTarget::new(field, PointerAction::Field, CursorIcon::Text));
             }
             if bubble.rect.contains(point) {
                 return Some(PointerTarget::new(bubble.rect, PointerAction::Bubble, CursorIcon::Default));

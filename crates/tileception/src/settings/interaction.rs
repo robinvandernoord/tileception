@@ -108,7 +108,9 @@ impl Tileception {
                 self.settings.text_drag = target.cursor == CursorIcon::Text;
                 target.activate(self, point);
                 if self.settings.text_drag {
-                    self.settings_text_caret(point, false);
+                    // With Shift, the press selects from the caret.
+                    let extend = self.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
+                    self.settings_text_caret(point, extend);
                 }
             }
             crate::ui::PointerEvent::Release(target) => {
@@ -118,6 +120,21 @@ impl Tileception {
             _ if !pressed => self.settings_release(),
             _ => {}
         }
+    }
+
+    /// A middle click on a text field places the caret there and pastes
+    /// the primary selection: what was last selected anywhere.
+    pub(super) fn settings_middle_click(&mut self) {
+        let point = Point::new(self.settings.pointer.0, self.settings.pointer.1);
+        let Some(target) = self.settings_pointer_target(point).filter(|target| target.cursor == CursorIcon::Text)
+        else {
+            return;
+        };
+        // As a press does: the field takes the keyboard, then the caret.
+        target.activate(self, point);
+        self.settings_text_caret(point, false);
+        self.paste_primary(crate::launcher::Paste::Settings(self.settings.editor_epoch));
+        self.schedule_render();
     }
 
     pub(super) fn settings_update_cursor(&self) {
@@ -155,6 +172,9 @@ impl Tileception {
         if self.settings_network_caret(&frame, point, extend) {
             return;
         }
+        if self.settings_connect_caret(point, extend) {
+            return;
+        }
         if let Some(index) = self.settings.editing {
             let Some((rect, _)) = frame.hits.iter().find(|(_, hit)| *hit == Hit::Field(index)) else { return };
             let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };
@@ -176,6 +196,28 @@ impl Tileception {
                 (point.x - rect.x - 35.).max(0.) as f32,
                 extend,
             );
+        }
+    }
+
+    /// What is selected in the field `settings_text_caret` goes to, to offer
+    /// to a middle click once the pointer lets go.
+    pub(super) fn settings_selected_text(&self) -> Option<String> {
+        if self.settings.editor.is_some() {
+            self.settings_editor_selected_text()
+        } else if self.settings.section.is_some() {
+            self.section_selected_text()
+        } else if self.settings.keymap.is_some() {
+            self.keymap_selected_text()
+        } else if self.settings_network_typing() {
+            self.settings_network_selected_text()
+        } else if self.settings_connect_typing() {
+            self.settings_connect_selected_text()
+        } else if self.settings.editing.is_some() {
+            self.settings.input.selected_text()
+        } else if self.settings.focus == Some(Hit::Search) {
+            self.settings.search_input.selected_text()
+        } else {
+            None
         }
     }
 

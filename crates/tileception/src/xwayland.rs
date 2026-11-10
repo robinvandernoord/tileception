@@ -429,6 +429,11 @@ impl XwmHandler for Tileception {
                     self.handoff_fetch(&remote, mime_type, fd);
                     return;
                 }
+                // Text selected in one of the compositor's own fields.
+                if let Some(clip) = clip {
+                    clip.send(&mime_type, fd);
+                    return;
+                }
                 request_primary_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
             }
         };
@@ -454,7 +459,9 @@ impl XwmHandler for Tileception {
                 }
             }
             SelectionTarget::Primary => {
-                if current_primary_selection_userdata(&self.seat).is_some() {
+                // Only what X11 offered goes: not text selected since in one
+                // of the compositor's own fields.
+                if current_primary_selection_userdata(&self.seat).is_some_and(|data| data.is_none()) {
                     clear_primary_selection(&self.display_handle, &self.seat)
                 }
             }

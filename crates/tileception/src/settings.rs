@@ -1237,6 +1237,7 @@ impl Tileception {
                 self.settings.pressed = None;
             }
             client::Event::Button(pressed) => self.settings_pointer_button(pressed),
+            client::Event::MiddleClick => self.settings_middle_click(),
             client::Event::Scroll(amount) => self.settings_scroll(amount),
             client::Event::Key { sym, mods, pressed, code } => {
                 if pressed {
@@ -1664,15 +1665,7 @@ impl Tileception {
         if let Hit::Field(index) = hit
             && self.settings.editing == Some(index)
         {
-            let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };
-            self.settings.input.click(
-                &mut self.text.borrow_mut(),
-                &self.theme.font,
-                11.,
-                (rect.w - inset - 8.) as f32,
-                (point.x - rect.x - inset).max(0.) as f32,
-                false,
-            );
+            // The press that got here places the caret, as `settings_text_caret`.
             self.schedule_render();
             return;
         }
@@ -1730,7 +1723,9 @@ impl Tileception {
 
     pub fn settings_release(&mut self) {
         self.settings.pressed = None;
-        self.settings.text_drag = false;
+        if std::mem::take(&mut self.settings.text_drag) {
+            self.offer_primary(self.settings_selected_text());
+        }
         if let Some(picker) = &mut self.settings.colour {
             picker.drag = None;
         }

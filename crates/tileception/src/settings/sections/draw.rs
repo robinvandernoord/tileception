@@ -455,8 +455,11 @@ impl Tileception {
                 if editing {
                     let (_, input) = screen.edit.as_ref().expect("active input");
                     let mask = "*".repeat(input.text.chars().count());
+                    // One mask character per character, so the caret and
+                    // the selection show where they are.
+                    let masked = |offset: usize| input.text[..offset].chars().count();
                     let (text, cursor, anchor) = if secret {
-                        (mask.as_str(), mask.len(), input.anchor.map(|_| 0))
+                        (mask.as_str(), masked(input.cursor), input.anchor.map(masked))
                     } else {
                         (input.text.as_str(), input.cursor, input.anchor)
                     };
@@ -966,7 +969,7 @@ pub(in crate::settings) fn draw_scrollbar(
     );
 }
 
-fn field_extra(field: &Field, kind: Kind) -> f64 {
+pub(super) fn field_extra(field: &Field, kind: Kind) -> f64 {
     let picker = field.pick || kind == Kind::Shortcuts && field.path == Path::Name && matches!(field.form, Form::Text);
     (if picker { 94. } else { 0. })
         + (if field.removable.is_some() { 40. } else { 0. })

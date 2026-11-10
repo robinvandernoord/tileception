@@ -38,6 +38,13 @@ pub(crate) struct PointerTarget {
 /// Components supply their own action type and activation handler.
 pub(crate) trait PointerAction: PartialEq + 'static {
     fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+
+    /// A middle click on this. A text field takes it: it places its caret
+    /// there and pastes the primary selection (what was last selected
+    /// anywhere), with `Tileception::paste_primary`. Returns whether it did.
+    fn middle_click(&self, _state: &mut Tileception, _rect: Rect, _point: tileception_core::Point) -> bool {
+        false
+    }
 }
 
 // Erasure lets the input stack hold a button from any component. Equality is
@@ -46,6 +53,7 @@ trait ErasedPointerAction {
     fn as_any(&self) -> &dyn std::any::Any;
     fn same(&self, other: &dyn ErasedPointerAction) -> bool;
     fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point);
+    fn middle_click(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) -> bool;
 }
 
 impl<Action: PointerAction> ErasedPointerAction for Action {
@@ -57,6 +65,9 @@ impl<Action: PointerAction> ErasedPointerAction for Action {
     }
     fn activate(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) {
         PointerAction::activate(self, state, rect, point);
+    }
+    fn middle_click(&self, state: &mut Tileception, rect: Rect, point: tileception_core::Point) -> bool {
+        PointerAction::middle_click(self, state, rect, point)
     }
 }
 
@@ -91,6 +102,10 @@ impl PointerTarget {
 
     pub fn activate(&self, state: &mut Tileception, point: tileception_core::Point) {
         self.action.activate(state, self.rect, point);
+    }
+
+    pub fn middle_click(&self, state: &mut Tileception, point: tileception_core::Point) -> bool {
+        self.action.middle_click(state, self.rect, point)
     }
 
     pub fn button_event(armed: &mut Option<Self>, target: Option<Self>, pressed: bool) -> PointerEvent {
@@ -172,6 +187,21 @@ impl Tileception {
         }
         self.schedule_render();
         true
+    }
+
+    /// A middle button over the compositor's own controls: pressed on a
+    /// text field, it pastes the primary selection there. Returns whether
+    /// the button was taken.
+    pub(crate) fn shell_middle_button(&mut self, pressed: bool) -> bool {
+        if !pressed {
+            return std::mem::take(&mut self.middle_pasted);
+        }
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        self.middle_pasted = self.shell_pointer_target(point).is_some_and(|target| target.middle_click(self, point));
+        if self.middle_pasted {
+            self.schedule_render();
+        }
+        self.middle_pasted
     }
 
     pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {

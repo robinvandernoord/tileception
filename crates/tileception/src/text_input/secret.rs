@@ -6,7 +6,7 @@ use std::ops::Range;
 use smithay::input::keyboard::xkb;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{Buffer, Key, Rules};
+use super::{Buffer, Clicks, Key, Rules};
 use crate::config::Mods;
 
 pub struct SecretField {
@@ -18,6 +18,7 @@ pub struct SecretField {
     anchor: Option<usize>,
     /// Drawn without a caret, so keys only add and delete at the end.
     appending: bool,
+    clicks: Clicks,
     compose: Option<xkb::compose::State>,
 }
 
@@ -29,6 +30,7 @@ impl Default for SecretField {
             cursor: 0,
             anchor: None,
             appending: false,
+            clicks: Clicks::default(),
             compose: crate::ui::compose_state(),
         }
     }
@@ -68,6 +70,10 @@ impl Buffer for SecretField {
 
     fn rules(&self) -> Rules {
         Rules { concealed: true, appending: self.appending, ..Default::default() }
+    }
+
+    fn clicks(&mut self) -> &mut Clicks {
+        &mut self.clicks
     }
 }
 
@@ -132,6 +138,15 @@ impl SecretField {
         key
     }
 
+    /// The pointer pressed at a character of the mask the field is drawn
+    /// as: see `Buffer::point`. `extend` is for a drag, or a press with
+    /// Shift. A double click selects everything, as a secret shows no words.
+    pub fn press(&mut self, character: usize, extend: bool) {
+        let text = self.as_str();
+        let position = text.char_indices().nth(character).map_or(text.len(), |(offset, _)| offset);
+        self.point(position, extend, std::time::Instant::now());
+    }
+
     /// The text, leaving the field empty.
     pub fn take(&mut self) -> Zeroizing<String> {
         let text = Zeroizing::new(self.as_str().to_owned());
@@ -145,7 +160,7 @@ mod tests {
     use smithay::input::keyboard::keysyms;
 
     use super::SecretField;
-    use crate::{config::Mods, text_input::Clipboard};
+    use crate::config::Mods;
 
     fn field(text: &str) -> SecretField {
         let mut field = SecretField::default();
@@ -186,7 +201,7 @@ mod tests {
         secret.key(keysyms::KEY_a, ctrl);
         assert!(!secret.key(keysyms::KEY_c, ctrl).used && !secret.key(keysyms::KEY_x, ctrl).used);
         assert_eq!(secret.as_str(), " ");
-        assert_eq!(secret.key(keysyms::KEY_v, ctrl).clipboard, Some(Clipboard::Paste));
+        assert!(secret.key(keysyms::KEY_v, ctrl).clipboard.paste);
     }
 
     #[test]
