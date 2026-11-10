@@ -380,7 +380,7 @@ list, **Space** ticks a row and **Enter** runs the page's main button.
 | Page | What it does |
 | --- | --- |
 | Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Check** refreshes the package lists. |
-| Kernels | Lists installed kernels by series with their size on disk. The running kernel is protected and the newest other one is marked as the fallback. Queue kernels with **Remove**, or take the suggestion with **Queue old kernels**; **Preview** shows what `apt-get` would do and **Apply queue** does it. A newer kernel that is on offer has an **Install** button. Leftover headers and modules without a kernel are listed separately. Nothing here runs `autoremove`. |
+| Kernels | Lists installed kernels by series with their size on disk. The running kernel is protected and the newest other one is marked as the fallback. Queue kernels with **Remove**, or take the suggestion with **Queue old kernels**; **Preview** shows what `apt-get` would do and **Apply queue** does it. Every other kernel apt offers for your flavour is listed with an **Install** button, as in kerntop's recommended view. Leftover headers and modules without a kernel are listed separately. Nothing here runs `autoremove`. |
 | Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
 | History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. |
 

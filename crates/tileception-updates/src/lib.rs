@@ -86,7 +86,7 @@ pub struct Snapshot {
     pub updates: Vec<apt::Update>,
     /// Kernel images, headers and their support packages.
     pub packages: Vec<kernels::Package>,
-    /// Kernel images apt offers that are newer than the running one.
+    /// Kernel images apt offers that are not installed.
     pub offered: Vec<String>,
     /// `uname -r`.
     pub running: String,

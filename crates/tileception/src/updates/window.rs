@@ -516,8 +516,24 @@ impl Tileception {
     fn updates_select_first(&mut self) {
         let rows = self.updates_rows();
         let window = &mut self.updates.window;
-        if !rows.get(window.selected).is_some_and(Row::selectable) {
-            window.selected = rows.iter().position(Row::selectable).unwrap_or(0);
+        if rows.get(window.selected).is_some_and(Row::selectable) {
+            return;
+        }
+        window.selected = rows.iter().position(Row::selectable).unwrap_or(0);
+        if window.page != Page::Kernels {
+            return;
+        }
+        // Apt offers many kernels: start at the running one, with the newer
+        // ones above it within reach.
+        let found = self.updates.snapshot.kernels();
+        let running = rows.iter().position(
+            |row| matches!(row, Row::Kernel(index) if found.get(*index).is_some_and(|kernel| kernel.running)),
+        );
+        if let Some(running) = running {
+            let above: f64 = rows[..running].iter().map(Row::height).sum();
+            self.updates.window.selected = running;
+            self.updates.window.scroll = (above - 120.0).max(0.0);
+            self.updates_clamp_scroll();
         }
     }
 

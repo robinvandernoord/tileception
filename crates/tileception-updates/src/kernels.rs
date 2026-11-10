@@ -101,41 +101,25 @@ pub fn installed(runner: &dyn Runner) -> Vec<Package> {
     runner.run("dpkg-query", &args).map(|text| parse_installed(&text)).unwrap_or_default()
 }
 
-/// Images apt offers that are newer than every installed one, of the running
-/// kernel's flavour: the newest of each series.
+/// Every image apt offers that is not installed, by kerntop's recommended
+/// view: versioned images of the running kernel's flavour, without unsigned
+/// and debug builds.
 pub fn offered(runner: &dyn Runner, packages: &[Package], running: &str) -> Vec<String> {
     let Ok(found) = runner.run("apt-cache", &["search", "--names-only", "^linux-image-[0-9]"]) else {
         return Vec::new();
     };
     let names = found.lines().filter_map(|line| line.split_whitespace().next());
-    newer_offers(names, packages, running)
+    relevant_offers(names, packages, running)
 }
 
-fn newer_offers<'list>(names: impl Iterator<Item = &'list str>, packages: &[Package], running: &str) -> Vec<String> {
+fn relevant_offers<'list>(names: impl Iterator<Item = &'list str>, packages: &[Package], running: &str) -> Vec<String> {
     let wanted = flavour(running);
-    let newest_installed = packages
-        .iter()
-        .filter_map(|package| identifier(&package.name))
-        .map(version_key)
-        .chain(std::iter::once(version_key(running)))
-        .max()
-        .unwrap_or_default();
-    let mut newer: Vec<&str> = names
+    names
         .filter(|name| !name.starts_with(UNSIGNED_IMAGE) && !name.ends_with("-dbg"))
-        .filter(|name| identifier(name).is_some_and(|found| wanted.is_empty() || flavour(found) == wanted))
-        .filter(|name| identifier(name).is_some_and(|found| version_key(found) > newest_installed))
+        .filter(|name| identifier(name).is_some_and(|found| wanted.is_empty() || found.ends_with(wanted)))
         .filter(|name| !packages.iter().any(|package| package.name == *name))
-        .collect();
-    newer.sort_by_key(|name| std::cmp::Reverse(identifier(name).map(version_key)));
-    // Only the newest of each series: older builds of it are of no use.
-    let mut series = Vec::new();
-    newer.retain(|name| {
-        let key: Vec<u64> = identifier(name).map(version_key).unwrap_or_default().into_iter().take(2).collect();
-        let fresh = !series.contains(&key);
-        series.push(key);
-        fresh
-    });
-    newer.into_iter().map(str::to_string).collect()
+        .map(str::to_string)
+        .collect()
 }
 
 fn belongs(support: &str, image: &str) -> bool {
@@ -335,16 +319,21 @@ mod tests {
     }
 
     #[test]
-    fn only_newer_kernels_of_the_same_flavour_are_offered() {
+    fn every_kernel_of_the_running_flavour_is_offered() {
         let names = [
             "linux-image-6.14.0-36-generic",
-            "linux-image-6.14.0-37-generic",
+            "linux-image-6.14.0-35-generic",
             "linux-image-6.14.0-37-lowlatency",
             "linux-image-unsigned-6.14.0-37-generic",
-            "linux-image-6.8.0-149-generic",
+            "linux-image-6.8.0-31-generic",
+            "linux-image-6.8.0-31-generic-dbg",
             "linux-image-6.17.0-5-generic",
         ];
-        let offers = newer_offers(names.into_iter(), &system(), "6.14.0-35-generic");
-        assert_eq!(offers, ["linux-image-6.17.0-5-generic", "linux-image-6.14.0-37-generic"]);
+        let offers = relevant_offers(names.into_iter(), &system(), "6.14.0-35-generic");
+        // Older and newer than what is installed, but never what is installed.
+        assert_eq!(
+            offers,
+            ["linux-image-6.14.0-36-generic", "linux-image-6.8.0-31-generic", "linux-image-6.17.0-5-generic"]
+        );
     }
 }
