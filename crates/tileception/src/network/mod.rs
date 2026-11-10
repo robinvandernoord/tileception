@@ -443,7 +443,15 @@ impl Tileception {
             return;
         }
         let password = Zeroizing::new(prompt.input.text.clone());
-        let network = prompt.network.clone();
+        let mut network = prompt.network.clone();
+        // A failed attempt may have deleted the profile held by the prompt.
+        network.saved = self
+            .network
+            .snapshot
+            .networks
+            .iter()
+            .find(|candidate| candidate.ssid == network.ssid)
+            .and_then(|candidate| candidate.saved.clone());
         self.network.prompt = None;
         self.network_connect(network, Some(password));
     }
