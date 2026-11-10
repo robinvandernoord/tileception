@@ -798,11 +798,19 @@ impl Tileception {
         // A stable sort keeps each kind's own order among equals.
         ranked.sort_by_key(|(quality, kind, _)| (*quality, *kind));
 
-        let mut entries: Vec<Entry> = found.into_iter().map(Entry::Answer).collect();
+        // A sentence such as "set a timer for 10 minutes" is the timers
+        // plugin's to carry out; plugins themselves only get their prefix.
+        let timer = self
+            .plugins
+            .as_ref()
+            .filter(|plugins| plugins.running(TIMERS))
+            .and_then(|_| crate::bundled::timers::understood(text, unix_now()))
+            .map(|row| Entry::Plugin { plugin: TIMERS.into(), row });
+        let mut entries: Vec<Entry> = timer.into_iter().chain(found.into_iter().map(Entry::Answer)).collect();
         let room = MAX_ROWS.saturating_sub(entries.len()).max(2);
         entries.extend(ranked.into_iter().take(room).map(|(_, _, entry)| entry));
         // Sums and conversions are answers, not questions for the doctor.
-        let answered = entries.iter().any(|entry| matches!(entry, Entry::Answer(_)));
+        let answered = entries.iter().any(|entry| matches!(entry, Entry::Answer(_) | Entry::Plugin { .. }));
         if !answered
             && !crate::calc::looks_like_conversion(text)
             && let Some(question) = question_in(text)
@@ -2377,6 +2385,8 @@ const FIELD_H: f64 = 52.0;
 const CAPTION_H: f64 = 32.0;
 const ROW_H: f64 = 54.0;
 const FOOTER_H: f64 = 44.0;
+/// The bundled plugin that plain sentences about timers go to.
+const TIMERS: &str = "timers";
 /// Between the cards under the launcher.
 const CARD_GAP: f64 = 8.0;
 /// Rows of results at most, besides "Ask Tileception".

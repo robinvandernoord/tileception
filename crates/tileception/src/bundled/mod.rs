@@ -6,7 +6,7 @@
 pub(crate) mod bluetooth;
 mod folders;
 pub(crate) mod home;
-mod timers;
+pub(crate) mod timers;
 
 use std::{
     collections::HashSet,
