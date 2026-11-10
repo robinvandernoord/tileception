@@ -1148,6 +1148,9 @@ impl Tileception {
 
     /// The window whose tab is under a point.
     pub(crate) fn tab_at(&self, point: tileception_core::Point, now: f64) -> Option<WindowId> {
+        if self.float_covers(point) {
+            return None;
+        }
         let strip =
             self.world.tab_strips(self.world.view(now)).into_iter().find(|tab_strip| tab_strip.rect.contains(point))?;
         let index = ((point.x - strip.rect.x) / strip.rect.w * strip.views.len() as f64) as usize;
@@ -1429,8 +1432,19 @@ impl Tileception {
             .map(|(hit_surface, loc)| (hit_surface, pos - (local - loc.to_f64())))
     }
 
+    /// Whether a floating window is drawn over this point. Dividers and tab
+    /// strips under it are out of reach: the click belongs to the window.
+    pub(crate) fn float_covers(&self, point: tileception_core::Point) -> bool {
+        self.drawn_windows(self.now())
+            .iter()
+            .any(|drawn| drawn.role == tileception_core::WindowRole::Floating && drawn.content.contains(point))
+    }
+
     /// The split boundary under a point, if any, for dragging gaps.
     pub(crate) fn gap_at(&self, pos: Point<f64, Logical>) -> Option<GapDrag> {
+        if self.float_covers(tileception_core::Point::new(pos.x, pos.y)) {
+            return None;
+        }
         let view = self.world.target_view();
         let tree = self.world.tree();
         let reach = self.world.settings.gap / 2.0 + 4.0;
