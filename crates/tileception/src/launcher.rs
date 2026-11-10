@@ -99,7 +99,12 @@ impl Clip {
     }
 
     /// [`Clip::send`], calling `written` once all of it was written.
-    pub(crate) fn send_then(&self, mime_type: &str, pipe: std::os::fd::OwnedFd, written: impl FnOnce() + Send + 'static) {
+    pub(crate) fn send_then(
+        &self,
+        mime_type: &str,
+        pipe: std::os::fd::OwnedFd,
+        written: impl FnOnce() + Send + 'static,
+    ) {
         use std::io::Write;
         if self.bytes(mime_type).is_none() {
             return;

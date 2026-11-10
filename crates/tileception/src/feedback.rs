@@ -142,7 +142,8 @@ pub struct Feedback {
 
 impl Feedback {
     fn body(&self) -> String {
-        let screenshot = matches!(self.screenshot, Screenshot::Ready(_)).then(|| screenshot_path().display().to_string());
+        let screenshot =
+            matches!(self.screenshot, Screenshot::Ready(_)).then(|| screenshot_path().display().to_string());
         issue_body(
             &self.message.text,
             screenshot.as_deref(),
