@@ -913,6 +913,19 @@ pub(crate) fn wants_float(window: &Window) -> bool {
     false
 }
 
+/// The largest size a window lets itself be, either side unlimited if `None`.
+pub(crate) fn max_size(window: &Window) -> (Option<i32>, Option<i32>) {
+    let size = if let Some(toplevel) = window.toplevel() {
+        with_states(toplevel.wl_surface(), |states| states.cached_state.get::<SurfaceCachedState>().current().max_size)
+    } else if let Some(max) = window.x11_surface().and_then(|x11| x11.max_size()) {
+        max
+    } else {
+        return (None, None);
+    };
+    // Zero means no limit on that side.
+    ((size.w > 0).then_some(size.w), (size.h > 0).then_some(size.h))
+}
+
 /// Not before a window's first configure: foot crashes on an enter then.
 pub(crate) fn focus_target(window: &Window) -> Option<KeyboardFocus> {
     if let Some(toplevel) = window.toplevel() {
