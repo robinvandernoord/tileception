@@ -365,6 +365,7 @@ tray_max_icons = 3
 # enabled = false
 # [plugins.example.launcher]
 # prefixes = ["echo"]
+# cards = false  # hide its cards under the launcher
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

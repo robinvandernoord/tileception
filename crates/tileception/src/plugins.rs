@@ -1,5 +1,6 @@
 //! Plugins: executables speaking MCP over stdio, found through manifests and
-//! `[plugins.<id>]`. For now they add launcher sources.
+//! `[plugins.<id>]`. They add launcher sources and cards, panel blocks, bar
+//! chips and commands.
 //!
 //! The compositor owns one [`Host`]. Every plugin gets a worker thread that
 //! owns its process and all of its I/O, so a slow plugin holds up only
@@ -85,6 +86,11 @@ impl PluginConfig {
     pub fn in_bar(&self) -> bool {
         self.bar.as_ref().is_some_and(|bar| bar.enabled != Some(false))
     }
+
+    /// Whether the plugin's cards show under the launcher.
+    pub fn launcher_cards(&self) -> bool {
+        self.launcher.as_ref().and_then(|launcher| launcher.cards) != Some(false)
+    }
 }
 
 /// A plugin's `[launcher]` block.
@@ -92,6 +98,8 @@ impl PluginConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LauncherOptions {
     pub prefixes: Option<Vec<String>>,
+    /// `false` hides the plugin's cards under the launcher.
+    pub cards: Option<bool>,
 }
 
 /// A plugin's `[bar]` block.
@@ -154,8 +162,13 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
     if overlay.enabled.is_some() {
         base.enabled = overlay.enabled;
     }
-    if let Some(prefixes) = overlay.launcher.and_then(|launcher| launcher.prefixes) {
-        base.launcher.get_or_insert_default().prefixes = Some(prefixes);
+    if let Some(launcher) = overlay.launcher {
+        if let Some(prefixes) = launcher.prefixes {
+            base.launcher.get_or_insert_default().prefixes = Some(prefixes);
+        }
+        if launcher.cards.is_some() {
+            base.launcher.get_or_insert_default().cards = launcher.cards;
+        }
     }
     if let Some(bar) = overlay.bar {
         let base = base.bar.get_or_insert_default();
@@ -245,6 +258,8 @@ pub struct Described {
 pub const PANEL: &str = "tileception://panel";
 /// The resource holding a plugin's bar chips.
 pub const BAR: &str = "tileception://bar";
+/// The resource holding a plugin's cards under the launcher.
+pub const LAUNCHER: &str = "tileception://launcher";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -252,6 +267,8 @@ pub struct Changed {
     pub routes: bool,
     pub panels: bool,
     pub bar: bool,
+    /// The cards under the launcher.
+    pub cards: bool,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -394,6 +411,8 @@ pub struct Host {
     panels: BTreeMap<String, crate::panel::block::Block>,
     /// Bar chips by plugin.
     bars: BTreeMap<String, crate::panel::block::Bar>,
+    /// Cards under the launcher by plugin.
+    cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
 }
@@ -416,6 +435,7 @@ impl Host {
             diagnostics: Vec::new(),
             panels: BTreeMap::new(),
             bars: BTreeMap::new(),
+            cards: BTreeMap::new(),
             resources: BTreeMap::new(),
         };
         host.reload();
@@ -455,6 +475,7 @@ impl Host {
         self.diagnostics.clear();
         self.panels.clear();
         self.bars.clear();
+        self.cards.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -469,7 +490,7 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, bar: reloaded, resources: Vec::new() }
+        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, resources: Vec::new() }
     }
 
     /// A resource was read: panels are kept parsed, others as they are.
@@ -513,6 +534,18 @@ impl Host {
                 }
             }
             changed.bar = true;
+        } else if uri == LAUNCHER {
+            match serde_json::from_value::<crate::panel::block::Launcher>(value) {
+                Ok(mut launcher) => {
+                    launcher.cards.truncate(crate::panel::block::LAUNCHER_CARDS);
+                    self.cards.insert(plugin, launcher.cards);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid launcher cards: {error}");
+                    self.cards.remove(&plugin);
+                }
+            }
+            changed.cards = true;
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -544,6 +577,17 @@ impl Host {
             .filter(|(_, config)| config.in_bar())
             .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.bars.get(plugin_id)?)))
             .flat_map(|(plugin_id, bar)| bar.chips.iter().map(move |chip| (plugin_id, chip)))
+            .collect()
+    }
+
+    /// The cards under the launcher, in the user's order, except of
+    /// plugins whose `[launcher]` block says `cards = false`.
+    pub fn launcher_cards(&self) -> Vec<(&str, &crate::panel::block::Card)> {
+        self.arranged()
+            .into_iter()
+            .filter(|(_, config)| config.launcher_cards())
+            .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.cards.get(plugin_id)?)))
+            .flat_map(|(plugin_id, cards)| cards.iter().map(move |card| (plugin_id, card)))
             .collect()
     }
 
@@ -762,6 +806,7 @@ impl Tileception {
         settings.bundled = crate::bundled::Options {
             home: home.enabled.then(|| home.devices.clone()),
             bluetooth_no_reconnect: !self.config.file.bluetooth.reconnect,
+            timers_unsaved: self.nested || self.headless.is_some(),
         };
         settings
     }
@@ -854,7 +899,7 @@ impl Tileception {
         if changed.panels {
             self.panel_changed();
         }
-        if changed.bar {
+        if changed.bar || (changed.cards && self.launcher.open) {
             self.schedule_render();
         }
         if !changed.resources.is_empty() && self.settings.open {
@@ -1576,7 +1621,10 @@ impl Session {
             let remaining = deadline.saturating_duration_since(Instant::now());
             i32::try_from(remaining.as_millis().saturating_add(1)).unwrap_or(i32::MAX)
         });
-        self.poll(self.output.as_raw_fd(), libc::POLLIN, timeout)?;
+        // A message read along with the last answer is already here.
+        if !self.buffered.contains(&b'\n') {
+            self.poll(self.output.as_raw_fd(), libc::POLLIN, timeout)?;
+        }
         let closed = self.fill().err();
         while let Some(message) = self.next_message()? {
             if !self.unsolicited(&message, Instant::now() + TIMEOUT)?
@@ -1704,6 +1752,30 @@ mod tests {
     }
 
     #[test]
+    fn launcher_cards_show_unless_switched_off() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.hidden.launcher]
+            cards = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(settings.plugins["plain"].launcher_cards());
+        assert!(!settings.plugins["hidden"].launcher_cards());
+        // A manifest's prefixes stay when the config only hides its cards.
+        let launcher = LauncherOptions { prefixes: Some(vec!["t".into()]), cards: None };
+        let mut manifest = PluginConfig { launcher: Some(launcher), ..PluginConfig::default() };
+        assert!(manifest.launcher_cards());
+        overlay(&mut manifest, settings.plugins["hidden"].clone());
+        assert!(!manifest.launcher_cards());
+        assert_eq!(manifest.launcher.unwrap().prefixes, Some(vec!["t".into()]));
+    }
+
+    #[test]
     fn old_launcher_config_folds_into_plugins() {
         let file: crate::config::ConfigFile = toml::from_str(
             r#"
@@ -1766,6 +1838,12 @@ for line in sys.stdin:
             time.sleep(0.1)
             print(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/later', 'params': {'n': 2}}), flush=True)
             continue
+        if name == 'together':
+            answer = json.dumps({'jsonrpc': '2.0', 'id': mid, 'result': result})
+            news = json.dumps({'jsonrpc': '2.0', 'method': 'notifications/together', 'params': {'n': 3}})
+            sys.stdout.write(answer + '\n' + news + '\n')
+            sys.stdout.flush()
+            continue
         if name == 'exit':
             print(json.dumps({'jsonrpc': '2.0', 'id': mid, 'result': result}), flush=True)
             sys.exit(0)
@@ -1820,6 +1898,16 @@ for line in sys.stdin:
         let methods: Vec<_> =
             source.session.as_mut().unwrap().notifications.drain(..).map(|(method, _)| method).collect();
         assert_eq!(methods, ["notifications/early", "notifications/later"]);
+
+        // One that came in the same read as an answer does not wait for the
+        // plugin to write again.
+        assert_eq!(source.invoke("together", json!({}), &current, 1), Ok(json!({ "ok": true })));
+        let mut bells = [0; 8];
+        while source.wake.recv(&mut bells).is_ok() {}
+        source.idle();
+        let methods: Vec<_> =
+            source.session.as_mut().unwrap().notifications.drain(..).map(|(method, _)| method).collect();
+        assert_eq!(methods, ["notifications/together"]);
 
         // A plugin exiting while idle is noticed without a request.
         assert_eq!(source.invoke("exit", json!({}), &current, 1), Ok(json!({ "ok": true })));
