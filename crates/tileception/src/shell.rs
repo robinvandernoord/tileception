@@ -55,6 +55,8 @@ pub struct ShellConfig {
     pub bar_position: BarPosition,
     /// The minimap chip in the built-in bar.
     pub bar_minimap: bool,
+    /// The network chip in the built-in bar.
+    pub bar_network: bool,
     /// Maximum bar slots, including the overflow button. At least one.
     pub tray_max_icons: usize,
 }
@@ -72,6 +74,7 @@ impl Default for ShellConfig {
             bar: builtin(),
             bar_position: BarPosition::Top,
             bar_minimap: true,
+            bar_network: true,
             tray_max_icons: 3,
         }
     }

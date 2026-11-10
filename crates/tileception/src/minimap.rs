@@ -125,6 +125,7 @@ impl Tileception {
         }
         self.close_calendar();
         self.close_tray();
+        self.close_network();
         let duration = self.world.settings.animation;
         self.bar.minimap.zoom.set(true, duration);
         self.bar.minimap.pinned = true;

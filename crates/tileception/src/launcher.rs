@@ -88,6 +88,8 @@ pub enum Paste {
     Feedback(u64, bool),
     /// The rubber duck's question.
     Duck,
+    /// The network card's password field.
+    Network,
 }
 
 /// One row of results.
@@ -200,6 +202,7 @@ const COMMANDS: &[Builtin] = &[
     ),
     builtin("Overview", "show everything all windows zoom out", glyph::OVERVIEW, Does::Line("overview")),
     builtin("Minimap", "map tree where camera outline", glyph::MINIMAP, Does::Line("minimap")),
+    builtin("Network", "wifi wi-fi wireless internet ethernet wired join", glyph::WIFI, Does::Line("network")),
     builtin("Lock screen", "lock", glyph::LOCK, Does::Line("lock")),
     builtin("Suspend", "sleep", glyph::MOON, Does::Suspend),
     builtin("Log out", "sign out exit quit leave", glyph::LOG_OUT, Does::Power(PowerAction::LogOut)),
@@ -544,6 +547,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
+            (Paste::Network, Clip::Text(text)) if self.network_typing() => self.network_insert_paste(&text),
             (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
         }
@@ -938,9 +942,12 @@ impl Tileception {
         // copied image often also offers its address as text.
         let mime_types = match target {
             Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Feedback(..) | Paste::Duck => {
-                text.to_vec()
-            }
+            Paste::Doctor
+            | Paste::Launcher(_)
+            | Paste::Settings(_)
+            | Paste::Feedback(..)
+            | Paste::Duck
+            | Paste::Network => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =

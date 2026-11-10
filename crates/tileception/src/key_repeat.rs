@@ -29,6 +29,7 @@ impl Repeat {
                 Command::Media(media) => media.repeats(),
                 Command::LauncherKey(sym, mods)
                 | Command::DuckKey(sym, mods)
+                | Command::NetworkKey(sym, mods)
                 | Command::DoctorKey(sym, mods)
                 | Command::FeedbackKey(sym, mods)
                 | Command::SettingsKey(sym, mods) => edits(*sym, *mods),
@@ -113,6 +114,7 @@ impl Tileception {
                     Command::LauncherKey(..) => self.launcher.open,
                     Command::SettingsKey(..) => self.settings_focused(),
                     Command::DuckKey(..) => self.duck.typing(),
+                    Command::NetworkKey(..) => self.network.zoom.open,
                     Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),
                     Command::FeedbackKey(sym, mods) => self.feedback_key_repeats(*sym, *mods),

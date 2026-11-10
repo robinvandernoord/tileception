@@ -359,6 +359,41 @@ to connect each. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 
+### Network
+
+With NetworkManager running, a Wi-Fi or cable icon in the bar shows how you
+are connected, with the signal strength; hover it for the network's name.
+Click it, or type **Network** in the launcher, to open the network card:
+
+- The switch at the top turns Wi-Fi on or off.
+- Click a network to join it. Saved and open networks join at once; for a
+  secured one, type its password and press **Enter**. **Show** reveals what you
+  typed; copying works only while it shows.
+- **Disconnect** leaves the network you are on.
+
+While the card is open it has the keyboard: **Up** and **Down** choose a
+network, **Enter** joins it (or leaves the one you are on), and **Escape** goes
+back from the password or closes the card. If a password turns out wrong, the
+card asks for it again. **Network settings** at the bottom of the card opens
+the Network page in Settings.
+
+The Network page lists the same networks with a **Join** button each, and holds
+what the card leaves out. It acts on NetworkManager at once rather than as part
+of the Settings draft:
+
+- The connections that are up, with their addresses, gateway, DNS servers,
+  interface and hardware address.
+- Saved Wi-Fi networks. The switch decides whether one joins by itself when in
+  range; **Forget**, clicked twice, removes it with its password.
+- Joining a network by name: a secured one chosen above asks for its password
+  here, and a name that is not in the list joins as a hidden network. Leave the
+  password empty for an open network.
+- **Open editor** starts `nm-connection-editor`, when it is installed, for
+  static addresses, VPNs and enterprise Wi-Fi.
+
+`tileception msg network status` prints the same information, and
+`tileception msg network wifi off` switches Wi-Fi off from a script or binding.
+
 ## Gestures
 
 ### Touchpad

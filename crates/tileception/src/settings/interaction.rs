@@ -50,7 +50,7 @@ impl Tileception {
                 return None;
             }
             let cursor = match hit {
-                Hit::Search => CursorIcon::Text,
+                Hit::Search | Hit::NetName | Hit::NetPassword => CursorIcon::Text,
                 Hit::LevelAt(_) => CursorIcon::EwResize,
                 Hit::Field(index) => match FIELDS[*index].control {
                     Control::Text | Control::Colour => CursorIcon::Text,
@@ -152,6 +152,9 @@ impl Tileception {
             return;
         }
         let frame = self.settings_frame();
+        if self.settings_network_caret(&frame, point, extend) {
+            return;
+        }
         if let Some(index) = self.settings.editing {
             let Some((rect, _)) = frame.hits.iter().find(|(_, hit)| *hit == Hit::Field(index)) else { return };
             let inset = if matches!(FIELDS[index].control, Control::Colour) { 34. } else { 10. };

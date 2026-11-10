@@ -227,6 +227,7 @@ pub struct Tileception {
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
+    pub network: crate::network::Network,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -407,6 +408,7 @@ impl Tileception {
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
             battery: Default::default(),
+            network: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,
@@ -776,7 +778,11 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
+        } else if self.launcher.open
+            || (self.doctor.open && self.doctor.focused)
+            || self.duck.typing()
+            || self.network.zoom.open
+        {
             None
         } else {
             remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
