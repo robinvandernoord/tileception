@@ -676,15 +676,16 @@ impl<'a> Button<'a> {
     }
 }
 
-/// The fill of a button that carries the accent: one hue with a line of
-/// light along the top, brighter and glowing under the pointer.
+/// The shape of a button that carries the accent: a [`Shape::halo`] on the
+/// popup surface, with more of the accent in it and a wider glow under the
+/// pointer.
 fn accent_button(theme: &crate::theme::Theme, radius: f32, hover: bool) -> Shape {
-    let fill = if hover { theme.accent.mix(Colour([1.0; 4]), 0.14) } else { theme.accent };
-    Shape {
-        highlight: 0.28,
-        glow_radius: if hover { theme.glow * 0.75 } else { 0.0 },
-        glow: theme.accent.alpha(0.33),
-        ..Shape::filled(fill, radius)
+    let halo = Shape::halo(theme, theme.popup(), radius);
+    if hover {
+        let fill = theme.popup().mix(theme.accent, 0.34);
+        Shape { fill: (fill, fill), highlight: 0.14, glow: theme.accent.alpha(0.42), ..halo }
+    } else {
+        Shape { glow_radius: theme.glow * 0.78, glow: theme.accent.alpha(0.26), ..halo }
     }
 }
 
@@ -878,19 +879,21 @@ impl<'a> Painter<'a> {
         let (shape, colour) = match (look, enabled) {
             (Look::Quiet, false) => (None, theme.muted.alpha(0.5)),
             (_, false) => (Some(outlined(Colour::TRANSPARENT)), theme.muted),
-            (Look::Primary, true) => (Some(accent_button(theme, radius, hover)), theme.on_accent),
+            (Look::Primary, true) => (Some(accent_button(theme, radius, hover)), theme.text),
             (Look::Quiet, true) => (hover.then(|| Shape::filled(theme.surface_raised, radius)), theme.text),
             (Look::Plain | Look::Warning, true) => (
                 Some(outlined(if hover { theme.border } else { theme.surface_raised })),
                 if look == Look::Warning { theme.warning } else { theme.text },
             ),
         };
-        // On the accent itself, the focus ring is in the text colour.
+        // Beside the accent border of a primary button, the focus ring is in
+        // the text colour.
         let ring = if look == Look::Primary && enabled { theme.text } else { theme.accent };
         let shape = match (shape, focused) {
             (shape, true) => Some(Shape {
                 border_width: 2.0,
                 border: ring,
+                border_end: None,
                 ..shape.unwrap_or_else(|| Shape::filled(Colour::TRANSPARENT, radius))
             }),
             (shape, false) => shape,

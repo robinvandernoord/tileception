@@ -522,6 +522,7 @@ impl Tileception {
                         Shape {
                             border_width: 1.0,
                             border: theme.border,
+                            highlight: 0.05,
                             ..Shape::filled(theme.panel(theme.popup()), theme.radius)
                         }
                     },
@@ -561,6 +562,7 @@ impl Tileception {
                     Shape {
                         border_width: 1.0,
                         border: theme.border,
+                        highlight: 0.05,
                         ..Shape::filled(theme.panel(theme.popup()), theme.radius)
                     }
                 },
@@ -572,11 +574,12 @@ impl Tileception {
             } else {
                 theme.text.alpha(0.85)
             };
+            // The chosen one's icon is lit in the accent.
             painter.glyph(
                 action.glyph(),
                 Rect::new(rect.x, rect.y + rect.h * 0.18, rect.w, rect.h * 0.36),
                 28,
-                foreground,
+                if active { theme.accent } else { foreground },
             );
             let label = if enabled { action.label() } else { "Suspend off" };
             let style = Style::new(theme.font_size, foreground).align(Align::Centre);
@@ -588,11 +591,8 @@ impl Tileception {
             // The letter that picks it, in the corner.
             let key = action.key().to_ascii_uppercase().to_string();
             let chip = Rect::new(rect.right() - 26.0, rect.y + 8.0, 18.0, 18.0);
-            let (chip_fill, chip_text) = if selected && enabled {
-                (theme.on_accent.alpha(0.18), theme.on_accent)
-            } else {
-                (theme.surface_raised, theme.muted)
-            };
+            let (chip_fill, chip_text) =
+                if selected && enabled { (theme.accent, theme.on_accent) } else { (theme.surface_raised, theme.muted) };
             painter.fill(chip, chip_fill, 4.0);
             painter.text(&key, chip, Style::new(theme.font_size * 0.75, chip_text).bold().align(Align::Centre));
         }

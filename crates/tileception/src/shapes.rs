@@ -51,10 +51,11 @@ void main() {
     vec4 c = mix(u_fill_a, u_fill_b, t) * inside;
 
     if (u_highlight > 0.0) {
-        // The pixels inside the shape whose neighbour above is outside it:
-        // a line of light that follows the top edge and its corners.
-        float above = rounded_box(p - vec2(0.0, 1.0) - half_size, half_size, u_radius);
-        float line = inside * (1.0 - clamp(0.5 - above, 0.0, 1.0)) * u_highlight;
+        // The pixels inside the border whose neighbour above is not: a line
+        // of light that follows the top edge and its corners.
+        float above = rounded_box(p - vec2(0.0, 1.0) - half_size, half_size, u_radius) + u_border_w;
+        float within = clamp(0.5 - (d + u_border_w), 0.0, 1.0);
+        float line = within * (1.0 - clamp(0.5 - above, 0.0, 1.0)) * u_highlight;
         c = vec4(line) + c * (1.0 - line);
     }
 
@@ -119,14 +120,17 @@ impl Shape {
     }
 
     /// The chosen one among several, drawn like the focused window: `base`
-    /// tinted with the accent, an accent border and its glow.
+    /// tinted with the accent, a border that runs from the accent to its end
+    /// colour, a line of light under the top of it and the glow.
     pub fn halo(theme: &Theme, base: Colour, radius: f32) -> Shape {
         Shape {
             border_width: 1.0,
             border: theme.accent,
+            border_end: Some(theme.accent_end),
+            highlight: 0.12,
             glow_radius: theme.glow,
-            glow: theme.accent.alpha(0.27),
-            ..Shape::filled(base.mix(theme.accent, 0.16), radius)
+            glow: theme.accent.alpha(0.3),
+            ..Shape::filled(base.mix(theme.accent, 0.2), radius)
         }
     }
 }
