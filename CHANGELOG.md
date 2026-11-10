@@ -2,6 +2,26 @@
 
 <!-- next-version-placeholder -->
 
+## v0.14.0 (2026-11-10)
+
+### Features
+* **tools:** add direct cargo-plane binary fallback
+* **doctor:** use agents that are already installed
+* **doctor:** add /report to send feedback from Doctor
+* **clipboard:** ship the persistence helper
+* **plugins:** support reloads/rediscover via `msg`
+* **plugins:** stream launcher search results
+
+### Fixes
+* **launcher:** complete a bare "~" to the home folder
+* **install:** report cargo-plane download failures clearly
+* **duck:** schedule redraws around animation changes
+* **doctor:** restart an agent that does not stop when asked
+* **settings:** stop scaling the Settings window twice
+
+### Documentation
+* **config:** clarify defaults and add configuration examples
+
 ## v0.13.0 (2026-11-08)
 
 ### Features

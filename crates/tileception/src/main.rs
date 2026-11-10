@@ -52,6 +52,7 @@ mod media;
 mod minimap;
 mod minimized;
 mod mirror;
+mod network;
 mod notifications;
 mod osd;
 mod outputs;
@@ -313,6 +314,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // runs in, which already shows the updates: there, only on request.
     if (!nested && !headless) || std::env::var_os("TILECEPTION_UPDATES").is_some() {
         state.start_updates();
+    }
+    // TILECEPTION_NETWORK_BUS points at a stand-in for NetworkManager, for tests.
+    match std::env::var(crate::network::manager::BUS_VARIABLE) {
+        Ok(address) => state.start_network(Some(address)),
+        Err(_) if !headless => state.start_network(None),
+        Err(_) => {}
     }
     let notification_bus = std::env::var("TILECEPTION_NOTIFICATION_BUS").ok();
     state.notification_bus = notification_bus.clone();

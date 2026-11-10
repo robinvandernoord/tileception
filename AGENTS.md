@@ -16,9 +16,12 @@ make tools
 This installs cargo-binstall with its upstream binary install script if needed,
 then installs cargo-plane with `cargo binstall --no-confirm --disable-strategies
 compile 'cargo-plane@>=0.2'`. Existing cargo-plane installations are upgraded
-if they lack unattended setup support. Source compilation is
-disabled to keep installation usable on small machines. If no binary is
-available, report the failure and wait for the release to become available.
+if they lack unattended setup support. When binstall fails, for example
+because a proxy or rate limit refuses its GitHub API lookups,
+`scripts/install-cargo-plane.sh` downloads the same release archive directly,
+taking the version from the crates.io index. Source compilation is disabled to
+keep installation usable on small machines. If no binary is available, report
+the failure and wait for the release to become available.
 `make deps` also runs this tool installation before checking system packages.
 It installs rustfmt and Clippy through rustup too; for a Rust installation
 without rustup, both tools must already be available.

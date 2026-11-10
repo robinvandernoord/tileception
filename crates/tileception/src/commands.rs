@@ -7,6 +7,17 @@ use tileception_core::Dir;
 
 use crate::{Tileception, input::Action};
 
+/// `tileception msg network ...`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NetworkCommand {
+    /// Opens or closes the card.
+    Card,
+    Status,
+    /// Switches Wi-Fi on or off; `None` flips it.
+    Wifi(Option<bool>),
+    Disconnect,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Action(Action),
@@ -88,6 +99,10 @@ pub enum Command {
     Feedback(String),
     /// A key pressed while the duck's question has the keyboard (not available as text).
     DuckKey(u32, crate::config::Mods),
+    /// The network card, Wi-Fi and the network's status.
+    Network(NetworkCommand),
+    /// A key pressed while the network card is open (not available as text).
+    NetworkKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
@@ -120,6 +135,7 @@ Inspecting:
   bluetooth on|off          switch Bluetooth on or off
   bluetooth connect <name>  connect a paired device (also: disconnect)
   bluetooth reconnect       reconnect devices that were connected before
+  network status            print the wired connection and the Wi-Fi networks
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
@@ -159,6 +175,9 @@ Views:
   go <1-9>                  go to a saved view
   desktop                   show or hide the Desktop tile
   minimap                   open or close the map of the whole tree in the bar
+  network                   open or close the network card in the bar
+  network wifi [on|off]     switch Wi-Fi on or off (toggles without on or off)
+  network disconnect        leave the Wi-Fi network
 
 Shell:
   launcher                  open the launcher
@@ -303,6 +322,17 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "battery" => return Ok(Command::Battery),
         "updates" => return crate::updates::parse(&args).map(Command::Updates),
         "bluetooth" => return Ok(Command::Bluetooth(rest.to_string())),
+        "network" => {
+            return match args.as_slice() {
+                [] => Ok(Command::Network(NetworkCommand::Card)),
+                ["status"] => Ok(Command::Network(NetworkCommand::Status)),
+                ["wifi"] | ["wifi", "toggle"] => Ok(Command::Network(NetworkCommand::Wifi(None))),
+                ["wifi", "on"] => Ok(Command::Network(NetworkCommand::Wifi(Some(true)))),
+                ["wifi", "off"] => Ok(Command::Network(NetworkCommand::Wifi(Some(false)))),
+                ["disconnect"] => Ok(Command::Network(NetworkCommand::Disconnect)),
+                _ => Err("network takes nothing, status, wifi [on|off] or disconnect".into()),
+            };
+        }
         "caches" => return Ok(Command::Caches),
         "tray" => {
             return match args.as_slice() {
@@ -561,6 +591,8 @@ impl Tileception {
             Command::Feedback(title) => self.send_feedback(&title),
             Command::FeedbackKey(sym, mods) => self.feedback_key(sym, mods),
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
+            Command::Network(command) => return self.network_command(command),
+            Command::NetworkKey(sym, mods) => self.network_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::Settings => self.toggle_settings(),

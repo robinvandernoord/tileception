@@ -113,9 +113,6 @@ Report testing in the conversation, the commit or the pull request instead.
     entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
-- Windows larger than their tiles: optionally draw a window only slightly
-  too big (within 5 to 10 percent) 1:1 and cut it off instead of scaling
-  it, so its text stays sharp.
 - Notifications on Tileception's own lock screen (external lockers draw
   only themselves), beyond Tileception's own notifications and a count.
   Decided:
@@ -170,8 +167,8 @@ Report testing in the conversation, the commit or the pull request instead.
   and default config, writing only missing or changed files.
 - Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
-  commit the new size; crop or pad instead, as niri does. Only if it shows up
-  in practice.
+  commit the new size; pad a buffer smaller than its slot instead, and scale
+  down one that is larger (never crop it). Only if it shows up in practice.
 - Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
   panels, Ctrl+Space layout switching, more than one screen, reduced motion,
   an accent taken from a shared wallpaper, and the full tile-to-window morph
@@ -202,6 +199,9 @@ Report testing in the conversation, the commit or the pull request instead.
 - A built-in clipboard history.
 - Restyling after LunariaOS (floating bar, pills, capsules and the like);
   Tide's look stays (decided 2026-11-02).
+- Cutting off part of a window, for sharper text or any other reason. A
+  window too big for its tile is scaled down; slightly soft text is far more
+  usable than a hidden edge.
 - Glass: translucent, blurred windows. Blur behind every window is redone
   most frames while the camera moves; Frost covers what matters
   (decided 2026-11-02).

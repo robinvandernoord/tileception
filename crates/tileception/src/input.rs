@@ -386,6 +386,24 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::DuckKey(sym, Mods::from_state(mods))]);
             }
+            // Before the welcome screen, which is the launcher too.
+            if panels && state.network.zoom.open && (!state.launcher.open || state.launcher.home) {
+                // The network card has the keyboard while it is open; Super
+                // shortcuts and keys that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
+            }
             if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
                 // and Esc closes the notification panel first.
@@ -900,7 +918,7 @@ impl Tileception {
             return;
         }
         if self.power_menu.is_none()
-            && (self.tray.open || state == ButtonState::Released)
+            && (self.tray.open || self.network.zoom.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
         {
             return;

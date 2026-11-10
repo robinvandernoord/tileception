@@ -228,6 +228,7 @@ pub struct Tileception {
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
     pub updates: crate::updates::Updates,
+    pub network: crate::network::Network,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -409,6 +410,7 @@ impl Tileception {
             idle: Default::default(),
             battery: Default::default(),
             updates: Default::default(),
+            network: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,
@@ -782,7 +784,11 @@ impl Tileception {
         } else if let Some(layer) = &self.layer_focus {
             // Over the launcher and the Doctor too: slurp needs its Esc.
             Some(KeyboardFocus::Wayland(layer.clone()))
-        } else if self.launcher.open || (self.doctor.open && self.doctor.focused) || self.duck.typing() {
+        } else if self.launcher.open
+            || (self.doctor.open && self.doctor.focused)
+            || self.duck.typing()
+            || self.network.zoom.open
+        {
             None
         } else {
             remote = focus.filter(|window_id| self.handoff.windows.is_remote(*window_id));
@@ -917,6 +923,19 @@ pub(crate) fn wants_float(window: &Window) -> bool {
         return x11.is_transient_for().is_some() || dialog || fixed;
     }
     false
+}
+
+/// The largest size a window lets itself be, either side unlimited if `None`.
+pub(crate) fn max_size(window: &Window) -> (Option<i32>, Option<i32>) {
+    let size = if let Some(toplevel) = window.toplevel() {
+        with_states(toplevel.wl_surface(), |states| states.cached_state.get::<SurfaceCachedState>().current().max_size)
+    } else if let Some(max) = window.x11_surface().and_then(|x11| x11.max_size()) {
+        max
+    } else {
+        return (None, None);
+    };
+    // Zero means no limit on that side.
+    ((size.w > 0).then_some(size.w), (size.h > 0).then_some(size.h))
 }
 
 /// Not before a window's first configure: foot crashes on an enter then.

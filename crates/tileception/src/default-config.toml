@@ -240,6 +240,10 @@ bar_position = "top"
 # screen marked. Click it to open a larger map: click a window there to fly
 # to it, drag to pan at the current zoom level. Also the `minimap` command.
 bar_minimap = true
+# A chip in the bar with the Wi-Fi network or wired connection in use, when
+# NetworkManager runs. Click it to switch Wi-Fi, join a network (secured ones
+# ask for their password) or disconnect. Also the `network` command.
+bar_network = true
 # Maximum tray slots, including the overflow button. With more than this
 # many applications, the last slot becomes (…) and opens the remaining items.
 # Must be at least 1; changes apply on save.
