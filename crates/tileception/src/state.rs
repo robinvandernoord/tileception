@@ -622,6 +622,11 @@ impl Tileception {
         });
         let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
+        // The new window takes the keyboard. Behind a fullscreen window it
+        // would do so unseen, so that one returns to the layout first.
+        if let Some(full) = self.fullscreen.filter(|full| *full != window_id && !rule.minimized) {
+            self.set_fullscreen(full, false);
+        }
         let now = self.now();
         self.world.add_window(window_id, placement, now);
         self.restore_window_layout(window_id);
