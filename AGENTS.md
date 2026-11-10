@@ -154,8 +154,8 @@ Give the field its keys through its `key` method and do what the returned
 `text_input::Key` says: pass `clipboard` to `Tileception::field_clipboard`,
 and use `changed` to refresh what depends on the text. A paste arrives through
 the field's `paste`, which makes it one line for a single-line field. Never
-match an editing key (arrows, Home, End, Backspace, Delete, Ctrl+A, C, X, V or
-U, typed characters) in a field's own handler, and never copy another field's
+match an editing key (arrows, Home, End, Backspace, Delete, Insert, Ctrl+A, C,
+X, V, Z, Y, U, K or W, typed characters) in a field's own handler, and never copy another field's
 handler: what a key means is decided once, in `Buffer::edit` in
 `text_input.rs`, and its tests list every key. A key that should work in
 fields is added there, with a test, so that every field gets it.
@@ -163,8 +163,26 @@ fields is added there, with a test, so that every field gets it.
 A field handles only what is its own: Enter, Escape, Tab, and the keys of a
 list attached to it, such as a menu's values, which takes Up, Down, Page Up
 and Page Down. Handle those first and pass every other key to the field.
-Variants are settings of the same types, not separate code: `multiline` and
-`read_only` on `TextInput`, its `hidden` flag while a password is masked, and
-`SecretField::appending` for a row of dots without a caret. Place the caret
-from the pointer with `TextInput::click` (or `move_to` where the field lays
-out its own rows). Try the keys in a headless instance.
+Variants are settings of the same types, not separate code: `multiline`,
+`code` and `read_only` on `TextInput`, its `hidden` flag while a password is
+masked, and `SecretField::appending` for a row of dots without a caret.
+
+The pointer is as uniform as the keys. A field's text is a `ui::PointerTarget`
+with the text cursor, and every field takes:
+
+- a press, which places the caret, selects the word on a double click and
+  the line (or everything) on a triple click: `TextInput::click` for a single
+  line, or `press` with the byte offset where the field lays out its own rows
+  (`SecretField::press` for a mask). Pass `extend` for a press with Shift;
+- a drag on from the press, with `extend`, which selects;
+- the release, where `Tileception::offer_primary` gets the field's
+  `selected_text`, so a middle click pastes it elsewhere;
+- a middle click, through `PointerAction::middle_click` (in Settings,
+  `settings_middle_click`), which places the caret and calls
+  `Tileception::paste_primary`.
+
+A press must reach the field once: a second call for the same press counts as
+a double click. A press in a field that is being edited must keep its
+`TextInput`, which holds what Ctrl+Z undoes, instead of starting the edit
+again. Use `move_to` only for keys the field handles itself, such as moving
+between its rows. Try the keys and the pointer in a headless instance.
