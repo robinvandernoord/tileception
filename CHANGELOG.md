@@ -2,6 +2,12 @@
 
 <!-- next-version-placeholder -->
 
+## v0.14.1 (2026-11-10)
+
+### Fixes
+* **paste:** keep handoff pipes in blocking mode
+* **render:** fit size-capped windows to the output (#63)
+
 ## v0.14.0 (2026-11-10)
 
 ### Features
