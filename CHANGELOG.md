@@ -2,6 +2,28 @@
 
 <!-- next-version-placeholder -->
 
+## v0.15.0 (2026-11-10)
+
+### Features
+* **calc:** expand offline unit conversions
+* **plugins:** add interactive launcher prompts
+* **timers:** add bundled timers and alarms
+* **plugins:** add launcher cards
+* **panel:** allow rearranging plugin blocks
+* **updates:** add APT update manager
+* **network:** add NetworkManager controls and Settings page
+
+### Fixes
+* **floating:** keep floating windows visible and on top
+* **settings:** keep a section in place when Settings edits it
+* **input:** end a drag when the button is released over a panel
+* **state:** exit fullscreen before focusing a new window
+* **handoff:** preserve pause state across session locks
+* **layout:** do not panic resizing between two squeezed tiles
+
+### Documentation
+* **plugins:** document launcher cards and timers
+
 ## v0.14.1 (2026-11-10)
 
 ### Fixes
