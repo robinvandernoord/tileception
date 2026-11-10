@@ -1,8 +1,8 @@
 //! The Updates window: a real toplevel drawn by the compositor, like
-//! Settings. Its pages list the pending updates, the kernels with a removal
-//! queue, the next release with what to look at first, and the apt history.
+//! Settings. Its pages list the pending updates, the kernels with a queue
+//! of installs and removals, the next release with what to look at first, and the apt history.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use smithay::{
     backend::renderer::gles::GlesRenderer,
@@ -67,10 +67,17 @@ pub(crate) struct Window {
     selected: usize,
     /// Updates left out of the next install.
     skipped: BTreeSet<String>,
-    /// Kernels queued for removal, by identifier.
-    queue: BTreeSet<String>,
-    /// The leftover packages are queued too.
-    leftovers: bool,
+    /// Kernels queued to install or remove, by image package.
+    queue: BTreeMap<String, kernels::Queued>,
+    /// The leftover headers, and the leftover modules and tools, are queued too.
+    headers: bool,
+    support: bool,
+    /// Removals also drop the packages' configuration.
+    purge: bool,
+    /// Every variant is listed: other flavours, unsigned and debug builds.
+    all_variants: bool,
+    /// Kernel series whose builds are folded away.
+    folded: BTreeSet<String>,
     /// What apt says the queue would do; empty while it is being asked.
     preview: Option<String>,
 }
@@ -88,8 +95,12 @@ impl Default for Window {
             scroll: 0.0,
             selected: 0,
             skipped: BTreeSet::new(),
-            queue: BTreeSet::new(),
-            leftovers: false,
+            queue: BTreeMap::new(),
+            headers: false,
+            support: false,
+            purge: true,
+            all_variants: false,
+            folded: BTreeSet::new(),
             preview: None,
         }
     }
@@ -109,23 +120,38 @@ impl Window {
         }
     }
 
+    pub(super) fn all_variants(&self) -> bool {
+        self.all_variants
+    }
+
     /// Forgets choices about packages that are gone after a new look.
-    pub(super) fn settle(&mut self, snapshot: &Snapshot) {
+    pub(super) fn settle(&mut self, snapshot: &Snapshot, found: &[kernels::Kernel]) {
         self.skipped.retain(|name| snapshot.updates.iter().any(|update| update.name == *name));
-        let found = snapshot.kernels();
-        self.queue.retain(|queued| found.iter().any(|kernel| kernel.installed && kernel.identifier == *queued));
-        if kernels::leftovers(&snapshot.packages).is_empty() {
-            self.leftovers = false;
-        }
+        self.queue.retain(|package, queued| {
+            found.iter().find(|kernel| kernel.package == *package).is_some_and(|kernel| match queued {
+                kernels::Queued::Install => !kernel.installed,
+                kernels::Queued::Remove => kernel.installed && !kernel.running,
+            })
+        });
+        self.headers &= !kernels::unused_headers(&snapshot.packages).is_empty();
+        self.support &= !kernels::unused_support(&snapshot.packages).is_empty();
     }
 
     pub(super) fn task_done(&mut self, task: &Task) {
-        if matches!(task, Task::Remove(_)) {
+        if matches!(task, Task::Remove(_) | Task::Kernels { .. }) {
             self.queue.clear();
-            self.leftovers = false;
+            self.headers = false;
+            self.support = false;
             self.preview = None;
         }
     }
+}
+
+/// The two kinds of leftover kernel package, cleaned up apart as in kerntop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leftover {
+    Headers,
+    Support,
 }
 
 /// One line of a page's list.
@@ -133,8 +159,10 @@ impl Window {
 enum Row {
     Heading(String, String),
     Update(usize),
+    /// A kernel series: its name, and how many builds are installed and available.
+    Series(String, usize, usize),
     Kernel(usize),
-    Leftovers,
+    Leftovers(Leftover),
     Check(usize),
     Entry(usize),
     Text(String),
@@ -143,16 +171,16 @@ enum Row {
 impl Row {
     fn height(&self) -> f64 {
         match self {
-            Row::Heading(..) => 32.0,
+            Row::Heading(..) | Row::Series(..) => 32.0,
             Row::Update(_) | Row::Entry(_) => 30.0,
-            Row::Kernel(_) | Row::Leftovers => 34.0,
+            Row::Kernel(_) | Row::Leftovers(_) => 34.0,
             Row::Check(_) => 48.0,
             Row::Text(_) => 18.0,
         }
     }
 
     fn selectable(&self) -> bool {
-        matches!(self, Row::Update(_) | Row::Kernel(_) | Row::Entry(_) | Row::Leftovers)
+        matches!(self, Row::Update(_) | Row::Series(..) | Row::Kernel(_) | Row::Entry(_) | Row::Leftovers(_))
     }
 }
 
@@ -163,7 +191,12 @@ enum Hit {
     Select(usize),
     Tick(usize),
     Kernel(usize),
-    Leftovers,
+    /// Folds or unfolds the series at this row.
+    Fold(usize),
+    Leftovers(Leftover),
+    Variants,
+    Purge,
+    Clear,
     Install,
     Security,
     Suggest,
@@ -435,18 +468,28 @@ impl Tileception {
                     rows.extend(preview.lines().map(|line| Row::Text(line.to_string())));
                     return rows;
                 }
-                let found = snapshot.kernels();
-                let mut series = String::new();
-                for (index, kernel) in found.iter().enumerate() {
-                    if kernel.series() != series {
-                        series = kernel.series();
-                        rows.push(Row::Heading(format!("Linux {series}"), String::new()));
+                let found = &updates.kernels;
+                let mut start = 0;
+                while start < found.len() {
+                    let series = found[start].series();
+                    let end = start + found[start..].iter().take_while(|kernel| kernel.series() == series).count();
+                    let installed = found[start..end].iter().filter(|kernel| kernel.installed).count();
+                    let folded = updates.window.folded.contains(&series);
+                    rows.push(Row::Series(series, installed, end - start - installed));
+                    if !folded {
+                        rows.extend((start..end).map(Row::Kernel));
                     }
-                    rows.push(Row::Kernel(index));
+                    start = end;
                 }
+                let note = "without an installed kernel; this never runs autoremove";
                 if !kernels::leftovers(&snapshot.packages).is_empty() {
-                    rows.push(Row::Heading("Leftovers".into(), "headers and modules without a kernel".into()));
-                    rows.push(Row::Leftovers);
+                    rows.push(Row::Heading("Leftovers".into(), note.into()));
+                }
+                if !kernels::unused_headers(&snapshot.packages).is_empty() {
+                    rows.push(Row::Leftovers(Leftover::Headers));
+                }
+                if !kernels::unused_support(&snapshot.packages).is_empty() {
+                    rows.push(Row::Leftovers(Leftover::Support));
                 }
                 if found.is_empty() {
                     rows.push(Row::Text(format!(
@@ -516,7 +559,9 @@ impl Tileception {
     fn updates_select_first(&mut self) {
         let rows = self.updates_rows();
         let window = &mut self.updates.window;
-        if rows.get(window.selected).is_some_and(Row::selectable) {
+        // The first row means nothing was chosen yet.
+        let chosen = window.selected > 0 && rows.get(window.selected).is_some_and(Row::selectable);
+        if chosen {
             return;
         }
         window.selected = rows.iter().position(Row::selectable).unwrap_or(0);
@@ -525,7 +570,7 @@ impl Tileception {
         }
         // Apt offers many kernels: start at the running one, with the newer
         // ones above it within reach.
-        let found = self.updates.snapshot.kernels();
+        let found = &self.updates.kernels;
         let running = rows.iter().position(
             |row| matches!(row, Row::Kernel(index) if found.get(*index).is_some_and(|kernel| kernel.running)),
         );
@@ -567,33 +612,74 @@ impl Tileception {
         self.updates_rows().get(self.updates.window.selected).cloned()
     }
 
-    /// The packages the kernel queue would remove.
-    fn updates_queue_names(&self) -> Vec<String> {
+    /// What the kernel queue would install and remove: the queued kernels
+    /// with their headers and modules, and the ticked leftovers.
+    fn updates_queue_plan(&self) -> (Vec<String>, Vec<String>) {
         let snapshot = &self.updates.snapshot;
         let window = &self.updates.window;
-        let queued: Vec<String> = window.queue.iter().cloned().collect();
-        let mut names = kernels::removal(&snapshot.packages, &snapshot.running, &queued).unwrap_or_default();
-        if window.leftovers {
-            for package in kernels::leftovers(&snapshot.packages) {
-                if !names.contains(&package.name) {
-                    names.push(package.name.clone());
+        let mut install: Vec<String> = Vec::new();
+        let mut images = Vec::new();
+        for (package, queued) in &window.queue {
+            match queued {
+                kernels::Queued::Remove => images.push(package.clone()),
+                kernels::Queued::Install => {
+                    let targets = self
+                        .updates
+                        .kernels
+                        .iter()
+                        .find(|kernel| kernel.package == *package)
+                        .map(kernels::install_targets)
+                        .unwrap_or_default();
+                    install.extend(targets.into_iter().filter(|name| !install.contains(name)).collect::<Vec<_>>());
                 }
             }
         }
-        names
+        let mut remove = kernels::removal(&snapshot.packages, &snapshot.running, &images).unwrap_or_default();
+        let headers = if window.headers { kernels::unused_headers(&snapshot.packages) } else { Vec::new() };
+        let support = if window.support { kernels::unused_support(&snapshot.packages) } else { Vec::new() };
+        for package in headers.into_iter().chain(support) {
+            if !remove.contains(&package.name) {
+                remove.push(package.name.clone());
+            }
+        }
+        (install, remove)
     }
 
     /// Queues what clean-up suggests: old kernels and leftovers.
     pub(crate) fn updates_queue_suggested(&mut self) {
         let snapshot = &self.updates.snapshot;
-        let old: BTreeSet<String> =
-            kernels::removable(&snapshot.kernels()).iter().map(|kernel| kernel.identifier.clone()).collect();
-        let leftovers = !kernels::leftovers(&snapshot.packages).is_empty();
+        let old: BTreeMap<String, kernels::Queued> = kernels::removable(&self.updates.kernels)
+            .iter()
+            .map(|kernel| (kernel.package.clone(), kernels::Queued::Remove))
+            .collect();
+        let headers = !kernels::unused_headers(&snapshot.packages).is_empty();
+        let support = !kernels::unused_support(&snapshot.packages).is_empty();
         let window = &mut self.updates.window;
         window.queue = old;
-        window.leftovers = leftovers;
+        window.headers = headers;
+        window.support = support;
         window.preview = None;
         self.updates_changed();
+    }
+
+    /// Switches between kerntop's recommended view and every variant. The
+    /// long list of variants starts with only the installed series unfolded.
+    fn updates_toggle_variants(&mut self) {
+        let all = !self.updates.window.all_variants;
+        self.updates.window.all_variants = all;
+        self.updates_refresh_kernels();
+        let mut folded = BTreeSet::new();
+        if all {
+            let found = &self.updates.kernels;
+            let installed: BTreeSet<String> =
+                found.iter().filter(|kernel| kernel.installed).map(kernels::Kernel::series).collect();
+            folded = found.iter().map(kernels::Kernel::series).filter(|series| !installed.contains(series)).collect();
+        }
+        let window = &mut self.updates.window;
+        window.folded = folded;
+        window.selected = 0;
+        window.scroll = 0.0;
+        self.updates_select_first();
     }
 
     /// The names of the ticked updates; none when every update is ticked.
@@ -642,8 +728,40 @@ impl Tileception {
                 Ok(())
             }
             Hit::Kernel(index) => self.updates_kernel_action(index),
-            Hit::Leftovers => {
-                self.updates.window.leftovers = !self.updates.window.leftovers;
+            Hit::Fold(row) => {
+                if let Some(Row::Series(series, ..)) = self.updates_rows().get(row).cloned() {
+                    let folded = &mut self.updates.window.folded;
+                    if !folded.remove(&series) {
+                        folded.insert(series);
+                    }
+                    self.updates.window.selected = row;
+                }
+                Ok(())
+            }
+            Hit::Leftovers(kind) => {
+                let window = &mut self.updates.window;
+                match kind {
+                    Leftover::Headers => window.headers = !window.headers,
+                    Leftover::Support => window.support = !window.support,
+                }
+                window.preview = None;
+                Ok(())
+            }
+            Hit::Variants => {
+                self.updates_toggle_variants();
+                Ok(())
+            }
+            Hit::Purge => {
+                self.updates.window.purge = !self.updates.window.purge;
+                self.updates.window.preview = None;
+                Ok(())
+            }
+            Hit::Clear => {
+                let window = &mut self.updates.window;
+                window.queue.clear();
+                window.headers = false;
+                window.support = false;
+                window.preview = None;
                 Ok(())
             }
             Hit::Install => {
@@ -660,22 +778,23 @@ impl Tileception {
                 Ok(())
             }
             Hit::Preview => {
-                if self.updates.window.preview.take().is_none() {
-                    let names = self.updates_queue_names();
-                    if !names.is_empty() {
+                if self.updates.window.preview.take().is_some() {
+                    Ok(())
+                } else {
+                    let (install, remove) = self.updates_queue_plan();
+                    apt::transaction_args(&install, &remove, self.updates.window.purge, true).map(|args| {
                         self.updates.window.preview = Some(String::new());
                         self.updates.window.scroll = 0.0;
-                        self.updates_preview(names);
-                    }
+                        self.updates_preview(args);
+                    })
                 }
-                Ok(())
             }
             Hit::Apply => {
-                let names = self.updates_queue_names();
-                if names.is_empty() {
+                let (install, remove) = self.updates_queue_plan();
+                if install.is_empty() && remove.is_empty() {
                     Err("Queue a kernel first.".into())
                 } else {
-                    self.updates_start(Task::Remove(names))
+                    self.updates_start(Task::Kernels { install, remove, purge: self.updates.window.purge })
                 }
             }
             Hit::Upgrade => self.updates_upgrade_release(),
@@ -711,28 +830,67 @@ impl Tileception {
         self.updates_changed();
     }
 
-    /// A kernel's button: install one that is offered, or queue an installed
-    /// one for removal. The running kernel has none.
+    /// A kernel's button: queues an offered one to install or an installed
+    /// one to remove, or takes it off the queue. The running kernel has none.
     fn updates_kernel_action(&mut self, index: usize) -> Result<(), String> {
-        let Some(kernel) = self.updates.snapshot.kernels().get(index).cloned() else { return Ok(()) };
+        let Some(kernel) = self.updates.kernels.get(index) else { return Ok(()) };
         if kernel.running {
             return Err("The running kernel cannot be removed.".into());
         }
-        if !kernel.installed {
-            return self.updates_start(Task::Add(vec![kernel.package]));
-        }
+        let queued = if kernel.installed { kernels::Queued::Remove } else { kernels::Queued::Install };
+        let package = kernel.package.clone();
         let queue = &mut self.updates.window.queue;
-        if !queue.remove(&kernel.identifier) {
-            queue.insert(kernel.identifier);
+        if queue.remove(&package).is_none() {
+            queue.insert(package, queued);
         }
         self.updates.window.preview = None;
         Ok(())
+    }
+
+    /// kerntop's keys on the Kernels page. Returns whether the key was one.
+    fn updates_kernel_key(&mut self, sym: u32) -> bool {
+        let selected = self.updates_selected_row();
+        let kernel = match &selected {
+            Some(Row::Kernel(index)) => self.updates.kernels.get(*index).map(|kernel| (*index, kernel.installed)),
+            _ => None,
+        };
+        let busy = self.updates.busy();
+        match (sym, kernel) {
+            (keysyms::KEY_a, _) => self.updates_window_activate(Hit::Variants),
+            (keysyms::KEY_p, _) => self.updates_window_activate(Hit::Preview),
+            (keysyms::KEY_c, _) => self.updates_window_activate(Hit::Clear),
+            (keysyms::KEY_r, _) if !busy => self.updates_window_activate(Hit::Refresh),
+            (keysyms::KEY_u, _) if !busy => {
+                let snapshot = &self.updates.snapshot;
+                let headers = !kernels::unused_headers(&snapshot.packages).is_empty();
+                let support = !kernels::unused_support(&snapshot.packages).is_empty();
+                let window = &mut self.updates.window;
+                let all = window.headers == headers && window.support == support;
+                window.headers = headers && !all;
+                window.support = support && !all;
+                window.preview = None;
+            }
+            (keysyms::KEY_q, Some((index, _)))
+            | (keysyms::KEY_i, Some((index, false)))
+            | (keysyms::KEY_d, Some((index, true)))
+                if !busy =>
+            {
+                self.updates_window_activate(Hit::Kernel(index));
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub(crate) fn updates_window_key(&mut self, sym: u32, mods: Mods) {
         if !self.updates.window.open {
             return;
         }
+        let plain = !mods.ctrl && !mods.alt && !mods.logo;
+        if plain && self.updates.window.page == Page::Kernels && self.updates_kernel_key(sym) {
+            return self.updates_changed();
+        }
+        let selected = self.updates.window.selected;
         match sym {
             keysyms::KEY_Escape if self.updates.window.preview.is_some() => self.updates.window.preview = None,
             keysyms::KEY_Escape => return self.close_updates(),
@@ -751,9 +909,15 @@ impl Tileception {
             keysyms::KEY_space => match self.updates_selected_row() {
                 Some(Row::Update(index)) => self.updates_window_activate(Hit::Tick(index)),
                 Some(Row::Kernel(index)) => self.updates_window_activate(Hit::Kernel(index)),
-                Some(Row::Leftovers) => self.updates_window_activate(Hit::Leftovers),
+                Some(Row::Leftovers(kind)) => self.updates_window_activate(Hit::Leftovers(kind)),
+                Some(Row::Series(..)) => self.updates_window_activate(Hit::Fold(selected)),
                 _ => {}
             },
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter
+                if matches!(self.updates_selected_row(), Some(Row::Series(..))) =>
+            {
+                self.updates_window_activate(Hit::Fold(selected));
+            }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter if !self.updates.busy() => match self.updates.window.page {
                 Page::Available => self.updates_window_activate(Hit::Install),
                 Page::Kernels => self.updates_window_activate(Hit::Apply),
@@ -786,12 +950,13 @@ impl Tileception {
                 buttons
             }
             Page::Kernels => {
-                let queued = !self.updates_queue_names().is_empty();
+                let (install, remove) = self.updates_queue_plan();
                 let mut buttons = Vec::new();
-                if queued {
+                if !install.is_empty() || !remove.is_empty() {
                     buttons.push(("Apply queue".to_string(), Hit::Apply, true));
                     let label = if updates.window.preview.is_some() { "Back" } else { "Preview" };
                     buttons.push((label.to_string(), Hit::Preview, false));
+                    buttons.push(("Clear".to_string(), Hit::Clear, false));
                 } else if updates.cleanup_summary().is_some() {
                     buttons.push(("Queue old kernels".to_string(), Hit::Suggest, false));
                 }
@@ -836,8 +1001,8 @@ impl Tileception {
     fn updates_window_controls(&self, frame: &Frame) -> Vec<(Rect, Hit)> {
         let updates = &self.updates;
         let mut controls: Vec<(Rect, Hit)> = frame.nav.iter().map(|(rect, page)| (*rect, Hit::Page(*page))).collect();
-        if updates.window.page == Page::Available && !updates.busy() {
-            controls.push((Self::updates_header_button(frame.header), Hit::Refresh));
+        for (slot, (_, hit)) in self.updates_header_buttons().into_iter().enumerate() {
+            controls.push((Self::updates_header_button(frame.header, slot), hit));
         }
         for (slot, (_, hit, _)) in self.updates_footer_buttons().into_iter().enumerate() {
             controls.push((footer_button(frame.footer, slot, 124.0), hit));
@@ -848,7 +1013,7 @@ impl Tileception {
             }
         }
         let checks = self.updates_release_checks();
-        let found = updates.snapshot.kernels();
+        let found = &updates.kernels;
         for (index, (rect, row)) in frame.rows.iter().enumerate() {
             if rect.bottom() <= frame.list.y || rect.y >= frame.list.bottom() {
                 continue;
@@ -863,7 +1028,8 @@ impl Tileception {
                         controls.push((row_button(*rect), Hit::Kernel(*kernel)));
                     }
                 }
-                Row::Leftovers if !updates.busy() => controls.push((row_button(*rect), Hit::Leftovers)),
+                Row::Leftovers(kind) if !updates.busy() => controls.push((row_button(*rect), Hit::Leftovers(*kind))),
+                Row::Series(..) => controls.push((visible, Hit::Fold(index))),
                 Row::Check(check) => {
                     if let Some((_, page)) = checks.get(*check).and_then(Self::updates_check_page) {
                         controls.push((row_button(*rect), Hit::Page(page)));
@@ -878,8 +1044,26 @@ impl Tileception {
         controls
     }
 
-    fn updates_header_button(header: Rect) -> Rect {
-        Rect::new(header.right() - 104.0, header.y + 13.0, 88.0, 30.0)
+    /// The header's buttons, rightmost first.
+    fn updates_header_buttons(&self) -> Vec<(&'static str, Hit)> {
+        let window = &self.updates.window;
+        if self.updates.busy() {
+            return Vec::new();
+        }
+        match window.page {
+            Page::Available => vec![("Check", Hit::Refresh)],
+            Page::Kernels if window.preview.is_none() => vec![
+                ("Check", Hit::Refresh),
+                (if window.all_variants { "Recommended" } else { "All variants" }, Hit::Variants),
+                (if window.purge { "Purge: on" } else { "Purge: off" }, Hit::Purge),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    fn updates_header_button(header: Rect, slot: usize) -> Rect {
+        let width = 104.0;
+        Rect::new(header.right() - 16.0 - width - slot as f64 * (width + 8.0), header.y + 13.0, width, 30.0)
     }
 
     fn updates_window_target(&self, point: Point) -> Option<PointerTarget> {
@@ -1000,7 +1184,13 @@ impl Tileception {
                     } else {
                         "Kernels".to_string()
                     },
-                    if installed > 0 { format!("{} installed", backend::human_size(installed)) } else { String::new() },
+                    if window.preview.is_some() {
+                        String::new()
+                    } else if window.all_variants {
+                        format!("{} installed \u{b7} all variants", backend::human_size(installed))
+                    } else {
+                        format!("{} installed", backend::human_size(installed))
+                    },
                 )
             }
             Page::Release => ("Release".to_string(), format!("You're on {}", snapshot.system.pretty)),
@@ -1011,9 +1201,15 @@ impl Tileception {
             Rect::new(header.x + 18.0, header.y, header.w - 140.0, 56.0),
             Style::new(size * 1.12, theme.text).bold(),
         );
-        painter.text(&note, Rect::new(header.x + 30.0 + width, header.y + 1.0, header.w - width - 150.0, 56.0), muted);
-        if window.page == Page::Available && !updates.busy() {
-            draw_button(&mut painter, Self::updates_header_button(header), "Check", Look::Plain, pointer);
+        let header_buttons = self.updates_header_buttons();
+        let taken = 30.0 + width + header_buttons.len() as f64 * 112.0 + 24.0;
+        painter.text(
+            &note,
+            Rect::new(header.x + 30.0 + width, header.y + 1.0, (header.w - taken).max(1.0), 56.0),
+            muted,
+        );
+        for (slot, (label, _)) in header_buttons.into_iter().enumerate() {
+            draw_button(&mut painter, Self::updates_header_button(header, slot), label, Look::Plain, pointer);
         }
         if window.page == Page::Release {
             let hero = Rect::new(header.x + 16.0, header.y + 56.0, header.w - 32.0, 64.0);
@@ -1060,10 +1256,9 @@ impl Tileception {
         painter.fill(Rect::new(header.x, header.bottom() - 1.0, header.w, 1.0), theme.border, 0.0);
 
         // The list.
-        let found = snapshot.kernels();
-        let keep = kernels::fallback(&found).map(|kernel| kernel.identifier.clone());
+        let found = &updates.kernels;
+        let keep = kernels::fallback(found).map(|kernel| kernel.package.clone());
         let checks = self.updates_release_checks();
-        let leftovers = kernels::leftovers(&snapshot.packages);
         painter.clipped(frame.list, |painter| {
             for (index, (rect, row)) in frame.rows.iter().enumerate() {
                 let rect = *rect;
@@ -1126,35 +1321,65 @@ impl Tileception {
                         let bytes = if update.size > 0 { backend::human_size(update.size) } else { "cached".into() };
                         text_right(painter, &bytes, Rect::new(rect.right() - 80.0, rect.y, 72.0, rect.h), muted);
                     }
+                    Row::Series(series, installed, available) => {
+                        let folded = window.folded.contains(series);
+                        let chevron = if folded { glyph::CHEVRON_RIGHT } else { glyph::CHEVRON_DOWN };
+                        painter.glyph(
+                            chevron,
+                            Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, rect.h - 6.0),
+                            13,
+                            theme.muted,
+                        );
+                        let line = Rect::new(rect.x + 30.0, rect.y + 6.0, rect.w - 38.0, rect.h - 6.0);
+                        let (width, _) = painter.text(
+                            &format!("LINUX {series}"),
+                            line,
+                            Style::new(size * 0.72, if *installed > 0 { theme.text } else { theme.muted }).bold(),
+                        );
+                        let note = match (*installed, *available) {
+                            (0, available) => format!("{available} available"),
+                            (installed, 0) => format!("{installed} installed"),
+                            (installed, available) => format!("{installed} installed \u{b7} {available} available"),
+                        };
+                        painter.text(
+                            &note,
+                            Rect::new(line.x + width + 10.0, line.y, line.w - width - 10.0, line.h),
+                            Style::new(size * 0.78, theme.muted.alpha(0.7)),
+                        );
+                    }
                     Row::Kernel(kernel) => {
                         let Some(kernel) = found.get(*kernel) else { continue };
-                        let queued = window.queue.contains(&kernel.identifier);
+                        let queued = window.queue.get(&kernel.package).copied();
                         let mark = tick_box(rect);
                         if kernel.running {
                             painter.glyph(glyph::LOCK, mark, 14, theme.accent);
-                        } else if kernel.installed {
-                            draw_tick(painter, mark, queued);
+                        } else if kernel.installed || queued.is_some() {
+                            draw_tick(painter, mark, queued.is_some());
                         } else {
                             painter.glyph(glyph::PLUS, mark, 14, theme.muted);
                         }
                         let name_w = ((rect.w - 220.0) * 0.5).max(120.0);
-                        let ink = if queued { theme.muted } else { theme.text };
+                        let ink = if queued == Some(kernels::Queued::Remove) { theme.muted } else { theme.text };
+                        let name = if kernel.unsigned() {
+                            format!("{} (unsigned)", kernel.identifier)
+                        } else {
+                            kernel.identifier.clone()
+                        };
                         painter.text_font(
-                            &kernel.identifier,
+                            &name,
                             Rect::new(rect.x + 34.0, rect.y, name_w, rect.h),
                             Style::new(size * 0.88, ink),
                             "monospace",
                         );
-                        let (state, tint) = if kernel.running {
-                            ("running \u{b7} protected", theme.accent)
-                        } else if !kernel.installed {
-                            ("available", theme.accent_end)
-                        } else if queued {
-                            ("queued to remove", theme.danger)
-                        } else if keep.as_deref() == Some(kernel.identifier.as_str()) {
-                            ("installed \u{b7} fallback", theme.muted)
-                        } else {
-                            ("installed", theme.muted)
+                        let (state, tint) = match (kernel.running, kernel.installed, queued) {
+                            (true, ..) => ("running \u{b7} protected", theme.accent),
+                            (_, false, Some(_)) => ("queued to install", theme.accent),
+                            (_, false, None) => ("available", theme.accent_end),
+                            (_, true, Some(_)) => ("queued to remove", theme.danger),
+                            (_, true, None) if keep.as_deref() == Some(kernel.package.as_str()) => {
+                                ("installed \u{b7} fallback", theme.muted)
+                            }
+                            (_, true, None) => ("installed", theme.muted),
                         };
                         painter.text(
                             state,
@@ -1166,20 +1391,28 @@ impl Tileception {
                             text_right(painter, &bytes, Rect::new(rect.right() - 170.0, rect.y, 72.0, rect.h), muted);
                         }
                         if !kernel.running && !updates.busy() {
-                            let label = match (kernel.installed, queued) {
-                                (false, _) => "Install",
+                            let label = match (kernel.installed, queued.is_some()) {
+                                (false, false) => "Install",
+                                (false, true) => "Skip",
                                 (true, false) => "Remove",
                                 (true, true) => "Keep",
                             };
                             draw_button(painter, row_button(rect), label, Look::Plain, pointer);
                         }
                     }
-                    Row::Leftovers => {
-                        draw_tick(painter, tick_box(rect), window.leftovers);
-                        let names: Vec<String> = leftovers.iter().map(|package| package.name.clone()).collect();
-                        let count = names.len();
-                        let label = if count == 1 { "1 package".to_string() } else { format!("{count} packages") };
-                        let (width, _) = painter.text(&label, Rect::new(rect.x + 34.0, rect.y, 120.0, rect.h), body);
+                    Row::Leftovers(kind) => {
+                        let (title, ticked, packages) = match kind {
+                            Leftover::Headers => {
+                                ("Development headers", window.headers, kernels::unused_headers(&snapshot.packages))
+                            }
+                            Leftover::Support => {
+                                ("Modules and tools", window.support, kernels::unused_support(&snapshot.packages))
+                            }
+                        };
+                        draw_tick(painter, tick_box(rect), ticked);
+                        let names: Vec<String> = packages.iter().map(|package| package.name.clone()).collect();
+                        let label = format!("{title} ({})", names.len());
+                        let (width, _) = painter.text(&label, Rect::new(rect.x + 34.0, rect.y, 220.0, rect.h), body);
                         painter.text(
                             &names.join(", "),
                             Rect::new(rect.x + 46.0 + width, rect.y, rect.w - 230.0 - width, rect.h),
@@ -1188,7 +1421,7 @@ impl Tileception {
                         let bytes = backend::human_size(kernels::size_of(&snapshot.packages, &names));
                         text_right(painter, &bytes, Rect::new(rect.right() - 170.0, rect.y, 72.0, rect.h), muted);
                         if !updates.busy() {
-                            let label = if window.leftovers { "Keep" } else { "Remove" };
+                            let label = if ticked { "Keep" } else { "Remove" };
                             draw_button(painter, row_button(rect), label, Look::Plain, pointer);
                         }
                     }
@@ -1257,19 +1490,33 @@ impl Tileception {
                         painter.text_font(&entry.command, second, Style::new(size * 0.8, theme.muted), "monospace");
                     }
                 }
-                (Page::Kernels, _) => {
-                    let names = self.updates_queue_names();
-                    let installed: u64 = snapshot.packages.iter().map(|package| package.size * 1024).sum();
-                    let freed = kernels::size_of(&snapshot.packages, &names);
-                    let text = if names.is_empty() {
-                        "Nothing queued. Removal names exact packages and never runs autoremove.".to_string()
-                    } else {
-                        format!(
-                            "After clean-up: {} of {}",
-                            backend::human_size(installed.saturating_sub(freed)),
-                            backend::human_size(installed)
-                        )
+                (Page::Kernels, selected) => {
+                    let kernel = match selected {
+                        Some(Row::Kernel(index)) => found.get(index),
+                        _ => None,
                     };
+                    let (text, tint) = match kernel {
+                        _ if kernels::fallback(found).is_none() && found.iter().any(|kernel| kernel.installed) => {
+                            ("No fallback kernel is installed beside the running one.".to_string(), theme.warning)
+                        }
+                        Some(kernel) if kernel.installed => {
+                            let headers = if kernel.headers.is_empty() {
+                                "no headers".to_string()
+                            } else {
+                                format!("headers {}", kernel.headers.join(", ").replace("linux-headers-", ""))
+                            };
+                            let version = kernel.version.as_deref().unwrap_or_default();
+                            (format!("{} {version} \u{b7} {headers}", kernel.package), theme.muted)
+                        }
+                        Some(kernel) => {
+                            (format!("Installs {}", kernels::install_targets(kernel).join(", ")), theme.muted)
+                        }
+                        None => (
+                            "Queue kernels to install or remove, preview, then apply as one transaction.".to_string(),
+                            theme.muted,
+                        ),
+                    };
+                    let muted = muted.colour(tint);
                     painter.text(&text, lines, muted);
                     let meter = Rect::new(lines.x, second.y + 6.0, detail.w - 36.0, 8.0);
                     painter.fill(meter, theme.border, 4.0);
@@ -1278,7 +1525,7 @@ impl Tileception {
                     let mut left = meter.x;
                     for kernel in found.iter().filter(|kernel| kernel.installed && total > 0.0) {
                         let width = meter.w * kernel.size as f64 / total;
-                        let tint = if window.queue.contains(&kernel.identifier) {
+                        let tint = if window.queue.contains_key(&kernel.package) {
                             theme.danger.alpha(0.6)
                         } else if kernel.running {
                             theme.accent
@@ -1327,20 +1574,22 @@ impl Tileception {
                     (text, theme.muted)
                 }
                 (_, Page::Kernels) => {
-                    let names = self.updates_queue_names();
-                    let remaining = found
-                        .iter()
-                        .filter(|kernel| {
-                            kernel.installed && !kernel.running && !window.queue.contains(&kernel.identifier)
-                        })
-                        .count();
-                    if names.is_empty() {
+                    let (install, remove) = self.updates_queue_plan();
+                    if install.is_empty() && remove.is_empty() {
                         (updates.cleanup_summary().unwrap_or_else(|| "Nothing to clean up.".into()), theme.muted)
-                    } else if remaining == 0 && !window.queue.is_empty() {
+                    } else if kernels::leaves_no_fallback(found, &window.queue) {
                         ("This leaves no fallback kernel if the running one fails to start.".into(), theme.warning)
                     } else {
-                        let freed = backend::human_size(kernels::size_of(&snapshot.packages, &names));
-                        (format!("Queue: {} packages \u{b7} frees {freed}", names.len()), theme.muted)
+                        let mut parts = Vec::new();
+                        if !install.is_empty() {
+                            parts.push(format!("install {}", install.len()));
+                        }
+                        if !remove.is_empty() {
+                            let freed = backend::human_size(kernels::size_of(&snapshot.packages, &remove));
+                            let verb = if window.purge { "purge" } else { "remove" };
+                            parts.push(format!("{verb} {} \u{b7} frees {freed}", remove.len()));
+                        }
+                        (format!("Queue: {}", parts.join(", ")), theme.muted)
                     }
                 }
                 (_, Page::Release) => {

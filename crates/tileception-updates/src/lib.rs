@@ -86,8 +86,8 @@ pub struct Snapshot {
     pub updates: Vec<apt::Update>,
     /// Kernel images, headers and their support packages.
     pub packages: Vec<kernels::Package>,
-    /// Kernel images apt offers that are not installed.
-    pub offered: Vec<String>,
+    /// Every versioned kernel image and header package apt knows.
+    pub offers: kernels::Offers,
     /// `uname -r`.
     pub running: String,
     pub system: release::System,
@@ -101,8 +101,9 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn kernels(&self) -> Vec<kernels::Kernel> {
-        kernels::kernels(&self.packages, &self.offered, &self.running)
+    /// The kernels: the running flavour's, or every variant.
+    pub fn kernels(&self, all_variants: bool) -> Vec<kernels::Kernel> {
+        kernels::kernels(&self.packages, &self.offers, &self.running, all_variants)
     }
 
     pub fn totals(&self) -> apt::Totals {
@@ -118,11 +119,11 @@ pub fn scan(runner: &dyn Runner, files: &Files) -> Snapshot {
     };
     let running = runner.run("uname", &["-r"]).map(|text| text.trim().to_string()).unwrap_or_default();
     let packages = kernels::installed(runner);
-    let offered = kernels::offered(runner, &packages, &running);
+    let offers = kernels::offers(runner);
     Snapshot {
         updates,
         packages,
-        offered,
+        offers,
         running,
         system: release::system(files),
         restart: release::restart_required(files),

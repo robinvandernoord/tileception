@@ -1,6 +1,9 @@
-//! Installed kernels and what can safely go. The rules follow kerntop: the
-//! running kernel is never removed, meta packages are never touched, and
+//! Installed and available kernels, and what can safely go. The rules follow
+//! kerntop: the running kernel is never removed, meta packages are never
+//! touched, installs and removals are queued into one transaction, and
 //! clean-up names exact packages instead of running `autoremove`.
+
+use std::collections::{BTreeMap, HashSet};
 
 use crate::Runner;
 
@@ -21,6 +24,13 @@ pub struct Package {
     pub size: u64,
 }
 
+/// Versioned image and header packages apt knows, installed or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Offers {
+    pub images: Vec<String>,
+    pub headers: Vec<String>,
+}
+
 /// A versioned kernel image: installed, or offered by apt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kernel {
@@ -30,8 +40,12 @@ pub struct Kernel {
     pub package: String,
     pub installed: bool,
     pub running: bool,
+    /// The installed version.
+    pub version: Option<String>,
     /// The image with its modules and headers, in kibibytes.
     pub size: u64,
+    /// Its header packages: installed ones, else the ones an install adds.
+    pub headers: Vec<String>,
 }
 
 impl Kernel {
@@ -43,20 +57,32 @@ impl Kernel {
             _ => self.identifier.clone(),
         }
     }
+
+    /// An unsigned build, which Secure Boot refuses to start.
+    pub fn unsigned(&self) -> bool {
+        self.package.starts_with(UNSIGNED_IMAGE)
+    }
 }
 
 /// The ABI and flavour of a versioned image package; none for meta packages
 /// such as `linux-image-generic`.
 pub fn identifier(package: &str) -> Option<&str> {
     let rest = package.strip_prefix(UNSIGNED_IMAGE).or_else(|| package.strip_prefix(IMAGE))?;
+    versioned(rest)
+}
+
+fn versioned(rest: &str) -> Option<&str> {
     rest.starts_with(|first: char| first.is_ascii_digit()).then_some(rest)
 }
 
-/// The version part of a headers or support package, when it has one.
+/// The version part of a versioned headers package.
+fn header_identifier(package: &str) -> Option<&str> {
+    versioned(package.strip_prefix(HEADERS)?)
+}
+
+/// The version part of a versioned modules, tools or buildinfo package.
 fn support_identifier(package: &str) -> Option<&str> {
-    let rest =
-        SUPPORT.iter().find_map(|prefix| package.strip_prefix(prefix)).or_else(|| package.strip_prefix(HEADERS))?;
-    rest.starts_with(|first: char| first.is_ascii_digit()).then_some(rest)
+    versioned(SUPPORT.iter().find_map(|prefix| package.strip_prefix(prefix))?)
 }
 
 /// The numbers a kernel version starts with, to order them: `6.8.0-87-generic`
@@ -101,69 +127,92 @@ pub fn installed(runner: &dyn Runner) -> Vec<Package> {
     runner.run("dpkg-query", &args).map(|text| parse_installed(&text)).unwrap_or_default()
 }
 
-/// Every image apt offers that is not installed, by kerntop's recommended
-/// view: versioned images of the running kernel's flavour, without unsigned
-/// and debug builds.
-pub fn offered(runner: &dyn Runner, packages: &[Package], running: &str) -> Vec<String> {
-    let Ok(found) = runner.run("apt-cache", &["search", "--names-only", "^linux-image-[0-9]"]) else {
-        return Vec::new();
+/// Every versioned image and header package in apt's lists.
+pub fn offers(runner: &dyn Runner) -> Offers {
+    let names = |pattern: &str| -> Vec<String> {
+        runner
+            .run("apt-cache", &["search", "--names-only", pattern])
+            .map(|found| found.lines().filter_map(|line| line.split_whitespace().next()).map(str::to_string).collect())
+            .unwrap_or_default()
     };
-    let names = found.lines().filter_map(|line| line.split_whitespace().next());
-    relevant_offers(names, packages, running)
+    Offers { images: names("^linux-image-(unsigned-)?[0-9]"), headers: names("^linux-headers-[0-9]") }
 }
 
-fn relevant_offers<'list>(names: impl Iterator<Item = &'list str>, packages: &[Package], running: &str) -> Vec<String> {
+/// Whether an image that is not installed is listed: every versioned image
+/// with `all_variants`, else those of the running kernel's flavour, without
+/// unsigned and debug builds.
+fn relevant(package: &str, running: &str, all_variants: bool) -> bool {
+    let Some(found) = identifier(package) else { return false };
+    if all_variants {
+        return true;
+    }
     let wanted = flavour(running);
-    names
-        .filter(|name| !name.starts_with(UNSIGNED_IMAGE) && !name.ends_with("-dbg"))
-        .filter(|name| identifier(name).is_some_and(|found| wanted.is_empty() || found.ends_with(wanted)))
-        .filter(|name| !packages.iter().any(|package| package.name == *name))
-        .map(str::to_string)
-        .collect()
+    !(package.starts_with(UNSIGNED_IMAGE) || found.ends_with("-dbg") || found.ends_with("-dbgsym"))
+        && (wanted.is_empty() || found.ends_with(wanted))
 }
 
 fn belongs(support: &str, image: &str) -> bool {
     image.starts_with(support) || support.starts_with(image)
 }
 
-/// The kernels, newest first.
-pub fn kernels(packages: &[Package], offered: &[String], running: &str) -> Vec<Kernel> {
+/// The kernels, newest first: every installed image, and the offered ones
+/// that the view lists.
+pub fn kernels(packages: &[Package], offers: &Offers, running: &str, all_variants: bool) -> Vec<Kernel> {
     let mut kernels: Vec<Kernel> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     for package in packages {
         let Some(found) = identifier(&package.name) else { continue };
-        if let Some(known) = kernels.iter_mut().find(|kernel| kernel.identifier == found) {
-            known.size += package.size;
-            continue;
-        }
+        seen.insert(&package.name);
+        let own = |other: &&Package| {
+            header_identifier(&other.name)
+                .or_else(|| support_identifier(&other.name))
+                .is_some_and(|support| belongs(support, found))
+        };
         // Headers shared between flavours count for each: an estimate.
-        let with = packages
+        let with: u64 = packages.iter().filter(own).map(|other| other.size).sum();
+        let headers = packages
             .iter()
-            .filter(|other| support_identifier(&other.name).is_some_and(|support| belongs(support, found)))
-            .map(|other| other.size)
-            .sum::<u64>();
+            .filter(|other| header_identifier(&other.name).is_some_and(|header| belongs(header, found)))
+            .map(|other| other.name.clone())
+            .collect();
         kernels.push(Kernel {
             identifier: found.to_string(),
             package: package.name.clone(),
             installed: true,
             running: found == running,
+            version: Some(package.version.clone()),
             size: package.size + with,
+            headers,
         });
     }
-    for name in offered {
-        if let Some(found) = identifier(name)
-            && !kernels.iter().any(|kernel| kernel.identifier == found)
-        {
-            kernels.push(Kernel {
-                identifier: found.to_string(),
-                package: name.clone(),
-                installed: false,
-                running: false,
-                size: 0,
-            });
+    let present: HashSet<&str> = packages.iter().map(|package| package.name.as_str()).collect();
+    let on_offer: HashSet<&str> = offers.headers.iter().map(String::as_str).collect();
+    for name in &offers.images {
+        if !seen.insert(name) || !relevant(name, running, all_variants) {
+            continue;
         }
+        let Some(found) = identifier(name) else { continue };
+        let header = format!("{HEADERS}{found}");
+        let headers = if on_offer.contains(header.as_str()) && !present.contains(header.as_str()) {
+            vec![header]
+        } else {
+            Vec::new()
+        };
+        kernels.push(Kernel {
+            identifier: found.to_string(),
+            package: name.clone(),
+            installed: false,
+            running: false,
+            version: None,
+            size: 0,
+            headers,
+        });
     }
     kernels.sort_by(|left, right| {
-        version_key(&right.identifier).cmp(&version_key(&left.identifier)).then(right.identifier.cmp(&left.identifier))
+        version_key(&right.identifier)
+            .cmp(&version_key(&left.identifier))
+            .then_with(|| right.identifier.cmp(&left.identifier))
+            .then_with(|| left.package.cmp(&right.package))
     });
     kernels
 }
@@ -179,49 +228,88 @@ pub fn removable(kernels: &[Kernel]) -> Vec<&Kernel> {
     kernels.iter().filter(|kernel| kernel.installed && !kernel.running).skip(1).collect()
 }
 
-fn images_after<'list>(packages: &'list [Package], removed: &[&str]) -> Vec<&'list str> {
-    packages.iter().filter_map(|package| identifier(&package.name)).filter(|found| !removed.contains(found)).collect()
+/// What to do with a kernel in the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Queued {
+    Install,
+    Remove,
 }
 
-fn unused<'list>(packages: &'list [Package], images: &[&str]) -> Vec<&'list Package> {
+/// Whether the queue, by image package, would leave no installed kernel
+/// beside the running one.
+pub fn leaves_no_fallback(kernels: &[Kernel], queue: &BTreeMap<String, Queued>) -> bool {
+    !kernels.iter().filter(|kernel| !kernel.running).any(|kernel| match queue.get(&kernel.package) {
+        Some(Queued::Install) => true,
+        Some(Queued::Remove) => false,
+        None => kernel.installed,
+    })
+}
+
+fn images_after<'list>(packages: &'list [Package], removed: &[&str]) -> Vec<&'list str> {
     packages
         .iter()
-        .filter(|package| {
-            support_identifier(&package.name).is_some_and(|support| !images.iter().any(|image| belongs(support, image)))
-        })
+        .filter(|package| !removed.contains(&package.name.as_str()))
+        .filter_map(|package| identifier(&package.name))
         .collect()
 }
 
-/// Headers, modules and tools whose kernel is no longer installed.
-pub fn leftovers(packages: &[Package]) -> Vec<&Package> {
-    unused(packages, &images_after(packages, &[]))
+fn unused<'list>(
+    packages: &'list [Package],
+    images: &[&str],
+    part: impl Fn(&str) -> Option<&str>,
+) -> Vec<&'list Package> {
+    packages
+        .iter()
+        .filter(|package| part(&package.name).is_some_and(|found| !images.iter().any(|image| belongs(found, image))))
+        .collect()
 }
 
-/// The packages to purge to remove these kernels: their images, and the
-/// headers and modules nothing else then uses. Refuses the running kernel.
-pub fn removal(packages: &[Package], running: &str, identifiers: &[String]) -> Result<Vec<String>, String> {
-    let removed: Vec<&str> = identifiers.iter().map(String::as_str).collect();
-    if removed.contains(&running) {
-        return Err("The running kernel cannot be removed.".into());
-    }
-    for wanted in &removed {
-        if !packages.iter().any(|package| identifier(&package.name) == Some(wanted)) {
-            return Err(format!("Kernel {wanted} is not installed."));
+/// Installed versioned headers whose kernel is no longer installed.
+pub fn unused_headers(packages: &[Package]) -> Vec<&Package> {
+    unused(packages, &images_after(packages, &[]), header_identifier)
+}
+
+/// Installed modules, tools and buildinfo whose kernel is no longer installed.
+pub fn unused_support(packages: &[Package]) -> Vec<&Package> {
+    unused(packages, &images_after(packages, &[]), support_identifier)
+}
+
+/// Both kinds of leftover.
+pub fn leftovers(packages: &[Package]) -> Vec<&Package> {
+    let mut all = unused_headers(packages);
+    all.extend(unused_support(packages));
+    all
+}
+
+/// The packages that go with these image packages: the images, and the
+/// headers and modules nothing else then uses. Refuses the running kernel
+/// and anything that is not an installed kernel image.
+pub fn removal(packages: &[Package], running: &str, images: &[String]) -> Result<Vec<String>, String> {
+    let removed: Vec<&str> = images.iter().map(String::as_str).collect();
+    for name in &removed {
+        let found = packages.iter().find(|package| package.name == *name).and_then(|package| identifier(&package.name));
+        match found {
+            Some(found) if found == running => return Err("The running kernel cannot be removed.".into()),
+            Some(_) => {}
+            None => return Err(format!("{name} is not an installed kernel image.")),
         }
     }
     let before = leftovers(packages);
-    let mut names: Vec<String> = packages
-        .iter()
-        .filter(|package| identifier(&package.name).is_some_and(|found| removed.contains(&found)))
-        .map(|package| package.name.clone())
-        .collect();
-    names.extend(
-        unused(packages, &images_after(packages, &removed))
-            .into_iter()
-            .filter(|package| !before.contains(package))
-            .map(|package| package.name.clone()),
-    );
+    let after = images_after(packages, &removed);
+    let mut names: Vec<String> = images.to_vec();
+    let orphaned =
+        unused(packages, &after, header_identifier).into_iter().chain(unused(packages, &after, support_identifier));
+    names.extend(orphaned.filter(|package| !before.contains(package)).map(|package| package.name.clone()));
     Ok(names)
+}
+
+/// What installing a kernel adds: its image and the headers that match it.
+pub fn install_targets(kernel: &Kernel) -> Vec<String> {
+    let mut names = vec![kernel.package.clone()];
+    if !kernel.installed {
+        names.extend(kernel.headers.iter().cloned());
+    }
+    names
 }
 
 /// The size of these packages, in bytes.
@@ -251,9 +339,32 @@ mod tests {
             package("linux-image-6.8.0-85-generic", 14_000),
             package("linux-headers-6.8.0-79", 70_000),
             package("linux-headers-6.8.0-79-generic", 20_000),
+            package("linux-tools-6.8.0-71-generic", 9_000),
             package("linux-image-generic", 10),
             package("linux-headers-generic", 10),
         ]
+    }
+
+    fn offers() -> Offers {
+        let names = |list: &[&str]| list.iter().map(|name| (*name).to_string()).collect();
+        Offers {
+            images: names(&[
+                "linux-image-6.14.0-36-generic",
+                "linux-image-6.14.0-35-generic",
+                "linux-image-6.14.0-37-lowlatency",
+                "linux-image-unsigned-6.14.0-36-generic",
+                "linux-image-6.8.0-31-generic",
+                "linux-image-6.8.0-31-generic-dbg",
+                "linux-image-6.17.0-5-generic",
+            ]),
+            headers: names(&["linux-headers-6.14.0-36-generic", "linux-headers-6.14.0-36", "linux-headers-6.14.0-35"]),
+        }
+    }
+
+    const RUNNING: &str = "6.14.0-35-generic";
+
+    fn identifiers(kernels: &[Kernel]) -> Vec<&str> {
+        kernels.iter().map(|kernel| kernel.identifier.as_str()).collect()
     }
 
     #[test]
@@ -280,37 +391,66 @@ mod tests {
     }
 
     #[test]
-    fn kernels_are_listed_newest_first_with_their_size() {
-        let found = kernels(&system(), &["linux-image-6.14.0-36-generic".into()], "6.14.0-35-generic");
-        let names: Vec<&str> = found.iter().map(|kernel| kernel.identifier.as_str()).collect();
+    fn the_recommended_view_lists_the_running_flavour() {
+        let found = kernels(&system(), &offers(), RUNNING, false);
         assert_eq!(
-            names,
-            ["6.14.0-36-generic", "6.14.0-35-generic", "6.14.0-33-generic", "6.8.0-87-generic", "6.8.0-85-generic"]
+            identifiers(&found),
+            [
+                "6.17.0-5-generic",
+                "6.14.0-36-generic",
+                "6.14.0-35-generic",
+                "6.14.0-33-generic",
+                "6.8.0-87-generic",
+                "6.8.0-85-generic",
+                "6.8.0-31-generic",
+            ]
         );
-        assert!(!found[0].installed);
-        assert!(found[1].running);
-        assert_eq!(found[1].size, 15_000 + 500_000 + 30_000 + 80_000);
-        assert_eq!(found[3].size, 14_000 + 400_000 + 150_000);
-        assert_eq!(found[1].series(), "6.14");
+        assert!(!found[1].installed);
+        assert_eq!(found[1].headers, ["linux-headers-6.14.0-36-generic"]);
+        assert!(found[2].running);
+        assert_eq!(found[2].size, 15_000 + 500_000 + 30_000 + 80_000);
+        assert_eq!(found[2].headers, ["linux-headers-6.14.0-35-generic", "linux-headers-6.14.0-35"]);
+        assert_eq!(found[4].size, 14_000 + 400_000 + 150_000);
+        assert_eq!(found[2].series(), "6.14");
         assert_eq!(fallback(&found).map(|kernel| kernel.identifier.as_str()), Some("6.14.0-33-generic"));
         let old: Vec<&str> = removable(&found).iter().map(|kernel| kernel.identifier.as_str()).collect();
         assert_eq!(old, ["6.8.0-87-generic", "6.8.0-85-generic"]);
     }
 
     #[test]
+    fn all_variants_adds_other_flavours_unsigned_and_debug_builds() {
+        let found = kernels(&system(), &offers(), RUNNING, true);
+        assert_eq!(found.len(), 10);
+        assert!(found.iter().any(|kernel| kernel.identifier == "6.14.0-37-lowlatency"));
+        assert!(found.iter().any(|kernel| kernel.identifier == "6.8.0-31-generic-dbg"));
+        let unsigned: Vec<&Kernel> = found.iter().filter(|kernel| kernel.unsigned()).collect();
+        assert_eq!(unsigned.len(), 1);
+        assert_eq!(unsigned[0].identifier, "6.14.0-36-generic");
+    }
+
+    #[test]
+    fn installing_a_kernel_takes_its_headers_along() {
+        let found = kernels(&system(), &offers(), RUNNING, false);
+        assert_eq!(install_targets(&found[1]), ["linux-image-6.14.0-36-generic", "linux-headers-6.14.0-36-generic"]);
+        assert_eq!(install_targets(&found[0]), ["linux-image-6.17.0-5-generic"]);
+    }
+
+    #[test]
     fn leftovers_have_no_kernel() {
         let packages = system();
-        let names: Vec<&str> = leftovers(&packages).iter().map(|package| package.name.as_str()).collect();
-        assert_eq!(names, ["linux-headers-6.8.0-79", "linux-headers-6.8.0-79-generic"]);
+        let names = |list: Vec<&Package>| list.into_iter().map(|package| package.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(unused_headers(&packages)), ["linux-headers-6.8.0-79", "linux-headers-6.8.0-79-generic"]);
+        assert_eq!(names(unused_support(&packages)), ["linux-tools-6.8.0-71-generic"]);
+        assert_eq!(leftovers(&packages).len(), 3);
     }
 
     #[test]
     fn removal_takes_the_modules_along_and_spares_the_running_kernel() {
         let packages = system();
-        let running = "6.14.0-35-generic";
-        assert!(removal(&packages, running, &[running.into()]).is_err());
-        assert!(removal(&packages, running, &["6.1.0-1-generic".into()]).is_err());
-        let names = removal(&packages, running, &["6.8.0-87-generic".into()]).unwrap_or_default();
+        assert!(removal(&packages, RUNNING, &["linux-image-6.14.0-35-generic".into()]).is_err());
+        assert!(removal(&packages, RUNNING, &["linux-image-6.1.0-1-generic".into()]).is_err());
+        assert!(removal(&packages, RUNNING, &["linux-image-generic".into()]).is_err());
+        let names = removal(&packages, RUNNING, &["linux-image-6.8.0-87-generic".into()]).unwrap_or_default();
         assert_eq!(
             names,
             ["linux-image-6.8.0-87-generic", "linux-modules-6.8.0-87-generic", "linux-modules-extra-6.8.0-87-generic"]
@@ -319,21 +459,15 @@ mod tests {
     }
 
     #[test]
-    fn every_kernel_of_the_running_flavour_is_offered() {
-        let names = [
-            "linux-image-6.14.0-36-generic",
-            "linux-image-6.14.0-35-generic",
-            "linux-image-6.14.0-37-lowlatency",
-            "linux-image-unsigned-6.14.0-37-generic",
-            "linux-image-6.8.0-31-generic",
-            "linux-image-6.8.0-31-generic-dbg",
-            "linux-image-6.17.0-5-generic",
-        ];
-        let offers = relevant_offers(names.into_iter(), &system(), "6.14.0-35-generic");
-        // Older and newer than what is installed, but never what is installed.
-        assert_eq!(
-            offers,
-            ["linux-image-6.14.0-36-generic", "linux-image-6.8.0-31-generic", "linux-image-6.17.0-5-generic"]
-        );
+    fn the_queue_is_checked_for_a_fallback() {
+        let found = kernels(&system(), &offers(), RUNNING, false);
+        let mut queue = BTreeMap::new();
+        assert!(!leaves_no_fallback(&found, &queue));
+        for name in ["linux-image-6.14.0-33-generic", "linux-image-6.8.0-87-generic", "linux-image-6.8.0-85-generic"] {
+            queue.insert(name.to_string(), Queued::Remove);
+        }
+        assert!(leaves_no_fallback(&found, &queue));
+        queue.insert("linux-image-6.14.0-36-generic".into(), Queued::Install);
+        assert!(!leaves_no_fallback(&found, &queue));
     }
 }

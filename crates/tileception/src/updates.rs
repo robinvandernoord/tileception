@@ -52,8 +52,9 @@ pub enum Task {
     Refresh,
     /// Install these updates, or every one for none.
     Install(Vec<String>),
-    /// Install packages that are not installed yet: a newer kernel.
-    Add(Vec<String>),
+    /// The kernel queue: packages to install and to remove in one
+    /// transaction, purging the configuration of what goes or keeping it.
+    Kernels { install: Vec<String>, remove: Vec<String>, purge: bool },
     /// Remove exactly these packages.
     Remove(Vec<String>),
 }
@@ -63,7 +64,7 @@ impl Task {
         match self {
             Task::Refresh => "Checking for updates",
             Task::Install(_) => "Installing updates",
-            Task::Add(_) => "Installing",
+            Task::Kernels { .. } => "Changing kernels",
             Task::Remove(_) => "Removing packages",
         }
     }
@@ -72,7 +73,7 @@ impl Task {
         match self {
             Task::Refresh => Ok(vec!["update".into()]),
             Task::Install(names) => apt::upgrade_args(names),
-            Task::Add(names) => apt::install_args(names),
+            Task::Kernels { install, remove, purge } => apt::transaction_args(install, remove, *purge, false),
             Task::Remove(names) => apt::purge_args(names, false),
         }
     }
@@ -144,6 +145,8 @@ pub(crate) enum Tone {
 #[derive(Default)]
 pub struct Updates {
     pub(crate) snapshot: Snapshot,
+    /// The kernels of the snapshot, in the view the window shows.
+    pub(crate) kernels: Vec<kernels::Kernel>,
     /// The first look has come back.
     scanned: bool,
     offer: release::Offer,
@@ -250,8 +253,7 @@ impl Updates {
 
     /// Packages to purge to clean up: old kernels, then leftovers.
     pub(crate) fn cleanup(&self) -> Vec<String> {
-        let found = self.snapshot.kernels();
-        let old: Vec<String> = kernels::removable(&found).iter().map(|kernel| kernel.identifier.clone()).collect();
+        let old: Vec<String> = kernels::removable(&self.kernels).iter().map(|kernel| kernel.package.clone()).collect();
         let mut names = kernels::removal(&self.snapshot.packages, &self.snapshot.running, &old).unwrap_or_default();
         for package in kernels::leftovers(&self.snapshot.packages) {
             if !names.contains(&package.name) {
@@ -267,7 +269,7 @@ impl Updates {
         if names.is_empty() {
             return None;
         }
-        let old = kernels::removable(&self.snapshot.kernels()).len();
+        let old = kernels::removable(&self.kernels).len();
         let size = backend::human_size(kernels::size_of(&self.snapshot.packages, &names));
         Some(match old {
             0 => format!("Leftover kernel packages, {size}"),
@@ -385,6 +387,14 @@ impl Tileception {
         self.updates_changed();
     }
 
+    /// Lists the kernels again, after a look at the system or a change of
+    /// view, and drops queue entries for kernels that are gone.
+    pub(crate) fn updates_refresh_kernels(&mut self) {
+        let updates = &mut self.updates;
+        updates.kernels = updates.snapshot.kernels(updates.window.all_variants());
+        updates.window.settle(&updates.snapshot, &updates.kernels);
+    }
+
     /// Something the chip, the popover or the window shows has changed.
     pub(crate) fn updates_changed(&mut self) {
         self.updates.window.invalidate();
@@ -410,7 +420,7 @@ impl Tileception {
         {
             tracing::warn!("could not list updates: {error}");
         }
-        self.updates.window.settle(&self.updates.snapshot);
+        self.updates_refresh_kernels();
         let totals = self.updates.snapshot.totals();
         if totals.count > self.updates.announced && self.config.file.updates.notify && !self.updates.busy() {
             let summary = if totals.count == 1 {
@@ -434,7 +444,7 @@ impl Tileception {
                 let message = match &task {
                     Task::Refresh => "Package lists refreshed.".to_string(),
                     Task::Install(_) => "Updates installed.".to_string(),
-                    Task::Add(names) => format!("Installed {}.", names.join(", ")),
+                    Task::Kernels { .. } => "Kernel changes applied.".to_string(),
                     Task::Remove(names) if names.len() == 1 => "Removed 1 package.".to_string(),
                     Task::Remove(names) => format!("Removed {} packages.", names.len()),
                 };
@@ -466,7 +476,8 @@ impl Tileception {
         let total = match &task {
             Task::Refresh => 0,
             Task::Install(names) if names.is_empty() => self.updates.snapshot.updates.len(),
-            Task::Install(names) | Task::Add(names) | Task::Remove(names) => names.len(),
+            Task::Install(names) | Task::Remove(names) => names.len(),
+            Task::Kernels { install, remove, .. } => install.len() + remove.len(),
         };
         let job = Job { task: task.clone(), done: 0, total, label: "starting".into() };
         if !self.updates_request(Request::Run { task, password }) {
@@ -495,8 +506,9 @@ impl Tileception {
         self.updates_start(Task::Install(names))
     }
 
-    pub(crate) fn updates_preview(&mut self, names: Vec<String>) {
-        self.updates_request(Request::Preview(names));
+    /// Asks what `apt-get` would do with these arguments, which simulate.
+    pub(crate) fn updates_preview(&mut self, args: Vec<String>) {
+        self.updates_request(Request::Preview(args));
     }
 
     /// What to look at before a release upgrade.
@@ -603,18 +615,18 @@ impl Tileception {
     }
 
     fn updates_kernels_status(&self) -> String {
-        let found = self.updates.snapshot.kernels();
+        let found = &self.updates.kernels;
         if found.is_empty() {
             return format!("running {}, no kernel packages installed\n", self.updates.snapshot.running);
         }
-        let keep = kernels::fallback(&found).map(|kernel| kernel.identifier.clone());
+        let keep = kernels::fallback(found).map(|kernel| kernel.package.clone());
         let mut text = String::new();
-        for kernel in &found {
+        for kernel in found {
             let state = if kernel.running {
                 "running"
             } else if !kernel.installed {
                 "available"
-            } else if keep.as_deref() == Some(kernel.identifier.as_str()) {
+            } else if keep.as_deref() == Some(kernel.package.as_str()) {
                 "fallback"
             } else {
                 "old"
@@ -692,13 +704,12 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
     }
 }
 
-fn preview(names: &[String]) -> String {
-    let args = match apt::purge_args(names, true) {
-        Ok(args) => args,
-        Err(error) => return error,
-    };
+fn preview(args: &[String]) -> String {
+    if !args.iter().any(|arg| arg == "-s") {
+        return "Only simulations are previewed.".into();
+    }
     // Errors belong in a preview too: what apt refuses is what matters most.
-    let output = Process::new("apt-get").args(&args).env("LC_ALL", "C").stdin(Stdio::null()).output();
+    let output = Process::new("apt-get").args(args).env("LC_ALL", "C").stdin(Stdio::null()).output();
     match output {
         Ok(output) => {
             let mut text = String::from_utf8_lossy(&output.stdout).into_owned();

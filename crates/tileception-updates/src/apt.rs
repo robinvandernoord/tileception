@@ -191,6 +191,31 @@ pub fn purge_args(names: &[String], simulate: bool) -> Result<Vec<String>, Strin
     Ok(args)
 }
 
+/// `apt-get` arguments for one transaction that installs some packages and
+/// removes others (`name-`), as kerntop queues them. `purge` also removes the
+/// configuration of what goes; `simulate` only prints what would happen.
+pub fn transaction_args(
+    installs: &[String],
+    removals: &[String],
+    purge: bool,
+    simulate: bool,
+) -> Result<Vec<String>, String> {
+    checked(installs)?;
+    checked(removals)?;
+    if installs.is_empty() && removals.is_empty() {
+        return Err("nothing is queued".into());
+    }
+    let mut args: Vec<String> =
+        if simulate { vec!["-s".into()] } else { QUIET.iter().map(|arg| (*arg).to_string()).collect() };
+    args.push("install".into());
+    if purge {
+        args.push("--purge".into());
+    }
+    args.extend(installs.iter().cloned());
+    args.extend(removals.iter().map(|name| format!("{name}-")));
+    Ok(args)
+}
+
 /// A step `apt-get` reports while it works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
@@ -285,6 +310,19 @@ Inst tileception [0.12.0] (0.13.0 apt.tileception.space:stable [amd64])
         assert_eq!(&some[some.len() - 4..], ["install", "--only-upgrade", "libssl3t64", "g++-13"]);
         let purge = purge_args(&["linux-image-6.8.0-85-generic".into()], true).unwrap_or_default();
         assert_eq!(purge, ["-s", "purge", "linux-image-6.8.0-85-generic"]);
+        let both = transaction_args(
+            &["linux-image-6.14.0-36-generic".into()],
+            &["linux-image-6.8.0-85-generic".into()],
+            true,
+            true,
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            both,
+            ["-s", "install", "--purge", "linux-image-6.14.0-36-generic", "linux-image-6.8.0-85-generic-"]
+        );
+        assert!(transaction_args(&[], &[], false, true).is_err());
+        assert!(transaction_args(&[], &["-oops".into()], false, true).is_err());
     }
 
     #[test]
