@@ -104,10 +104,6 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
-  - Plugins in a user-chosen order, ideally set by dragging their blocks
-    (smart home, Bluetooth) in the notification panel. The order is saved
-    and used for the panel and for the bar's chips; without one, the
-    priority order applies.
   - Timers come later, as a plugin of their own.
   - Possibly: `tileception msg plugin add <command>` writes the config
     entry, so Doctor can set a plugin up on request.

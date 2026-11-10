@@ -3,8 +3,11 @@
 //! resource ([`block`]), in plugin priority order. Tileception lays them out
 //! and draws them in its own style; folding, the view, the selected row and
 //! a held level bar are kept here, so they survive the plugin's updates.
+//! Dragging a block by its header puts it elsewhere; that order ([`order`])
+//! is saved and used for the bar's chips too.
 
 pub mod block;
+pub mod order;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -42,6 +45,19 @@ const GAP: f64 = 10.0;
 pub struct Panel {
     blocks: HashMap<String, BlockState>,
     pub drag: Option<Drag>,
+    /// A block's header pressed, perhaps being dragged elsewhere.
+    pub reorder: Option<Reorder>,
+}
+
+/// A block's header held: a click when let go where it was, else a drag
+/// that moves the block once the pointer goes further than the threshold.
+#[derive(Clone)]
+pub struct Reorder {
+    plugin: String,
+    origin: Point,
+    /// Where in the header it was held, from the block's top.
+    grab: f64,
+    dragging: bool,
 }
 
 #[derive(Default)]
@@ -115,21 +131,27 @@ struct CardLayout {
 
 #[derive(Clone, PartialEq)]
 enum PointerAction {
-    Fold(String),
+    /// A block's header: folds it when clicked, moves it when dragged.
+    Hold(String),
     View(String, usize),
     Group(String, String),
     Select(String, String),
     Act(String, ActionKind),
-    Level { plugin: String, row: String, level: usize, track: Rect },
+    Level {
+        plugin: String,
+        row: String,
+        level: usize,
+        track: Rect,
+    },
 }
 
 impl crate::ui::PointerAction for PointerAction {
-    fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
+    fn activate(&self, state: &mut Tileception, rect: Rect, point: Point) {
         match self {
-            Self::Fold(plugin) => {
-                let Some(block) = state.panel_block(plugin) else { return };
-                let (folded, active) = (state.panel_folded(plugin, block), block.active);
-                state.panel.blocks.entry(plugin.clone()).or_default().fold = Some((!folded, active));
+            Self::Hold(plugin) => {
+                // The header starts 4 below the block's top.
+                let grab = point.y - (rect.y - 4.0);
+                state.panel.reorder = Some(Reorder { plugin: plugin.clone(), origin: point, grab, dragging: false });
             }
             Self::View(plugin, view) => state.panel.blocks.entry(plugin.clone()).or_default().view = *view,
             Self::Group(plugin, title) => {
@@ -199,6 +221,9 @@ impl Tileception {
         self.panel.blocks.retain(|plugin, _| present.contains(plugin));
         if self.panel.drag.as_ref().is_some_and(|drag| !present.contains(&drag.plugin)) {
             self.panel.drag = None;
+        }
+        if self.panel.reorder.as_ref().is_some_and(|reorder| !present.contains(&reorder.plugin)) {
+            self.panel.reorder = None;
         }
         if self.notifications.open {
             self.schedule_render();
@@ -311,11 +336,70 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Lets go of a level bar, sending where it ended.
+    /// Lets go of a level bar, sending where it ended, or of a block's
+    /// header: a click folds it, a drag puts the block where it was dropped.
     pub fn panel_release(&mut self) -> bool {
+        if let Some(reorder) = self.panel.reorder.take() {
+            self.panel_reorder_release(&reorder);
+            self.schedule_render();
+            return true;
+        }
         let Some(drag) = self.panel.drag.take() else { return false };
         self.panel_send_level(&drag.plugin, &drag.row, drag.level, drag.value);
         true
+    }
+
+    /// Whether a block is being dragged elsewhere.
+    pub fn panel_reordering(&self) -> bool {
+        self.panel.reorder.as_ref().is_some_and(|reorder| reorder.dragging)
+    }
+
+    /// The pointer moved while a block's header is held.
+    pub fn panel_reorder_motion(&mut self, point: Point) {
+        let Some(reorder) = &mut self.panel.reorder else { return };
+        if !reorder.dragging
+            && (point.x - reorder.origin.x).hypot(point.y - reorder.origin.y) <= crate::input::DRAG_THRESHOLD
+        {
+            return;
+        }
+        reorder.dragging = true;
+        self.schedule_render();
+    }
+
+    fn panel_reorder_release(&mut self, reorder: &Reorder) {
+        if !self.notifications.open {
+            return;
+        }
+        let layout = self.panel_controls().plugins;
+        let point = Point::new(self.pointer.x, self.pointer.y);
+        if !reorder.dragging {
+            // A click, if it ends on the same header.
+            if layout.blocks.iter().any(|block| block.plugin == reorder.plugin && block.header.contains(point)) {
+                self.panel_header_clicked(&reorder.plugin);
+            }
+            return;
+        }
+        let shown: Vec<&str> = layout.blocks.iter().map(|block| block.plugin.as_str()).collect();
+        let Some((from, slot)) = drop_slot(&layout, &reorder.plugin, point.y) else { return };
+        let arranged = order::moved(&shown, from, slot);
+        if arranged != shown
+            && let Some(plugins) = &mut self.plugins
+        {
+            plugins.arrange_panels(&arranged);
+        }
+    }
+
+    /// A header clicked: runs a notice's action, else folds or unfolds.
+    fn panel_header_clicked(&mut self, plugin: &str) {
+        let Some(block) = self.panel_block(plugin) else { return };
+        if let Some(notice) = &block.notice {
+            if let Some(action) = notice.action.clone() {
+                self.panel_action(plugin, action);
+            }
+            return;
+        }
+        let (folded, active) = (self.panel_folded(plugin, block), block.active);
+        self.panel.blocks.entry(plugin.into()).or_default().fold = Some((!folded, active));
     }
 
     /// The blocks with their top left at (left, top).
@@ -502,17 +586,22 @@ impl Tileception {
         let act = |rect: Rect, action: &Option<ActionKind>| {
             action.clone().map(|action| PointerTarget::button(rect, PointerAction::Act(plugin.clone(), action)))
         };
-        if let Some(notice) = &block.notice {
-            let area = Rect::new(laid.rect.x, laid.header.y, laid.rect.w, laid.rect.bottom() - laid.header.y);
-            return act(area, &notice.action);
-        }
         for (index, tab) in laid.tabs.iter().enumerate() {
             if tab.contains(point) {
                 return Some(PointerTarget::button(*tab, PointerAction::View(plugin, index)));
             }
         }
         if laid.header.contains(point) {
-            return Some(PointerTarget::button(laid.header, PointerAction::Fold(plugin)));
+            // Held on press so it can be dragged; a click acts on release.
+            return Some(PointerTarget::new(
+                laid.header,
+                PointerAction::Hold(plugin),
+                smithay::input::pointer::CursorIcon::Pointer,
+            ));
+        }
+        if let Some(notice) = &block.notice {
+            let below = laid.header.bottom();
+            return act(Rect::new(laid.rect.x, below, laid.rect.w, laid.rect.bottom() - below), &notice.action);
         }
         if let (Some((_, rects)), Some(footer)) = (&laid.footer, &block.footer) {
             for (rect, action) in rects.iter().zip(&footer.actions) {
@@ -601,10 +690,59 @@ impl Tileception {
     }
 
     pub fn draw_panel_blocks(&self, painter: &mut Painter, layout: &PanelLayout, pointer: Point) {
+        let reorder = self.panel.reorder.as_ref().filter(|reorder| reorder.dragging);
+        // While a block is dragged, nothing under the pointer lights up.
+        let hover = if reorder.is_some() { Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY) } else { pointer };
         for laid in &layout.blocks {
             if let Some(block) = self.panel_block(&laid.plugin) {
-                self.panel_draw_block(painter, block, laid, pointer);
+                self.panel_draw_block(painter, block, laid, hover);
             }
+        }
+        if let Some(reorder) = reorder {
+            self.panel_draw_reorder(painter, layout, reorder, pointer);
+        }
+    }
+
+    /// A dragged block stays faded where it was, a line shows where it
+    /// would go and its header follows the pointer.
+    fn panel_draw_reorder(&self, painter: &mut Painter, layout: &PanelLayout, reorder: &Reorder, pointer: Point) {
+        let Some(dragged) = layout.blocks.iter().find(|laid| laid.plugin == reorder.plugin) else { return };
+        let Some(block) = self.panel_block(&reorder.plugin) else { return };
+        let theme = &self.theme;
+        painter.fill(dragged.rect, theme.background.alpha(0.55), theme.radius);
+        let top = pointer.y - reorder.grab;
+        let header = Rect::new(dragged.header.x, top + 4.0, dragged.header.w, HEADER);
+        painter.shape(
+            header,
+            Shape {
+                border_width: 1.0,
+                border: theme.accent.alpha(0.6),
+                glow_radius: 12.0,
+                glow: theme.background.alpha(0.5),
+                ..Shape::filled(theme.surface_raised, theme.radius)
+            },
+        );
+        painter.glyph(
+            icon(block.icon.as_deref()),
+            Rect::new(header.x + 8.0, header.y, 24.0, header.h),
+            16,
+            theme.accent,
+        );
+        painter.text(
+            &block.title,
+            Rect::new(header.x + 38.0, header.y, header.w - 46.0, header.h),
+            Style::new(theme.font_size, theme.text).bold(),
+        );
+        // Over the header, which would hide it when dropping close by.
+        if let Some((from, slot)) = drop_slot(layout, &reorder.plugin, pointer.y)
+            && slot != from
+            && slot != from + 1
+        {
+            let line_y = match slot.checked_sub(1).and_then(|above| layout.blocks.get(above)) {
+                Some(above) => above.rect.bottom() + GAP / 2.0,
+                None => layout.rect.y - GAP / 2.0,
+            };
+            painter.fill(Rect::new(layout.rect.x + 4.0, line_y - 1.5, layout.rect.w - 8.0, 3.0), theme.accent, 1.5);
         }
     }
 
@@ -870,6 +1008,14 @@ impl Tileception {
             draw_trend(painter, rect, trend);
         }
     }
+}
+
+/// The dragged block's place among the blocks, and the gap nearest the
+/// pointer, judged by the blocks' middles.
+fn drop_slot(layout: &PanelLayout, plugin: &str, pointer_y: f64) -> Option<(usize, usize)> {
+    let from = layout.blocks.iter().position(|block| block.plugin == plugin)?;
+    let middles: Vec<f64> = layout.blocks.iter().map(|block| block.rect.y + block.rect.h / 2.0).collect();
+    Some((from, order::slot(&middles, pointer_y)))
 }
 
 /// Every row in some items, groups opened.

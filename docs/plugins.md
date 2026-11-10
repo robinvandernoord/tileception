@@ -89,7 +89,8 @@ start of the query and followed by a space: `echo` alone still searches apps,
 Config overrides win over user manifests, which win over system manifests,
 which win over bundled plugins. Within the same priority, plugin IDs sort
 alphabetically. This order settles conflicting prefixes and orders the panel's
-blocks and the bar's chips. Every rejected prefix is logged and shown by
+blocks and the bar's chips until you choose another (see
+[Panel block](#panel-block)). Every rejected prefix is logged and shown by
 `plugins`; a source can retain its other prefixes. A plugin overriding a
 built-in prefix takes precedence for that prefix. Reserve `plugins` for
 discovery diagnostics.
@@ -234,10 +235,18 @@ folding, the chosen view and the selected row across updates.
 - Tints are `accent`, `cool`, `warm`, `danger`, `muted` and `faded`.
 - Actions are the launcher's. Panel tool calls never cancel each other.
 
+Drag a block by its header to put it elsewhere in the panel: once the pointer
+has moved a few pixels, the header follows it and a line shows where the block
+will go. Letting go there moves it; a click without moving still folds the
+block. The order is saved in `$XDG_STATE_HOME/tileception/plugin-order.toml`
+(normally `~/.local/state/tileception/plugin-order.toml`) and also orders the
+bar's chips. Plugins it does not name, such as newly installed ones, follow
+in priority order. Delete the file to return to the priority order.
+
 ### Bar chips
 
 A `tileception://bar` resource holds the plugin's chips, shown left of the
-clock while it has any, for plugins with a `[bar]` block:
+clock while it has any, for plugins with a `[bar]` block, in the panel's order:
 
 ```json
 {"chips":[{"label":"Floor lamp","icon":"glyph:bulb","tint":"warm"}]}

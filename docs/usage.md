@@ -359,6 +359,13 @@ to connect each. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 
+### Arranging the panel's blocks
+
+Drag a block such as Home or Bluetooth by its title to move it above or below
+the others; a line shows where it will go. Tileception remembers the order and
+shows the bar's chips in the same order. See [the plugin guide](plugins.md#panel-block)
+for where it is kept.
+
 ### Updates
 
 On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
