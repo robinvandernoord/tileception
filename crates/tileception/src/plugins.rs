@@ -1553,7 +1553,10 @@ impl Session {
             let remaining = deadline.saturating_duration_since(Instant::now());
             i32::try_from(remaining.as_millis().saturating_add(1)).unwrap_or(i32::MAX)
         });
-        self.poll(self.output.as_raw_fd(), libc::POLLIN, timeout)?;
+        // A message read along with the last answer is already here.
+        if !self.buffered.contains(&b'\n') {
+            self.poll(self.output.as_raw_fd(), libc::POLLIN, timeout)?;
+        }
         let closed = self.fill().err();
         while let Some(message) = self.next_message()? {
             if !self.unsolicited(&message, Instant::now() + TIMEOUT)?
@@ -1743,6 +1746,12 @@ for line in sys.stdin:
             time.sleep(0.1)
             print(json.dumps({'jsonrpc': '2.0', 'method': 'notifications/later', 'params': {'n': 2}}), flush=True)
             continue
+        if name == 'together':
+            answer = json.dumps({'jsonrpc': '2.0', 'id': mid, 'result': result})
+            news = json.dumps({'jsonrpc': '2.0', 'method': 'notifications/together', 'params': {'n': 3}})
+            sys.stdout.write(answer + '\n' + news + '\n')
+            sys.stdout.flush()
+            continue
         if name == 'exit':
             print(json.dumps({'jsonrpc': '2.0', 'id': mid, 'result': result}), flush=True)
             sys.exit(0)
@@ -1797,6 +1806,16 @@ for line in sys.stdin:
         let methods: Vec<_> =
             source.session.as_mut().unwrap().notifications.drain(..).map(|(method, _)| method).collect();
         assert_eq!(methods, ["notifications/early", "notifications/later"]);
+
+        // One that came in the same read as an answer does not wait for the
+        // plugin to write again.
+        assert_eq!(source.invoke("together", json!({}), &current, 1), Ok(json!({ "ok": true })));
+        let mut bells = [0; 8];
+        while source.wake.recv(&mut bells).is_ok() {}
+        source.idle();
+        let methods: Vec<_> =
+            source.session.as_mut().unwrap().notifications.drain(..).map(|(method, _)| method).collect();
+        assert_eq!(methods, ["notifications/together"]);
 
         // A plugin exiting while idle is noticed without a request.
         assert_eq!(source.invoke("exit", json!({}), &current, 1), Ok(json!({ "ok": true })));
