@@ -116,6 +116,7 @@ impl Tileception {
     /// What is on screen now, ready to render into a capture.
     fn scene(&mut self, renderer: &mut GlesRenderer) -> Scene {
         self.update_settings_client(renderer);
+        self.update_updates_client(renderer);
         if self.draws_lock_screen() {
             self.wallpaper_buffer();
         }

@@ -48,8 +48,14 @@ impl Entry {
         if all.len() > limit { format!("{shown}, {} more", all.len() - limit) } else { shown }
     }
 
-    pub fn automatic(&self) -> bool {
-        self.requested_by.is_none()
+    /// Who it ran for: a user, the unattended upgrades, or the system
+    /// (root, an installer or a script).
+    pub fn who(&self) -> &str {
+        match &self.requested_by {
+            Some(user) => user,
+            None if self.command.contains("unattended-upgrade") => "automatic",
+            None => "system",
+        }
     }
 }
 
@@ -135,10 +141,10 @@ End-Date: 2026-11-05  09:13:55
         let entries = parse(LOG);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].date, "2026-11-03 06:30:12");
-        assert!(entries[0].automatic());
+        assert_eq!(entries[0].who(), "automatic");
         assert_eq!(entries[0].upgraded[1], Change { name: "apt".into(), version: "2.8.3 \u{2192} 2.8.4".into() });
         assert_eq!(entries[0].summary(), "2 updated");
-        assert_eq!(entries[1].requested_by.as_deref(), Some("robin"));
+        assert_eq!(entries[1].who(), "robin");
         assert_eq!(entries[1].installed[0].version, "6.14.0-36.36");
         assert_eq!(entries[1].summary(), "1 updated, 1 installed, 1 removed");
         assert_eq!(entries[1].names(2), "mesa-utils, linux-image-6.14.0-36-generic, 1 more");

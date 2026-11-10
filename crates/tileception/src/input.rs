@@ -344,6 +344,9 @@ impl Tileception {
             if state.feedback.is_some() {
                 return FilterResult::Intercept(vec![Command::FeedbackKey(sym, held)]);
             }
+            if state.updates.prompt.is_some() {
+                return FilterResult::Intercept(vec![Command::UpdatesKey(sym, held)]);
+            }
             if state.power_menu.is_some() {
                 // The menu takes every key while it is open.
                 return FilterResult::Intercept(vec![Command::PowerMenuKey(sym)]);
@@ -429,7 +432,7 @@ impl Tileception {
             }
             if sym == keysyms::KEY_Escape
                 && held == Mods::default()
-                && (state.close_calendar() || state.close_minimap())
+                && (state.close_calendar() || state.close_minimap() || state.close_updates_popover())
             {
                 return FilterResult::Intercept(Vec::new());
             }
@@ -650,6 +653,13 @@ impl Tileception {
             self.colour_pick_moved();
             return;
         }
+        if !self.is_locked() && self.updates.prompt.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.schedule_render();
+            return;
+        }
         if !self.is_locked() && self.power_menu.is_none() && self.handoff_prompt_motion(pos) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
@@ -848,6 +858,10 @@ impl Tileception {
             if button == BTN_LEFT && state == ButtonState::Released {
                 self.feedback_release();
             }
+            return;
+        }
+        // The password prompt is modal: clicks beside its buttons do nothing.
+        if !self.is_locked() && self.updates.prompt.is_some() {
             return;
         }
         // A held slider lets go wherever the button comes up.
@@ -1113,6 +1127,9 @@ impl Tileception {
             if amount != 0.0 {
                 self.feedback_scroll(if amount > 0.0 { 1 } else { -1 });
             }
+            return;
+        }
+        if !self.is_locked() && self.updates.prompt.is_some() {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {

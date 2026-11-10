@@ -122,6 +122,9 @@ impl Tileception {
         if self.is_locked() || self.overlay_under(point) {
             return None;
         }
+        if self.updates.prompt.is_some() {
+            return self.updates_prompt_pointer_target(point);
+        }
         if self.power_menu.is_some() {
             return self.power_pointer_target(point);
         }
@@ -176,6 +179,7 @@ impl Tileception {
             return Some(target.cursor);
         }
         (self.feedback.is_some()
+            || self.updates.prompt.is_some()
             || self.power_menu.is_some()
             || (self.launcher.open && self.launcher_takes(point))
             || self.doctor_contains(point)

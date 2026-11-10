@@ -179,6 +179,7 @@ impl Tileception {
             self.close_doctor();
         }
         self.apply_bar_command();
+        self.updates_follow_config();
         self.apply_tray();
     }
 }

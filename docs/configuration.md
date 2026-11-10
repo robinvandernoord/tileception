@@ -518,6 +518,24 @@ Suspend is available in the power menu by default. To disable that menu action:
 suspend_enabled = false
 ```
 
+### Updates
+
+On systems with APT, the bar shows a chip while updates wait; see
+[Updates](usage.md#updates). These are the defaults:
+
+```toml
+[updates]
+enabled = true
+notify = true
+check_hours = 4
+```
+
+`enabled = false` switches the update manager off: no chip, no launcher rows
+and no `tileception msg updates`. `notify = false` keeps the chip and drops the
+one notification when new updates arrive. `check_hours` is how often
+Tileception reads the package lists; the lists themselves are refreshed by the
+system's daily timer, or by **Check** in the Updates window.
+
 ### Battery
 
 On computers with a battery, the bar shows its charge; hover for the estimated

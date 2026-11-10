@@ -6,7 +6,7 @@ use smithay::{
 };
 use tileception_core::{Point, Rect, WindowId};
 
-mod client;
+pub(crate) mod client;
 mod colour;
 mod connect;
 mod defaults_page;
@@ -753,7 +753,7 @@ fn viewport(frame: &Frame) -> Rect {
     )
 }
 
-fn intersect(left: Rect, right: Rect) -> Option<Rect> {
+pub(crate) fn intersect(left: Rect, right: Rect) -> Option<Rect> {
     let start_x = left.x.max(right.x);
     let start_y = left.y.max(right.y);
     let end_x = left.right().min(right.right());
@@ -1079,7 +1079,7 @@ impl Tileception {
         }
         self.settings.size = settings_size(self.world.screen());
         self.open_settings_page_section();
-        match client::Client::start(self) {
+        match client::Client::start(self, client::Kind::Settings) {
             Ok(client) => self.settings.client = Some(client),
             Err(error) => {
                 self.settings.open = false;

@@ -122,11 +122,19 @@ pub fn list(runner: &dyn Runner) -> Result<Vec<Update>, String> {
     Ok(updates)
 }
 
-/// When the package lists were last refreshed.
+/// When the package lists were last refreshed: the newest of the marks
+/// that the daily timer and a refresh by hand leave behind.
 pub fn last_refresh(files: &Files) -> Option<SystemTime> {
-    ["/var/lib/apt/periodic/update-success-stamp", "/var/cache/apt/pkgcache.bin", "/var/lib/apt/lists"]
-        .iter()
-        .find_map(|path| std::fs::metadata(files.path(path)).and_then(|meta| meta.modified()).ok())
+    [
+        "/var/lib/apt/periodic/update-success-stamp",
+        "/var/cache/apt/pkgcache.bin",
+        "/var/lib/apt/lists",
+        "/var/lib/apt/lists/partial",
+        "/var/lib/apt/lists/lock",
+    ]
+    .iter()
+    .filter_map(|path| std::fs::metadata(files.path(path)).and_then(|meta| meta.modified()).ok())
+    .max()
 }
 
 /// Whether this is a package name apt would take as one, never as an option.
