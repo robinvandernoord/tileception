@@ -90,7 +90,9 @@ make tools
 ```
 
 `make tools` installs [cargo-plane](https://github.com/robinvandernoord/cargo-plane),
-which runs builds locally or on a remote machine.
+which runs builds locally or on a remote machine. It downloads a release
+binary rather than compiling one, through cargo-binstall or, if that fails,
+directly from the cargo-plane releases.
 
 ### Choose a builder
 

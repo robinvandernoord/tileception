@@ -35,7 +35,8 @@ tools:
 		if ! command -v cargo-binstall >/dev/null 2>&1; then \
 			bash -o pipefail -c 'curl -L --proto "=https" --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash' || exit 1; \
 		fi; \
-		cargo binstall --no-confirm --disable-strategies compile 'cargo-plane@>=0.2'; \
+		cargo binstall --no-confirm --disable-strategies compile 'cargo-plane@>=0.2' || \
+			{ echo "cargo-binstall failed; downloading the release binary directly." >&2; scripts/install-cargo-plane.sh; } || exit 1; \
 	fi
 
 # Setup reuses the configured Codespace, creating one only when needed.
