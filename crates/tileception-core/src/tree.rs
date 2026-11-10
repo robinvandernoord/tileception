@@ -710,7 +710,10 @@ impl Tree {
         let adjustment = delta * total;
         let before_weight = weights[before];
         let after_weight = weights[after];
-        let adjustment = adjustment.clamp(min - before_weight, after_weight - min);
+        // Neither side shrinks below the minimum. One already below it (a row
+        // that gained windows since) keeps its size instead of being pushed
+        // back up, and the bounds stay in order.
+        let adjustment = adjustment.clamp((min - before_weight).min(0.0), (after_weight - min).max(0.0));
         if adjustment.abs() < 1e-12 {
             return false;
         }
@@ -895,6 +898,25 @@ mod tests {
 
     fn window_id(number: u64) -> WindowId {
         WindowId(number)
+    }
+
+    #[test]
+    fn resizing_between_two_squeezed_tiles_does_not_panic() {
+        // Two neighbours at the minimum share, then a new window in the row
+        // takes its share from everyone: both are now below the minimum.
+        let mut tree = Tree::new();
+        let first = tree.dock(WindowId(1), tree.desktop(), Side::Right);
+        let second = tree.dock(WindowId(2), first, Side::Right);
+        let third = tree.dock(WindowId(3), second, Side::Right);
+        let root = tree.root();
+        assert!(tree.resize_gap(root, 1, -0.9));
+        assert!(tree.resize_gap(root, 2, -0.9));
+        tree.dock(WindowId(4), third, Side::Right);
+        // Dragging the divider between them moves it as far as it can go
+        // without making either smaller still.
+        tree.resize_gap(root, 1, 0.01);
+        tree.resize_gap(root, 1, -0.01);
+        tree.check_invariants();
     }
 
     #[test]
