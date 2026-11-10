@@ -412,10 +412,11 @@ impl Tileception {
                 // A hidden password stays on the page.
                 let reveal = page.reveal;
                 let input = if field == 0 { &mut page.name } else { &mut page.password };
-                if field == 0 || reveal {
-                    let text = input.text[input.selection()].to_string();
+                let range = input.selection();
+                if (field == 0 || reveal) && !range.is_empty() {
+                    let text = input.text[range].to_string();
                     if matches!(sym, keysyms::KEY_x | keysyms::KEY_X) {
-                        input.delete(false, false);
+                        input.insert("");
                     }
                     self.copy_text(text);
                 }
