@@ -38,35 +38,80 @@ use crate::{
 };
 
 /// Clipboard contents the compositor owns itself: launcher text, a
-/// screenshot from `tileception msg copy-image`, or what another machine
-/// offers (fetched when pasted).
+/// screenshot from `tileception msg copy-image`, what another machine
+/// offers (fetched when pasted), or what a program had copied, given back
+/// after the clipboard was lent (see `clipboard`).
 #[derive(Debug, Clone)]
 pub enum Clip {
     Text(String),
     Png(std::sync::Arc<[u8]>),
     Remote(crate::handoff::RemoteClip),
+    /// Each offered type with its data, in the order offered.
+    Saved(std::sync::Arc<[(String, Vec<u8>)]>),
 }
+
+/// What a text field pastes, in order of preference.
+const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
 
 impl Clip {
     pub fn text(&self) -> Option<&str> {
         match self {
             Clip::Text(text) => Some(text),
+            Clip::Saved(_) => TEXT_TYPES
+                .iter()
+                .find_map(|mime_type| self.bytes(mime_type))
+                .and_then(|bytes| std::str::from_utf8(bytes).ok()),
             Clip::Png(_) | Clip::Remote(_) => None,
         }
     }
 
-    /// Serves the contents without starting a Wayland client. Another
-    /// machine's selection goes through `Tileception::handoff_fetch` instead.
-    pub fn send(&self, pipe: std::os::fd::OwnedFd) {
+    /// What a paste as `mime_type` gets.
+    pub(crate) fn bytes(&self, mime_type: &str) -> Option<&[u8]> {
+        match self {
+            Clip::Text(text) => Some(text.as_bytes()),
+            Clip::Png(png) => Some(png),
+            Clip::Saved(saved) => saved.iter().find(|(offered, _)| offered == mime_type).map(|(_, bytes)| &bytes[..]),
+            Clip::Remote(_) => None,
+        }
+    }
+
+    /// The text, or the picture where `pictures` are welcome, that one of
+    /// Tileception's own fields pastes from this.
+    fn pasted(&self, pictures: bool) -> Option<Clip> {
+        match self {
+            Clip::Text(_) => Some(self.clone()),
+            // As before: a picture goes nowhere but the doctor's message.
+            Clip::Png(_) => Some(self.clone()),
+            Clip::Saved(_) => pictures
+                .then(|| self.bytes("image/png"))
+                .flatten()
+                .map(|png| Clip::Png(png.into()))
+                .or_else(|| self.text().map(|text| Clip::Text(text.into()))),
+            Clip::Remote(_) => None,
+        }
+    }
+
+    /// Serves the contents as `mime_type` without starting a Wayland client.
+    /// Another machine's selection goes through `Tileception::handoff_fetch`
+    /// instead.
+    pub fn send(&self, mime_type: &str, pipe: std::os::fd::OwnedFd) {
+        self.send_then(mime_type, pipe, || {});
+    }
+
+    /// [`Clip::send`], calling `written` once all of it was written.
+    pub(crate) fn send_then(&self, mime_type: &str, pipe: std::os::fd::OwnedFd, written: impl FnOnce() + Send + 'static) {
         use std::io::Write;
+        if self.bytes(mime_type).is_none() {
+            return;
+        }
         let clip = self.clone();
+        let mime_type = mime_type.to_owned();
         std::thread::spawn(move || {
-            let bytes = match &clip {
-                Clip::Text(text) => text.as_bytes(),
-                Clip::Png(png) => png,
-                Clip::Remote(_) => return,
-            };
-            let _ = std::fs::File::from(pipe).write_all(bytes);
+            if let Some(bytes) = clip.bytes(&mime_type)
+                && std::fs::File::from(pipe).write_all(bytes).is_ok()
+            {
+                written();
+            }
         });
     }
 }
@@ -927,8 +972,16 @@ impl Tileception {
     pub fn paste(&mut self, target: Paste) {
         use std::os::unix::net::UnixStream;
         let owned = current_data_device_selection_userdata(&self.seat).and_then(|data| data.clone());
+        // Pictures first where they are welcome (not in a menu's filter): a
+        // copied image often also offers its address as text.
+        let pictures = match target {
+            Paste::Doctor => !self.doctor_menu_open(),
+            Paste::Launcher(_) | Paste::Settings(_) | Paste::Feedback(..) | Paste::Duck => false,
+        };
         if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
-            self.insert_paste(target, clip.clone());
+            if let Some(clip) = clip.pasted(pictures) {
+                self.insert_paste(target, clip);
+            }
             return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
@@ -938,15 +991,7 @@ impl Tileception {
             return;
         }
         let mut requested = false;
-        let text = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
-        // Pictures first where they are welcome (not in a menu's filter): a
-        // copied image often also offers its address as text.
-        let mime_types = match target {
-            Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor | Paste::Launcher(_) | Paste::Settings(_) | Paste::Feedback(..) | Paste::Duck => {
-                text.to_vec()
-            }
-        };
+        let mime_types = if pictures { [&["image/png"][..], &TEXT_TYPES].concat() } else { TEXT_TYPES.to_vec() };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
                 mime_types.into_iter().find(|mime_type| remote.mime_types.iter().any(|offered| offered == mime_type))
@@ -2416,8 +2461,22 @@ fn plugin_action_glyph(kind: &crate::plugins::ActionKind) -> &'static str {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
-    use super::{RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
+    use super::{Clip, RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn saved_contents_paste_as_they_were_offered() {
+        let saved = Clip::Saved(
+            vec![("text/html".to_string(), b"<b>hi</b>".to_vec()), ("text/plain".to_string(), b"hi".to_vec())].into(),
+        );
+        assert_eq!(saved.bytes("text/html"), Some(&b"<b>hi</b>"[..]));
+        assert_eq!(saved.bytes("image/png"), None);
+        assert_eq!(saved.text(), Some("hi"));
+        assert!(matches!(saved.pasted(true), Some(Clip::Text(text)) if text == "hi"));
+        let picture = Clip::Saved(vec![("image/png".to_string(), b"png".to_vec())].into());
+        assert!(matches!(picture.pasted(true), Some(Clip::Png(png)) if &png[..] == b"png"));
+        assert!(picture.pasted(false).is_none());
+    }
 
     #[test]
     fn questions_go_to_the_doctor() {

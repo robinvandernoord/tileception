@@ -51,7 +51,7 @@ pub fn issue_url(title: &str) -> String {
 }
 
 /// Where the screenshot is saved when the issue opens, for attaching it by
-/// hand if the clipboard has changed since. Each opened issue replaces
+/// hand once the clipboard holds something else. Each opened issue replaces
 /// the last one's. The temporary folder may be shared, so the name carries
 /// the user id: another user's file there cannot be replaced or read.
 fn screenshot_path() -> PathBuf {
@@ -84,7 +84,11 @@ fn save_screenshot(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
 /// A hidden note where the screenshot belongs: GitHub shows comments while
 /// editing, not in the filed issue.
 fn screenshot_note(path: &str) -> String {
-    format!("<!-- Screenshot: press Ctrl+V here to attach the one Tileception copied, also saved as {path} -->")
+    let minutes = crate::clipboard::LEND_FOR.as_secs() / 60;
+    format!(
+        "<!-- Screenshot: press Ctrl+V here to attach the one Tileception put on the clipboard. Once it is pasted, \
+         or after {minutes} minutes, the clipboard holds what you copied before; then drag in {path} instead. -->"
+    )
 }
 
 fn issue_body(message: &str, screenshot: Option<&str>, conversation: Option<&str>, details: Option<&str>) -> String {
@@ -320,7 +324,7 @@ impl Tileception {
                     if let Err(err) = save_screenshot(&path, &png) {
                         tracing::warn!("could not save {}: {err}", path.display());
                     }
-                    self.copy_png(png);
+                    self.lend_clipboard_png(png);
                 }
                 self.spawn("xdg-open", &[url]);
             }
@@ -970,8 +974,8 @@ impl Tileception {
                     painter.image_sized(&shot.preview, corner, Some(shot.preview_size));
                 });
                 format!(
-                    "The screen under this dialog, {} by {} pixels. Opening the issue copies it to the clipboard and \
-                     saves it as {}; paste it into the issue with Ctrl+V. Uncheck to remove it.",
+                    "The screen under this dialog, {} by {} pixels. Opening the issue saves it as {} and puts it \
+                     on the clipboard until you paste it into the issue with Ctrl+V. Uncheck to remove it.",
                     shot.size.0,
                     shot.size.1,
                     screenshot_path().display(),
@@ -1087,6 +1091,7 @@ mod tests {
         let path = "/tmp/shot.png";
         let note = screenshot_note(path);
         assert!(note.starts_with("<!--") && note.ends_with("-->") && note.contains(path));
+        assert!(note.contains("after 2 minutes"));
         assert_eq!(issue_body("Broken", Some(path), None, None), format!("Broken\n\n{note}\n\n---\n{version}"));
         assert_eq!(issue_body("", Some(path), None, None), format!("{note}\n\n---\n{version}"));
     }

@@ -231,12 +231,16 @@ architecture, backend and output pixel sizes/scales to the preview.
 "Include a screenshot of the screen" starts unchecked too. Checking it takes a
 screenshot of the screen under the dialog, without the dialog, and shows a
 preview of it with its size; unchecking it removes the screenshot again. A
-GitHub link cannot carry a picture, so **Open in browser** copies the
-screenshot to the clipboard and saves it as
-`tileception-feedback-screenshot-<uid>.png` in the temporary folder (usually
-`/tmp`, readable only by you, replacing the last one), and the issue body gets
-a hidden note where it belongs: press **Ctrl+V** there to attach it, or drag
-the file into the issue. Nothing is copied or saved before you open the issue.
+GitHub link cannot carry a picture, so **Open in browser** saves the
+screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
+folder (usually `/tmp`, readable only by you, replacing the last one) and puts
+it on the clipboard, and the issue body gets a hidden note where it belongs:
+press **Ctrl+V** there to attach it, or drag the file into the issue. What you
+had copied (up to 32 MB) comes back to the clipboard once the screenshot is
+pasted, or after two minutes (only the latter with clipboard persistence on,
+whose helper serves the paste), unless you copy something else first; another
+machine's clipboard shared through handoff stays replaced. Nothing is copied
+or saved before you open the issue.
 Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
