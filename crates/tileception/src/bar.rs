@@ -1370,7 +1370,7 @@ impl Tileception {
                 let behind = if bell_lit { theme.surface_raised } else { theme.surface };
                 painter.fill(badge.inset(-1.5), behind, (BADGE_H / 2.0 + 1.5) as f32);
             }
-            let fill = if dnd { (theme.muted, theme.muted) } else { (theme.accent, theme.accent_end) };
+            let fill = if dnd { (theme.muted, theme.muted) } else { theme.accent_fill() };
             painter.shape(badge, Shape { fill, ..Shape::filled(Colour::TRANSPARENT, (BADGE_H / 2.0) as f32) });
             let ink = if dnd { theme.surface } else { theme.on_accent };
             // Digits have no descenders: centring the line box leaves them high.
@@ -1699,7 +1699,7 @@ impl Tileception {
                         mark,
                         Shape {
                             radius: 15.0,
-                            fill: (theme.accent, theme.accent_end),
+                            fill: theme.accent_fill(),
                             glow_radius: theme.glow * 0.5,
                             glow: theme.accent.alpha(0.3),
                             ..Default::default()

@@ -12,7 +12,7 @@ use crate::{
     shapes::Shape,
     text_input::SecretField,
     theme::Colour,
-    ui::{Align, Painter, PointerTarget, Style, glyph},
+    ui::{Button, Painter, PointerTarget, Style, glyph},
 };
 
 pub(crate) struct Prompt {
@@ -163,15 +163,8 @@ impl Tileception {
         );
         for (rect, hit) in self.updates_prompt_controls() {
             let primary = hit == Hit::Submit;
-            let shape = if primary {
-                Shape { fill: (theme.accent, theme.accent_end), ..Shape::filled(theme.accent, theme.radius) }
-            } else {
-                Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface_raised, theme.radius) }
-            };
-            painter.shape(rect, shape);
-            let label = if primary { "Continue" } else { "Cancel" };
-            let colour = if primary { theme.on_accent } else { theme.text };
-            painter.text(label, rect, Style::new(theme.font_size * 0.92, colour).bold().align(Align::Centre));
+            let button = if primary { Button::primary("Continue") } else { Button::plain("Cancel") };
+            painter.button(rect, button, rect.contains(Point::new(self.pointer.x, self.pointer.y)));
         }
         painter.finish()
     }

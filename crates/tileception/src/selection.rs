@@ -122,7 +122,7 @@ impl Tileception {
                     &badge,
                     Shape {
                         radius: 11.0,
-                        fill: (theme.accent, theme.accent_end),
+                        fill: theme.accent_fill(),
                         glow_radius: 10.0,
                         glow: Colour([0.0, 0.0, 0.0, 0.4]),
                         ..Default::default()
@@ -134,7 +134,7 @@ impl Tileception {
                     &drawn.slot,
                     Shape {
                         radius: theme.radius,
-                        fill: (theme.accent.alpha(0.10), theme.accent_end.alpha(0.10)),
+                        fill: (theme.accent.alpha(0.10), theme.accent.alpha(0.10)),
                         border_width: 2.0,
                         border: theme.accent,
                         glow_radius: theme.glow * 0.6,

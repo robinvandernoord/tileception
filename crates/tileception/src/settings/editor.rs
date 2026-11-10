@@ -418,9 +418,9 @@ impl Tileception {
             Rect::new(area.x, frame.panel.bottom() - 61., area.w - 285., 52.),
             Style::new(11., if editor.error.is_empty() { theme.muted } else { theme.danger }).lines(3),
         );
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         for (rect, label, _) in buttons(frame, editor.reference) {
-            painter.fill(rect, theme.surface_raised, 6.);
-            painter.text(label, rect, Style::new(12., theme.text).align(Align::Centre));
+            painter.button(rect, Button::plain(label), rect.contains(pointer));
         }
     }
 }

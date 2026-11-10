@@ -142,6 +142,17 @@ Commit changes to PLAN.md (and to this file) as `chore(plan): ...` or
 changelog, and these files mean nothing to users; `chore` is left out. Keep
 `docs` for user-facing documentation such as `docs/` and the README.
 
+## Buttons
+
+Every button Tileception draws itself goes through `Painter::button` with a
+`ui::Button`, which says what the button is: its label or glyph, its `Look`
+(primary, plain, warning or quiet) and whether it is enabled, focused or round.
+The painter decides the fill, border, radius, text, hover and focus ring, so a
+change of style is made there and reaches every button. Do not assemble a
+button from `Shape` and `painter.text` at the call site, and do not write the
+accent gradient out by hand: a test in `ui.rs` lists the few marks that keep
+it. If a button needs something `Button` cannot say, extend `Button`.
+
 ## Text fields
 
 Every field Tileception draws itself must edit the same way, so users can rely

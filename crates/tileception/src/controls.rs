@@ -11,7 +11,7 @@ use crate::{
     Tileception,
     media::{Adjust, Level, SliderId},
     shapes::Shape,
-    ui::{Align, Painter, Style, glyph},
+    ui::{Align, Button, Look, Painter, Style, glyph},
 };
 
 /// Height of one slider row.
@@ -489,19 +489,8 @@ impl Tileception {
             painter.text(&player.artist, card.artist, Style::new(theme.font_size * 0.9, theme.muted));
         }
         let button = |painter: &mut Painter, rect: Rect, icon: &'static str, enabled: bool, primary: bool| {
-            let hover = enabled && rect.contains(pointer);
-            if primary {
-                painter.shape(
-                    rect,
-                    Shape { radius: rect.h as f32 / 2.0, fill: (theme.accent, theme.accent_end), ..Default::default() },
-                );
-                painter.glyph(icon, rect, 14, theme.on_accent);
-                return;
-            }
-            if hover {
-                painter.fill(rect, theme.surface_raised, rect.h as f32 / 2.0);
-            }
-            painter.glyph(icon, rect, 15, if enabled { theme.text } else { theme.muted.alpha(0.5) });
+            let look = if primary { Look::Primary } else { Look::Quiet };
+            painter.button(rect, Button::glyph(icon, look).round().enabled(enabled), rect.contains(pointer));
         };
         button(painter, card.previous, glyph::PREVIOUS, player.can_previous, false);
         let playing = player.status == Status::Playing;
@@ -520,7 +509,7 @@ impl Tileception {
             let share = (position.as_secs_f64() / length.as_secs_f64().max(1.0)).clamp(0.0, 1.0);
             painter.fill(card.progress, theme.border, 1.5);
             let done = Rect::new(card.progress.x, card.progress.y, (card.progress.w * share).max(3.0), card.progress.h);
-            painter.shape(done, Shape { radius: 1.5, fill: (theme.accent, theme.accent_end), ..Default::default() });
+            painter.shape(done, Shape { radius: 1.5, fill: theme.accent_line(), ..Default::default() });
         }
     }
 
@@ -673,8 +662,7 @@ pub fn level_bar(painter: &mut Painter, area: Rect, value: u32, max: u32, muted:
     }
     let value = value as f64;
     let normal = value.min(100.0);
-    let (start, end) =
-        if muted { (theme.muted.alpha(0.6), theme.muted.alpha(0.6)) } else { (theme.accent, theme.accent_end) };
+    let (start, end) = if muted { (theme.muted.alpha(0.6), theme.muted.alpha(0.6)) } else { theme.accent_fill() };
     if normal > 0.0 {
         painter.shape(
             Rect::new(bar.x, bar.y, (x_of(normal) - bar.x).max(4.0), bar.h),

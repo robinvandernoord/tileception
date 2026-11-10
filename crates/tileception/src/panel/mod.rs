@@ -26,7 +26,7 @@ use crate::{
     plugins::{ActionKind, Place},
     shapes::Shape,
     theme::Colour,
-    ui::{Align, Painter, Style, glyph},
+    ui::{Align, Button, Look, Painter, Style, glyph},
 };
 
 const ROW: f64 = 40.0;
@@ -909,32 +909,12 @@ impl Tileception {
         }
         for (button, rect) in card.buttons.iter().zip(&laid.buttons) {
             let usable = card.enabled && button.enabled && button.action.is_some();
-            let hover = usable && rect.contains(pointer);
-            let alpha = if usable { 1.0 } else { 0.4 };
-            let glyph = button.icon.as_deref().and_then(glyph::named);
-            let radius = if glyph.is_some() { rect.h as f32 / 2.0 } else { theme.radius };
-            let colour = if button.primary {
-                painter.shape(
-                    *rect,
-                    Shape {
-                        radius,
-                        fill: (theme.accent.alpha(alpha), theme.accent_end.alpha(alpha)),
-                        ..Default::default()
-                    },
-                );
-                theme.on_accent.alpha(alpha)
-            } else {
-                if hover {
-                    painter.fill(*rect, theme.surface_raised, radius);
-                }
-                if usable { theme.text } else { theme.muted.alpha(0.5) }
+            let look = if button.primary { Look::Primary } else { Look::Quiet };
+            let drawn = match button.icon.as_deref().and_then(glyph::named) {
+                Some(glyph) => Button::glyph(glyph, look).round(),
+                None => Button::new(&button.title, look),
             };
-            match glyph {
-                Some(glyph) => painter.glyph(glyph, *rect, if button.primary { 14 } else { 15 }, colour),
-                None => {
-                    painter.text(&button.title, *rect, Style::new(theme.font_size * 0.82, colour).align(Align::Centre));
-                }
-            }
+            painter.button(*rect, drawn.enabled(usable), rect.contains(pointer));
         }
         if let Some(stepper) = &card.stepper {
             for (rect, sign, action) in
@@ -1181,7 +1161,7 @@ pub(crate) fn draw_switch(painter: &mut Painter, track: Rect, lit: bool, pending
             track,
             Shape {
                 radius,
-                fill: (theme.accent.alpha(alpha), theme.accent_end.alpha(alpha)),
+                fill: (theme.accent.alpha(alpha), theme.accent.alpha(alpha)),
                 glow_radius: if pending || !usable { 0.0 } else { 8.0 },
                 glow: theme.accent.alpha(0.25),
                 ..Default::default()

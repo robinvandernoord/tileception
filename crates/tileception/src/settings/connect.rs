@@ -694,26 +694,11 @@ impl Tileception {
         } else {
             vec![(6, layout.submit, submit)]
         };
+        let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         for (index, rect, label) in buttons {
-            painter.shape(
-                rect,
-                Shape {
-                    radius: 5.,
-                    fill: if index == 6 && !busy {
-                        (theme.accent, theme.accent_end)
-                    } else {
-                        (theme.surface_raised, theme.surface_raised)
-                    },
-                    border_width: if form.focus == index && typing { 1. } else { 0. },
-                    border: theme.accent,
-                    ..Default::default()
-                },
-            );
-            painter.text(
-                label,
-                rect,
-                Style::new(12., if index == 6 && !busy { theme.on_accent } else { theme.text }).align(Align::Centre),
-            );
+            let focused = form.focus == index && typing;
+            let button = if index == 6 { Button::primary(label).enabled(!busy) } else { Button::plain(label) };
+            painter.button(rect, button.focused(focused), rect.contains(pointer));
         }
         if let Some(selected) = form.menu {
             let top = (layout.fields[2].bottom() + 4.).min(layout.cancel.y - REGIONS.len() as f64 * 28. - 8.);

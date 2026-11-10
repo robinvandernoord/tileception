@@ -213,7 +213,8 @@ optional `arguments`:
 - `fields`: one to four inputs; Tab and Up/Down move between them. Enter on the last one,
   or the `submit` button (default "Continue"), calls the tool with `arguments`
   plus each field's name and value. `secret` fields are masked, cannot be
-  copied, are never logged and are wiped once sent.
+  copied, are never logged and are wiped once sent. A step with a single
+  field and no `alternate` shows the button beside the input.
 - `wait`: calls the tool on entering the step and shows `text` meanwhile.
 
 `timeout` is 3 to 60 seconds: 30 for a wait, 3 for fields by default.

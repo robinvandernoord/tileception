@@ -33,7 +33,9 @@
   }
   .tile { border-radius: var(--radius); padding: 10px; font-size: 11px; color: var(--muted); overflow: hidden; position: relative; }
   .tile.big { grid-row: span 2; }
-  .tile.focused { border-color: var(--accent); box-shadow: var(--shadow), var(--sheen), var(--focus-glow); }
+  .tile.focused { border-color: transparent; box-shadow: var(--shadow), var(--sheen), 0 0 18px #2bd4a744; }
+  .tile.focused::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; background: var(--accent-line); pointer-events: none;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
   .tile .title { display: flex; align-items: center; gap: 6px; color: var(--text); font-weight: 600; margin-bottom: 8px; }
   .tile.focused .title::before {
     content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent);
@@ -70,7 +72,7 @@
   .card .dim { position: absolute; inset: 0; background: var(--scrim); backdrop-filter: var(--blur-l); -webkit-backdrop-filter: var(--blur-l); }
   .power { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 78%; }
   .power div { aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 11px; color: var(--muted); }
-  .power div.on { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; box-shadow: var(--shadow-l), var(--focus-glow); }
+  .power div.on { background-image: linear-gradient(var(--accent-fill), var(--accent-fill)); color: var(--on-accent); border-color: var(--accent); box-shadow: var(--shadow-l), var(--focus-glow); }
   .power svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; }
   .lock { position: relative; text-align: center; }
   .lock .clock { font-size: 38px; font-weight: 300; color: var(--text); text-shadow: var(--clock-glow); }
@@ -89,9 +91,9 @@
     --focus-glow: 0 0 0 1px var(--accent); --clock-glow: none; --stripe: 0px;
   }
   .tide {
-    --tab-on: #2bd4a71a; --selected: linear-gradient(90deg, #2bd4a733, #5c8ff214);
+    --tab-on: #2bd4a71a; --selected: linear-gradient(90deg, #2bd4a72e, #2bd4a70a);
     --accent: #2bd4a7; --accent-line: linear-gradient(90deg, #2bd4a7, #5c8ff2);
-    --accent-fill: linear-gradient(135deg, #2bd4a7, #5c8ff2); --on-accent: #0d1117;
+    --accent-fill: #2bd4a729; --on-accent: #e8eaee;
     --icon: linear-gradient(135deg, #2bd4a7, #5c8ff2);
     --focus-glow: 0 0 0 1px #2bd4a7, 0 0 18px #2bd4a744; --clock-glow: 0 0 24px #2bd4a744; --stripe: 3px;
     --field-border: #2bd4a744;
@@ -101,9 +103,9 @@
 <body>
 <h1>Tileception: Tide</h1>
 <p class="intro">Design reference: flat graphite, small radii (6px tiles, 10px popups), quiet surfaces,
-and a teal to blue accent with a soft focus glow. No coloured wallpaper or blur.</p>
+and a teal accent with a soft focus glow, running to blue along thin lines and the focused window's border. No coloured wallpaper or blur.</p>
 <section class="theme tide">
-  <header><h2>Tide</h2><p>Flat graphite and glow, with a teal to blue accent.</p>
+  <header><h2>Tide</h2><p>Flat graphite and glow, with a teal accent that runs to blue along lines.</p>
     <div class="swatches"><span style="background:#1c1f24"></span><span style="background:#2bd4a7"></span><span style="background:#5c8ff2"></span></div></header>
   <div class="row">
     <div>

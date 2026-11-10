@@ -69,6 +69,28 @@ Report testing in the conversation, the commit or the pull request instead.
   - A changelog per update (`apt-get changelog`, Flatpak and Snap release
     notes), and "skip this version" or "hold" for one package, shown as a
     muted row.
+  - Automatic updates through `unattended-upgrades` where the distribution
+    has it: a switch that turns its periodic run on or off and says what it
+    covers. No scheduler of our own.
+  - No shutdown, restart or sleep while packages install: an inhibitor for
+    the length of the task, and the power menu says why it waits.
+  - Everything a transaction does, before it runs: packages it removes and
+    packages kept back or phased, next to the ones it installs. The full
+    `apt-get` output of the last task is kept and opens from the window,
+    also after a failure.
+  - The package lists refresh on their own (`apt-get update` every
+    `check_hours`), without a password: this needs the polkit helper.
+  - `apt autoremove` as a housekeeping offer with a preview of what goes,
+    apart from the kernel clean-up, which keeps naming exact packages.
+  - Repair from the window when apt asks for it: `apt-get --fix-broken
+    install` and `dpkg --configure -a` as one button on the failure, with a
+    preview.
+  - Choosing an Ubuntu mirror, with each mirror's speed and how far behind
+    it is; a warning when the current one is unreachable or stale.
+  - When to remind is configurable: at once (the default), or only after
+    updates have waited some days, and for security updates only.
+  - One row per source package, with its description and the binary
+    packages under it.
   - "Restart and install" as a second line under Restart in the power menu
     while a kernel or firmware waits.
   - No checks on a metered connection or below 30% battery, and no update

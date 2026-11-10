@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command as Process, Stdio};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
@@ -658,8 +658,11 @@ const OFFER_EVERY: Duration = Duration::from_secs(24 * 3600);
 fn scan(with_offer: bool) -> Scan {
     let files = Files::default();
     let runner = backend::System;
+    let mut snapshot = backend::scan(&runner, &files);
+    // Restarting is easier to explain than logging out and in again.
+    snapshot.restart |= replaced();
     Scan {
-        snapshot: backend::scan(&runner, &files),
+        snapshot,
         offer: with_offer.then(|| release::offer(&runner)),
         third_party: release::third_party(&files),
         free: release::free_space(&runner),
@@ -668,21 +671,57 @@ fn scan(with_offer: bool) -> Scan {
     }
 }
 
+/// How often the worker looks whether apt's files changed.
+const WATCH_EVERY: Duration = Duration::from_secs(10);
+
+/// When apt's package lists and dpkg's record of what is installed last
+/// changed: any install, removal or refresh moves one of them.
+fn stamp() -> [Option<SystemTime>; 3] {
+    ["/var/lib/dpkg/status", "/var/lib/apt/lists", "/var/cache/apt/pkgcache.bin"]
+        .map(|path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok())
+}
+
+/// What the last scan saw of apt's files, and when it looked.
+struct Watch {
+    seen: [Option<SystemTime>; 3],
+    looked: Instant,
+}
+
+impl Default for Watch {
+    fn default() -> Self {
+        Watch { seen: stamp(), looked: Instant::now() }
+    }
+}
+
+impl Watch {
+    fn scan(&mut self, with_offer: bool) -> Event {
+        // Stamped first: a change during the scan brings another one.
+        *self = Watch::default();
+        Event::Scanned(Box::new(scan(with_offer)))
+    }
+}
+
 fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request>>, interval: Duration) {
     let mut asked = Instant::now();
-    if events.send(Event::Scanned(Box::new(scan(true)))).is_err() {
+    let mut watch = Watch::default();
+    if events.send(watch.scan(true)).is_err() {
         return;
     }
     loop {
-        let event = match incoming.recv_timeout(interval) {
+        let event = match incoming.recv_timeout(WATCH_EVERY) {
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Something else ran apt, in a terminal for one: look again
+                // at once instead of showing the old list until the next look.
+                if watch.looked.elapsed() < interval && watch.seen == stamp() {
+                    continue;
+                }
                 let offer = asked.elapsed() >= OFFER_EVERY;
                 if offer {
                     asked = Instant::now();
                 }
-                Event::Scanned(Box::new(scan(offer)))
+                watch.scan(offer)
             }
-            Ok(Some(Request::Scan { offer })) => Event::Scanned(Box::new(scan(offer))),
+            Ok(Some(Request::Scan { offer })) => watch.scan(offer),
             Ok(Some(Request::Preview(names))) => Event::Preview(preview(&names)),
             Ok(Some(Request::Run { task, password })) => match authorise(password.as_deref().map(String::as_str)) {
                 Access::Ask => Event::NeedsPassword(task),
@@ -697,7 +736,7 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
                     if refreshed {
                         asked = Instant::now();
                     }
-                    Event::Scanned(Box::new(scan(refreshed)))
+                    watch.scan(refreshed)
                 }
             },
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -770,29 +809,53 @@ fn authorise(password: Option<&str>) -> Access {
     }
 }
 
-/// Runs a task's `apt-get` as root and reports its steps.
-fn execute(task: &Task, password: Option<&str>, events: &channel::Sender<Event>) -> Result<(), Failure> {
-    const ENVIRONMENT: [&str; 2] = ["DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"];
-    let args = task.args().map_err(Failure::Failed)?;
+/// A command that runs what is added to it as root, through `sudo` when
+/// Tileception is not root itself; `feed` it the password once spawned.
+fn as_root(password: Option<&str>) -> Process {
     let mut command = if is_root() {
         Process::new("env")
     } else {
         let mut command = Process::new("sudo");
         match password {
-            // -k: always read the password, so it never reaches apt-get.
+            // -k: always read the password, so it never reaches the program.
             Some(_) => command.args(["-S", "-k", "-p", ""]),
             None => command.arg("-n"),
         };
         command.args(["--", "env"]);
         command
     };
+    command.args(["DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"]).stdin(if password.is_some() && !is_root() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     command
-        .args(ENVIRONMENT)
-        .args(["apt-get", "-o", "DPkg::Lock::Timeout=60"])
-        .args(&args)
-        .stdin(if password.is_some() && !is_root() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+}
+
+/// Whether the Tileception that is running is no longer the one installed:
+/// a package update replaced its program, which `/proc` then calls deleted.
+fn replaced() -> bool {
+    std::fs::read_link("/proc/self/exe").is_ok_and(|path| path.to_string_lossy().ends_with(" (deleted)"))
+}
+
+/// Runs a task's `apt-get` as root and reports its steps.
+fn execute(task: &Task, password: Option<&str>, events: &channel::Sender<Event>) -> Result<(), Failure> {
+    let args = task.args().map_err(Failure::Failed)?;
+    // Read before the install, which marks what it names as installed by hand.
+    let automatic = match task {
+        Task::Install(names) if !names.is_empty() => Process::new("apt-mark")
+            .arg("showmanual")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| apt::automatic(names, &String::from_utf8_lossy(&output.stdout)))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let mut command = as_root(password);
+    command.args(["apt-get", "-o", "DPkg::Lock::Timeout=60"]).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| Failure::Failed(format!("could not start apt-get: {error}")))?;
     feed(&mut child, password.filter(|_| !is_root()));
     let errors = child.stderr.take().map(|mut stderr| {
@@ -817,6 +880,17 @@ fn execute(task: &Task, password: Option<&str>, events: &channel::Sender<Event>)
     let status = child.wait().map_err(|error| Failure::Failed(error.to_string()))?;
     let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
     if status.success() {
+        if !automatic.is_empty() {
+            let mut command = as_root(password);
+            command.args(["apt-mark", "auto"]).args(&automatic).stdout(Stdio::null()).stderr(Stdio::null());
+            let marked = command.spawn().and_then(|mut child| {
+                feed(&mut child, password.filter(|_| !is_root()));
+                child.wait()
+            });
+            if !marked.is_ok_and(|status| status.success()) {
+                tracing::warn!("could not mark the installed updates as automatic again");
+            }
+        }
         return Ok(());
     }
     let lines = || errors.lines().map(str::trim).filter(|line| !line.is_empty());

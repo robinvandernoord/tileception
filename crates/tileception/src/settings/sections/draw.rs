@@ -380,7 +380,7 @@ impl Tileception {
                         Shape {
                             radius: 10.,
                             fill: if enabled {
-                                (theme.accent, theme.accent_end)
+                                theme.accent_fill()
                             } else {
                                 (theme.surface_raised, theme.surface_raised)
                             },
@@ -391,7 +391,7 @@ impl Tileception {
                     );
                     painter.fill(
                         Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
-                        if enabled { theme.text } else { theme.muted },
+                        if enabled { theme.on_accent } else { theme.muted },
                         7.,
                     );
                     if focused {
@@ -421,7 +421,7 @@ impl Tileception {
                             painter.shape(
                                 Rect::new(segment.x + 3., segment.y + 3., segment.w - 6., segment.h - 6.),
                                 Shape {
-                                    fill: (theme.accent.alpha(0.22), theme.accent_end.alpha(0.14)),
+                                    fill: (theme.accent.alpha(0.18), theme.accent.alpha(0.18)),
                                     border_width: 1.,
                                     border: theme.accent.alpha(0.6),
                                     radius: 4.,
@@ -626,7 +626,7 @@ impl Tileception {
                     switch,
                     Shape {
                         radius: 8.,
-                        fill: if enabled { (theme.accent, theme.accent_end) } else { (theme.surface, theme.surface) },
+                        fill: if enabled { theme.accent_fill() } else { (theme.surface, theme.surface) },
                         border_width: if enabled { 0. } else { 1. },
                         border: theme.border,
                         ..Default::default()
@@ -634,7 +634,7 @@ impl Tileception {
                 );
                 painter.fill(
                     Rect::new(switch.x + if enabled { 16. } else { 2. }, switch.y + 2., 12., 12.),
-                    if enabled { theme.text } else { theme.muted },
+                    if enabled { theme.on_accent } else { theme.muted },
                     6.,
                 );
                 continue;
@@ -725,25 +725,10 @@ impl Tileception {
                 _ => "",
             };
             let primary = *action == Action::Stage;
-            painter.shape(
-                *rect,
-                Shape {
-                    fill: if primary {
-                        (theme.accent, theme.accent_end)
-                    } else {
-                        (theme.surface_raised, theme.surface_raised)
-                    },
-                    border_width: if screen.focus == Some(*action) { 1. } else { 0. },
-                    border: theme.accent,
-                    radius: 5.,
-                    ..Default::default()
-                },
-            );
-            painter.text(
-                label,
-                *rect,
-                Style::new(11., if primary { theme.on_accent } else { theme.text }).align(Align::Centre),
-            );
+            let focused = screen.focus == Some(*action);
+            let hover = rect.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));
+            let look = if primary { Look::Primary } else { Look::Plain };
+            painter.button(*rect, Button::new(label, look).focused(focused), hover);
             if *action == Action::Back {
                 painter.glyph(glyph::ARROW_LEFT, Rect::new(rect.x + 6., rect.y + 7., 16., 16.), 14, theme.text);
             }

@@ -516,25 +516,18 @@ impl Tileception {
                 let active = index == menu.selected && *enabled;
                 painter.shape(
                     *rect,
-                    Shape {
-                        radius: theme.radius,
-                        border_width: 1.0,
-                        border: if active { theme.accent } else { theme.border },
-                        fill: if active {
-                            (theme.accent, theme.accent_end)
-                        } else {
-                            (theme.panel(theme.popup()), theme.panel(theme.popup()))
-                        },
-                        ..Default::default()
+                    if active {
+                        Shape::halo(theme, theme.panel(theme.popup()), theme.radius)
+                    } else {
+                        Shape {
+                            border_width: 1.0,
+                            border: theme.border,
+                            highlight: 0.05,
+                            ..Shape::filled(theme.panel(theme.popup()), theme.radius)
+                        }
                     },
                 );
-                let colour = if !enabled {
-                    theme.muted
-                } else if active {
-                    theme.on_accent
-                } else {
-                    theme.text
-                };
+                let colour = if *enabled { theme.text } else { theme.muted };
                 painter.text(label, *rect, Style::new(theme.font_size, colour).align(Align::Centre));
             }
             let hints: &[(&str, &str)] = if menu.page == Page::Wake {
@@ -563,32 +556,30 @@ impl Tileception {
             let active = selected && enabled;
             painter.shape(
                 rect,
-                Shape {
-                    radius: theme.radius,
-                    border_width: 1.0,
-                    border: if active { theme.accent.alpha(0.7) } else { theme.border },
-                    fill: if active {
-                        (theme.accent, theme.accent_end)
-                    } else {
-                        (theme.panel(theme.popup()), theme.panel(theme.popup()))
-                    },
-                    glow_radius: if active { theme.glow * 0.5 } else { 0.0 },
-                    glow: theme.accent.alpha(0.16),
-                    ..Default::default()
+                if active {
+                    Shape::halo(theme, theme.panel(theme.popup()), theme.radius)
+                } else {
+                    Shape {
+                        border_width: 1.0,
+                        border: theme.border,
+                        highlight: 0.05,
+                        ..Shape::filled(theme.panel(theme.popup()), theme.radius)
+                    }
                 },
             );
             let foreground = if !enabled {
                 theme.muted.alpha(0.5)
             } else if selected {
-                theme.on_accent
+                theme.text
             } else {
                 theme.text.alpha(0.85)
             };
+            // The chosen one's icon is lit in the accent.
             painter.glyph(
                 action.glyph(),
                 Rect::new(rect.x, rect.y + rect.h * 0.18, rect.w, rect.h * 0.36),
                 28,
-                foreground,
+                if active { theme.accent } else { foreground },
             );
             let label = if enabled { action.label() } else { "Suspend off" };
             let style = Style::new(theme.font_size, foreground).align(Align::Centre);
@@ -600,11 +591,8 @@ impl Tileception {
             // The letter that picks it, in the corner.
             let key = action.key().to_ascii_uppercase().to_string();
             let chip = Rect::new(rect.right() - 26.0, rect.y + 8.0, 18.0, 18.0);
-            let (chip_fill, chip_text) = if selected && enabled {
-                (theme.on_accent.alpha(0.18), theme.on_accent)
-            } else {
-                (theme.surface_raised, theme.muted)
-            };
+            let (chip_fill, chip_text) =
+                if selected && enabled { (theme.accent, theme.on_accent) } else { (theme.surface_raised, theme.muted) };
             painter.fill(chip, chip_fill, 4.0);
             painter.text(&key, chip, Style::new(theme.font_size * 0.75, chip_text).bold().align(Align::Centre));
         }

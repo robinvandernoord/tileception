@@ -14,7 +14,7 @@ use crate::{
     plugins::{ActionKind, Arguments, Place, Prompt, Row, Step, StepKind},
     shapes::Shape,
     text_input::{SecretField, TextInput},
-    ui::{Align, Painter, Style, glyph},
+    ui::{Button, Look, Painter, Style, glyph},
 };
 
 pub(super) struct PromptView {
@@ -118,7 +118,7 @@ fn prompt_layout(view: &PromptView, area: Rect) -> PromptLayout {
     let step = view.current();
     let text = (!step.text.is_empty()).then(|| take(TEXT_H));
     let message = (!view.error.is_empty() || !view.notice.is_empty()).then(|| take(MESSAGE_H));
-    let fields = view
+    let mut fields: Vec<(Rect, Rect)> = view
         .inputs
         .iter()
         .map(|_| {
@@ -128,6 +128,24 @@ fn prompt_layout(view: &PromptView, area: Rect) -> PromptLayout {
             (label, input)
         })
         .collect();
+    // A lone field with nothing but a submit button shares its row with it.
+    if let ([(_, input)], Some(label), None) = (fields.as_mut_slice(), view.submit_label(), &step.alternate) {
+        let button = button_width(label);
+        input.w -= button + 10.0;
+        let submit = Rect::new(input.right() + 10.0, input.y, button, input.h);
+        return PromptLayout {
+            icon,
+            title,
+            detail,
+            text,
+            message,
+            fields,
+            busy: None,
+            submit: Some(submit),
+            alternate: None,
+            bottom: top + 2.0,
+        };
+    }
     let busy = matches!(step.kind, StepKind::Wait).then(|| take(BUSY_H));
     take(6.0);
     let row = take(BUTTON_H);
@@ -559,13 +577,10 @@ impl Tileception {
         ];
         for (rect, label, primary) in buttons {
             let (Some(rect), Some(label)) = (rect, label) else { continue };
-            let lit = primary && typing;
-            let fill =
-                if lit { (theme.accent, theme.accent_end) } else { (theme.surface_raised, theme.surface_raised) };
-            painter.shape(rect, Shape { radius: theme.radius, fill, ..Default::default() });
             let label = if primary && !typing { "Working..." } else { label };
-            let colour = if lit { theme.on_accent } else { theme.text };
-            painter.text(label, rect, Style::new(size * 0.92, colour).align(Align::Centre));
+            let look = if primary { Look::Primary } else { Look::Plain };
+            let hover = rect.contains(Point::new(self.pointer.x, self.pointer.y));
+            painter.button(rect, Button::new(label, look).enabled(typing || !primary), hover);
         }
     }
 }

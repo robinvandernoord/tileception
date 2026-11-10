@@ -19,7 +19,7 @@ use crate::{
     settings::client::{self, Client},
     shapes::Shape,
     theme::Colour,
-    ui::{Align, Painter, PointerEvent, PointerTarget, Style, glyph},
+    ui::{Align, Button, Look, Painter, PointerEvent, PointerTarget, Style, glyph},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1611,12 +1611,13 @@ impl Tileception {
         let ready = release::ready(&checks);
         for (slot, (label, hit, primary)) in buttons.into_iter().enumerate() {
             let look = match (primary, hit) {
-                (true, Hit::Upgrade) if !ready => Look::Disabled,
                 (true, _) => Look::Primary,
                 (false, Hit::Security) => Look::Warning,
                 _ => Look::Plain,
             };
-            draw_button(&mut painter, footer_button(footer, slot, 124.0), &label, look, pointer);
+            let rect = footer_button(footer, slot, 124.0);
+            let enabled = ready || hit != Hit::Upgrade || !primary;
+            painter.button(rect, Button::new(&label, look).enabled(enabled), rect.contains(pointer));
         }
         painter.finish()
     }
@@ -1625,36 +1626,8 @@ impl Tileception {
 /// An arrow pointing up: updates.
 const ARROW_UP: &str = r#"<path d="M12 19V5M5 12l7-7 7 7"/>"#;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Look {
-    Plain,
-    Primary,
-    Warning,
-    Disabled,
-}
-
 fn draw_button(painter: &mut Painter, rect: Rect, label: &str, look: Look, pointer: Point) {
-    let theme = painter.theme();
-    let hovered = rect.contains(pointer);
-    let shape = match look {
-        Look::Primary => Shape { fill: (theme.accent, theme.accent_end), ..Shape::filled(theme.accent, theme.radius) },
-        Look::Disabled => {
-            Shape { border_width: 1.0, border: theme.border, ..Shape::filled(Colour::TRANSPARENT, theme.radius) }
-        }
-        Look::Plain | Look::Warning => Shape {
-            border_width: 1.0,
-            border: theme.border,
-            ..Shape::filled(if hovered { theme.border } else { theme.surface_raised }, theme.radius)
-        },
-    };
-    painter.shape(rect, shape);
-    let colour = match look {
-        Look::Primary => theme.on_accent,
-        Look::Warning => theme.warning,
-        Look::Disabled => theme.muted,
-        Look::Plain => theme.text,
-    };
-    painter.text(label, rect, Style::new(theme.font_size * 0.88, colour).bold().align(Align::Centre));
+    painter.button(rect, Button::new(label, look), rect.contains(pointer));
 }
 
 fn draw_tick(painter: &mut Painter, rect: Rect, ticked: bool) {
