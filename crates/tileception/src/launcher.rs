@@ -5,6 +5,8 @@
 //! visited folders, from the bundled folders plugin), and `>` to run a
 //! command and see its output.
 
+mod prompt;
+
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -57,11 +59,14 @@ impl Clip {
 
     /// Serves the contents without starting a Wayland client. Another
     /// machine's selection goes through `Tileception::handoff_fetch` instead.
-    pub fn send(&self, pipe: std::os::fd::OwnedFd) {
+    pub fn send(&self, mime_type: &str, pipe: std::os::fd::OwnedFd) {
         use std::io::Write;
         let clip = self.clone();
+        let hint = mime_type == PASSWORD_HINT;
         std::thread::spawn(move || {
             let bytes = match &clip {
+                // What clipboard managers read to know they should skip it.
+                _ if hint => b"secret".as_slice(),
                 Clip::Text(text) => text.as_bytes(),
                 Clip::Png(png) => png,
                 Clip::Remote(_) => return,
@@ -70,6 +75,10 @@ impl Clip {
         });
     }
 }
+
+/// Offered with a sensitive copy, saying `secret`, so clipboard managers and
+/// clipboard persistence leave it alone (a KDE convention others follow).
+pub(crate) const PASSWORD_HINT: &str = "x-kde-passwordManagerHint";
 
 /// Opens the pipe a pasting program gave us for writing, in blocking mode.
 /// Some programs (Chromium and Electron among them) create the pipe
@@ -108,6 +117,9 @@ pub enum Paste {
     Feedback(u64, bool),
     /// The rubber duck's question.
     Duck,
+    /// A field of a launcher prompt: the prompt step's serial and the
+    /// field, so a late paste never lands anywhere else.
+    Prompt(u64, usize),
     /// The network card's password field.
     Network,
 }
@@ -181,6 +193,7 @@ enum PointerAction {
     Search,
     Settings,
     Entry(Entry),
+    Prompt(prompt::Target),
     /// A control on a plugin's card under the launcher.
     Card(String, crate::plugins::ActionKind),
 }
@@ -201,6 +214,7 @@ impl crate::ui::PointerAction for PointerAction {
                     state.launch_selected(crate::config::Mods::default());
                 }
             }
+            Self::Prompt(target) => state.prompt_activate(*target),
             Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
         }
     }
@@ -337,6 +351,8 @@ pub struct Launcher {
     entries: Vec<Entry>,
     /// What Enter last copied, and when, to say so on its row.
     copied: Option<(String, Instant)>,
+    /// The result whose prompt ended in a copy, and when, to say so on it.
+    copied_row: Option<(crate::plugins::Row, Instant)>,
     run: Option<Run>,
     /// Lines the output is scrolled back from its end.
     output_scroll: usize,
@@ -352,6 +368,10 @@ pub struct Launcher {
     plugin_pending: bool,
     plugin_rows: Vec<Entry>,
     plugin_actions: Option<(String, crate::plugins::Row)>,
+    /// A plugin's prompt, shown instead of the results.
+    prompt: Option<prompt::PromptView>,
+    /// Counts prompt steps entered, to tell pastes for them apart.
+    prompt_serial: u64,
 }
 
 impl Default for Launcher {
@@ -374,6 +394,7 @@ impl Default for Launcher {
             first: 0,
             entries: Vec::new(),
             copied: None,
+            copied_row: None,
             run: None,
             output_scroll: 0,
             index: AppIndex::scan_default(),
@@ -385,6 +406,8 @@ impl Default for Launcher {
             plugin_pending: false,
             plugin_rows: Vec::new(),
             plugin_actions: None,
+            prompt: None,
+            prompt_serial: 0,
             usage: usage
                 .into_iter()
                 .map(|(app_id, value)| {
@@ -467,9 +490,21 @@ impl Tileception {
 
     /// Puts text on the clipboard, owned by the compositor, for Wayland and X11.
     pub(crate) fn copy_text(&mut self, text: String) {
-        let mime_types = vec!["text/plain;charset=utf-8".into(), "text/plain".into()];
+        self.copy_text_with(text, false);
+    }
+
+    /// Puts text on the clipboard; sensitive text, such as a password or a
+    /// one-time code, says so to clipboard managers and is not offered to
+    /// other machines through handoff.
+    pub(crate) fn copy_text_with(&mut self, text: String, sensitive: bool) {
+        let mut mime_types = vec!["text/plain;charset=utf-8".to_string(), "text/plain".to_string()];
+        if sensitive {
+            mime_types.push(PASSWORD_HINT.into());
+        }
         set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
-        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
+        // Nothing to share: linked machines drop what this one offered before.
+        let shared = if sensitive { Vec::new() } else { mime_types.clone() };
+        self.selection_offered(SelectionTarget::Clipboard, Some(shared));
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
         {
@@ -530,6 +565,7 @@ impl Tileception {
                     || self.launcher.plugin_pending
                     || self.launcher.plugin_query.as_ref() != Some(&(generation, plugin.clone()))
                     || self.launcher.plugin_actions.is_some()
+                    || self.launcher.prompt.is_some()
                 {
                     return;
                 }
@@ -555,6 +591,11 @@ impl Tileception {
                 }
                 self.launcher.entries = self.launcher_entries();
             }
+            Event::Action { place: crate::plugins::Place::Launcher, generation, result }
+                if self.launcher.open && self.launcher.prompt.as_ref().is_some_and(|view| view.awaits(generation)) =>
+            {
+                self.prompt_result(result);
+            }
             Event::Action { place: crate::plugins::Place::Launcher, generation, result } => {
                 if !self.launcher.open
                     || self.launcher.plugin_query.as_ref().map(|(current, _)| *current) != Some(generation)
@@ -575,6 +616,19 @@ impl Tileception {
 
     /// A paste arriving, if what it was meant for is still there.
     fn insert_paste(&mut self, target: Paste, clip: Clip) {
+        // A prompt's paste may be a passphrase: wiped once inserted, and
+        // also when it arrives too late or is refused.
+        let (target, clip) = match (target, clip) {
+            (Paste::Prompt(serial, field), Clip::Text(mut text)) => {
+                if self.launcher.open {
+                    self.prompt_paste(serial, field, &text);
+                }
+                zeroize::Zeroize::zeroize(&mut text);
+                self.schedule_render();
+                return;
+            }
+            other => other,
+        };
         match (target, clip) {
             (Paste::Launcher(epoch), Clip::Text(text)) if self.launcher.open && self.launcher.epoch == epoch => {
                 self.launcher_insert_paste(&text);
@@ -651,9 +705,11 @@ impl Tileception {
         self.launcher.edited = Instant::now();
         self.launcher.opened = Instant::now();
         self.launcher.copied = None;
+        self.launcher.copied_row = None;
         self.launcher.run = None;
         self.launcher.details = None;
         self.launcher.plugin_actions = None;
+        self.launcher.prompt = None;
         if let Some(compose) = &mut self.launcher.compose {
             compose.reset();
         }
@@ -669,6 +725,8 @@ impl Tileception {
         if let Some(plugins) = &self.plugins {
             plugins.cancel(crate::plugins::Place::Launcher);
         }
+        // Wipes what was typed into it.
+        self.launcher.prompt = None;
         self.launcher.plugin_query = None;
         self.launcher.plugin_pending = false;
         self.launcher.open = false;
@@ -680,6 +738,7 @@ impl Tileception {
     /// Works out the rows for what is typed now.
     fn refresh_launcher(&mut self) {
         self.launcher.plugin_actions = None;
+        self.launcher.prompt = None;
         let previous = self.launcher.plugin_query.take();
         let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim_start()));
         let retain =
@@ -875,6 +934,9 @@ impl Tileception {
     }
 
     fn launcher_key_inner(&mut self, sym: u32, mods: crate::config::Mods) {
+        if self.launcher.prompt.is_some() {
+            return self.prompt_key(sym, mods);
+        }
         let word = mods.ctrl || mods.alt;
         // Alt+Enter shows an app's desktop entry; Esc goes back to the results.
         let enter = matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter);
@@ -997,6 +1059,7 @@ impl Tileception {
             | Paste::Settings(_)
             | Paste::Feedback(..)
             | Paste::Duck
+            | Paste::Prompt(..)
             | Paste::Network => text.to_vec(),
         };
         if let Some(Clip::Remote(remote)) = owned {
@@ -1063,14 +1126,22 @@ impl Tileception {
                 }
                 return;
             }
-            let mut text = String::new();
+            // Sized up front so reading leaves no reallocated copies of a
+            // pasted passphrase behind; a refused one is wiped.
+            let mut text = String::with_capacity(4097);
             if reader.take(4097).read_to_string(&mut text).is_ok() && text.len() <= 4096 {
                 let _ = sender.send((target, Clip::Text(text)));
+            } else {
+                zeroize::Zeroize::zeroize(&mut text);
             }
         });
     }
 
     fn launcher_insert_paste(&mut self, text: &str) {
+        // Search text never arrives while a prompt shows.
+        if self.launcher.prompt.is_some() {
+            return;
+        }
         let text: String = text.chars().map(|character| if character.is_control() { ' ' } else { character }).collect();
         self.launcher.input.insert(&text);
         self.launcher.edited = Instant::now();
@@ -1091,6 +1162,9 @@ impl Tileception {
     }
 
     pub fn launcher_scroll(&mut self, delta: isize) {
+        if self.launcher.prompt.is_some() {
+            return;
+        }
         if let Some(lines) =
             self.launcher.shown_run().and_then(|run| run.output.as_ref()).map(|output| output.text.lines().count())
         {
@@ -1149,7 +1223,7 @@ impl Tileception {
                 self.run_builtin(COMMANDS[index].does);
             }
             Entry::Answer(answer) => {
-                self.launcher_action(None, crate::plugins::ActionKind::Copy { text: answer.copy });
+                self.launcher_action(None, crate::plugins::ActionKind::Copy { text: answer.copy, sensitive: false });
             }
             // A folder opens in the terminal with Ctrl.
             Entry::Place(place) if place.folder && mods.ctrl => {
@@ -1176,17 +1250,27 @@ impl Tileception {
                 if self.launcher.plugin_pending {
                     return;
                 }
-                if mods.ctrl
-                    && let Some(alternate) = row.alternate
+                let kind = if mods.ctrl
+                    && let Some(alternate) = &row.alternate
                 {
-                    self.launcher_action(Some(plugin), alternate.kind);
+                    alternate.kind.clone()
                 } else if row.actions.len() > 1 && self.launcher.plugin_actions.is_none() {
                     self.launcher.plugin_actions = Some((plugin, row));
                     self.launcher.entries = self.launcher_entries();
                     self.launcher.selected = 0;
                     self.launcher.first = 0;
+                    return;
                 } else if let Some(action) = row.actions.first() {
-                    self.launcher_action(Some(plugin), action.kind.clone());
+                    action.kind.clone()
+                } else {
+                    return;
+                };
+                if let crate::plugins::ActionKind::Prompt { prompt } = kind {
+                    // In a result's actions, the row stands for one action.
+                    let origin = self.launcher.plugin_actions.as_ref().map_or(row, |(_, listed)| listed.clone());
+                    self.open_prompt(plugin, *prompt, Some(origin));
+                } else {
+                    self.launcher_action(Some(plugin), kind);
                 }
             }
             Entry::PluginStatus(_) => {}
@@ -1350,8 +1434,8 @@ impl Tileception {
     fn launcher_action(&mut self, plugin: Option<String>, action: crate::plugins::ActionKind) {
         use crate::plugins::ActionKind;
         match action {
-            ActionKind::Copy { text } => {
-                self.copy_text(text.clone());
+            ActionKind::Copy { text, sensitive } => {
+                self.copy_text_with(text.clone(), sensitive);
                 self.launcher.copied = Some((text, Instant::now()));
             }
             ActionKind::Open { target } => {
@@ -1381,6 +1465,11 @@ impl Tileception {
                     self.launcher.plugin_rows = vec![Entry::PluginStatus("Running plugin action".into())];
                     self.launcher.entries = self.launcher_entries();
                     self.launcher.selected = 0;
+                }
+            }
+            ActionKind::Prompt { prompt } => {
+                if let Some(plugin) = plugin {
+                    self.open_prompt(plugin, *prompt, None);
                 }
             }
         }
@@ -1575,6 +1664,9 @@ impl Tileception {
         let columns = if grid { self.home_columns() } else { 1 };
         let row_h = if grid { TILE_H } else { ROW_H };
         let available = (screen.h - 32.0 - PAD * 2.0 - FIELD_H - CAPTION_H - FOOTER_H).max(row_h);
+        // A plugin's prompt takes the results' place.
+        let prompt_h = self.prompt_height(width - 2.0 * PAD).map(|height| height.min(available));
+        let results = if prompt_h.is_some() { 0 } else { results };
         let output_h = self
             .launcher
             .shown_run()
@@ -1590,7 +1682,7 @@ impl Tileception {
             .max(selected_row.saturating_sub(visible_rows - 1));
         let first = first_row * columns;
         let visible = results.saturating_sub(first).min(visible_rows * columns);
-        let list_h = row_count.min(visible_rows) as f64 * row_h + reserved;
+        let list_h = prompt_h.unwrap_or(row_count.min(visible_rows) as f64 * row_h + reserved);
         let height = PAD + FIELD_H + CAPTION_H + list_h + PAD + FOOTER_H;
         // A fixed top edge, so the field stays put while results come and go.
         // The welcome screen sits lower, under its clock.
@@ -1623,6 +1715,7 @@ impl Tileception {
             Rect::new(panel.x + PAD, output_top, panel.w - 2.0 * PAD, output_height)
         });
         let footer = Rect::new(panel.x, panel.bottom() - FOOTER_H, panel.w, FOOTER_H);
+        let prompt = prompt_h.map(|height| Rect::new(panel.x + PAD, caption.bottom(), panel.w - 2.0 * PAD, height));
         let text = Rect::new(field.x + 44.0, field.y, field.w - 58.0, field.h);
         // Under the panel: what is playing, then the plugins' cards, as far
         // as the screen has room for them.
@@ -1644,7 +1737,7 @@ impl Tileception {
                 cards.push((plugin.to_string(), card.clone(), laid));
             }
         }
-        LauncherLayout { panel, field, text, caption, rows, first, output, footer, media, cards }
+        LauncherLayout { panel, field, text, caption, rows, first, output, prompt, footer, media, cards }
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -1665,6 +1758,15 @@ impl Tileception {
 
     pub(crate) fn launcher_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
         let layout = self.launcher_layout();
+        if let Some(area) = layout.prompt {
+            if launcher_settings_button(layout.footer).contains(point) {
+                return Some(crate::ui::PointerTarget::button(
+                    launcher_settings_button(layout.footer),
+                    PointerAction::Settings,
+                ));
+            }
+            return self.prompt_pointer_target(area, point);
+        }
         if layout.field.contains(point) {
             return Some(crate::ui::PointerTarget::new(
                 layout.field,
@@ -1814,7 +1916,8 @@ impl Tileception {
             crate::text::Field {
                 cursor: input.cursor,
                 anchor: input.anchor,
-                visible: self.launcher.edited.elapsed().as_millis() % 1000 < 600,
+                // A prompt's fields have the caret then.
+                visible: self.launcher.prompt.is_none() && self.launcher.edited.elapsed().as_millis() % 1000 < 600,
                 accent: theme.accent.straight_rgba8(),
             },
         );
@@ -1860,7 +1963,7 @@ impl Tileception {
         } else {
             "FREQUENTLY USED"
         };
-        let caption = if layout.rows.len() < entries.len() {
+        let caption = if layout.prompt.is_none() && layout.rows.len() < entries.len() {
             format!(
                 "{caption} · {} to {} of {} · Scroll for more",
                 layout.first + 1,
@@ -1872,7 +1975,9 @@ impl Tileception {
         };
         painter.text(&caption, layout.caption, Style::new(theme.font_size * 0.85, theme.muted).bold());
 
-        if entries.is_empty() {
+        if let Some(area) = layout.prompt {
+            painter.clipped(area, |painter| self.draw_prompt(painter, area));
+        } else if entries.is_empty() {
             let area = Rect::new(
                 layout.panel.x,
                 layout.caption.bottom(),
@@ -1930,7 +2035,9 @@ impl Tileception {
             _ => "Launch",
         };
         let close = if self.launcher.home { ("Esc", "Clear") } else { ("Esc", "Close") };
-        let hints: Vec<(&str, &str)> = if self.launcher.home && !typing {
+        let hints: Vec<(&str, &str)> = if self.launcher.prompt.is_some() {
+            self.prompt_hints()
+        } else if self.launcher.home && !typing {
             vec![("Type", "Search"), ("\u{2190}\u{2192}", "Choose"), ("Enter", "Launch")]
         } else if matches!(selected, Some(Entry::Run(_))) {
             vec![("Enter", "Run here"), ("Ctrl+Enter", "In a terminal"), close]
@@ -2131,7 +2238,8 @@ impl Tileception {
                 } else {
                     glyph_box(painter, glyph::PLUG, theme.accent);
                 }
-                copied = row.actions.iter().any(|action| matches!(&action.kind, crate::plugins::ActionKind::Copy { text } if self.launcher.just_copied(text)));
+                copied = row.actions.iter().any(|action| matches!(&action.kind, crate::plugins::ActionKind::Copy { text, .. } if self.launcher.just_copied(text)))
+                    || self.launcher.copied_row.as_ref().is_some_and(|(copied, when)| copied == row && when.elapsed() < COPIED_FOR);
                 (row.title.clone(), Some(row.detail.clone()))
             }
             Entry::PluginStatus(message) => {
@@ -2613,6 +2721,8 @@ struct LauncherLayout {
     first: usize,
     /// A `>` command's output, under its row.
     output: Option<Rect>,
+    /// A plugin's prompt, instead of the rows.
+    prompt: Option<Rect>,
     footer: Rect,
 }
 
@@ -2640,13 +2750,15 @@ fn usage_path() -> PathBuf {
 fn plugin_action_detail(kind: &crate::plugins::ActionKind) -> String {
     use crate::plugins::ActionKind;
     match kind {
-        ActionKind::Copy { text } => format!("Copies \"{text}\""),
+        ActionKind::Copy { sensitive: true, .. } => "Copies it, hidden from clipboard managers".into(),
+        ActionKind::Copy { text, .. } => format!("Copies \"{text}\""),
         ActionKind::Open { target } => format!("Opens {target}"),
         ActionKind::Run { command, args } if args.is_empty() => format!("Runs {command}"),
         ActionKind::Run { command, args } => format!("Runs {command} {}", args.join(" ")),
         ActionKind::Tool { .. } => "Asks the plugin to do it".into(),
         ActionKind::Terminal { directory } => format!("Opens a terminal in {directory}"),
         ActionKind::Settings { page } => format!("Opens {page} in Settings"),
+        ActionKind::Prompt { prompt } => prompt.title.clone(),
     }
 }
 
@@ -2658,6 +2770,7 @@ fn plugin_action_glyph(kind: &crate::plugins::ActionKind) -> &'static str {
         ActionKind::Run { .. } | ActionKind::Terminal { .. } => glyph::TERMINAL,
         ActionKind::Tool { .. } => glyph::PLUG,
         ActionKind::Settings { .. } => glyph::SETTINGS,
+        ActionKind::Prompt { .. } => glyph::LOCK,
     }
 }
 

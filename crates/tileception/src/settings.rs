@@ -16,7 +16,7 @@ mod home_page;
 mod interaction;
 mod keymap;
 mod network_page;
-mod sections;
+pub(crate) mod sections;
 
 use crate::{
     Tileception,

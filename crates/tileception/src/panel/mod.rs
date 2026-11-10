@@ -293,10 +293,12 @@ impl Tileception {
                 }
             }
             ActionKind::Settings { page } => self.open_settings_named(&page),
-            ActionKind::Copy { text } => self.copy_text(text),
+            ActionKind::Copy { text, sensitive } => self.copy_text_with(text, sensitive),
             ActionKind::Open { target } => self.spawn("xdg-open", &[target]),
             ActionKind::Run { command, args } => self.spawn(&command, &args),
             ActionKind::Terminal { directory } => self.open_terminal_in(&directory),
+            // Prompts belong to the launcher.
+            ActionKind::Prompt { .. } => tracing::warn!("Plugin {plugin}: prompts only work in the launcher"),
         }
     }
 
@@ -1208,7 +1210,7 @@ mod tests {
     use block::{Button, Progress, Stepper, Switch};
 
     fn action() -> Option<ActionKind> {
-        Some(ActionKind::Copy { text: "x".into() })
+        Some(ActionKind::Copy { text: "x".into(), sensitive: false })
     }
 
     fn button(icon: Option<&str>, enabled: bool) -> Button {

@@ -42,7 +42,9 @@ Open the launcher and type `echo hello`. Enter shows the row's actions. Choose
 one with Up/Down and Enter. Escape returns to search results. Copy actions
 leave the launcher open and show its usual Copied feedback. "Call remember
 tool" keeps the text on a [card under the launcher](#launcher-cards), with
-buttons to copy and to forget it.
+buttons to copy and to forget it. "Try a prompt" opens a [prompt](#prompts)
+that pretends to wait for a security key, then asks for a name and a secret
+and copies them as a sensitive copy.
 
 Alternatively, enable the example directly in `config.toml`:
 
@@ -167,15 +169,70 @@ Every action has a `title` and one of these shapes:
 {"title":"Remember","type":"tool","name":"remember","arguments":{"text":"hello"}}
 {"title":"Terminal","type":"terminal","directory":"/home/me/src"}
 {"title":"Set up","type":"settings","page":"Smart home"}
+{"title":"Unlock","type":"prompt","prompt":{"title":"Unlock vault","steps":[]}}
 ```
 
-Copy uses the compositor clipboard. Open invokes `xdg-open` with the path or
+Copy uses the compositor clipboard. With `"sensitive": true`, for passwords
+and one-time codes, the copy also offers `x-kde-passwordManagerHint` with the
+value `secret`, which clipboard managers that follow KDE's convention skip.
+[Clipboard persistence](configuration.md#clipboard) does not hold it, and
+handoff does not offer it to linked machines, which then hold nothing from
+this machine's clipboard until the next copy. Pasting on this machine works as
+usual. Open invokes `xdg-open` with the path or
 URL. Run starts an executable with literal arguments and closes the launcher.
 Terminal opens the user's terminal in a folder. Settings opens the Settings
 page with that title. Tool invokes a tool on the same plugin, keeps the
 launcher open and displays completion or failure. Its result cannot request
-further compositor actions. One action runs directly on Enter; several actions
-open a keyboard and pointer accessible list in the existing launcher.
+further compositor actions. Prompt asks for input in the launcher; see
+[Prompts](#prompts). One action runs directly on Enter; several actions open a
+keyboard and pointer accessible list in the existing launcher.
+
+#### Prompts
+
+A `prompt` action shows a small dialog in place of the plugin's results, for
+example to unlock a vault. It works in rows, action lists and `alternate`, not
+in panel blocks, bar chips or launcher cards.
+
+```json
+{"title":"Unlock","type":"prompt","prompt":{
+  "title":"Unlock vault","detail":"optional subtitle","icon":"glyph:lock",
+  "steps":[
+    {"id":"key","kind":"wait","text":"Touch your security key",
+     "tool":"unlock_key","arguments":{},"timeout":30,
+     "alternate":{"title":"Use passphrase instead","step":"password"}},
+    {"id":"password","kind":"fields","text":"optional explanation",
+     "fields":[{"name":"passphrase","label":"Passphrase","secret":true}],
+     "submit":"Unlock","tool":"unlock_password","arguments":{}}
+  ]}}
+```
+
+The prompt opens on its first step; Escape returns to the results. Each step
+has a unique `id`, optional `text`, and a `tool` on the same plugin with
+optional `arguments`:
+
+- `fields`: one to four inputs; Tab and Up/Down move between them. Enter on the last one,
+  or the `submit` button (default "Continue"), calls the tool with `arguments`
+  plus each field's name and value. `secret` fields are masked, cannot be
+  copied, are never logged and are wiped once sent.
+- `wait`: calls the tool on entering the step and shows `text` meanwhile.
+
+`timeout` is 3 to 60 seconds: 30 for a wait, 3 for fields by default.
+`alternate` switches to another step, by button or Ctrl+Enter. Leaving a step
+mid-call sends `notifications/cancelled`; the plugin may skip the answer and
+keeps running. A plugin missing `timeout` is ended like any other, so answer
+with an error shortly before it.
+
+The tool's answer decides what follows:
+
+- `isError: true`: the step shows the error and empties its secret fields;
+  Enter retries a wait.
+- `{"step":"<id>","text":"..."}`: switches to that step with the message.
+- `{"action":{...}}`: closes the prompt and runs a `copy`, `open`, `run`,
+  `terminal` or `settings` action, as if chosen from the row.
+- Anything else: closes the prompt and searches again.
+
+At most eight steps; text and messages are cut to two lines. Invalid prompts
+are skipped like other invalid actions.
 
 #### Progressive launcher results
 
@@ -310,7 +367,8 @@ object of arguments, for scripts and key bindings, and prints the answer: its
 
 Discovery, process I/O and tool calls run outside the compositor event loop,
 on a worker per plugin, so a slow plugin delays only itself. Each request has
-a three-second deadline and a 1 MiB message limit. An idle worker keeps
+a three-second deadline, unless a prompt step sets another, and a 1 MiB
+message limit. An idle worker keeps
 reading, so notifications arrive at once and a crash shows without a request.
 
 Editing or closing the launcher cancels its current generation. Queued stale

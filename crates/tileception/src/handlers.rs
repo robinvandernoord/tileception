@@ -252,7 +252,7 @@ impl SelectionHandler for Tileception {
             return;
         }
         if let Some(clip) = clip {
-            clip.send(fd);
+            clip.send(&mime_type, fd);
             return;
         }
         if let Some(xwm) = self.xwm.as_mut()

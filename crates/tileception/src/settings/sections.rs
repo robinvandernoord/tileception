@@ -806,7 +806,7 @@ pub(super) fn edges() -> usize {
     FIELDS.iter().position(|field| field.key == "general.stretch_screen_edges").expect("full-edge crossing is a field")
 }
 
-pub(super) fn edit_key(input: &mut TextInput, compose: &mut Option<xkb::compose::State>, sym: u32, mods: Mods) {
+pub(crate) fn edit_key(input: &mut TextInput, compose: &mut Option<xkb::compose::State>, sym: u32, mods: Mods) {
     match sym {
         keysyms::KEY_a | keysyms::KEY_A if mods.ctrl => input.select_all(),
         keysyms::KEY_Left | keysyms::KEY_Right => {
