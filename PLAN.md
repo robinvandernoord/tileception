@@ -76,6 +76,9 @@ Report testing in the conversation, the commit or the pull request instead.
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
+  - Cards under the launcher, where the built-in media card is: a plugin
+    can show cards there, such as a running timer. Several cards stack, so
+    the media card stays visible next to them while something plays.
   - The bundled smart home plugin goes into the remaining places first:
     - Lock screen: the indoor temperature, read-only, following the lock
       screen's privacy level, without input or actions. Never launcher
