@@ -426,10 +426,32 @@ list, **Space** ticks a row and **Enter** runs the page's main button.
 
 | Page | What it does |
 | --- | --- |
-| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Check** refreshes the package lists. |
+| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked ones. **Check** refreshes the package lists. |
 | Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
 | Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
-| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. |
+| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed. |
+
+Below the updates, the Available page says what else installing everything
+does: packages it removes, updates apt keeps back, and updates the archive
+is still phasing in, which follow later by themselves. When installing
+everything would remove packages, **Install all** in the card and **Install**
+in the window show the preview first; nothing is removed unseen.
+
+Under **Housekeeping** the page offers the dependencies that nothing needs any
+more. **Review** shows what `apt-get autoremove` would take, and **Remove**
+there does it.
+
+While packages are installed or removed the computer stays on: restarting,
+switching off, suspending and logging out wait for the task. Choose one in the
+power menu and it follows by itself once the task ends; choose it again to
+call it off. If the task fails, it is called off. Where systemd's logind runs,
+other programs asking to restart or sleep are held off for as long too.
+
+Everything the last task printed is kept, also across a restart of
+Tileception. After a failure the window offers **Show log**, and **Repair**
+when apt says the package system needs one. Repair shows what
+`apt-get --fix-broken install` would do, then runs `dpkg --configure -a`
+followed by that.
 
 The Kernels page lists kernels by series; click a series, or press **Space**
 on it, to fold it. It shows every installed kernel and every kernel apt offers
@@ -448,7 +470,7 @@ queues everything except the running kernel and the fallback. The page warns
 when no fallback is installed, and when the queue would leave none.
 
 Leftover headers, and leftover modules and tools, of kernels that are gone are
-listed apart and queued per kind. Nothing here runs `autoremove`.
+listed apart and queued per kind. Nothing on this page runs `autoremove`.
 
 | Key | Action on the Kernels page |
 | --- | --- |
@@ -476,11 +498,14 @@ From scripts and key bindings:
 | `tileception msg updates install <package>...` | Install the named updates |
 | `tileception msg updates kernels` | List kernels: running, fallback, old, available |
 | `tileception msg updates clean` | Remove old kernels and leftover kernel packages |
+| `tileception msg updates autoremove` | Remove packages that are no longer needed |
+| `tileception msg updates repair` | Repair the package system, when apt asks for it |
+| `tileception msg updates log` | Print what the last task printed |
 | `tileception msg updates upgrade` | Start the release upgrade in a terminal |
 
 Flatpak, Snap and firmware updates are not listed yet. See
 [Configuration](configuration.md#updates) to switch the chip or its
-notification off.
+notification off, or to choose when the notification comes.
 
 ### Network
 
