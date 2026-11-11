@@ -187,6 +187,13 @@ const FIELDS: &[Field] = &[
     ),
     field(0, "theme.frost", "Frosted panels", "Translucent bar, menus and notifications.", Control::Toggle),
     field(
+        0,
+        "theme.buttons",
+        "Button style",
+        "How the main button of a panel shows the accent.",
+        Control::Choice(&["halo", "gradient", "flat"]),
+    ),
+    field(
         1,
         "general.gap",
         "Window spacing",

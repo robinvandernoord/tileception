@@ -22,7 +22,7 @@ use crate::{
     Tileception,
     render::{OutputElement, push_image},
     shapes::{Shape, Shapes},
-    theme::Colour,
+    theme::{ButtonStyle, Colour},
 };
 
 /// A control's stable identity, bounds and pointer affordance. Buttons arm on
@@ -706,16 +706,38 @@ impl<'a> Button<'a> {
     }
 }
 
-/// The shape of a button that carries the accent: a [`Shape::halo`] on the
-/// popup surface, with more of the accent in it and a wider glow under the
-/// pointer.
-fn accent_button(theme: &crate::theme::Theme, radius: f32, hover: bool) -> Shape {
-    let halo = Shape::halo(theme, theme.popup(), radius);
-    if hover {
-        let fill = theme.popup().mix(theme.accent, 0.34);
-        Shape { fill: (fill, fill), highlight: 0.14, glow: theme.accent.alpha(0.42), ..halo }
-    } else {
-        Shape { glow_radius: theme.glow * 0.78, glow: theme.accent.alpha(0.26), ..halo }
+/// The shape of a button that carries the accent and the colour of what is
+/// written on it, in the theme's [`ButtonStyle`]:
+///
+/// - halo: a [`Shape::halo`] on the popup surface, with more of the accent in
+///   it and a wider glow under the pointer;
+/// - gradient: filled from the accent to its end colour;
+/// - flat: filled with the accent alone, under a line of light.
+///
+/// The filled ones turn lighter and glow under the pointer.
+fn accent_button(theme: &crate::theme::Theme, radius: f32, hover: bool) -> (Shape, Colour) {
+    let lit = |colour: Colour| if hover { colour.mix(Colour([1.0; 4]), 0.14) } else { colour };
+    let filled = |fill: (Colour, Colour), highlight: f32| Shape {
+        fill,
+        highlight,
+        glow_radius: if hover { theme.glow * 0.75 } else { 0.0 },
+        glow: theme.accent.alpha(0.33),
+        radius,
+        ..Default::default()
+    };
+    match theme.buttons {
+        ButtonStyle::Halo => {
+            let halo = Shape::halo(theme, theme.popup(), radius);
+            let shape = if hover {
+                let fill = theme.popup().mix(theme.accent, 0.34);
+                Shape { fill: (fill, fill), highlight: 0.14, glow: theme.accent.alpha(0.42), ..halo }
+            } else {
+                Shape { glow_radius: theme.glow * 0.78, glow: theme.accent.alpha(0.26), ..halo }
+            };
+            (shape, theme.text)
+        }
+        ButtonStyle::Gradient => (filled((lit(theme.accent), lit(theme.accent_end)), 0.0), theme.on_accent),
+        ButtonStyle::Flat => (filled((lit(theme.accent), lit(theme.accent)), 0.28), theme.on_accent),
     }
 }
 
@@ -909,15 +931,18 @@ impl<'a> Painter<'a> {
         let (shape, colour) = match (look, enabled) {
             (Look::Quiet, false) => (None, theme.muted.alpha(0.5)),
             (_, false) => (Some(outlined(Colour::TRANSPARENT)), theme.muted),
-            (Look::Primary, true) => (Some(accent_button(theme, radius, hover)), theme.text),
+            (Look::Primary, true) => {
+                let (shape, colour) = accent_button(theme, radius, hover);
+                (Some(shape), colour)
+            }
             (Look::Quiet, true) => (hover.then(|| Shape::filled(theme.surface_raised, radius)), theme.text),
             (Look::Plain | Look::Warning, true) => (
                 Some(outlined(if hover { theme.border } else { theme.surface_raised })),
                 if look == Look::Warning { theme.warning } else { theme.text },
             ),
         };
-        // Beside the accent border of a primary button, the focus ring is in
-        // the text colour.
+        // Beside the accent of a primary button, whether its border or its
+        // fill, the focus ring is in the text colour.
         let ring = if look == Look::Primary && enabled { theme.text } else { theme.accent };
         let shape = match (shape, focused) {
             (shape, true) => Some(Shape {

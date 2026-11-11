@@ -97,6 +97,10 @@ persist = false
 # What applications are told through the desktop portal: dark, light, or
 # default (each application's own choice).
 # colour_scheme = "dark"
+# How the main button of a panel shows the accent: halo (the surface tinted
+# with the accent, inside an accent border and glow), gradient (filled from
+# accent to accent_end) or flat (filled with accent alone).
+# buttons = "halo"
 # Frost: the bar, launcher, notifications, menus and cards turn translucent
 # and blur what is behind them. Windows stay solid.
 # frost = false

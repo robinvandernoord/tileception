@@ -80,6 +80,8 @@ pub struct ThemeFile {
     /// What applications are told to use: dark, light or default (their own
     /// choice).
     pub colour_scheme: String,
+    /// How a primary button carries the accent: halo, gradient or flat.
+    pub buttons: String,
     /// Tileception's own panels translucent, blurring what is behind them.
     pub frost: bool,
 }
@@ -107,6 +109,7 @@ impl Default for ThemeFile {
             wallpaper: None,
             wallpaper_fit: "fill".into(),
             colour_scheme: "dark".into(),
+            buttons: "halo".into(),
             frost: false,
         }
     }
@@ -135,7 +138,30 @@ pub struct Theme {
     pub wallpaper: Option<std::path::PathBuf>,
     pub wallpaper_fit: crate::wallpaper::Scaling,
     pub colour_scheme: ColourScheme,
+    pub buttons: ButtonStyle,
     pub frost: bool,
+}
+
+/// How a primary button carries the accent. `Painter::button` draws each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    /// The surface tinted with the accent, inside an accent border and glow.
+    Halo,
+    /// Filled from the accent to its end colour.
+    Gradient,
+    /// Filled with the accent alone, under a line of light.
+    Flat,
+}
+
+impl ButtonStyle {
+    pub fn parse(value: &str) -> Result<ButtonStyle, String> {
+        match value {
+            "halo" => Ok(ButtonStyle::Halo),
+            "gradient" => Ok(ButtonStyle::Gradient),
+            "flat" => Ok(ButtonStyle::Flat),
+            other => Err(format!("buttons {other:?} is not halo, gradient or flat")),
+        }
+    }
 }
 
 /// Whether applications should use their light or dark styles.
@@ -181,6 +207,7 @@ impl Theme {
             wallpaper: file.wallpaper.as_deref().filter(|path| !path.is_empty()).map(crate::wallpaper::expand_home),
             wallpaper_fit: crate::wallpaper::Scaling::parse(&file.wallpaper_fit)?,
             colour_scheme: ColourScheme::parse(&file.colour_scheme)?,
+            buttons: ButtonStyle::parse(&file.buttons)?,
             frost: file.frost,
         })
     }
@@ -237,6 +264,16 @@ mod tests {
         assert!(Colour::parse("#12345").is_err());
         assert_eq!(Theme::default().colour_scheme, ColourScheme::Dark);
         assert!(ColourScheme::parse("dim").is_err());
+    }
+
+    #[test]
+    fn buttons_are_halo_unless_chosen() {
+        assert_eq!(Theme::default().buttons, ButtonStyle::Halo);
+        for (name, style) in [("gradient", ButtonStyle::Gradient), ("flat", ButtonStyle::Flat)] {
+            let file: ThemeFile = toml::from_str(&format!("buttons = {name:?}")).unwrap();
+            assert_eq!(Theme::from_file(&file).unwrap().buttons, style);
+        }
+        assert!(ButtonStyle::parse("glossy").is_err());
     }
 
     #[test]
