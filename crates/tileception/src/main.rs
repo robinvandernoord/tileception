@@ -286,6 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         udev::init(&mut event_loop, &mut state)?;
     }
     config::watch(&event_loop.handle(), config_path);
+    wallpaper::watch(&event_loop.handle());
     let socket = ipc::socket_path(&state.socket_name.to_string_lossy());
     ipc::listen(&mut event_loop, &socket)?;
     state.ipc_socket = Some(socket.clone());

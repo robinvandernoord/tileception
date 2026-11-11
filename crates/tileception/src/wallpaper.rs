@@ -1,12 +1,20 @@
 //! The background image, from `wallpaper` in the `[theme]` section. It is
 //! decoded and scaled to the output once, then drawn behind everything. The
-//! lock screen uses the same image.
+//! lock screen uses the same image. The file is watched, so a tool that
+//! swaps the picture by overwriting it (Variety and the like) is followed.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 
 use image::{DynamicImage, GenericImageView, RgbaImage, imageops::FilterType};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
+    reexports::calloop::{
+        LoopHandle,
+        timer::{TimeoutAction, Timer},
+    },
     utils::Transform,
 };
 
@@ -114,7 +122,100 @@ fn compose(img: &DynamicImage, fit: Scaling, width: u32, height: u32, background
     canvas
 }
 
+/// What tells one version of the file from the next: when it was written
+/// and how long it is. Symlinks are followed, so a link that is pointed at
+/// another picture counts as a change too.
+type Stamp = (SystemTime, u64);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// Notices that the wallpaper's file has been replaced or rewritten.
+#[derive(Debug, Default)]
+struct Watch {
+    /// The file on screen, as it was when it was last looked at.
+    shown: Option<(PathBuf, Stamp)>,
+    /// A change seen on the previous look, which may still be being written.
+    pending: Option<Stamp>,
+}
+
+impl Watch {
+    /// Takes a look at the file; true when the picture should be loaded
+    /// again. A change must be seen unchanged on two looks in a row, so a
+    /// file is not read while it is still being written. A file that is
+    /// missing (a tool may remove it before writing the next) leaves the
+    /// picture as it is.
+    fn look(&mut self, path: Option<&Path>, stamp: Option<Stamp>) -> bool {
+        let Some(path) = path else {
+            *self = Watch::default();
+            return false;
+        };
+        let Some(stamp) = stamp else { return false };
+        match &self.shown {
+            // Another path comes from the theme, which loads it itself.
+            Some((shown, _)) if shown != path => {}
+            Some((_, shown)) if *shown == stamp => {
+                self.pending = None;
+                return false;
+            }
+            Some(_) if self.pending != Some(stamp) => {
+                self.pending = Some(stamp);
+                return false;
+            }
+            Some(_) => {
+                self.shown = Some((path.to_path_buf(), stamp));
+                self.pending = None;
+                return true;
+            }
+            None => {}
+        }
+        self.shown = Some((path.to_path_buf(), stamp));
+        self.pending = None;
+        false
+    }
+}
+
+/// Loads the wallpaper again whenever its file changes.
+pub fn watch(handle: &LoopHandle<'static, crate::state::Tileception>) {
+    let mut watch = Watch::default();
+    let _ = handle.insert_source(Timer::from_duration(Duration::from_secs(1)), move |_, _, state| {
+        let path = state.theme.wallpaper.clone();
+        if watch.look(path.as_deref(), path.as_deref().and_then(stamp)) {
+            tracing::info!("wallpaper file changed");
+            state.reload_wallpaper();
+        }
+        TimeoutAction::ToDuration(Duration::from_secs(1))
+    });
+}
+
 impl crate::state::Tileception {
+    /// Reads the file again for every screen. A file that cannot be read
+    /// (gone again, or not a picture) leaves the picture that is showing.
+    fn reload_wallpaper(&mut self) {
+        for output in self.all_outputs() {
+            self.with_output(&output, Self::reload_output_wallpaper);
+        }
+        self.schedule_render();
+    }
+
+    fn reload_output_wallpaper(&mut self) {
+        let Some(path) = self.theme.wallpaper.clone() else { return };
+        let (width, height) = self.output_pixels();
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        match load(&path, self.theme.wallpaper_fit, width as u32, height as u32, self.theme.background.0) {
+            Ok(wallpaper) => {
+                tracing::info!("wallpaper {} at {width}x{height}", path.display());
+                self.wallpaper = Some(wallpaper);
+                self.wallpaper_failed = None;
+            }
+            Err(err) => tracing::warn!("wallpaper: {err}"),
+        }
+    }
+
     /// The wallpaper scaled for the current output's pixels, loaded on first
     /// use and again when the theme or the output size changes.
     pub fn wallpaper_buffer(&mut self) -> Option<MemoryRenderBuffer> {
@@ -190,5 +291,36 @@ mod tests {
         assert_eq!(canvas.get_pixel(100, 100).0, [255, 0, 0, 255]);
         assert_eq!(expand_home("/a/b"), PathBuf::from("/a/b"));
         assert!(Scaling::parse("zoom").is_err());
+    }
+
+    #[test]
+    fn a_changed_file_is_loaded_again_once_it_settles() {
+        let seen = |seconds: u64, length: u64| Some((SystemTime::UNIX_EPOCH + Duration::from_secs(seconds), length));
+        let path = Path::new("/pictures/wallpaper.jpg");
+        let mut watch = Watch::default();
+        // The first look only notes what is on screen.
+        assert!(!watch.look(Some(path), seen(1, 100)));
+        assert!(!watch.look(Some(path), seen(1, 100)));
+        // Still being written: the stamp keeps moving.
+        assert!(!watch.look(Some(path), seen(2, 40)));
+        assert!(!watch.look(Some(path), seen(3, 90)));
+        // Settled: load it, once.
+        assert!(watch.look(Some(path), seen(3, 90)));
+        assert!(!watch.look(Some(path), seen(3, 90)));
+        // Removed for a moment, then written anew.
+        assert!(!watch.look(Some(path), None));
+        assert!(!watch.look(Some(path), seen(4, 70)));
+        assert!(watch.look(Some(path), seen(4, 70)));
+        // A change that is undone before it settles is no change.
+        assert!(!watch.look(Some(path), seen(5, 10)));
+        assert!(!watch.look(Some(path), seen(4, 70)));
+        assert!(!watch.look(Some(path), seen(5, 10)));
+        assert!(watch.look(Some(path), seen(5, 10)));
+        // Another path is the theme's doing; no wallpaper forgets the file.
+        let other = Path::new("/pictures/other.jpg");
+        assert!(!watch.look(Some(other), seen(9, 1)));
+        assert!(!watch.look(Some(other), seen(9, 1)));
+        assert!(!watch.look(None, None));
+        assert!(!watch.look(Some(other), seen(10, 2)));
     }
 }
