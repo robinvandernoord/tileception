@@ -113,7 +113,7 @@ impl Task {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Log {
     pub(crate) title: &'static str,
-    pub(crate) ok: bool,
+    pub(crate) succeeded: bool,
     pub(crate) text: String,
 }
 
@@ -564,9 +564,9 @@ impl Tileception {
         self.updates.job = None;
         let after = self.updates.after.take();
         if !matches!(result, Err(Failure::Password)) && !log.trim().is_empty() {
-            let log = Log { title: task.title(), ok: result.is_ok(), text: log };
+            let log = Log { title: task.title(), succeeded: result.is_ok(), text: log };
             write_log(&log);
-            self.updates.repair = !log.ok && apt::needs_repair(&log.text);
+            self.updates.repair = !log.succeeded && apt::needs_repair(&log.text);
             self.updates.log = Some(log);
         }
         match result {
@@ -749,7 +749,7 @@ impl Tileception {
                     Some(log) => Ok(format!(
                         "{} ({})\n{}\n",
                         log.title,
-                        if log.ok { "finished" } else { "failed" },
+                        if log.succeeded { "finished" } else { "failed" },
                         log.text.trim_end()
                     )),
                     None => Err("no task has run yet".into()),
@@ -1120,7 +1120,7 @@ const LOG_LIMIT: usize = 512 * 1024;
 /// what ran and how it ended.
 fn write_log(log: &Log) {
     let path = state_file("updates-last.log");
-    let text = format!("{}\t{}\n{}", log.title, if log.ok { "ok" } else { "failed" }, log.text);
+    let text = format!("{}\t{}\n{}", log.title, if log.succeeded { "ok" } else { "failed" }, log.text);
     let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text));
     if let Err(error) = written {
         tracing::warn!("could not keep the log of the last update task: {error}");
@@ -1137,7 +1137,7 @@ fn read_log() -> Option<Log> {
         .map(Task::title)
         .find(|known| *known == title)
         .unwrap_or("Changing kernels");
-    Some(Log { title, ok: state == "ok", text: text.to_string() })
+    Some(Log { title, succeeded: state == "ok", text: text.to_string() })
 }
 
 /// Whether updates that have waited this long are due for their reminder.

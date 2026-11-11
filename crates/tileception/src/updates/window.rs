@@ -1363,7 +1363,7 @@ impl Tileception {
                 window.sheet.title().to_string(),
                 match (window.sheet, updates.log()) {
                     (Sheet::Log, Some(log)) => {
-                        format!("{} \u{b7} {}", log.title, if log.ok { "finished" } else { "failed" })
+                        format!("{} \u{b7} {}", log.title, if log.succeeded { "finished" } else { "failed" })
                     }
                     (Sheet::Log, None) => String::new(),
                     _ => "nothing has changed yet".to_string(),
