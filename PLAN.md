@@ -64,23 +64,18 @@ Report testing in the conversation, the commit or the pull request instead.
 - Update manager, beyond APT and kernels. Decided:
   - Flatpak and Snap updates join the same list, each with its source; then
     firmware through fwupd, never ticked by default.
-  - Root through polkit: a small helper with its own policy and Tileception
-    as the authentication agent, replacing the password passed to `sudo`.
   - A changelog per update (`apt-get changelog`, Flatpak and Snap release
     notes), and "skip this version" or "hold" for one package, shown as a
     muted row.
   - Automatic updates through `unattended-upgrades` where the distribution
     has it: a switch that turns its periodic run on or off and says what it
     covers. No scheduler of our own.
-  - The package lists refresh on their own (`apt-get update` every
-    `check_hours`), without a password: this needs the polkit helper.
   - Choosing an Ubuntu mirror, with each mirror's speed and how far behind
     it is; a warning when the current one is unreachable or stale.
   - One row per source package, with its description and the binary
     packages under it.
   - "Restart and install" as a second line under Restart in the power menu
     while a kernel or firmware waits.
-  - No checks on a metered connection or below 30% battery.
   - A snapshot before kernel, Mesa and release upgrades where Timeshift or
     a btrfs root is present.
   - Doctor answers "what changed since Tuesday?" from the apt history.
