@@ -272,6 +272,13 @@ const FIELDS: &[Field] = &[
         "The assistant panel opened with Super+/.",
         Control::Choice(&["builtin", "none"]),
     ),
+    field(
+        2,
+        "shell.polkit",
+        "Password prompt",
+        "Ask for the administrator's password when polkit wants one, or leave that to another agent.",
+        Control::Choice(&["builtin", "none"]),
+    ),
     field(3, "keyboard.layout", "Keyboard layout", "Choose a layout and variant.", Control::Keyboard),
     field(
         3,
@@ -668,7 +675,12 @@ fn group(key: &str) -> &'static str {
         "shell.bar" | "shell.bar_position" | "shell.bar_minimap" | "shell.bar_network" | "shell.tray_max_icons" => {
             "Bar"
         }
-        "shell.launcher" | "shell.notifications" | "shell.doctor" | "shell.power_menu" | "duck.size" => "Panels",
+        "shell.launcher"
+        | "shell.notifications"
+        | "shell.doctor"
+        | "shell.polkit"
+        | "shell.power_menu"
+        | "duck.size" => "Panels",
         "shell.media" => "Media keys",
         "shell.lock" | "general.lock_command" => "Lock screen",
         "general.suspend_enabled" | "general.welcome" | "greeter.share" => "Session",

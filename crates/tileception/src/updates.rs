@@ -3,26 +3,37 @@
 //! history) and launcher rows. Flatpak, Snap and firmware are not read yet.
 //!
 //! A worker thread reads the system and runs `apt-get`; what to show and do
-//! about it is decided here, on the compositor thread. Changes run as root:
-//! directly when Tileception does, else through `sudo`, with the password
-//! from Tileception's own prompt when `sudo` needs one.
+//! about it is decided here, on the compositor thread. Changes run as root
+//! in `tileception-updates-helper`, which takes a task and never a command
+//! line. Polkit starts it through `pkexec` under the helper's own policy:
+//! refreshing the package lists needs no password, so it also happens by
+//! itself, and everything else asks for an administrator through the
+//! session's polkit agent. Without polkit or its agent the helper runs
+//! through `sudo`, with the password from Tileception's prompt when `sudo`
+//! needs one. When Tileception is root itself, the task runs in place.
 
 mod popover;
-mod prompt;
 mod window;
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
-use tileception_updates::{self as backend, Files, Snapshot, apt, kernels, release};
+pub use tileception_updates::task::Task;
+use tileception_updates::{self as backend, Files, Snapshot, apt, kernels, release, task};
 use zeroize::Zeroizing;
 
-use crate::Tileception;
+use crate::{
+    Tileception,
+    password::{Prompt, Purpose},
+};
 use tileception_notify::Urgency;
 
 pub(crate) use window::Page;
@@ -49,66 +60,6 @@ impl Default for UpdatesConfig {
     }
 }
 
-/// A change to the system, run as root.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Task {
-    /// Refresh the package lists.
-    Refresh,
-    /// Install these updates, or every one for none.
-    Install(Vec<String>),
-    /// The kernel queue: packages to install and to remove in one
-    /// transaction, purging the configuration of what goes or keeping it.
-    Kernels { install: Vec<String>, remove: Vec<String>, purge: bool },
-    /// Remove exactly these packages.
-    Remove(Vec<String>),
-    /// Remove the dependencies nothing needs any more.
-    Autoremove,
-    /// Finish what `dpkg` left half done, then settle broken dependencies.
-    Repair,
-}
-
-impl Task {
-    fn title(&self) -> &'static str {
-        match self {
-            Task::Refresh => "Checking for updates",
-            Task::Install(_) => "Installing updates",
-            Task::Kernels { .. } => "Changing kernels",
-            Task::Remove(_) => "Removing packages",
-            Task::Autoremove => "Removing unneeded packages",
-            Task::Repair => "Repairing packages",
-        }
-    }
-
-    /// The programs to run as root, in order, each with its arguments. The
-    /// last one decides whether the task succeeded.
-    fn commands(&self) -> Result<Vec<Vec<String>>, String> {
-        let apt = |args: Vec<String>| {
-            let mut command = vec!["apt-get".to_string(), "-o".into(), "DPkg::Lock::Timeout=60".into()];
-            command.extend(args);
-            command
-        };
-        Ok(match self {
-            Task::Refresh => vec![apt(vec!["update".into()])],
-            Task::Install(names) => vec![apt(apt::upgrade_args(names, false)?)],
-            Task::Kernels { install, remove, purge } => {
-                vec![apt(apt::transaction_args(install, remove, *purge, false)?)]
-            }
-            Task::Remove(names) => vec![apt(apt::purge_args(names, false)?)],
-            Task::Autoremove => vec![apt(apt::autoremove_args(false))],
-            Task::Repair => vec![
-                ["dpkg", "--force-confdef", "--force-confold", "--configure", "-a"].map(String::from).to_vec(),
-                apt(apt::repair_args(false)),
-            ],
-        })
-    }
-
-    /// Whether the task changes packages, so that the computer must stay on
-    /// until it ends. Refreshing the lists can be cut short.
-    fn changes_packages(&self) -> bool {
-        !matches!(self, Task::Refresh)
-    }
-}
-
 /// What the last task printed, kept until the next one ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Log {
@@ -122,6 +73,8 @@ pub(crate) struct Log {
 pub enum Failure {
     /// `sudo` did not take the password.
     Password,
+    /// The person, or polkit, said no.
+    Declined,
     Failed(String),
 }
 
@@ -143,6 +96,8 @@ enum Request {
     Run {
         task: Task,
         password: Option<Zeroizing<String>>,
+        /// Started by itself: it never asks for a password and fails quietly.
+        quiet: bool,
     },
     /// Simulate removing these packages.
     Preview(Vec<String>),
@@ -161,6 +116,7 @@ pub enum Event {
         result: Result<(), Failure>,
         /// Everything the task's programs printed.
         log: String,
+        quiet: bool,
     },
     Preview(String),
     /// A minute went by: a reminder that had to wait may be due.
@@ -214,10 +170,13 @@ pub struct Updates {
     waiting: Option<SystemTime>,
     /// The power action that follows once the running task ends.
     after: Option<crate::power::PowerAction>,
+    /// When the package lists were last refreshed by themselves, or tried.
+    refreshed: Option<Instant>,
+    /// Told to the worker: nothing may use the network by itself now.
+    saving: Arc<AtomicBool>,
     /// This instance may run the update manager at all.
     allowed: bool,
     pub(crate) popover: popover::Popover,
-    pub(crate) prompt: Option<prompt::Prompt>,
     pub(crate) window: window::Window,
 }
 
@@ -422,9 +381,10 @@ impl Tileception {
         };
         let interval = Duration::from_secs(u64::from(self.config.file.updates.check_hours.clamp(1, 168)) * 3600);
         let (requests, incoming) = mpsc::channel();
+        let saving = self.updates.saving.clone();
         let thread = thread::Builder::new()
             .name("tileception-updates".into())
-            .spawn(move || run(&sender, &incoming, interval))
+            .spawn(move || run(&sender, &incoming, interval, &saving))
             .map_err(|error| tracing::error!("could not start the updates worker: {error}"))
             .ok();
         self.updates.source = Some(token);
@@ -453,7 +413,9 @@ impl Tileception {
             self.start_updates();
         } else {
             self.close_updates_popover();
-            self.close_updates_prompt();
+            if self.password_prompt.as_ref().is_some_and(|prompt| matches!(prompt.purpose(), Purpose::Sudo(_))) {
+                self.close_password_prompt();
+            }
             if self.updates.window.open {
                 self.close_updates();
             }
@@ -463,11 +425,14 @@ impl Tileception {
     fn updates_event(&mut self, event: Event) {
         match event {
             Event::Scanned(scan) => self.updates_scanned(*scan),
-            Event::Tick => return self.updates_remind(),
+            Event::Tick => {
+                self.updates_remind();
+                return self.updates_auto_refresh();
+            }
             Event::NeedsPassword(task) => {
                 self.updates.job = None;
                 self.updates.after = None;
-                self.open_updates_prompt(task, None);
+                self.updates_ask_password(task, None);
             }
             Event::Progress { done, label } => {
                 if let Some(job) = self.updates.job.as_mut() {
@@ -475,7 +440,7 @@ impl Tileception {
                     job.label = label;
                 }
             }
-            Event::Finished { task, result, log } => self.updates_finished(task, result, log),
+            Event::Finished { task, result, log, quiet } => self.updates_finished(task, result, log, quiet),
             Event::Preview(text) => self.updates.window.set_preview(text),
         }
         self.updates_changed();
@@ -560,10 +525,62 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn updates_finished(&mut self, task: Task, result: Result<(), Failure>, log: String) {
+    /// Opens the password prompt for a task that `sudo` wants a password for.
+    fn updates_ask_password(&mut self, task: Task, error: Option<String>) {
+        let user = std::env::var("USER").unwrap_or_default();
+        let title = task.title();
+        self.open_password_prompt(Prompt::new(Purpose::Sudo(task), title, "", &user).with_error(error));
+    }
+
+    /// Whether the computer is saving power or data, so that nothing should
+    /// use the network by itself: below 30% on battery. The worker adds a
+    /// metered connection, which it asks NetworkManager about.
+    fn updates_saving(&self) -> bool {
+        self.battery
+            .reading
+            .is_some_and(|reading| reading.charge == crate::battery::Charge::Discharging && reading.percent < 30)
+    }
+
+    /// Refreshes the package lists once they are older than `check_hours`.
+    /// Polkit lets the person at the computer do that without a password;
+    /// where it does not, the worker leaves it. A failure is tried again
+    /// after an hour.
+    fn updates_auto_refresh(&mut self) {
+        let saving = self.updates_saving();
+        self.updates.saving.store(saving, Ordering::Relaxed);
+        let config = &self.config.file.updates;
+        let interval = Duration::from_secs(u64::from(config.check_hours.clamp(1, 168)) * 3600);
+        let fresh =
+            self.updates.snapshot.checked.is_some_and(|checked| checked.elapsed().is_ok_and(|age| age < interval));
+        let tried = self.updates.refreshed.is_some_and(|tried| tried.elapsed() < RETRY_REFRESH);
+        if !config.enabled
+            || !self.updates.scanned
+            || self.updates.busy()
+            || fresh
+            || tried
+            || saving
+            || self.is_locked()
+        {
+            return;
+        }
+        self.updates.refreshed = Some(Instant::now());
+        if self.updates_request(Request::Run { task: Task::Refresh, password: None, quiet: true }) {
+            self.updates.job = Some(Job { task: Task::Refresh, done: 0, total: 0, label: "starting".into() });
+            self.updates_changed();
+        }
+    }
+
+    fn updates_finished(&mut self, task: Task, result: Result<(), Failure>, log: String, quiet: bool) {
         self.updates.job = None;
         let after = self.updates.after.take();
-        if !matches!(result, Err(Failure::Password)) && !log.trim().is_empty() {
+        if quiet {
+            // Nobody asked: nothing to say, and the last task's log stays.
+            if let Err(Failure::Failed(reason)) = &result {
+                tracing::info!("the package lists were not refreshed: {reason}");
+            }
+            return;
+        }
+        if !matches!(result, Err(Failure::Password | Failure::Declined)) && !log.trim().is_empty() {
             let log = Log { title: task.title(), succeeded: result.is_ok(), text: log };
             write_log(&log);
             self.updates.repair = !log.succeeded && apt::needs_repair(&log.text);
@@ -590,7 +607,10 @@ impl Tileception {
                     self.run_power_action(action);
                 }
             }
-            Err(Failure::Password) => self.open_updates_prompt(task, Some("That password did not work.".into())),
+            Err(Failure::Password) => self.updates_ask_password(task, Some("That password did not work.".into())),
+            Err(Failure::Declined) => {
+                self.updates.outcome = Some(Err(format!("{} was not authorised.", task.title())));
+            }
             Err(Failure::Failed(reason)) => {
                 tracing::warn!("{}: {reason}", task.title());
                 let reason = match after {
@@ -622,7 +642,7 @@ impl Tileception {
             Task::Kernels { install, remove, .. } => install.len() + remove.len(),
         };
         let job = Job { task: task.clone(), done: 0, total, label: "starting".into() };
-        if !self.updates_request(Request::Run { task, password }) {
+        if !self.updates_request(Request::Run { task, password, quiet: false }) {
             return Err("the update manager is not running".into());
         }
         self.updates.job = Some(job);
@@ -698,7 +718,7 @@ impl Tileception {
         if !release::ready(&self.updates_release_checks()) {
             return Err(format!("not ready for {name}: see `updates open release`"));
         }
-        let sudo = if is_root() { "" } else { "sudo " };
+        let sudo = if task::is_root() { "" } else { "sudo " };
         self.run_in_terminal(&format!("{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"))
     }
 
@@ -851,12 +871,6 @@ impl Tileception {
     }
 }
 
-/// Whether Tileception itself runs as root, as in a container.
-pub(crate) fn is_root() -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").is_ok_and(|meta| meta.uid() == 0)
-}
-
 /// Whether the release offer is asked for again: once a day.
 const OFFER_EVERY: Duration = Duration::from_secs(24 * 3600);
 
@@ -875,6 +889,9 @@ fn scan(with_offer: bool) -> Scan {
         snapshots: files.exists("/usr/bin/timeshift"),
     }
 }
+
+/// How long after a refresh by itself, or a try, the next one waits.
+const RETRY_REFRESH: Duration = Duration::from_secs(3600);
 
 /// How often the worker says that time passed, for reminders that waited.
 const TICK_EVERY: Duration = Duration::from_secs(60);
@@ -909,7 +926,12 @@ impl Watch {
     }
 }
 
-fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request>>, interval: Duration) {
+fn run(
+    events: &channel::Sender<Event>,
+    incoming: &mpsc::Receiver<Option<Request>>,
+    interval: Duration,
+    saving: &AtomicBool,
+) {
     let mut asked = Instant::now();
     let mut ticked = Instant::now();
     let mut watch = Watch::default();
@@ -930,7 +952,8 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
                     }
                     continue;
                 }
-                let offer = asked.elapsed() >= OFFER_EVERY;
+                // Asking for the next release uses the network.
+                let offer = asked.elapsed() >= OFFER_EVERY && !saving.load(Ordering::Relaxed) && !metered();
                 if offer {
                     asked = Instant::now();
                 }
@@ -938,25 +961,32 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
             }
             Ok(Some(Request::Scan { offer })) => watch.scan(offer),
             Ok(Some(Request::Preview(names))) => Event::Preview(preview(&names)),
-            Ok(Some(Request::Run { task, password })) => match authorise(password.as_deref().map(String::as_str)) {
-                Access::Ask => Event::NeedsPassword(task),
-                Access::Refused => Event::Finished { task, result: Err(Failure::Password), log: String::new() },
-                Access::Impossible(reason) => {
-                    Event::Finished { task, result: Err(Failure::Failed(reason)), log: String::new() }
-                }
-                Access::Granted => {
-                    let mut log = String::new();
-                    let result = execute(&task, password.as_deref().map(String::as_str), events, &mut log);
-                    let refreshed = matches!(task, Task::Refresh);
-                    if events.send(Event::Finished { task, result, log }).is_err() {
+            Ok(Some(Request::Run { task, password, quiet })) => {
+                let mut log = String::new();
+                let result = if quiet && (saving.load(Ordering::Relaxed) || metered() || !unasked(&task)) {
+                    Some(Err(Failure::Declined))
+                } else {
+                    perform(&task, password.as_deref().map(String::as_str), events, &mut log)
+                };
+                let Some(result) = result else {
+                    if events.send(Event::NeedsPassword(task)).is_err() {
                         return;
                     }
-                    if refreshed {
-                        asked = Instant::now();
-                    }
-                    watch.scan(refreshed)
+                    continue;
+                };
+                let refreshed = matches!(task, Task::Refresh) && result.is_ok();
+                let ran = !matches!(result, Err(Failure::Declined | Failure::Password));
+                if events.send(Event::Finished { task, result, log, quiet }).is_err() {
+                    return;
                 }
-            },
+                if !ran {
+                    continue;
+                }
+                if refreshed {
+                    asked = Instant::now();
+                }
+                watch.scan(refreshed && !quiet)
+            }
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         if events.send(event).is_err() {
@@ -981,16 +1011,6 @@ fn preview(args: &[String]) -> String {
     }
 }
 
-enum Access {
-    Granted,
-    /// There is no way to become root from here.
-    Impossible(String),
-    /// A password is needed and none was given.
-    Ask,
-    /// The password was wrong.
-    Refused,
-}
-
 /// Feeds a password to a `sudo -S` on its standard input.
 fn feed(child: &mut std::process::Child, password: Option<&str>) {
     if let (Some(password), Some(mut stdin)) = (password, child.stdin.take()) {
@@ -999,87 +1019,236 @@ fn feed(child: &mut std::process::Child, password: Option<&str>) {
     }
 }
 
-fn authorise(password: Option<&str>) -> Access {
-    if is_root() {
-        return Access::Granted;
+/// Whether a program is somewhere on `PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|folder| folder.join(program).is_file()))
+}
+
+/// The helper: where the package puts it, else beside this program, as in
+/// a build folder.
+fn helper() -> Option<PathBuf> {
+    let installed = Path::new(task::HELPER);
+    if installed.is_file() {
+        return Some(installed.to_path_buf());
     }
-    if Process::new("sudo").arg("-V").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err() {
-        return Access::Impossible("Changing packages needs sudo, which is not installed.".into());
+    let beside = std::env::current_exe().ok()?.with_file_name("tileception-updates-helper");
+    beside.is_file().then_some(beside)
+}
+
+/// Whether polkit can start the helper: the policy names the helper's
+/// installed path, so only that one counts.
+fn polkit_ready() -> bool {
+    Path::new(task::HELPER).is_file() && Path::new(task::POLICY).is_file() && on_path("pkexec")
+}
+
+/// Whether a task may run without anyone having asked for it: only where
+/// that needs no password. Polkit is asked without letting it prompt.
+fn unasked(task: &Task) -> bool {
+    if task::is_root() {
+        return true;
     }
-    let quiet = |command: &mut Process| {
-        command.stdout(Stdio::null()).stderr(Stdio::null());
+    let action =
+        if task.changes_packages() { "org.tileception.updates.change" } else { "org.tileception.updates.refresh" };
+    polkit_ready()
+        && Process::new("pkcheck")
+            .args(["--action-id", action, "--process", &std::process::id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+/// Whether NetworkManager counts the connection as metered. Unknown, and
+/// no NetworkManager, count as not.
+fn metered() -> bool {
+    const NAME: &str = "org.freedesktop.NetworkManager";
+    let read = || -> zbus::Result<u32> {
+        let reply = zbus::blocking::Connection::system()?.call_method(
+            Some(NAME),
+            "/org/freedesktop/NetworkManager",
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(NAME, "Metered"),
+        )?;
+        let value: zbus::zvariant::OwnedValue = reply.body().deserialize()?;
+        Ok(value.downcast_ref::<u32>()?)
     };
-    match password {
-        None => {
-            let mut command = Process::new("sudo");
-            command.args(["-n", "true"]).stdin(Stdio::null());
-            quiet(&mut command);
-            if command.status().is_ok_and(|status| status.success()) { Access::Granted } else { Access::Ask }
+    // 1 is yes, 3 is "guessed yes".
+    matches!(read(), Ok(1 | 3))
+}
+
+/// How one line of a task's output is taken: kept, and told as progress.
+struct Follow<'a> {
+    events: &'a channel::Sender<Event>,
+    log: &'a mut String,
+    done: usize,
+}
+
+impl Follow<'_> {
+    fn line(&mut self, line: &str) {
+        self.log.push_str(line);
+        self.log.push('\n');
+        let Some(progress) = apt::parse_progress(line) else { return };
+        if matches!(progress, apt::Progress::Setup(_) | apt::Progress::Remove(_)) {
+            self.done += 1;
         }
-        Some(password) => {
-            let mut command = Process::new("sudo");
-            command.args(["-S", "-k", "-p", "", "true"]).stdin(Stdio::piped());
-            quiet(&mut command);
-            let Ok(mut child) = command.spawn() else { return Access::Refused };
-            feed(&mut child, Some(password));
-            if child.wait().is_ok_and(|status| status.success()) { Access::Granted } else { Access::Refused }
+        // Read on even when nobody listens: stopping would stop apt halfway.
+        let _ = self.events.send(Event::Progress { done: self.done, label: progress.label() });
+    }
+
+    /// Keeps the end of a log that grew too long.
+    fn trim(&mut self) {
+        if self.log.len() > LOG_LIMIT {
+            let mut start = self.log.len() - LOG_LIMIT;
+            while !self.log.is_char_boundary(start) {
+                start += 1;
+            }
+            self.log.replace_range(..start, "...\n");
         }
     }
 }
 
-/// A command that runs what is added to it as root, through `sudo` when
-/// Tileception is not root itself; `feed` it the password once spawned.
-fn as_root(password: Option<&str>) -> Process {
-    let mut command = if is_root() {
-        Process::new("env")
-    } else {
-        let mut command = Process::new("sudo");
-        match password {
-            // -k: always read the password, so it never reaches the program.
-            Some(_) => command.args(["-S", "-k", "-p", ""]),
-            None => command.arg("-n"),
-        };
-        command.args(["--", "env"]);
-        command
-    };
-    command.args(["DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"]).stdin(if password.is_some() && !is_root() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
+/// How the helper ended, started through `pkexec` or `sudo`.
+struct Ended {
+    code: Option<i32>,
+    /// What it, or what started it, wrote to standard error.
+    errors: String,
+}
+
+impl Ended {
+    /// Why it failed: the helper's own reason, else the last thing said.
+    fn reason(&self) -> String {
+        let lines = || self.errors.lines().map(str::trim).filter(|line| !line.is_empty());
+        lines()
+            .filter_map(|line| line.strip_prefix(task::FAILED))
+            .next_back()
+            .or_else(|| lines().next_back())
+            .map(|line| line.trim_start_matches("Error executing command as another user: "))
+            .unwrap_or("the task failed")
+            .to_string()
+    }
+}
+
+/// Whether `pkexec` gave up because the session has no polkit agent: it
+/// says so, or fails to become one itself for want of a terminal.
+fn no_agent(errors: &str) -> bool {
+    errors.contains("No authentication agent") || errors.contains("textual authentication agent")
+}
+
+/// Runs the helper under what `command` starts it with, to its end.
+fn drive(mut command: Process, task: &Task, password: Option<&str>, follow: &mut Follow) -> Result<Ended, String> {
+    command.args(task.to_args()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.stdin(if password.is_some() { Stdio::piped() } else { Stdio::null() });
+    let mut child = command.spawn().map_err(|error| format!("could not start the updates helper: {error}"))?;
+    feed(&mut child, password);
+    let errors = child.stderr.take().map(|mut stderr| {
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stderr.read_to_string(&mut text);
+            text
+        })
     });
-    command
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            follow.line(&line);
+        }
+    }
+    let status = child.wait().map_err(|error| error.to_string())?;
+    let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
+    Ok(Ended { code: status.code(), errors })
+}
+
+/// Runs a task as root, by the first way that is open: in place when
+/// Tileception is root, through polkit, or through `sudo`. None when `sudo`
+/// wants a password first.
+fn perform(
+    task: &Task,
+    password: Option<&str>,
+    events: &channel::Sender<Event>,
+    log: &mut String,
+) -> Option<Result<(), Failure>> {
+    let mut follow = Follow { events, log, done: 0 };
+    if task::is_root() {
+        let result = task::run(task, &mut |line| follow.line(line)).map_err(Failure::Failed);
+        follow.trim();
+        return Some(result);
+    }
+    // A password in hand was typed for sudo: polkit asks by itself.
+    if password.is_none() && polkit_ready() {
+        let mut command = Process::new("pkexec");
+        command.arg(task::HELPER);
+        let ended = match drive(command, task, None, &mut follow) {
+            Ok(ended) => ended,
+            Err(reason) => return Some(Err(Failure::Failed(reason))),
+        };
+        follow.trim();
+        match ended.code {
+            Some(0) => return Some(Ok(())),
+            // The person closed polkit's question.
+            Some(126) => return Some(Err(Failure::Declined)),
+            // Nobody to ask the question: sudo and Tileception's own prompt.
+            Some(127) if no_agent(&ended.errors) => {}
+            Some(127) if ended.errors.contains("Not authorized") => return Some(Err(Failure::Declined)),
+            _ => return Some(Err(Failure::Failed(ended.reason()))),
+        }
+    }
+    let Some(helper) = helper() else {
+        return Some(Err(Failure::Failed(
+            "Changing packages needs tileception-updates-helper, which is not installed.".into(),
+        )));
+    };
+    if !on_path("sudo") {
+        return Some(Err(Failure::Failed("Changing packages needs polkit with an agent, or sudo.".into())));
+    }
+    let mut command = Process::new("sudo");
+    match password {
+        // -k: always read the password, so it never reaches the helper.
+        Some(_) => {
+            let mut check = Process::new("sudo");
+            check
+                .args(["-S", "-k", "-p", "", "true"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let taken = check.spawn().is_ok_and(|mut child| {
+                feed(&mut child, password);
+                child.wait().is_ok_and(|status| status.success())
+            });
+            if !taken {
+                return Some(Err(Failure::Password));
+            }
+            command.args(["-S", "-k", "-p", ""]);
+        }
+        None => {
+            let free = Process::new("sudo")
+                .args(["-n", "true"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !free {
+                return None;
+            }
+            command.arg("-n");
+        }
+    }
+    command.arg("--").arg(helper);
+    let result = match drive(command, task, password, &mut follow) {
+        Ok(ended) if ended.code == Some(0) => Ok(()),
+        Ok(ended) => Err(Failure::Failed(ended.reason())),
+        Err(reason) => Err(Failure::Failed(reason)),
+    };
+    follow.trim();
+    Some(result)
 }
 
 /// Whether the Tileception that is running is no longer the one installed:
 /// a package update replaced its program, which `/proc` then calls deleted.
 fn replaced() -> bool {
     std::fs::read_link("/proc/self/exe").is_ok_and(|path| path.to_string_lossy().ends_with(" (deleted)"))
-}
-
-/// Runs a command as root to its end, feeding `sudo` the password.
-fn finish(mut command: Process, password: Option<&str>) -> bool {
-    command.stdout(Stdio::null()).stderr(Stdio::null());
-    command
-        .spawn()
-        .and_then(|mut child| {
-            feed(&mut child, password.filter(|_| !is_root()));
-            child.wait()
-        })
-        .is_ok_and(|status| status.success())
-}
-
-/// What goes before a program so that logind refuses to shut down, restart
-/// or sleep until it ends: nothing where logind takes no such lock, as in a
-/// container.
-fn inhibitor(title: &str, password: Option<&str>) -> Vec<String> {
-    let lock: Vec<String> =
-        ["systemd-inhibit", "--what=shutdown:sleep", "--who=Tileception", &format!("--why={title}"), "--mode=block"]
-            .iter()
-            .map(|part| (*part).to_string())
-            .collect();
-    let mut probe = as_root(password);
-    probe.args(&lock).arg("true");
-    if finish(probe, password) { lock } else { Vec::new() }
 }
 
 /// The folder for what the update manager remembers between sessions.
@@ -1145,92 +1314,6 @@ fn reminder_due(waited: Duration, after_days: u32) -> bool {
     waited >= Duration::from_secs(u64::from(after_days) * 24 * 3600)
 }
 
-/// Runs a task's programs as root, reports their steps and keeps what they
-/// print in `log`.
-fn execute(
-    task: &Task,
-    password: Option<&str>,
-    events: &channel::Sender<Event>,
-    log: &mut String,
-) -> Result<(), Failure> {
-    let commands = task.commands().map_err(Failure::Failed)?;
-    // Read before the install, which marks what it names as installed by hand.
-    let automatic = match task {
-        Task::Install(names) if !names.is_empty() => Process::new("apt-mark")
-            .arg("showmanual")
-            .env("LC_ALL", "C")
-            .stdin(Stdio::null())
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| apt::automatic(names, &String::from_utf8_lossy(&output.stdout)))
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    let lock = if task.changes_packages() { inhibitor(task.title(), password) } else { Vec::new() };
-    let mut done = 0;
-    let mut result = Ok(());
-    for arguments in &commands {
-        log.push_str(&format!("$ {}\n", arguments.join(" ")));
-        let mut command = as_root(password);
-        command.args(&lock).args(arguments).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child =
-            command.spawn().map_err(|error| Failure::Failed(format!("could not start {}: {error}", arguments[0])))?;
-        feed(&mut child, password.filter(|_| !is_root()));
-        let errors = child.stderr.take().map(|mut stderr| {
-            thread::spawn(move || {
-                let mut text = String::new();
-                let _ = stderr.read_to_string(&mut text);
-                text
-            })
-        });
-        if let Some(stdout) = child.stdout.take() {
-            // Read to the end even when nobody listens: closing the pipe
-            // would stop apt halfway.
-            let mut listening = true;
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                log.push_str(&line);
-                log.push('\n');
-                let Some(progress) = apt::parse_progress(&line) else { continue };
-                if matches!(progress, apt::Progress::Setup(_) | apt::Progress::Remove(_)) {
-                    done += 1;
-                }
-                listening = listening && events.send(Event::Progress { done, label: progress.label() }).is_ok();
-            }
-        }
-        let status = child.wait().map_err(|error| Failure::Failed(error.to_string()))?;
-        let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
-        log.push_str(&errors);
-        result = if status.success() {
-            Ok(())
-        } else {
-            let lines = || errors.lines().map(str::trim).filter(|line| !line.is_empty());
-            let reason = lines()
-                .filter_map(|line| line.strip_prefix("E: "))
-                .next()
-                .or_else(|| lines().next_back())
-                .unwrap_or("the command failed")
-                .to_string();
-            Err(Failure::Failed(reason))
-        };
-    }
-    if log.len() > LOG_LIMIT {
-        let mut start = log.len() - LOG_LIMIT;
-        while !log.is_char_boundary(start) {
-            start += 1;
-        }
-        log.replace_range(..start, "...\n");
-    }
-    if result.is_ok() && !automatic.is_empty() {
-        let mut command = as_root(password);
-        command.args(["apt-mark", "auto"]).args(&automatic);
-        if !finish(command, password) {
-            tracing::warn!("could not mark the installed updates as automatic again");
-        }
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1270,14 +1353,24 @@ mod tests {
     }
 
     #[test]
-    fn a_repair_finishes_dpkg_before_apt() {
-        let commands = Task::Repair.commands().unwrap_or_default();
-        assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0][0], "dpkg");
-        assert_eq!(commands[1].last().map(String::as_str), Some("install"));
-        assert!(commands[1].contains(&"--fix-broken".to_string()));
-        assert!(Task::Repair.changes_packages() && Task::Autoremove.changes_packages());
-        assert!(!Task::Refresh.changes_packages());
+    fn failures_keep_the_helpers_reason() {
+        let ended = Ended {
+            code: Some(1),
+            errors: "W: something\ntileception-updates-helper: Unable to lock the package system\n".into(),
+        };
+        assert_eq!(ended.reason(), "Unable to lock the package system");
+        let ended = Ended {
+            code: Some(127),
+            errors: "Error executing command as another user: Not authorized\n\nThis incident has been reported.\n"
+                .into(),
+        };
+        assert_eq!(ended.reason(), "This incident has been reported.");
+        assert_eq!(Ended { code: None, errors: String::new() }.reason(), "the task failed");
+        assert!(no_agent(
+            "Error creating textual authentication agent: Error opening current controlling terminal for the process"
+        ));
+        assert!(no_agent("Error executing command as another user: No authentication agent found."));
+        assert!(!no_agent("Error executing command as another user: Not authorized"));
     }
 
     #[test]

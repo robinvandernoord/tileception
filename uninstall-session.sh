@@ -30,6 +30,12 @@ if [ -e "$portal" ]; then
     sudo rm -f "$portal"
     echo "Removed $portal"
 fi
+updates_helper=/usr/libexec/tileception-updates-helper
+updates_policy=/usr/share/polkit-1/actions/org.tileception.updates.policy
+if [ -e "$updates_helper" ] || [ -e "$updates_policy" ]; then
+    sudo rm -f "$updates_helper" "$updates_policy"
+    echo "Removed the update manager's helper and its polkit policy"
+fi
 wake_unit=/etc/systemd/system/tileception-wake@.service
 if [ -e "$wake_unit" ]; then
     sudo rm -f "$wake_unit" /etc/polkit-1/rules.d/40-tileception-wake.rules

@@ -37,7 +37,7 @@ sudo -v
 bindir="$HOME/.local/bin"
 # dev-install (Cargo.toml) rebuilds faster after an edit than release.
 build=target/dev-install/tileception
-cargo plane build --profile dev-install -p tileception
+cargo plane build --profile dev-install -p tileception -p tileception-updates
 scripts/build-clipboard-helper.sh target/dev-install
 mkdir -p "$bindir"
 install -m 755 "$build" "$bindir/tileception"
@@ -71,6 +71,17 @@ if ! cmp -s "resources/tileception-wake@.service" "$wake_unit" || ! sudo cmp -s 
     sudo install -D -m 644 resources/tileception-wake.rules "$wake_rules"
     sudo systemctl daemon-reload
     echo "Installed the wake-up alarm unit and its polkit rule (Suspend until in the power menu)"
+fi
+
+# The update manager's helper runs as root through pkexec, under a polkit
+# policy that names its path: both belong to root, in system directories.
+updates_helper=/usr/libexec/tileception-updates-helper
+updates_policy=/usr/share/polkit-1/actions/org.tileception.updates.policy
+if ! cmp -s target/dev-install/tileception-updates-helper "$updates_helper" \
+    || ! cmp -s resources/org.tileception.updates.policy "$updates_policy"; then
+    sudo install -D -o root -g root -m 755 target/dev-install/tileception-updates-helper "$updates_helper"
+    sudo install -D -o root -g root -m 644 resources/org.tileception.updates.policy "$updates_policy"
+    echo "Installed the update manager's helper and its polkit policy (updates without sudo)"
 fi
 
 # The portal only looks for backends in this system directory.

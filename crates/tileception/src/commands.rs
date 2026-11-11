@@ -604,8 +604,8 @@ impl Tileception {
             Command::Handoff(command) => return self.handoff_command(command),
             Command::Updates(command) => return self.updates_command(command),
             Command::UpdatesKey(sym, mods) => {
-                if self.updates.prompt.is_some() {
-                    self.updates_prompt_key(sym, mods);
+                if self.password_prompt.is_some() {
+                    self.password_prompt_key(sym, mods);
                 } else if self.updates_window_focused() {
                     self.updates_window_key(sym, mods);
                 }

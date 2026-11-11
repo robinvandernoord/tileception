@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Lets Tileception's update manager run its helper as root through pkexec.
+  The helper takes a task, never a command line. Its first argument tells
+  the two actions apart: refreshing the package lists changes nothing that
+  is installed, so the person at the computer may do it without a password;
+  everything else asks for an administrator.
+-->
+<policyconfig>
+  <vendor>Tileception</vendor>
+  <vendor_url>https://tileception.space</vendor_url>
+
+  <action id="org.tileception.updates.refresh">
+    <description>Check for updates</description>
+    <message>Authentication is required to refresh the package lists</message>
+    <icon_name>system-software-update</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tileception-updates-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">refresh</annotate>
+  </action>
+
+  <action id="org.tileception.updates.change">
+    <description>Install updates and remove packages</description>
+    <message>Authentication is required to install updates or remove packages</message>
+    <icon_name>system-software-update</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/tileception-updates-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">change</annotate>
+  </action>
+</policyconfig>

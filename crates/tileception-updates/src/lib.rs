@@ -10,6 +10,7 @@ pub mod apt;
 pub mod history;
 pub mod kernels;
 pub mod release;
+pub mod task;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

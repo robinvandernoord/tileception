@@ -120,7 +120,7 @@ impl Tileception {
                 let still = commands.iter().all(|command| match command {
                     Command::LauncherKey(..) => self.launcher.open,
                     Command::SettingsKey(..) => self.settings_focused(),
-                    Command::UpdatesKey(..) => self.updates.prompt.is_some() || self.updates_window_focused(),
+                    Command::UpdatesKey(..) => self.password_prompt.is_some() || self.updates_window_focused(),
                     Command::DuckKey(..) => self.duck.typing(),
                     Command::NetworkKey(..) => self.network.zoom.open,
                     Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,

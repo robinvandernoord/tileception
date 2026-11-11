@@ -231,6 +231,11 @@ pub struct Tileception {
     pub idle: crate::idle::Idle,
     pub battery: crate::battery::Battery,
     pub updates: crate::updates::Updates,
+    /// The password prompt, for polkit or the update manager's `sudo`.
+    pub(crate) password_prompt: Option<crate::password::Prompt>,
+    pub polkit: crate::polkit::Polkit,
+    /// This instance may be the polkit agent at all.
+    pub polkit_wanted: bool,
     pub network: crate::network::Network,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
@@ -414,6 +419,9 @@ impl Tileception {
             idle: Default::default(),
             battery: Default::default(),
             updates: Default::default(),
+            password_prompt: None,
+            polkit: Default::default(),
+            polkit_wanted: false,
             network: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
@@ -779,7 +787,7 @@ impl Tileception {
         } else if self.is_locked() {
             self.lock_surface().map(|surface| KeyboardFocus::Wayland(surface.clone()))
         } else if self.feedback.is_some()
-            || self.updates.prompt.is_some()
+            || self.password_prompt.is_some()
             || self.power_menu.is_some()
             || self.colour_pick.is_some()
             || self.notifications.answering.is_some()

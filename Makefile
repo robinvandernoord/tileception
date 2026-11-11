@@ -62,7 +62,7 @@ check-deps:
 
 build: tools
 	cargo plane exec scripts/deps.sh check build
-	cargo plane build --release -p tileception
+	cargo plane build --release -p tileception -p tileception-updates
 	scripts/build-clipboard-helper.sh target/release
 
 clean:
