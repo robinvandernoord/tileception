@@ -3405,7 +3405,7 @@ dependencies = [
 
 [[package]]
 name = "tileception"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "async-channel",
  "cosmic-text",
@@ -3443,7 +3443,7 @@ dependencies = [
 
 [[package]]
 name = "tileception-acp"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3469,14 +3469,14 @@ dependencies = [
 
 [[package]]
 name = "tileception-core"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "tileception-handoff"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "getrandom 0.3.4",
  "lz4_flex",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "tileception-home"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "tileception-media"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "pulseaudio",
  "serde",
@@ -3527,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "tileception-updates"
-version = "0.16.0"
+version = "0.16.1"
 
 [[package]]
 name = "time"

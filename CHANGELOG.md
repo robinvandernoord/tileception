@@ -2,6 +2,11 @@
 
 <!-- next-version-placeholder -->
 
+## v0.16.1 (2026-11-11)
+
+### Fix
+* **session:** keep the SSH agent socket stable
+
 ## v0.16.0 (2026-11-11)
 
 ### Features
