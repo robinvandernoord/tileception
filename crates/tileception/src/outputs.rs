@@ -83,6 +83,15 @@ pub struct Outputs {
     /// The areas of the last screen, from when it went, so they come back
     /// with it.
     remembered: Option<Remembered>,
+    /// The desktops of screens that went while another stayed, by connector
+    /// name, so their windows go back as they were when the screen returns.
+    departed: BTreeMap<String, Departed>,
+}
+
+/// What a screen that went had: its areas' desktops and which was active.
+struct Departed {
+    active: usize,
+    desktops: Vec<PreviewDesktop>,
 }
 
 /// A split screen's areas while no screen is there: their windows wait in
@@ -559,8 +568,90 @@ impl Tileception {
                 state.apply_split();
                 state.apply_output_scale();
             });
+            self.arrange_outputs();
+            self.restore_departed(&output);
         }
         self.arrange_outputs();
+    }
+
+    /// Before a screen goes while another stays: keeps its areas' worlds, so
+    /// `restore_departed` can bring its windows back as they were.
+    fn remember_departing(&mut self, output: &Output) {
+        // Windows that came here from a screen that went earlier return there.
+        let claimed: Vec<WindowId> = self
+            .outputs
+            .departed
+            .values()
+            .flat_map(|departed| &departed.desktops)
+            .flat_map(|desktop| world_windows(&desktop.world))
+            .collect();
+        let (count, active) =
+            self.outputs.areas.get(&output.name()).map_or((1, 0), |areas| (areas.shares.len(), areas.active));
+        let desktops: Vec<_> = (0..count)
+            .filter_map(|index| {
+                let area = AreaId { output: output.clone(), index };
+                self.with_area(&area.clone(), |state| {
+                    let mut world = state.world.clone();
+                    let now = state.now();
+                    for window in world_windows(&world).into_iter().filter(|window| claimed.contains(window)) {
+                        world.remove_window(window, now);
+                    }
+                    PreviewDesktop { area, world, pointer: state.pointer, fullscreen: state.fullscreen }
+                })
+            })
+            .collect();
+        if desktops.iter().any(|desktop| !world_windows(&desktop.world).is_empty()) {
+            self.outputs.departed.insert(output.name(), Departed { active, desktops });
+        } else {
+            self.outputs.departed.remove(&output.name());
+        }
+    }
+
+    /// A screen is back: the windows it had when it went return to it from
+    /// the screens that took them in, in the layout they had. Areas it no
+    /// longer has give their windows to the first.
+    fn restore_departed(&mut self, output: &Output) {
+        let Some(Departed { active: was_active, mut desktops }) = self.outputs.departed.remove(&output.name()) else {
+            return;
+        };
+        let count = self.outputs.areas.get(&output.name()).map_or(1, |areas| areas.shares.len());
+        let active = self.active_area();
+        let mut homes = Vec::new();
+        for desktop in &mut desktops {
+            desktop.area.output = output.clone();
+            if desktop.area.index >= count {
+                desktop.area.index = 0;
+            }
+            homes.extend(
+                world_windows(&desktop.world)
+                    .into_iter()
+                    .filter(|window| self.windows.contains_key(window))
+                    .map(|window| (window, desktop.area.clone())),
+            );
+        }
+        if homes.is_empty() {
+            return;
+        }
+        tracing::info!("{} is back: {} windows return to it", output.name(), homes.len());
+        self.restore_output_homes(&homes);
+        // Only areas that are still there take their old world.
+        let mut seen = Vec::new();
+        desktops.retain(|desktop| {
+            let first = !seen.contains(&desktop.area.index);
+            seen.push(desktop.area.index);
+            first
+        });
+        self.restore_preview_desktops(desktops, active);
+        self.with_output(output, |state| {
+            if let Some(areas) = state.outputs.areas.get_mut(&output.name())
+                && was_active < areas.shares.len()
+            {
+                areas.active = was_active;
+                state.exchange_area(was_active);
+            }
+            state.apply_output_scale();
+        });
+        self.schedule_render();
     }
 
     /// Switches the context used by existing layout/rendering code. This does
@@ -1462,6 +1553,7 @@ impl Tileception {
             self.force_keyboard_focus_sync();
             return;
         };
+        self.remember_departing(output);
         let windows = self
             .windows
             .keys()
@@ -1683,6 +1775,11 @@ impl Tileception {
 }
 
 /// Every window a layout snapshot holds, tiled or floating.
+/// Every window of a world: tiled, floating and minimized.
+fn world_windows(world: &World) -> Vec<WindowId> {
+    remembered_windows(&world.snapshot().root).into_iter().chain(world.minimized()).collect()
+}
+
 fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId> {
     use tileception_core::tree::LayoutNode;
     match node {
