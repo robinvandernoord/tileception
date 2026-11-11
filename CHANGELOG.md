@@ -2,6 +2,23 @@
 
 <!-- next-version-placeholder -->
 
+## v0.16.0 (2026-11-11)
+
+### Features
+* **updates:** run package tasks through a polkit helper
+* **updates:** preview and manage package transactions
+* **theme:** add configurable primary button styles
+* **ui:** unify button styling and accent treatment
+* **text-input:** unify field editing and pointer selection
+
+### Fixes
+* **ui:** refine accent highlights and focus styling
+* **updates:** preserve apt package state and refresh scans
+* **launcher:** place submit button beside lone prompt field
+
+### Documentation
+* **updates:** explain transaction previews and maintenance
+
 ## v0.15.0 (2026-11-10)
 
 ### Features
