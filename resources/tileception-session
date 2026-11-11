@@ -5,8 +5,21 @@
 # Give every application the same agent, and stop it when the session exits.
 # Keep an agent supplied by the login environment, if there is one.
 if [ -z "$SSH_AUTH_SOCK" ] && command -v ssh-agent >/dev/null 2>&1; then
+    export TILECEPTION_OWN_AGENT=1
     exec ssh-agent "$0" "$@"
 fi
+
+# That agent listens at a random path under /tmp, new at every login. What
+# outlives the session (a tmux server, a systemd user service) would keep the
+# old one, and a program that wants the path written down could not be told
+# once. So applications get a path that stays the same, linked to this
+# login's agent. The agent keeps its own socket: the one from the login
+# before lingers a few seconds and then removes what it listened on.
+if [ -n "$TILECEPTION_OWN_AGENT" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    link="$XDG_RUNTIME_DIR/tileception-ssh-agent.sock"
+    ln -sfn "$SSH_AUTH_SOCK" "$link" 2>/dev/null && export SSH_AUTH_SOCK="$link"
+fi
+unset TILECEPTION_OWN_AGENT
 
 # Cursor theme from the desktop settings, when there are any. GNOME's first:
 # GTK applications read that one, so every window shows the same pointer.
