@@ -57,9 +57,11 @@ mod notifications;
 mod osd;
 mod outputs;
 mod panel;
+mod password;
 mod persistence;
 mod plugins;
 mod pointer_lock;
+mod polkit;
 mod power;
 mod remote_desktop;
 mod render;
@@ -144,6 +146,8 @@ Environment:
   TILECEPTION_SCALE          output scale, overriding [outputs]
   TILECEPTION_HEADLESS_SIZE  headless screen size, such as 1280x800
   TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
+  TILECEPTION_UPDATES        start the update manager nested or headless too
+  TILECEPTION_POLKIT         be the polkit agent nested or headless too
   RUST_LOG                   log filter (default: info,smithay=warn)
   GREETD_SOCK                greetd's socket, set by greetd (greeter)
   TILECEPTION_GREETER_CONFIG the greeter's settings file, for tests
@@ -301,6 +305,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.start_sleep_watch();
         state.start_screensaver();
         export_session_environment(&state);
+    }
+    // TILECEPTION_POLKIT makes a nested or headless instance the polkit
+    // agent of what it starts, for tests.
+    if state.session_services || std::env::var_os("TILECEPTION_POLKIT").is_some() {
+        state.polkit_wanted = true;
+        state.start_polkit();
     }
     // TILECEPTION_POWER_SUPPLY points at a stand-in for /sys/class/power_supply,
     // for tests; such a battery never notifies, hibernates or changes profiles.

@@ -415,9 +415,13 @@ and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
 
 Click the chip for a card with the updates by kind and three buttons:
-**Install all**, **Security only** and **Review**. Installing needs
-administrator rights. If `sudo` asks for a password, Tileception shows its own
-prompt and passes what you type to `sudo` for that one task.
+**Install all**, **Security only** and **Review**. Installing needs an
+administrator: polkit asks for the password in Tileception's prompt and
+remembers it for a few minutes. See [Administrator rights](#administrator-rights).
+
+Tileception refreshes the package lists by itself every few hours, which
+needs no password. It leaves that on a metered connection and below 30% on
+battery; **Check** still works then.
 
 **Review** opens the Updates window, which also opens with
 `tileception msg updates open` or "Updates" in the launcher. It has four pages;
@@ -502,6 +506,25 @@ From scripts and key bindings:
 | `tileception msg updates repair` | Repair the package system, when apt asks for it |
 | `tileception msg updates log` | Print what the last task printed |
 | `tileception msg updates upgrade` | Start the release upgrade in a terminal |
+
+#### Administrator rights
+
+Changes to packages are made by a small helper,
+`/usr/libexec/tileception-updates-helper`, that polkit starts as root. It
+takes a task such as "install these updates", never a command line, and
+checks every package name. Its policy has two actions: refreshing the package
+lists is allowed without a password for the person at the computer, and
+everything else asks for an administrator. To change who may do what, add a
+polkit rule for `org.tileception.updates.refresh` or
+`org.tileception.updates.change`.
+
+Tileception is the session's polkit agent, so the same prompt answers other
+programs that ask polkit for an administrator, such as `pkexec`. The password
+goes to polkit's own checker and nowhere else. To use another agent, set
+`[shell] polkit = "none"` and start that agent yourself.
+
+Where polkit or an agent is missing, the helper runs through `sudo` instead,
+and Tileception's prompt passes what you type to `sudo` for that one task.
 
 Flatpak, Snap and firmware updates are not listed yet. See
 [Configuration](configuration.md#updates) to switch the chip or its

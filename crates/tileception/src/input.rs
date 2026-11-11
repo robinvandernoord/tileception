@@ -345,7 +345,7 @@ impl Tileception {
             if state.feedback.is_some() {
                 return FilterResult::Intercept(vec![Command::FeedbackKey(sym, held)]);
             }
-            if state.updates.prompt.is_some() {
+            if state.password_prompt.is_some() {
                 return FilterResult::Intercept(vec![Command::UpdatesKey(sym, held)]);
             }
             if state.power_menu.is_some() {
@@ -672,7 +672,7 @@ impl Tileception {
             self.colour_pick_moved();
             return;
         }
-        if !self.is_locked() && self.updates.prompt.is_some() {
+        if !self.is_locked() && self.password_prompt.is_some() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -890,7 +890,7 @@ impl Tileception {
             return;
         }
         // The password prompt is modal: clicks beside its buttons do nothing.
-        if !self.is_locked() && self.updates.prompt.is_some() {
+        if !self.is_locked() && self.password_prompt.is_some() {
             return;
         }
         // A held slider lets go wherever the button comes up.
@@ -1173,7 +1173,7 @@ impl Tileception {
             }
             return;
         }
-        if !self.is_locked() && self.updates.prompt.is_some() {
+        if !self.is_locked() && self.password_prompt.is_some() {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {

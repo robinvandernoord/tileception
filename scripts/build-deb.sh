@@ -71,13 +71,15 @@ if [ -n "$cargo_target" ]; then
     export "CARGO_TARGET_${target_env}_LINKER=$DEB_HOST_GNU_TYPE-gcc"
     export PKG_CONFIG_ALLOW_CROSS=1
     export PKG_CONFIG_LIBDIR="/usr/lib/$DEB_HOST_MULTIARCH/pkgconfig:/usr/share/pkgconfig"
-    cargo build --locked --profile dist -p tileception --target "$cargo_target"
+    cargo build --locked --profile dist -p tileception -p tileception-updates --target "$cargo_target"
     scripts/build-clipboard-helper.sh --package --target "$cargo_target"
     built="$target_dir/$cargo_target/dist/tileception"
+    built_updates_helper="$target_dir/$cargo_target/dist/tileception-updates-helper"
 else
-    cargo build --locked --profile dist -p tileception
+    cargo build --locked --profile dist -p tileception -p tileception-updates
     scripts/build-clipboard-helper.sh --package
     built="$target_dir/dist/tileception"
+    built_updates_helper="$target_dir/dist/tileception-updates-helper"
 fi
 
 out="${DEB_OUT:-$target_dir/deb}"
@@ -114,6 +116,12 @@ install -D -m 644 resources/greeter.toml "$root/etc/tileception/greeter.toml"
 # the person at the computer start it.
 install -D -m 644 "resources/tileception-wake@.service" "$root/usr/lib/systemd/system/tileception-wake@.service"
 install -D -m 644 resources/tileception-wake.rules "$root/usr/share/polkit-1/rules.d/40-tileception-wake.rules"
+# The update manager's helper, which pkexec runs as root, and the polkit
+# policy that names its path.
+install -D -m 755 "$built_updates_helper" "$root/usr/libexec/tileception-updates-helper"
+"${binutils_prefix}strip" --strip-unneeded "$root/usr/libexec/tileception-updates-helper"
+install -D -m 644 resources/org.tileception.updates.policy \
+    "$root/usr/share/polkit-1/actions/org.tileception.updates.policy"
 install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
 mkdir -p "$root/usr/share/accountsservice/interfaces"
 ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
@@ -151,7 +159,9 @@ mkdir "$shlibs_dir/debian"
 printf 'Source: %s\n\nPackage: %s\nArchitecture: any\n' "$package" "$package" > "$shlibs_dir/debian/control"
 abs_bin=$(realpath "$bin")
 abs_helper=$(realpath "$root/usr/bin/tileception-clip-persist")
-shlibs=$(cd "$shlibs_dir" && dpkg-shlibdeps -O "$abs_bin" "$abs_helper" | sed -n 's/^shlibs:Depends=//p')
+abs_updates_helper=$(realpath "$root/usr/libexec/tileception-updates-helper")
+shlibs=$(cd "$shlibs_dir" && dpkg-shlibdeps -O "$abs_bin" "$abs_helper" "$abs_updates_helper" \
+    | sed -n 's/^shlibs:Depends=//p')
 
 # Companion programs, from deps/debian.txt: Xwayland is required, the rest of
 # the runtime group is recommended (apt installs it by default) and the

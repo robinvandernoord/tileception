@@ -50,6 +50,8 @@ pub struct ShellConfig {
     pub media: String,
     /// The doctor panel: "builtin" or "none".
     pub doctor: String,
+    /// The polkit authentication agent: "builtin" or "none".
+    pub polkit: String,
     /// The built-in bar or its replacement.
     pub bar: String,
     pub bar_position: BarPosition,
@@ -71,6 +73,7 @@ impl Default for ShellConfig {
             lock: builtin(),
             media: builtin(),
             doctor: builtin(),
+            polkit: builtin(),
             bar: builtin(),
             bar_position: BarPosition::Top,
             bar_minimap: true,
@@ -103,11 +106,17 @@ impl ShellConfig {
         Part::parse(&self.doctor).is_builtin()
     }
 
+    /// Asking for the administrator's password when polkit wants one. An
+    /// outside agent starts by itself, so this is on or off.
+    pub fn polkit(&self) -> bool {
+        Part::parse(&self.polkit).is_builtin()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.tray_max_icons == 0 {
             return Err("[shell] tray_max_icons must be at least 1".into());
         }
-        for (name, value) in [("media", &self.media), ("doctor", &self.doctor)] {
+        for (name, value) in [("media", &self.media), ("doctor", &self.doctor), ("polkit", &self.polkit)] {
             if let Part::Command(other) = Part::parse(value) {
                 return Err(format!("[shell] {name} is builtin or none, not {other:?}"));
             }
@@ -178,6 +187,13 @@ impl Tileception {
         if !new.power_menu().is_builtin() {
             self.power_menu = None;
         }
+        if old.polkit() != new.polkit() && self.polkit_wanted {
+            if new.polkit() {
+                self.start_polkit();
+            } else {
+                self.stop_polkit();
+            }
+        }
         if !new.doctor() && self.doctor.open {
             self.close_doctor();
         }
@@ -204,5 +220,8 @@ mod tests {
         assert!(ShellConfig::default().validate().is_ok());
         assert!(ShellConfig::default().media());
         assert!(ShellConfig::default().doctor());
+        assert!(ShellConfig::default().polkit());
+        let shell = ShellConfig { polkit: "lxpolkit".into(), ..ShellConfig::default() };
+        assert!(shell.validate().is_err());
     }
 }

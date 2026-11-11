@@ -194,12 +194,13 @@ enabled = false
 # On systems with APT, the bar shows a count while updates wait: security
 # updates first, then the rest. Click it, type "up" in the launcher or run
 # `tileception msg updates open` to install them, clean up old kernels or
-# start a release upgrade. Installing asks for your password, as sudo does.
+# start a release upgrade. Installing asks for an administrator's password,
+# through polkit.
 # enabled = true
 # One notification when new updates arrive.
 # notify = true
-# Hours between looks at the package lists. The lists themselves are
-# refreshed by the system's own daily timer, or by "Check" in Updates.
+# Hours between refreshes of the package lists (apt-get update), which need
+# no password. Not on a metered connection or below 30% on battery.
 # check_hours = 4
 # Days updates wait before that notification: 0 says so at once.
 # remind_after_days = 0
@@ -236,6 +237,10 @@ media = "builtin"
 # Doctor, the panel for asking an agent about your setup (Super+/):
 # "builtin" or "none".
 doctor = "builtin"
+# Asking for the administrator's password when polkit wants one, as for
+# installing updates: "builtin" or "none". With "none", start another
+# polkit agent yourself.
+polkit = "builtin"
 # The bar: where the camera is, saved views, the clock (click
 # it for a calendar) and notifications. "none" leaves the edge to the
 # windows; a command such as "waybar" runs in its place and is stopped again

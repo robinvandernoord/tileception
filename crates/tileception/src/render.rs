@@ -267,7 +267,7 @@ impl Tileception {
             elements.extend(self.feedback_elements(renderer));
             elements.extend(self.colour_pick_elements(renderer));
             elements.extend(self.osd_elements(renderer));
-            elements.extend(self.updates_prompt_elements(renderer));
+            elements.extend(self.password_prompt_elements(renderer));
             elements.extend(self.power_menu_elements(renderer));
             elements.extend(self.handoff_elements(renderer));
         }

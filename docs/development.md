@@ -107,7 +107,7 @@ locked dependencies for all platforms, and ship with both installation paths.
 | `tileception-notify` | D-Bus notification service                                |
 | `tileception-media`  | Audio, media playback and backlight controls              |
 | `tileception-acp`    | Agent registry, installation and ACP client               |
-| `tileception-updates` | Pending APT updates, kernels, release checks, apt history |
+| `tileception-updates` | Pending APT updates, kernels, release checks, apt history, and the helper that changes packages as root |
 
 The layout engine has no Smithay dependency or I/O. The compositor drives it
 with window and input events, then renders the resulting layout. DRM/KMS runs
@@ -156,6 +156,18 @@ A nested or headless instance leaves updates to the desktop it runs in. Set
 `do-release-upgrade`, `systemd-inhibit` and `sudo` from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
 release offer or a `sudo` that asks for a password, without changing the
 system.
+
+Changes to packages run in `tileception-updates-helper`, built with
+`cargo plane build -p tileception-updates`. An instance that runs as root
+runs the task in place, with the programs from its `PATH`, so stand-ins
+still work there. Otherwise polkit starts the helper through `pkexec`, which
+needs the helper at `/usr/libexec/tileception-updates-helper` and
+`resources/org.tileception.updates.policy` in `/usr/share/polkit-1/actions`
+(`./install-session.sh` puts both there); `pkexec` clears `PATH`, so this way
+runs the real programs. Without those files, or without a polkit agent, the
+helper beside the `tileception` binary runs through `sudo`. Set
+`TILECEPTION_POLKIT=1` to make a nested or headless instance the polkit agent
+of the programs it starts.
 
 Headless instances run Xwayland too, so X11 programs can be tried the same way.
 Start programs inside an instance with `tileception msg spawn <command line>`,

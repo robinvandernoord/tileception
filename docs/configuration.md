@@ -277,6 +277,11 @@ has the same switch on its Network page. To hide it:
 bar_network = false
 ```
 
+Tileception answers polkit when a program needs an administrator's password,
+as installing updates does ([Using Tileception](usage.md#administrator-rights)).
+`shell.polkit` accepts only `"builtin"` or `"none"`; with `"none"`, start
+another polkit agent through autostart.
+
 `shell.media` accepts only `"builtin"` or `"none"`. To replace the media controls,
 set it to `"none"` and bind volume, brightness and playback keys to your own
 commands under `[binds]`.
@@ -550,8 +555,9 @@ remind_security_only = false
 `enabled = false` switches the update manager off: no chip, no launcher rows
 and no `tileception msg updates`. `notify = false` keeps the chip and drops the
 one notification when new updates arrive. `check_hours` is how often
-Tileception reads the package lists; the lists themselves are refreshed by the
-system's daily timer, or by **Check** in the Updates window.
+Tileception refreshes the package lists, as `apt-get update` does. That
+needs no password and is left out on a metered connection and below 30% on
+battery; **Check** in the Updates window refreshes them at once.
 
 `remind_after_days` holds the notification back until updates have waited
 that many days; `0` says so at once. `remind_security_only = true` notifies
