@@ -29,7 +29,7 @@ impl PowerAction {
     pub const ALL: [PowerAction; 5] =
         [PowerAction::Lock, PowerAction::LogOut, PowerAction::Suspend, PowerAction::Restart, PowerAction::PowerOff];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             PowerAction::Lock => "Lock",
             PowerAction::LogOut => "Log out",
@@ -353,6 +353,15 @@ impl Tileception {
 
     /// Runs an action; the menu closes first.
     pub fn run_power_action(&mut self, action: PowerAction) {
+        // While packages change the computer stays on: the action waits.
+        if self.updates_hold_power(action) {
+            // Back to the buttons, where the menu says what waits.
+            let selected = PowerAction::ALL.iter().position(|known| *known == action).unwrap_or(PowerAction::ALL.len());
+            if self.power_menu.is_some() {
+                self.power_page(Page::Main, selected);
+            }
+            return;
+        }
         if action != PowerAction::More {
             self.close_power_menu();
         }
@@ -550,6 +559,23 @@ impl Tileception {
             Rect::new(screen.x, top - 64.0, screen.w, 32.0),
             Style::new(theme.font_size * 1.5, theme.text).weight(300).align(Align::Centre),
         );
+        if self.updates.holds_power() {
+            let waits = match self.updates.power_after() {
+                Some(action) => {
+                    format!(
+                        "{} follows when the updates are installed. Choose it again to call it off.",
+                        action.label()
+                    )
+                }
+                None => "Updates are installing: restarting, switching off, suspending and logging out wait for them."
+                    .to_string(),
+            };
+            painter.text(
+                &waits,
+                Rect::new(screen.x + 16.0, top - 30.0, screen.w - 32.0, 22.0),
+                Style::new(theme.font_size * 0.9, theme.warning).align(Align::Centre),
+            );
+        }
         for (index, (action, rect)) in buttons.into_iter().enumerate() {
             let selected = index == menu.selected;
             let enabled = action != PowerAction::Suspend || self.config.file.general.suspend_enabled;

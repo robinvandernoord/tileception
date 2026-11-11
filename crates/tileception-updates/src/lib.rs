@@ -87,6 +87,9 @@ pub fn supported() -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub updates: Vec<apt::Update>,
+    /// What installing every update would do besides: removals, updates
+    /// kept back or phased, and the dependencies that are no longer needed.
+    pub plan: apt::Plan,
     /// Kernel images, headers and their support packages.
     pub packages: Vec<kernels::Package>,
     /// Every versioned kernel image and header package apt knows.
@@ -116,15 +119,16 @@ impl Snapshot {
 
 /// Reads the system. Nothing here needs root or the network.
 pub fn scan(runner: &dyn Runner, files: &Files) -> Snapshot {
-    let (updates, error) = match apt::list(runner) {
-        Ok(updates) => (updates, None),
-        Err(error) => (Vec::new(), Some(error)),
+    let (listing, error) = match apt::list(runner) {
+        Ok(listing) => (listing, None),
+        Err(error) => (apt::Listing::default(), Some(error)),
     };
     let running = runner.run("uname", &["-r"]).map(|text| text.trim().to_string()).unwrap_or_default();
     let packages = kernels::installed(runner);
     let offers = kernels::offers(runner);
     Snapshot {
-        updates,
+        updates: listing.updates,
+        plan: listing.plan,
         packages,
         offers,
         running,

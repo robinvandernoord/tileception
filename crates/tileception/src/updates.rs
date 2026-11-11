@@ -37,11 +37,15 @@ pub struct UpdatesConfig {
     pub notify: bool,
     /// Hours between looks at the package lists.
     pub check_hours: u32,
+    /// Days updates wait before the notification; 0 says so at once.
+    pub remind_after_days: u32,
+    /// Only security updates bring a notification.
+    pub remind_security_only: bool,
 }
 
 impl Default for UpdatesConfig {
     fn default() -> Self {
-        UpdatesConfig { enabled: true, notify: true, check_hours: 4 }
+        UpdatesConfig { enabled: true, notify: true, check_hours: 4, remind_after_days: 0, remind_security_only: false }
     }
 }
 
@@ -57,6 +61,10 @@ pub enum Task {
     Kernels { install: Vec<String>, remove: Vec<String>, purge: bool },
     /// Remove exactly these packages.
     Remove(Vec<String>),
+    /// Remove packages that are no longer needed.
+    Autoremove,
+    /// Finish what `dpkg` left half done, then settle broken dependencies.
+    Repair,
 }
 
 impl Task {
@@ -66,17 +74,47 @@ impl Task {
             Task::Install(_) => "Installing updates",
             Task::Kernels { .. } => "Changing kernels",
             Task::Remove(_) => "Removing packages",
+            Task::Autoremove => "Removing unneeded packages",
+            Task::Repair => "Repairing packages",
         }
     }
 
-    fn args(&self) -> Result<Vec<String>, String> {
-        match self {
-            Task::Refresh => Ok(vec!["update".into()]),
-            Task::Install(names) => apt::upgrade_args(names),
-            Task::Kernels { install, remove, purge } => apt::transaction_args(install, remove, *purge, false),
-            Task::Remove(names) => apt::purge_args(names, false),
-        }
+    /// The programs to run as root, in order, each with its arguments. The
+    /// last one decides whether the task succeeded.
+    fn commands(&self) -> Result<Vec<Vec<String>>, String> {
+        let apt = |args: Vec<String>| {
+            let mut command = vec!["apt-get".to_string(), "-o".into(), "DPkg::Lock::Timeout=60".into()];
+            command.extend(args);
+            command
+        };
+        Ok(match self {
+            Task::Refresh => vec![apt(vec!["update".into()])],
+            Task::Install(names) => vec![apt(apt::upgrade_args(names, false)?)],
+            Task::Kernels { install, remove, purge } => {
+                vec![apt(apt::transaction_args(install, remove, *purge, false)?)]
+            }
+            Task::Remove(names) => vec![apt(apt::purge_args(names, false)?)],
+            Task::Autoremove => vec![apt(apt::autoremove_args(false))],
+            Task::Repair => vec![
+                ["dpkg", "--force-confdef", "--force-confold", "--configure", "-a"].map(String::from).to_vec(),
+                apt(apt::repair_args(false)),
+            ],
+        })
     }
+
+    /// Whether the task changes packages, so that the computer must stay on
+    /// until it ends. Refreshing the lists can be cut short.
+    fn changes_packages(&self) -> bool {
+        !matches!(self, Task::Refresh)
+    }
+}
+
+/// What the last task printed, kept until the next one ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Log {
+    pub(crate) title: &'static str,
+    pub(crate) succeeded: bool,
+    pub(crate) text: String,
 }
 
 /// Why a task did not finish.
@@ -106,8 +144,11 @@ enum Request {
         task: Task,
         password: Option<Zeroizing<String>>,
     },
-    /// Simulate removing these packages.
-    Preview(Vec<String>),
+    /// Simulate a transaction, keeping its originating request identifier.
+    Preview {
+        request: u64,
+        args: Vec<String>,
+    },
 }
 
 pub enum Event {
@@ -121,8 +162,15 @@ pub enum Event {
     Finished {
         task: Task,
         result: Result<(), Failure>,
+        /// Everything the task's programs printed.
+        log: String,
     },
-    Preview(String),
+    Preview {
+        request: u64,
+        text: String,
+    },
+    /// A minute went by: a reminder that had to wait may be due.
+    Tick,
 }
 
 /// The task being run.
@@ -160,8 +208,18 @@ pub struct Updates {
     requests: Option<mpsc::Sender<Option<Request>>>,
     thread: Option<JoinHandle<()>>,
     source: Option<RegistrationToken>,
+    /// What the last task printed.
+    log: Option<Log>,
+    /// The last failure asked for a repair.
+    repair: bool,
+    /// The last task failed and the failure was not put away yet.
+    pub(crate) failed: bool,
     /// The number of updates last announced.
     announced: usize,
+    /// Since when updates have been waiting.
+    waiting: Option<SystemTime>,
+    /// The power action that follows once the running task ends.
+    after: Option<crate::power::PowerAction>,
     /// This instance may run the update manager at all.
     allowed: bool,
     pub(crate) popover: popover::Popover,
@@ -192,6 +250,12 @@ pub enum UpdatesCommand {
     Show,
     Kernels,
     Clean,
+    /// Remove packages that are no longer needed.
+    Autoremove,
+    /// Repair a package system that apt says is broken.
+    Repair,
+    /// What the last task printed.
+    Log,
     Upgrade,
 }
 
@@ -210,10 +274,14 @@ pub fn parse(args: &[&str]) -> Result<UpdatesCommand, String> {
         ["show"] => UpdatesCommand::Show,
         ["kernels"] => UpdatesCommand::Kernels,
         ["clean"] => UpdatesCommand::Clean,
+        ["autoremove"] => UpdatesCommand::Autoremove,
+        ["repair"] => UpdatesCommand::Repair,
+        ["log"] => UpdatesCommand::Log,
         ["upgrade"] => UpdatesCommand::Upgrade,
         _ => {
             return Err(
-                "usage: updates [check|install [security|package...]|open [page]|show|kernels|clean|upgrade]".into()
+                "usage: updates [check|install [security|package...]|open [page]|show|kernels|clean|autoremove|repair|log|upgrade]"
+                    .into()
             );
         }
     })
@@ -233,6 +301,32 @@ impl Updates {
 
     pub(crate) fn outcome(&self) -> Option<&Result<String, String>> {
         self.outcome.as_ref()
+    }
+
+    /// Whether the last task failed and the failure still shows.
+    pub(crate) fn failed(&self) -> bool {
+        self.failed && matches!(self.outcome, Some(Err(_)))
+    }
+
+    /// What the last task printed.
+    pub(crate) fn log(&self) -> Option<&Log> {
+        self.log.as_ref()
+    }
+
+    /// Whether apt asked for a repair: after the last failure, or when it
+    /// could not even list the updates.
+    pub(crate) fn repairable(&self) -> bool {
+        self.repair || self.snapshot.error.as_deref().is_some_and(apt::needs_repair)
+    }
+
+    /// Whether the computer must stay on: a task is changing packages.
+    pub(crate) fn holds_power(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| job.task.changes_packages())
+    }
+
+    /// The power action that waits for the running task.
+    pub(crate) fn power_after(&self) -> Option<crate::power::PowerAction> {
+        self.after
     }
 
     /// The next release, when there is one.
@@ -282,7 +376,9 @@ impl Updates {
     pub(crate) fn chip(&self) -> Option<(String, Tone)> {
         if let Some(job) = &self.job {
             let label = match (&job.task, job.total) {
-                (Task::Refresh, _) | (_, 0) => "Checking".to_string(),
+                (Task::Refresh, _) => "Checking".to_string(),
+                (Task::Repair, _) => "Repairing".to_string(),
+                (_, 0) => "Working".to_string(),
                 (_, total) => format!("{} / {total}", job.done.min(total)),
             };
             return Some((label, Tone::Busy));
@@ -338,6 +434,8 @@ impl Tileception {
             .map_err(|error| tracing::error!("could not start the updates worker: {error}"))
             .ok();
         self.updates.source = Some(token);
+        self.updates.waiting = read_waiting();
+        self.updates.log = read_log();
         self.updates.requests = Some(requests);
         self.updates.thread = thread;
     }
@@ -371,8 +469,10 @@ impl Tileception {
     fn updates_event(&mut self, event: Event) {
         match event {
             Event::Scanned(scan) => self.updates_scanned(*scan),
+            Event::Tick => return self.updates_remind(),
             Event::NeedsPassword(task) => {
                 self.updates.job = None;
+                self.updates.after = None;
                 self.open_updates_prompt(task, None);
             }
             Event::Progress { done, label } => {
@@ -381,8 +481,8 @@ impl Tileception {
                     job.label = label;
                 }
             }
-            Event::Finished { task, result } => self.updates_finished(task, result),
-            Event::Preview(text) => self.updates.window.set_preview(text),
+            Event::Finished { task, result, log } => self.updates_finished(task, result, log),
+            Event::Preview { request, text } => self.updates.window.set_preview(request, text),
         }
         self.updates_changed();
     }
@@ -421,28 +521,64 @@ impl Tileception {
             tracing::warn!("could not list updates: {error}");
         }
         self.updates_refresh_kernels();
-        let totals = self.updates.snapshot.totals();
-        if totals.count > self.updates.announced
-            && self.config.file.updates.enabled
-            && self.config.file.updates.notify
-            && !self.updates.busy()
-        {
-            let summary = if totals.count == 1 {
-                "1 update available".to_string()
-            } else {
-                format!("{} updates available", totals.count)
-            };
-            let body = match totals.security {
-                0 => "Click the count in the bar to install them.".to_string(),
-                count => format!("{count} for security. Click the count in the bar to install them."),
-            };
-            self.notify_locally(&summary, &body, Urgency::Normal);
+        let waiting = match (
+            self.updates.snapshot.error.is_none(),
+            self.updates.snapshot.updates.is_empty(),
+            self.updates.waiting,
+        ) {
+            (true, true, _) => None,
+            (true, false, None) => Some(SystemTime::now()),
+            (_, _, since) => since,
+        };
+        if waiting != self.updates.waiting {
+            self.updates.waiting = waiting;
+            write_waiting(waiting);
         }
-        self.updates.announced = totals.count;
+        self.updates_remind();
     }
 
-    fn updates_finished(&mut self, task: Task, result: Result<(), Failure>) {
+    /// Says once that updates wait, when `[updates]` wants it said: at once
+    /// or after they waited some days, for every update or only for security.
+    /// Never over a fullscreen window or during Do not disturb; a reminder
+    /// held back that way comes with a later look.
+    fn updates_remind(&mut self) {
+        let config = &self.config.file.updates;
+        let totals = self.updates.snapshot.totals();
+        let count = if config.remind_security_only { totals.security } else { totals.count };
+        if count <= self.updates.announced || !config.enabled || !config.notify || self.updates.busy() {
+            self.updates.announced = count;
+            return;
+        }
+        let waited = self.updates.waiting.and_then(|since| since.elapsed().ok()).unwrap_or_default();
+        if !reminder_due(waited, config.remind_after_days) || self.do_not_disturb() || self.fullscreen.is_some() {
+            return;
+        }
+        let summary = match (config.remind_security_only, count) {
+            (false, 1) => "1 update available".to_string(),
+            (false, count) => format!("{count} updates available"),
+            (true, 1) => "1 security update available".to_string(),
+            (true, count) => format!("{count} security updates available"),
+        };
+        let body = match totals.security {
+            count if count > 0 && !config.remind_security_only => {
+                format!("{count} for security. Click the count in the bar to install them.")
+            }
+            _ => "Click the count in the bar to install them.".to_string(),
+        };
+        self.notify_locally(&summary, &body, Urgency::Normal);
+        self.updates.announced = count;
+        self.schedule_render();
+    }
+
+    fn updates_finished(&mut self, task: Task, result: Result<(), Failure>, log: String) {
         self.updates.job = None;
+        let after = self.updates.after.take();
+        if !matches!(result, Err(Failure::Password)) && !log.trim().is_empty() {
+            let log = Log { title: task.title(), succeeded: result.is_ok(), text: log };
+            write_log(&log);
+            self.updates.repair = !log.succeeded && apt::needs_repair(&log.text);
+            self.updates.log = Some(log);
+        }
         match result {
             Ok(()) => {
                 let message = match &task {
@@ -451,17 +587,28 @@ impl Tileception {
                     Task::Kernels { .. } => "Kernel changes applied.".to_string(),
                     Task::Remove(names) if names.len() == 1 => "Removed 1 package.".to_string(),
                     Task::Remove(names) => format!("Removed {} packages.", names.len()),
+                    Task::Autoremove => "Unneeded packages removed.".to_string(),
+                    Task::Repair => "Packages repaired.".to_string(),
                 };
                 if !matches!(task, Task::Refresh) {
                     self.notify_locally("Updates", &message, Urgency::Low);
                 }
                 self.updates.window.task_done(&task);
                 self.updates.outcome = Some(Ok(message));
+                if let Some(action) = after {
+                    self.power_menu = None;
+                    self.run_power_action(action);
+                }
             }
             Err(Failure::Password) => self.open_updates_prompt(task, Some("That password did not work.".into())),
             Err(Failure::Failed(reason)) => {
                 tracing::warn!("{}: {reason}", task.title());
+                let reason = match after {
+                    Some(action) => format!("{reason} {} was called off.", action.label()),
+                    None => reason,
+                };
                 self.notify_locally(&format!("{} failed", task.title()), &reason, Urgency::Critical);
+                self.updates.failed = true;
                 self.updates.outcome = Some(Err(reason));
             }
         }
@@ -476,9 +623,10 @@ impl Tileception {
         if self.updates.busy() {
             return Err("another update task is running".into());
         }
-        task.args()?;
+        task.commands()?;
         let total = match &task {
-            Task::Refresh => 0,
+            Task::Refresh | Task::Repair => 0,
+            Task::Autoremove => self.updates.snapshot.plan.unneeded.len(),
             Task::Install(names) if names.is_empty() => self.updates.snapshot.updates.len(),
             Task::Install(names) | Task::Remove(names) => names.len(),
             Task::Kernels { install, remove, .. } => install.len() + remove.len(),
@@ -488,6 +636,8 @@ impl Tileception {
             return Err("the update manager is not running".into());
         }
         self.updates.job = Some(job);
+        self.updates.after = None;
+        self.updates.failed = false;
         self.updates.outcome = None;
         self.updates_changed();
         Ok(())
@@ -510,9 +660,30 @@ impl Tileception {
         self.updates_start(Task::Install(names))
     }
 
+    /// A power action chosen while packages change: it waits for the task to
+    /// end and follows by itself, and choosing it again calls it off. Returns
+    /// whether the action was held back.
+    pub(crate) fn updates_hold_power(&mut self, action: crate::power::PowerAction) -> bool {
+        use crate::power::PowerAction;
+        let waits = matches!(
+            action,
+            PowerAction::LogOut
+                | PowerAction::Suspend
+                | PowerAction::Restart
+                | PowerAction::PowerOff
+                | PowerAction::Uefi
+        );
+        if !waits || !self.updates.holds_power() {
+            return false;
+        }
+        self.updates.after = if self.updates.after == Some(action) { None } else { Some(action) };
+        self.schedule_render();
+        true
+    }
+
     /// Asks what `apt-get` would do with these arguments, which simulate.
-    pub(crate) fn updates_preview(&mut self, args: Vec<String>) {
-        self.updates_request(Request::Preview(args));
+    pub(crate) fn updates_preview(&mut self, request: u64, args: Vec<String>) {
+        self.updates_request(Request::Preview { request, args });
     }
 
     /// What to look at before a release upgrade.
@@ -571,6 +742,29 @@ impl Tileception {
                 }
                 self.updates_start(Task::Remove(names))?;
             }
+            UpdatesCommand::Autoremove => {
+                if self.updates.snapshot.plan.unneeded.is_empty() {
+                    return Err("there are no unneeded packages".into());
+                }
+                self.updates_start(Task::Autoremove)?;
+            }
+            UpdatesCommand::Repair => {
+                if !self.updates.repairable() {
+                    return Err("apt has not asked for a repair".into());
+                }
+                self.updates_start(Task::Repair)?;
+            }
+            UpdatesCommand::Log => {
+                return match self.updates.log() {
+                    Some(log) => Ok(format!(
+                        "{} ({})\n{}\n",
+                        log.title,
+                        if log.succeeded { "finished" } else { "failed" },
+                        log.text.trim_end()
+                    )),
+                    None => Err("no task has run yet".into()),
+                };
+            }
             UpdatesCommand::Upgrade => self.updates_upgrade_release()?,
         }
         Ok(String::new())
@@ -583,6 +777,7 @@ impl Tileception {
         }
         let totals = updates.snapshot.totals();
         let mut text = match (totals.count, totals.security) {
+            (0, _) if updates.snapshot.error.is_some() => "updates could not be listed".to_string(),
             (0, _) => "up to date".to_string(),
             (count, 0) => format!("{count} updates, {}", backend::human_size(totals.bytes)),
             (count, security) => {
@@ -609,6 +804,26 @@ impl Tileception {
         }
         if let Some(summary) = updates.cleanup_summary() {
             text.push_str(&format!("clean-up: {summary}\n"));
+        }
+        if updates.repairable() {
+            text.push_str("apt asks for a repair: `updates repair`\n");
+        }
+        if updates.holds_power() {
+            match updates.power_after() {
+                Some(action) => text.push_str(&format!("{} follows when the task ends\n", action.label())),
+                None => text.push_str("restart, power off, suspend and log out wait for the task\n"),
+            }
+        }
+        let plan = &updates.snapshot.plan;
+        for (title, names) in [
+            ("removed by a full install", &plan.removed),
+            ("kept back", &plan.kept_back),
+            ("phased, offered later", &plan.phased),
+            ("no longer needed", &plan.unneeded),
+        ] {
+            if !names.is_empty() {
+                text.push_str(&format!("{title}: {}\n", names.join(" ")));
+            }
         }
         for update in &updates.snapshot.updates {
             let old = update.old.as_deref().unwrap_or("new");
@@ -671,6 +886,9 @@ fn scan(with_offer: bool) -> Scan {
     }
 }
 
+/// How often the worker says that time passed, for reminders that waited.
+const TICK_EVERY: Duration = Duration::from_secs(60);
+
 /// How often the worker looks whether apt's files changed.
 const WATCH_EVERY: Duration = Duration::from_secs(10);
 
@@ -703,6 +921,7 @@ impl Watch {
 
 fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request>>, interval: Duration) {
     let mut asked = Instant::now();
+    let mut ticked = Instant::now();
     let mut watch = Watch::default();
     if events.send(watch.scan(true)).is_err() {
         return;
@@ -713,6 +932,12 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
                 // Something else ran apt, in a terminal for one: look again
                 // at once instead of showing the old list until the next look.
                 if watch.looked.elapsed() < interval && watch.seen == stamp() {
+                    if ticked.elapsed() >= TICK_EVERY {
+                        ticked = Instant::now();
+                        if events.send(Event::Tick).is_err() {
+                            return;
+                        }
+                    }
                     continue;
                 }
                 let offer = asked.elapsed() >= OFFER_EVERY;
@@ -722,15 +947,18 @@ fn run(events: &channel::Sender<Event>, incoming: &mpsc::Receiver<Option<Request
                 watch.scan(offer)
             }
             Ok(Some(Request::Scan { offer })) => watch.scan(offer),
-            Ok(Some(Request::Preview(names))) => Event::Preview(preview(&names)),
+            Ok(Some(Request::Preview { request, args })) => Event::Preview { request, text: preview(&args) },
             Ok(Some(Request::Run { task, password })) => match authorise(password.as_deref().map(String::as_str)) {
                 Access::Ask => Event::NeedsPassword(task),
-                Access::Refused => Event::Finished { task, result: Err(Failure::Password) },
-                Access::Impossible(reason) => Event::Finished { task, result: Err(Failure::Failed(reason)) },
+                Access::Refused => Event::Finished { task, result: Err(Failure::Password), log: String::new() },
+                Access::Impossible(reason) => {
+                    Event::Finished { task, result: Err(Failure::Failed(reason)), log: String::new() }
+                }
                 Access::Granted => {
-                    let result = execute(&task, password.as_deref().map(String::as_str), events);
+                    let mut log = String::new();
+                    let result = execute(&task, password.as_deref().map(String::as_str), events, &mut log);
                     let refreshed = matches!(task, Task::Refresh);
-                    if events.send(Event::Finished { task, result }).is_err() {
+                    if events.send(Event::Finished { task, result, log }).is_err() {
                         return;
                     }
                     if refreshed {
@@ -838,9 +1066,104 @@ fn replaced() -> bool {
     std::fs::read_link("/proc/self/exe").is_ok_and(|path| path.to_string_lossy().ends_with(" (deleted)"))
 }
 
-/// Runs a task's `apt-get` as root and reports its steps.
-fn execute(task: &Task, password: Option<&str>, events: &channel::Sender<Event>) -> Result<(), Failure> {
-    let args = task.args().map_err(Failure::Failed)?;
+/// Runs a command as root to its end, feeding `sudo` the password.
+fn finish(mut command: Process, password: Option<&str>) -> bool {
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    command
+        .spawn()
+        .and_then(|mut child| {
+            feed(&mut child, password.filter(|_| !is_root()));
+            child.wait()
+        })
+        .is_ok_and(|status| status.success())
+}
+
+/// What goes before a program so that logind refuses to shut down, restart
+/// or sleep until it ends: nothing where logind takes no such lock, as in a
+/// container.
+fn inhibitor(title: &str, password: Option<&str>) -> Vec<String> {
+    let lock: Vec<String> =
+        ["systemd-inhibit", "--what=shutdown:sleep", "--who=Tileception", &format!("--why={title}"), "--mode=block"]
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+    let mut probe = as_root(password);
+    probe.args(&lock).arg("true");
+    if finish(probe, password) { lock } else { Vec::new() }
+}
+
+/// The folder for what the update manager remembers between sessions.
+fn state_file(name: &str) -> std::path::PathBuf {
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+    root.join("tileception").join(name)
+}
+
+/// Since when updates have been waiting, across restarts of Tileception.
+fn read_waiting() -> Option<SystemTime> {
+    let seconds = std::fs::read_to_string(state_file("updates-waiting")).ok()?.trim().parse().ok()?;
+    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
+}
+
+fn write_waiting(since: Option<SystemTime>) {
+    let path = state_file("updates-waiting");
+    let seconds =
+        since.and_then(|since| since.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|since| since.as_secs());
+    let written = match seconds {
+        Some(seconds) => path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, seconds.to_string())),
+        None if path.exists() => std::fs::remove_file(&path),
+        None => Ok(()),
+    };
+    if let Err(error) = written {
+        tracing::warn!("could not save how long updates have been waiting: {error}");
+    }
+}
+
+/// The most a kept log holds: the end of a longer one.
+const LOG_LIMIT: usize = 512 * 1024;
+
+/// The last task's output, kept beside the other state: the first line says
+/// what ran and how it ended.
+fn write_log(log: &Log) {
+    let path = state_file("updates-last.log");
+    let text = format!("{}\t{}\n{}", log.title, if log.succeeded { "ok" } else { "failed" }, log.text);
+    let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text));
+    if let Err(error) = written {
+        tracing::warn!("could not keep the log of the last update task: {error}");
+    }
+}
+
+fn read_log() -> Option<Log> {
+    let text =
+        std::fs::read_to_string(state_file("updates-last.log")).ok().filter(|text| text.len() <= LOG_LIMIT * 2)?;
+    let (first, text) = text.split_once('\n')?;
+    let (title, state) = first.split_once('\t')?;
+    let title = [Task::Refresh, Task::Install(Vec::new()), Task::Remove(Vec::new()), Task::Autoremove, Task::Repair]
+        .iter()
+        .map(Task::title)
+        .find(|known| *known == title)
+        .unwrap_or("Changing kernels");
+    Some(Log { title, succeeded: state == "ok", text: text.to_string() })
+}
+
+/// Whether updates that have waited this long are due for their reminder.
+fn reminder_due(waited: Duration, after_days: u32) -> bool {
+    waited >= Duration::from_secs(u64::from(after_days) * 24 * 3600)
+}
+
+/// Runs a task's programs as root, reports their steps and keeps what they
+/// print in `log`.
+fn execute(
+    task: &Task,
+    password: Option<&str>,
+    events: &channel::Sender<Event>,
+    log: &mut String,
+) -> Result<(), Failure> {
+    let commands = task.commands().map_err(Failure::Failed)?;
     // Read before the install, which marks what it names as installed by hand.
     let automatic = match task {
         Task::Install(names) if !names.is_empty() => Process::new("apt-mark")
@@ -854,53 +1177,68 @@ fn execute(task: &Task, password: Option<&str>, events: &channel::Sender<Event>)
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    let mut command = as_root(password);
-    command.args(["apt-get", "-o", "DPkg::Lock::Timeout=60"]).args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| Failure::Failed(format!("could not start apt-get: {error}")))?;
-    feed(&mut child, password.filter(|_| !is_root()));
-    let errors = child.stderr.take().map(|mut stderr| {
-        thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stderr.read_to_string(&mut text);
-            text
-        })
-    });
+    let lock = if task.changes_packages() { inhibitor(task.title(), password) } else { Vec::new() };
     let mut done = 0;
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let Some(progress) = apt::parse_progress(&line) else { continue };
-            if matches!(progress, apt::Progress::Setup(_) | apt::Progress::Remove(_)) {
-                done += 1;
-            }
-            if events.send(Event::Progress { done, label: progress.label() }).is_err() {
-                break;
+    let mut result = Ok(());
+    for arguments in &commands {
+        log.push_str(&format!("$ {}\n", arguments.join(" ")));
+        let mut command = as_root(password);
+        command.args(&lock).args(arguments).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child =
+            command.spawn().map_err(|error| Failure::Failed(format!("could not start {}: {error}", arguments[0])))?;
+        feed(&mut child, password.filter(|_| !is_root()));
+        let errors = child.stderr.take().map(|mut stderr| {
+            thread::spawn(move || {
+                let mut text = String::new();
+                let _ = stderr.read_to_string(&mut text);
+                text
+            })
+        });
+        if let Some(stdout) = child.stdout.take() {
+            // Read to the end even when nobody listens: closing the pipe
+            // would stop apt halfway.
+            let mut listening = true;
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                log.push_str(&line);
+                log.push('\n');
+                let Some(progress) = apt::parse_progress(&line) else { continue };
+                if matches!(progress, apt::Progress::Setup(_) | apt::Progress::Remove(_)) {
+                    done += 1;
+                }
+                listening = listening && events.send(Event::Progress { done, label: progress.label() }).is_ok();
             }
         }
+        let status = child.wait().map_err(|error| Failure::Failed(error.to_string()))?;
+        let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
+        log.push_str(&errors);
+        result = if status.success() {
+            Ok(())
+        } else {
+            let lines = || errors.lines().map(str::trim).filter(|line| !line.is_empty());
+            let reason = lines()
+                .filter_map(|line| line.strip_prefix("E: "))
+                .next()
+                .or_else(|| lines().next_back())
+                .unwrap_or("the command failed")
+                .to_string();
+            Err(Failure::Failed(reason))
+        };
     }
-    let status = child.wait().map_err(|error| Failure::Failed(error.to_string()))?;
-    let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
-    if status.success() {
-        if !automatic.is_empty() {
-            let mut command = as_root(password);
-            command.args(["apt-mark", "auto"]).args(&automatic).stdout(Stdio::null()).stderr(Stdio::null());
-            let marked = command.spawn().and_then(|mut child| {
-                feed(&mut child, password.filter(|_| !is_root()));
-                child.wait()
-            });
-            if !marked.is_ok_and(|status| status.success()) {
-                tracing::warn!("could not mark the installed updates as automatic again");
-            }
+    if log.len() > LOG_LIMIT {
+        let mut start = log.len() - LOG_LIMIT;
+        while !log.is_char_boundary(start) {
+            start += 1;
         }
-        return Ok(());
+        log.replace_range(..start, "...\n");
     }
-    let lines = || errors.lines().map(str::trim).filter(|line| !line.is_empty());
-    let reason = lines()
-        .filter_map(|line| line.strip_prefix("E: "))
-        .next()
-        .or_else(|| lines().next_back())
-        .unwrap_or("apt-get failed")
-        .to_string();
-    Err(Failure::Failed(reason))
+    if result.is_ok() && !automatic.is_empty() {
+        let mut command = as_root(password);
+        command.args(["apt-mark", "auto"]).args(&automatic);
+        if !finish(command, password) {
+            tracing::warn!("could not mark the installed updates as automatic again");
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -927,7 +1265,39 @@ mod tests {
         assert_eq!(parse(&["install", "curl", "apt"]), Ok(UpdatesCommand::Install(vec!["curl".into(), "apt".into()])));
         assert_eq!(parse(&["open", "kernels"]), Ok(UpdatesCommand::Open(Page::Kernels)));
         assert!(parse(&["open", "nowhere"]).is_err());
+        assert_eq!(parse(&["autoremove"]), Ok(UpdatesCommand::Autoremove));
+        assert_eq!(parse(&["repair"]), Ok(UpdatesCommand::Repair));
+        assert_eq!(parse(&["log"]), Ok(UpdatesCommand::Log));
         assert!(parse(&["remove"]).is_err());
+    }
+
+    #[test]
+    fn reminders_wait_their_days() {
+        let day = Duration::from_secs(24 * 3600);
+        assert!(reminder_due(Duration::ZERO, 0));
+        assert!(!reminder_due(day * 2, 3));
+        assert!(reminder_due(day * 3, 3));
+    }
+
+    #[test]
+    fn a_repair_finishes_dpkg_before_apt() {
+        let commands = Task::Repair.commands().unwrap_or_default();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0][0], "dpkg");
+        assert_eq!(commands[1].last().map(String::as_str), Some("install"));
+        assert!(commands[1].contains(&"--fix-broken".to_string()));
+        assert!(Task::Repair.changes_packages() && Task::Autoremove.changes_packages());
+        assert!(!Task::Refresh.changes_packages());
+    }
+
+    #[test]
+    fn power_waits_only_while_packages_change() {
+        let mut updates = Updates::default();
+        assert!(!updates.holds_power());
+        updates.job = Some(Job { task: Task::Refresh, done: 0, total: 0, label: String::new() });
+        assert!(!updates.holds_power());
+        updates.job = Some(Job { task: Task::Autoremove, done: 0, total: 2, label: String::new() });
+        assert!(updates.holds_power());
     }
 
     #[test]

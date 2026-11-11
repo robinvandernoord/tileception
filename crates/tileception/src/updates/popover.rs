@@ -104,7 +104,7 @@ impl Tileception {
     fn updates_popover_activate(&mut self, hit: Hit) {
         let result = match hit {
             Hit::Check => self.updates_start(Task::Refresh),
-            Hit::Install => self.updates_install(false),
+            Hit::Install => self.updates_install_reviewed(),
             Hit::Security => self.updates_install(true),
             Hit::Review => {
                 self.close_updates_popover();

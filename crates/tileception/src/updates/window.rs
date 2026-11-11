@@ -78,8 +78,41 @@ pub(crate) struct Window {
     all_variants: bool,
     /// Kernel series whose builds are folded away.
     folded: BTreeSet<String>,
-    /// What apt says the queue would do; empty while it is being asked.
+    /// A sheet of text shown in place of the list: what apt says a
+    /// transaction would do (empty while it is being asked), or a log.
     preview: Option<String>,
+    /// Identifies the simulation requested for the current preview.
+    preview_request: u64,
+    /// What the sheet is about, while there is one.
+    sheet: Sheet,
+}
+
+/// What the sheet of text in place of the list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Sheet {
+    /// What the kernel queue would do.
+    #[default]
+    Queue,
+    /// What installing the ticked updates would do.
+    Install,
+    /// What removing the unneeded dependencies would do.
+    Autoremove,
+    /// What settling broken dependencies would do.
+    Repair,
+    /// What the last task printed.
+    Log,
+}
+
+impl Sheet {
+    fn title(self) -> &'static str {
+        match self {
+            Sheet::Queue => "What the queue would do",
+            Sheet::Install => "What installing would do",
+            Sheet::Autoremove => "Clean-up preview",
+            Sheet::Repair => "What a repair would do",
+            Sheet::Log => "The last task",
+        }
+    }
 }
 
 impl Default for Window {
@@ -102,6 +135,8 @@ impl Default for Window {
             all_variants: false,
             folded: BTreeSet::new(),
             preview: None,
+            preview_request: 0,
+            sheet: Sheet::Queue,
         }
     }
 }
@@ -113,8 +148,8 @@ impl Window {
         }
     }
 
-    pub(super) fn set_preview(&mut self, text: String) {
-        if self.preview.is_some() {
+    pub(super) fn set_preview(&mut self, request: u64, text: String) {
+        if request == self.preview_request && self.preview.is_some() && self.sheet != Sheet::Log {
             self.preview = Some(if text.trim().is_empty() { "apt-get printed nothing.".into() } else { text });
             self.scroll = 0.0;
         }
@@ -142,6 +177,9 @@ impl Window {
             self.queue.clear();
             self.headers = false;
             self.support = false;
+        }
+        // A simulation of what has now been done says nothing any more.
+        if self.sheet != Sheet::Log {
             self.preview = None;
         }
     }
@@ -165,6 +203,8 @@ enum Row {
     Leftovers(Leftover),
     Check(usize),
     Entry(usize),
+    /// The dependencies that are no longer needed, with what removes them.
+    Unneeded,
     Text(String),
 }
 
@@ -173,14 +213,17 @@ impl Row {
         match self {
             Row::Heading(..) | Row::Series(..) => 32.0,
             Row::Update(_) | Row::Entry(_) => 30.0,
-            Row::Kernel(_) | Row::Leftovers(_) => 34.0,
+            Row::Kernel(_) | Row::Leftovers(_) | Row::Unneeded => 34.0,
             Row::Check(_) => 48.0,
             Row::Text(_) => 18.0,
         }
     }
 
     fn selectable(&self) -> bool {
-        matches!(self, Row::Update(_) | Row::Series(..) | Row::Kernel(_) | Row::Entry(_) | Row::Leftovers(_))
+        matches!(
+            self,
+            Row::Update(_) | Row::Series(..) | Row::Kernel(_) | Row::Entry(_) | Row::Leftovers(_) | Row::Unneeded
+        )
     }
 }
 
@@ -201,6 +244,14 @@ enum Hit {
     Security,
     Suggest,
     Preview,
+    /// Shows a sheet: a transaction before it runs, or the last log.
+    Sheet(Sheet),
+    /// Leaves the sheet.
+    Back,
+    /// Does what the sheet shows.
+    Run,
+    /// Puts a failure away.
+    Dismiss,
     Apply,
     Upgrade,
     Copy,
@@ -261,6 +312,7 @@ impl Tileception {
             window.page = page;
             window.scroll = 0.0;
             window.selected = 0;
+            window.preview = None;
         }
         if self.updates.window.open {
             self.updates_select_first();
@@ -443,6 +495,17 @@ impl Tileception {
         let updates = &self.updates;
         let snapshot = &updates.snapshot;
         let mut rows = Vec::new();
+        if let Some(preview) = &updates.window.preview {
+            if preview.is_empty() {
+                rows.push(Row::Text("Asking apt-get what this would do...".into()));
+            }
+            if updates.window.sheet == Sheet::Repair && !preview.is_empty() {
+                rows.push(Row::Text("First `dpkg --configure -a` finishes what was left half installed. Then:".into()));
+                rows.push(Row::Text(String::new()));
+            }
+            rows.extend(preview.lines().map(|line| Row::Text(line.to_string())));
+            return rows;
+        }
         match updates.window.page {
             Page::Available => {
                 if let Some(error) = &snapshot.error {
@@ -461,15 +524,27 @@ impl Tileception {
                     let text = if updates.scanned { "Everything is up to date." } else { "Looking for updates..." };
                     rows.push(Row::Text(text.into()));
                 }
+                // What installing everything does besides, and what apt
+                // leaves out of it.
+                let plan = &snapshot.plan;
+                let columns = ((updates.window.size.0 - SIDE - 60.0) / (f64::from(self.theme.font_size) * 0.5))
+                    .max(24.0) as usize;
+                for (title, note, names) in [
+                    ("Removed", "removed when you install everything", &plan.removed),
+                    ("Kept back", "held back by apt; needs a full upgrade", &plan.kept_back),
+                    ("Phased", "rolling out gradually; arrives later", &plan.phased),
+                ] {
+                    if !names.is_empty() {
+                        rows.push(Row::Heading(title.into(), note.into()));
+                        rows.extend(wrap_names(names, columns).into_iter().map(Row::Text));
+                    }
+                }
+                if !plan.unneeded.is_empty() {
+                    rows.push(Row::Heading("Housekeeping".into(), String::new()));
+                    rows.push(Row::Unneeded);
+                }
             }
             Page::Kernels => {
-                if let Some(preview) = &updates.window.preview {
-                    if preview.is_empty() {
-                        rows.push(Row::Text("Asking apt-get what this would do...".into()));
-                    }
-                    rows.extend(preview.lines().map(|line| Row::Text(line.to_string())));
-                    return rows;
-                }
                 let found = &updates.kernels;
                 let mut start = 0;
                 while start < found.len() {
@@ -483,7 +558,7 @@ impl Tileception {
                     }
                     start = end;
                 }
-                let note = "without an installed kernel; this never runs autoremove";
+                let note = "for kernels that are no longer installed";
                 if !kernels::leftovers(&snapshot.packages).is_empty() {
                     rows.push(Row::Heading("Leftovers".into(), note.into()));
                 }
@@ -529,11 +604,7 @@ impl Tileception {
         let header_h = if window.page == Page::Release { 132.0 } else { 56.0 };
         let header = Rect::new(body.x, body.y, body.w, header_h);
         let footer = Rect::new(body.x, body.bottom() - FOOTER, body.w, FOOTER);
-        let has_detail = match window.page {
-            Page::Available | Page::History => true,
-            Page::Kernels => window.preview.is_none(),
-            Page::Release => false,
-        };
+        let has_detail = window.preview.is_none() && window.page != Page::Release;
         let detail = has_detail.then(|| Rect::new(body.x, footer.y - DETAIL, body.w, DETAIL));
         let list_bottom = detail.map_or(footer.y, |rect| rect.y);
         let list = Rect::new(body.x, header.bottom(), body.w, (list_bottom - header.bottom()).max(1.0));
@@ -711,6 +782,7 @@ impl Tileception {
                 window.page = page;
                 window.scroll = 0.0;
                 window.selected = 0;
+                window.preview = None;
                 self.updates_select_first();
                 Ok(())
             }
@@ -767,12 +839,40 @@ impl Tileception {
                 Ok(())
             }
             Hit::Install => {
+                if self.updates.window.preview.as_ref().is_some_and(String::is_empty) {
+                    return;
+                }
                 let (count, _, names) = self.updates_ticked();
                 if count == 0 {
                     Err("Tick at least one update.".into())
+                } else if self.updates.window.preview.is_none()
+                    && names.is_empty()
+                    && self.updates.snapshot.plan.removes()
+                {
+                    // Never take packages away unseen.
+                    self.updates_open_sheet(Sheet::Install)
                 } else {
                     self.updates_start(Task::Install(names))
                 }
+            }
+            Hit::Sheet(sheet) => self.updates_open_sheet(sheet),
+            Hit::Back => {
+                self.updates.window.preview = None;
+                self.updates.window.scroll = 0.0;
+                Ok(())
+            }
+            Hit::Run => match self.updates.window.sheet {
+                _ if self.updates.window.preview.as_ref().is_none_or(String::is_empty) => Ok(()),
+                Sheet::Queue => return self.updates_window_activate(Hit::Apply),
+                Sheet::Install => return self.updates_window_activate(Hit::Install),
+                Sheet::Autoremove => self.updates_start(Task::Autoremove),
+                Sheet::Repair => self.updates_start(Task::Repair),
+                Sheet::Log => Ok(()),
+            },
+            Hit::Dismiss => {
+                self.updates.outcome = None;
+                self.updates.failed = false;
+                Ok(())
             }
             Hit::Security => self.updates_install(true),
             Hit::Suggest => {
@@ -783,12 +883,7 @@ impl Tileception {
                 if self.updates.window.preview.take().is_some() {
                     Ok(())
                 } else {
-                    let (install, remove) = self.updates_queue_plan();
-                    apt::transaction_args(&install, &remove, self.updates.window.purge, true).map(|args| {
-                        self.updates.window.preview = Some(String::new());
-                        self.updates.window.scroll = 0.0;
-                        self.updates_preview(args);
-                    })
+                    self.updates_open_sheet(Sheet::Queue)
                 }
             }
             Hit::Apply => {
@@ -800,6 +895,11 @@ impl Tileception {
                 }
             }
             Hit::Upgrade => self.updates_upgrade_release(),
+            Hit::Copy if self.updates.window.preview.is_some() => {
+                let text = self.updates.window.preview.clone().unwrap_or_default();
+                self.copy_text(text);
+                Ok(())
+            }
             Hit::Copy | Hit::Doctor => {
                 if let Some(Row::Entry(index)) = self.updates_selected_row()
                     && let Some(entry) = self.updates.snapshot.history.get(index).cloned()
@@ -830,6 +930,53 @@ impl Tileception {
         }
         self.updates_clamp_scroll();
         self.updates_changed();
+    }
+
+    /// Shows a sheet in place of the list: what `apt-get` says a transaction
+    /// would do, asked from the worker, or the last task's log.
+    fn updates_open_sheet(&mut self, sheet: Sheet) -> Result<(), String> {
+        let args = match sheet {
+            Sheet::Queue => {
+                let (install, remove) = self.updates_queue_plan();
+                apt::transaction_args(&install, &remove, self.updates.window.purge, true)?
+            }
+            Sheet::Install => {
+                let (count, _, names) = self.updates_ticked();
+                if count == 0 {
+                    return Err("Tick at least one update.".into());
+                }
+                apt::upgrade_args(&names, true)?
+            }
+            Sheet::Autoremove => apt::autoremove_args(true),
+            Sheet::Repair => apt::repair_args(true),
+            Sheet::Log => {
+                let text = self.updates.log().map(|log| log.text.clone()).ok_or("No task has run yet.")?;
+                let window = &mut self.updates.window;
+                window.sheet = sheet;
+                window.preview = Some(if text.trim().is_empty() { "The task printed nothing.".into() } else { text });
+                window.scroll = 0.0;
+                return Ok(());
+            }
+        };
+        let window = &mut self.updates.window;
+        window.sheet = sheet;
+        window.preview = Some(String::new());
+        window.scroll = 0.0;
+        window.preview_request = window.preview_request.wrapping_add(1);
+        let request = window.preview_request;
+        self.updates_preview(request, args);
+        Ok(())
+    }
+
+    /// Installs every update from outside the window. When that would take
+    /// packages away, the window opens on what it does instead.
+    pub(crate) fn updates_install_reviewed(&mut self) -> Result<(), String> {
+        if !self.updates.snapshot.plan.removes() || self.updates.snapshot.updates.is_empty() {
+            return self.updates_install(false);
+        }
+        self.open_updates(Page::Available);
+        self.updates.window.skipped.clear();
+        self.updates_open_sheet(Sheet::Install)
     }
 
     /// A kernel's button: queues an offered one to install or an installed
@@ -913,12 +1060,25 @@ impl Tileception {
                 Some(Row::Kernel(index)) => self.updates_window_activate(Hit::Kernel(index)),
                 Some(Row::Leftovers(kind)) => self.updates_window_activate(Hit::Leftovers(kind)),
                 Some(Row::Series(..)) => self.updates_window_activate(Hit::Fold(selected)),
+                Some(Row::Unneeded) if !self.updates.busy() => {
+                    self.updates_window_activate(Hit::Sheet(Sheet::Autoremove));
+                }
                 _ => {}
             },
             keysyms::KEY_Return | keysyms::KEY_KP_Enter
                 if matches!(self.updates_selected_row(), Some(Row::Series(..))) =>
             {
                 self.updates_window_activate(Hit::Fold(selected));
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter
+                if !self.updates.busy() && self.updates.window.preview.is_some() =>
+            {
+                self.updates_window_activate(Hit::Run);
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter
+                if !self.updates.busy() && matches!(self.updates_selected_row(), Some(Row::Unneeded)) =>
+            {
+                self.updates_window_activate(Hit::Sheet(Sheet::Autoremove));
             }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter if !self.updates.busy() => match self.updates.window.page {
                 Page::Available => self.updates_window_activate(Hit::Install),
@@ -938,16 +1098,53 @@ impl Tileception {
         if updates.busy() {
             return Vec::new();
         }
+        let back = ("Back".to_string(), Hit::Back, false);
+        match (updates.window.preview.as_ref(), updates.window.sheet) {
+            (None, _) | (Some(_), Sheet::Queue) => {}
+            (Some(preview), Sheet::Install) => {
+                if preview.is_empty() {
+                    return vec![back];
+                }
+                let (count, ..) = self.updates_ticked();
+                return vec![(format!("Install {count}"), Hit::Install, true), back];
+            }
+            (Some(preview), Sheet::Autoremove) => {
+                let count = apt::parse_plan(preview).removed.len();
+                return if count == 0 { vec![back] } else { vec![(format!("Remove {count}"), Hit::Run, true), back] };
+            }
+            (Some(_), Sheet::Repair) => return vec![("Repair".into(), Hit::Run, true), back],
+            (Some(_), Sheet::Log) => return vec![back, ("Copy".into(), Hit::Copy, false)],
+        }
+        // A task that failed: what went wrong comes before anything else.
+        if updates.failed() {
+            let mut buttons = Vec::new();
+            if updates.repairable() {
+                buttons.push(("Repair".to_string(), Hit::Sheet(Sheet::Repair), true));
+            }
+            if updates.log().is_some() {
+                buttons.push(("Show log".to_string(), Hit::Sheet(Sheet::Log), false));
+            }
+            buttons.push(("Dismiss".to_string(), Hit::Dismiss, false));
+            return buttons;
+        }
         match updates.window.page {
             Page::Available => {
                 let (count, ..) = self.updates_ticked();
                 if updates.snapshot.updates.is_empty() {
-                    return vec![("Check now".into(), Hit::Refresh, false)];
+                    let mut buttons = Vec::new();
+                    if updates.repairable() {
+                        buttons.push(("Repair".to_string(), Hit::Sheet(Sheet::Repair), true));
+                    }
+                    buttons.push(("Check now".into(), Hit::Refresh, false));
+                    return buttons;
                 }
                 let totals = updates.snapshot.totals();
                 let mut buttons = vec![(format!("Install {count}"), Hit::Install, true)];
                 if totals.security > 0 && totals.security < totals.count {
                     buttons.push(("Security only".into(), Hit::Security, false));
+                }
+                if count > 0 {
+                    buttons.push(("Preview".into(), Hit::Sheet(Sheet::Install), false));
                 }
                 buttons
             }
@@ -971,6 +1168,7 @@ impl Tileception {
                     Vec::new()
                 }
             }
+            Page::History if updates.log().is_some() => vec![("Last task log".into(), Hit::Sheet(Sheet::Log), false)],
             Page::History => Vec::new(),
         }
     }
@@ -1031,6 +1229,9 @@ impl Tileception {
                     }
                 }
                 Row::Leftovers(kind) if !updates.busy() => controls.push((row_button(*rect), Hit::Leftovers(*kind))),
+                Row::Unneeded if !updates.busy() => {
+                    controls.push((row_button(*rect), Hit::Sheet(Sheet::Autoremove)));
+                }
                 Row::Series(..) => controls.push((visible, Hit::Fold(index))),
                 Row::Check(check) => {
                     if let Some((_, page)) = checks.get(*check).and_then(Self::updates_check_page) {
@@ -1049,12 +1250,12 @@ impl Tileception {
     /// The header's buttons, rightmost first.
     fn updates_header_buttons(&self) -> Vec<(&'static str, Hit)> {
         let window = &self.updates.window;
-        if self.updates.busy() {
+        if self.updates.busy() || window.preview.is_some() {
             return Vec::new();
         }
         match window.page {
             Page::Available => vec![("Check", Hit::Refresh)],
-            Page::Kernels if window.preview.is_none() => vec![
+            Page::Kernels => vec![
                 ("Check", Hit::Refresh),
                 (if window.all_variants { "Recommended" } else { "All variants" }, Hit::Variants),
                 (if window.purge { "Purge: on" } else { "Purge: off" }, Hit::Purge),
@@ -1169,8 +1370,19 @@ impl Tileception {
         // The header.
         let header = frame.header;
         let (title, note) = match window.page {
+            _ if window.preview.is_some() => (
+                window.sheet.title().to_string(),
+                match (window.sheet, updates.log()) {
+                    (Sheet::Log, Some(log)) => {
+                        format!("{} \u{b7} {}", log.title, if log.succeeded { "finished" } else { "failed" })
+                    }
+                    (Sheet::Log, None) => String::new(),
+                    _ => "nothing has changed yet".to_string(),
+                },
+            ),
             Page::Available => (
                 match (totals.count, totals.security) {
+                    (0, _) if snapshot.error.is_some() => "Updates could not be listed".to_string(),
                     (0, _) => "Up to date".to_string(),
                     (1, 0) => "1 update".to_string(),
                     (count, 0) => format!("{count} updates"),
@@ -1181,14 +1393,8 @@ impl Tileception {
             Page::Kernels => {
                 let installed: u64 = snapshot.packages.iter().map(|package| package.size * 1024).sum();
                 (
-                    if window.preview.is_some() {
-                        "What the queue would do".to_string()
-                    } else {
-                        "Kernels".to_string()
-                    },
-                    if window.preview.is_some() {
-                        String::new()
-                    } else if window.all_variants {
+                    "Kernels".to_string(),
+                    if window.all_variants {
                         format!("{} installed \u{b7} all variants", backend::human_size(installed))
                     } else {
                         format!("{} installed", backend::human_size(installed))
@@ -1427,6 +1633,23 @@ impl Tileception {
                             draw_button(painter, row_button(rect), label, Look::Plain, pointer);
                         }
                     }
+                    Row::Unneeded => {
+                        let names = &snapshot.plan.unneeded;
+                        painter.glyph(glyph::MINUS, tick_box(rect), 14, theme.muted);
+                        let label = match names.len() {
+                            1 => "1 package no longer needed".to_string(),
+                            count => format!("{count} packages no longer needed"),
+                        };
+                        let (width, _) = painter.text(&label, Rect::new(rect.x + 34.0, rect.y, 320.0, rect.h), body);
+                        painter.text(
+                            &names.join(", "),
+                            Rect::new(rect.x + 46.0 + width, rect.y, rect.w - 150.0 - width, rect.h),
+                            muted,
+                        );
+                        if !updates.busy() {
+                            draw_button(painter, row_button(rect), "Review", Look::Plain, pointer);
+                        }
+                    }
                     Row::Check(check) => {
                         let Some(check) = checks.get(*check) else { continue };
                         let (icon, tint) = match check.state {
@@ -1485,6 +1708,10 @@ impl Tileception {
                         let origin = if update.origin.is_empty() { "unknown source" } else { &update.origin };
                         painter.text(&format!("From {origin}"), second, muted);
                     }
+                }
+                (Page::Available, Some(Row::Unneeded)) => {
+                    painter.text("Dependencies of packages that have been removed", lines, body.bold());
+                    painter.text("Review lists what `apt-get autoremove` would remove.", second, muted);
                 }
                 (Page::History, Some(Row::Entry(index))) => {
                     if let Some(entry) = snapshot.history.get(index) {
@@ -1560,8 +1787,23 @@ impl Tileception {
                 Shape { fill: (theme.accent, theme.accent_end), ..Shape::filled(theme.accent, 2.0) },
             );
         } else {
+            let sheet = window.preview.as_ref().map(|preview| (window.sheet, apt::parse_plan(preview)));
             let (text, tint) = match (updates.outcome(), window.page) {
                 (Some(Err(reason)), _) => (reason.clone(), theme.danger),
+                _ if matches!(sheet, Some((Sheet::Install | Sheet::Autoremove | Sheet::Repair | Sheet::Log, _))) => {
+                    match sheet {
+                        Some((Sheet::Log, _)) => ("Kept until the next task ends.".to_string(), theme.muted),
+                        Some((_, plan)) if window.preview.as_ref().is_some_and(String::is_empty) => {
+                            let _ = plan;
+                            ("Asking apt-get...".to_string(), theme.muted)
+                        }
+                        Some((_, plan)) if plan.removes() && window.sheet != Sheet::Autoremove => {
+                            (format!("This removes {}: {}", plan.removed.len(), plan.removed.join(", ")), theme.warning)
+                        }
+                        Some((_, plan)) => (format!("This {}.", plan.summary()), theme.muted),
+                        None => (String::new(), theme.muted),
+                    }
+                }
                 (_, Page::Available) => {
                     let (count, bytes, _) = self.updates_ticked();
                     let restart = if snapshot.restart { " \u{b7} a restart is waiting" } else { "" };
@@ -1600,11 +1842,11 @@ impl Tileception {
                     } else if release::ready(&checks) {
                         "Runs do-release-upgrade in a terminal, where it asks its questions."
                     } else {
-                        "Settle the marked points first."
+                        "Fix the marked items first."
                     };
                     (text.to_string(), theme.muted)
                 }
-                (_, Page::History) => ("Read-only: undoing an update stays a terminal job.".to_string(), theme.muted),
+                (_, Page::History) => ("Read-only. To undo an update, use a terminal.".to_string(), theme.muted),
             };
             painter.text(&text, line, muted.colour(tint));
         }
@@ -1621,6 +1863,21 @@ impl Tileception {
         }
         painter.finish()
     }
+}
+
+/// Package names as lines of about `columns` characters.
+fn wrap_names(names: &[String], columns: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for name in names {
+        match lines.last_mut() {
+            Some(line) if line.len() + name.len() + 2 <= columns => {
+                line.push_str(", ");
+                line.push_str(name);
+            }
+            _ => lines.push(name.clone()),
+        }
+    }
+    lines
 }
 
 /// An arrow pointing up: updates.
@@ -1647,4 +1904,17 @@ fn draw_badge(painter: &mut Painter, rect: Rect, label: &str, tint: Colour) {
     let theme = painter.theme();
     painter.shape(rect, Shape { border_width: 1.0, border: tint.alpha(0.7), ..Shape::filled(tint.alpha(0.1), 4.0) });
     painter.text(&label.to_uppercase(), rect, Style::new(theme.font_size * 0.62, tint).bold().align(Align::Centre));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_wrap_into_lines() {
+        let names: Vec<String> = ["alpha", "beta", "gamma", "delta"].iter().map(|name| (*name).to_string()).collect();
+        assert_eq!(wrap_names(&names, 13), ["alpha, beta", "gamma, delta"]);
+        assert_eq!(wrap_names(&names, 3), ["alpha", "beta", "gamma", "delta"]);
+        assert!(wrap_names(&[], 40).is_empty());
+    }
 }

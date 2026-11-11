@@ -222,6 +222,10 @@ Shell:
   updates show              open or close the card under the bar's chip
   updates kernels           list kernels: running, fallback, old, available
   updates clean             remove old kernels and leftover kernel packages
+  updates autoremove        remove packages that are no longer needed
+  updates repair            finish what dpkg left half done and settle broken
+                            dependencies, when apt asks for it
+  updates log               print what the last task's programs printed
   updates upgrade           start the release upgrade in a terminal
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n

@@ -1377,7 +1377,7 @@ impl Tileception {
     fn run_update_row(&mut self, row: UpdateRow) {
         use crate::updates::{Page, Task};
         let result = match row {
-            UpdateRow::Install => self.updates_install(false),
+            UpdateRow::Install => self.updates_install_reviewed(),
             UpdateRow::Security => self.updates_install(true),
             UpdateRow::Check => self.updates_start(Task::Refresh),
             UpdateRow::Choose => {
