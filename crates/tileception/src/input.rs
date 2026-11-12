@@ -1036,6 +1036,11 @@ impl Tileception {
                 if let Some(target) = drag.target {
                     self.world.apply_drop(drag.window, target, now);
                 }
+                // On a split screen, what hangs over a neighbouring area is cut
+                // off, so a floating window lands wholly in its own.
+                if self.area_clip().is_some() {
+                    self.world.fit_float(drag.window);
+                }
                 self.apply_layout();
                 self.persist_layout();
                 // A title bar drag began with a press the client saw; close it.
