@@ -2,6 +2,12 @@
 
 <!-- next-version-placeholder -->
 
+## v0.17.0 (2026-11-12)
+
+### Features
+* **wallpaper:** reload images when files change
+* **outputs:** restore windows when displays return
+
 ## v0.16.1 (2026-11-11)
 
 ### Fix
