@@ -132,7 +132,22 @@ fn insert_plugin(
         // An empty `[bar]` block is what shows a plugin's chips.
         entry["bar"] = Item::Table(toml_edit::Table::new());
     }
+    // A table without a position is written straight after the last table
+    // read, which can be ahead of tables added before; pin it to the end.
+    entry.set_position(Some(isize::MAX));
     plugins.insert(plugin_id, Item::Table(entry));
+    // Comments after the last key, such as a commented-out setting of the
+    // last table, are kept as the file's trailing text, which is written
+    // after every table. Left there, they would end up in the new table:
+    // keep them where they were, in front of it.
+    let trailing = doc.trailing().as_str().unwrap_or_default().to_string();
+    if !trailing.trim().is_empty() {
+        doc.set_trailing("");
+        let prefix = format!("{}\n\n", trailing.trim_end());
+        if let Some(entry) = doc["plugins"].get_mut(plugin_id).and_then(Item::as_table_mut) {
+            entry.decor_mut().set_prefix(prefix);
+        }
+    }
     Ok(())
 }
 
@@ -530,6 +545,33 @@ mod tests {
         assert_eq!(block.args.as_deref(), Some(args.as_slice()));
         assert!(!block.in_bar());
         assert!(config.file.plugins["chips"].in_bar());
+    }
+
+    #[test]
+    fn insert_plugin_keeps_comments_at_the_end_out_of_its_table() {
+        let original = "[binds]\n\"Super+T\" = \"spawn foot\"\n# \"Super+B\" = \"spawn firefox\"\n";
+        let mut file = doc(original);
+        insert_plugin(&mut file, "block", "/bin/true", &[], false).unwrap();
+        assert_eq!(file.to_string(), format!("{original}\n[plugins.block]\ncommand = \"/bin/true\"\n"));
+        crate::config::Config::parse(&file.to_string()).unwrap();
+    }
+
+    #[test]
+    fn insert_plugin_leaves_an_earlier_plugins_comment_with_it() {
+        let original = "[plugins.old]\ncommand = \"/bin/old\"\n# enabled = false\n";
+        let mut file = doc(original);
+        insert_plugin(&mut file, "chips", "/bin/chips", &[], true).unwrap();
+        assert_eq!(
+            file.to_string(),
+            format!("{original}\n[plugins.chips]\ncommand = \"/bin/chips\"\n\n[plugins.chips.bar]\n")
+        );
+        // A comment that belongs to the table after it stays there, and the
+        // new table still goes after everything.
+        let original = "[plugins.old]\ncommand = \"/bin/old\"\n\n# Bar.\n[shell]\nbar = \"builtin\"\n";
+        let mut file = doc(original);
+        insert_plugin(&mut file, "block", "/bin/block", &[], false).unwrap();
+        assert_eq!(file.to_string(), format!("{original}\n[plugins.block]\ncommand = \"/bin/block\"\n"));
+        crate::config::Config::parse(&file.to_string()).unwrap();
     }
 
     #[test]
