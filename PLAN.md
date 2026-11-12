@@ -61,57 +61,16 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Next
 
-- A dashboard on the cleared desk (Super+D) that plugins can draw on.
-  Decided:
-  - The peek (holding Super+D) fades windows out to their outlines and back
-    instead of switching at once, and shows the dashboard behind them.
-  - The dashboard fills the active area while the desk is clear, during a
-    peek, and when the area has no windows, growing out of the welcome
-    screen an empty area already shows (clock, date, launcher). It sits
-    above the wallpaper and below floating windows: a clock and date, a
-    summary of notifications, the media card, the minimized windows and the
-    plugins' dashboard items.
-    Clicking empty space does nothing; Escape or Super+D ends a cleared
-    desk.
-  - Plugins get a `Dashboard` place: a `tileception://dashboard` resource,
-    and a `[dashboard]` manifest block that is opt-in, like `[lock]`. The
-    resource lists items in the order the plugin wants them, each with a
-    size class (`small`, `medium`, `wide`); Tileception lays them out and
-    may leave out what does not fit. Items are:
-    - `card`: the panel's card, drawn by Tileception. No drawing code.
-    - `image`: a PNG or SVG by file path or data URI, read again on
-      `notifications/resources/updated`. Any tool that writes an image can
-      draw on the dashboard, a few times a second at most.
-    - `surface`: a Wayland surface the plugin draws itself, for animation.
-  - Plugins stay language agnostic. MCP over stdio is unchanged, and the
-    surface is plain Wayland: the private protocol's XML ships in
-    `resources/protocols/tileception-dashboard-v1.xml` and is documented in
-    the plugin guide, so any Wayland client library works (libwayland in C,
-    pywayland, wayland-rs, Go and others). A surface needs nothing beyond
-    `wl_shm`; dmabuf is optional. The example dashboard plugin is written in
-    Python, so the guide does not assume Rust.
-  - Surface safety, enforced by the compositor:
-    - Only plugins with a `[dashboard]` block that list a `surface` are
-      started with `WAYLAND_SOCKET`, a connection Tileception made and
-      marked as that plugin's. A client on the normal socket cannot get the
-      dashboard role.
-    - That client sees `wl_compositor`, `wl_shm`, `linux-dmabuf`,
-      `wp_viewporter`, fractional scale and the dashboard protocol, filtered
-      per client with `GlobalDispatch::can_view`. No xdg-shell, layer shell,
-      screen capture, clipboard, primary selection, virtual input, input
-      method, activation, idle inhibit or session lock.
-    - Tileception picks the slot from the size class, clamps buffers to the
-      slot at the output scale, clips to the theme's radius and draws the
-      frame and the plugin's name itself. Never above windows, never on the
-      lock screen, the greeter or the welcome screen.
-    - Pointer and scroll while hovered; never the keyboard.
-    - Frame callbacks only while the dashboard is visible, so a hidden
-      dashboard costs nothing. A size cap on shm pools. A surface with no
-      frame yet shows a placeholder; a protocol error disconnects the
-      client and the plugin restarts after the usual cooldown.
-    - This limits what a plugin can do to the desktop, not what its process
-      can do to the user's files. Confining the process (Landlock or
-      bubblewrap, no network) is a separate, later option.
+- Dashboard surfaces, the rest. Decided:
+  - The dashboard's display also offers `linux-dmabuf` (with the same
+    feedback as the main display) and fractional scale, so GPU-drawn
+    surfaces do not go through shared memory and a fractional output scale
+    draws sharp.
+  - A cap on each dashboard client's shared memory pools, on top of the
+    4096-pixel cap on buffers.
+  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
+    network) as a manifest option. The protocol limits what it can do to the
+    desktop, not to the user's files.
 
 ### Later
 
