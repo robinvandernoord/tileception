@@ -92,24 +92,6 @@ Report testing in the conversation, the commit or the pull request instead.
     entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
-- Notifications on Tileception's own lock screen (external lockers draw
-  only themselves), beyond Tileception's own notifications and a count.
-  Decided:
-
-  ```toml
-  [lock]
-  notifications = "count"   # "none" | "count" | "apps" | "full"
-  [lock.notification_apps]  # exceptions per app
-  "org.gnome.Calendar" = "full"
-  ```
-
-  - `notifications` is what every app gets; `notification_apps` holds the
-    exceptions. A low default with "full" exceptions is opt-in; "full"
-    with lower exceptions is opt-out. The default stays "count".
-  - A "Show on lock screen" toggle per app in the notification panel
-    writes that exception, so opting in needs no config editing.
-  - No buttons on the lock screen (they would run an app's action without
-    unlocking), except Tileception's own. Do not disturb applies there too.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.
