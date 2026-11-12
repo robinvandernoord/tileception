@@ -10,7 +10,7 @@ use crate::{
     render::OutputElement,
     shapes::Shape,
     theme::Colour,
-    ui::{Align, Painter, Style, ease_out, glyph},
+    ui::{Align, Painter, Style, ago, ease_out, glyph},
 };
 
 /// The bar along the top.
@@ -20,6 +20,8 @@ const TAB_H: f64 = 30.0;
 const TAB_MIN: f64 = 120.0;
 const TAB_ARROW: f64 = 24.0;
 const ROW_H: f64 = 38.0;
+/// A notification on the lock screen: two lines.
+const AWAY_ROW_H: f64 = 52.0;
 const PILL_H: f64 = 26.0;
 const AVATAR: f64 = 92.0;
 const FIELD_H: f64 = 48.0;
@@ -82,8 +84,10 @@ struct Scene {
     power: Vec<(Action, Rect)>,
     /// Locked: the one tab, saying whose session it is.
     locked_tab: Option<Rect>,
-    /// Locked: what happened while away, and play or pause.
+    /// Locked: what happened while away, the notifications it may show
+    /// (newest first), and play or pause.
     away: Option<Rect>,
+    away_rows: Vec<Rect>,
     media: Option<Rect>,
     palette: Option<PaletteLayout>,
 }
@@ -132,6 +136,7 @@ impl Tileception {
             power: Vec::new(),
             locked_tab: None,
             away: None,
+            away_rows: Vec::new(),
             media: None,
             palette: None,
         };
@@ -195,11 +200,24 @@ impl Tileception {
         {
             let inner = body(session);
             let mut top = inner.y;
+            let media = greeter.file.lock.show_media && self.media.snapshot.media.active().is_some();
             if greeter.file.lock.show_notification_count {
                 scene.away = Some(Rect::new(inner.x, inner.y, inner.w, ROW_H + 8.0));
                 top += ROW_H + 20.0;
+                // As many as fit above the player.
+                let bottom = inner.bottom() - if media { 64.0 + 12.0 } else { 0.0 };
+                for _ in self.lock_screen_notifications().1 {
+                    if top + AWAY_ROW_H > bottom {
+                        break;
+                    }
+                    scene.away_rows.push(Rect::new(inner.x, top, inner.w, AWAY_ROW_H));
+                    top += AWAY_ROW_H + 6.0;
+                }
+                if !scene.away_rows.is_empty() {
+                    top += 6.0;
+                }
             }
-            if greeter.file.lock.show_media && self.media.snapshot.media.active().is_some() {
+            if media {
                 let player = Rect::new(inner.x, top, inner.w, 64.0);
                 scene.media = Some(Rect::new(player.right() - 48.0, player.y + 14.0, 36.0, 36.0));
             }
@@ -802,12 +820,8 @@ impl Tileception {
             );
             return;
         }
-        if let (Some(row), Some((total, _))) = (scene.away, self.notification_status()) {
-            let before = match &greeter.mode {
-                super::Mode::Lock { notifications, .. } => *notifications,
-                super::Mode::Login => total,
-            };
-            let count = total.saturating_sub(before);
+        if let (Some(row), Some(_)) = (scene.away, self.notification_status()) {
+            let (count, listed) = self.lock_screen_notifications();
             painter.fill(row, theme.surface_raised.alpha(0.6), theme.radius);
             painter.glyph(
                 glyph::BELL,
@@ -825,14 +839,20 @@ impl Tileception {
                 Rect::new(row.x + 42.0, row.y, row.w - 180.0, row.h),
                 Style::new(theme.font_size, theme.text),
             );
-            if count > 0 {
+            // Those counted but not shown, or not all of them.
+            let hidden = count.saturating_sub(scene.away_rows.len());
+            if hidden > 0 {
+                let label = if hidden == count {
+                    "hidden until unlock".to_string()
+                } else {
+                    format!("{hidden} more after unlock")
+                };
                 let style = Style::new(theme.font_size * 0.8, theme.muted);
-                let (width, _) = painter.measure("hidden until unlock", 300.0, style);
-                painter.text(
-                    "hidden until unlock",
-                    Rect::new(row.right() - width - 12.0, row.y, width + 2.0, row.h),
-                    style,
-                );
+                let (width, _) = painter.measure(&label, 300.0, style);
+                painter.text(&label, Rect::new(row.right() - width - 12.0, row.y, width + 2.0, row.h), style);
+            }
+            for (row, (notification, shown)) in scene.away_rows.iter().zip(&listed) {
+                self.greeter_draw_away_row(painter, *row, notification, *shown, accent);
             }
         }
         let (Some(button), Some(player)) = (scene.media, self.media.snapshot.media.active()) else { return };
@@ -854,6 +874,50 @@ impl Tileception {
             Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface_raised, theme.radius) },
         );
         painter.glyph(if playing { glyph::PAUSE } else { glyph::PLAY }, button, 16, theme.text);
+    }
+
+    /// One notification on the lock screen: which app, and in full what it
+    /// says. Never its buttons.
+    fn greeter_draw_away_row(
+        &self,
+        painter: &mut Painter,
+        row: Rect,
+        notification: &tileception_notify::Notification,
+        shown: crate::lock::Shown,
+        accent: (Colour, Colour),
+    ) {
+        let theme = &self.theme;
+        painter.fill(row, theme.surface_raised.alpha(0.6), theme.radius);
+        let icon = Rect::new(row.x + 8.0, row.y + (row.h - 24.0) / 2.0, 24.0, 24.0);
+        match self.notification_icon(notification, 24) {
+            Some(image) => painter.image(&image, (icon.x, icon.y)),
+            None => painter.glyph(glyph::BELL, icon, 16, accent.0),
+        }
+        let app = if notification.app_name.is_empty() { "Notification" } else { &notification.app_name };
+        let full = shown >= crate::lock::Shown::Full;
+        let body = crate::notifications::plain_body(&notification.body);
+        let (title, detail) = if full {
+            let first = body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(app);
+            (notification.summary.as_str(), first.to_string())
+        } else {
+            (app, "Hidden until unlock".to_string())
+        };
+        let when = ago(notification.created);
+        let small = Style::new(theme.font_size * 0.8, theme.muted);
+        let (when_w, _) = painter.measure(&when, 200.0, small);
+        let text_x = icon.right() + 10.0;
+        let text_w = (row.right() - 12.0 - when_w - 8.0 - text_x).max(0.0);
+        painter.text(
+            title,
+            Rect::new(text_x, row.y + 6.0, text_w, 20.0),
+            Style::new(theme.font_size * 0.95, theme.text).bold().lines(1),
+        );
+        painter.text(
+            &detail,
+            Rect::new(text_x, row.y + 26.0, text_w, 20.0),
+            Style::new(theme.font_size * 0.85, theme.muted).lines(1),
+        );
+        painter.text(&when, Rect::new(row.right() - 12.0 - when_w, row.y + 6.0, when_w + 2.0, 20.0), small);
     }
 
     fn greeter_draw_sessions(

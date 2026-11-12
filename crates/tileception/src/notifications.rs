@@ -21,9 +21,10 @@ use tileception_notify::{Event, Image, Notification, NotifyService, Request, Urg
 
 use crate::{
     Tileception,
+    lock::{LockState, Shown},
     render::OutputElement,
     shapes::Shape,
-    ui::{Align, Painter, Style, ago, ease_out, glyph},
+    ui::{Align, Button, Look, Painter, Style, ago, ease_out, glyph},
 };
 
 #[derive(Default)]
@@ -49,10 +50,15 @@ pub struct Notifications {
     /// The popup whose buttons have the keyboard (Super+Enter), and the
     /// highlighted button. Only ever on request: popups never take it.
     pub answering: Option<(u32, usize)>,
+    /// What came in since Tileception's own lock screen showed, oldest first.
+    while_locked: Vec<Arc<Notification>>,
 }
 
-/// The category of [`Tileception::notify_locally`]'s notifications: the only
-/// ones shown on a lock screen, which keeps everyone else's to itself.
+/// The most notifications kept for the lock screen.
+const WHILE_LOCKED: usize = 100;
+
+/// The category of [`Tileception::notify_locally`]'s notifications, which a
+/// lock screen always shows; everyone else's follow `[lock]`.
 const LOCAL_CATEGORY: &str = "x-tileception.local";
 
 /// The category of questions waiting for an answer, which stay off a lock screen.
@@ -72,8 +78,21 @@ enum NotificationKind {
 enum PointerAction {
     Clear,
     Dnd,
-    Close { identifier: u32, kind: NotificationKind, history: bool },
-    Invoke { identifier: u32, kind: NotificationKind, key: String },
+    Close {
+        identifier: u32,
+        kind: NotificationKind,
+        history: bool,
+    },
+    Invoke {
+        identifier: u32,
+        kind: NotificationKind,
+        key: String,
+    },
+    /// "Show on lock screen" for the app's desktop entry and name.
+    LockScreen {
+        desktop_entry: Option<String>,
+        app_name: String,
+    },
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -81,6 +100,9 @@ impl crate::ui::PointerAction for PointerAction {
         match self {
             Self::Clear => state.clear_notifications(),
             Self::Dnd => state.toggle_dnd(),
+            Self::LockScreen { desktop_entry, app_name } => {
+                state.toggle_lock_screen_app(desktop_entry.as_deref(), app_name)
+            }
             Self::Close { identifier, kind: NotificationKind::Local, .. } => {
                 state.close_local_notification(*identifier)
             }
@@ -157,7 +179,9 @@ impl Tileception {
                 Event::Shown(notification) | Event::Replaced(notification) => {
                     self.notifications_appear();
                     self.notifications.thumbnails.borrow_mut().remove(&notification.id);
-                    self.notifications.active.insert(notification.id, Arc::new(notification));
+                    let notification = Arc::new(notification);
+                    self.came_in_while_locked(&notification);
+                    self.notifications.active.insert(notification.id, notification);
                 }
                 Event::Closed { id: notification_id, .. } => {
                     self.notifications.active.remove(&notification_id);
@@ -358,6 +382,89 @@ impl Tileception {
         }
     }
 
+    /// Tileception's own lock screen has just come up: what it shows of
+    /// notifications starts from nothing.
+    pub fn notifications_locked(&mut self) {
+        self.notifications.while_locked.clear();
+    }
+
+    /// Keeps what comes in while Tileception's own lock screen shows, as the
+    /// history would (not transient ones), a replacement in its place.
+    fn came_in_while_locked(&mut self, notification: &Arc<Notification>) {
+        if !matches!(self.lock, LockState::BuiltIn) || notification.transient {
+            return;
+        }
+        let kept = &mut self.notifications.while_locked;
+        match kept.iter_mut().find(|entry| entry.id == notification.id) {
+            Some(entry) => *entry = notification.clone(),
+            None => kept.push(notification.clone()),
+        }
+        if kept.len() > WHILE_LOCKED {
+            kept.remove(0);
+        }
+    }
+
+    /// How much of a notification the lock screen shows, while locked:
+    /// `None` when it is not restricted (unlocked, or Tileception's own).
+    fn lock_shows(&self, notification: &Notification) -> Option<Shown> {
+        if !self.is_locked() || notification.category.as_deref() == Some(LOCAL_CATEGORY) {
+            return None;
+        }
+        // Questions wait for an answer after unlocking.
+        if notification.category.as_deref() == Some(PROMPT_CATEGORY)
+            || self.notifications.questions.contains(&notification.id)
+            || !matches!(self.lock, LockState::BuiltIn)
+        {
+            return Some(Shown::None);
+        }
+        let allowed = self.greeter.as_deref().is_some_and(crate::greeter::Greeter::shows_notifications);
+        Some(self.config.file.lock.on_lock_screen(&lock_apps(notification), allowed, self.do_not_disturb()))
+    }
+
+    /// For the lock screen: how many notifications came in since it showed
+    /// that it may count, and those it may show more of, newest first.
+    pub fn lock_screen_notifications(&self) -> (usize, Vec<(Arc<Notification>, Shown)>) {
+        let mut count = 0;
+        let mut shown = Vec::new();
+        for notification in self.notifications.while_locked.iter().rev() {
+            let level = self.lock_shows(notification).unwrap_or(Shown::Full);
+            if level >= Shown::Count {
+                count += 1;
+            }
+            if level >= Shown::Apps {
+                shown.push((notification.clone(), level));
+            }
+        }
+        (count, shown)
+    }
+
+    /// The notification panel's "Show on lock screen" for an app: writes
+    /// its exception in `[lock.notification_apps]`.
+    fn toggle_lock_screen_app(&mut self, desktop_entry: Option<&str>, app_name: &str) {
+        let apps = [desktop_entry.unwrap_or_default(), app_name];
+        let lock = &self.config.file.lock;
+        let shown = lock.toggled(&apps);
+        let keys: Vec<String> = lock.app_keys(&apps).into_iter().map(str::to_string).collect();
+        let Some(first) = keys.first().cloned() else { return };
+        let written = crate::config_edit::set_lock_notification_app(
+            &crate::config::path(),
+            &keys.iter().map(String::as_str).collect::<Vec<_>>(),
+            shown,
+        );
+        match written {
+            Ok(()) => {
+                // At once, before the config file is read again.
+                let exceptions = &mut self.config.file.lock.notification_apps;
+                exceptions.retain(|key, _| !keys.contains(key));
+                if let Some(shown) = shown {
+                    exceptions.insert(first, shown);
+                }
+                self.schedule_render();
+            }
+            Err(error) => self.notify_locally("Could not change the lock screen", &error, Urgency::Normal),
+        }
+    }
+
     pub fn do_not_disturb(&self) -> bool {
         self.notifications.service.as_ref().is_some_and(|service| service.do_not_disturb())
     }
@@ -438,13 +545,12 @@ impl Tileception {
             return cards;
         }
         let width = (screen.w - 24.0).clamp(1.0, POPUP_W);
-        let locked = self.is_locked();
         let mut items: Vec<_> = self
             .notifications
             .active
             .values()
             .filter(|notification| {
-                notification.show_popup && (!locked || notification.category.as_deref() == Some(LOCAL_CATEGORY))
+                notification.show_popup && self.lock_shows(notification).is_none_or(|shown| shown >= Shown::Apps)
             })
             .cloned()
             .collect();
@@ -473,11 +579,25 @@ impl Tileception {
     /// Lays out one card with its top left at (x, y).
     fn card_layout(&self, notification: Arc<Notification>, left: f64, card_top: f64, width: f64, popup: bool) -> Card {
         let theme = &self.theme;
+        // On the lock screen: no buttons, and the content only in full.
+        let locked = self.lock_shows(&notification);
+        let content = locked.is_none_or(|shown| shown >= Shown::Full);
         let mut cursor = card_top + 14.0;
-        let header = Rect::new(left + 16.0, cursor, width - 56.0, 20.0);
+        let mut header = Rect::new(left + 16.0, cursor, width - 56.0, 20.0);
         let close = Rect::new(left + width - 36.0, card_top + 8.0, 28.0, 28.0);
+        // In the panel, apps' own notifications say whether they show on the lock screen.
+        let lock_toggle = (!popup
+            && self.builtin_lock_screen()
+            && notification.category.as_deref() != Some(LOCAL_CATEGORY)
+            && notification.category.as_deref() != Some(PROMPT_CATEGORY)
+            && lock_apps(&notification).iter().any(|app| !app.is_empty()))
+        .then(|| Rect::new(close.x - 32.0, close.y, 28.0, 28.0));
+        if lock_toggle.is_some() {
+            header.w -= 32.0;
+        }
         cursor = header.bottom() + 10.0;
-        let preview = self.notification_preview(&notification).map(|(_, image_width, image_height)| {
+        let picture = if content { self.notification_preview(&notification) } else { None };
+        let preview = picture.map(|(_, image_width, image_height)| {
             let placed = Rect::new(
                 left + 16.0 + ((width - 32.0 - image_width as f64) / 2.0).max(0.0),
                 cursor,
@@ -492,7 +612,8 @@ impl Tileception {
         let text_x = icon.map_or(left + 16.0, |icon_rect| icon_rect.right() + 12.0);
         let text_w = left + width - 16.0 - text_x;
         let summary = Rect::new(text_x, cursor, text_w, 22.0);
-        let body_text = plain_body(&notification.body);
+        let summary_text = if content { notification.summary.clone() } else { "New notification".into() };
+        let body_text = if content { plain_body(&notification.body) } else { "Shown after unlocking".into() };
         let body_h = if body_text.trim().is_empty() {
             0.0
         } else {
@@ -511,7 +632,7 @@ impl Tileception {
         };
         let body = Rect::new(text_x, summary.bottom() + 2.0, text_w, body_h);
         cursor = body.bottom().max(icon.map_or(0.0, |icon_rect| icon_rect.bottom()));
-        let count = notification.actions.len();
+        let count = if locked.is_some() { 0 } else { notification.actions.len() };
         let actions = if count > 0 {
             let top = cursor + 12.0;
             let gap = 8.0;
@@ -522,7 +643,21 @@ impl Tileception {
             Vec::new()
         };
         let rect = Rect::new(left, card_top, width, cursor + 16.0 - card_top);
-        Card { notification, rect, header, close, preview, icon, summary, body, body_text, actions, popup }
+        Card {
+            notification,
+            rect,
+            header,
+            close: if locked.is_some() { None } else { Some(close) },
+            lock_toggle,
+            preview,
+            icon,
+            summary,
+            summary_text,
+            body,
+            body_text,
+            actions,
+            popup,
+        }
     }
 
     pub fn notifications_contain(&self, point: Point) -> bool {
@@ -566,10 +701,19 @@ impl Tileception {
             } else {
                 NotificationKind::Service
             };
-            if card.close.contains(point) {
+            if let Some(close) = card.close.filter(|close| close.contains(point)) {
                 return Some(PointerTarget::button(
-                    card.close,
+                    close,
                     PointerAction::Close { identifier: notification.id, kind, history: self.notifications.open },
+                ));
+            }
+            if let Some(toggle) = card.lock_toggle.filter(|toggle| toggle.contains(point)) {
+                return Some(PointerTarget::button(
+                    toggle,
+                    PointerAction::LockScreen {
+                        desktop_entry: notification.desktop_entry.clone(),
+                        app_name: notification.app_name.clone(),
+                    },
                 ));
             }
             for (rect, (key, _)) in card.actions.iter().zip(&notification.actions) {
@@ -580,7 +724,11 @@ impl Tileception {
                     ));
                 }
             }
-            if notification.default_action && card.rect.contains(point) && kind == NotificationKind::Service {
+            if notification.default_action
+                && card.rect.contains(point)
+                && kind == NotificationKind::Service
+                && card.close.is_some()
+            {
                 return Some(PointerTarget::button(
                     card.rect,
                     PointerAction::Invoke { identifier: notification.id, kind, key: "default".into() },
@@ -888,17 +1036,29 @@ impl Tileception {
             painter.key_hints(&hint, header_right + 8.0, card.header.y + card.header.h / 2.0, false);
         }
         let app = if notification.app_name.is_empty() { "Notification" } else { &notification.app_name };
-        let header = format!("{app}  \u{00b7}  {}", ago(notification.created));
+        // Hovering "Show on lock screen" says what it does in the header.
+        let on_lock_screen = self.config.file.lock.shows_in_full(&lock_apps(notification));
+        let header = match card.lock_toggle {
+            Some(toggle) if toggle.contains(pointer) && on_lock_screen => format!("{app} shows on the lock screen"),
+            Some(toggle) if toggle.contains(pointer) => format!("Show {app} on the lock screen"),
+            _ => format!("{app}  \u{00b7}  {}", ago(notification.created)),
+        };
         painter.text(
             &header,
             Rect::new(cursor_x, card.header.y, (header_right - cursor_x).max(0.0), card.header.h),
             Style::new(theme.font_size * 0.9, theme.muted).lines(1),
         );
-        let hover_close = card.close.contains(pointer);
-        if hover_close {
-            painter.fill(card.close, theme.surface_raised, card.close.w as f32 / 2.0);
+        if let Some(toggle) = card.lock_toggle {
+            let look = if on_lock_screen { Look::Primary } else { Look::Quiet };
+            painter.button(toggle, Button::glyph(glyph::LOCK, look).round(), toggle.contains(pointer));
         }
-        painter.glyph(glyph::CLOSE, card.close, 14, if hover_close { theme.text } else { theme.muted });
+        if let Some(close) = card.close {
+            let hover_close = close.contains(pointer);
+            if hover_close {
+                painter.fill(close, theme.surface_raised, close.w as f32 / 2.0);
+            }
+            painter.glyph(glyph::CLOSE, close, 14, if hover_close { theme.text } else { theme.muted });
+        }
 
         if let (Some(preview_rect), Some((image, width, height))) =
             (card.preview, self.notification_preview(notification))
@@ -912,7 +1072,7 @@ impl Tileception {
         if let (Some(icon_rect), Some(icon)) = (card.icon, self.notification_icon(notification, ICON)) {
             painter.image(&icon, (icon_rect.x, icon_rect.y));
         }
-        painter.text(&notification.summary, card.summary, Style::new(theme.font_size * 1.02, theme.text).bold());
+        painter.text(&card.summary_text, card.summary, Style::new(theme.font_size * 1.02, theme.text).bold());
         if card.body.h > 0.0 {
             painter.text(
                 card.body_text.trim(),
@@ -987,7 +1147,7 @@ impl Tileception {
     }
 
     /// An app icon for the notification, from its hints or the sending app.
-    fn notification_icon(&self, notification: &Notification, size: u32) -> Option<MemoryRenderBuffer> {
+    pub(crate) fn notification_icon(&self, notification: &Notification, size: u32) -> Option<MemoryRenderBuffer> {
         let named = |name: &str| {
             let path = name.strip_prefix("file://").unwrap_or(name);
             if path.starts_with('/') {
@@ -1052,10 +1212,14 @@ struct Card {
     notification: Arc<Notification>,
     rect: Rect,
     header: Rect,
-    close: Rect,
+    /// None on the lock screen, which has no buttons for apps.
+    close: Option<Rect>,
+    /// "Show on lock screen", in the panel.
+    lock_toggle: Option<Rect>,
     preview: Option<Rect>,
     icon: Option<Rect>,
     summary: Rect,
+    summary_text: String,
     body: Rect,
     body_text: String,
     actions: Vec<Rect>,
@@ -1069,13 +1233,20 @@ impl Card {
         let down = |rect: &mut Rect| rect.y += delta;
         down(&mut self.rect);
         down(&mut self.header);
-        down(&mut self.close);
+        self.close.iter_mut().for_each(down);
+        self.lock_toggle.iter_mut().for_each(down);
         down(&mut self.summary);
         down(&mut self.body);
         self.preview.iter_mut().for_each(down);
         self.icon.iter_mut().for_each(down);
         self.actions.iter_mut().for_each(down);
     }
+}
+
+/// The names an app's lock screen exception may be under: its desktop entry
+/// (empty when it gave none), then its name.
+fn lock_apps(notification: &Notification) -> [&str; 2] {
+    [notification.desktop_entry.as_deref().unwrap_or_default(), notification.app_name.as_str()]
 }
 
 fn read_picture(path: &str) -> Option<image::RgbaImage> {
@@ -1121,7 +1292,7 @@ fn load_preview(notification: &Notification) -> Option<Preview> {
     Some((buffer, scaled.width() as i32, scaled.height() as i32))
 }
 
-fn plain_body(markup: &str) -> String {
+pub(crate) fn plain_body(markup: &str) -> String {
     let mut out = String::new();
     let mut tag = false;
     let mut quote = None;

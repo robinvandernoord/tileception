@@ -116,6 +116,20 @@ off_after = 600
 # desktop never shows on waking.
 # lock_before_sleep = true
 
+[lock]
+# Notifications on Tileception's own lock screen (other lockers draw only
+# themselves): "none", "count" (how many came in), "apps" (which apps, with
+# the content hidden) or "full" (what they say, without their buttons).
+# Do not disturb shows only the count, and the login screen's greeter.toml
+# can hide even that. Tileception's own notifications always show.
+# notifications = "count"
+#
+# Exceptions, by desktop entry or app name. A low default with "full" here
+# opts apps in; "full" above with lower levels here opts them out. "Show on
+# lock screen" on a card in the notification panel writes these for you.
+# [lock.notification_apps]
+# "org.gnome.Calendar" = "full"
+
 [touchpad]
 # Tap to click: one finger is the left button, two the right, three the middle.
 tap = true

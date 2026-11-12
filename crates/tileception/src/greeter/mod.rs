@@ -89,9 +89,6 @@ pub enum Mode {
     Lock {
         /// "18:02", said on the login tile.
         locked_at: String,
-        /// How many notifications there were when the screen locked, to count
-        /// the ones that came in since.
-        notifications: usize,
     },
 }
 
@@ -277,7 +274,7 @@ impl Greeter {
 
     /// The lock screen of a session: only `login` is shown, the theme stays
     /// the session's, and nothing is remembered.
-    pub fn lock(login: &str, notifications: usize) -> Greeter {
+    pub fn lock(login: &str) -> Greeter {
         let account = accounts::list(&[]).into_iter().find(|listed| listed.login == login).unwrap_or_else(|| Account {
             login: login.to_string(),
             name: login.to_string(),
@@ -292,8 +289,14 @@ impl Greeter {
             ..Default::default()
         };
         let mut greeter = Greeter::with(file, vec![account], Vec::new(), Memory::default(), PathBuf::new(), 0);
-        greeter.mode = Mode::Lock { locked_at: draw::local_time("%H:%M"), notifications };
+        greeter.mode = Mode::Lock { locked_at: draw::local_time("%H:%M") };
         greeter
+    }
+
+    /// Whether the administrator lets this lock screen say anything about
+    /// notifications (`show_notification_count` in greeter.toml).
+    pub fn shows_notifications(&self) -> bool {
+        self.locked() && self.file.lock.show_notification_count
     }
 
     fn locked(&self) -> bool {
