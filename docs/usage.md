@@ -411,7 +411,7 @@ for where it is kept.
 ### Updates
 
 On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
-while updates wait. It counts security updates first: `3 +9` means three
+while updates wait: APT packages, Flatpaks, snaps and firmware from fwupd. It counts security updates first: `3 +9` means three
 security updates and nine others. While updates install it shows progress,
 and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
@@ -426,16 +426,36 @@ needs no password. It leaves that on a metered connection and below 30% on
 battery; **Check** still works then.
 
 **Review** opens the Updates window, which also opens with
-`tileception msg updates open` or "Updates" in the launcher. It has four pages;
+`tileception msg updates open` or "Updates" in the launcher. It has five pages;
 **Tab** and **Shift+Tab** switch between them, the arrow keys move through the
 list, **Space** ticks a row and **Enter** runs the page's main button.
 
 | Page | What it does |
 | --- | --- |
-| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked ones. **Check** refreshes the package lists. |
+| Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
 | Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
 | Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
 | History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed. |
+| Settings | Automatic updates, and the Ubuntu mirror. See below. |
+
+Flatpaks of the system and of your own installation, and snaps, are listed
+under **Apps**. Asking for them uses the network, so they are listed when the
+package lists are refreshed and when the window opens, not on a metered
+connection or low battery; in between the last list stays. Firmware from
+fwupd is listed under **Firmware** and is never ticked by itself: a firmware
+update is installed only when you tick it, and some devices finish it while
+the computer restarts. One **Install** installs the APT updates first, then
+the Flatpaks, the snaps and the firmware, each with its own tool.
+
+The strip under the list acts on the highlighted row. **Notes** shows what
+changed: the changelog entries since the installed version for APT
+(`apt-get changelog`, which asks the archive), the commit messages of a
+Flatpak's remote, what `snap info` says, or the release notes of firmware.
+Press **N** for the same. **Skip version** leaves that version out: the row
+moves to **Skipped and held**, muted, and comes back when a newer version
+arrives. **Hold** keeps an APT package at its version with `apt-mark hold`
+until **Release** lets it update again. Skipping is remembered by Tileception
+alone; a hold is apt's own and also applies in a terminal.
 
 Below the updates, the Available page says what else installing everything
 does: packages it removes, updates apt keeps back, and updates the archive
@@ -478,6 +498,33 @@ when no fallback is installed, and when the queue would leave none.
 Leftover headers, and leftover modules and tools, of kernels that are gone are
 listed apart and queued per kind. Nothing on this page runs `autoremove`.
 
+Where Timeshift or Snapper is installed, or the root file system is btrfs,
+Tileception takes a snapshot before installing a kernel or Mesa update and
+before a release upgrade: with Timeshift or Snapper when one is there, or else
+as a read-only btrfs snapshot of `/` in `/.tileception-snapshots`. A failed
+snapshot is said in the log and the install goes ahead, so that security
+updates are never kept out; a release upgrade is not started without one.
+
+While a kernel or firmware update waits, the power menu shows **Restart and
+install** (key **N**) beside **Restart**: it installs everything that waits,
+firmware included, and restarts once that has succeeded.
+
+The Settings page turns automatic updates on and off. Tileception does not
+schedule anything itself: the switch turns the periodic run of
+`unattended-upgrades` on or off in `/etc/apt/apt.conf.d/20auto-upgrades`, and
+the row says what it covers, such as security updates or Ubuntu Pro. Where
+`unattended-upgrades` is not installed, the row says so.
+
+Below that, the page shows the Ubuntu mirror in use. **Test mirrors** asks the
+mirror in use, the main archive and the mirrors Ubuntu lists for your country
+for a small file and part of a larger one, and lists them fastest first with
+their speed, how long they took to answer and how far behind the main archive
+they are. **Use** switches to one: it rewrites the Ubuntu entries of the
+package sources, leaving the security pocket alone, and refreshes the lists;
+when that refresh fails, the old sources are put back. Once a day the mirror
+in use is tested by itself, and the page and the window's sidebar warn when it
+cannot be reached or is a day or more behind.
+
 | Key | Action on the Kernels page |
 | --- | --- |
 | A | Switch between the recommended view and all variants |
@@ -508,13 +555,29 @@ From scripts and key bindings:
 | `tileception msg updates repair` | Repair the package system, when apt asks for it |
 | `tileception msg updates log` | Print what the last task printed |
 | `tileception msg updates upgrade` | Start the release upgrade in a terminal |
+| `tileception msg updates changelog <name>` | Show what changed in an update |
+| `tileception msg updates hold <package>...` | Hold APT packages at their version; `unhold` releases them |
+| `tileception msg updates skip <name>` | Skip the waiting version of an update; `unskip` brings it back |
+| `tileception msg updates automatic [on\|off]` | Say how automatic updates are set up, or switch them |
+| `tileception msg updates mirrors` | Test the mirrors; ask again for the results |
+| `tileception msg updates mirror <url>` | Use this mirror |
+| `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first |
+
+Where two sources have an update by the same name, such as a Flatpak in both
+the system and your own installation, or a package and a snap, name it with
+its source in front: `apt:`, `flatpak:`, `flatpak-user:`, `snap:` or
+`firmware:`, as in `tileception msg updates skip snap:firefox`. A name alone
+then says which to choose from.
+
+Doctor reads the history the same way, so it can answer "what changed since
+Tuesday?".
 
 #### Administrator rights
 
 Changes to packages are made by a small helper,
 `/usr/libexec/tileception-updates-helper`, that polkit starts as root. It
 takes a task such as "install these updates", never a command line, and
-checks every package name. Its policy has two actions: refreshing the package
+checks every package, Flatpak, snap, device and mirror address. Its policy has two actions: refreshing the package
 lists is allowed without a password for the person at the computer, and
 everything else asks for an administrator. To change who may do what, add a
 polkit rule for `org.tileception.updates.refresh` or
@@ -528,8 +591,8 @@ goes to polkit's own checker and nowhere else. To use another agent, set
 Where polkit or an agent is missing, the helper runs through `sudo` instead,
 and Tileception's prompt passes what you type to `sudo` for that one task.
 
-Flatpak, Snap and firmware updates are not listed yet. See
-[Configuration](configuration.md#updates) to switch the chip or its
+Flatpaks of your own installation are updated as you, without the helper.
+See [Configuration](configuration.md#updates) to switch the chip or its
 notification off, or to choose when the notification comes.
 
 ### Network

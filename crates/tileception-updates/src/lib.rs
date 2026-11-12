@@ -1,15 +1,20 @@
-//! What the update manager knows about the system: pending APT updates,
-//! installed kernels and what can go, the next Ubuntu release, and the apt
-//! history. Everything here reads; the commands that change the system are
+//! What the update manager knows about the system: pending APT, Flatpak,
+//! Snap and firmware updates, installed kernels and what can go, the next
+//! Ubuntu release, and the apt history. Everything here reads; the commands that change the system are
 //! built here and run by the compositor's worker, as root.
 //!
 //! Programs are run through a [`Runner`] and files read below a root folder,
 //! so the parsers are tested on captured output.
 
+pub mod apps;
 pub mod apt;
+pub mod automatic;
+pub mod firmware;
 pub mod history;
 pub mod kernels;
+pub mod mirrors;
 pub mod release;
+pub mod snapshots;
 pub mod task;
 
 use std::path::{Path, PathBuf};
@@ -19,7 +24,8 @@ use std::time::SystemTime;
 /// Runs a program and returns what it printed.
 pub trait Runner {
     /// The program's standard output. An error when it could not start or
-    /// failed, except for partial `dpkg-query` results.
+    /// failed, except for partial `dpkg-query` results and fwupd's
+    /// no-updates status.
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String>;
 }
 
@@ -36,6 +42,10 @@ impl Runner for System {
             .output()
             .map_err(|error| format!("{program}: {error}"))?;
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        // fwupdmgr uses 2 for "nothing to do", distinct from query failures.
+        if program == "fwupdmgr" && args.first() == Some(&"get-updates") && output.status.code() == Some(2) {
+            return Ok(String::new());
+        }
         // dpkg-query can return installed matches while failing for unmatched
         // patterns. Other commands, especially APT simulations, must succeed.
         let partial = program == "dpkg-query" && !text.trim().is_empty();
@@ -87,7 +97,14 @@ pub fn supported() -> bool {
 /// Everything read in one pass.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
+    /// APT updates, security first, then firmware. Flatpak and Snap are
+    /// in `apps`, since listing them takes the network.
     pub updates: Vec<apt::Update>,
+    /// Flatpak and Snap updates, when this look asked for them, and the
+    /// sources among them that could not be asked.
+    pub apps: Option<apps::Found>,
+    /// Held packages that have a newer version.
+    pub held: Vec<apt::Update>,
     /// What installing every update would do besides: removals, updates
     /// kept back or phased, and the dependencies that are no longer needed.
     pub plan: apt::Plan,
@@ -105,6 +122,8 @@ pub struct Snapshot {
     pub history: Vec<history::Entry>,
     /// Why the updates could not be listed.
     pub error: Option<String>,
+    /// Why firmware could not be listed, independently of APT.
+    pub firmware_error: Option<String>,
 }
 
 impl Snapshot {
@@ -118,17 +137,28 @@ impl Snapshot {
     }
 }
 
-/// Reads the system. Nothing here needs root or the network.
-pub fn scan(runner: &dyn Runner, files: &Files) -> Snapshot {
-    let (listing, error) = match apt::list(runner) {
+/// Reads the system. Nothing here needs root; only `network` lets Flatpak
+/// and Snap ask their servers.
+pub fn scan(runner: &dyn Runner, files: &Files, network: bool) -> Snapshot {
+    let (mut listing, error) = match apt::list(runner) {
         Ok(listing) => (listing, None),
         Err(error) => (apt::Listing::default(), Some(error)),
     };
+    let firmware_error = match firmware::list(runner) {
+        Ok(updates) => {
+            listing.updates.extend(updates.unwrap_or_default());
+            None
+        }
+        Err(error) => Some(error),
+    };
+    let apps = network.then(|| apps::list(runner));
     let running = runner.run("uname", &["-r"]).map(|text| text.trim().to_string()).unwrap_or_default();
     let packages = kernels::installed(runner);
     let offers = kernels::offers(runner);
     Snapshot {
         updates: listing.updates,
+        apps,
+        held: apt::held(runner),
         plan: listing.plan,
         packages,
         offers,
@@ -138,6 +168,7 @@ pub fn scan(runner: &dyn Runner, files: &Files) -> Snapshot {
         checked: apt::last_refresh(files),
         history: history::read(files),
         error,
+        firmware_error,
     }
 }
 

@@ -11,6 +11,8 @@ pub struct System {
     pub pretty: String,
     /// `24.04`.
     pub version: String,
+    /// `noble`.
+    pub codename: String,
 }
 
 pub fn parse_system(text: &str) -> System {
@@ -20,7 +22,12 @@ pub fn parse_system(text: &str) -> System {
             .map(|value| value.trim().trim_matches('"').to_string())
             .unwrap_or_default()
     };
-    System { distributor: field("ID"), pretty: field("PRETTY_NAME"), version: field("VERSION_ID") }
+    System {
+        distributor: field("ID"),
+        pretty: field("PRETTY_NAME"),
+        version: field("VERSION_ID"),
+        codename: field("VERSION_CODENAME"),
+    }
 }
 
 pub fn system(files: &Files) -> System {
@@ -272,7 +279,12 @@ mod tests {
         );
         assert_eq!(
             parsed,
-            System { distributor: "ubuntu".into(), pretty: "Ubuntu 24.04.5 LTS".into(), version: "24.04".into() }
+            System {
+                distributor: "ubuntu".into(),
+                pretty: "Ubuntu 24.04.5 LTS".into(),
+                version: "24.04".into(),
+                codename: String::new(),
+            }
         );
     }
 

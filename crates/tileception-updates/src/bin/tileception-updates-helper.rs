@@ -9,7 +9,7 @@
 //! ends with its reason on standard error and exit status 1; a request that
 //! is not a task ends with status 2.
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::ExitCode;
 
 use tileception_updates::task::{self, FAILED, Task};
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
         eprintln!("{FAILED}this helper changes packages and must run as root; Tileception starts it through pkexec");
         return ExitCode::from(2);
     }
-    let mut output = io::stdout().lock();
+    let mut output = std::io::stdout().lock();
     match task::run(&task, &mut |line| {
         // Losing the UI must not stop a package operation or its output drain.
         let _ = writeln!(output, "{line}");
