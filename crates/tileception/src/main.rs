@@ -25,6 +25,7 @@ mod config_edit;
 mod controls;
 mod cursor;
 mod doctor;
+mod doctor_mcp;
 mod doctor_policy;
 mod drag;
 mod duck;
@@ -106,6 +107,7 @@ Usage:
   tileception setup [options]
   tileception pair [<passphrase words...> | --new | --off | --show]
   tileception plugin <id>
+  tileception doctor-mcp <plugin id>
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
@@ -113,7 +115,9 @@ Starts the Tileception compositor, or with `msg` controls a running one.
 login screen again (`tileception setup --help`). `pair` shows or sets the
 passphrase that lets other computers share this mouse and keyboard
 (`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
-Tileception starts these itself.
+Tileception starts these itself. `doctor-mcp` offers a plugin's tools to
+Doctor's agent over MCP, asking the compositor before each call; Doctor
+gives it to its agent.
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -199,6 +203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if argv.first().map(String::as_str) == Some("plugin") {
         if let Err(err) = bundled::run(&argv[1..]) {
             eprintln!("tileception plugin: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("doctor-mcp") {
+        if let Err(err) = doctor_mcp::run(&argv[1..]) {
+            eprintln!("tileception doctor-mcp: {err}");
             std::process::exit(1);
         }
         return Ok(());

@@ -78,6 +78,10 @@ const CODE_BUTTON: f64 = 24.0;
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
 /// How long a stopped agent may take to end its turn before it is restarted.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long a plugin tool call waits for the user to allow it.
+const TOOL_ASK_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Characters of a plugin tool call's arguments shown when asking.
+const TOOL_TITLE_CHARS: usize = 160;
 
 /// A small picture, premultiplied, ready to draw.
 #[derive(Debug, Clone)]
@@ -161,6 +165,9 @@ pub enum AskReply {
     Read { request_id: serde_json::Value, path: PathBuf, line: Option<u64>, limit: Option<u64> },
     /// A file the agent wants to write.
     Write { request_id: serde_json::Value, path: PathBuf, content: String },
+    /// A plugin's tool the agent wants to call, waiting on the command
+    /// socket under `request`.
+    Tool { request: u64, plugin: String, tool: String, arguments: serde_json::Value },
 }
 
 /// What the panel shows in place of the conversation.
@@ -307,6 +314,9 @@ pub struct Doctor {
     /// Asking whether to use a program found by name before starting it.
     unconfirmed: Option<Unconfirmed>,
     session: Option<Session>,
+    /// Given to the session's plugin tool servers: their calls count only
+    /// with it, so they come from this session.
+    tool_token: Option<String>,
     status: Status,
     events: Option<(channel::Sender<Event>, RegistrationToken)>,
     /// How much the agent may do without asking.
@@ -399,6 +409,7 @@ impl Default for Doctor {
             skip_installed: saved.skip_installed,
             unconfirmed: None,
             session: None,
+            tool_token: None,
             status: Status::Starting(String::new()),
             events: None,
             mode: saved.mode,
@@ -884,6 +895,8 @@ impl Tileception {
                 Err(error) => self.doctor.mode_env_warning = Some(error),
             }
         }
+        self.doctor.tool_token = crate::doctor_mcp::new_token();
+        let servers = self.doctor_mcp_servers();
         self.doctor.session = Some(match (test_agent, agent) {
             (Some(line), _) => {
                 let mut words = line.split_whitespace().map(str::to_string);
@@ -891,13 +904,13 @@ impl Tileception {
                 let program =
                     tileception_acp::install::Program { command, args: words.collect(), env: Default::default() };
                 self.doctor.agent.get_or_insert_with(|| "test agent".into());
-                Session::start_program("Test agent".into(), program, cwd, context, env, emit)
+                Session::start_program("Test agent".into(), program, cwd, context, env, servers, emit)
             }
             (None, Some(agent)) => {
                 self.doctor.status = Status::Starting(format!("Starting {}\u{2026}", agent.name));
                 match configured {
-                    Some(program) => Session::start_program(agent.name, program, cwd, context, env, emit),
-                    None => Session::start(agent, cwd, context, env, emit),
+                    Some(program) => Session::start_program(agent.name, program, cwd, context, env, servers, emit),
+                    None => Session::start(agent, cwd, context, env, servers, emit),
                 }
             }
             (None, None) => return,
@@ -1304,6 +1317,115 @@ impl Tileception {
             answer: None,
         });
         self.doctor.scroll = 0.0;
+    }
+
+    /// The plugins' tool servers for an agent session, with this session's
+    /// token: one per plugin offering Doctor tools.
+    fn doctor_mcp_servers(&self) -> Vec<tileception_acp::McpServer> {
+        let (Some(plugins), Some(token)) = (&self.plugins, &self.doctor.tool_token) else { return Vec::new() };
+        let exe = match crate::bundled::exe() {
+            Ok(exe) => PathBuf::from(exe),
+            Err(error) => {
+                tracing::warn!("Doctor gets no plugin tools: {error}");
+                return Vec::new();
+            }
+        };
+        let mut env: tileception_acp::Env = [(crate::doctor_mcp::TOKEN.to_string(), token.clone())].into();
+        if let Some(socket) = &self.ipc_socket {
+            env.insert("TILECEPTION_SOCKET".into(), socket.to_string_lossy().into_owned());
+        }
+        crate::doctor_mcp::servers(&exe, &plugins.doctor_plugins(), &env)
+    }
+
+    /// Whether a plugin tool server's token is this agent session's.
+    fn doctor_token(&self, token: &str) -> Result<(), String> {
+        match &self.doctor.tool_token {
+            Some(current) if self.doctor.session.is_some() && current == token => Ok(()),
+            _ => Err("this is not the token of Doctor's agent; restart the agent".into()),
+        }
+    }
+
+    /// `doctor tools <token> <plugin>`: the tools a plugin offers Doctor's
+    /// agent and what to tell it about them, as JSON.
+    pub(crate) fn doctor_tools_command(&mut self, token: &str, plugin: &str) -> Result<String, String> {
+        self.doctor_token(token)?;
+        let plugins = self.plugins.as_ref().ok_or("plugins are not running")?;
+        let (tools, instructions) =
+            plugins.doctor_offer(plugin).ok_or_else(|| format!("plugin {plugin} offers Doctor no tools now"))?;
+        Ok(format!("{}\n", serde_json::json!({ "tools": tools, "instructions": instructions })))
+    }
+
+    /// `doctor call <token> <plugin> <tool> <json>`: one of the plugin's
+    /// Doctor tools, called when the permission mode allows it and asked
+    /// in the panel otherwise. Answered once the plugin is.
+    pub(crate) fn doctor_call_command(
+        &mut self,
+        token: &str,
+        plugin: String,
+        tool: String,
+        arguments: serde_json::Value,
+    ) -> Result<String, String> {
+        self.doctor_token(token)?;
+        let plugins = self.plugins.as_ref().ok_or("plugins are not running")?;
+        let (tools, _) =
+            plugins.doctor_offer(&plugin).ok_or_else(|| format!("plugin {plugin} offers Doctor no tools now"))?;
+        let entry = tools
+            .iter()
+            .find(|entry| entry["name"] == tool.as_str())
+            .ok_or_else(|| format!("plugin {plugin} offers Doctor no tool {tool}"))?;
+        let call = doctor_policy::PluginCall {
+            plugin: &plugin,
+            bundled: plugins.bundled(&plugin),
+            read_only: crate::plugins::read_only(entry),
+        };
+        let allowed = doctor_policy::may_call(self.doctor.mode, call);
+        let request = plugins.call_number();
+        let title = tool_title(&plugin, &tool, &arguments);
+        if allowed {
+            plugins.tool_as(crate::plugins::Place::Doctor, request, plugin, tool, arguments);
+            self.defer_reply(request);
+            self.doctor.messages.push(Message::Note(format!("Went ahead ({}): {title}", self.doctor.mode.label())));
+        } else {
+            self.defer_reply_for(request, TOOL_ASK_WAIT, "nobody allowed this in time; nothing was done");
+            let choices = vec![
+                Choice { choice_id: "allow".into(), name: "Allow".into(), kind: "allow_once".into() },
+                Choice { choice_id: "deny".into(), name: "Deny".into(), kind: "reject_once".into() },
+            ];
+            let reply = AskReply::Tool { request, plugin, tool, arguments };
+            self.doctor.messages.push(Message::Ask { reply, title, choices, diff: Vec::new(), answer: None });
+            self.doctor.scroll = 0.0;
+        }
+        self.schedule_render();
+        Ok(String::new())
+    }
+
+    /// The user allowed or denied a plugin tool call.
+    fn doctor_tool_decided(
+        &mut self,
+        request: u64,
+        plugin: String,
+        tool: String,
+        arguments: serde_json::Value,
+        allowed: bool,
+    ) {
+        if !allowed {
+            self.reply_later(request, Err("The user declined; nothing was done.".into()));
+            return;
+        }
+        // Allowing after the agent gave up must not do it anyway.
+        if !self.reply_awaited(request) {
+            self.doctor.messages.push(Message::Note("The agent no longer waits for this; nothing was done.".into()));
+            return;
+        }
+        match &self.plugins {
+            Some(plugins) => plugins.tool_as(crate::plugins::Place::Doctor, request, plugin, tool, arguments),
+            None => self.reply_later(request, Err("plugins are not running".into())),
+        }
+    }
+
+    /// A plugin answered a call of Doctor's agent.
+    pub(crate) fn doctor_tool_answered(&mut self, request: u64, result: Result<serde_json::Value, String>) {
+        self.reply_later(request, result.map(|value| format!("{value}\n")));
     }
 
     /// A file the agent reads or writes through Tileception.
@@ -2127,6 +2249,9 @@ impl Tileception {
                             );
                         }
                     }
+                    AskReply::Tool { request, plugin, tool, arguments } => {
+                        self.doctor_tool_decided(request, plugin, tool, arguments, allowed);
+                    }
                 }
             }
             Hit::Undo(index) => self.undo_change(index),
@@ -2197,16 +2322,24 @@ impl Tileception {
                 // The agent's own questions are cancelled with the turn; its
                 // file requests still need an answer, or it waits for ever.
                 let mut unanswered = Vec::new();
+                let mut tools = Vec::new();
                 for message in &mut self.doctor.messages {
                     if let Message::Ask { answer: answer @ None, reply, .. } = message {
                         *answer = Some("Stopped".into());
-                        if let AskReply::Read { request_id, .. } | AskReply::Write { request_id, .. } = reply {
-                            unanswered.push(request_id.clone());
+                        match reply {
+                            AskReply::Read { request_id, .. } | AskReply::Write { request_id, .. } => {
+                                unanswered.push(request_id.clone());
+                            }
+                            AskReply::Tool { request, .. } => tools.push(*request),
+                            AskReply::Agent { .. } => {}
                         }
                     }
                 }
                 for request_id in unanswered {
                     self.doctor_reply(request_id, Err("The user stopped the agent.".into()));
+                }
+                for request in tools {
+                    self.reply_later(request, Err("The user stopped the agent.".into()));
                 }
             }
         }
@@ -2321,7 +2454,10 @@ impl Tileception {
         self.doctor.approved.clear();
         self.doctor.waiting = None;
         self.doctor.busy = false;
+        let servers = self.doctor_mcp_servers();
         if let Some(session) = &self.doctor.session {
+            // Plugins installed since get into the new conversation.
+            session.send(Request::McpServers(servers));
             session.send(Request::NewSession);
             self.doctor.restore_model = true;
             self.doctor.options_ready = false;
@@ -3693,6 +3829,22 @@ fn doctor_scope() -> Scope {
     Scope { config, state: state_dir() }
 }
 
+/// What a plugin tool call shows in the panel: the plugin, the tool and
+/// its arguments, cut short.
+fn tool_title(plugin: &str, tool: &str, arguments: &serde_json::Value) -> String {
+    let mut title = format!("{plugin}: {tool}");
+    if arguments.as_object().is_some_and(|arguments| !arguments.is_empty()) {
+        let shown = arguments.to_string();
+        let cut: String = shown.chars().take(TOOL_TITLE_CHARS).collect();
+        title.push(' ');
+        title.push_str(&cut);
+        if cut.len() < shown.len() {
+            title.push('\u{2026}');
+        }
+    }
+    title
+}
+
 /// Copies of files from before the agent changed them.
 fn backups_dir() -> PathBuf {
     state_dir().join("doctor-backups")
@@ -3818,6 +3970,9 @@ fn doctor_context(mode: &str) -> String {
          unattended; `--cloud-sensors`/`--no-cloud-sensors` choose whether battery sensors are read from the cloud \
          every 10 minutes). Devices behind a Zigbee or Bluetooth gateway are not \
          supported yet and show as unavailable.\n\
+         - Plugins may also give you tools as MCP servers named after them, such as `home` for the smart \
+         home. Prefer those tools to the matching commands. Tileception asks the user before each call as the \
+         permission mode says; a declined call did nothing.\n\
          - Bluetooth: `tileception msg bluetooth` lists adapters and paired devices with their state, and says \
          what is wrong when Bluetooth cannot be used (bluetooth.service not running, no adapter, blocked by \
          rfkill, switched off). `bluetooth on|off`, `connect|disconnect|forget <name>`, `search` and \
@@ -3935,6 +4090,18 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_calls_show_their_arguments_cut_short() {
+        assert_eq!(tool_title("home", "all_off", &serde_json::json!({})), "home: all_off");
+        assert_eq!(
+            tool_title("home", "toggle", &serde_json::json!({ "device": "Floor lamp" })),
+            r#"home: toggle {"device":"Floor lamp"}"#
+        );
+        let long = tool_title("notes", "add", &serde_json::json!({ "text": "é".repeat(400) }));
+        assert!(long.ends_with('\u{2026}'));
+        assert_eq!(long.chars().count(), "notes: add ".len() + TOOL_TITLE_CHARS + 1);
+    }
 
     #[test]
     fn reports_the_last_question_and_answer() {

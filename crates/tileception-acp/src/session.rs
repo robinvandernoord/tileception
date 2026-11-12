@@ -12,8 +12,8 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::{
-    Action, Agent, AgentCommand, Choice, Emit, Env, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue,
-    Request, SessionOption, Status, install,
+    Action, Agent, AgentCommand, Choice, Emit, Env, EnvVar, Event, FileOp, Image, Login, LoginHow, McpServer,
+    OptionValue, Request, SessionOption, Status, install,
 };
 
 /// The protocol version spoken here.
@@ -49,9 +49,17 @@ impl Session {
     /// Starts `agent` in `cwd`. `context` goes along with the first prompt,
     /// telling the agent what it is helping with.
     /// `env` is set for the agent program on top of the compositor's own,
-    /// such as the session's `TILECEPTION_SOCKET`.
-    pub fn start(agent: Agent, cwd: PathBuf, context: String, env: Env, emit: Emit) -> Session {
-        Self::launch(agent.name.clone(), Source::Registry(Box::new(agent)), cwd, context, env, emit)
+    /// such as the session's `TILECEPTION_SOCKET`. `servers` are the tool
+    /// servers every conversation gets.
+    pub fn start(
+        agent: Agent,
+        cwd: PathBuf,
+        context: String,
+        env: Env,
+        servers: Vec<McpServer>,
+        emit: Emit,
+    ) -> Session {
+        Self::launch(agent.name.clone(), Source::Registry(Box::new(agent)), cwd, context, env, servers, emit)
     }
 
     /// Starts an agent program directly (tests, and agents already installed).
@@ -61,12 +69,21 @@ impl Session {
         cwd: PathBuf,
         context: String,
         env: Env,
+        servers: Vec<McpServer>,
         emit: Emit,
     ) -> Session {
-        Self::launch(name, Source::Program(program), cwd, context, env, emit)
+        Self::launch(name, Source::Program(program), cwd, context, env, servers, emit)
     }
 
-    fn launch(name: String, source: Source, cwd: PathBuf, context: String, env: Env, emit: Emit) -> Session {
+    fn launch(
+        name: String,
+        source: Source,
+        cwd: PathBuf,
+        context: String,
+        env: Env,
+        servers: Vec<McpServer>,
+        emit: Emit,
+    ) -> Session {
         let (messages, incoming) = mpsc::channel();
         let sender = messages.clone();
         let installing = Arc::new(AtomicBool::new(true));
@@ -84,6 +101,7 @@ impl Session {
             .name("tileception-acp".into())
             .spawn(move || {
                 let mut worker = Worker::new(name, source, cwd, context, env, emit.clone(), installed);
+                worker.servers = servers;
                 if let Err(error) = worker.run(&sender, &incoming) {
                     emit(Event::Status(Status::Failed(error)));
                 }
@@ -146,6 +164,8 @@ struct Worker {
     login_env: std::collections::BTreeMap<String, String>,
     /// Variables from the compositor for every start of the agent.
     session_env: Env,
+    /// Tool servers for every new session.
+    servers: Vec<McpServer>,
     sender: Option<mpsc::Sender<Msg>>,
     /// Sent along with the first prompt of every session.
     context_text: Option<String>,
@@ -181,6 +201,7 @@ impl Worker {
     ) -> Self {
         Self {
             session_env,
+            servers: Vec::new(),
             installing,
             name,
             source: Some(source),
@@ -386,8 +407,8 @@ impl Worker {
     fn new_session(&mut self) -> Result<(), String> {
         // Every conversation starts by saying what the agent helps with.
         self.context.clone_from(&self.context_text);
-        let cwd = self.cwd.display().to_string();
-        self.request("session/new", json!({ "cwd": cwd, "mcpServers": [] }), Pending::NewSession)
+        let params = new_session_params(&self.cwd, &self.servers);
+        self.request("session/new", params, Pending::NewSession)
     }
 
     fn prompt(&mut self, text: String, images: Vec<Image>) -> Result<(), String> {
@@ -496,6 +517,7 @@ impl Worker {
                 self.queued = None;
                 self.new_session()?;
             }
+            Request::McpServers(servers) => self.servers = servers,
             Request::SetOption { id: option_id, value } => {
                 let Some(session) = self.session.clone() else {
                     (self.emit)(Event::Note("The agent is not ready yet.".into()));
@@ -806,6 +828,12 @@ impl Worker {
             (self.emit)(event);
         }
     }
+}
+
+/// `session/new`'s parameters: where the agent works and its tool servers.
+fn new_session_params(cwd: &std::path::Path, servers: &[McpServer]) -> Value {
+    let servers: Vec<Value> = servers.iter().map(McpServer::to_json).collect();
+    json!({ "cwd": cwd.display().to_string(), "mcpServers": servers })
 }
 
 /// What a tool call is about: its kind, files, command and edits.
@@ -1140,6 +1168,29 @@ mod tests {
         assert!(legacy);
         assert_eq!((options[0].option_id.as_str(), options[0].current_name()), (LEGACY_MODEL, "B"));
     }
+    #[test]
+    fn sessions_get_their_tool_servers() {
+        assert_eq!(
+            new_session_params(std::path::Path::new("/home/r"), &[]),
+            json!({ "cwd": "/home/r", "mcpServers": [] })
+        );
+        let home = McpServer {
+            name: "home".into(),
+            command: "/usr/bin/tileception".into(),
+            args: vec!["doctor-mcp".into(), "home".into()],
+            env: [("TILECEPTION_SOCKET".to_string(), "/run/user/1000/tileception-wayland-1.sock".to_string())].into(),
+        };
+        assert_eq!(
+            new_session_params(std::path::Path::new("/home/r/.config/tileception"), &[home]),
+            json!({ "cwd": "/home/r/.config/tileception", "mcpServers": [{
+                "name": "home",
+                "command": "/usr/bin/tileception",
+                "args": ["doctor-mcp", "home"],
+                "env": [{ "name": "TILECEPTION_SOCKET", "value": "/run/user/1000/tileception-wayland-1.sock" }],
+            }] })
+        );
+    }
+
     #[test]
     fn stopping_an_unsent_prompt_ends_the_turn() {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));

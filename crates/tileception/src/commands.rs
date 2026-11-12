@@ -91,6 +91,20 @@ pub enum Command {
     DoctorUse(String),
     /// How much the doctor's agent may do without asking.
     DoctorMode(crate::doctor_policy::Mode),
+    /// For `tileception doctor-mcp`: the tools a plugin offers Doctor's
+    /// agent, for the agent session holding this token.
+    DoctorTools {
+        token: String,
+        plugin: String,
+    },
+    /// For `tileception doctor-mcp`: calls a plugin's tool for Doctor's
+    /// agent once Doctor's permission mode allows it.
+    DoctorCall {
+        token: String,
+        plugin: String,
+        tool: String,
+        arguments: serde_json::Value,
+    },
     /// A key pressed while the doctor panel has the keyboard (not available as text).
     DoctorKey(u32, crate::config::Mods),
     /// Lets the rubber duck out, or puts it away.
@@ -281,6 +295,21 @@ While the screen is locked only tree, screenshot, reload, unlock, vt,
 battery and the sound, light and media commands work.
 ";
 
+/// `<plugin id> <tool> [json object]`, as `plugin` takes it.
+fn tool_call(rest: &str) -> Result<(String, String, serde_json::Value), String> {
+    let mut parts = rest.trim().splitn(3, char::is_whitespace);
+    let plugin = parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin id and a tool")?;
+    let tool = parts.next().ok_or("plugin needs a tool after the plugin id")?;
+    let arguments = match parts.next().map(str::trim).filter(|json| !json.is_empty()) {
+        Some(json) => serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .filter(serde_json::Value::is_object)
+            .ok_or("plugin arguments must be a JSON object, such as {\"device\": \"Lamp\"}")?,
+        None => serde_json::json!({}),
+    };
+    Ok((plugin.into(), tool.into(), arguments))
+}
+
 pub fn parse(line: &str) -> Result<Command, String> {
     let line = line.trim();
     let (verb, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
@@ -366,18 +395,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "home" => return crate::home::parse(rest).map(|command| Command::Home(command, rest.trim().to_string())),
         "plugin" => {
-            let mut parts = rest.trim().splitn(3, char::is_whitespace);
-            let plugin =
-                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin id and a tool")?;
-            let tool = parts.next().ok_or("plugin needs a tool after the plugin id")?;
-            let arguments = match parts.next().map(str::trim).filter(|json| !json.is_empty()) {
-                Some(json) => serde_json::from_str::<serde_json::Value>(json)
-                    .ok()
-                    .filter(serde_json::Value::is_object)
-                    .ok_or("plugin arguments must be a JSON object, such as {\"device\": \"Lamp\"}")?,
-                None => serde_json::json!({}),
-            };
-            return Ok(Command::Plugin { plugin: plugin.into(), tool: tool.into(), arguments });
+            let (plugin, tool, arguments) = tool_call(rest)?;
+            return Ok(Command::Plugin { plugin, tool, arguments });
         }
         "settings" if rest.is_empty() => return Ok(Command::Settings),
         "doctor" => {
@@ -385,6 +404,22 @@ pub fn parse(line: &str) -> Result<Command, String> {
             let (sub, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let tail = tail.trim();
             return match sub {
+                "tools" | "call" => {
+                    let (token, rest) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
+                    if token.is_empty() {
+                        return Err(format!("doctor {sub} is for Doctor's agent"));
+                    }
+                    let token = token.to_string();
+                    if sub == "tools" {
+                        let plugin = rest.trim();
+                        if plugin.is_empty() || plugin.contains(char::is_whitespace) {
+                            return Err("doctor tools needs a plugin id".into());
+                        }
+                        return Ok(Command::DoctorTools { token, plugin: plugin.into() });
+                    }
+                    let (plugin, tool, arguments) = tool_call(rest)?;
+                    Ok(Command::DoctorCall { token, plugin, tool, arguments })
+                }
                 "mode" => crate::doctor_policy::Mode::parse(tail)
                     .map(Command::DoctorMode)
                     .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
@@ -591,6 +626,10 @@ impl Tileception {
             Command::DoctorUse(agent_id) => self.use_doctor_agent(agent_id),
             Command::Inject(input) => self.inject(input)?,
             Command::DoctorMode(mode) => self.set_doctor_mode(mode),
+            Command::DoctorTools { token, plugin } => return self.doctor_tools_command(&token, &plugin),
+            Command::DoctorCall { token, plugin, tool, arguments } => {
+                return self.doctor_call_command(&token, plugin, tool, arguments);
+            }
             Command::Duck => self.toggle_duck(),
             Command::Feedback(title) => self.send_feedback(&title),
             Command::FeedbackKey(sym, mods) => self.feedback_key(sym, mods),
@@ -679,6 +718,21 @@ mod tests {
         assert!(parse("doctor user").is_err());
         assert!(parse("doctor asking").is_err());
         assert_eq!(parse("doctor use claude-acp"), Ok(Command::DoctorUse("claude-acp".into())));
+        assert_eq!(
+            parse("doctor tools 0f3a home"),
+            Ok(Command::DoctorTools { token: "0f3a".into(), plugin: "home".into() })
+        );
+        assert_eq!(
+            parse(r#"doctor call 0f3a home toggle {"device": "Floor lamp"}"#),
+            Ok(Command::DoctorCall {
+                token: "0f3a".into(),
+                plugin: "home".into(),
+                tool: "toggle".into(),
+                arguments: serde_json::json!({ "device": "Floor lamp" }),
+            })
+        );
+        assert!(parse("doctor tools").is_err() && parse("doctor call 0f3a home").is_err());
+        assert!(parse("doctor call 0f3a home toggle [1]").is_err());
         assert_eq!(parse("notifications"), Ok(Command::Action(Action::Notifications)));
         assert_eq!(parse("notifications clear"), Ok(Command::Action(Action::ClearNotifications)));
         assert!(parse("notifications wipe").is_err());
