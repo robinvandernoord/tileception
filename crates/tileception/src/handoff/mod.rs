@@ -7,7 +7,8 @@
 //! the pointer crosses at those edges. Nothing about the arrangement is
 //! saved: every new connection asks again. Locking pauses sharing until it
 //! is resumed by hand. Windows shown on a machine whose connection is lost
-//! wait for it to link again.
+//! wait for it to link again. Machines that paired once are trusted by their
+//! keys, kept in the state directory, until they are forgotten.
 
 mod clipboard;
 mod drag;
@@ -226,6 +227,12 @@ pub enum HandoffCommand {
     Home,
     /// Brings this machine's windows back from other machines, or from one.
     Reclaim(Option<String>),
+    /// Lists the machines trusted by their keys, and those forgotten.
+    Trusted,
+    /// Stops trusting a machine, by name, id or key fingerprint.
+    Forget(String),
+    /// Gives this machine a new key, which connected machines take over.
+    NewKey,
 }
 
 pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
@@ -248,7 +255,13 @@ pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
         ["reclaim"] => Ok(HandoffCommand::Reclaim(None)),
         // A machine's name may have spaces.
         ["reclaim", name @ ..] => Ok(HandoffCommand::Reclaim(Some(name.join(" ")))),
-        _ => Err("handoff takes status, edge, dismiss, retry, resume, home or reclaim".into()),
+        ["trusted"] => Ok(HandoffCommand::Trusted),
+        ["forget"] => Err("handoff forget needs a machine: its name, id or key".into()),
+        ["forget", name @ ..] => Ok(HandoffCommand::Forget(name.join(" "))),
+        ["new-key"] => Ok(HandoffCommand::NewKey),
+        _ => {
+            Err("handoff takes status, edge, dismiss, retry, resume, home, reclaim, trusted, forget or new-key".into())
+        }
     }
 }
 
@@ -276,15 +289,20 @@ pub fn suggest_passphrase() -> Result<String, String> {
     Ok(chosen.join(" "))
 }
 
-/// This machine's id, kept in the state directory so that other machines
-/// recognise it after a restart: windows waiting for it are then cleared up
-/// instead of waiting for good. One per port, as instances on one machine
-/// (when trying things out) each listen on their own.
-fn machine_id(port: u16) -> PeerId {
-    let path = std::env::var_os("XDG_STATE_HOME")
+/// A handoff file in the state directory. One per port, as instances on one
+/// machine (when trying things out) each listen on their own.
+fn state_file(kind: &str, port: u16) -> std::path::PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
-        .join(format!("tileception/handoff-machine-{port}"));
+        .join(format!("tileception/handoff-{kind}-{port}"))
+}
+
+/// This machine's id, kept in the state directory so that other machines
+/// recognise it after a restart: windows waiting for it are then cleared up
+/// instead of waiting for good.
+fn machine_id(port: u16) -> PeerId {
+    let path = state_file("machine", port);
     let kept = std::fs::read_to_string(&path).ok().and_then(|text| PeerId::from_str_radix(text.trim(), 16).ok());
     if let Some(machine) = kept.filter(|machine| *machine != 0) {
         return machine;
@@ -344,6 +362,8 @@ impl Tileception {
             peers: config.peers,
             discovery: config.discovery,
             machine: Some(machine_id(config.port)),
+            key_file: Some(state_file("key", config.port)),
+            trust_file: Some(state_file("trust", config.port)),
         };
         let started = Service::start(settings, move |event| {
             let _ = sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(event);
@@ -433,6 +453,14 @@ impl Tileception {
                 }
             }
             Event::Refused { .. } => {}
+            Event::Forgotten { peer, name, from } => {
+                self.peer_forgotten(peer);
+                if let Some(sender) = from {
+                    let summary = format!("{name} is no longer trusted");
+                    let body = format!("{sender} forgot it, so it cannot connect to this computer either.");
+                    self.notify_locally(&summary, &body, Urgency::Normal);
+                }
+            }
         }
         self.schedule_render();
     }
@@ -646,6 +674,48 @@ impl Tileception {
         Ok(())
     }
 
+    /// A machine is no longer trusted: everything shared with it ends and
+    /// this machine's windows come back from it, as it will not return.
+    fn peer_forgotten(&mut self, peer: PeerId) {
+        if self.handoff.forwarding == Some(peer) {
+            self.stop_forwarding(forward::Back::Gone);
+        }
+        self.forget_input(peer);
+        self.clipboard_peer_gone(peer);
+        self.drags_peer_gone(peer);
+        self.windows_peer_gone(peer);
+        self.handoff.prompt.dismissed.remove(&peer);
+        self.handoff.peers.remove(&peer);
+    }
+
+    /// `handoff forget`: a trusted machine by name (any case), id or the
+    /// start of its key.
+    fn forget_machine(&mut self, wanted: &str) -> Result<String, String> {
+        let service = self.handoff.service.as_ref().ok_or("handoff is off")?;
+        let key = pick_trusted(&service.trusted(), wanted)?;
+        service.forget(key);
+        Ok(String::new())
+    }
+
+    fn trusted_status(&self) -> Result<String, String> {
+        let service = self.handoff.service.as_ref().ok_or("handoff is off")?;
+        let mut status = format!("this machine's key {}\n", tileception_handoff::fingerprint(&service.key()));
+        for trusted in service.trusted() {
+            let connected = if self.handoff.peers.contains_key(&trusted.machine) { ", connected" } else { "" };
+            status.push_str(&format!(
+                "trusted {} {:016x} key {}{connected}\n",
+                trusted.name,
+                trusted.machine,
+                tileception_handoff::fingerprint(&trusted.key)
+            ));
+        }
+        for forgotten in service.forgotten() {
+            let name = if forgotten.name.is_empty() { "(unnamed)" } else { &forgotten.name };
+            status.push_str(&format!("forgotten {name} key {}\n", tileception_handoff::fingerprint(&forgotten.key)));
+        }
+        Ok(status)
+    }
+
     pub(crate) fn dismiss_peer(&mut self, peer: PeerId) {
         if let Some(entry) = self.handoff.peers.get_mut(&peer) {
             entry.link = Link::Dismissed;
@@ -683,6 +753,13 @@ impl Tileception {
                     return Err("input is already here".into());
                 }
                 self.stop_forwarding(forward::Back::Home);
+            }
+            HandoffCommand::Trusted => return self.trusted_status(),
+            HandoffCommand::Forget(machine) => return self.forget_machine(&machine),
+            HandoffCommand::NewKey => {
+                let service = self.handoff.service.as_ref().ok_or("handoff is off")?;
+                let key = service.new_key().map_err(|error| format!("cannot keep a new key: {error}"))?;
+                return Ok(format!("this machine's key {}\n", tileception_handoff::fingerprint(&key)));
             }
             HandoffCommand::Reclaim(machine) => {
                 if self.reclaim_windows(machine.as_deref()) == 0 {
@@ -752,6 +829,28 @@ impl Tileception {
     }
 }
 
+/// The key of the one trusted machine `wanted` names: by name (any case), by
+/// hex id, or by the start of its key (at least eight hex digits, spaces
+/// allowed, as fingerprints show it).
+fn pick_trusted(trusted: &[tileception_handoff::Trusted], wanted: &str) -> Result<tileception_handoff::Key, String> {
+    let digits: String = wanted.chars().filter(|char| !char.is_whitespace()).collect::<String>().to_lowercase();
+    let by_key = digits.len() >= 8 && digits.chars().all(|char| char.is_ascii_hexdigit());
+    let matching: Vec<&tileception_handoff::Trusted> = trusted
+        .iter()
+        .filter(|trusted| {
+            trusted.name.eq_ignore_ascii_case(wanted.trim())
+                || format!("{:016x}", trusted.machine) == digits
+                || by_key
+                    && trusted.key.iter().map(|byte| format!("{byte:02x}")).collect::<String>().starts_with(&digits)
+        })
+        .collect();
+    match matching.as_slice() {
+        [one] => Ok(one.key),
+        [] => Err(format!("no trusted machine called {wanted:?}; see tileception msg handoff trusted")),
+        _ => Err(format!("more than one trusted machine matches {wanted:?}; give its key")),
+    }
+}
+
 /// A screen in the shared desktop's logical coordinates.
 pub(crate) fn output_bounds(output: &smithay::output::Output) -> Option<tileception_core::Rect> {
     let mode = output.current_mode()?;
@@ -776,6 +875,22 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_names_one_machine() {
+        let machine = |byte: u8, number: PeerId, name: &str| tileception_handoff::Trusted {
+            key: [byte; 32],
+            machine: number,
+            name: name.into(),
+        };
+        let trusted = [machine(0xa1, 0x11, "laptop"), machine(0xb2, 0x22, "desk"), machine(0xb3, 0x33, "Desk")];
+        assert_eq!(pick_trusted(&trusted, "Laptop"), Ok([0xa1; 32]));
+        assert_eq!(pick_trusted(&trusted, "0000000000000022"), Ok([0xb2; 32]));
+        assert_eq!(pick_trusted(&trusted, "b3b3 b3b3"), Ok([0xb3; 32]));
+        assert!(pick_trusted(&trusted, "desk").is_err());
+        assert!(pick_trusted(&trusted, "b3b3").is_err());
+        assert!(pick_trusted(&trusted, "nobody").is_err());
+    }
+
+    #[test]
     fn commands_parse() {
         assert_eq!(parse(&[]), Ok(HandoffCommand::Status));
         assert_eq!(
@@ -789,6 +904,10 @@ mod tests {
         assert!(parse(&["edge", "eDP-1", "middle"]).is_err());
         assert_eq!(parse(&["dismiss", "laptop"]), Ok(HandoffCommand::Dismiss(Some("laptop".into()))));
         assert_eq!(parse(&["home"]), Ok(HandoffCommand::Home));
+        assert_eq!(parse(&["trusted"]), Ok(HandoffCommand::Trusted));
+        assert_eq!(parse(&["forget", "Robin's", "laptop"]), Ok(HandoffCommand::Forget("Robin's laptop".into())));
+        assert!(parse(&["forget"]).is_err());
+        assert_eq!(parse(&["new-key"]), Ok(HandoffCommand::NewKey));
         assert_eq!(parse(&["reclaim"]), Ok(HandoffCommand::Reclaim(None)));
         assert_eq!(
             parse(&["reclaim", "Robin's", "laptop"]),

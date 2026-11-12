@@ -10,10 +10,12 @@ workspace = true
 
 [dependencies]
 getrandom = "0.3"
+hmac = "0.12"
 lz4_flex = "0.11"
 mdns-sd = "0.21"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
 snow = "0.10"
 spake2 = "0.4"
 tracing = "0.1"

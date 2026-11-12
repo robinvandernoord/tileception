@@ -212,6 +212,11 @@ Shell:
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
   handoff reclaim [machine] bring this machine's windows back from others
+  handoff trusted           machines trusted by their keys, and forgotten ones
+  handoff forget <machine>  stop trusting a machine for good, here and on
+                            the machines connected now
+  handoff new-key           give this machine a new key; connected machines
+                            take it over
   updates                   list pending updates and what else waits
   updates check             refresh the package lists (asks for your password)
   updates install [security|package...]

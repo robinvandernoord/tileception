@@ -331,8 +331,11 @@ tray_max_icons = 3
 # crosses there once its user has placed this machine too. Ctrl+Super+Escape
 # brings input back. Locking pauses sharing until you resume it on the card.
 # Pick several random words for the passphrase: guesses are slowed down, but
-# a short phrase can still be guessed. Nothing listens until this is enabled
-# with a passphrase. `tileception msg handoff` shows what is connected.
+# a short phrase can still be guessed. Machines that paired once trust each
+# other's key from then on, so changing the passphrase only affects machines
+# that have not paired yet; `tileception pair --forget <machine>` stops
+# trusting one. Nothing listens until this is enabled with a passphrase.
+# `tileception msg handoff` shows what is connected.
 # Defaults: enabled = false, no passphrase, the host name, port 24850,
 # discovery = true and peers = []. The following is an opt-in example.
 #
