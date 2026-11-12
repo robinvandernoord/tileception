@@ -147,10 +147,11 @@ Report testing in the conversation, the commit or the pull request instead.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
-- Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, Ctrl+Space layout switching, more than one screen, reduced motion,
-  an accent taken from a shared wallpaper, and the full tile-to-window morph
-  at login.
+- Login screen: screen reader and on-screen keyboard switches beside larger
+  text and high contrast (nothing in the compositor provides either yet),
+  Ctrl+Space layout switching, more than one screen, reduced motion, an
+  accent taken from a shared wallpaper, and the full tile-to-window morph at
+  login.
 - Handoff hardening: key rotation and revocation, keyboard-layout ownership,
   edge mapping for unequal monitors and pointer-locked apps, shortcut routing
   inside a streamed window, audio and owner-side portal dialogs. Each machine's
