@@ -710,7 +710,7 @@ impl Runner {
         }
         let from = installed.commit.clone();
         self.install(&source, &lookup)?;
-        Ok(Updated::Moved { from, to: lookup.commit })
+        Ok(Updated::Moved { from, onto: lookup.commit })
     }
 
     /// Updates each plugin in turn, whatever happens to the others.
@@ -765,7 +765,7 @@ fn configured(stdout: &[u8]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Updated {
     /// Installed a newer commit.
-    Moved { from: Option<String>, to: String },
+    Moved { from: Option<String>, onto: String },
     /// Its source is still at the commit installed.
     Current,
 }
@@ -791,9 +791,9 @@ fn update_summary(results: &[(String, Result<Updated, String>)]) -> (String, Res
     for (plugin_id, result) in results {
         match result {
             Err(error) => lines.push(format!("{plugin_id}: {error}")),
-            Ok(Updated::Moved { from, to }) => {
+            Ok(Updated::Moved { from, onto }) => {
                 let from = from.as_deref().map_or_else(String::new, |from| format!("{} ", short(from)));
-                lines.push(format!("{plugin_id}: {from}\u{2192} {}", short(to)));
+                lines.push(format!("{plugin_id}: {from}\u{2192} {}", short(onto)));
             }
             Ok(Updated::Current) => {}
         }
@@ -1267,7 +1267,7 @@ needs = ["the 2fas CLI"]
     fn updating_reports_every_plugin() {
         let commit = |digit: char| std::iter::repeat_n(digit, 40).collect::<String>();
         let results = vec![
-            ("2fas".to_string(), Ok(Updated::Moved { from: Some(commit('0')), to: commit('f') })),
+            ("2fas".to_string(), Ok(Updated::Moved { from: Some(commit('0')), onto: commit('f') })),
             ("github".to_string(), Err("uv tool install failed: no network".to_string())),
             ("odoo".to_string(), Ok(Updated::Current)),
             ("weather".to_string(), Err("weather was not installed from a repository".to_string())),
