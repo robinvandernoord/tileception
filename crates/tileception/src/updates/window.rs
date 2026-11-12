@@ -282,9 +282,36 @@ const SIDE: f64 = 184.0;
 const FOOTER: f64 = 54.0;
 const DETAIL: f64 = 58.0;
 
-fn footer_button(footer: Rect, slot: usize, width: f64) -> Rect {
+/// Narrow headers put their actions below the title, wrapping at button widths.
+fn header_button_rows(width: f64, count: usize) -> usize {
+    if count == 0 || width >= 160.0 + count as f64 * 112.0 {
+        return 0;
+    }
+    count.div_ceil(header_button_columns(width, count))
+}
+
+fn header_button_columns(width: f64, count: usize) -> usize {
+    (((width - 32.0 + 8.0) / 112.0).floor().max(1.0) as usize).min(count.max(1))
+}
+
+/// The width of each of `count` buttons in a footer: `widest`, or less when
+/// the window is narrow (a split screen's area), so they stay inside it.
+fn footer_button_width(footer: Rect, count: usize, widest: f64) -> f64 {
+    let count = count.max(1) as f64;
+    let room = footer.w - 32.0 - (count - 1.0) * 8.0;
+    widest.min(room / count).max(1.0)
+}
+
+/// Button `slot` of `count`, counted from the right.
+fn footer_button(footer: Rect, slot: usize, count: usize, widest: f64) -> Rect {
+    let width = footer_button_width(footer, count, widest);
     let right = footer.right() - 16.0 - slot as f64 * (width + 8.0);
     Rect::new(right - width, footer.y + (footer.h - 32.0) / 2.0, width, 32.0)
+}
+
+/// What is left of a footer for text beside its buttons.
+fn footer_text_room(footer: Rect, count: usize, widest: f64) -> f64 {
+    footer.w - 36.0 - count as f64 * (footer_button_width(footer, count, widest) + 8.0)
 }
 
 fn row_button(row: Rect) -> Rect {
@@ -323,8 +350,11 @@ impl Tileception {
         self.close_tray();
         self.close_launcher();
         let screen = self.world.screen();
-        self.updates.window.size =
-            (880.0_f64.min(screen.w - 40.0).max(480.0), 580.0_f64.min(screen.h - 40.0).max(360.0));
+        // Never wider than the screen, or on a split screen its area.
+        self.updates.window.size = (
+            880.0_f64.min(screen.w - 40.0).max(480.0).min(screen.w),
+            580.0_f64.min(screen.h - 40.0).max(360.0).min(screen.h),
+        );
         self.updates.window.open = true;
         // What the window lists should be as it is now, not hours old.
         self.updates_request(super::Request::Scan { offer: false });
@@ -601,7 +631,8 @@ impl Tileception {
             })
             .collect();
         let body = Rect::new(side.right(), panel.y, panel.w - side.w, panel.h);
-        let header_h = if window.page == Page::Release { 132.0 } else { 56.0 };
+        let header_h = if window.page == Page::Release { 132.0 } else { 56.0 }
+            + header_button_rows(body.w, self.updates_header_buttons().len()) as f64 * 38.0;
         let header = Rect::new(body.x, body.y, body.w, header_h);
         let footer = Rect::new(body.x, body.bottom() - FOOTER, body.w, FOOTER);
         let has_detail = window.preview.is_none() && window.page != Page::Release;
@@ -1201,15 +1232,21 @@ impl Tileception {
     fn updates_window_controls(&self, frame: &Frame) -> Vec<(Rect, Hit)> {
         let updates = &self.updates;
         let mut controls: Vec<(Rect, Hit)> = frame.nav.iter().map(|(rect, page)| (*rect, Hit::Page(*page))).collect();
-        for (slot, (_, hit)) in self.updates_header_buttons().into_iter().enumerate() {
-            controls.push((Self::updates_header_button(frame.header, slot), hit));
+        let header_buttons = self.updates_header_buttons();
+        let count = header_buttons.len();
+        for (slot, (_, hit)) in header_buttons.into_iter().enumerate() {
+            controls.push((Self::updates_header_button(frame.header, slot, count), hit));
         }
-        for (slot, (_, hit, _)) in self.updates_footer_buttons().into_iter().enumerate() {
-            controls.push((footer_button(frame.footer, slot, 124.0), hit));
+        let footer_buttons = self.updates_footer_buttons();
+        let count = footer_buttons.len();
+        for (slot, (_, hit, _)) in footer_buttons.into_iter().enumerate() {
+            controls.push((footer_button(frame.footer, slot, count, 124.0), hit));
         }
         if let Some(detail) = frame.detail {
-            for (slot, (_, hit)) in self.updates_detail_buttons().into_iter().enumerate() {
-                controls.push((footer_button(detail, slot, 104.0), hit));
+            let detail_buttons = self.updates_detail_buttons();
+            let count = detail_buttons.len();
+            for (slot, (_, hit)) in detail_buttons.into_iter().enumerate() {
+                controls.push((footer_button(detail, slot, count, 104.0), hit));
             }
         }
         let checks = self.updates_release_checks();
@@ -1264,9 +1301,17 @@ impl Tileception {
         }
     }
 
-    fn updates_header_button(header: Rect, slot: usize) -> Rect {
-        let width = 104.0;
-        Rect::new(header.right() - 16.0 - width - slot as f64 * (width + 8.0), header.y + 13.0, width, 30.0)
+    fn updates_header_button(header: Rect, slot: usize, count: usize) -> Rect {
+        let wrapped = header_button_rows(header.w, count) > 0;
+        let columns = if wrapped { header_button_columns(header.w, count) } else { count };
+        let width = footer_button_width(header, columns, 104.0);
+        let offset_y = if wrapped { 56.0 + (slot / columns) as f64 * 38.0 } else { 13.0 };
+        Rect::new(
+            header.right() - 16.0 - width - (slot % columns) as f64 * (width + 8.0),
+            header.y + offset_y,
+            width,
+            30.0,
+        )
     }
 
     fn updates_window_target(&self, point: Point) -> Option<PointerTarget> {
@@ -1404,20 +1449,25 @@ impl Tileception {
             Page::Release => ("Release".to_string(), format!("You're on {}", snapshot.system.pretty)),
             Page::History => ("History".to_string(), "from the apt log".to_string()),
         };
+        let header_buttons = self.updates_header_buttons();
+        let count = header_buttons.len();
+        let room = if header_button_rows(header.w, count) > 0 {
+            header.w - 36.0
+        } else {
+            footer_text_room(header, count, 104.0)
+        };
         let (width, _) = painter.text(
             &title,
-            Rect::new(header.x + 18.0, header.y, header.w - 140.0, 56.0),
+            Rect::new(header.x + 18.0, header.y, room.max(1.0), 56.0),
             Style::new(size * 1.12, theme.text).bold(),
         );
-        let header_buttons = self.updates_header_buttons();
-        let taken = 30.0 + width + header_buttons.len() as f64 * 112.0 + 24.0;
         painter.text(
             &note,
-            Rect::new(header.x + 30.0 + width, header.y + 1.0, (header.w - taken).max(1.0), 56.0),
+            Rect::new(header.x + 30.0 + width, header.y + 1.0, (room - width - 12.0).max(1.0), 56.0),
             muted,
         );
         for (slot, (label, _)) in header_buttons.into_iter().enumerate() {
-            draw_button(&mut painter, Self::updates_header_button(header, slot), label, Look::Plain, pointer);
+            draw_button(&mut painter, Self::updates_header_button(header, slot, count), label, Look::Plain, pointer);
         }
         if window.page == Page::Release {
             let hero = Rect::new(header.x + 16.0, header.y + 56.0, header.w - 32.0, 64.0);
@@ -1698,7 +1748,7 @@ impl Tileception {
             painter.fill(detail, theme.surface, 0.0);
             painter.fill(Rect::new(detail.x, detail.y, detail.w, 1.0), theme.border, 0.0);
             let buttons = self.updates_detail_buttons();
-            let room = detail.w - 36.0 - buttons.len() as f64 * 112.0;
+            let room = footer_text_room(detail, buttons.len(), 104.0);
             let lines = Rect::new(detail.x + 18.0, detail.y + 8.0, room, 20.0);
             let second = Rect::new(lines.x, lines.y + 20.0, lines.w, 20.0);
             match (window.page, self.updates_selected_row()) {
@@ -1767,8 +1817,9 @@ impl Tileception {
                 }
                 _ => {}
             }
+            let count = buttons.len();
             for (slot, (label, _)) in buttons.into_iter().enumerate() {
-                draw_button(&mut painter, footer_button(detail, slot, 104.0), label, Look::Plain, pointer);
+                draw_button(&mut painter, footer_button(detail, slot, count, 104.0), label, Look::Plain, pointer);
             }
         }
 
@@ -1776,7 +1827,7 @@ impl Tileception {
         let footer = frame.footer;
         painter.fill(Rect::new(footer.x, footer.y, footer.w, 1.0), theme.border, 0.0);
         let buttons = self.updates_footer_buttons();
-        let room = footer.w - 36.0 - buttons.len() as f64 * 132.0;
+        let room = footer_text_room(footer, buttons.len(), 124.0);
         let line = Rect::new(footer.x + 18.0, footer.y, room, footer.h);
         if let Some((title, label, fraction)) = updates.progress() {
             painter.text(&format!("{title} \u{b7} {label}"), Rect::new(line.x, line.y + 8.0, line.w, 22.0), body);
@@ -1851,13 +1902,14 @@ impl Tileception {
             painter.text(&text, line, muted.colour(tint));
         }
         let ready = release::ready(&checks);
+        let count = buttons.len();
         for (slot, (label, hit, primary)) in buttons.into_iter().enumerate() {
             let look = match (primary, hit) {
                 (true, _) => Look::Primary,
                 (false, Hit::Security) => Look::Warning,
                 _ => Look::Plain,
             };
-            let rect = footer_button(footer, slot, 124.0);
+            let rect = footer_button(footer, slot, count, 124.0);
             let enabled = ready || hit != Hit::Upgrade || !primary;
             painter.button(rect, Button::new(&label, look).enabled(enabled), rect.contains(pointer));
         }
