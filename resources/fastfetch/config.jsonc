@@ -1,0 +1,25 @@
+// Fastfetch's config in a Tileception session, when you have none of your own
+// in ~/.config/fastfetch. tileception-session puts this file's directory in
+// XDG_CONFIG_DIRS; other sessions keep fastfetch's defaults.
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        // fastfetch/logos/tileception in a data directory, such as /usr/share.
+        // Without an extension, so `fastfetch -l tileception` finds it too.
+        "source": "tileception",
+        "color": {
+            // The pale tiles take the terminal's text colour, so they show on
+            // light and dark themes alike.
+            "1": "default",
+            "2": "#d42a1e",
+            "3": "#f4c22f",
+            "4": "#1d4fa2"
+        }
+    },
+    "display": {
+        "color": {
+            "keys": "#d42a1e",
+            "title": "#d42a1e"
+        }
+    }
+}
