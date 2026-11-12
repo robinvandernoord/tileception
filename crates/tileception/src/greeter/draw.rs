@@ -4,7 +4,7 @@
 use smithay::backend::renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer};
 use tileception_core::{Point, Rect};
 
-use super::{Action, Auth, Greeter, settings::Panel, settings::WallpaperFallback};
+use super::{Action, Auth, Greeter, access::Aid, settings::Panel, settings::WallpaperFallback};
 use crate::{
     Tileception,
     render::OutputElement,
@@ -24,6 +24,11 @@ const PILL_H: f64 = 26.0;
 const AVATAR: f64 = 92.0;
 const FIELD_H: f64 = 48.0;
 const PALETTE_ROWS: usize = 8;
+/// With people as tiles, how much wider the selected person's tile is than
+/// the others, and the narrowest each may get before fewer people are shown.
+const CARD_GROW: f64 = 2.8;
+const CARD_MIN: f64 = 96.0;
+const CARD_SELECTED_MIN: f64 = 300.0;
 /// How long the field shakes after a wrong password, in seconds.
 const SHAKE: f64 = 0.45;
 /// How long a change of person takes to crossfade, in seconds.
@@ -39,6 +44,8 @@ pub enum Target {
     Session(usize),
     Submit,
     Run(Action),
+    /// A switch of the accessibility panel, by its row.
+    Aid(usize),
     Launcher,
     /// The keyboard layout in the bar, when there are several.
     Layout,
@@ -76,10 +83,14 @@ struct Scene {
     /// Arrows at the ends of a tab strip too long to show at once, each
     /// with the person it moves to (none at the end) and whether it points left.
     tab_arrows: Vec<(Rect, Option<usize>, bool)>,
+    /// With people as tiles: each shown person's tile, by person.
+    cards: Vec<(usize, Rect)>,
     login: Option<LoginLayout>,
     /// Session rows, by session.
     rows: Vec<(usize, Rect)>,
     power: Vec<(Action, Rect)>,
+    /// The accessibility panel's switches, by row.
+    aids: Vec<(usize, Rect)>,
     /// Locked: the one tab, saying whose session it is.
     locked_tab: Option<Rect>,
     /// Locked: what happened while away, and play or pause.
@@ -127,9 +138,11 @@ impl Tileception {
             panels: panels.clone(),
             tabs: Vec::new(),
             tab_arrows: Vec::new(),
+            cards: Vec::new(),
             login: None,
             rows: Vec::new(),
             power: Vec::new(),
+            aids: Vec::new(),
             locked_tab: None,
             away: None,
             media: None,
@@ -140,9 +153,20 @@ impl Tileception {
         if let Some(login) = panel_rect(&panels, Panel::Login) {
             // One person needs no tabs; someone not listed is in the launcher then.
             let mut top = login.y + 14.0;
+            // Where the name and field go: the panel, or the selected person's tile.
+            let mut area = login;
             if greeter.locked() {
                 scene.locked_tab = Some(Rect::new(login.x + 6.0, login.y + 6.0, (login.w - 12.0).min(260.0), TAB_H));
                 top = login.y + 6.0 + TAB_H + 10.0;
+            } else if greeter.cards() {
+                let gap = self.config.file.general.gap.clamp(4.0, 32.0);
+                for (person, left, width) in card_row(login.w, gap, greeter.people(), greeter.user) {
+                    let card = Rect::new(login.x + left, login.y, width, login.h);
+                    if person == greeter.user {
+                        area = card;
+                    }
+                    scene.cards.push((person, card));
+                }
             } else if greeter.accounts.len() > 1 {
                 let strip = Rect::new(login.x + 6.0, login.y + 6.0, login.w - 12.0, TAB_H);
                 let plus = 34.0;
@@ -176,17 +200,20 @@ impl Tileception {
                 scene.tabs.push((account_count, Rect::new(strip.right() - plus, strip.y, plus, strip.h)));
                 top = strip.bottom() + 10.0;
             }
-            let column_h = AVATAR + 14.0 + 30.0 + 22.0 + 22.0 + FIELD_H + 12.0 + 24.0;
-            let room = login.bottom() - top;
+            // Larger text needs taller lines.
+            let font_size = f64::from(self.theme.font_size);
+            let (name_h, sub_h) = ((font_size * 1.7 * 1.35).max(30.0), (font_size * 1.7).max(22.0));
+            let column_h = AVATAR + 14.0 + name_h + sub_h + 22.0 + FIELD_H + 12.0 + 24.0;
+            let room = area.bottom() - top;
             let avatar_top = top + ((room - column_h) / 2.0).max(0.0);
-            let center_x = login.x + login.w / 2.0;
+            let center_x = area.x + area.w / 2.0;
             let avatar = Rect::new(center_x - AVATAR / 2.0, avatar_top, AVATAR, AVATAR);
-            let name = Rect::new(login.x + 16.0, avatar.bottom() + 14.0, login.w - 32.0, 30.0);
-            let sub = Rect::new(name.x, name.bottom(), name.w, 22.0);
-            let field_width = (login.w - 48.0).clamp(1.0, 360.0);
+            let name = Rect::new(area.x + 16.0, avatar.bottom() + 14.0, area.w - 32.0, name_h);
+            let sub = Rect::new(name.x, name.bottom(), name.w, sub_h);
+            let field_width = (area.w - 48.0).clamp(1.0, 360.0);
             let field = Rect::new(center_x - field_width / 2.0, sub.bottom() + 22.0, field_width, FIELD_H);
             let submit = Rect::new(field.right() - 40.0, field.y + 8.0, 32.0, 32.0);
-            let hint = Rect::new(login.x + 16.0, field.bottom() + 12.0, login.w - 32.0, 24.0);
+            let hint = Rect::new(area.x + 16.0, field.bottom() + 12.0, area.w - 32.0, 24.0);
             scene.login = Some(LoginLayout { avatar, name, sub, field, submit, hint });
         }
 
@@ -216,6 +243,14 @@ impl Tileception {
             let first = (chosen + 1).saturating_sub(fits);
             for (row, index) in (first..greeter.sessions.len()).take(fits).enumerate() {
                 scene.rows.push((index, Rect::new(inner.x, inner.y + row as f64 * (ROW_H + 4.0), inner.w, ROW_H)));
+            }
+        }
+
+        if let Some(panel) = panel_rect(&panels, Panel::Accessibility) {
+            let inner = body(panel);
+            let fits = ((inner.h + 4.0) / (ROW_H + 4.0)).floor().max(0.0) as usize;
+            for row in 0..Aid::ALL.len().min(fits) {
+                scene.aids.push((row, Rect::new(inner.x, inner.y + row as f64 * (ROW_H + 4.0), inner.w, ROW_H)));
             }
         }
 
@@ -260,6 +295,8 @@ impl Tileception {
         if let Some(login) = &scene.login {
             out.push((login.submit, Target::Submit));
         }
+        out.extend(scene.cards.iter().map(|(person, rect)| (*rect, Target::Person(*person))));
+        out.extend(scene.aids.iter().map(|(row, rect)| (*rect, Target::Aid(*row))));
         out.extend(scene.rows.iter().map(|(session, rect)| (*rect, Target::Session(*session))));
         out.extend(scene.power.iter().map(|(action, rect)| (*rect, Target::Run(*action))));
         out.extend(scene.media.map(|rect| (rect, Target::Run(Action::Media))));
@@ -293,7 +330,10 @@ impl Tileception {
         self.greeter_draw_bar(&mut painter, greeter, &scene);
         for (panel, rect) in &scene.panels {
             let focused = greeter.focus == *panel && greeter.palette.is_none();
-            draw_frame(&mut painter, *rect, focused, accent);
+            // People as tiles stand on their own, without the panel around them.
+            if *panel != Panel::Login || scene.cards.is_empty() {
+                draw_frame(&mut painter, *rect, focused, accent);
+            }
             match panel {
                 Panel::Login => self.greeter_draw_login(&mut painter, greeter, &scene, accent),
                 Panel::Clock => self.greeter_draw_clock(&mut painter, greeter, *rect, focused, accent),
@@ -304,6 +344,9 @@ impl Tileception {
                     self.greeter_draw_away(&mut painter, greeter, &scene, *rect, focused, accent)
                 }
                 Panel::Session => self.greeter_draw_sessions(&mut painter, greeter, &scene, *rect, focused, accent),
+                Panel::Accessibility => {
+                    self.greeter_draw_accessibility(&mut painter, greeter, &scene, *rect, focused, accent)
+                }
             }
         }
         if let Some(palette) = &scene.palette {
@@ -322,6 +365,9 @@ impl Tileception {
             other => other,
         };
         painter.fill(screen, theme.background, 0.0);
+        if greeter.aid_on(Aid::HighContrast) {
+            return;
+        }
         match fallback {
             WallpaperFallback::Generated => {
                 // A soft wash of the person's accent, brightest in two corners.
@@ -349,8 +395,9 @@ impl Tileception {
             WallpaperFallback::Flat => {}
         }
         // Shared wallpapers over that: the newly selected person's fades in,
-        // over the one before when the person changed.
-        if greeter.file.per_user.wallpaper {
+        // over the one before when the person changed. People shown as
+        // tiles carry their own.
+        if greeter.file.per_user.wallpaper && !greeter.cards() {
             let fade = ease_out(greeter.switched_at.elapsed().as_secs_f64() / CROSSFADE) as f32;
             let mut layer = |person: usize, alpha: f32| {
                 if let Some(wallpaper) = greeter.wallpapers.get(&person).filter(|_| alpha > 0.0) {
@@ -405,6 +452,7 @@ impl Tileception {
 
     fn greeter_draw_login(&self, painter: &mut Painter, greeter: &Greeter, scene: &Scene, accent: (Colour, Colour)) {
         let theme = &self.theme;
+        self.greeter_draw_cards(painter, greeter, scene, accent);
         let strip =
             scene.tabs.iter().map(|(_, rect)| *rect).chain(scene.tab_arrows.iter().map(|(rect, _, _)| *rect)).reduce(
                 |merged, tab| {
@@ -665,6 +713,118 @@ impl Tileception {
             layout.hint.y + layout.hint.h / 2.0,
             false,
         );
+    }
+
+    /// People as tiles: each over their own wallpaper (or their accent),
+    /// darkened so text reads on it. The selected one, widest, gets the
+    /// login form from [`Self::greeter_draw_login`]; the others their
+    /// picture and name.
+    fn greeter_draw_cards(&self, painter: &mut Painter, greeter: &Greeter, scene: &Scene, accent: (Colour, Colour)) {
+        let theme = &self.theme;
+        let focused = greeter.focus == Panel::Login && greeter.palette.is_none();
+        let contrast = greeter.aid_on(Aid::HighContrast);
+        for (person, rect) in &scene.cards {
+            let active = *person == greeter.user;
+            let own = greeter.accent_of(theme, *person);
+            let drop = if theme.frost { 0.0 } else { 4.0 };
+            painter.shape(
+                Rect::new(rect.x, rect.y + drop, rect.w, rect.h),
+                Shape {
+                    radius: theme.radius,
+                    glow_radius: 14.0,
+                    glow: Colour([0.0, 0.0, 0.0, 0.2]),
+                    ..Default::default()
+                },
+            );
+            painter.fill(*rect, theme.surface, theme.radius);
+            if !contrast {
+                let wallpaper = greeter.wallpapers.get(person).filter(|_| greeter.file.per_user.wallpaper);
+                match wallpaper {
+                    Some(wallpaper) => {
+                        painter.clipped(*rect, |clipped| clipped.image(wallpaper, (scene.screen.x, scene.screen.y)));
+                    }
+                    None => painter.shape(
+                        *rect,
+                        Shape {
+                            fill: (own.0.alpha(0.22), own.1.alpha(0.10)),
+                            radius: theme.radius,
+                            ..Default::default()
+                        },
+                    ),
+                }
+                let shade = if active { 0.45 } else { 0.68 };
+                painter.fill(*rect, Colour([0.0, 0.0, 0.0, shade]), theme.radius);
+            }
+            let lit = active && focused;
+            painter.shape(
+                *rect,
+                Shape {
+                    border_width: if lit { 1.5 } else { 1.0 },
+                    border: if lit { accent.0 } else { theme.border },
+                    glow_radius: if lit { theme.glow * 0.7 } else { 0.0 },
+                    glow: accent.0.alpha(0.2),
+                    radius: theme.radius,
+                    ..Default::default()
+                },
+            );
+            if active {
+                continue;
+            }
+            let font_size = f64::from(theme.font_size);
+            let size = (rect.w * 0.5).clamp(32.0, 64.0);
+            let name_h = (font_size * 1.6).max(22.0);
+            let top = rect.y + ((rect.h - size - 10.0 - name_h) / 2.0).max(0.0);
+            let picture = Rect::new(rect.x + (rect.w - size) / 2.0, top, size, size);
+            self.greeter_draw_avatar(painter, greeter, *person, picture, own, 0.42);
+            let name = greeter.accounts.get(*person).map_or("Not listed", |account| account.name.as_str());
+            painter.text(
+                name,
+                Rect::new(rect.x + 8.0, picture.bottom() + 10.0, rect.w - 16.0, name_h),
+                Style::new(theme.font_size, theme.text).align(Align::Centre),
+            );
+        }
+    }
+
+    /// Switches for larger text and high contrast.
+    fn greeter_draw_accessibility(
+        &self,
+        painter: &mut Painter,
+        greeter: &Greeter,
+        scene: &Scene,
+        rect: Rect,
+        focused: bool,
+        accent: (Colour, Colour),
+    ) {
+        let theme = &self.theme;
+        draw_title(painter, theme, rect, "Accessibility", focused.then_some(accent.0));
+        for (row, line) in &scene.aids {
+            let Some(aid) = Aid::ALL.get(*row).copied() else { continue };
+            let enabled = greeter.aid_on(aid);
+            if focused && *row == greeter.aid_cursor {
+                painter.shape(
+                    *line,
+                    Shape {
+                        border_width: 1.0,
+                        border: accent.0.alpha(0.7),
+                        radius: theme.radius,
+                        ..Default::default()
+                    },
+                );
+            }
+            painter.glyph(
+                aid.glyph(),
+                Rect::new(line.x + 6.0, line.y, 28.0, line.h),
+                16,
+                if enabled { accent.0 } else { theme.muted },
+            );
+            painter.text(
+                aid.label(),
+                Rect::new(line.x + 42.0, line.y, (line.w - 42.0 - 60.0).max(0.0), line.h),
+                Style::new(theme.font_size, theme.text),
+            );
+            let track = Rect::new(line.right() - 48.0, line.y + (line.h - 22.0) / 2.0, 38.0, 22.0);
+            crate::panel::draw_switch(painter, track, enabled, false, true);
+        }
     }
 
     /// An avatar picture, or the initial on the accent gradient.
@@ -1035,6 +1195,7 @@ impl Tileception {
                 Action::Session(_) => glyph::OVERVIEW,
                 Action::Person(_) => USER,
                 Action::Layout(_) | Action::Keymap(_) => glyph::KEYBOARD,
+                Action::Aid(aid) => aid.glyph(),
             };
             painter.glyph(
                 icon,
@@ -1122,6 +1283,34 @@ const USER: &str = r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 
 const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
 const CHEVRON_LEFT: &str = r#"<path d="M15 6l-6 6 6 6"/>"#;
 const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
+
+/// People as tiles across `width`, `gap` apart: which of `count` people
+/// (someone not listed last, always shown) get one, where each starts and
+/// how wide it is. The selected one is [`CARD_GROW`] times as wide as the
+/// others; when they would be too narrow, fewer people are shown, around
+/// the selected one.
+fn card_row(width: f64, gap: f64, count: usize, selected: usize) -> Vec<(usize, f64, f64)> {
+    let listed = count.saturating_sub(1);
+    let fits = |shown: usize| {
+        let others = shown as f64;
+        let unit = (width - gap * others) / (others + CARD_GROW);
+        unit >= CARD_MIN && unit * CARD_GROW >= CARD_SELECTED_MIN
+    };
+    let shown = (1..=listed).rev().find(|shown| fits(*shown)).unwrap_or(1.min(listed));
+    let people: Vec<usize> = tab_window(listed, selected, shown).chain(std::iter::once(listed)).collect();
+    let others = (people.len() - 1) as f64;
+    let unit = ((width - gap * others) / (others + CARD_GROW)).max(1.0);
+    let mut left = 0.0;
+    people
+        .into_iter()
+        .map(|person| {
+            let card = if person == selected { unit * CARD_GROW } else { unit };
+            let placed = (person, left, card);
+            left += card + gap;
+            placed
+        })
+        .collect()
+}
 
 /// Which of `count` people's tabs show when only `fits` do: a run around the
 /// selected one, or the last ones while someone not listed is selected.
@@ -1333,6 +1522,27 @@ mod tests {
         assert_eq!(tab_window(10, 9, 4), 6..10);
         // Someone not listed: the last tabs, beside the + tab.
         assert_eq!(tab_window(10, 10, 4), 6..10);
+    }
+
+    #[test]
+    fn people_as_tiles_fill_the_row_around_the_selected_one() {
+        // Three listed and someone not listed, with room for all.
+        let row = card_row(1000.0, 10.0, 4, 1);
+        assert_eq!(row.iter().map(|(person, _, _)| *person).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        let (_, left, width) = row[1];
+        assert!((width / row[0].2 - CARD_GROW).abs() < 1e-9);
+        assert!((left - row[0].2 - 10.0).abs() < 1e-9);
+        let (_, last_left, last_width) = row[3];
+        assert!((last_left + last_width - 1000.0).abs() < 1e-9);
+        // Too many for the width: fewer, around the selected one, and
+        // someone not listed still last.
+        let row = card_row(700.0, 10.0, 11, 6);
+        let people: Vec<usize> = row.iter().map(|(person, _, _)| *person).collect();
+        assert!(people.contains(&6) && people.last() == Some(&10) && people.len() < 11);
+        assert!(row.iter().all(|(person, _, width)| *person == 6 || *width >= CARD_MIN));
+        // Someone not listed selected: the last listed people beside them.
+        let row = card_row(700.0, 10.0, 11, 10);
+        assert_eq!(row.last().map(|(person, _, width)| (*person, *width >= CARD_SELECTED_MIN)), Some((10, true)));
     }
 
     #[test]

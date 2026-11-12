@@ -8,11 +8,13 @@
 default_session = "tileception"
 # Sessions left out of the list, by file name or by name.
 hidden_sessions = ["tileception-nested"]
-# Accounts left out of the tabs. System accounts (outside UID_MIN..UID_MAX in
+# Accounts left out of the people to choose from. System accounts (outside UID_MIN..UID_MAX in
 # /etc/login.defs, or with a nologin shell) are never listed. The + tab still
 # takes any username.
 hidden_users = []
-# tabs: one tab per person on the login tile. (tiles is not drawn yet.)
+# tabs: one tab per person on the login tile.
+# tiles: a tile per person side by side, each over their shared wallpaper;
+# the selected person's is widest and holds the password field.
 users_as = "tabs"
 # strftime, such as "%H:%M" or "%I:%M %p".
 clock_format = "%H:%M"
@@ -25,8 +27,9 @@ xsession_wrapper = "startx /usr/bin/env"
 
 [panels]
 # Columns of panels, each top to bottom, sized by ratio. On a portrait screen
-# the columns become rows. Panels: login (required), clock, session, motd.
-# For example, a message under the clock and sessions:
+# the columns become rows. Panels: login (required), clock, session, motd,
+# accessibility (switches for larger text and high contrast, which are also
+# in the launcher). For example, a message under the clock and sessions:
 # columns = [["login"], ["clock", "session", "motd"]]
 columns = [["login"], ["clock", "session"]]
 ratios = [1.75, 1]

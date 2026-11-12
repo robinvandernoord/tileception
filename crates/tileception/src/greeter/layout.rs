@@ -12,6 +12,7 @@ fn weight(panel: Panel) -> f64 {
         Panel::Clock => 0.8,
         Panel::Session => 1.0,
         Panel::Motd => 0.6,
+        Panel::Accessibility => 0.5,
     }
 }
 

@@ -74,9 +74,17 @@ Edit `/etc/tileception/greeter.toml` with sudo. The
 users and sessions, panel layout, clock, theme and keyboard layout. Settings are
 read when the greeter starts.
 
+- **People as tiles:** with `users_as = "tiles"`, everyone gets a tile of
+  their own instead of a tab, over the wallpaper their Tileception session
+  shares. The selected person's tile is the widest and holds the password
+  field; click another tile or press **Super+Tab** to switch.
 - **Message panel:** add `motd` to `[panels] columns` to show a message to
   everyone who logs in. Set its `title` and `text` in `[motd]`, or point `file` at
   a file such as `/etc/motd`.
+- **Accessibility:** **Larger text** and **High contrast** are in the launcher
+  (tap **Super** and type "larger" or "contrast"). Add `accessibility` to
+  `[panels] columns` to show them as switches on screen too. The greeter
+  remembers them for the next boot; they do not change anyone's session.
 - **Lock screen:** `[lock]` decides what a locked Tileception session shows before
   it is unlocked: `show_media` for the player controls and
   `show_notification_count` for the number of new notifications. Locked sessions
