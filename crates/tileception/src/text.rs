@@ -73,10 +73,10 @@ impl Ink {
 /// RGBA) at least half as opaque as the most opaque one, so the faint
 /// edges of anti-aliasing don't widen it to whole pixels on either side.
 fn ink(pixels: &[u8], width: i32, scale: f32) -> Option<Ink> {
-    let peak = pixels.chunks_exact(4).map(|pixel| pixel[3]).max().filter(|&alpha| alpha > 0)?;
+    let peak = pixels.as_chunks::<4>().0.iter().map(|pixel| pixel[3]).max().filter(|&alpha| alpha > 0)?;
     let width = width.max(1) as usize;
     let (mut left, mut top, mut right, mut bottom) = (usize::MAX, usize::MAX, 0, 0);
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         if u16::from(pixel[3]) * 2 >= u16::from(peak) {
             let (x_pos, y_pos) = (index % width, index / width);
             left = left.min(x_pos);
@@ -733,7 +733,9 @@ mod tests {
     /// quarter.
     fn pixels(opaque: &[(usize, usize)], faint: &[(usize, usize)]) -> Vec<u8> {
         let mut pixels = vec![0; 4 * 3 * 4];
-        for (&(x_pos, y_pos), alpha) in opaque.iter().map(|at| (at, 255)).chain(faint.iter().map(|at| (at, 64))) {
+        for (&(x_pos, y_pos), alpha) in
+            opaque.iter().map(|place| (place, 255)).chain(faint.iter().map(|place| (place, 64)))
+        {
             pixels[(y_pos * 4 + x_pos) * 4 + 3] = alpha;
         }
         pixels
