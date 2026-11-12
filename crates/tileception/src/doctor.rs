@@ -3813,8 +3813,7 @@ fn doctor_context(mode: &str) -> String {
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\
-         - This is Tileception {version}. What changed in each version, and when, is in {changelog}, \
-         newest first.\n\
+         - {version} What changed in each version, and when, is in {changelog}, newest first.\n\
          - The log is {log}.\n\
          - Read and write files with the file tools the client offers, so the user sees diffs and gets backups. \
          The user's permission mode is \"{mode}\".\n\
@@ -3824,9 +3823,22 @@ fn doctor_context(mode: &str) -> String {
         defaults = state.join("tileception/default-config.toml").display(),
         docs = state.join("tileception/docs/index.md").display(),
         changelog = state.join("tileception/CHANGELOG.md").display(),
-        version = env!("CARGO_PKG_VERSION"),
+        version = running_version(env!("CARGO_PKG_VERSION")),
         mode = mode,
     )
+}
+
+/// Which Tileception this is, for the agent. A prerelease such as `1.2.0-rc.1`
+/// has no entry in the changelog, which leaves prereleases out until the
+/// release itself.
+fn running_version(version: &str) -> String {
+    match version.split_once('-') {
+        Some((release, _)) => format!(
+            "This is Tileception {version}, a test release of {release}; its changes may not be in the \
+             changelog yet."
+        ),
+        None => format!("This is Tileception {version}."),
+    }
 }
 
 /// Premultiplied, as the renderer wants pictures.
@@ -3997,6 +4009,15 @@ mod tests {
         let context = doctor_context("Ask");
         assert!(context.contains("tileception/CHANGELOG.md"));
         assert!(context.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn says_when_this_is_a_test_release() {
+        assert_eq!(running_version("1.2.0"), "This is Tileception 1.2.0.");
+        assert_eq!(
+            running_version("1.2.0-rc.1"),
+            "This is Tileception 1.2.0-rc.1, a test release of 1.2.0; its changes may not be in the changelog yet."
+        );
     }
 
     #[test]
