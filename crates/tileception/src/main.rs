@@ -24,6 +24,7 @@ mod config;
 mod config_edit;
 mod controls;
 mod cursor;
+mod desk;
 mod doctor;
 mod doctor_policy;
 mod drag;

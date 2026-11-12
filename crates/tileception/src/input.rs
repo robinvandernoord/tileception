@@ -48,7 +48,7 @@ pub enum Action {
     Back,
     Forward,
     Maximize,
-    ToggleDesktop,
+    ToggleDesk,
     ToggleFloat,
     NextTab,
     PrevTab,
@@ -477,10 +477,16 @@ impl Tileception {
             self.key_to_owner(code, key_state);
         }
         let tapped = std::mem::take(&mut self.tap_fired);
-        let commands = commands.unwrap_or_default();
+        let mut commands = commands.unwrap_or_default();
+        if pressed && matches!(commands.as_slice(), [Command::Action(Action::ToggleDesk)]) {
+            // A tap acts when let go; a hold peeks.
+            self.desk_key_pressed(keycode);
+            commands.clear();
+        }
         let greeter_repeat = self.greeter_repeat.take();
         if !pressed {
             self.key_released(keycode, modifier);
+            self.desk_key_released(keycode);
         } else if let Some(repeat) = greeter_repeat.or_else(|| Repeat::for_commands(&commands)) {
             self.start_key_repeat(keycode, repeat);
         } else {
@@ -588,7 +594,7 @@ impl Tileception {
             Action::Back => self.world.back(now),
             Action::Forward => self.world.forward(now),
             Action::Maximize => self.world.maximize(now),
-            Action::ToggleDesktop => self.world.toggle_desktop(now),
+            Action::ToggleDesk => self.toggle_desk(),
             Action::ToggleFloat => {
                 if let Some(focused) = self.world.focus() {
                     self.world.toggle_float(focused, now);
@@ -642,7 +648,7 @@ impl Tileception {
                 | Action::RecallView(_)
                 | Action::NextTab
                 | Action::PrevTab
-                | Action::ToggleDesktop
+                | Action::ToggleDesk
                 | Action::Minimize
                 | Action::Restore(_)
         ) {

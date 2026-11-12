@@ -173,7 +173,7 @@ Views:
   forward                   the next space you framed
   save <1-9>                save the current view in a slot
   go <1-9>                  go to a saved view
-  desktop                   show or hide the Desktop tile
+  desktop                   clear the desk, or bring back what it cleared
   minimap                   open or close the map of the whole tree in the bar
   network                   open or close the network card in the bar
   network wifi [on|off]     switch Wi-Fi on or off (toggles without on or off)
@@ -476,7 +476,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "back" => Action::Back,
         "forward" => Action::Forward,
         "maximize" => Action::Maximize,
-        "desktop" => Action::ToggleDesktop,
+        "desktop" => Action::ToggleDesk,
         "float" => Action::ToggleFloat,
         "fullscreen" => Action::Fullscreen,
         "lock" => Action::Lock,

@@ -136,7 +136,7 @@ group where the first selected window was. Use **Super+U** to zoom back out, or
 | Super+G                     | Combine selected windows into tabs                             |
 | Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
 | Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
-| Super+D                     | Show or hide the Desktop tile                                  |
+| Super+D                     | Clear the desk, or bring back what it cleared                  |
 | Super+H                     | Minimize windows                                               |
 | Super+Shift+H               | Restore the most recently minimized window                     |
 | Super+C                     | Close windows                                                  |
@@ -165,14 +165,27 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
-### The Desktop tile
+### Clearing the desk
 
-**Super+D** shows or hides the Desktop tile, a space in the layout for floating
-windows. Drag a tiled window onto it to make that window floating, or drag a
-floating window to another tile's edge to make it tiled again.
+**Super+D** clears the desk of the active area: every window there, tiled and
+floating, goes to the minimized-window strip. Press it again to bring them
+back exactly where they were. Windows you had minimized before stay
+minimized, and windows closed in the meantime are left out.
 
-The Desktop tile is also visible when there are no tiled windows. Floating
-windows remain available when the tile is hidden.
+While the desk is clear you can still open windows, or restore single ones
+from the strip. The next **Super+D** brings the rest back around them.
+
+Hold **Super+D** instead of tapping it to peek: windows show only as outlines
+for as long as you hold it, and come back when you let go. The desk is not
+cleared. A hold lasts past the keyboard's repeat delay.
+
+### Floating a window by dragging
+
+While you drag a tiled window, a **Float here** pill appears at the top of the
+area. Drop the window on it to make it float; the outline shows where it will
+land. Drag a floating window to another tile's edge to tile it again. When
+there are no tiled windows, dropping anywhere on the empty space floats the
+window too.
 
 ### Minimized windows
 

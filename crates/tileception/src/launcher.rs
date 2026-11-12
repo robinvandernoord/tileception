@@ -322,7 +322,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Step out", "zoom out", glyph::ZOOM_OUT, Does::Line("step-out")),
     builtin("Back", "previous view history", glyph::ARROW_LEFT, Does::Line("back")),
     builtin("Forward", "next view history", glyph::ARROW_RIGHT, Does::Line("forward")),
-    builtin("Show desktop", "desktop tile", glyph::OVERVIEW, Does::Line("desktop")),
+    builtin("Show desktop", "clear desk minimize all hide windows", glyph::OVERVIEW, Does::Line("desktop")),
 ];
 
 /// A command started with `>` and what it printed.

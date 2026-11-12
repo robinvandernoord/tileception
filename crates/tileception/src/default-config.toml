@@ -436,7 +436,7 @@ repeat_rate = 30
 #   brightness up|down    the screen's backlight; brightness set <n>
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
-#   desktop               show or hide the Desktop tile
+#   desktop               clear the desk, or bring back what it cleared
 #   colour-scheme <s>     tell apps to use dark, light or default styles,
 #                         until this file is next loaded
 #   reload                reload this file
