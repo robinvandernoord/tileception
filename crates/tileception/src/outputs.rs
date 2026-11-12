@@ -1347,6 +1347,8 @@ impl Tileception {
             });
             right = right.max(position[0].saturating_add(width));
         }
+        // Linked machines learn how much of their edge is left.
+        self.share_edges();
     }
 
     pub fn configure_outputs(&mut self) -> Result<(), String> {

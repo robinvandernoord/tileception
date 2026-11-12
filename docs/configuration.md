@@ -192,7 +192,12 @@ stretch_screen_edges = true
 ```
 
 The default is `false`, which uses the screens' positions in the desktop
-arrangement. Settings calls this **Full-edge pointer crossing**. It applies
+arrangement. Settings calls this **Full-edge pointer crossing**. With handoff,
+the setting of the machine the pointer leaves also decides how its edge meets
+the other machine's: off, the two edges meet centred, pixel for pixel, and the
+pointer crosses only where they face each other; on, each edge spans the whole
+of the other. Only the part of an edge that no other screen of the same
+machine lies beyond is shared. It applies
 when you save and does not require a special build.
 
 ### Touchscreen mapping

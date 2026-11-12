@@ -57,7 +57,9 @@ autostart = []
 # Map the whole edge proportionally when the pointer crosses to an adjacent
 # screen, including between screens of different sizes. Off: use their
 # positions in the desktop arrangement. Also called Full-edge pointer crossing
-# in Settings. Applies when saved; no special build is needed.
+# in Settings. Applies when saved; no special build is needed. With handoff,
+# it also maps this machine's shared edge onto the whole edge of the other;
+# off, the two edges meet centred, pixel for pixel.
 # stretch_screen_edges = false
 
 [clipboard]
@@ -328,8 +330,12 @@ tray_max_icons = 3
 # Handoff: share this mouse, keyboard and clipboard with other Tileception
 # machines on the network that know the same passphrase. When one appears,
 # drag its card to the edge of the screen where it stands; the pointer then
-# crosses there once its user has placed this machine too. Ctrl+Super+Escape
-# brings input back. Locking pauses sharing until you resume it on the card.
+# crosses there once its user has placed this machine too, where no other
+# screen of either machine lies beyond the edge, and not while a game or
+# other program locks the pointer. Ctrl+Super+Escape brings input back. Each
+# keyboard types with its own machine's layout wherever it types, and the
+# shortcuts of the machine the pointer is on apply, also in a window from
+# another machine. Locking pauses sharing until you resume it on the card.
 # Pick several random words for the passphrase: guesses are slowed down, but
 # a short phrase can still be guessed. Nothing listens until this is enabled
 # with a passphrase. `tileception msg handoff` shows what is connected.

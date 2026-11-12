@@ -1310,6 +1310,13 @@ impl Tileception {
         true
     }
 
+    /// The machine whose window has the keyboard here, which gets the keys
+    /// no shortcut takes.
+    pub(crate) fn remote_keyboard_owner(&self) -> Option<PeerId> {
+        let windows = &self.handoff.windows;
+        windows.remote_keyboard.and_then(|window| windows.remote.get(&window)).map(|remote| remote.peer)
+    }
+
     /// A key that no binding took, for another machine's window when it has
     /// the keyboard here.
     pub(crate) fn key_to_owner(&mut self, code: Keycode, key_state: KeyState) {
@@ -1577,9 +1584,9 @@ impl Tileception {
         self.force_keyboard_focus_sync();
     }
 
-    /// A key for one of this machine's windows from where it is shown. When
-    /// this machine's own keyboard pressed it, the keyboard here already
-    /// knows (it was forwarded); then the window only needs telling.
+    /// A key for one of this machine's windows from where it is shown. The
+    /// machine showing it already matched its shortcuts, so none here run;
+    /// the key goes to that window alone (see `away_key_route`).
     fn away_key(&mut self, peer: PeerId, window: WindowId, key: u32, pressed: bool) {
         let target = self.windows.get(&window).and_then(crate::state::focus_target);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
@@ -1588,15 +1595,24 @@ impl Tileception {
             self.force_keyboard_focus_sync();
         }
         let code = Keycode::new(key + XKB_OFFSET);
+        let focused = target.is_some() && keyboard.current_focus() == target;
+        let known = keyboard.pressed_keys().contains(&code) == pressed;
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let serial = SERIAL_COUNTER.next_serial();
         let time = self.input_time();
-        if keyboard.pressed_keys().contains(&code) == pressed {
-            keyboard.input_forward(self, code, state, serial, time, true);
-        } else {
-            keyboard.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Forward);
-            if pressed {
-                self.handoff.windows.away_keys.insert(key, peer);
+        match away_key_route(known, focused, pressed) {
+            AwayKey::Tell => keyboard.input_forward(self, code, state, serial, time, true),
+            AwayKey::Type => {
+                self.type_with(Source::Peer(peer));
+                keyboard.input::<(), _>(self, code, state, serial, time, |_, _, _| FilterResult::Forward);
+                if pressed {
+                    self.handoff.windows.away_keys.insert(key, peer);
+                }
+            }
+            AwayKey::Drop => {
+                if pressed {
+                    tracing::debug!(window = window.0, "handoff: a key for a window without the keyboard here");
+                }
             }
         }
         if !pressed {
@@ -1665,6 +1681,35 @@ impl Tileception {
     }
 }
 
+/// What becomes of a key for one of this machine's windows, sent from the
+/// machine showing it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AwayKey {
+    /// The keyboard here already has it: this machine's own keyboard pressed
+    /// it there, and it came back. Only the window is told.
+    Tell,
+    /// Typed here, with the sending machine's layout and none of this
+    /// machine's shortcuts.
+    Type,
+    /// Not for any window here: the window cannot have the keyboard here
+    /// (a menu or prompt of this machine's own holds it), and the key must
+    /// not reach whatever has it instead.
+    Drop,
+}
+
+/// Where a key for one of this machine's windows shown elsewhere goes:
+/// `known` when the keyboard here already is in the state the key leaves it
+/// in, `focused` when the window has the keyboard here.
+pub(crate) fn away_key_route(known: bool, focused: bool, pressed: bool) -> AwayKey {
+    match (known, focused, pressed) {
+        (true, true, _) => AwayKey::Tell,
+        (true, false, _) | (false, false, true) => AwayKey::Drop,
+        // A release lets go of the key here wherever the keyboard went, or
+        // it would stay down.
+        (false, true, _) | (false, false, false) => AwayKey::Type,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1687,6 +1732,23 @@ mod tests {
             lost: false,
             grab: false,
         }
+    }
+
+    #[test]
+    fn keys_for_a_window_shown_elsewhere_reach_only_that_window() {
+        // Typed into it from the machine showing it.
+        assert_eq!(away_key_route(false, true, true), AwayKey::Type);
+        assert_eq!(away_key_route(false, true, false), AwayKey::Type);
+        // This machine's own keyboard, passed on there and back again.
+        assert_eq!(away_key_route(true, true, true), AwayKey::Tell);
+        assert_eq!(away_key_route(true, true, false), AwayKey::Tell);
+        // While something of this machine's own holds the keyboard, a press
+        // must not type into it.
+        assert_eq!(away_key_route(false, false, true), AwayKey::Drop);
+        assert_eq!(away_key_route(true, false, true), AwayKey::Drop);
+        // A key down here is still let go of, so none stays stuck.
+        assert_eq!(away_key_route(false, false, false), AwayKey::Type);
+        assert_eq!(away_key_route(true, false, false), AwayKey::Drop);
     }
 
     #[test]
