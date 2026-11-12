@@ -171,6 +171,11 @@ impl Tileception {
                                      change, so Apply will refuse. Discard reloads the file."
                 .into();
             self.settings.error = true;
+        } else if self.settings_editor_stale() {
+            self.settings.message = "config.toml changed on disk, and your edits in the config.toml editor cannot \
+                                     take the change, so Apply will refuse them. Discard reloads the file."
+                .into();
+            self.settings.error = true;
         } else if !kept.is_empty() {
             self.settings.message = format!(
                 "config.toml changed on disk. Your edits to {} are kept; Apply saves them over the file's.",

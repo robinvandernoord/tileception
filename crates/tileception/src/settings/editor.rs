@@ -5,6 +5,9 @@ use crate::{launcher::Paste, text_input::TextInput};
 
 const LINE: f64 = 21.;
 const LIMIT: usize = 256 * 1024;
+/// Why the whole-file editor refuses its text after config.toml changed.
+const STALE: &str = "config.toml changed on disk, and your edits here cannot be carried onto it, so applying them \
+                     is refused. Copy what you want to keep; Discard reloads the file.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum PointerAction {
@@ -43,6 +46,9 @@ pub(super) struct Editor {
     error: String,
     /// The file changed on disk while this editor held edits.
     notice: String,
+    /// The whole file changed on disk under edits that cannot move onto
+    /// it: applying them would write over the change.
+    stale: bool,
     reference: bool,
     scroll_remainder: f64,
     original: String,
@@ -52,6 +58,35 @@ impl Editor {
     fn insert(&mut self, text: &str) {
         self.input.insert_with_limit(text, LIMIT);
         self.error.clear();
+    }
+
+    /// Brings the whole-file editor onto config.toml's new text. It goes over
+    /// the file as it is, so edits are carried onto the new text, or, when
+    /// they cannot be, kept for copying while applying them is refused.
+    fn follow_file(&mut self, source: &str) {
+        if source == self.original {
+            if self.stale {
+                // Back to the text the edits were made on.
+                self.stale = false;
+                self.error.clear();
+                self.notice.clear();
+            }
+            return;
+        }
+        let mut text = std::mem::take(&mut self.input.text);
+        let edited = text != self.original;
+        if super::refresh::merge_document(&mut self.original, &mut text, source) {
+            self.stale = false;
+            self.error.clear();
+            if edited {
+                self.notice = "config.toml changed on disk. Your edits here were carried onto it.".into();
+            }
+        } else {
+            self.stale = true;
+            STALE.clone_into(&mut self.error);
+            STALE.clone_into(&mut self.notice);
+        }
+        super::refresh::replace_input(&mut self.input, text);
     }
 
     fn keep_caret(&mut self, visible: usize, columns: usize) {
@@ -132,6 +167,7 @@ impl Tileception {
                     horizontal: 0,
                     error: String::new(),
                     notice: String::new(),
+                    stale: false,
                     reference,
                     scroll_remainder: 0.,
                 });
@@ -161,6 +197,10 @@ impl Tileception {
                 },
                 None => document.clone(),
             };
+            if editor.field.is_none() {
+                editor.follow_file(&source);
+                continue;
+            }
             if source == editor.original {
                 continue;
             }
@@ -177,6 +217,12 @@ impl Tileception {
             editor.error.clear();
         }
         kept
+    }
+
+    /// Whether the whole-file editor, open or kept for later, holds edits
+    /// that would write over a change on disk.
+    pub(super) fn settings_editor_stale(&self) -> bool {
+        self.settings.editor.iter().chain(&self.settings.parked_editors).any(|editor| editor.stale)
     }
 
     /// Whether an editor holds text not yet in the draft.
@@ -205,6 +251,9 @@ impl Tileception {
         let result = (|| {
             if editor.input.text == editor.original {
                 return Ok(());
+            }
+            if editor.stale {
+                return Err(STALE.into());
             }
             let current = self.settings_document()?;
             let current_excerpt = if let Some(index) = editor.field {
@@ -502,5 +551,57 @@ impl Tileception {
             painter.fill(rect, theme.surface_raised, 6.);
             painter.text(label, rect, Style::new(12., theme.text).align(Align::Centre));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn whole_file(original: &str, text: &str) -> Editor {
+        Editor {
+            input: TextInput { text: text.into(), ..Default::default() },
+            field: None,
+            first: 0,
+            horizontal: 0,
+            error: String::new(),
+            notice: String::new(),
+            stale: false,
+            reference: false,
+            scroll_remainder: 0.,
+            original: original.into(),
+        }
+    }
+
+    #[test]
+    fn unstaged_file_edits_do_not_write_over_a_change_on_disk() {
+        let before = "[theme]\nradius = 4\n";
+        let disk = "[theme]\nradius = 4\n\n[plugins.demo]\ncommand = \"/bin/true\"\n";
+        // A comment is no setting, so the edits cannot move: they stay for
+        // copying, and staging or applying them is refused.
+        let mut editor = whole_file(before, "[theme]\nradius = 4\n# note\n");
+        editor.follow_file(disk);
+        assert!(editor.stale);
+        assert_eq!(editor.error, STALE);
+        assert_eq!(editor.input.text, "[theme]\nradius = 4\n# note\n");
+        // Another change keeps it so; going back to the old text ends it.
+        editor.follow_file("[theme]\nradius = 6\n");
+        assert!(editor.stale);
+        editor.follow_file(before);
+        assert!(!editor.stale && editor.error.is_empty());
+        assert_eq!(editor.input.text, "[theme]\nradius = 4\n# note\n");
+
+        // A changed setting is carried onto the new file.
+        let mut editor = whole_file(before, "[theme]\nradius = 9\n");
+        editor.follow_file(disk);
+        assert!(!editor.stale);
+        assert_eq!(editor.original, disk);
+        assert!(editor.input.text.contains("plugins.demo") && editor.input.text.contains("radius = 9"));
+
+        // Untouched text follows the file.
+        let mut editor = whole_file(before, before);
+        editor.follow_file(disk);
+        assert!(!editor.stale && editor.notice.is_empty());
+        assert_eq!(editor.input.text, disk);
     }
 }
