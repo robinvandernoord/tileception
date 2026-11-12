@@ -1137,17 +1137,16 @@ impl Tileception {
                     break;
                 }
                 Err(SelectionRequestError::InvalidMimetype) => continue,
-                // From X11, where offered types are not known: text only.
-                Err(SelectionRequestError::ServerSideSelection) if mime_type.starts_with("image/") => continue,
+                // From X11: a picture only when the program that copied offers one.
+                Err(SelectionRequestError::ServerSideSelection)
+                    if mime_type.starts_with("image/") && !self.selection_offers(selection, mime_type) =>
+                {
+                    continue;
+                }
                 Err(SelectionRequestError::ServerSideSelection) => {
-                    if let Some(xwm) = self.xwm.as_mut() {
-                        requested = xwm
-                            .send_selection(selection, mime_type.into(), writer.into(), self.loop_handle.clone())
-                            .is_ok();
-                    }
-                    // This writer is transferred to Xwayland or dropped here.
-                    if requested {
-                        self.launcher_read_paste(reader, sender, target, false);
+                    // This writer is transferred to the X11 paste or dropped here.
+                    if self.send_x11_selection(selection, mime_type.into(), writer.into()) {
+                        self.launcher_read_paste(reader, sender, target, mime_type.starts_with("image/"));
                     }
                     return;
                 }

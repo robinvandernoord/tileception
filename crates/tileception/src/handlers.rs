@@ -255,11 +255,7 @@ impl SelectionHandler for Tileception {
             clip.send(&mime_type, fd);
             return;
         }
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone())
-        {
-            tracing::warn!("could not paste from X11: {err:?}");
-        }
+        self.send_x11_selection(ty, mime_type, fd);
     }
 }
 

@@ -88,6 +88,7 @@ mod updates;
 mod wake;
 mod wallpaper;
 mod winit;
+mod x11_paste;
 mod xwayland;
 mod zones;
 
