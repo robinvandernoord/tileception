@@ -1,6 +1,8 @@
-//! The update manager: pending APT updates as a bar chip with a popover, an
-//! Updates window (updates, kernels, the next Ubuntu release and the apt
-//! history) and launcher rows. Flatpak, Snap and firmware are not read yet.
+//! The update manager: pending APT, Flatpak, Snap and firmware updates as a
+//! bar chip with a popover, an Updates window (updates, kernels, the next
+//! Ubuntu release, the apt history, and the mirror and automatic updates)
+//! and launcher rows. Flatpak and Snap ask their servers, so they are listed
+//! when the network may be used and kept in between.
 //!
 //! A worker thread reads the system and runs `apt-get`; what to show and do
 //! about it is decided here, on the compositor thread. Changes run as root
@@ -15,6 +17,7 @@
 mod popover;
 mod window;
 
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
@@ -27,7 +30,9 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
 pub use tileception_updates::task::Task;
-use tileception_updates::{self as backend, Files, Snapshot, apt, kernels, release, task};
+use tileception_updates::{
+    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, snapshots, task,
+};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -86,13 +91,26 @@ pub struct Scan {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    snapshots: bool,
+    /// What takes a snapshot before kernel, Mesa and release upgrades.
+    snapshots: Option<snapshots::Tool>,
+    automatic: automatic::Automatic,
+    /// The mirror in use, from the package sources.
+    mirror: Option<String>,
+    /// The mirror in use tested against the main archive, when this look
+    /// could use the network.
+    mirror_check: Option<(mirrors::Mirror, Option<i64>)>,
 }
 
 enum Request {
     Scan {
         offer: bool,
+        /// Flatpak and Snap may ask their servers.
+        apps: bool,
     },
+    /// What changed in an update, for the sheet that asked.
+    Notes { request: u64, update: Box<apt::Update> },
+    /// Tests the candidate mirrors.
+    Mirrors,
     Run {
         task: Task,
         password: Option<Zeroizing<String>>,
@@ -100,10 +118,7 @@ enum Request {
         quiet: bool,
     },
     /// Simulate a transaction, keeping its originating request identifier.
-    Preview {
-        request: u64,
-        args: Vec<String>,
-    },
+    Preview { request: u64, args: Vec<String> },
 }
 
 pub enum Event {
@@ -125,6 +140,8 @@ pub enum Event {
         request: u64,
         text: String,
     },
+    /// The candidate mirrors as tested, the main archive's date with them.
+    Mirrors(Vec<mirrors::Mirror>, Option<i64>),
     /// A minute went by: a reminder that had to wait may be due.
     Tick,
 }
@@ -157,8 +174,22 @@ pub struct Updates {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    snapshots: bool,
+    snapshots: Option<snapshots::Tool>,
+    /// The Flatpak and Snap updates last listed.
+    apps: Vec<apt::Update>,
+    /// Updates whose version was skipped: they show muted and wait for the
+    /// next version.
+    pub(crate) skipped: Vec<apt::Update>,
+    /// The versions skipped, by update name.
+    skip: BTreeMap<String, String>,
+    pub(crate) automatic: automatic::Automatic,
+    pub(crate) mirrors: Mirrors,
     job: Option<Job>,
+    /// Tasks that follow the running one when it succeeds: one Install
+    /// covers APT, Flatpak, Snap and firmware, each its own task.
+    next: VecDeque<Task>,
+    /// What the earlier tasks of the chain printed.
+    chain_log: String,
     /// How the last task ended, until the next one starts.
     outcome: Option<Result<String, String>>,
     requests: Option<mpsc::Sender<Option<Request>>>,
@@ -196,6 +227,32 @@ impl Drop for Updates {
     }
 }
 
+/// The mirror in use and the candidates, as last tested.
+#[derive(Default)]
+pub(crate) struct Mirrors {
+    pub(crate) current: Option<String>,
+    /// The mirror in use, tested, with the main archive's date.
+    pub(crate) check: Option<(mirrors::Mirror, Option<i64>)>,
+    pub(crate) candidates: Vec<mirrors::Mirror>,
+    /// The main archive's date when the candidates were tested.
+    pub(crate) reference: Option<i64>,
+    pub(crate) testing: bool,
+}
+
+impl Mirrors {
+    /// Why the mirror in use should change: unreachable or stale.
+    pub(crate) fn warning(&self) -> Option<String> {
+        let (mirror, reference) = self.check.as_ref()?;
+        match &mirror.error {
+            Some(error) => Some(format!("The mirror in use cannot be reached: {error}")),
+            None if mirror.stale(*reference) => {
+                Some(format!("The mirror in use is {}.", mirrors::describe_lag(mirror.lag(*reference))))
+            }
+            None => None,
+        }
+    }
+}
+
 /// `tileception msg updates ...`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdatesCommand {
@@ -216,6 +273,21 @@ pub enum UpdatesCommand {
     /// What the last task printed.
     Log,
     Upgrade,
+    /// What changed in an update.
+    Changelog(String),
+    /// Hold packages at their version, or release them.
+    Hold(Vec<String>, bool),
+    /// Skip the waiting version of an update, or stop skipping it.
+    Skip(String, bool),
+    /// Turn automatic updates on or off, or say how they are set up.
+    Automatic(Option<bool>),
+    /// Test the mirrors and list them.
+    Mirrors,
+    /// Use this mirror.
+    Mirror(String),
+    /// What apt changed, newest first: since a day (`2026-11-10`), or the
+    /// latest transactions.
+    History(Option<String>),
 }
 
 pub fn parse(args: &[&str]) -> Result<UpdatesCommand, String> {
@@ -237,9 +309,27 @@ pub fn parse(args: &[&str]) -> Result<UpdatesCommand, String> {
         ["repair"] => UpdatesCommand::Repair,
         ["log"] => UpdatesCommand::Log,
         ["upgrade"] => UpdatesCommand::Upgrade,
+        ["changelog", name] => UpdatesCommand::Changelog((*name).to_string()),
+        ["hold", names @ ..] if !names.is_empty() => {
+            UpdatesCommand::Hold(names.iter().map(|name| (*name).to_string()).collect(), true)
+        }
+        ["unhold", names @ ..] if !names.is_empty() => {
+            UpdatesCommand::Hold(names.iter().map(|name| (*name).to_string()).collect(), false)
+        }
+        ["skip", name] => UpdatesCommand::Skip((*name).to_string(), true),
+        ["unskip", name] => UpdatesCommand::Skip((*name).to_string(), false),
+        ["automatic"] => UpdatesCommand::Automatic(None),
+        ["automatic", "on"] => UpdatesCommand::Automatic(Some(true)),
+        ["automatic", "off"] => UpdatesCommand::Automatic(Some(false)),
+        ["mirrors"] => UpdatesCommand::Mirrors,
+        ["mirror", url] => UpdatesCommand::Mirror((*url).to_string()),
+        ["history"] => UpdatesCommand::History(None),
+        ["history", "since", day] | ["history", day] if valid_day(day) => {
+            UpdatesCommand::History(Some((*day).to_string()))
+        }
         _ => {
             return Err(
-                "usage: updates [check|install [security|package...]|open [page]|show|kernels|clean|autoremove|repair|log|upgrade]"
+                "usage: updates [check|install [security|name...]|open [page]|show|kernels|clean|autoremove|repair|log|upgrade|changelog <name>|hold|unhold <package>...|skip|unskip <name>|automatic [on|off]|mirrors|mirror <url>|history [since YYYY-MM-DD]]"
                     .into()
             );
         }
@@ -357,6 +447,53 @@ impl Updates {
         self.release().map(|name| (name.to_string(), Tone::Accent))
     }
 
+    /// Whether a restart would install something: a kernel waits among the
+    /// updates, or firmware that fwupd flashes while the computer starts.
+    pub(crate) fn installs_on_restart(&self) -> bool {
+        self.snapshot.updates.iter().any(|update| matches!(update.kind, apt::Kind::Kernel | apt::Kind::Firmware))
+    }
+
+    /// A muted row's update: the skipped versions, then the held packages.
+    /// The flag says it is held.
+    pub(crate) fn muted(&self, index: usize) -> Option<(&apt::Update, bool)> {
+        match self.skipped.get(index) {
+            Some(update) => Some((update, false)),
+            None => self.snapshot.held.get(index - self.skipped.len()).map(|update| (update, true)),
+        }
+    }
+
+    /// The update by its name, waiting, skipped or held.
+    pub(crate) fn find(&self, name: &str) -> Option<&apt::Update> {
+        self.snapshot.updates.iter().chain(&self.skipped).chain(&self.snapshot.held).find(|update| update.name == name)
+    }
+
+    /// Puts the apps last listed beside the rest and moves the skipped
+    /// versions out of the waiting list. Security comes first, then by
+    /// source, then by source package, so a package's binaries are together.
+    fn merge(&mut self) {
+        let mut all: Vec<apt::Update> = std::mem::take(&mut self.snapshot.updates);
+        all.retain(|update| update.source != apt::Source::Flatpak && update.source != apt::Source::FlatpakUser);
+        all.retain(|update| update.source != apt::Source::Snap);
+        all.extend(self.apps.iter().cloned());
+        all.extend(std::mem::take(&mut self.skipped));
+        // A skip ends when a newer version than the one skipped arrives.
+        let skip = &mut self.skip;
+        skip.retain(|name, version| all.iter().any(|update| update.name == *name && update.new == *version));
+        let (skipped, waiting): (Vec<apt::Update>, Vec<apt::Update>) =
+            all.into_iter().partition(|update| skip.get(&update.name) == Some(&update.new));
+        let mut waiting = waiting;
+        waiting.sort_by(|left, right| {
+            right
+                .security
+                .cmp(&left.security)
+                .then_with(|| left.source.cmp(&right.source))
+                .then_with(|| left.group().cmp(right.group()))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        self.snapshot.updates = waiting;
+        self.skipped = skipped;
+    }
+
     pub(crate) fn checked(&self) -> String {
         match self.snapshot.checked {
             Some(when) => match crate::ui::ago(when).as_str() {
@@ -397,6 +534,7 @@ impl Tileception {
         self.updates.source = Some(token);
         self.updates.waiting = read_waiting();
         self.updates.log = read_log();
+        self.updates.skip = read_skip();
         self.updates.requests = Some(requests);
         self.updates.thread = thread;
     }
@@ -449,6 +587,18 @@ impl Tileception {
             }
             Event::Finished { task, result, log, quiet } => self.updates_finished(task, result, log, quiet),
             Event::Preview { request, text } => self.updates.window.set_preview(request, text),
+            Event::Mirrors(found, reference) => {
+                let mirrors = &mut self.updates.mirrors;
+                mirrors.testing = false;
+                mirrors.reference = reference;
+                // The mirror in use was just tested too: its warning follows.
+                if let Some(current) = &mirrors.current
+                    && let Some(mirror) = found.iter().find(|mirror| mirror.url == *current)
+                {
+                    mirrors.check = Some((mirror.clone(), reference));
+                }
+                mirrors.candidates = found;
+            }
         }
         self.updates_changed();
     }
@@ -474,10 +624,21 @@ impl Tileception {
         let first = !self.updates.scanned;
         self.updates.scanned = true;
         self.updates.snapshot = scan.snapshot;
+        if let Some(apps) = self.updates.snapshot.apps.take() {
+            self.updates.apps = apps;
+        }
+        // The new look lists the skipped versions again among the rest.
+        self.updates.skipped.clear();
+        self.updates.merge();
         self.updates.third_party = scan.third_party;
         self.updates.free = scan.free;
         self.updates.track = scan.track;
         self.updates.snapshots = scan.snapshots;
+        self.updates.automatic = scan.automatic;
+        self.updates.mirrors.current = scan.mirror;
+        if scan.mirror_check.is_some() {
+            self.updates.mirrors.check = scan.mirror_check;
+        }
         if let Some(offer) = scan.offer {
             self.updates.offer = offer;
         }
@@ -583,6 +744,29 @@ impl Tileception {
 
     fn updates_finished(&mut self, task: Task, result: Result<(), Failure>, log: String, quiet: bool) {
         self.updates.job = None;
+        if quiet {
+            return self.updates_finished_last(task, result, log, quiet);
+        }
+        // An install of several sources is a chain of tasks with one log.
+        // The next part follows a success; a failure ends the chain.
+        let mut log = std::mem::take(&mut self.updates.chain_log) + &log;
+        if result.is_ok()
+            && let Some(next) = self.updates.next.pop_front()
+        {
+            log.push('\n');
+            self.updates.chain_log = log;
+            let after = self.updates.after;
+            if self.updates_run_part(next).is_ok() {
+                self.updates.after = after;
+                return;
+            }
+            log = std::mem::take(&mut self.updates.chain_log);
+        }
+        self.updates.next.clear();
+        self.updates_finished_last(task, result, log, quiet)
+    }
+
+    fn updates_finished_last(&mut self, task: Task, result: Result<(), Failure>, log: String, quiet: bool) {
         let after = self.updates.after.take();
         if quiet {
             // Nobody asked: nothing to say, and the last task's log stays.
@@ -607,8 +791,17 @@ impl Tileception {
                     Task::Remove(names) => format!("Removed {} packages.", names.len()),
                     Task::Autoremove => "Unneeded packages removed.".to_string(),
                     Task::Repair => "Packages repaired.".to_string(),
+                    Task::Flatpak { .. } | Task::Snap(_) => "Updates installed.".to_string(),
+                    Task::Firmware(_) => {
+                        "Firmware updated. Some devices finish when the computer restarts.".to_string()
+                    }
+                    Task::Hold { hold: true, .. } => "Held at their version.".to_string(),
+                    Task::Hold { hold: false, .. } => "Released: they update again.".to_string(),
+                    Task::Automatic(true) => "Automatic updates are on.".to_string(),
+                    Task::Automatic(false) => "Automatic updates are off.".to_string(),
+                    Task::Mirror(url) => format!("Now using {url}."),
                 };
-                if !matches!(task, Task::Refresh) {
+                if task.changes_packages() {
                     self.notify_locally("Updates", &message, Urgency::Low);
                 }
                 self.updates.window.task_done(&task);
@@ -645,18 +838,7 @@ impl Tileception {
             return Err("another update task is running".into());
         }
         task.commands()?;
-        let total = match &task {
-            Task::Refresh | Task::Repair => 0,
-            Task::Autoremove => self.updates.snapshot.plan.unneeded.len(),
-            Task::Install(names) if names.is_empty() => self.updates.snapshot.updates.len(),
-            Task::Install(names) | Task::Remove(names) => names.len(),
-            Task::Kernels { install, remove, .. } => install.len() + remove.len(),
-        };
-        let job = Job { task: task.clone(), done: 0, total, label: "starting".into() };
-        if !self.updates_request(Request::Run { task, password, quiet: false }) {
-            return Err("the update manager is not running".into());
-        }
-        self.updates.job = Some(job);
+        self.updates_send(task, password)?;
         self.updates.after = None;
         self.updates.failed = false;
         self.updates.outcome = None;
@@ -664,21 +846,62 @@ impl Tileception {
         Ok(())
     }
 
-    /// Installs every update, or only those for security.
+    /// Starts the next task of a chain, keeping what the chain set up.
+    fn updates_run_part(&mut self, task: Task) -> Result<(), String> {
+        task.commands()?;
+        self.updates_send(task, None)
+    }
+
+    fn updates_send(&mut self, task: Task, password: Option<Zeroizing<String>>) -> Result<(), String> {
+        let total = match &task {
+            Task::Autoremove => self.updates.snapshot.plan.unneeded.len(),
+            Task::Install(names) if names.is_empty() => {
+                self.updates.snapshot.updates.iter().filter(|update| update.source == apt::Source::Apt).count()
+            }
+            task => task.count(),
+        };
+        let job = Job { task: task.clone(), done: 0, total, label: "starting".into() };
+        if !self.updates_request(Request::Run { task, password, quiet: false }) {
+            return Err("the update manager is not running".into());
+        }
+        self.updates.job = Some(job);
+        self.updates_changed();
+        Ok(())
+    }
+
+    /// Runs tasks one after the other, as one install. The first starts
+    /// now; each of the others when the one before it succeeded.
+    pub(crate) fn updates_start_all(&mut self, tasks: Vec<Task>) -> Result<(), String> {
+        let mut tasks: VecDeque<Task> = tasks.into();
+        let first = tasks.pop_front().ok_or("there is nothing to install")?;
+        for task in &tasks {
+            task.commands()?;
+        }
+        self.updates_start(first)?;
+        self.updates.next = tasks;
+        self.updates.chain_log.clear();
+        Ok(())
+    }
+
+    /// Installs every update, or only those for security. Firmware is
+    /// left out: it is only ever installed when chosen.
     pub(crate) fn updates_install(&mut self, security_only: bool) -> Result<(), String> {
         let updates = &self.updates.snapshot.updates;
         if updates.is_empty() {
             return Err("there are no updates to install".into());
         }
-        let names: Vec<String> = if security_only {
-            updates.iter().filter(|update| update.security).map(|update| update.name.clone()).collect()
-        } else {
-            Vec::new()
-        };
-        if security_only && names.is_empty() {
-            return Err("there are no security updates".into());
+        if security_only {
+            let names: Vec<String> =
+                updates.iter().filter(|update| update.security).map(|update| update.name.clone()).collect();
+            if names.is_empty() {
+                return Err("there are no security updates".into());
+            }
+            return self.updates_start(Task::Install(names));
         }
-        self.updates_start(Task::Install(names))
+        let chosen: Vec<&apt::Update> =
+            updates.iter().filter(|update| update.source != apt::Source::Firmware).collect();
+        let tasks = install_tasks(&chosen, true);
+        self.updates_start_all(tasks)
     }
 
     /// A power action chosen while packages change: it waits for the task to
@@ -702,6 +925,17 @@ impl Tileception {
         true
     }
 
+    /// Installs everything that waits, firmware too, then restarts: what
+    /// the power menu's Restart and install does.
+    pub(crate) fn updates_install_and_restart(&mut self) -> Result<(), String> {
+        let chosen: Vec<&apt::Update> = self.updates.snapshot.updates.iter().collect();
+        let tasks = install_tasks(&chosen, true);
+        self.updates_start_all(tasks)?;
+        self.updates.after = Some(crate::power::PowerAction::Restart);
+        self.schedule_render();
+        Ok(())
+    }
+
     /// Asks what `apt-get` would do with these arguments, which simulate.
     pub(crate) fn updates_preview(&mut self, request: u64, args: Vec<String>) {
         self.updates_request(Request::Preview { request, args });
@@ -716,7 +950,7 @@ impl Tileception {
             security: totals.security,
             third_party: self.updates.third_party.clone(),
             on_battery: self.battery.reading.map(|reading| reading.charge == crate::battery::Charge::Discharging),
-            snapshots: self.updates.snapshots,
+            snapshots: self.updates.snapshots.is_some(),
             restart: self.updates.snapshot.restart,
         })
     }
@@ -730,7 +964,26 @@ impl Tileception {
             return Err(format!("not ready for {name}: see `updates open release`"));
         }
         let sudo = if task::is_root() { "" } else { "sudo " };
-        self.run_in_terminal(&format!("{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"))
+        // A snapshot first, where there is something to take it with; the
+        // upgrade waits for it and is not started when it fails.
+        let snapshot = match self.updates.snapshots {
+            Some(tool) => {
+                let commands: Vec<String> = tool
+                    .commands(&format!("the upgrade to {name}"), &snapshots::stamp())
+                    .iter()
+                    .map(|command| format!("{sudo}{}", shell_words(command)))
+                    .collect();
+                format!(
+                    "echo 'Taking a snapshot with {} first.'; {{ {}; }} || {{ echo 'The snapshot failed; the upgrade was not started.'; echo 'Press Enter to close.'; read -r _; exit 1; }}; ",
+                    tool.name(),
+                    commands.join(" && ")
+                )
+            }
+            None => String::new(),
+        };
+        self.run_in_terminal(&format!(
+            "{snapshot}{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"
+        ))
     }
 
     pub(crate) fn updates_command(&mut self, command: UpdatesCommand) -> Result<String, String> {
@@ -747,10 +1000,15 @@ impl Tileception {
             UpdatesCommand::Install(names) if names.is_empty() => self.updates_install(false)?,
             UpdatesCommand::Install(names) => {
                 let pending = &self.updates.snapshot.updates;
-                if let Some(unknown) = names.iter().find(|name| !pending.iter().any(|update| update.name == **name)) {
-                    return Err(format!("{unknown} has no update waiting"));
+                let mut chosen = Vec::new();
+                for name in &names {
+                    match pending.iter().find(|update| update.name == *name) {
+                        Some(update) => chosen.push(update),
+                        None => return Err(format!("{name} has no update waiting")),
+                    }
                 }
-                self.updates_start(Task::Install(names))?;
+                let tasks = install_tasks(&chosen, false);
+                self.updates_start_all(tasks)?;
             }
             UpdatesCommand::Security => self.updates_install(true)?,
             UpdatesCommand::Open(page) => self.open_updates(page),
@@ -787,8 +1045,93 @@ impl Tileception {
                 };
             }
             UpdatesCommand::Upgrade => self.updates_upgrade_release()?,
+            UpdatesCommand::Changelog(name) => {
+                self.open_updates(Page::Available);
+                self.updates_show_notes(&name)?;
+            }
+            UpdatesCommand::Hold(names, hold) => self.updates_hold(names, hold)?,
+            UpdatesCommand::Skip(name, skip) => self.updates_skip(&name, skip)?,
+            UpdatesCommand::Automatic(None) => return Ok(self.updates_automatic_status()),
+            UpdatesCommand::Automatic(Some(enable)) => {
+                if !self.updates.automatic.available {
+                    return Err("unattended-upgrades is not installed".into());
+                }
+                self.updates_start(Task::Automatic(enable))?;
+            }
+            UpdatesCommand::Mirrors => {
+                self.updates_test_mirrors();
+                return Ok(self.updates_mirrors_status());
+            }
+            UpdatesCommand::Mirror(url) => self.updates_start(Task::Mirror(url))?,
+            UpdatesCommand::History(since) => {
+                return Ok(history_text(&self.updates.snapshot.history, since.as_deref()));
+            }
         }
         Ok(String::new())
+    }
+
+    /// Holds APT packages at their version, or lets them update again.
+    pub(crate) fn updates_hold(&mut self, names: Vec<String>, hold: bool) -> Result<(), String> {
+        for name in &names {
+            let found = self.updates.find(name).filter(|update| update.source == apt::Source::Apt);
+            if found.is_none() && hold {
+                return Err(format!("{name} has no APT update waiting"));
+            }
+        }
+        self.updates_start(Task::Hold { names, hold })
+    }
+
+    /// Skips the version of an update that waits, or stops skipping it.
+    pub(crate) fn updates_skip(&mut self, name: &str, skip: bool) -> Result<(), String> {
+        let version =
+            self.updates.find(name).map(|update| update.new.clone()).ok_or(format!("{name} has no update"))?;
+        if skip {
+            self.updates.skip.insert(name.to_string(), version);
+        } else if self.updates.skip.remove(name).is_none() {
+            return Err(format!("{name} is not skipped"));
+        }
+        write_skip(&self.updates.skip);
+        self.updates.merge();
+        self.updates.window.settle(&self.updates.snapshot, &self.updates.kernels);
+        self.updates_changed();
+        Ok(())
+    }
+
+    /// Asks the worker to test the candidate mirrors.
+    pub(crate) fn updates_test_mirrors(&mut self) {
+        if !self.updates.mirrors.testing && self.updates_request(Request::Mirrors) {
+            self.updates.mirrors.testing = true;
+            self.updates_changed();
+        }
+    }
+
+    /// Asks the worker what changed in an update, for the notes sheet.
+    pub(crate) fn updates_request_notes(&mut self, request: u64, update: apt::Update) {
+        self.updates_request(Request::Notes { request, update: Box::new(update) });
+    }
+
+    fn updates_automatic_status(&self) -> String {
+        let automatic = &self.updates.automatic;
+        if !automatic.available {
+            return "unattended-upgrades is not installed\n".into();
+        }
+        let state = if automatic.enabled { "on" } else { "off" };
+        format!("automatic updates are {state}; they cover {}\n", automatic.covers.join(", "))
+    }
+
+    fn updates_mirrors_status(&self) -> String {
+        let mirrors = &self.updates.mirrors;
+        let mut text = format!("in use: {}\n", mirrors.current.as_deref().unwrap_or("none found"));
+        if let Some(warning) = mirrors.warning() {
+            text.push_str(&format!("warning: {warning}\n"));
+        }
+        if mirrors.testing {
+            text.push_str("testing the mirrors; ask again in a moment\n");
+        }
+        for mirror in &mirrors.candidates {
+            text.push_str(&format!("  {}  {}\n", mirror.url, describe_mirror(mirror, mirrors.reference)));
+        }
+        text
     }
 
     fn updates_status(&self) -> String {
@@ -846,10 +1189,25 @@ impl Tileception {
                 text.push_str(&format!("{title}: {}\n", names.join(" ")));
             }
         }
-        for update in &updates.snapshot.updates {
+        if let Some(warning) = updates.mirrors.warning() {
+            text.push_str(&format!("mirror: {warning}\n"));
+        }
+        let line = |update: &apt::Update, mark: &str| {
             let old = update.old.as_deref().unwrap_or("new");
-            let mark = if update.security { " [security]" } else { "" };
-            text.push_str(&format!("  {} {old} -> {}{mark}\n", update.name, update.new));
+            let source = match update.source {
+                apt::Source::Apt => String::new(),
+                source => format!(" ({})", source.label().to_lowercase()),
+            };
+            format!("  {} {old} -> {}{source}{mark}\n", update.name, update.new)
+        };
+        for update in &updates.snapshot.updates {
+            text.push_str(&line(update, if update.security { " [security]" } else { "" }));
+        }
+        for update in &updates.skipped {
+            text.push_str(&line(update, " [skipped]"));
+        }
+        for update in &updates.snapshot.held {
+            text.push_str(&line(update, " [held]"));
         }
         text
     }
@@ -882,22 +1240,149 @@ impl Tileception {
     }
 }
 
+/// Whether this is a day as `YYYY-MM-DD`.
+fn valid_day(day: &str) -> bool {
+    let parts: Vec<&str> = day.split('-').collect();
+    matches!(parts.as_slice(), [year, month, date]
+        if year.len() == 4 && month.len() == 2 && date.len() == 2
+            && parts.iter().all(|part| part.chars().all(|character| character.is_ascii_digit())))
+}
+
+/// The apt history as text for `updates history`: each transaction since
+/// the day, newest first, with every package and its versions. Without a
+/// day, the latest ten.
+fn history_text(history: &[backend::history::Entry], since: Option<&str>) -> String {
+    let chosen: Vec<&backend::history::Entry> = match since {
+        // Dates are `YYYY-MM-DD hh:mm:ss`, so they compare as text.
+        Some(day) => history.iter().filter(|entry| entry.date.as_str() >= day).collect(),
+        None => history.iter().take(10).collect(),
+    };
+    if chosen.is_empty() {
+        return match since {
+            Some(day) => format!("apt changed nothing since {day}\n"),
+            None => "no apt history could be read\n".into(),
+        };
+    }
+    let mut text = String::new();
+    for entry in chosen {
+        text.push_str(&format!("{} by {}: {}\n", entry.date, entry.who(), entry.summary()));
+        if !entry.command.is_empty() {
+            text.push_str(&format!("  $ {}\n", entry.command));
+        }
+        for (verb, changes) in
+            [("updated", &entry.upgraded), ("installed", &entry.installed), ("removed", &entry.removed)]
+        {
+            for change in changes {
+                text.push_str(&format!("  {verb} {} {}\n", change.name, change.version));
+            }
+        }
+    }
+    text
+}
+
+/// The tasks that install these updates, a task per source. With `all_apt`,
+/// the APT part is every APT update, as a full upgrade.
+pub(crate) fn install_tasks(chosen: &[&apt::Update], all_apt: bool) -> Vec<Task> {
+    let names = |source: apt::Source| -> Vec<String> {
+        chosen.iter().filter(|update| update.source == source).map(|update| update.name.clone()).collect()
+    };
+    let mut tasks = Vec::new();
+    let apt_names = names(apt::Source::Apt);
+    if all_apt && !apt_names.is_empty() {
+        tasks.push(Task::Install(Vec::new()));
+    } else if !apt_names.is_empty() {
+        tasks.push(Task::Install(apt_names));
+    }
+    for (source, user) in [(apt::Source::Flatpak, false), (apt::Source::FlatpakUser, true)] {
+        let refs = names(source);
+        if !refs.is_empty() {
+            tasks.push(Task::Flatpak { refs, user });
+        }
+    }
+    let snaps = names(apt::Source::Snap);
+    if !snaps.is_empty() {
+        tasks.push(Task::Snap(snaps));
+    }
+    let devices = names(apt::Source::Firmware);
+    if !devices.is_empty() {
+        tasks.push(Task::Firmware(devices));
+    }
+    tasks
+}
+
+/// A command for a shell, each word quoted where it needs it.
+fn shell_words(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|word| {
+            if word.chars().all(|character| character.is_ascii_alphanumeric() || "-_./:=".contains(character)) {
+                word.clone()
+            } else {
+                format!("'{}'", word.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A tested mirror in a line: "2.4 MB/s · 0.12 s · up to date".
+pub(crate) fn describe_mirror(mirror: &mirrors::Mirror, reference: Option<i64>) -> String {
+    if let Some(error) = &mirror.error {
+        return format!("unreachable: {error}");
+    }
+    let mut parts = Vec::new();
+    if let Some(speed) = mirror.speed {
+        parts.push(format!("{}/s", backend::human_size(speed)));
+    }
+    if let Some(latency) = mirror.latency {
+        parts.push(format!("{latency:.2} s"));
+    }
+    parts.push(mirrors::describe_lag(mirror.lag(reference)));
+    parts.join(" \u{b7} ")
+}
+
 /// Whether the release offer is asked for again: once a day.
 const OFFER_EVERY: Duration = Duration::from_secs(24 * 3600);
 
-fn scan(with_offer: bool) -> Scan {
+/// One look at the system. `network` lets it ask servers: Flatpak, Snap,
+/// the next release and the mirror in use.
+fn scan(with_offer: bool, network: bool) -> Scan {
     let files = Files::default();
     let runner = backend::System;
-    let mut snapshot = backend::scan(&runner, &files);
+    let mut snapshot = backend::scan(&runner, &files, network);
     // Restarting is easier to explain than logging out and in again.
     snapshot.restart |= replaced();
+    let codename = snapshot.system.codename.clone();
+    let mirror = mirrors::current(&files);
+    let mirror_check = (with_offer && network && mirror.is_some())
+        .then(|| mirrors::check_current(&runner, &files, &codename))
+        .flatten();
     Scan {
         snapshot,
         offer: with_offer.then(|| release::offer(&runner)),
         third_party: release::third_party(&files),
         free: release::free_space(&runner),
         track: release::track(&files),
-        snapshots: files.exists("/usr/bin/timeshift"),
+        snapshots: snapshots::tool(),
+        automatic: automatic::read(&runner, &files),
+        mirror,
+        mirror_check,
+    }
+}
+
+/// What changed in an update, asked from the tool that installs it.
+fn notes(update: &apt::Update) -> String {
+    let runner = backend::System;
+    let result = match update.source {
+        apt::Source::Apt => apt::changelog(&runner, &update.name, update.old.as_deref()),
+        apt::Source::Flatpak | apt::Source::FlatpakUser => apps::flatpak_notes(&runner, update),
+        apt::Source::Snap => apps::snap_notes(&runner, &update.name),
+        apt::Source::Firmware => firmware::notes(&runner, &update.name),
+    };
+    match result {
+        Ok(text) if text.trim().is_empty() => "No release notes were found.".into(),
+        Ok(text) => text,
+        Err(error) => format!("The release notes could not be read: {error}"),
     }
 }
 
@@ -930,10 +1415,10 @@ impl Default for Watch {
 }
 
 impl Watch {
-    fn scan(&mut self, with_offer: bool) -> Event {
+    fn scan(&mut self, with_offer: bool, network: bool) -> Event {
         // Stamped first: a change during the scan brings another one.
         *self = Watch::default();
-        Event::Scanned(Box::new(scan(with_offer)))
+        Event::Scanned(Box::new(scan(with_offer, network)))
     }
 }
 
@@ -946,7 +1431,9 @@ fn run(
     let mut asked = Instant::now();
     let mut ticked = Instant::now();
     let mut watch = Watch::default();
-    if events.send(watch.scan(!saving.load(Ordering::Relaxed) && !metered())).is_err() {
+    let online = || !saving.load(Ordering::Relaxed) && !metered();
+    let first = online();
+    if events.send(watch.scan(first, first)).is_err() {
         return;
     }
     loop {
@@ -963,15 +1450,27 @@ fn run(
                     }
                     continue;
                 }
-                // Asking for the next release uses the network.
-                let offer = asked.elapsed() >= OFFER_EVERY && !saving.load(Ordering::Relaxed) && !metered();
+                // Asking for the next release uses the network; so do
+                // Flatpak and Snap, which follow the timed look.
+                let timed = watch.looked.elapsed() >= interval;
+                let offer = asked.elapsed() >= OFFER_EVERY && online();
                 if offer {
                     asked = Instant::now();
                 }
-                watch.scan(offer)
+                watch.scan(offer, (offer || timed) && online())
             }
-            Ok(Some(Request::Scan { offer })) => watch.scan(offer),
+            Ok(Some(Request::Scan { offer, apps })) => watch.scan(offer, apps && online()),
             Ok(Some(Request::Preview { request, args })) => Event::Preview { request, text: preview(&args) },
+            Ok(Some(Request::Notes { request, update })) => Event::Preview { request, text: notes(&update) },
+            Ok(Some(Request::Mirrors)) => {
+                let files = Files::default();
+                let runner = backend::System;
+                let codename = release::system(&files).codename;
+                let found = mirrors::survey(&runner, &files, &codename);
+                let reference =
+                    found.iter().find(|mirror| mirror.url == mirrors::ARCHIVE).and_then(|mirror| mirror.published);
+                Event::Mirrors(found, reference)
+            }
             Ok(Some(Request::Run { task, password, quiet })) => {
                 let mut log = String::new();
                 let result = if quiet && (saving.load(Ordering::Relaxed) || metered() || !unasked(&task)) {
@@ -986,6 +1485,9 @@ fn run(
                     continue;
                 };
                 let refreshed = matches!(task, Task::Refresh) && result.is_ok();
+                // After a refresh the apps are asked for too; after an
+                // install of apps, they are listed again.
+                let apps = (refreshed || matches!(task, Task::Flatpak { .. } | Task::Snap(_))) && online();
                 let ran = !matches!(result, Err(Failure::Declined | Failure::Password));
                 if events.send(Event::Finished { task, result, log, quiet }).is_err() {
                     return;
@@ -996,7 +1498,7 @@ fn run(
                 if refreshed {
                     asked = Instant::now();
                 }
-                watch.scan(refreshed && !quiet)
+                watch.scan(refreshed && !quiet, apps)
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
@@ -1181,7 +1683,7 @@ fn perform(
     log: &mut String,
 ) -> Option<Result<(), Failure>> {
     let mut follow = Follow { events, log, done: 0 };
-    if task::is_root() {
+    if task::is_root() || !task.needs_root() {
         let result = task::run(task, &mut |line| follow.line(line)).map_err(Failure::Failed);
         follow.trim();
         return Some(result);
@@ -1312,12 +1814,27 @@ fn read_log() -> Option<Log> {
         std::fs::read_to_string(state_file("updates-last.log")).ok().filter(|text| text.len() <= LOG_LIMIT * 2)?;
     let (first, text) = text.split_once('\n')?;
     let (title, state) = first.split_once('\t')?;
-    let title = [Task::Refresh, Task::Install(Vec::new()), Task::Remove(Vec::new()), Task::Autoremove, Task::Repair]
-        .iter()
-        .map(Task::title)
-        .find(|known| *known == title)
-        .unwrap_or("Changing kernels");
+    let title = Task::TITLES.iter().copied().find(|known| *known == title).unwrap_or("Changing kernels");
     Some(Log { title, succeeded: state == "ok", text: text.to_string() })
+}
+
+/// The versions skipped, one `name<TAB>version` a line.
+fn read_skip() -> BTreeMap<String, String> {
+    std::fs::read_to_string(state_file("updates-skipped"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(name, version)| (name.to_string(), version.to_string()))
+        .collect()
+}
+
+fn write_skip(skip: &BTreeMap<String, String>) {
+    let path = state_file("updates-skipped");
+    let text: String = skip.iter().map(|(name, version)| format!("{name}\t{version}\n")).collect();
+    let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text));
+    if let Err(error) = written {
+        tracing::warn!("could not keep the skipped versions: {error}");
+    }
 }
 
 /// Whether updates that have waited this long are due for their reminder.
@@ -1338,7 +1855,71 @@ mod tests {
             security,
             kind: apt::Kind::System,
             size: 1_000_000,
+            ..apt::Update::default()
         }
+    }
+
+    #[test]
+    fn an_install_is_a_task_per_source() {
+        let mut flatpak = update("org.mozilla.firefox//stable", false);
+        flatpak.source = apt::Source::Flatpak;
+        let mut snap = update("core22", false);
+        snap.source = apt::Source::Snap;
+        let mut device = update("362301da643102b9f38477387e2193e57abaa590", false);
+        device.source = apt::Source::Firmware;
+        let curl = update("curl", false);
+        let tasks = install_tasks(&[&curl, &flatpak, &snap, &device], false);
+        assert_eq!(
+            tasks,
+            [
+                Task::Install(vec!["curl".into()]),
+                Task::Flatpak { refs: vec!["org.mozilla.firefox//stable".into()], user: false },
+                Task::Snap(vec!["core22".into()]),
+                Task::Firmware(vec!["362301da643102b9f38477387e2193e57abaa590".into()]),
+            ]
+        );
+        assert_eq!(install_tasks(&[&curl, &snap], true)[0], Task::Install(Vec::new()));
+        assert!(install_tasks(&[], true).is_empty());
+    }
+
+    #[test]
+    fn skipped_versions_wait_for_the_next() {
+        let mut updates = Updates::default();
+        updates.snapshot.updates = vec![update("apt", false), update("curl", false)];
+        updates.skip.insert("curl".into(), "2".into());
+        updates.merge();
+        assert_eq!(updates.snapshot.updates.len(), 1);
+        assert_eq!(updates.skipped[0].name, "curl");
+        // A newer version than the one skipped ends the skip.
+        let mut newer = update("curl", false);
+        newer.new = "3".into();
+        updates.snapshot.updates = vec![update("apt", false), newer];
+        updates.skipped.clear();
+        updates.merge();
+        assert_eq!(updates.snapshot.updates.len(), 2);
+        assert!(updates.skipped.is_empty() && updates.skip.is_empty());
+    }
+
+    #[test]
+    fn history_answers_since_a_day() {
+        let log = "Start-Date: 2026-11-03  06:30:12\nCommandline: /usr/bin/unattended-upgrade\nUpgrade: apt:amd64 (2.8.3, 2.8.4)\nEnd-Date: x\n\n\
+                   Start-Date: 2026-11-10  09:12:40\nCommandline: apt-get -y install curl\nRequested-By: robin (1000)\nInstall: curl:amd64 (8.5.0)\nEnd-Date: x\n";
+        let mut history = backend::history::parse(log);
+        history.reverse();
+        let text = history_text(&history, Some("2026-11-10"));
+        assert!(text.starts_with("2026-11-10 09:12:40 by robin: 1 installed\n"), "{text}");
+        assert!(text.contains("  installed curl 8.5.0\n"));
+        assert!(!text.contains("apt 2.8.3"));
+        assert_eq!(history_text(&history, Some("2026-11-11")), "apt changed nothing since 2026-11-11\n");
+        assert!(history_text(&history, None).contains("updated apt 2.8.3 \u{2192} 2.8.4"));
+        assert_eq!(parse(&["history", "since", "2026-11-10"]), Ok(UpdatesCommand::History(Some("2026-11-10".into()))));
+        assert!(parse(&["history", "since", "Tuesday"]).is_err());
+    }
+
+    #[test]
+    fn words_reach_the_shell_whole() {
+        let words: Vec<String> = ["timeshift", "--comments", "Tileception: before it's done"].map(String::from).into();
+        assert_eq!(shell_words(&words), "timeshift --comments 'Tileception: before it'\\''s done'");
     }
 
     #[test]

@@ -1,15 +1,20 @@
-//! What the update manager knows about the system: pending APT updates,
-//! installed kernels and what can go, the next Ubuntu release, and the apt
-//! history. Everything here reads; the commands that change the system are
+//! What the update manager knows about the system: pending APT, Flatpak,
+//! Snap and firmware updates, installed kernels and what can go, the next
+//! Ubuntu release, and the apt history. Everything here reads; the commands that change the system are
 //! built here and run by the compositor's worker, as root.
 //!
 //! Programs are run through a [`Runner`] and files read below a root folder,
 //! so the parsers are tested on captured output.
 
+pub mod apps;
 pub mod apt;
+pub mod automatic;
+pub mod firmware;
 pub mod history;
 pub mod kernels;
+pub mod mirrors;
 pub mod release;
+pub mod snapshots;
 pub mod task;
 
 use std::path::{Path, PathBuf};
@@ -87,7 +92,13 @@ pub fn supported() -> bool {
 /// Everything read in one pass.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
+    /// APT updates, security first, then firmware. Flatpak and Snap are
+    /// in `apps`, since listing them takes the network.
     pub updates: Vec<apt::Update>,
+    /// Flatpak and Snap updates, when this look asked for them.
+    pub apps: Option<Vec<apt::Update>>,
+    /// Held packages that have a newer version.
+    pub held: Vec<apt::Update>,
     /// What installing every update would do besides: removals, updates
     /// kept back or phased, and the dependencies that are no longer needed.
     pub plan: apt::Plan,
@@ -118,17 +129,26 @@ impl Snapshot {
     }
 }
 
-/// Reads the system. Nothing here needs root or the network.
-pub fn scan(runner: &dyn Runner, files: &Files) -> Snapshot {
-    let (listing, error) = match apt::list(runner) {
+/// Reads the system. Nothing here needs root; only `network` lets Flatpak
+/// and Snap ask their servers.
+pub fn scan(runner: &dyn Runner, files: &Files, network: bool) -> Snapshot {
+    let (mut listing, error) = match apt::list(runner) {
         Ok(listing) => (listing, None),
         Err(error) => (apt::Listing::default(), Some(error)),
     };
+    listing.updates.extend(firmware::list(runner).unwrap_or_default());
+    let apps = network.then(|| {
+        let mut apps = apps::flatpak(runner).unwrap_or_default();
+        apps.extend(apps::snap(runner).unwrap_or_default());
+        apps
+    });
     let running = runner.run("uname", &["-r"]).map(|text| text.trim().to_string()).unwrap_or_default();
     let packages = kernels::installed(runner);
     let offers = kernels::offers(runner);
     Snapshot {
         updates: listing.updates,
+        apps,
+        held: apt::held(runner),
         plan: listing.plan,
         packages,
         offers,

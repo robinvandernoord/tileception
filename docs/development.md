@@ -152,8 +152,9 @@ nested instances. `tileception msg --help` lists the commands.
 
 A nested or headless instance leaves updates to the desktop it runs in. Set
 `TILECEPTION_UPDATES=1` to start the update manager there too. It runs
-`apt-get`, `dpkg`, `dpkg-query`, `apt-cache`, `apt-mark`, `uname`,
-`do-release-upgrade`, `systemd-inhibit` and `sudo` from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
+`apt-get`, `dpkg`, `dpkg-query`, `apt-cache`, `apt-mark`, `apt-config`,
+`uname`, `do-release-upgrade`, `systemd-inhibit`, `sudo`, `flatpak`, `snap`,
+`fwupdmgr` and `curl` (for the mirror tests) from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
 release offer or a `sudo` that asks for a password, without changing the
 system.
 

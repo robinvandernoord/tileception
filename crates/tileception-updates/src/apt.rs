@@ -7,17 +7,55 @@ use std::time::SystemTime;
 use crate::{Files, Runner};
 
 /// What an update is, for its badge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
     Kernel,
     /// Tileception itself.
     Desktop,
+    #[default]
     System,
+    /// An app from Flatpak or Snap.
+    App,
+    Firmware,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where an update comes from, and so what installs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
+pub enum Source {
+    #[default]
+    Apt,
+    /// A Flatpak in the system installation.
+    Flatpak,
+    /// A Flatpak installed for this user alone.
+    FlatpakUser,
+    Snap,
+    /// A device's firmware, through fwupd.
+    Firmware,
+}
+
+impl Source {
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Apt => "APT",
+            Source::Flatpak | Source::FlatpakUser => "Flatpak",
+            Source::Snap => "Snap",
+            Source::Firmware => "Firmware",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Update {
+    /// What the source installs it by: a package, a Flatpak ref
+    /// (`org.mozilla.firefox//stable`), a snap or a device ID.
     pub name: String,
+    pub source: Source,
+    /// A name for people where `name` is not one: the app or the device.
+    pub title: String,
+    /// The source package an APT package is built from; empty elsewhere.
+    pub package: String,
+    /// One line about what it is.
+    pub summary: String,
     /// The installed version; none for a package the update pulls in.
     pub old: Option<String>,
     pub new: String,
@@ -27,6 +65,18 @@ pub struct Update {
     pub kind: Kind,
     /// Bytes still to download.
     pub size: u64,
+}
+
+impl Update {
+    /// The name to show: the app or device, else the package.
+    pub fn label(&self) -> &str {
+        if self.title.is_empty() { &self.name } else { &self.title }
+    }
+
+    /// The source package it belongs to, or its own name.
+    pub fn group(&self) -> &str {
+        if self.package.is_empty() { &self.name } else { &self.package }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -86,7 +136,7 @@ fn parse_inst(line: &str) -> Option<Update> {
         origin: origin.to_string(),
         security,
         kind: kind_of(name),
-        size: 0,
+        ..Update::default()
     })
 }
 
@@ -102,6 +152,40 @@ pub fn parse_uris(text: &str) -> HashMap<String, u64> {
             Some((file.split('_').next()?.to_string(), size))
         })
         .collect()
+}
+
+/// What `dpkg-query` says of installed packages: name, source package and
+/// summary, one per line separated by tabs.
+pub fn parse_descriptions(text: &str) -> HashMap<String, (String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.trim();
+            let source = fields.next().unwrap_or_default().trim();
+            let summary = fields.next().unwrap_or_default().trim();
+            // `source:Package` can carry a version: `glibc (2.39-0ubuntu8)`.
+            let source = source.split_whitespace().next().unwrap_or(name);
+            (!name.is_empty()).then(|| (name.to_string(), (source.to_string(), summary.to_string())))
+        })
+        .collect()
+}
+
+/// Fills in each update's source package and summary. A package that is
+/// not installed yet keeps its own name as its group.
+pub fn describe(runner: &dyn Runner, updates: &mut [Update]) {
+    let names: Vec<&str> = updates.iter().map(|update| update.name.as_str()).collect();
+    if names.is_empty() {
+        return;
+    }
+    let mut args = vec!["-W", "-f=${Package}\t${source:Package}\t${binary:Summary}\n"];
+    args.extend(names);
+    let known = runner.run("dpkg-query", &args).map(|text| parse_descriptions(&text)).unwrap_or_default();
+    for update in updates {
+        if let Some((source, summary)) = known.get(&update.name) {
+            update.package = source.clone();
+            update.summary = summary.clone();
+        }
+    }
 }
 
 /// What a transaction does besides the updates it installs, read from the
@@ -212,8 +296,90 @@ pub fn list(runner: &dyn Runner) -> Result<Listing, String> {
             update.size = sizes.get(&update.name).copied().unwrap_or(0);
         }
     }
+    describe(runner, &mut updates);
     updates.sort_by(|left, right| right.security.cmp(&left.security).then_with(|| left.name.cmp(&right.name)));
     Ok(Listing { updates, plan })
+}
+
+/// `apt-cache policy` for some packages: each one's installed and candidate
+/// versions, where both are known.
+pub fn parse_policy(text: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut name: Option<&str> = None;
+    let mut installed: Option<&str> = None;
+    for line in text.lines() {
+        if !line.starts_with(' ') && line.ends_with(':') {
+            name = Some(line.trim_end_matches(':').split(':').next().unwrap_or_default());
+            installed = None;
+            continue;
+        }
+        let line = line.trim();
+        if let Some(version) = line.strip_prefix("Installed: ") {
+            installed = Some(version).filter(|version| *version != "(none)");
+        } else if let Some(candidate) = line.strip_prefix("Candidate: ")
+            && let (Some(name), Some(old)) = (name, installed)
+            && candidate != "(none)"
+        {
+            found.push((name.to_string(), old.to_string(), candidate.to_string()));
+        }
+    }
+    found
+}
+
+/// The packages held with `apt-mark hold` that have a newer version: the
+/// updates apt leaves alone until the hold is lifted. They show muted.
+pub fn held(runner: &dyn Runner) -> Vec<Update> {
+    let names: Vec<String> = runner
+        .run("apt-mark", &["showhold"])
+        .map(|text| text.lines().map(str::trim).filter(|name| valid_name(name)).map(str::to_string).collect())
+        .unwrap_or_default();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["policy"];
+    args.extend(names.iter().map(String::as_str));
+    let policy = runner.run("apt-cache", &args).unwrap_or_default();
+    let mut held: Vec<Update> = parse_policy(&policy)
+        .into_iter()
+        .filter(|(_, old, new)| old != new)
+        .map(|(name, old, new)| Update { kind: kind_of(&name), name, old: Some(old), new, ..Update::default() })
+        .collect();
+    describe(runner, &mut held);
+    held
+}
+
+/// The entries of a Debian changelog newer than `since`, the version that
+/// is installed. Each entry starts with `name (version) suite; urgency=`.
+pub fn changelog_since(text: &str, since: Option<&str>) -> String {
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        let heading = !line.starts_with(' ') && line.contains(" (") && line.contains(';');
+        if heading
+            && let Some(since) = since
+            && line
+                .split_once(" (")
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .is_some_and(|(version, _)| version == since)
+        {
+            break;
+        }
+        kept.push(line);
+    }
+    while kept.last().is_some_and(|line| line.trim().is_empty()) {
+        kept.pop();
+    }
+    kept.join("\n")
+}
+
+/// What changed in a package since the installed version, from
+/// `apt-get changelog`, which asks the archive.
+pub fn changelog(runner: &dyn Runner, name: &str, since: Option<&str>) -> Result<String, String> {
+    if !valid_name(name) {
+        return Err(format!("{name:?} is not a package name"));
+    }
+    let text = runner.run("apt-get", &["changelog", "-qq", name])?;
+    let notes = changelog_since(&text, since);
+    Ok(if notes.trim().is_empty() { text } else { notes })
 }
 
 /// When the package lists were last refreshed: the newest of the marks
@@ -490,6 +656,62 @@ Inst apt [2.8.3] (2.8.4 Ubuntu:24.04/noble-updates [amd64])
         let nothing = parse_plan(SIMULATION.replace("will be upgraded", "are fine").as_str());
         assert_eq!(nothing, Plan::default());
         assert_eq!(nothing.summary(), "changes nothing");
+    }
+
+    #[test]
+    fn packages_know_their_source() {
+        let known = parse_descriptions(
+            "libc6\tglibc (2.39-0ubuntu8)\tGNU C Library: Shared libraries\nlibc-bin\tglibc\tGNU C Library: Binaries\ncurl\t\t\n",
+        );
+        assert_eq!(known.get("libc6"), Some(&("glibc".into(), "GNU C Library: Shared libraries".into())));
+        assert_eq!(known.get("libc-bin").map(|(source, _)| source.as_str()), Some("glibc"));
+        assert_eq!(known.get("curl").map(|(source, _)| source.as_str()), Some("curl"));
+        let update = Update { name: "libc6".into(), package: "glibc".into(), ..Update::default() };
+        assert_eq!(update.group(), "glibc");
+        assert_eq!(Update { name: "curl".into(), ..Update::default() }.group(), "curl");
+    }
+
+    #[test]
+    fn holds_with_newer_versions() {
+        let policy = "\
+docker-ce:
+  Installed: 5:29.9.2-1~ubuntu.24.04~noble
+  Candidate: 5:29.9.3-1~ubuntu.24.04~noble
+  Version table:
+     5:29.9.3-1~ubuntu.24.04~noble 500
+nvidia-driver-550:amd64:
+  Installed: (none)
+  Candidate: 550.120-0ubuntu1
+";
+        assert_eq!(
+            parse_policy(policy),
+            [(
+                "docker-ce".to_string(),
+                "5:29.9.2-1~ubuntu.24.04~noble".to_string(),
+                "5:29.9.3-1~ubuntu.24.04~noble".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn changelogs_stop_at_the_installed_version() {
+        let text = "\
+curl (8.5.0-2ubuntu10.6) noble-security; urgency=medium
+
+  * SECURITY UPDATE: cookie leak
+    - debian/patches/CVE-2026-0001.patch
+
+ -- Someone <someone@ubuntu.com>  Mon, 09 Nov 2026 10:00:00 +0000
+
+curl (8.5.0-2ubuntu10.5) noble-updates; urgency=medium
+
+  * Older fix.
+";
+        let notes = changelog_since(text, Some("8.5.0-2ubuntu10.5"));
+        assert!(notes.starts_with("curl (8.5.0-2ubuntu10.6)"));
+        assert!(notes.ends_with("+0000"), "{notes}");
+        assert!(!notes.contains("Older fix"));
+        assert!(changelog_since(text, None).contains("Older fix"));
     }
 
     #[test]

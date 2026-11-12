@@ -3823,6 +3823,10 @@ fn doctor_context(mode: &str) -> String {
          rfkill, switched off). `bluetooth on|off`, `connect|disconnect|forget <name>`, `search` and \
          `pair <name>` act on it. Failed connections show a notification with the reason; sound output follows \
          the sound server (PipeWire/WirePlumber).\n\
+         - Updates: `tileception msg updates` lists what waits (APT, Flatpak, Snap, firmware). \
+         `tileception msg updates history since YYYY-MM-DD` lists what apt updated, installed and removed from \
+         that day on, with versions, newest first; use it for questions such as \"what changed since Tuesday?\", \
+         working out the date with `date` first. `updates history` alone shows the latest ten transactions.\n\
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\
