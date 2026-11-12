@@ -351,8 +351,10 @@ next event. All-day events, and timed ones lasting a day or more, stay out
 of the chip, which would otherwise name them all day. Clicking it, or the
 clock, opens the calendar, which lists today's events and those of the coming
 week that have not ended. Sources are read again every `refresh_minutes`, and
-when the config changes. A source that cannot be read
-is named in the calendar and the session log; the others still show. Without
+when the config changes. A source that cannot be read is named in the
+calendar and the session log, a URL by its host only, since a calendar's
+address is often secret; its events from the last time it could be read
+still show, and it is tried again after a minute. Without
 sources, which is the default, nothing is read and nothing shows.
 
 Recurring events repeat daily, weekly (also on several weekdays), monthly or

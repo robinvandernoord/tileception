@@ -3,7 +3,7 @@
 //! the next one today, beside the clock, and the clock's calendar lists what
 //! is coming.
 
-use std::{sync::mpsc, time::Duration};
+use std::{collections::HashMap, sync::mpsc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
@@ -18,6 +18,8 @@ const DAY: i64 = 86_400;
 pub const DAYS_AHEAD: i64 = 7;
 /// A calendar larger than this is not read.
 const MAX_BYTES: &str = "8M";
+/// How soon a round with a source that could not be read is tried again.
+const RETRY: Duration = Duration::from_secs(60);
 
 /// The `[calendar]` section.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -90,12 +92,16 @@ impl Tileception {
         self.calendar.stop = Some(stop);
         let spawned = std::thread::Builder::new().name("tileception-calendar".into()).spawn(move || {
             let every = Duration::from_secs(config.refresh_minutes.max(1) * 60);
+            // Each source's last data that could be read, shown while it cannot.
+            let mut last_good = HashMap::new();
             loop {
-                if sender.send(read_all(&config.sources)).is_err() {
+                let read = read_all(&config.sources, &mut last_good);
+                let wait = if read.errors.is_empty() { every } else { every.min(RETRY) };
+                if sender.send(read).is_err() {
                     return;
                 }
                 // A message or a dropped sender both mean stop.
-                if !matches!(stopped.recv_timeout(every), Err(mpsc::RecvTimeoutError::Timeout)) {
+                if !matches!(stopped.recv_timeout(wait), Err(mpsc::RecvTimeoutError::Timeout)) {
                     return;
                 }
             }
@@ -117,25 +123,58 @@ impl Tileception {
 }
 
 /// Every source's occurrences from the start of today, a week ahead.
-fn read_all(sources: &[String]) -> Read {
+fn read_all(sources: &[String], last_good: &mut HashMap<String, Vec<u8>>) -> Read {
     let now = now();
     let (from, until) = (local_midnight(now, 0), local_midnight(now, DAYS_AHEAD + 1));
     let named = |tzid: &str| TimeZone::named(tzid).map(|zone| Box::new(zone) as Box<dyn Zone>);
     let zones = Zones { local: &LocalZone, named: &named };
+    read_sources(sources, last_good, fetch, &zones, from, until)
+}
+
+/// One round over the sources. A source that cannot be read is named in
+/// the errors, and its last data that could be read still shows, so a
+/// moment offline does not empty the calendar.
+fn read_sources(
+    sources: &[String],
+    last_good: &mut HashMap<String, Vec<u8>>,
+    fetch: impl Fn(&str) -> Result<Vec<u8>, String>,
+    zones: &Zones,
+    from: i64,
+    until: i64,
+) -> Read {
     let mut events = Vec::new();
     let mut errors = Vec::new();
     for source in sources {
         match fetch(source) {
-            Ok(text) => events.extend(crate::ics::occurrences(&text, &zones, from, until)),
-            Err(error) => errors.push(format!("{source}: {error}")),
+            Ok(data) => {
+                last_good.insert(source.clone(), data);
+            }
+            Err(error) => errors.push(format!("{}: {error}", source_name(source))),
+        }
+        if let Some(data) = last_good.get(source) {
+            events.extend(crate::ics::occurrences(data, zones, from, until));
         }
     }
     events.sort_by_key(|event| (event.start, event.end));
     Read { events, errors }
 }
 
-/// A file's text, or a URL's through curl, bounded in size and time.
-fn fetch(source: &str) -> Result<String, String> {
+/// How the calendar and the log name a source: a file by its path, a URL
+/// by its scheme and host only, as a calendar's address is often a secret
+/// that would otherwise show in screenshots and logs.
+fn source_name(source: &str) -> String {
+    let Some((scheme, rest)) = source.split_once("://") else { return source.to_string() };
+    if !["http", "https", "webcal"].iter().any(|known| scheme.eq_ignore_ascii_case(known)) {
+        return source.to_string();
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let tail = &rest[authority.len()..];
+    if tail.is_empty() || tail == "/" { format!("{scheme}://{host}") } else { format!("{scheme}://{host}/…") }
+}
+
+/// A file's data, or a URL's through curl, bounded in size and time.
+fn fetch(source: &str) -> Result<Vec<u8>, String> {
     let url = match source.strip_prefix("webcal://") {
         Some(rest) => format!("https://{rest}"),
         None => source.to_string(),
@@ -145,8 +184,7 @@ fn fetch(source: &str) -> Result<String, String> {
             Some(rest) => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
             None => std::path::PathBuf::from(source),
         };
-        let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        return std::fs::read(&path).map_err(|error| error.to_string());
     }
     let output = std::process::Command::new("curl")
         .args(["--fail", "--silent", "--show-error", "--location", "--max-redirs", "5"])
@@ -162,9 +200,11 @@ fn fetch(source: &str) -> Result<String, String> {
         .map_err(|error| format!("curl: {error}"))?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr);
+        // Its own message may quote the address.
+        let message = message.replace(&url, &source_name(&url)).replace(source, &source_name(source));
         return Err(message.trim().trim_start_matches("curl: ").to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// Seconds since 1970, UTC.
@@ -202,5 +242,57 @@ impl Zone for LocalZone {
         // SAFETY: mktime reads and normalizes the caller-owned `calendar`.
         let utc = unsafe { libc::mktime(&mut calendar) };
         if utc == -1 { wall } else { utc }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ics::Utc;
+
+    #[test]
+    fn a_source_that_fails_keeps_its_last_events() {
+        let sources = vec!["/calendars/team.ics".to_string(), "https://example.org/private-123/basic.ics".to_string()];
+        let data = |summary: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:{summary}\r\nDTSTART:19700101T100000Z\r\nSUMMARY:{summary}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+            .into_bytes()
+        };
+        let named = |_: &str| -> Option<Box<dyn Zone>> { None };
+        let zones = Zones { local: &Utc, named: &named };
+        let summaries =
+            |read: &Read| -> Vec<String> { read.events.iter().map(|event| event.summary.clone()).collect() };
+        let mut last_good = HashMap::new();
+        let working = |source: &str| -> Result<Vec<u8>, String> {
+            Ok(data(if source.ends_with("team.ics") { "Team" } else { "Private" }))
+        };
+        let read = read_sources(&sources, &mut last_good, working, &zones, 0, DAY);
+        assert_eq!(summaries(&read), ["Team", "Private"]);
+        assert!(read.errors.is_empty());
+        // Offline: both still show, and both are named as failing.
+        let offline = |_: &str| -> Result<Vec<u8>, String> { Err("Could not resolve host".into()) };
+        let read = read_sources(&sources, &mut last_good, offline, &zones, 0, DAY);
+        assert_eq!(summaries(&read), ["Team", "Private"]);
+        assert_eq!(
+            read.errors,
+            ["/calendars/team.ics: Could not resolve host", "https://example.org/…: Could not resolve host"]
+        );
+        // A source never read has nothing to show.
+        let read = read_sources(&sources, &mut HashMap::new(), offline, &zones, 0, DAY);
+        assert!(read.events.is_empty());
+    }
+
+    #[test]
+    fn a_url_source_is_named_by_its_host() {
+        assert_eq!(
+            source_name("https://calendar.invalid/ical/me%40example.org/private-0123456789abcdef/basic.ics"),
+            "https://calendar.invalid/…"
+        );
+        assert_eq!(source_name("webcal://user:secret@example.org:8443/cal?token=x"), "webcal://example.org:8443/…");
+        assert_eq!(source_name("http://127.0.0.1:8765/"), "http://127.0.0.1:8765");
+        assert_eq!(source_name("https://example.org?key=1"), "https://example.org/…");
+        assert_eq!(source_name("~/Calendars/family.ics"), "~/Calendars/family.ics");
+        assert_eq!(source_name("/srv/a://b.ics"), "/srv/a://b.ics");
     }
 }

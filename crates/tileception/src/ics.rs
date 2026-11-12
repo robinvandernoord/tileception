@@ -4,8 +4,10 @@
 //! `DTEND` or `DURATION`, `SUMMARY`, `LOCATION`, `STATUS`, `EXDATE` and
 //! `RECURRENCE-ID`. Times are UTC, floating (local) or in a `TZID` zone,
 //! read from the system's zoneinfo. `RRULE` repeats daily, weekly (on the
-//! `BYDAY` weekdays), monthly or yearly with `INTERVAL`, `COUNT` and
-//! `UNTIL`; a rule with other parts shows only its first occurrence.
+//! `BYDAY` weekdays, from its `WKST` week start), monthly or yearly with
+//! `INTERVAL`, `COUNT` and `UNTIL`, and a `BYMONTHDAY` or `BYMONTH` that
+//! only repeats the start's own day and month; a rule with other parts
+//! shows only its first occurrence.
 //! Everything else is ignored.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,6 +73,21 @@ struct Rule {
     until: Option<Until>,
     /// 0 for Monday up to 6 for Sunday, for weekly rules.
     weekdays: Vec<i64>,
+    /// The day weeks start on, 0 for Monday up to 6 for Sunday.
+    week_start: i64,
+    /// A single `BYMONTHDAY`, followed only when it is the start's own day.
+    month_day: Option<i32>,
+    /// A single `BYMONTH`, followed only when it is the start's own month.
+    month: Option<i32>,
+}
+
+impl Rule {
+    /// Whether the rule only repeats the start's own day of the month and
+    /// month, which is all `walls` follows of `BYMONTHDAY` and `BYMONTH`.
+    fn follows(&self, first: i64) -> bool {
+        let (_, month, day) = civil_from_days(first.div_euclid(DAY));
+        self.month_day.is_none_or(|wanted| wanted == day) && self.month.is_none_or(|wanted| wanted == month)
+    }
 }
 
 /// A date or date-time as written, before its zone is applied.
@@ -98,9 +115,10 @@ struct Vevent {
     cancelled: bool,
 }
 
-/// Every occurrence that overlaps `from..until`, sorted by start.
-pub fn occurrences(text: &str, zones: &Zones, from: i64, until: i64) -> Vec<Occurrence> {
-    let events = parse(text);
+/// Every occurrence that overlaps `from..until`, sorted by start. The data
+/// is UTF-8, read line by line once folded lines are joined.
+pub fn occurrences(data: &[u8], zones: &Zones, from: i64, until: i64) -> Vec<Occurrence> {
+    let events = parse(data);
     let resolve = |stamp: &Stamp| -> i64 {
         if stamp.utc {
             return stamp.wall;
@@ -126,9 +144,12 @@ pub fn occurrences(text: &str, zones: &Zones, from: i64, until: i64) -> Vec<Occu
             continue;
         }
         let all_day = start.date_only;
+        // An all-day event ending on the day it starts, which exporters
+        // write, still takes its day.
+        let shortest = if all_day { DAY } else { 0 };
         let length = match (&event.end, event.duration) {
-            (Some(end), _) => (end.wall - start.wall).max(0),
-            (None, Some(duration)) => duration.max(0),
+            (Some(end), _) => (end.wall - start.wall).max(shortest),
+            (None, Some(duration)) => duration.max(shortest),
             (None, None) if all_day => DAY,
             (None, None) => 0,
         };
@@ -180,7 +201,7 @@ pub fn occurrences(text: &str, zones: &Zones, from: i64, until: i64) -> Vec<Occu
             });
         };
         match &event.rule {
-            Some(Ok(rule)) if event.recurrence_id.is_none() => {
+            Some(Ok(rule)) if event.recurrence_id.is_none() && rule.follows(start.wall) => {
                 let within_rule = |wall: i64| match rule.until {
                     None => true,
                     Some(Until::Utc(limit)) => zone.to_utc(wall) <= limit,
@@ -222,16 +243,19 @@ fn walls<'rule>(rule: &'rule Rule, first: i64) -> impl Iterator<Item = i64> + 'r
     if weekdays.is_empty() {
         weekdays.push(crate::bar::monday_index(day));
     }
-    weekdays.sort_unstable();
-    weekdays.dedup();
-    let week_start = day - crate::bar::monday_index(day);
+    // Days into the week, from its start, so a week holds its days in order.
+    let mut offsets: Vec<i64> = weekdays.iter().map(|weekday| (weekday - rule.week_start).rem_euclid(7)).collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    // With an interval, which weeks count depends on where they start.
+    let week_start = day - (crate::bar::monday_index(day) - rule.week_start).rem_euclid(7);
     (0..)
         .flat_map(move |step: i64| -> Vec<i64> {
             match rule.freq {
                 Freq::Daily => vec![day + step * interval],
                 Freq::Weekly => {
-                    let monday = week_start + step * interval * 7;
-                    weekdays.iter().map(|weekday| monday + weekday).filter(|candidate| *candidate >= day).collect()
+                    let start = week_start + step * interval * 7;
+                    offsets.iter().map(|offset| start + offset).filter(|candidate| *candidate >= day).collect()
                 }
                 Freq::Monthly => {
                     let (shifted_year, shifted_month) = crate::bar::add_months(year, month, (step * interval) as i32);
@@ -251,12 +275,12 @@ fn valid_date(year: i32, month: i32, day: i32) -> Option<i64> {
 }
 
 /// The VEVENTs in the text, skipping what we cannot read.
-fn parse(text: &str) -> Vec<Vevent> {
+fn parse(data: &[u8]) -> Vec<Vevent> {
     let mut events = Vec::new();
     // Components we are inside, innermost last.
     let mut stack: Vec<String> = Vec::new();
     let mut event = Vevent::default();
-    for line in unfold(text) {
+    for line in unfold(data) {
         let Some((name, params, value)) = content_line(&line) else { continue };
         match name.as_str() {
             "BEGIN" => {
@@ -299,18 +323,19 @@ fn parse(text: &str) -> Vec<Vevent> {
 }
 
 /// Joins folded lines: a line starting with a space or tab continues the
-/// one before.
-fn unfold(text: &str) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for raw in text.split('\n') {
-        let raw = raw.strip_suffix('\r').unwrap_or(raw);
-        match (raw.strip_prefix([' ', '\t']), lines.last_mut()) {
-            (Some(rest), Some(last)) => last.push_str(rest),
+/// one before. A fold may split a UTF-8 character, so lines are joined as
+/// bytes and only then read as text.
+fn unfold(data: &[u8]) -> Vec<String> {
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    for raw in data.split(|byte| *byte == b'\n') {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
+        match (raw.first(), lines.last_mut()) {
+            (Some(b' ' | b'\t'), Some(last)) => last.extend_from_slice(&raw[1..]),
             _ if raw.is_empty() => {}
-            _ => lines.push(raw.to_string()),
+            _ => lines.push(raw.to_vec()),
         }
     }
-    lines
+    lines.into_iter().map(|line| String::from_utf8_lossy(&line).into_owned()).collect()
 }
 
 /// `NAME;PARAM=value;PARAM="quoted:value":the value`, with the name and
@@ -437,7 +462,16 @@ fn duration(value: &str) -> Option<i64> {
 
 /// An RRULE we can follow, or None.
 fn rule(value: &str) -> Option<Rule> {
-    let mut rule = Rule { freq: Freq::Daily, interval: 1, count: None, until: None, weekdays: Vec::new() };
+    let mut rule = Rule {
+        freq: Freq::Daily,
+        interval: 1,
+        count: None,
+        until: None,
+        weekdays: Vec::new(),
+        week_start: 0,
+        month_day: None,
+        month: None,
+    };
     let mut freq = None;
     for part in value.split(';').filter(|part| !part.is_empty()) {
         let (key, value) = part.split_once('=')?;
@@ -463,14 +497,13 @@ fn rule(value: &str) -> Option<Rule> {
             }
             "BYDAY" => {
                 for day in value.split(',') {
-                    let index = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
-                        .iter()
-                        .position(|name| day.eq_ignore_ascii_case(name))?;
-                    rule.weekdays.push(index as i64);
+                    rule.weekdays.push(weekday(day)?);
                 }
             }
-            // The default week start changes nothing for the rules we follow.
-            "WKST" => {}
+            "WKST" => rule.week_start = weekday(value)?,
+            // One positive day or month; `Rule::follows` checks it is the start's.
+            "BYMONTHDAY" => rule.month_day = Some(value.parse().ok().filter(|day| (1..=31).contains(day))?),
+            "BYMONTH" => rule.month = Some(value.parse().ok().filter(|month| (1..=12).contains(month))?),
             _ => return None,
         }
     }
@@ -478,7 +511,23 @@ fn rule(value: &str) -> Option<Rule> {
     if !rule.weekdays.is_empty() && rule.freq != Freq::Weekly {
         return None;
     }
+    // BYMONTHDAY repeats within the period of a monthly rule, or of a
+    // yearly one in the month BYMONTH names; elsewhere it means more.
+    let month_day_fits = match rule.freq {
+        Freq::Monthly => rule.month.is_none(),
+        Freq::Yearly => rule.month.is_some(),
+        Freq::Daily | Freq::Weekly => false,
+    };
+    if rule.month_day.is_some() && !month_day_fits || rule.month.is_some() && rule.freq != Freq::Yearly {
+        return None;
+    }
     Some(rule)
+}
+
+/// `MO` to `SU`: 0 for Monday up to 6 for Sunday.
+fn weekday(name: &str) -> Option<i64> {
+    let index = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"].iter().position(|day| name.eq_ignore_ascii_case(day))?;
+    Some(index as i64)
 }
 
 /// A zone from a zoneinfo (TZif) file: its transitions, then the POSIX
@@ -747,11 +796,11 @@ mod tests {
         TimeZone::from_posix("CET-1CEST,M3.5.0,M10.5.0/3").unwrap()
     }
 
-    fn read(text: &str, from: i64, until: i64) -> Vec<Occurrence> {
+    fn read(text: impl AsRef<[u8]>, from: i64, until: i64) -> Vec<Occurrence> {
         let named = |tzid: &str| -> Option<Box<dyn Zone>> {
             (tzid == "Europe/Amsterdam").then(|| Box::new(amsterdam()) as Box<dyn Zone>)
         };
-        occurrences(text, &Zones { local: &Utc, named: &named }, from, until)
+        occurrences(text.as_ref(), &Zones { local: &Utc, named: &named }, from, until)
     }
 
     fn calendar(events: &str) -> String {
@@ -844,6 +893,111 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_may_split_a_character() {
+        // "Café met Zoë", folded between the two bytes of the é.
+        let text = b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:f\r\nDTSTART:20261109T100000Z\r\n\
+                     SUMMARY:Caf\xc3\r\n \xa9 met Zo\xc3\xab\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let found = read(text, MONDAY, MONDAY + DAY);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].summary, "Café met Zoë");
+        assert_eq!(unfold(b"A:\xe2\x82\r\n\t\xac"), ["A:€"]);
+    }
+
+    #[test]
+    fn an_all_day_event_takes_at_least_its_day() {
+        let text = calendar(
+            "BEGIN:VEVENT\r\nUID:z\r\nDTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261110\r\nSUMMARY:Bin day\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:d\r\nDTSTART;VALUE=DATE:20261111\r\nDURATION:PT0S\r\nSUMMARY:No length\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:t\r\nDTSTART:20261110T100000Z\r\nDTEND:20261110T100000Z\r\nSUMMARY:Instant\r\nEND:VEVENT\r\n",
+        );
+        let found = read(&text, MONDAY + DAY, MONDAY + 3 * DAY);
+        let list: Vec<_> = found.iter().map(|event| (event.summary.as_str(), event.start, event.end)).collect();
+        assert_eq!(
+            list,
+            [
+                ("Bin day", MONDAY + DAY, MONDAY + 2 * DAY),
+                ("Instant", utc_at(2026, 11, 10, 10, 0), utc_at(2026, 11, 10, 10, 0)),
+                ("No length", MONDAY + 2 * DAY, MONDAY + 3 * DAY),
+            ]
+        );
+        // It is not shown the day before.
+        assert!(read(&text, MONDAY, MONDAY + DAY).is_empty());
+    }
+
+    #[test]
+    fn weeks_start_where_the_rule_says() {
+        // From Tuesday 27 October, every other week on Tuesday and Sunday,
+        // in weeks from Sunday: 8 and 10 November, then 22 and 24.
+        let event = |wkst: &str| {
+            calendar(&format!(
+                "BEGIN:VEVENT\r\nUID:w\r\nDTSTART:20261027T180000Z\r\nDTEND:20261027T190000Z\r\n\
+                 RRULE:FREQ=WEEKLY;{wkst}INTERVAL=2;BYDAY=TU,SU\r\nSUMMARY:Choir\r\nEND:VEVENT\r\n"
+            ))
+        };
+        let starts = |text: &str| -> Vec<i64> {
+            read(text, MONDAY - 7 * DAY, MONDAY + 21 * DAY).iter().map(|event| event.start).collect()
+        };
+        assert_eq!(
+            starts(&event("WKST=SU;")),
+            [
+                utc_at(2026, 11, 8, 18, 0),
+                utc_at(2026, 11, 10, 18, 0),
+                utc_at(2026, 11, 22, 18, 0),
+                utc_at(2026, 11, 24, 18, 0)
+            ]
+        );
+        // Weeks from Monday, the default: 10 and 15 November, then 24 and 29.
+        let monday = [
+            utc_at(2026, 11, 10, 18, 0),
+            utc_at(2026, 11, 15, 18, 0),
+            utc_at(2026, 11, 24, 18, 0),
+            utc_at(2026, 11, 29, 18, 0),
+        ];
+        assert_eq!(starts(&event("")), monday);
+        assert_eq!(starts(&event("WKST=MO;")), monday);
+        assert!(rule("FREQ=WEEKLY;WKST=XX").is_none());
+    }
+
+    #[test]
+    fn follows_a_by_month_day_or_month_that_repeats_the_start() {
+        let event = |uid: &str, start: &str, rrule: &str| {
+            format!(
+                "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:{start}\r\nDURATION:PT1H\r\nRRULE:{rrule}\r\nSUMMARY:{uid}\r\nEND:VEVENT\r\n"
+            )
+        };
+        let text = calendar(
+            &[
+                event("rent", "20261015T100000Z", "FREQ=MONTHLY;BYMONTHDAY=15"),
+                event("birthday", "20001112T080000Z", "FREQ=YEARLY;BYMONTH=11;BYMONTHDAY=12"),
+                event("month", "20001110T080000Z", "FREQ=YEARLY;BYMONTH=11"),
+                // Not the start's own day or month: only the start is shown.
+                event("other-day", "20261015T100000Z", "FREQ=MONTHLY;BYMONTHDAY=16"),
+                event("other-month", "20001112T080000Z", "FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=12"),
+            ]
+            .concat(),
+        );
+        let found = read(&text, MONDAY, MONDAY + 7 * DAY);
+        let list: Vec<_> = found.iter().map(|event| (event.summary.as_str(), event.start)).collect();
+        assert_eq!(
+            list,
+            [
+                ("month", utc_at(2026, 11, 10, 8, 0)),
+                ("birthday", utc_at(2026, 11, 12, 8, 0)),
+                ("rent", utc_at(2026, 11, 15, 10, 0))
+            ]
+        );
+        let october = read(&text, utc_at(2026, 10, 15, 0, 0), utc_at(2026, 10, 17, 0, 0));
+        assert!(october.iter().any(|event| event.summary == "other-day"));
+        // More than one, a negative day, or a part that means more than the
+        // start's own day is not followed.
+        assert!(rule("FREQ=MONTHLY;BYMONTHDAY=1,15").is_none());
+        assert!(rule("FREQ=MONTHLY;BYMONTHDAY=-1").is_none());
+        assert!(rule("FREQ=YEARLY;BYMONTHDAY=15").is_none());
+        assert!(rule("FREQ=MONTHLY;BYMONTH=11").is_none());
+        assert!(rule("FREQ=WEEKLY;BYMONTHDAY=15").is_none());
+    }
+
+    #[test]
     fn moved_occurrences_replace_their_originals() {
         let text = calendar(
             "BEGIN:VEVENT\r\nUID:r\r\nDTSTART:20261109T090000Z\r\nDURATION:PT30M\r\nRRULE:FREQ=DAILY;INTERVAL=2\r\nSUMMARY:Sync\r\nEND:VEVENT\r\n\
@@ -877,7 +1031,7 @@ mod tests {
         assert_eq!((name.as_str(), value.as_str()), ("DTSTART", "20261109T100000"));
         assert_eq!(params["TZID"], "Europe/A:b");
         assert_eq!(unescape("a\\nb\\;c\\\\"), "a\nb;c\\");
-        assert_eq!(unfold("A:1\r\n 2\r\n\tthree\r\nB:x"), ["A:12three", "B:x"]);
+        assert_eq!(unfold(b"A:1\r\n 2\r\n\tthree\r\nB:x"), ["A:12three", "B:x"]);
         assert!(rule("FREQ=HOURLY").is_none());
         assert!(rule("FREQ=MONTHLY;BYDAY=MO").is_none());
         assert!(rule("INTERVAL=2").is_none());
