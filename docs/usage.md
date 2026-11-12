@@ -374,7 +374,11 @@ With [smart home devices](configuration.md#smart-home) set up, the notification
 panel has a **Home** block. An air conditioner shows its room temperature, a
 target you change with **-** and **+**, its mode and fan speed, and a trend
 line of the last six hours of temperature and target underneath. Below it are
-the lights and plugs by room, each with a switch. Click a light to show its
+the lights, plugs and sensors by room, each light and plug with a switch, and
+each sensor with a small trend line of its last six hours. Temperature is drawn
+in the accent colour and humidity in the second accent colour, each on its own
+scale. For a device that reports both, **Settings**, **Smart home**,
+**History** chooses temperature, humidity or both. Click a light to show its
 brightness and colour sliders. **All** lists everything in one list instead,
 with what is on first, and **All off** switches off every light and plug.
 

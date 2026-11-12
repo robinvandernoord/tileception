@@ -4,9 +4,14 @@
 //! cloud project (with an expandable how-to and troubleshooting), the
 //! credentials form from `connect`, and the devices it finds. Once a device
 //! file exists the page shows the usual rows, the devices and their state,
-//! and Refresh devices, which opens the same form again.
+//! and Refresh devices, which opens the same form again. Devices that
+//! report both temperature and humidity get a choice of which readings their
+//! history shows in the panel.
 
-use tileception_home::store;
+use tileception_home::{
+    model::Model,
+    store::{self, Readings},
+};
 
 use super::*;
 
@@ -55,6 +60,9 @@ pub(super) const FORM_H: f64 = 404.;
 const PAD: f64 = 20.;
 const BUTTON_H: f64 = 32.;
 const DEVICE_ROW: f64 = 30.;
+const READINGS_ROW: f64 = 36.;
+/// The readings buttons' widths, in the order of [`Readings::ALL`].
+const READINGS_W: [f64; 3] = [104., 86., 62.];
 
 /// One card on the page: a numbered step, or the devices.
 pub(super) struct Card {
@@ -74,6 +82,8 @@ pub(super) struct HomeFrame {
     pub trouble: Option<Rect>,
     pub form: Option<Rect>,
     pub devices: Option<Rect>,
+    /// The devices with a choice of readings, one row each.
+    pub readings: Option<Rect>,
     pub height: f64,
 }
 
@@ -86,7 +96,10 @@ impl HomeFrame {
         for (rect, _) in &mut self.buttons {
             move_rect(rect);
         }
-        for rect in [&mut self.guide, &mut self.trouble, &mut self.form, &mut self.devices].into_iter().flatten() {
+        for rect in [&mut self.guide, &mut self.trouble, &mut self.form, &mut self.devices, &mut self.readings]
+            .into_iter()
+            .flatten()
+        {
             move_rect(rect);
         }
     }
@@ -105,6 +118,28 @@ fn guide_height(width: f64) -> f64 {
 
 fn trouble_height(width: f64) -> f64 {
     TROUBLE.iter().map(|(_, fix)| 20. + text_height(fix, width, 12.) + 12.).sum::<f64>() + 8.
+}
+
+/// A device whose history can show temperature, humidity or both, and the
+/// readings it shows now.
+pub(super) struct ReadingsChoice {
+    pub device_id: String,
+    pub name: String,
+    pub shown: Readings,
+}
+
+/// The devices that report both readings, from the device file, with the
+/// readings chosen for each; unset is both.
+fn readings_choices(file: &store::DeviceFile) -> Vec<ReadingsChoice> {
+    file.devices
+        .iter()
+        .filter(|device| !Model::for_entry(device).reports().choices().is_empty())
+        .map(|device| ReadingsChoice {
+            device_id: device.device_id.clone(),
+            name: device.name.clone(),
+            shown: device.readings.unwrap_or(Readings::Both),
+        })
+        .collect()
 }
 
 /// A device as the page lists it: name, home and room, and its state.
@@ -129,6 +164,7 @@ impl Tileception {
         let file = self.config.file.home.path().and_then(|path| store::load(&path).ok());
         self.settings.home_cloud_saved = file.as_ref().is_some_and(|file| file.cloud.is_some());
         self.settings.home_cloud_labels = [self.settings_home_cloud_label(true), self.settings_home_cloud_label(false)];
+        self.settings.home_readings = file.as_ref().map(readings_choices).unwrap_or_default();
         self.settings.home_listed = file
             .map(|file| {
                 file.devices
@@ -180,6 +216,7 @@ impl Tileception {
             trouble: None,
             form: None,
             devices: None,
+            readings: None,
             height: 0.,
         };
         let inner = width - 2. * PAD;
@@ -312,6 +349,32 @@ impl Tileception {
                 subtitle,
                 done: false,
             });
+            if !self.settings.home_readings.is_empty() {
+                cursor += card_gap;
+                let start = cursor;
+                cursor += header;
+                let height = self.settings.home_readings.len() as f64 * READINGS_ROW;
+                let area = Rect::new(left + PAD, cursor, inner, height);
+                for (row, _) in self.settings.home_readings.iter().enumerate() {
+                    let row_y = cursor + row as f64 * READINGS_ROW + (READINGS_ROW - 28.) / 2.;
+                    let mut button_x = area.right() - READINGS_W.iter().sum::<f64>() - 6. * 2.;
+                    for (choice, width) in READINGS_W.iter().enumerate() {
+                        frame.buttons.push((Rect::new(button_x, row_y, *width, 28.), Hit::HomeReadings(row, choice)));
+                        button_x += width + 6.;
+                    }
+                }
+                frame.readings = Some(area);
+                cursor += height + 14.;
+                frame.cards.push(Card {
+                    rect: Rect::new(left, start, width, cursor - start),
+                    step: None,
+                    title: "History",
+                    subtitle: "Which readings the panel draws over the last six hours, for devices that report both \
+                               temperature and humidity."
+                        .into(),
+                    done: false,
+                });
+            }
             if self.settings.connect.is_some() {
                 cursor += card_gap;
                 let start = cursor;
@@ -420,9 +483,47 @@ impl Tileception {
                 );
             }
         }
+        if let Some(area) = home.readings {
+            for (row, device) in self.settings.home_readings.iter().enumerate() {
+                let rect = Rect::new(area.x, area.y + row as f64 * READINGS_ROW, area.w, READINGS_ROW);
+                let buttons = READINGS_W.iter().sum::<f64>() + 6. * 2.;
+                painter.text(
+                    &device.name,
+                    Rect::new(rect.x + 4., rect.y, rect.w - buttons - 16., rect.h),
+                    Style::new(12., theme.text),
+                );
+            }
+        }
         if home.form.is_some() {
             self.settings_draw_connect(painter);
         }
+    }
+
+    /// A readings button: its label, and whether it is the one chosen.
+    pub(super) fn settings_home_readings_button(&self, row: usize, choice: usize) -> (&'static str, bool) {
+        let readings = Readings::ALL[choice.min(Readings::ALL.len() - 1)];
+        let chosen = self.settings.home_readings.get(row).is_some_and(|device| device.shown == readings);
+        (readings.label(), chosen)
+    }
+
+    /// Chooses the readings a device's history shows, in the device file;
+    /// the home plugin follows the file without connecting again.
+    pub(super) fn settings_home_choose_readings(&mut self, row: usize, choice: usize) -> Result<String, String> {
+        let device = self.settings.home_readings.get(row).ok_or("No such device")?;
+        let readings = *Readings::ALL.get(choice).ok_or("No such choice")?;
+        let path = self.config.file.home.path().ok_or("No config directory")?;
+        let mut file = store::load(&path)?;
+        let entry = file
+            .devices
+            .iter_mut()
+            .find(|entry| entry.device_id == device.device_id)
+            .ok_or_else(|| format!("{} is no longer in the device file", device.name))?;
+        // Both is what an unset choice shows.
+        entry.readings = (readings != Readings::Both).then_some(readings);
+        store::save(&path, &file)?;
+        let message = format!("{}: {} in the history", device.name, readings.label().to_lowercase());
+        self.settings.home_readings = readings_choices(&file);
+        Ok(message)
     }
 
     /// What a page button says.
@@ -434,5 +535,37 @@ impl Tileception {
             Hit::HomeRefresh => ("Refresh devices".into(), None),
             _ => (String::new(), None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tileception_home::store::{DataPoint, DeviceEntry, DeviceFile};
+
+    use super::*;
+
+    #[test]
+    fn only_devices_reporting_both_readings_offer_a_choice() {
+        let point = |code: &str| DataPoint { code: code.into(), kind: "Integer".into(), values: serde_json::json!({}) };
+        let device = |device_id: &str, codes: &[&str], readings| DeviceEntry {
+            device_id: device_id.into(),
+            name: device_id.into(),
+            category: "wsdcg".into(),
+            mapping: codes.iter().enumerate().map(|(index, code)| ((index + 1).to_string(), point(code))).collect(),
+            readings,
+            ..Default::default()
+        };
+        let file = DeviceFile {
+            devices: vec![
+                device("both", &["va_temperature", "va_humidity"], None),
+                device("thermometer", &["va_temperature"], Some(Readings::Humidity)),
+                device("chosen", &["temp_current", "humidity_value"], Some(Readings::Humidity)),
+                device("lamp", &[], None),
+            ],
+            ..Default::default()
+        };
+        let choices: Vec<(String, Readings)> =
+            readings_choices(&file).into_iter().map(|choice| (choice.device_id, choice.shown)).collect();
+        assert_eq!(choices, [("both".to_string(), Readings::Both), ("chosen".to_string(), Readings::Humidity)]);
     }
 }

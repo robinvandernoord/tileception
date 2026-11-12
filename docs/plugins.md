@@ -289,8 +289,9 @@ folding, the chosen view and the selected row across updates.
 - Items are `group` (a heading that folds its items when clicked), `row` and
   `card`. A row has an `id`, `title`, `detail`, `icon`, `tint`, `dim` (dimmer
   title), `alert` (detail in the danger colour), `enabled`, an optional
-  `switch` (`on`, `pending`, `action`) and `levels`. Clicking a row with levels
-  selects it and shows them.
+  `switch` (`on`, `pending`, `action`), `levels` and a `trend` like a card's,
+  drawn small at the right of a row without a switch. Clicking a row with
+  levels selects it and shows them.
 - A level is a bar from 0 to 100 with `title`, `value`, `unit` or `steps`
   (words spread over the range) and `look` (`plain` or `warmth`). Dragging
   sends its tool action with `value` added to the arguments, up to eight times
@@ -299,7 +300,9 @@ folding, the chosen view and the selected row across updates.
   `tint`, `lit`, `enabled`, `title_action`, `buttons`, a `stepper` (`value`,
   `minus`, `plus`), a `switch`, rows of `choices` (`title` and `options` with
   `title`, `selected`, `action`), a `trend` (`span` in seconds and `lines` of
-  `[seconds ago, value]` points, `dashed` for a target) and a `progress` bar
+  `[seconds ago, value]` points, `dashed` for a target, `secondary` for a
+  second kind of reading, such as humidity beside temperature, drawn in the
+  second accent colour on a scale of its own) and a `progress` bar
   along the bottom (`value` from 0 to 100). Without a `value`, the title starts
   where the reading would.
 - A button has a `title`, `icon`, `primary` (filled with the accent, for the

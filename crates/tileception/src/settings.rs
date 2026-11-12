@@ -545,6 +545,9 @@ enum Hit {
     HomeLink(usize),
     HomeRefresh,
     HomeCloud(bool),
+    /// A device's history readings: the device's row on the page, and the
+    /// choice of temperature, humidity or both.
+    HomeReadings(usize, usize),
     /// Default apps: an entry's application button, one of its menu's
     /// applications, and showing all file types.
     AppDefault(usize),
@@ -620,6 +623,9 @@ pub struct Settings {
     home_trouble: bool,
     /// Names and places from the device file, while not connected.
     home_listed: Vec<(String, String)>,
+    /// The devices that report both temperature and humidity, with the
+    /// readings their history shows.
+    home_readings: Vec<home_page::ReadingsChoice>,
     /// The device file keeps cloud access, so its options can change.
     home_cloud_saved: bool,
     needs_reload: bool,
@@ -1858,6 +1864,16 @@ impl Tileception {
             | Hit::NetReveal
             | Hit::NetJoin
             | Hit::NetEditor => self.settings_network_activate(hit),
+            Hit::HomeReadings(row, choice) => match self.settings_home_choose_readings(row, choice) {
+                Ok(message) => {
+                    self.settings.message = message;
+                    self.settings.error = false;
+                }
+                Err(error) => {
+                    self.settings.message = error;
+                    self.settings.error = true;
+                }
+            },
             Hit::HomeCloud(sensors) => match self.settings_home_cloud(sensors) {
                 Ok(()) => {
                     self.settings.message = self.settings_home_cloud_label(sensors);
@@ -2487,6 +2503,11 @@ impl Tileception {
                         painter.fill(*rect, theme.surface_raised, 6.);
                     }
                     painter.glyph(glyph::CLOSE, *rect, 18, if hovered { theme.text } else { theme.muted });
+                }
+                Hit::HomeReadings(row, choice) => {
+                    let (label, chosen) = self.settings_home_readings_button(row, choice);
+                    let look = if chosen { Look::Primary } else { Look::Plain };
+                    painter.button(*rect, Button::new(label, look).focused(focused), hovered);
                 }
                 Hit::HomeCloud(sensors) => {
                     let label = &state.home_cloud_labels[usize::from(!sensors)];

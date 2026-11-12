@@ -89,6 +89,9 @@ pub struct Row {
     pub enabled: bool,
     pub switch: Option<Switch>,
     pub levels: Vec<Level>,
+    /// A small trend line at the right, for a row without a switch, such as
+    /// a sensor's last hours.
+    pub trend: Option<Trend>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -230,6 +233,9 @@ pub struct Trend {
 pub struct Line {
     /// Thin and dashed, such as a target, instead of a solid reading.
     pub dashed: bool,
+    /// A second kind of reading, such as humidity beside temperature: drawn
+    /// in a second colour, on its own scale.
+    pub secondary: bool,
     /// Points as (seconds ago, value); each value holds until the next.
     pub points: Vec<(f64, f64)>,
 }

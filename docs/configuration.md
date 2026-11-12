@@ -672,8 +672,13 @@ on the network you are on. `devices` points to a different device file; see the
 `tileception home status` lists the imported devices and whether they answer,
 and `tileception msg home why <name>` explains why one is unreachable and what
 to check. The climate widget draws a trend line of the last six hours of room
-temperature and target under itself, sampled locally and kept in
-`~/.local/state/tileception/home-history.json`.
+temperature and target under itself, and each temperature or humidity sensor
+one of its readings beside its name. The readings are sampled locally (cloud
+sensors as they are polled) and kept in
+`~/.local/state/tileception/home-history.json`. For a device that reports
+both temperature and humidity, **History** on the Smart home page in Settings
+chooses which of them the trend shows; the choice is kept with the device in
+the device file and survives imports and refreshes.
 
 ## Doctor
 
