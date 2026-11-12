@@ -6,7 +6,10 @@ use std::{
     fs::File,
     hash::{Hash, Hasher},
     io::{Read, Write},
-    os::{fd::AsFd, unix::net::UnixStream},
+    os::{
+        fd::AsFd,
+        unix::{fs::FileExt, net::UnixStream},
+    },
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
@@ -494,10 +497,15 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
             wl_keyboard::Event::Keymap {
                 format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
                 fd: descriptor,
-                ..
+                size,
             } => {
-                let mut text = String::new();
-                if File::from(descriptor).read_to_string(&mut text).is_ok() {
+                // The compositor may give every client the same file, and so
+                // the same offset: read from the start, never from where the
+                // previous reader stopped.
+                let mut bytes = vec![0; size as usize];
+                if File::from(descriptor).read_exact_at(&mut bytes, 0).is_ok()
+                    && let Ok(text) = String::from_utf8(bytes)
+                {
                     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
                     app.keyboard = xkb::Keymap::new_from_string(
                         &context,
