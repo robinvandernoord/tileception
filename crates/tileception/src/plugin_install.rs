@@ -26,6 +26,9 @@ const UV_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long `status` and `uninstall` may take.
 const QUICK_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long output is still read after a program ended, while something it
+/// left running holds its pipes open.
+const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 /// The largest `pyproject.toml` read.
 const MAX_PYPROJECT: &str = "1000000";
 
@@ -328,6 +331,14 @@ pub fn listing() -> String {
         .collect()
 }
 
+/// A file of its own for each lookup: two can run at once, and one must
+/// not read what the other fetched.
+fn lookup_file() -> String {
+    static LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let lookup = LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("plugin-pyproject-{}-{lookup}.toml", std::process::id())
+}
+
 /// Runs `command` without a terminal on stdin, gathering its output, and
 /// ends it after `timeout`.
 fn run(mut command: Command, timeout: Duration) -> Result<Output, String> {
@@ -338,17 +349,34 @@ fn run(mut command: Command, timeout: Duration) -> Result<Output, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("{program}: {error}"))?;
+    // Output is gathered as it comes, and each reader says when its pipe
+    // closed. Something the program started in the background may hold the
+    // pipes open long after it ended, so they are not waited for forever.
+    let (closed, pipes_closed) = std::sync::mpsc::channel::<()>();
     let gather = |pipe: Option<Box<dyn Read + Send>>| {
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gathered = bytes.clone();
+        let closed = closed.clone();
         std::thread::spawn(move || {
-            let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
+                let mut chunk = [0; 8192];
+                while let Ok(length @ 1..) = pipe.read(&mut chunk) {
+                    gathered
+                        .lock()
+                        .expect("output buffer mutex must not be poisoned")
+                        .extend_from_slice(&chunk[..length]);
+                }
             }
-            bytes
-        })
+            let _ = closed.send(());
+        });
+        bytes
     };
     let stdout = gather(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
     let stderr = gather(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    drop(closed);
+    let take = |bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+        std::mem::take(&mut *bytes.lock().expect("output buffer mutex must not be poisoned"))
+    };
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| format!("{program}: {error}"))? {
@@ -361,7 +389,13 @@ fn run(mut command: Command, timeout: Duration) -> Result<Output, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+    let grace = Instant::now() + OUTPUT_GRACE;
+    for _ in 0..2 {
+        if pipes_closed.recv_timeout(grace.saturating_duration_since(Instant::now())).is_err() {
+            break;
+        }
+    }
+    Ok(Output { status, stdout: take(stdout), stderr: take(stderr) })
 }
 
 /// The last lines a failed program wrote, for a notification.
@@ -410,7 +444,7 @@ impl Runner {
             .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
             .join("tileception");
         std::fs::create_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
-        let path = cache.join("plugin-pyproject.toml");
+        let path = cache.join(lookup_file());
         tileception_acp::curl(&source.raw_url("pyproject.toml"), &path, MAX_PYPROJECT)
             .map_err(|error| format!("{source} has no pyproject.toml to read ({error})"))?;
         let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
@@ -613,8 +647,11 @@ impl Tileception {
         if self.installer.looking.as_ref() == Some(&source) {
             return Ok(());
         }
-        self.installer.looking = Some(source.clone());
-        self.start_job(String::new(), Job::Look(source))
+        // Only once it runs: a lookup refused now must not look started,
+        // or Enter would wait for it for good.
+        self.start_job(String::new(), Job::Look(source.clone()))?;
+        self.installer.looking = Some(source);
+        Ok(())
     }
 
     /// Installs what [`Self::plugin_look_up`] found.
@@ -840,6 +877,24 @@ needs = ["the 2fas CLI"]
         let mut sleep = Command::new("sleep");
         sleep.arg("5");
         assert!(run(sleep, Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn a_program_that_leaves_something_running_still_returns() {
+        // An `install` that starts a background process, which keeps its
+        // output open after the plugin's own process has ended.
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & echo started"]);
+        let started = Instant::now();
+        let output = run(command, Duration::from_secs(2)).expect("sh runs");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "started");
+    }
+
+    #[test]
+    fn lookups_do_not_share_a_file() {
+        assert_ne!(lookup_file(), lookup_file());
     }
 
     #[test]
