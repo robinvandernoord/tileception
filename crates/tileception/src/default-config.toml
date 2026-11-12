@@ -379,6 +379,10 @@ tray_max_icons = 3
 # [plugins.example.launcher]
 # prefixes = ["echo"]
 # cards = false  # hide its cards under the launcher
+# The smart home's indoor temperature on the lock screen; plugins show
+# readings there only with a [lock] block.
+# [plugins.home.lock]
+# enabled = false
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

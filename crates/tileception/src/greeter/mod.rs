@@ -17,6 +17,7 @@ mod draw;
 mod greetd;
 pub(crate) mod keymap;
 mod layout;
+mod readings;
 mod sessions;
 mod settings;
 

@@ -2,8 +2,8 @@
 
 Plugins are executable commands speaking MCP over stdio. They can add launcher
 sources, cards under the launcher, a block in the notification panel, chips in
-the bar, and tools for `tileception msg plugin`. They run as the session user, with the session's
-environment and permissions. Installing a manifest enables its executable. Only
+the bar, readings on the lock screen, and tools for `tileception msg plugin`.
+They run as the session user, with the session's environment and permissions. Installing a manifest enables its executable. Only
 install plugins you trust.
 
 ## Bundled plugins
@@ -11,7 +11,8 @@ install plugins you trust.
 Some plugins ship inside the `tileception` binary and need no installation:
 
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
-  launcher and its bar chip. It runs while `[home] enabled = true`.
+  launcher, its bar chip and the indoor temperature on the [lock
+  screen](#lock-screen). It runs while `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
 - `timers`: `timer` in the launcher for timers and alarms, with a [card
   under the launcher](#launcher-cards) for each. The launcher also reads
@@ -83,13 +84,17 @@ args = ["--stdio"]
 # cards = false
 [bar]
 # enabled = false
+[lock]
+# enabled = false
 ```
 
 `command` names one executable, not a shell command line. Arguments are separate
 strings. Config fields overlay the matching manifest, so disabling an installed
 plugin only needs `enabled = false`, and hiding its bar chips only
 `[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
-block. A panel block shows whenever the plugin offers one, and so do its cards
+block, and readings on the lock screen only for plugins with a `[lock]` block;
+`[plugins.home.lock] enabled = false` takes the indoor temperature off the lock
+screen. A panel block shows whenever the plugin offers one, and so do its cards
 under the launcher unless `[launcher]` says `cards = false`.
 
 Omitted prefixes come from `launcher_info`. An explicit empty prefix list
@@ -132,7 +137,7 @@ symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
 `home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
 `wifi_off`, `bluetooth`, `bell`, `lock`, `clock`, `play`, `pause`, `stop`,
 `next`, `previous`, `plus`, `minus`, `check` and `close`. Panel blocks, launcher
-cards and bar chips only draw `glyph:` icons.
+cards, bar chips and lock screen readings only draw `glyph:` icons.
 
 ### Launcher
 
@@ -357,6 +362,30 @@ stays open and what is typed and found stays as it is. Copy also leaves the
 launcher open; open, run, terminal and settings actions close it. Send
 `notifications/resources/updated` when a card changes, for instance each second
 for a countdown; Tileception reads the resource again and redraws.
+
+### Lock screen
+
+A `tileception://lock` resource holds readings for Tileception's own lock
+screen, for plugins with a `[lock]` block. Without the block, nothing of the
+plugin shows there, whatever it offers. The bundled smart home plugin offers
+the indoor temperature:
+
+```json
+{"readings":[{"title":"Indoors","value":"21.5°","icon":"glyph:thermometer"}]}
+```
+
+Readings are read-only: anyone at the locked screen can see them, so they take
+no input and have no actions, and a reading should not name people, devices or
+rooms. They show as pills in the clock tile, after the reading's `glyph:` icon,
+up to two per plugin, in the panel's order, as far as the tile is wide. A
+label is cut after 32 characters. Return no readings to show nothing.
+
+They follow the lock screen's privacy: when its `[lock]` settings in
+[`greeter.toml`](greeter.md#settings) show neither media nor the notification
+count, the lock screen shows nothing of the session until unlocked, readings
+included. They never show on the login screen, nor on the screen of an external
+locker such as swaylock, which draws only itself. Launcher sources never reach
+the lock screen; only this resource does.
 
 ### Commands
 

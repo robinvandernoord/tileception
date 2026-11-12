@@ -118,6 +118,14 @@ impl Default for Lock {
     }
 }
 
+impl Lock {
+    /// Whether the lock screen shows anything of the session beyond the
+    /// clock. Without, everything waits for unlocking, plugins' readings too.
+    pub fn shows_session(&self) -> bool {
+        self.show_media || self.show_notification_count
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GreeterFile {

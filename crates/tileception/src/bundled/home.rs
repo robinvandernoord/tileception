@@ -1,7 +1,8 @@
 //! The `home` plugin: Tuya lights, plugs, sensors and air conditioners on
 //! the LAN through `tileception-home`. It owns the device connections, so
 //! everything that controls them goes through it: the panel block, `home`
-//! in the launcher, `tileception msg home` and key bindings.
+//! in the launcher, `tileception msg home` and key bindings. The lock screen
+//! gets only the indoor temperature, to read.
 //!
 //! It follows the device file: when an import in Settings or
 //! `tileception home import` writes it, the plugin connects again. Once at
@@ -23,10 +24,10 @@ use super::{Notifier, Plugin, tool};
 use crate::{
     home::{HomeCommand, Wanted},
     panel::block::{
-        Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Notice,
-        Row, Stepper, Switch, Tint, Trend, View,
+        Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Lock,
+        Notice, Reading, Row, Stepper, Switch, Tint, Trend, View,
     },
-    plugins::{ActionKind, BAR, PANEL},
+    plugins::{ActionKind, BAR, LOCK, PANEL},
     ui::ago,
 };
 
@@ -116,6 +117,7 @@ impl HomePlugin {
             if let Some(notifier) = &notifier {
                 notifier.changed(PANEL);
                 notifier.changed(BAR);
+                notifier.changed(LOCK);
                 notifier.changed(DEVICES);
             }
         }));
@@ -374,6 +376,32 @@ impl HomePlugin {
             _ => (Some("glyph:bulb".into()), Tint::Warm),
         };
         Bar { chips: vec![BarChip { label: parts.join(" \u{b7} "), icon, tint, action: None }] }
+    }
+
+    /// The lock screen's reading: the indoor temperature, from the climate
+    /// device the card shows, else from a sensor. Nothing to act on, and no
+    /// names of devices or rooms.
+    fn lock(&mut self) -> Lock {
+        if self.problem.is_some() {
+            return Lock::default();
+        }
+        let devices = self.shown();
+        let climate =
+            self.climate(&devices).filter(|device| reachable(device)).and_then(|device| device.state.temperature);
+        let sensor = || {
+            devices
+                .iter()
+                .filter(|device| device.kind == Kind::Sensor && reachable(device))
+                .find_map(|device| device.state.temperature)
+        };
+        let Some(temperature) = climate.or_else(sensor) else { return Lock::default() };
+        Lock {
+            readings: vec![Reading {
+                title: "Indoors".into(),
+                value: degrees(temperature),
+                icon: Some("glyph:thermometer".into()),
+            }],
+        }
     }
 
     /// Every device for Settings, with the addresses heard on the network.
@@ -702,6 +730,7 @@ impl Plugin for HomePlugin {
                 if let Some(notifier) = &self.notifier {
                     notifier.changed(PANEL);
                     notifier.changed(BAR);
+                    notifier.changed(LOCK);
                 }
                 Ok(json!({ "ok": true }))
             }
@@ -711,7 +740,12 @@ impl Plugin for HomePlugin {
     }
 
     fn resources(&self) -> Vec<(&'static str, &'static str)> {
-        vec![(PANEL, "Smart home block"), (BAR, "Smart home chip"), (DEVICES, "Smart home devices")]
+        vec![
+            (PANEL, "Smart home block"),
+            (BAR, "Smart home chip"),
+            (LOCK, "Indoor temperature on the lock screen"),
+            (DEVICES, "Smart home devices"),
+        ]
     }
 
     fn read(&mut self, uri: &str) -> Result<Value, String> {
@@ -719,6 +753,7 @@ impl Plugin for HomePlugin {
         match uri {
             PANEL => serde_json::to_value(self.block()).map_err(|error| error.to_string()),
             BAR => serde_json::to_value(self.bar()).map_err(|error| error.to_string()),
+            LOCK => serde_json::to_value(self.lock()).map_err(|error| error.to_string()),
             DEVICES => Ok(self.devices()),
             _ => Err(format!("no resource {uri}")),
         }
@@ -739,6 +774,7 @@ impl Plugin for HomePlugin {
                         seen = now;
                         notifier.changed(PANEL);
                         notifier.changed(BAR);
+                        notifier.changed(LOCK);
                         notifier.changed(DEVICES);
                     }
                 }
@@ -1028,6 +1064,29 @@ mod tests {
         assert_eq!(notice.action, Some(ActionKind::Settings { page: "Smart home".into() }));
         assert!(plugin.call("toggle", &json!({ "device": "Lamp" })).is_err());
         assert!(plugin.bar().chips.is_empty());
+        assert!(plugin.lock().readings.is_empty());
+    }
+
+    #[test]
+    fn the_lock_screen_gets_only_the_indoor_temperature() {
+        let (mut plugin, _household) = simulated();
+        let mut lock = plugin.lock();
+        for _ in 0..100 {
+            if !lock.readings.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            lock = plugin.lock();
+        }
+        assert_eq!(lock.readings.len(), 1, "{lock:?}");
+        assert_eq!(lock.readings[0].title, "Indoors");
+        assert_eq!(lock.readings[0].value, "23.5\u{b0}");
+        // Read, as the compositor reads it: no device or room names, nothing
+        // to act on.
+        let value = plugin.read(LOCK).unwrap();
+        let text = value.to_string();
+        assert!(!text.contains("Airco") && !text.contains("Living room") && !text.contains("action"), "{text}");
+        assert!(plugin.resources().iter().any(|(uri, _)| *uri == LOCK));
     }
 
     #[test]
