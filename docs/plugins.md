@@ -108,15 +108,18 @@ tileception msg plugin add --bar --id lamps /opt/lamps/bin/lamps-mcp --stdio
 
 The id comes from the executable's name, without its extension or a
 `tileception-` prefix, or from the script or package when the command is an
-interpreter or runner such as `python3`, `node`, `bash`, `npx` or `uvx`
-(`python3 ~/plugins/weather.py` becomes `weather`). Give another with
+interpreter or runner such as `python3`, `node`, `bash`, `deno`, `npx` or
+`uvx` (`python3 ~/plugins/weather.py` and `deno run -A ~/plugins/weather.ts`
+both become `weather`). Give another with
 `--id <id>`: lowercase letters, digits, `-` and `_`. Tileception does not start
 the plugin to ask for an id: MCP's server name is a display name, and the
 plugin should not run before it is set up. `--bar` adds the `[bar]` block, so
 the plugin's chips show. Options go before the command; everything after it is
-the plugin's arguments, split at spaces. For an argument containing spaces,
-edit `config.toml` instead. Plugins do not start in the folder you ran the
-command from, so name scripts by absolute path (the shell expands `~/`).
+the plugin's arguments. An argument that is empty or contains spaces is
+refused, since it would reach the compositor split in two; edit `config.toml`
+for one. Plugins do not start in the folder you ran the command from, so name
+scripts by absolute path (the shell expands `~/`): a relative script path that
+Tileception cannot find is refused.
 Ask Doctor to set up a plugin and it can run this command once you approve it.
 
 The command must be an executable on the compositor's `PATH` or an absolute

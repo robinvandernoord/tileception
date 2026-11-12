@@ -719,7 +719,32 @@ pub struct Add {
 const RESERVED: [&str; 2] = ["add", "plugins"];
 
 /// Commands that run a script or package: its name is the plugin's.
-const RUNNERS: [&str; 11] = ["python", "python3", "node", "sh", "bash", "perl", "ruby", "deno", "bun", "npx", "uvx"];
+const RUNNERS: [&str; 12] =
+    ["python", "python3", "node", "sh", "bash", "perl", "ruby", "deno", "bun", "npx", "uv", "uvx"];
+
+/// Runners whose subcommand comes before the script or package:
+/// `deno run`, `bun x`, `uv run`, `npx exec`.
+const SUBCOMMAND_RUNNERS: [&str; 5] = ["deno", "bun", "npx", "uv", "uvx"];
+const SUBCOMMANDS: [&str; 3] = ["run", "x", "exec"];
+
+/// A name with an extension that is not a version number: `weather.py`.
+fn has_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty() && !extension.is_empty() && !extension.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+/// The script or package a runner runs: the first word that looks like a
+/// path or has an extension, or else the first that is not an option or
+/// a subcommand. Options can take values (`python3 -W ignore x.py`), so
+/// the first plain word is only the fallback.
+fn runner_target<'a>(runner: &str, args: &'a [String]) -> Option<&'a str> {
+    let subcommands: &[&str] = if SUBCOMMAND_RUNNERS.contains(&runner) { &SUBCOMMANDS } else { &[] };
+    let words: Vec<&str> =
+        args.iter().map(String::as_str).filter(|word| !word.starts_with('-') && !subcommands.contains(word)).collect();
+    let base = |word: &'a str| word.rsplit('/').next().unwrap_or(word);
+    words.iter().copied().find(|word| word.contains('/') || has_extension(base(word))).or(words.first().copied())
+}
 
 impl Add {
     /// The words after `plugin add`; option words come before the command.
@@ -759,15 +784,14 @@ fn id_for(command: &str, args: &[String]) -> Option<String> {
     let base = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
     let mut name = base(command);
     if RUNNERS.contains(&name.as_str()) {
-        name = base(args.iter().find(|arg| !arg.starts_with('-'))?);
+        name = base(runner_target(&name, args)?);
         // A package's version: some-server@1.2.
         if let Some((package, _)) = name.split_once('@').filter(|(package, _)| !package.is_empty()) {
             name = package.to_string();
         }
     }
-    if let Some((stem, extension)) = name.rsplit_once('.')
-        && !stem.is_empty()
-        && !extension.chars().all(|character| character.is_ascii_digit())
+    if has_extension(&name)
+        && let Some((stem, _)) = name.rsplit_once('.')
     {
         name = stem.to_string();
     }
@@ -781,6 +805,22 @@ fn id_for(command: &str, args: &[String]) -> Option<String> {
     }
     let plugin_id = plugin_id.trim_matches('-').to_string();
     valid_id(&plugin_id).then_some(plugin_id)
+}
+
+/// A runner's script given as a relative path that does not exist from
+/// the compositor's folder, where the plugin starts: the user typed it
+/// from somewhere else. Packages, URLs and `npm:` specifiers are not
+/// files and are left alone.
+fn missing_script<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
+    let runner = command.rsplit('/').next().unwrap_or(command);
+    if !RUNNERS.contains(&runner) || ["npx", "uvx"].contains(&runner) {
+        return None;
+    }
+    let script = runner_target(runner, args)?;
+    let base = script.rsplit('/').next().unwrap_or(script);
+    let file_like = script.contains('/') || has_extension(base);
+    (file_like && !script.starts_with('/') && !script.contains(':') && !std::path::Path::new(script).exists())
+        .then_some(script)
 }
 
 /// An executable file, or a command found on PATH.
@@ -859,6 +899,11 @@ impl Tileception {
         }
         if !on_path(&command) {
             return Err(format!("{command} is not an executable file or a command on PATH"));
+        }
+        if let Some(script) = missing_script(&command, &args) {
+            return Err(format!(
+                "{script} is a relative path that Tileception does not find; give the script's absolute path"
+            ));
         }
         let plugin_id = match plugin_id {
             Some(plugin_id) => plugin_id,
@@ -1748,7 +1793,30 @@ mod tests {
         assert_eq!(derive("npx", &["-y", "@acme/notes-server@1.2"]).as_deref(), Some("notes-server"));
         assert_eq!(derive("/usr/bin/Calendar_Sync.sh", &[]).as_deref(), Some("calendar_sync"));
         assert_eq!(derive("python3", &[]), None);
+        assert_eq!(derive("deno", &["run", "-A", "/p/weather.ts"]).as_deref(), Some("weather"));
+        assert_eq!(derive("/usr/bin/bun", &["run", "/p/lamps.ts"]).as_deref(), Some("lamps"));
+        assert_eq!(derive("bun", &["x", "cowsay-server"]).as_deref(), Some("cowsay-server"));
+        assert_eq!(derive("uv", &["run", "--with", "httpx", "/p/feeds.py"]).as_deref(), Some("feeds"));
+        assert_eq!(derive("python3", &["-W", "ignore", "x.py"]).as_deref(), Some("x"));
+        assert_eq!(derive("python3", &["x"]).as_deref(), Some("x"));
         assert_eq!(derive("/usr/bin/ü.ï", &[]), None);
+    }
+
+    #[test]
+    fn a_relative_script_must_exist_for_the_compositor() {
+        let missing = |command: &str, args: &[&str]| {
+            missing_script(command, &args.iter().map(ToString::to_string).collect::<Vec<_>>()).map(str::to_string)
+        };
+        assert_eq!(
+            missing("python3", &["weather-that-is-not-here.py"]).as_deref(),
+            Some("weather-that-is-not-here.py")
+        );
+        assert_eq!(missing("deno", &["run", "-A", "nowhere/lamps.ts"]).as_deref(), Some("nowhere/lamps.ts"));
+        assert_eq!(missing("python3", &["/abs/weather.py"]), None);
+        assert_eq!(missing("python3", &["Cargo.toml"]), None, "exists in the test's folder");
+        assert_eq!(missing("npx", &["-y", "@acme/notes-server"]), None);
+        assert_eq!(missing("deno", &["run", "jsr:@acme/notes.ts"]), None);
+        assert_eq!(missing("/usr/bin/weather", &["config.json"]), None);
     }
 
     #[test]
