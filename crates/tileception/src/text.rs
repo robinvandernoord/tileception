@@ -741,14 +741,14 @@ mod tests {
 
     #[test]
     fn ink_covers_the_drawn_pixels_without_their_faint_edges() {
-        let ink = ink(&pixels(&[(1, 1), (2, 1)], &[(0, 0), (3, 2)]), 4, 1.0).unwrap();
+        let ink = ink(&pixels(&[(1, 1), (2, 1)], &[(0, 0), (3, 2)]), 4, 1.0).expect("pixels were drawn");
         assert_eq!(ink, Ink { left: 1.0, top: 1.0, right: 3.0, bottom: 2.0 });
         assert_eq!(ink.centre(), (2.0, 1.5));
     }
 
     #[test]
     fn ink_is_in_logical_pixels() {
-        let ink = ink(&pixels(&[(1, 1), (2, 2)], &[]), 4, 2.0).unwrap();
+        let ink = ink(&pixels(&[(1, 1), (2, 2)], &[]), 4, 2.0).expect("pixels were drawn");
         assert_eq!(ink, Ink { left: 0.5, top: 0.5, right: 1.5, bottom: 1.5 });
     }
 
