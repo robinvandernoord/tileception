@@ -107,10 +107,13 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
-  - Possibly: `tileception msg plugin add <command>` writes the config
-    entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
+- Plugins from GitHub releases for `plugins add`, beside the Python packages
+  it installs with uv: a repository without `pyproject.toml` whose latest
+  release has an archive for this architecture, downloaded and checked like
+  Doctor's binary agents (`tileception-acp/src/install.rs`), with the same
+  standard subcommands. Update replaces the archive with the newest release.
 - Notifications on Tileception's own lock screen (external lockers draw
   only themselves), beyond Tileception's own notifications and a count.
   Decided:
