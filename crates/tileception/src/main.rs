@@ -451,7 +451,7 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
 /// gnome-terminal-server) find this session.
 fn export_session_environment(state: &Tileception) {
     let mut vars = vec!["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
-    for var in ["SSH_AUTH_SOCK", "GNOME_DESKTOP_SESSION_ID"] {
+    for var in ["SSH_AUTH_SOCK", "GNOME_DESKTOP_SESSION_ID", "XDG_CONFIG_DIRS"] {
         if std::env::var_os(var).is_some() {
             vars.push(var);
         }

@@ -85,6 +85,17 @@ them. Windows stay solid. The login screen has its own `[theme]` in
 shows best over a colourful wallpaper. It costs a little GPU time when
 something changes behind a panel; a still screen costs nothing extra.
 
+### Fastfetch logo
+
+In a Tileception session, [fastfetch](https://github.com/fastfetch-cli/fastfetch)
+shows Tileception's tiles instead of your distribution's logo. The session adds
+a fastfetch config installed with Tileception to `XDG_CONFIG_DIRS`, so nothing
+is written to your home configuration and other desktops keep the usual logo.
+A config of your own in `~/.config/fastfetch` takes precedence; to keep the
+tiles there, copy the `logo` block from
+`/usr/share/tileception/xdg/fastfetch/config.jsonc` (or
+`~/.local/share/tileception/xdg/...` for a source installation).
+
 ## Windows larger than their tiles
 
 A window whose minimum size exceeds its tile is scaled down to fit. Once the
