@@ -63,7 +63,9 @@ pub enum Item {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Picture {
-    pub id: String,
+    /// `id`.
+    #[serde(rename = "id")]
+    pub key: String,
     pub title: String,
     pub size: Size,
     /// An absolute path, or a `data:image/...;base64,` URI.
@@ -87,7 +89,7 @@ impl Picture {
 
     fn light(&self) -> Picture {
         Picture {
-            id: self.id.clone(),
+            key: self.key.clone(),
             title: self.title.clone(),
             size: self.size,
             src: String::new(),
@@ -111,7 +113,9 @@ impl Items {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Surface {
-    pub id: String,
+    /// `id`.
+    #[serde(rename = "id")]
+    pub key: String,
     pub title: String,
     pub size: Size,
 }
@@ -371,7 +375,7 @@ impl Tileception {
                 }
                 Shown::Surface { plugin, surface } => {
                     let inner = self.draw_frame(painter, slot.rect, &surface.title, plugin);
-                    if !self.dashboard_surface_drawn(plugin, &surface.id) {
+                    if !self.dashboard_surface_drawn(plugin, &surface.key) {
                         let style = Style::new(theme.font_size * 0.9, theme.muted).align(Align::Centre);
                         painter.text("Starting…", inner, style);
                     }
@@ -590,7 +594,9 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(&items.items[0], Item::Card(card) if card.title == "Tea"));
-        assert!(matches!(&items.items[1], Item::Image(picture) if picture.size == Size::Medium));
+        assert!(
+            matches!(&items.items[1], Item::Image(picture) if picture.size == Size::Medium && picture.key == "lamp")
+        );
         assert!(matches!(&items.items[2], Item::Surface(surface) if surface.size == Size::Large));
     }
 

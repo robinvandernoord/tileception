@@ -215,7 +215,7 @@ impl Tileception {
             .iter()
             .filter_map(|slot| match &slot.what {
                 Shown::Surface { plugin, surface } => {
-                    let item = self.dashboard_surfaces.items.get(&(plugin.clone(), surface.id.clone()))?;
+                    let item = self.dashboard_surfaces.items.get(&(plugin.clone(), surface.key.clone()))?;
                     Some((crate::dashboard::inner(slot.rect), item))
                 }
                 _ => None,
@@ -242,7 +242,7 @@ impl Tileception {
         for slot in &slots {
             if let Shown::Surface { plugin, surface } = &slot.what {
                 let room = crate::dashboard::inner(slot.rect);
-                sizes.insert((plugin.clone(), surface.id.clone()), (room.w as i32, room.h as i32, scale));
+                sizes.insert((plugin.clone(), surface.key.clone()), (room.w as i32, room.h as i32, scale));
             }
         }
         for (key, item) in &mut self.dashboard_surfaces.items {
@@ -402,7 +402,7 @@ impl Dispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tilecept
         _handle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        let tileception_dashboard_v1::Request::GetItem { id, surface, item } = request else { return };
+        let tileception_dashboard_v1::Request::GetItem { id: made, surface, item } = request else { return };
         let Some(owner) = client.get_data::<ClientState>().and_then(|data| data.dashboard.clone()) else { return };
         if compositor::get_role(&surface) != Some(ROLE) && compositor::give_role(&surface, ROLE).is_err() {
             resource.post_error(tileception_dashboard_v1::Error::Role, "the surface already has another role");
@@ -418,7 +418,7 @@ impl Dispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tilecept
             resource.post_error(tileception_dashboard_v1::Error::Taken, "the item already has a surface");
             return;
         }
-        let resource = data_init.init(id, key.clone());
+        let resource = data_init.init(made, key.clone());
         state.dashboard_surfaces.items.insert(key, Item { surface, resource, configured: None });
         state.configure_dashboard_items();
         state.schedule_render();
