@@ -7,6 +7,9 @@
         // fastfetch/logos/tileception in a data directory, such as /usr/share.
         // Without an extension, so `fastfetch -l tileception` finds it too.
         "source": "tileception",
+        // A text logo. Left to detect it, fastfetch in kitty tries the file
+        // as an image and then waits forever for the terminal's reply.
+        "type": "file",
         "color": {
             // The pale tiles take the terminal's text colour, so they show on
             // light and dark themes alike.
@@ -21,5 +24,38 @@
             "keys": "#d42a1e",
             "title": "#d42a1e"
         }
-    }
+    },
+    // Fastfetch's default modules (`fastfetch --gen-config`): a config without
+    // this list shows the logo and nothing else.
+    "modules": [
+        "title",
+        "separator",
+        "os",
+        "host",
+        "kernel",
+        "uptime",
+        "packages",
+        "shell",
+        "display",
+        "de",
+        "wm",
+        "wmtheme",
+        "theme",
+        "icons",
+        "font",
+        "cursor",
+        "terminal",
+        "terminalfont",
+        "cpu",
+        "gpu",
+        "memory",
+        "swap",
+        "disk",
+        "localip",
+        "battery",
+        "poweradapter",
+        "locale",
+        "break",
+        "colors"
+    ]
 }
