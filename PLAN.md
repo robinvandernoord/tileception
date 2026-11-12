@@ -122,8 +122,6 @@ Report testing in the conversation, the commit or the pull request instead.
     as the App's bot. The key never ships in Tileception. The relay needs
     rate limiting, a length cap and a spam check, and new issues should wait
     in triage before they show publicly.
-- Smart home in Settings: import devices, configure cloud sensors, switch
-  `[home] enabled` and refresh the device inventory by hand.
 - Smart home history: support temperature, humidity or both, including
   standalone sensors. Let users choose which readings to show in Settings,
   according to what each device reports.
