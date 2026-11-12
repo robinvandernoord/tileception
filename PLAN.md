@@ -139,7 +139,6 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Maybe someday
 
-- Window management gestures on the touchpad.
 - Top bar calendar events from an .ics file or URL.
 - Compare contents or hashes before exporting Doctor's bundled documentation
   and default config, writing only missing or changed files.
