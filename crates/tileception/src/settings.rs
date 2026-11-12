@@ -383,6 +383,13 @@ const FIELDS: &[Field] = &[
         "Optional custom command. {wallpaper} expands to the wallpaper path.",
         Control::Text,
     ),
+    field(
+        6,
+        "lock.notifications",
+        "Notifications when locked",
+        "On the built-in lock screen: none, a count, which apps, or what they say.",
+        Control::Choice(&["none", "count", "apps", "full"]),
+    ),
     field(6, "general.suspend_enabled", "Allow suspend", "Show suspend in the power menu.", Control::Toggle),
     field(6, "general.welcome", "Welcome launcher", "Show the launcher on an empty desktop.", Control::Toggle),
     field(7, "general.autostart", "Autostart commands", "Commands run once when the session starts.", Control::Section),
@@ -689,7 +696,7 @@ fn group(key: &str) -> &'static str {
         | "shell.power_menu"
         | "duck.size" => "Panels",
         "shell.media" => "Media keys",
-        "shell.lock" | "general.lock_command" => "Lock screen",
+        "shell.lock" | "general.lock_command" | "lock.notifications" => "Lock screen",
         "general.suspend_enabled" | "general.welcome" | "greeter.share" => "Session",
         "general.default_binds" | "binds" => "Shortcuts",
         "general.autostart" | "general.terminal" | "launch_args" => "Applications",
@@ -727,6 +734,10 @@ const GROUPS: &[&str] = &[
 fn choice_label(key: &str, value: &str) -> String {
     match (key, value) {
         (_, "builtin") => "Built-in".into(),
+        ("lock.notifications", "none") => "Nothing".into(),
+        ("lock.notifications", "count") => "A count".into(),
+        ("lock.notifications", "apps") => "Which apps".into(),
+        ("lock.notifications", "full") => "What they say".into(),
         (_, "none") => "Off".into(),
         ("theme.colour_scheme", "default") => "Each app decides".into(),
         (_, "center") => "Centre".into(),

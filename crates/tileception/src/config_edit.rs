@@ -86,6 +86,16 @@ pub fn set_value(file: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Writes an app's `[lock.notification_apps]` exception under the first of
+/// `keys`, or removes it (`None`), removing any under the other keys.
+pub fn set_lock_notification_app(file: &Path, keys: &[&str], shown: Option<crate::lock::Shown>) -> Result<(), String> {
+    let mut doc = read(file)?;
+    if lock_notification_app(&mut doc, keys, shown)? || !file.exists() {
+        write(file, &doc)?;
+    }
+    Ok(())
+}
+
 /// Apply a panel draft in one validated write. Read the latest file so edits
 /// to unrelated settings are preserved; refuse conflicting changes.
 pub fn apply_draft(changes: &[(&str, Option<toml::Value>, Option<toml::Value>)]) -> Result<(), String> {
@@ -415,6 +425,70 @@ fn set(doc: &mut DocumentMut, key: &str, text: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Changes one app's lock screen exception, keeping the comments around it.
+/// False when it already was so.
+fn lock_notification_app(
+    doc: &mut DocumentMut,
+    keys: &[&str],
+    shown: Option<crate::lock::Shown>,
+) -> Result<bool, String> {
+    let Some(first) = keys.first() else { return Err("no app to change".into()) };
+    let value = match shown {
+        Some(shown) => match toml::Value::try_from(shown).map_err(|error| error.to_string())? {
+            toml::Value::String(text) => Some(text),
+            other => return Err(format!("unexpected value {other}")),
+        },
+        None => None,
+    };
+    let current = |doc: &DocumentMut, key: &str| {
+        doc.get("lock")
+            .and_then(|lock| lock.get("notification_apps"))
+            .and_then(|apps| apps.get(key))
+            .and_then(Item::as_str)
+            .map(str::to_string)
+    };
+    let others = keys.iter().skip(1).any(|key| current(doc, key).is_some());
+    if current(doc, first) == value && !others {
+        return Ok(false);
+    }
+    if doc.get("lock").is_none() {
+        // Only `[lock.notification_apps]` needs a header.
+        let mut lock = toml_edit::Table::new();
+        lock.set_implicit(true);
+        doc.insert("lock", Item::Table(lock));
+    }
+    let lock = doc["lock"].as_table_like_mut().ok_or("[lock] is not a table")?;
+    if lock.get("notification_apps").is_none() {
+        if value.is_none() {
+            return Ok(others);
+        }
+        lock.insert("notification_apps", Item::Table(toml_edit::Table::new()));
+    }
+    let apps = lock
+        .get_mut("notification_apps")
+        .and_then(Item::as_table_like_mut)
+        .ok_or("lock.notification_apps is not a table")?;
+    for key in keys.iter().skip(1) {
+        apps.remove(key);
+    }
+    match value {
+        Some(text) => match apps.get_mut(first).and_then(Item::as_value_mut) {
+            Some(old) => {
+                let decor = old.decor().clone();
+                *old = Value::from(text);
+                *old.decor_mut() = decor;
+            }
+            None => {
+                apps.insert(first, Item::Value(Value::from(text)));
+            }
+        },
+        None => {
+            apps.remove(first);
+        }
+    }
+    Ok(true)
+}
+
 /// Adds a string to a list setting. False when it was there already.
 fn add(doc: &mut DocumentMut, key: &str, text: &str) -> Result<bool, String> {
     let (section, name) = split(key)?;
@@ -508,6 +582,44 @@ mod tests {
         assert!(!add(&mut file, "general.autostart", "swaync").unwrap());
         assert_eq!(get(&file, "general.autostart").unwrap(), "[\"swaync\"]");
         assert!(add(&mut file, "shell.bar", "x").is_err());
+    }
+
+    #[test]
+    fn lock_screen_exceptions_are_written_and_removed() {
+        use crate::lock::Shown;
+        let keys = ["org.gnome.Calendar", "Calendar"];
+        let parsed = |file: &DocumentMut| crate::config::Config::parse(&file.to_string()).unwrap().file.lock;
+        // A file without [lock] gets only the exceptions' header.
+        let mut file = doc("[idle]\nlock_after = 0\n");
+        assert!(lock_notification_app(&mut file, &keys, Some(Shown::Full)).unwrap());
+        assert_eq!(
+            file.to_string(),
+            "[idle]\nlock_after = 0\n\n[lock.notification_apps]\n\"org.gnome.Calendar\" = \"full\"\n"
+        );
+        assert!(parsed(&file).shows_in_full(&keys));
+        assert!(!lock_notification_app(&mut file, &keys, Some(Shown::Full)).unwrap());
+        assert!(lock_notification_app(&mut file, &keys, None).unwrap());
+        assert!(!parsed(&file).shows_in_full(&keys));
+        assert!(!lock_notification_app(&mut file, &keys, None).unwrap());
+        // Comments stay, and an exception under the app's other name goes.
+        let mut file = doc("[lock]\n# Everyone.\nnotifications = \"full\"\n\n[lock.notification_apps]\n\
+             # Too chatty.\nCalendar = \"none\" # for now\n\"org.gnome.Calendar\" = \"apps\" # kept\n");
+        assert!(lock_notification_app(&mut file, &keys, Some(Shown::Count)).unwrap());
+        assert_eq!(
+            file.to_string(),
+            "[lock]\n# Everyone.\nnotifications = \"full\"\n\n[lock.notification_apps]\n\
+             \"org.gnome.Calendar\" = \"count\" # kept\n"
+        );
+        assert_eq!(parsed(&file).shown(&keys), Shown::Count);
+        // Nothing to remove leaves no empty table behind.
+        let mut file = doc("[lock]\nnotifications = \"count\"\n");
+        assert!(!lock_notification_app(&mut file, &keys, None).unwrap());
+        assert_eq!(file.to_string(), "[lock]\nnotifications = \"count\"\n");
+        // Inline tables are edited in place.
+        let mut file = doc("[lock]\nnotification_apps = { Calendar = \"apps\" }\n");
+        assert!(lock_notification_app(&mut file, &["Calendar"], Some(Shown::Full)).unwrap());
+        assert_eq!(parsed(&file).shown(&["Calendar"]), Shown::Full);
+        assert!(lock_notification_app(&mut file, &[], None).is_err());
     }
 
     #[test]
