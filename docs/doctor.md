@@ -61,8 +61,10 @@ changelog. Copies of the default config, guides and changelog are written
 under `~/.local/state/tileception/` (or `$XDG_STATE_HOME/tileception/`) when an
 agent starts, so they are available without a source checkout. The agent reads
 them only as needed, for example the changelog when you ask what changed in a
-version or when something arrived. Existing exports are rewritten only when
-their bundled contents have changed; missing files are restored.
+version or when something arrived. On a test release, Doctor says that its
+changes may not be in the changelog yet, which lists only releases. Existing
+exports are rewritten only when their bundled contents have changed; missing
+files are restored.
 
 Your messages, attachments and anything the agent reads, such as config files
 and log lines, are sent to the agent's provider. Session logs can contain window
