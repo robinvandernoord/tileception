@@ -103,14 +103,7 @@ impl Tileception {
     /// sees the file change and connects again.
     pub(crate) fn settings_home_cloud(&mut self, sensors: bool) -> Result<(), String> {
         let path = self.config.file.home.path().ok_or("No config directory")?;
-        let mut file = store::load(&path)?;
-        let access = file.cloud.as_mut().ok_or("Import devices with saved cloud access first")?;
-        if sensors {
-            access.poll_sensors = !access.poll_sensors;
-        } else {
-            access.startup_refresh = !access.startup_refresh;
-        }
-        store::save(&path, &file)
+        switch_cloud_use(&path, sensors).map(|_| ())
     }
 
     pub(crate) fn settings_home_connected(&self) -> bool {
@@ -544,9 +537,84 @@ fn simulate(file: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Switches one use of the saved cloud access in the device file: polling
+/// cloud-only sensors, or refreshing the devices at startup. The other use,
+/// the credentials and the devices stay as they are. Returns the new state.
+pub(crate) fn switch_cloud_use(path: &std::path::Path, sensors: bool) -> Result<bool, String> {
+    let mut file = store::load(path)?;
+    let access = file.cloud.as_mut().ok_or("Import devices with saved cloud access first")?;
+    let switched = if sensors { &mut access.poll_sensors } else { &mut access.startup_refresh };
+    *switched = !*switched;
+    let now = *switched;
+    store::save(path, &file)?;
+    Ok(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device_file(dir: &str, cloud: Option<store::CloudAccess>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tileception-home-{dir}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(store::FILE_NAME);
+        let file = store::DeviceFile {
+            source: "tuya".into(),
+            devices: vec![store::DeviceEntry {
+                device_id: "lamp".into(),
+                name: "Desk lamp".into(),
+                key: "0123456789abcdef".into(),
+                ..Default::default()
+            }],
+            cloud,
+        };
+        store::save(&path, &file).expect("saved");
+        path
+    }
+
+    #[test]
+    fn switching_a_cloud_use_leaves_the_rest_of_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let access = store::CloudAccess {
+            client_id: "id".into(),
+            region: "eu".into(),
+            secret: "secret".into(),
+            poll_sensors: true,
+            startup_refresh: true,
+        };
+        let path = device_file("cloud-use", Some(access.clone()));
+        let before = store::load(&path).expect("loads");
+
+        assert_eq!(switch_cloud_use(&path, true), Ok(false));
+        let after = store::load(&path).expect("loads");
+        let cloud = after.cloud.clone().expect("cloud access kept");
+        assert!(!cloud.poll_sensors && cloud.startup_refresh);
+        assert_eq!((cloud.client_id.as_str(), cloud.region.as_str(), cloud.secret.as_str()), ("id", "eu", "secret"));
+        assert_eq!(after.devices, before.devices);
+
+        assert_eq!(switch_cloud_use(&path, false), Ok(false));
+        let cloud = store::load(&path).expect("loads").cloud.expect("cloud access kept");
+        assert!(!cloud.poll_sensors && !cloud.startup_refresh);
+
+        assert_eq!(switch_cloud_use(&path, true), Ok(true));
+        assert_eq!(switch_cloud_use(&path, false), Ok(true));
+        assert_eq!(store::load(&path).expect("loads"), before);
+        // The file holds the Access Secret: it stays readable by its owner only.
+        let mode = std::fs::metadata(&path).expect("exists").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn cloud_uses_need_saved_cloud_access() {
+        let path = device_file("no-cloud", None);
+        let before = std::fs::read_to_string(&path).expect("reads");
+        assert!(switch_cloud_use(&path, true).is_err());
+        assert!(switch_cloud_use(&path, false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("reads"), before);
+        assert!(switch_cloud_use(&path.with_file_name("missing.json"), true).is_err());
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
 
     #[test]
     fn parses_home_commands() {
