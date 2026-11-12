@@ -59,6 +59,75 @@ finished, remove its item (keep any part still to come) instead of ticking it
 off or adding notes such as "implemented", "verified" or "remains untried".
 Report testing in the conversation, the commit or the pull request instead.
 
+### Next
+
+- Super+D clears the desk, and the cleared desk shows a dashboard that
+  plugins can draw on. Decided:
+  - Super+D (the `desktop` command, "Show desktop" in the launcher) acts on
+    the active area. It minimizes every window there, tiled and floating,
+    into the minimized strip and remembers that set together with the
+    layout it came from. Pressing it again brings back that set only, into
+    the remembered layout. Windows that were minimized before stay
+    minimized, and closed windows are left out.
+  - While the desk is clear, a window restored from the strip comes back to
+    its place in the remembered layout, and a newly opened window docks as
+    usual. Neither ends the cleared desk: the next Super+D brings the rest
+    back around them. Windows opened while the desk was clear stay where
+    they are, beside the restored layout.
+  - The Desktop tile is no longer toggled by a key. It remains the drop
+    target that floats a window, shown as a "float here" zone only while a
+    window is being dragged (Alt-drag, the overview, a minimized preview),
+    and still shown when there are no tiled windows. The `shown` flag stays
+    in layout snapshots so saved layouts keep loading.
+  - Holding Super+D peeks: windows fade to outlines while it is held and
+    come back on release. A tap toggles as above. The hold threshold is
+    the key-repeat delay.
+  - The dashboard fills the active area while the desk is clear, during a
+    peek, and when the area has no windows. It sits above the wallpaper and
+    below floating windows: a clock and date, a summary of notifications,
+    the media card, the minimized windows and the plugins' dashboard items.
+    Clicking empty space does nothing; Escape or Super+D ends a cleared
+    desk.
+  - Plugins get a `Dashboard` place: a `tileception://dashboard` resource,
+    and a `[dashboard]` manifest block that is opt-in, like `[lock]`. The
+    resource lists items in the order the plugin wants them, each with a
+    size class (`small`, `medium`, `wide`); Tileception lays them out and
+    may leave out what does not fit. Items are:
+    - `card`: the panel's card, drawn by Tileception. No drawing code.
+    - `image`: a PNG or SVG by file path or data URI, read again on
+      `notifications/resources/updated`. Any tool that writes an image can
+      draw on the dashboard, a few times a second at most.
+    - `surface`: a Wayland surface the plugin draws itself, for animation.
+  - Plugins stay language agnostic. MCP over stdio is unchanged, and the
+    surface is plain Wayland: the private protocol's XML ships in
+    `resources/protocols/tileception-dashboard-v1.xml` and is documented in
+    the plugin guide, so any Wayland client library works (libwayland in C,
+    pywayland, wayland-rs, Go and others). A surface needs nothing beyond
+    `wl_shm`; dmabuf is optional. The example dashboard plugin is written in
+    Python, so the guide does not assume Rust.
+  - Surface safety, enforced by the compositor:
+    - Only plugins with a `[dashboard]` block that list a `surface` are
+      started with `WAYLAND_SOCKET`, a connection Tileception made and
+      marked as that plugin's. A client on the normal socket cannot get the
+      dashboard role.
+    - That client sees `wl_compositor`, `wl_shm`, `linux-dmabuf`,
+      `wp_viewporter`, fractional scale and the dashboard protocol, filtered
+      per client with `GlobalDispatch::can_view`. No xdg-shell, layer shell,
+      screen capture, clipboard, primary selection, virtual input, input
+      method, activation, idle inhibit or session lock.
+    - Tileception picks the slot from the size class, clamps buffers to the
+      slot at the output scale, clips to the theme's radius and draws the
+      frame and the plugin's name itself. Never above windows, never on the
+      lock screen, the greeter or the welcome screen.
+    - Pointer and scroll while hovered; never the keyboard.
+    - Frame callbacks only while the dashboard is visible, so a hidden
+      dashboard costs nothing. A size cap on shm pools. A surface with no
+      frame yet shows a placeholder; a protocol error disconnects the
+      client and the plugin restarts after the usual cooldown.
+    - This limits what a plugin can do to the desktop, not what its process
+      can do to the user's files. Confining the process (Landlock or
+      bubblewrap, no network) is a separate, later option.
+
 ### Later
 
 - Updates of machines linked through handoff, in the update manager's card:
