@@ -80,7 +80,9 @@ read when the greeter starts.
 - **Lock screen:** `[lock]` decides what a locked Tileception session shows before
   it is unlocked: `show_media` for the player controls and
   `show_notification_count` for the number of new notifications. Locked sessions
-  read this table too.
+  read this table too. Each person's `[lock]` in their own config can show more
+  of their notifications ([lock screen notifications](configuration.md#lock-screen-notifications)),
+  but not once `show_notification_count = false`.
 - **Keyboard layouts:** with several layouts, such as `layout = "us,nl"` in
   `[keyboard]`, **Ctrl+Space** switches between them. Anyone can pick another
   layout from the bar on the login screen; the greeter remembers it for that

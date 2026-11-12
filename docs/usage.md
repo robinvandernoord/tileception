@@ -292,6 +292,12 @@ again, gives the keyboard back without answering.
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
 to silence ordinary notification popups.
 
+The lock button on a card in the panel decides whether that app's
+notifications show in full on Tileception's own lock screen; hover it to see
+which. It writes the app's exception in
+[`[lock.notification_apps]`](configuration.md#lock-screen-notifications), so
+no config editing is needed.
+
 The panel's actions work from scripts and key bindings too:
 `tileception msg notifications clear` does what **Clear all** does, and
 `tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
