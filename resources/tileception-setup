@@ -466,6 +466,21 @@ fi
 now_name=$now_agent
 doctor_agent_name=$doctor_agent
 
+# A --doctor-agent is checked before anything is applied, so a mistyped id
+# does not leave the settings half written. Without the registry's list
+# (offline) the id is passed on unchecked.
+if [ -n "$doctor_agent" ] && [ -n "$doctor_cli" ]; then
+    if agents=$(as_user "$doctor_cli" doctor agents 2>/dev/null) && [ -n "$agents" ]; then
+        if ! printf '%s\n' "$agents" | cut -f 1 | grep -qxF -- "$doctor_agent"; then
+            fail "the ACP Registry has no agent \"$doctor_agent\"; \`tileception doctor agents\` lists them"
+        fi
+        name=$(printf '%s\n' "$agents" | awk -F '\t' -v id="$doctor_agent" '$1 == id { print $2; exit }')
+        doctor_agent_name=${name:-$doctor_agent}
+    fi
+elif [ -n "$doctor_agent" ] && [ -n "$user" ] && [ "$print_flags" = 0 ] && [ -n "$tileception_bin" ]; then
+    fail "this tileception cannot choose Doctor's agent; update it, or choose one in Doctor (Super+/)"
+fi
+
 # What the config says now, or the default.
 current_of() {
     if [ "$has_config" = 1 ] && [ -n "$tileception_bin" ]; then
@@ -664,7 +679,7 @@ agent_field() { # <list> <n> <field>
 # installed now: Doctor fetches a registry agent when it first starts it.
 ask_doctor_agent() {
     [ -n "$doctor_agent" ] && return
-    [ -n "$doctor_cli" ] || return
+    [ -n "$doctor_cli" ] || return 0
     heading "Doctor's agent"
     if ! agents=$(as_user "$doctor_cli" doctor agents 2>/dev/null) || [ -z "$agents" ]; then
         say "  The ACP Registry could not be read (offline?). Doctor asks which agent"
@@ -720,7 +735,7 @@ ask_doctor_agent() {
         doctor_agent_name=$(agent_field "$installed" "$choice" 2)
         return
     fi
-    [ "$choice" = "$another" ] || return
+    [ "$choice" = "$another" ] || return 0
     heading "Agents in the ACP Registry"
     total=$(printf '%s\n' "$others" | wc -l)
     set --
