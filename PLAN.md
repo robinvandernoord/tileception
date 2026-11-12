@@ -61,31 +61,16 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Next
 
-- Super+D clears the desk, and the cleared desk shows a dashboard that
-  plugins can draw on. Decided:
-  - Super+D (the `desktop` command, "Show desktop" in the launcher) acts on
-    the active area. It minimizes every window there, tiled and floating,
-    into the minimized strip and remembers that set together with the
-    layout it came from. Pressing it again brings back that set only, into
-    the remembered layout. Windows that were minimized before stay
-    minimized, and closed windows are left out.
-  - While the desk is clear, a window restored from the strip comes back to
-    its place in the remembered layout, and a newly opened window docks as
-    usual. Neither ends the cleared desk: the next Super+D brings the rest
-    back around them. Windows opened while the desk was clear stay where
-    they are, beside the restored layout.
-  - The Desktop tile is no longer toggled by a key. It remains the drop
-    target that floats a window, shown as a "float here" zone only while a
-    window is being dragged (Alt-drag, the overview, a minimized preview),
-    and still shown when there are no tiled windows. The `shown` flag stays
-    in layout snapshots so saved layouts keep loading.
-  - Holding Super+D peeks: windows fade to outlines while it is held and
-    come back on release. A tap toggles as above. The hold threshold is
-    the key-repeat delay.
+- A dashboard on the cleared desk (Super+D) that plugins can draw on.
+  Decided:
+  - The peek (holding Super+D) fades windows out to their outlines and back
+    instead of switching at once, and shows the dashboard behind them.
   - The dashboard fills the active area while the desk is clear, during a
-    peek, and when the area has no windows. It sits above the wallpaper and
-    below floating windows: a clock and date, a summary of notifications,
-    the media card, the minimized windows and the plugins' dashboard items.
+    peek, and when the area has no windows, growing out of the welcome
+    screen an empty area already shows (clock, date, launcher). It sits
+    above the wallpaper and below floating windows: a clock and date, a
+    summary of notifications, the media card, the minimized windows and the
+    plugins' dashboard items.
     Clicking empty space does nothing; Escape or Super+D ends a cleared
     desk.
   - Plugins get a `Dashboard` place: a `tileception://dashboard` resource,
