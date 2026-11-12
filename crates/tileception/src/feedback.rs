@@ -180,6 +180,9 @@ struct Shot {
     size: (u32, u32),
     preview: MemoryRenderBuffer,
     preview_size: (i32, i32),
+    /// Whether the Doctor panel is in the picture, or `None` when Doctor
+    /// was not open on that screen.
+    doctor: Option<bool>,
 }
 
 /// A screenshot made ready off the compositor thread.
@@ -351,14 +354,16 @@ impl Tileception {
                 }
             }
             Action::Conversation => {
-                let doctor_here = self.doctor_here();
+                // Open on any screen: the picture may come from another one
+                // than the dialog is on now, if the active screen changed.
+                let doctor_open = self.doctor.open;
                 let Some(feedback) = &mut self.feedback else { return };
                 feedback.with_conversation = !feedback.with_conversation;
                 feedback.selected = Action::Conversation;
                 feedback.scroll = 0;
                 // The Doctor panel comes and goes with the conversation:
                 // take the picture again so it matches the switch.
-                if feedback.screenshot.checked() && doctor_here {
+                if feedback.screenshot.checked() && doctor_open {
                     let shot = NEXT_SHOT.fetch_add(1, Ordering::Relaxed);
                     feedback.screenshot = Screenshot::Taking(shot);
                     self.feedback_screenshot(shot);
@@ -417,13 +422,15 @@ impl Tileception {
         if !self.feedback_waiting_for(shot) {
             return;
         }
+        // Taken in the context of the screen in the picture.
+        let doctor = self.doctor_here().then(|| self.feedback.as_ref().is_some_and(Feedback::shows_doctor));
         let (sender, receiver) = channel::channel::<Option<Prepared>>();
         let registered = self.loop_handle.insert_source(receiver, move |event, _, state| {
             let prepared = match event {
                 channel::Event::Msg(prepared) => prepared,
                 channel::Event::Closed => None,
             };
-            state.feedback_shot_ready(shot, prepared);
+            state.feedback_shot_ready(shot, prepared, doctor);
         });
         if let Err(err) = registered {
             tracing::warn!("feedback screenshot: {err}");
@@ -447,7 +454,7 @@ impl Tileception {
         }
     }
 
-    fn feedback_shot_ready(&mut self, shot: u64, prepared: Option<Prepared>) {
+    fn feedback_shot_ready(&mut self, shot: u64, prepared: Option<Prepared>, doctor: Option<bool>) {
         if !self.feedback_waiting_for(shot) {
             return;
         }
@@ -456,8 +463,13 @@ impl Tileception {
         let preview_size = (width as i32, height as i32);
         let preview = MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, preview_size, 1, Transform::Normal, None);
         if let Some(feedback) = &mut self.feedback {
-            feedback.screenshot =
-                Screenshot::Ready(Shot { png: prepared.png.into(), size: prepared.size, preview, preview_size });
+            feedback.screenshot = Screenshot::Ready(Shot {
+                png: prepared.png.into(),
+                size: prepared.size,
+                preview,
+                preview_size,
+                doctor,
+            });
         }
         self.schedule_render();
     }
@@ -994,12 +1006,10 @@ impl Tileception {
                     );
                     painter.image_sized(&shot.preview, corner, Some(shot.preview_size));
                 });
-                let doctor = if !self.doctor_here() {
-                    ""
-                } else if feedback.shows_doctor() {
-                    " It includes the Doctor panel."
-                } else {
-                    " The Doctor panel is left out."
+                let doctor = match shot.doctor {
+                    None => "",
+                    Some(true) => " It includes the Doctor panel.",
+                    Some(false) => " The Doctor panel is left out.",
                 };
                 format!(
                     "The screen under this dialog, {} by {} pixels.{doctor} Opening the issue saves it as {} and \
