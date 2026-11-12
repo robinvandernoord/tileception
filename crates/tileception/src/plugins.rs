@@ -816,11 +816,17 @@ fn missing_script<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
     if !RUNNERS.contains(&runner) || ["npx", "uvx"].contains(&runner) {
         return None;
     }
+    // `python3 -m package.module` runs a module, not a file.
+    if runner.starts_with("python") && args.iter().any(|arg| arg == "-m") {
+        return None;
+    }
+    let file_like = |word: &str| word.contains('/') || has_extension(word.rsplit('/').next().unwrap_or(word));
+    let found = |word: &str| word.starts_with('/') || word.contains(':') || std::path::Path::new(word).exists();
     let script = runner_target(runner, args)?;
-    let base = script.rsplit('/').next().unwrap_or(script);
-    let file_like = script.contains('/') || has_extension(base);
-    (file_like && !script.starts_with('/') && !script.contains(':') && !std::path::Path::new(script).exists())
-        .then_some(script)
+    // An option's value can look like a path too (`node -r dotenv/config
+    // /p/server.js`): refuse only when no such word is one that is found.
+    let any_found = args.iter().any(|arg| !arg.starts_with('-') && file_like(arg) && found(arg));
+    (file_like(script) && !found(script) && !any_found).then_some(script)
 }
 
 /// An executable file, or a command found on PATH.
@@ -1817,6 +1823,10 @@ mod tests {
         assert_eq!(missing("npx", &["-y", "@acme/notes-server"]), None);
         assert_eq!(missing("deno", &["run", "jsr:@acme/notes.ts"]), None);
         assert_eq!(missing("/usr/bin/weather", &["config.json"]), None);
+        // A module, and an option's value that looks like a path.
+        assert_eq!(missing("python3", &["-m", "weather.plugin"]), None);
+        assert_eq!(missing("node", &["-r", "dotenv/config", "/p/server.js"]), None);
+        assert_eq!(missing("node", &["-r", "dotenv/config", "server-not-here.js"]).as_deref(), Some("dotenv/config"));
     }
 
     #[test]
