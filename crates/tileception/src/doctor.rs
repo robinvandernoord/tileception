@@ -3952,7 +3952,12 @@ mod tests {
         export_docs_to(&root).unwrap();
         let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
         assert_eq!(changelog, include_str!("../../../CHANGELOG.md"));
-        assert!(changelog.contains(&format!("## v{}", env!("CARGO_PKG_VERSION"))));
+        // A prerelease (1.2.0-rc.1) gets no entry of its own: vommit leaves
+        // prereleases out of the changelog.
+        let version = env!("CARGO_PKG_VERSION");
+        if !version.contains('-') {
+            assert!(changelog.contains(&format!("## v{version}")));
+        }
         // Every guide the index and README point to was exported with them.
         for (file, text) in [
             (root.join("docs/index.md"), std::fs::read_to_string(root.join("docs/index.md")).unwrap()),
