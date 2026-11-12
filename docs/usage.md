@@ -245,7 +245,10 @@ Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
 "Include the last Doctor question and answer", also unchecked. Checking it
-adds your last question and the agent's answer, shortened if long.
+adds your last question and the agent's answer, shortened if long. The
+screenshot leaves the Doctor panel out unless this option is checked, since the
+panel shows more than the last exchange; changing the option takes the
+screenshot again.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the

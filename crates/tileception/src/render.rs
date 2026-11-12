@@ -269,7 +269,9 @@ impl Tileception {
         }
         // These stay on the screen they appeared on, whichever is active.
         elements.extend(self.notification_elements(renderer));
-        elements.extend(self.doctor_elements(renderer));
+        if !self.feedback_hides_doctor() {
+            elements.extend(self.doctor_elements(renderer));
+        }
         // Over the strip, which it can stand on.
         elements.extend(self.duck_elements(renderer));
         if active {

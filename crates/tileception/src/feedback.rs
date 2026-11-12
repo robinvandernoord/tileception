@@ -141,6 +141,13 @@ pub struct Feedback {
 }
 
 impl Feedback {
+    /// The Doctor panel goes in the screenshot only with the conversation:
+    /// it shows more than the last question and answer, so leaving the
+    /// conversation out leaves the panel out too.
+    fn shows_doctor(&self) -> bool {
+        self.conversation.is_some() && self.with_conversation
+    }
+
     fn body(&self) -> String {
         let screenshot =
             matches!(self.screenshot, Screenshot::Ready(_)).then(|| screenshot_path().display().to_string());
@@ -344,10 +351,17 @@ impl Tileception {
                 }
             }
             Action::Conversation => {
-                if let Some(feedback) = &mut self.feedback {
-                    feedback.with_conversation = !feedback.with_conversation;
-                    feedback.selected = Action::Conversation;
-                    feedback.scroll = 0;
+                let doctor_here = self.doctor_here();
+                let Some(feedback) = &mut self.feedback else { return };
+                feedback.with_conversation = !feedback.with_conversation;
+                feedback.selected = Action::Conversation;
+                feedback.scroll = 0;
+                // The Doctor panel comes and goes with the conversation:
+                // take the picture again so it matches the switch.
+                if feedback.screenshot.checked() && doctor_here {
+                    let shot = NEXT_SHOT.fetch_add(1, Ordering::Relaxed);
+                    feedback.screenshot = Screenshot::Taking(shot);
+                    self.feedback_screenshot(shot);
                 }
                 self.schedule_render();
             }
@@ -379,6 +393,12 @@ impl Tileception {
         if let Some(feedback) = &mut self.feedback {
             feedback.hidden = hidden;
         }
+    }
+
+    /// The Doctor panel is left out of the dialog's screenshot unless the
+    /// conversation goes with the report.
+    pub(crate) fn feedback_hides_doctor(&self) -> bool {
+        self.feedback.as_ref().is_some_and(|feedback| feedback.hidden && !feedback.shows_doctor())
     }
 
     /// Open and drawn: not left out for its own screenshot.
@@ -974,9 +994,16 @@ impl Tileception {
                     );
                     painter.image_sized(&shot.preview, corner, Some(shot.preview_size));
                 });
+                let doctor = if !self.doctor_here() {
+                    ""
+                } else if feedback.shows_doctor() {
+                    " It includes the Doctor panel."
+                } else {
+                    " The Doctor panel is left out."
+                };
                 format!(
-                    "The screen under this dialog, {} by {} pixels. Opening the issue saves it as {} and puts it \
-                     on the clipboard until you paste it into the issue with Ctrl+V. Uncheck to remove it.",
+                    "The screen under this dialog, {} by {} pixels.{doctor} Opening the issue saves it as {} and \
+                     puts it on the clipboard until you paste it into the issue with Ctrl+V. Uncheck to remove it.",
                     shot.size.0,
                     shot.size.1,
                     screenshot_path().display(),
