@@ -73,16 +73,12 @@ Report testing in the conversation, the commit or the pull request instead.
     `tileception://` resource the host subscribes to, as the panel's is.
   - Each place gets a manifest block with the user's options for it, next
     to `[launcher]`; the plugin itself reports over MCP what it offers
-    there. `[lock]` is opt-in: without it, nothing on the lock screen.
-    Config overrides use the same blocks (`[plugins.home.lock]`).
+    there. Config overrides use the same blocks.
   - The instant pure launcher sources (calculations, conversions, times,
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
   - The bundled smart home plugin goes into the remaining places first:
-    - Lock screen: the indoor temperature, read-only, following the lock
-      screen's privacy level, without input or actions. Never launcher
-      plugins.
     - Doctor: plugins offered to Doctor's agent as MCP servers, under
       Doctor's policy for running tools.
   - `tileception msg home` stays as a shorthand for the home plugin's
