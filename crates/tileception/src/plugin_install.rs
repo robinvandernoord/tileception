@@ -79,20 +79,70 @@ impl Source {
         Ok(Self { owner: owner.into(), repo: repo.into(), rev: rev.map(Into::into) })
     }
 
-    /// The URL of a file in the repository, at its revision or the
-    /// default branch.
-    fn raw_url(&self, file: &str) -> String {
-        let rev = self.rev.as_deref().unwrap_or("HEAD");
-        format!("https://raw.githubusercontent.com/{}/{}/{rev}/{file}", self.owner, self.repo)
+    /// The URL of a file in the repository at a commit.
+    fn raw_url(&self, commit: &str, file: &str) -> String {
+        format!("https://raw.githubusercontent.com/{}/{}/{commit}/{file}", self.owner, self.repo)
     }
 
-    /// The repository as pip and uv take it.
-    fn git_url(&self) -> String {
-        match &self.rev {
-            Some(rev) => format!("git+https://github.com/{}/{}@{rev}", self.owner, self.repo),
-            None => format!("git+https://github.com/{}/{}", self.owner, self.repo),
-        }
+    /// The repository as git takes it.
+    fn clone_url(&self) -> String {
+        format!("https://github.com/{}/{}", self.owner, self.repo)
     }
+
+    /// The repository at a commit, as pip and uv take it.
+    fn git_url(&self, commit: &str) -> String {
+        format!("git+{}@{commit}", self.clone_url())
+    }
+
+    /// `owner/repo`, without the revision.
+    fn repository(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+
+    /// Whether both name the same repository, whatever the revision: GitHub
+    /// names do not depend on case.
+    fn same_repository(&self, other: &Self) -> bool {
+        self.owner.eq_ignore_ascii_case(&other.owner) && self.repo.eq_ignore_ascii_case(&other.repo)
+    }
+}
+
+/// Whether `text` is a full commit hash.
+fn is_commit(text: &str) -> bool {
+    text.len() == 40 && text.chars().all(|letter| letter.is_ascii_hexdigit())
+}
+
+/// The first seven characters of a commit, as GitHub shows it.
+pub fn short(commit: &str) -> &str {
+    commit.get(..7).unwrap_or(commit)
+}
+
+/// The refs `git ls-remote` is asked for to find `rev`: the default branch
+/// without one, else a tag (and the commit an annotated tag points at) or a
+/// branch of that exact name.
+fn ls_remote_patterns(rev: Option<&str>) -> Vec<String> {
+    match rev {
+        None => vec!["HEAD".into()],
+        Some(rev) => vec![format!("refs/tags/{rev}"), format!("refs/tags/{rev}^{{}}"), format!("refs/heads/{rev}")],
+    }
+}
+
+/// The commit `git ls-remote` says `rev` is at, from its output. A tag wins
+/// over a branch of the same name, as it does for git, and an annotated tag
+/// gives the commit it points at rather than the tag object.
+fn pick_commit(listing: &str, rev: Option<&str>) -> Option<String> {
+    let refs: Vec<(&str, &str)> = listing
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(commit, name)| (commit.trim(), name.trim()))
+        .filter(|(commit, _)| is_commit(commit))
+        .collect();
+    let wanted = match rev {
+        None => vec!["HEAD".to_string()],
+        Some(rev) => vec![format!("refs/tags/{rev}^{{}}"), format!("refs/tags/{rev}"), format!("refs/heads/{rev}")],
+    };
+    wanted
+        .iter()
+        .find_map(|wanted| refs.iter().find(|(_, name)| name == wanted).map(|(commit, _)| commit.to_ascii_lowercase()))
 }
 
 impl std::fmt::Display for Source {
@@ -212,30 +262,50 @@ pub fn package(text: &str) -> Result<Package, String> {
     })
 }
 
-/// The requirement `uv tool install` gets, extras and all.
-fn requirement(source: &Source, package: &Package) -> String {
-    let extras = if package.extras.is_empty() { String::new() } else { format!("[{}]", package.extras.join(",")) };
-    format!("{}{extras} @ {}", package.name, source.git_url())
+/// A package as looked up: what its `pyproject.toml` says at the commit it
+/// was read from. That commit is what installs, so what is installed is what
+/// was shown, whatever the repository does in the meantime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lookup {
+    pub package: Package,
+    /// The full commit hash.
+    pub commit: String,
 }
 
-fn install_args(source: &Source, package: &Package) -> Vec<String> {
+/// The requirement `uv tool install` gets, extras and all.
+fn requirement(source: &Source, lookup: &Lookup) -> String {
+    let package = &lookup.package;
+    let extras = if package.extras.is_empty() { String::new() } else { format!("[{}]", package.extras.join(",")) };
+    format!("{}{extras} @ {}", package.name, source.git_url(&lookup.commit))
+}
+
+fn install_args(source: &Source, lookup: &Lookup) -> Vec<String> {
     let mut args = vec!["tool".to_string(), "install".to_string()];
-    if let Some(python) = &package.python {
+    if let Some(python) = &lookup.package.python {
         args.extend(["--python".to_string(), python.trim().to_string()]);
     }
-    args.push(requirement(source, package));
+    args.push(requirement(source, lookup));
     args
 }
 
 /// A plugin installed from a repository.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installed {
-    /// `owner/repo`, with `@rev` when one was asked for.
+    /// `owner/repo`, with `@rev` when one was asked for: what `update`
+    /// looks up again.
     pub source: String,
-    /// The Python package, for `uv tool upgrade` and `uninstall`.
+    /// The commit installed. Only `update` moves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The Python package, for `uv tool uninstall`.
     pub package: String,
     /// The script's absolute path.
     pub command: PathBuf,
+    /// Whether the manifest was made by installing (by Tileception or the
+    /// plugin's `install`), so removing may delete it. A manifest that was
+    /// there before stays.
+    #[serde(default)]
+    pub wrote_manifest: bool,
 }
 
 /// Every installed plugin, by ID.
@@ -243,6 +313,32 @@ pub struct Installed {
 pub struct Record {
     #[serde(default)]
     pub plugins: BTreeMap<String, Installed>,
+}
+
+/// Package names as Python compares them.
+fn same_package(one: &str, other: &str) -> bool {
+    let normal = |name: &str| name.to_lowercase().replace(['_', '.'], "-");
+    normal(one) == normal(other)
+}
+
+/// Refuses an install that would take over another plugin: one with the same
+/// ID from another repository, whose record it would overwrite, or one with
+/// the same package under another ID, whose uv tool it would replace.
+/// Installing the same repository again, at any revision, is fine.
+fn conflict(record: &Record, source: &Source, package: &Package) -> Result<(), String> {
+    if let Some(installed) = record.plugins.get(&package.plugin_id) {
+        let same = Source::parse(&installed.source).is_ok_and(|other| other.same_repository(source));
+        if !same {
+            let from = Source::parse(&installed.source).map_or(installed.source.clone(), |other| other.repository());
+            return Err(format!("plugin ID {} is taken by {from}; remove it first", package.plugin_id));
+        }
+    }
+    if let Some((plugin_id, installed)) = record.plugins.iter().find(|(plugin_id, installed)| {
+        **plugin_id != package.plugin_id && same_package(&installed.package, &package.name)
+    }) {
+        return Err(format!("{} is already installed as the plugin {plugin_id}; remove it first", installed.package));
+    }
+    Ok(())
 }
 
 fn data_dir() -> PathBuf {
@@ -259,6 +355,28 @@ fn record_path() -> PathBuf {
 
 fn manifest_path(plugin_id: &str) -> PathBuf {
     data_dir().join("plugins").join(format!("{plugin_id}.toml"))
+}
+
+/// The manifest Tileception writes when a plugin's `install` wrote none.
+fn minimal_manifest(command: &Path) -> String {
+    let quoted = toml::Value::String(command.display().to_string());
+    format!("command = {quoted}\nargs = [\"serve\"]\n")
+}
+
+/// Deletes a removed plugin's manifest if installing made it, and says so
+/// when it stays. Older records do not say who made it; the manifest
+/// Tileception writes itself is recognised by its text.
+fn remove_manifest(installed: &Installed, manifest: &Path) -> Result<Option<String>, String> {
+    if !manifest.exists() {
+        return Ok(None);
+    }
+    let ours = installed.wrote_manifest
+        || std::fs::read_to_string(manifest).is_ok_and(|text| text == minimal_manifest(&installed.command));
+    if !ours {
+        return Ok(Some(format!("kept {}, which was there before it was installed", manifest.display())));
+    }
+    std::fs::remove_file(manifest).map_err(|error| format!("{}: {error}", manifest.display()))?;
+    Ok(None)
 }
 
 impl Record {
@@ -293,14 +411,14 @@ enum Job {
     Look(Source),
     /// Looks up and installs without showing it first.
     Add(Source),
-    Install(Source, Package),
+    Install(Source, Box<Lookup>),
     Update(Vec<String>),
     Remove(String),
 }
 
 /// What a job reports back.
 pub enum Report {
-    Looked { source: Source, result: Result<Package, String> },
+    Looked { source: Source, result: Box<Result<Lookup, String>> },
     Done { title: String, result: Result<String, String>, configure: Option<String> },
 }
 
@@ -311,7 +429,7 @@ pub struct Installer {
     /// What runs now, in words, such as "Installing tileception-odoo".
     pub busy: Option<String>,
     /// The last repository looked up, and what it said.
-    pub looked: Option<(Source, Result<Package, String>)>,
+    pub looked: Option<(Source, Result<Lookup, String>)>,
     /// The repository being looked up.
     pub looking: Option<Source>,
     /// What is installed, read again after every change.
@@ -327,7 +445,10 @@ pub fn listing() -> String {
     record
         .plugins
         .iter()
-        .map(|(plugin_id, installed)| format!("{plugin_id}\t{}\t{}\n", installed.source, installed.command.display()))
+        .map(|(plugin_id, installed)| {
+            let commit = installed.commit.as_deref().map_or("-", short);
+            format!("{plugin_id}\t{}\t{commit}\t{}\n", installed.source, installed.command.display())
+        })
         .collect()
 }
 
@@ -438,26 +559,73 @@ impl Runner {
             .ok_or_else(|| "Plugins install with uv, which is not installed: see https://docs.astral.sh/uv/".into())
     }
 
-    fn look(&self, source: &Source) -> Result<Package, String> {
+    /// The commit `source` is at now: its default branch, or the tag,
+    /// branch or full commit it names.
+    fn resolve(&self, source: &Source) -> Result<String, String> {
+        if let Some(rev) = source.rev.as_deref().filter(|rev| is_commit(rev)) {
+            return Ok(rev.to_ascii_lowercase());
+        }
+        let patterns = ls_remote_patterns(source.rev.as_deref());
+        let url = source.clone_url();
+        let mut args = vec!["ls-remote", "--", url.as_str()];
+        args.extend(patterns.iter().map(String::as_str));
+        let mut command = self.command("git", &args);
+        // A repository that does not exist, or is private, asks for a login.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        let output = run(command, QUICK_TIMEOUT)
+            .map_err(|error| format!("Could not ask GitHub about {} ({error})", source.repository()))?;
+        if !output.status.success() {
+            // GitHub asks for a login rather than say a repository is missing.
+            let error = tail(&output);
+            return Err(if error.contains("could not read Username") {
+                format!("{} is not a public GitHub repository", source.repository())
+            } else {
+                format!("Could not ask GitHub about {}: {error}", source.repository())
+            });
+        }
+        pick_commit(&String::from_utf8_lossy(&output.stdout), source.rev.as_deref()).ok_or_else(|| match &source.rev {
+            Some(rev) => format!(
+                "{} has no tag or branch {rev}; name a tag, a branch or a full commit hash",
+                source.repository()
+            ),
+            None => format!("{} has no default branch", source.repository()),
+        })
+    }
+
+    /// Finds the commit to install and reads its `pyproject.toml`, refusing
+    /// a plugin that would take over another one.
+    fn look(&self, source: &Source) -> Result<Lookup, String> {
+        let lookup = self.read(source)?;
+        conflict(&Record::load(), source, &lookup.package)?;
+        Ok(lookup)
+    }
+
+    /// Finds the commit to install and reads its `pyproject.toml`.
+    fn read(&self, source: &Source) -> Result<Lookup, String> {
+        let commit = self.resolve(source)?;
         let cache = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
             .join("tileception");
         std::fs::create_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
         let path = cache.join(lookup_file());
-        tileception_acp::curl(&source.raw_url("pyproject.toml"), &path, MAX_PYPROJECT)
-            .map_err(|error| format!("{source} has no pyproject.toml to read ({error})"))?;
+        tileception_acp::curl(&source.raw_url(&commit, "pyproject.toml"), &path, MAX_PYPROJECT).map_err(|error| {
+            format!("{} has no pyproject.toml to read at {} ({error})", source.repository(), short(&commit))
+        })?;
         let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
         let _ = std::fs::remove_file(&path);
-        package(&text?)
+        Ok(Lookup { package: package(&text?)?, commit })
     }
 
-    /// Installs the package, lets the plugin set itself up without asking
-    /// anything, makes sure a manifest exists, and asks whether it still
-    /// needs configuring.
-    fn install(&self, source: &Source, package: &Package) -> Result<(String, Option<String>), String> {
+    /// Installs the package at the commit looked up, lets the plugin set
+    /// itself up without asking anything, makes sure a manifest exists, and
+    /// asks whether it still needs configuring.
+    fn install(&self, source: &Source, lookup: &Lookup) -> Result<(String, Option<String>), String> {
+        let package = &lookup.package;
+        // Again, as something else may have been installed since the lookup.
+        conflict(&Record::load(), source, package)?;
         let uv_path = self.find_uv()?;
-        let args = install_args(source, package);
+        let args = install_args(source, lookup);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         self.check("uv tool install", self.command(&uv_path, &args), UV_TIMEOUT)?;
         let bin = self.check("uv tool dir", self.command(&uv_path, &["tool", "dir", "--bin"]), QUICK_TIMEOUT)?;
@@ -465,17 +633,28 @@ impl Runner {
         if !command.is_file() {
             return Err(format!("{} did not install {}", package.name, command.display()));
         }
+        let manifest = manifest_path(&package.plugin_id);
+        let had_manifest = manifest.exists();
         self.setup(&package.plugin_id, &command)?;
         let mut record = Record::load();
+        let wrote_before = record.plugins.get(&package.plugin_id).is_some_and(|installed| installed.wrote_manifest);
         record.plugins.insert(
             package.plugin_id.clone(),
-            Installed { source: source.to_string(), package: package.name.clone(), command: command.clone() },
+            Installed {
+                source: source.to_string(),
+                commit: Some(lookup.commit.clone()),
+                package: package.name.clone(),
+                command: command.clone(),
+                wrote_manifest: wrote_before || (!had_manifest && manifest.exists()),
+            },
         );
         record.save()?;
         let configure = (!self.configured(&command)).then(|| package.plugin_id.clone());
+        let version = if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
+        let installed = format!("Installed {}{version} at {}", package.name, short(&lookup.commit));
         let body = match &configure {
-            Some(_) => format!("Installed {} {}; set it up in the terminal", package.name, package.version),
-            None => format!("Installed {} {}", package.name, package.version),
+            Some(_) => format!("{installed}; set it up in the terminal"),
+            None => installed,
         };
         Ok((body, configure))
     }
@@ -498,8 +677,7 @@ impl Runner {
             if let Some(parent) = manifest.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
             }
-            let quoted = toml::Value::String(command.display().to_string());
-            std::fs::write(&manifest, format!("command = {quoted}\nargs = [\"serve\"]\n"))
+            std::fs::write(&manifest, minimal_manifest(command))
                 .map_err(|error| format!("{}: {error}", manifest.display()))?;
         }
         Ok(())
@@ -512,24 +690,32 @@ impl Runner {
         configured(&output.stdout)
     }
 
-    fn update(&self, ids: &[String]) -> Result<String, String> {
-        let uv_path = self.find_uv()?;
+    /// Moves one plugin to the commit its source is at now: the only step
+    /// that installs something other than what was installed before.
+    fn update_one(&self, plugin_id: &str) -> Result<Updated, String> {
         let record = Record::load();
-        let mut updated = Vec::new();
-        for plugin_id in ids {
-            let installed = record
-                .plugins
-                .get(plugin_id)
-                .ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
-            self.check(
-                &format!("uv tool upgrade {}", installed.package),
-                self.command(&uv_path, &["tool", "upgrade", &installed.package]),
-                UV_TIMEOUT,
-            )?;
-            self.setup(plugin_id, &installed.command)?;
-            updated.push(installed.package.clone());
+        let installed =
+            record.plugins.get(plugin_id).ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
+        let source = Source::parse(&installed.source)?;
+        let lookup = self.read(&source)?;
+        if lookup.package.plugin_id != plugin_id {
+            return Err(format!(
+                "{} now installs the plugin {}; remove {plugin_id} and add it again",
+                source.repository(),
+                lookup.package.plugin_id
+            ));
         }
-        Ok(format!("Updated {}", updated.join(", ")))
+        if installed.commit.as_deref() == Some(lookup.commit.as_str()) {
+            return Ok(Updated::Current);
+        }
+        let from = installed.commit.clone();
+        self.install(&source, &lookup)?;
+        Ok(Updated::Moved { from, to: lookup.commit })
+    }
+
+    /// Updates each plugin in turn, whatever happens to the others.
+    fn update(&self, ids: &[String]) -> Vec<(String, Result<Updated, String>)> {
+        ids.iter().map(|plugin_id| (plugin_id.clone(), self.update_one(plugin_id))).collect()
     }
 
     fn remove(&self, plugin_id: &str) -> Result<String, String> {
@@ -554,9 +740,8 @@ impl Runner {
             self.command(&uv_path, &["tool", "uninstall", &installed.package]),
             UV_TIMEOUT,
         )?;
-        let manifest = manifest_path(plugin_id);
-        if manifest.exists() {
-            std::fs::remove_file(&manifest).map_err(|error| format!("{}: {error}", manifest.display()))?;
+        if let Some(note) = remove_manifest(&installed, &manifest_path(plugin_id))? {
+            notes.push(note);
         }
         record.plugins.remove(plugin_id);
         record.save()?;
@@ -574,6 +759,52 @@ fn configured(stdout: &[u8]) -> bool {
         .ok()
         .and_then(|status| status.get("configured").and_then(serde_json::Value::as_bool))
         .unwrap_or(true)
+}
+
+/// What updating one plugin did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Updated {
+    /// Installed a newer commit.
+    Moved { from: Option<String>, to: String },
+    /// Its source is still at the commit installed.
+    Current,
+}
+
+/// The notification for updating plugins: a title, then which failed, which
+/// were updated and which were up to date, then a line for each failure and
+/// each update. Ok when every one succeeded.
+fn update_summary(results: &[(String, Result<Updated, String>)]) -> (String, Result<String, String>) {
+    let names = |keep: fn(&Result<Updated, String>) -> bool| -> String {
+        let names: Vec<&str> =
+            results.iter().filter(|(_, result)| keep(result)).map(|(plugin_id, _)| plugin_id.as_str()).collect();
+        names.join(", ")
+    };
+    let failed = names(Result::is_err);
+    let moved = names(|result| matches!(result, Ok(Updated::Moved { .. })));
+    let current = names(|result| matches!(result, Ok(Updated::Current)));
+    let mut lines = Vec::new();
+    for (label, names) in [("Failed", &failed), ("Updated", &moved), ("Up to date", &current)] {
+        if !names.is_empty() {
+            lines.push(format!("{label}: {names}"));
+        }
+    }
+    for (plugin_id, result) in results {
+        match result {
+            Err(error) => lines.push(format!("{plugin_id}: {error}")),
+            Ok(Updated::Moved { from, to }) => {
+                let from = from.as_deref().map_or_else(String::new, |from| format!("{} ", short(from)));
+                lines.push(format!("{plugin_id}: {from}\u{2192} {}", short(to)));
+            }
+            Ok(Updated::Current) => {}
+        }
+    }
+    let body = lines.join("\n");
+    let failures = results.iter().filter(|(_, result)| result.is_err()).count();
+    match failures {
+        0 => ("Plugins".into(), Ok(body)),
+        _ if results.len() == 1 => (format!("Could not update {}", results[0].0), Err(body)),
+        _ => (format!("Could not update {failures} of {} plugins", results.len()), Err(body)),
+    }
 }
 
 impl Tileception {
@@ -610,25 +841,35 @@ impl Tileception {
             .spawn(move || {
                 let report = match job {
                     Job::Look(source) => {
-                        let result = runner.look(&source);
+                        let result = Box::new(runner.look(&source));
                         Report::Looked { source, result }
                     }
-                    Job::Install(source, package) => {
-                        let (result, configure) = match runner.install(&source, &package) {
+                    Job::Install(source, lookup) => {
+                        let (result, configure) = match runner.install(&source, &lookup) {
                             Ok((body, configure)) => (Ok(body), configure),
                             Err(error) => (Err(error), None),
                         };
                         Report::Done { title: busy, result, configure }
                     }
                     Job::Add(source) => {
-                        let installed = runner.look(&source).and_then(|package| runner.install(&source, &package));
+                        let installed = runner.look(&source).and_then(|lookup| runner.install(&source, &lookup));
                         let (result, configure) = match installed {
                             Ok((body, configure)) => (Ok(body), configure),
                             Err(error) => (Err(error), None),
                         };
                         Report::Done { title: busy, result, configure }
                     }
-                    Job::Update(ids) => Report::Done { title: busy, result: runner.update(&ids), configure: None },
+                    Job::Update(ids) => {
+                        let results = runner.update(&ids);
+                        for (plugin_id, result) in &results {
+                            match result {
+                                Ok(updated) => tracing::info!("updating {plugin_id}: {updated:?}"),
+                                Err(error) => tracing::warn!("updating {plugin_id}: {error}"),
+                            }
+                        }
+                        let (title, result) = update_summary(&results);
+                        Report::Done { title, result, configure: None }
+                    }
                     Job::Remove(plugin_id) => {
                         Report::Done { title: busy, result: runner.remove(&plugin_id), configure: None }
                     }
@@ -655,9 +896,9 @@ impl Tileception {
     }
 
     /// Installs what [`Self::plugin_look_up`] found.
-    pub(crate) fn plugin_install(&mut self, source: Source, package: Package) -> Result<String, String> {
-        let busy = format!("Installing {}", package.name);
-        self.start_job(busy.clone(), Job::Install(source, package))?;
+    pub(crate) fn plugin_install(&mut self, source: Source, lookup: Lookup) -> Result<String, String> {
+        let busy = format!("Installing {} at {}", lookup.package.name, short(&lookup.commit));
+        self.start_job(busy.clone(), Job::Install(source, Box::new(lookup)))?;
         self.notify_locally("Plugins", &format!("{busy}\u{2026}"), tileception_notify::Urgency::Low);
         Ok(format!("{busy}; a notification follows when it is done\n"))
     }
@@ -718,7 +959,7 @@ impl Tileception {
                 if self.installer.looking.as_ref() == Some(&source) {
                     self.installer.looking = None;
                 }
-                self.installer.looked = Some((source, result));
+                self.installer.looked = Some((source, *result));
             }
             Report::Done { title, result, configure } => {
                 self.installer.busy = None;
@@ -744,6 +985,7 @@ impl Tileception {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
 
@@ -763,12 +1005,17 @@ mod tests {
         let tagged = Source::parse("robinvandernoord/tileception-2fas@v0.2.0").expect("a tagged source");
         assert_eq!(tagged.rev.as_deref(), Some("v0.2.0"));
         assert_eq!(tagged.to_string(), "robinvandernoord/tileception-2fas@v0.2.0");
-        assert_eq!(tagged.git_url(), "git+https://github.com/robinvandernoord/tileception-2fas@v0.2.0");
+        let commit = "fb54a60c53c20be83553d78bedd8093f44332e0d";
         assert_eq!(
-            tagged.raw_url("pyproject.toml"),
-            "https://raw.githubusercontent.com/robinvandernoord/tileception-2fas/v0.2.0/pyproject.toml"
+            tagged.git_url(commit),
+            "git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d"
         );
-        assert_eq!(odoo.raw_url("x"), "https://raw.githubusercontent.com/robinvandernoord/tileception-odoo/HEAD/x");
+        assert_eq!(
+            tagged.raw_url(commit, "pyproject.toml"),
+            "https://raw.githubusercontent.com/robinvandernoord/tileception-2fas/fb54a60c53c20be83553d78bedd8093f44332e0d/pyproject.toml"
+        );
+        assert!(tagged.same_repository(&Source::parse("RobinVanDerNoord/Tileception-2fas").expect("a source")));
+        assert!(!tagged.same_repository(&Source::parse("someone/tileception-2fas").expect("a source")));
         for text in [
             "",
             "odoo",
@@ -804,14 +1051,18 @@ tileception-odoo = "tileception_odoo.cli:main"
         assert_eq!(plain.script, "tileception-odoo");
         assert_eq!(plain.python.as_deref(), Some(">=3.14"));
         let source = Source::parse("robinvandernoord/tileception-odoo").expect("a plain source");
+        let commit = "0123456789abcdef0123456789abcdef01234567".to_string();
+        let lookup = Lookup { package: plain, commit: commit.clone() };
+        // What installs is the commit that was looked up, not whatever the
+        // default branch is at by then.
         assert_eq!(
-            install_args(&source, &plain),
+            install_args(&source, &lookup),
             [
                 "tool",
                 "install",
                 "--python",
                 ">=3.14",
-                "tileception-odoo @ git+https://github.com/robinvandernoord/tileception-odoo"
+                "tileception-odoo @ git+https://github.com/robinvandernoord/tileception-odoo@0123456789abcdef0123456789abcdef01234567"
             ]
         );
 
@@ -832,8 +1083,8 @@ needs = ["the 2fas CLI"]
         .expect("a declared pyproject");
         assert_eq!((declared.plugin_id.as_str(), declared.needs.len()), ("totp", 1));
         assert_eq!(
-            requirement(&source, &declared),
-            "tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-odoo"
+            requirement(&source, &Lookup { package: declared, commit }),
+            "tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-odoo@0123456789abcdef0123456789abcdef01234567"
         );
 
         // Two scripts and none named: which one serves is unknown.
@@ -897,18 +1148,145 @@ needs = ["the 2fas CLI"]
         assert_ne!(lookup_file(), lookup_file());
     }
 
+    fn installed(source: &str, package: &str) -> Installed {
+        Installed {
+            source: source.into(),
+            commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            package: package.into(),
+            command: format!("/home/me/.local/bin/{package}").into(),
+            wrote_manifest: true,
+        }
+    }
+
     #[test]
     fn records_round_trip() {
         let mut record = Record::default();
-        record.plugins.insert(
-            "odoo".into(),
-            Installed {
-                source: "robinvandernoord/tileception-odoo".into(),
-                package: "tileception-odoo".into(),
-                command: "/home/me/.local/bin/tileception-odoo".into(),
-            },
-        );
+        record.plugins.insert("odoo".into(), installed("robinvandernoord/tileception-odoo", "tileception-odoo"));
         let text = toml::to_string(&record).expect("the record serializes");
         assert_eq!(toml::from_str::<Record>(&text).expect("the record reads back"), record);
+        // A record from before commits and manifests were kept still reads.
+        let old = toml::from_str::<Record>("[plugins.odoo]\nsource = \"a/b\"\npackage = \"b\"\ncommand = \"/bin/b\"\n")
+            .expect("an older record reads");
+        assert_eq!((old.plugins["odoo"].commit.as_deref(), old.plugins["odoo"].wrote_manifest), (None, false));
+    }
+
+    #[test]
+    fn commits_from_ls_remote() {
+        let head = "fb54a60c53c20be83553d78bedd8093f44332e0d\tHEAD\n";
+        assert_eq!(pick_commit(head, None).as_deref(), Some("fb54a60c53c20be83553d78bedd8093f44332e0d"));
+        assert_eq!(ls_remote_patterns(None), ["HEAD"]);
+        assert_eq!(ls_remote_patterns(Some("v1")), ["refs/tags/v1", "refs/tags/v1^{}", "refs/heads/v1"]);
+        // An annotated tag: the commit it points at, not the tag object; and a
+        // tag before a branch of the same name.
+        let listing = "\
+1111111111111111111111111111111111111111\trefs/heads/v1
+2222222222222222222222222222222222222222\trefs/tags/v1
+3333333333333333333333333333333333333333\trefs/tags/v1^{}
+";
+        assert_eq!(pick_commit(listing, Some("v1")).as_deref(), Some("3333333333333333333333333333333333333333"));
+        let lightweight = "2222222222222222222222222222222222222222\trefs/tags/v1\n";
+        assert_eq!(pick_commit(lightweight, Some("v1")).as_deref(), Some("2222222222222222222222222222222222222222"));
+        let branch = "1111111111111111111111111111111111111111\trefs/heads/main\n";
+        assert_eq!(pick_commit(branch, Some("main")).as_deref(), Some("1111111111111111111111111111111111111111"));
+        // Only exact names count, and only real hashes.
+        assert_eq!(pick_commit("1111111111111111111111111111111111111111\trefs/heads/x/v1\n", Some("v1")), None);
+        assert_eq!(pick_commit("nonsense\tHEAD\n", None), None);
+        assert_eq!(pick_commit("", None), None);
+        assert!(is_commit("0123456789abcdef0123456789ABCDEF01234567"));
+        assert!(!is_commit("0123456"));
+        assert_eq!(short("fb54a60c53c20be83553d78bedd8093f44332e0d"), "fb54a60");
+    }
+
+    #[test]
+    fn another_repository_cannot_take_an_installed_id() {
+        let mut record = Record::default();
+        record.plugins.insert("2fas".into(), installed("robinvandernoord/tileception-2fas", "tileception-2fas"));
+        let pyproject = |name: &str| {
+            package(&format!("[project]\nname = \"{name}\"\n[project.scripts]\n{name} = \"m:main\"\n"))
+                .expect("a pyproject")
+        };
+        let same = pyproject("tileception-2fas");
+        // Installing or updating the same repository, at any revision.
+        for text in ["robinvandernoord/tileception-2fas", "RobinVanDerNoord/tileception-2fas@v0.3.0"] {
+            assert_eq!(conflict(&record, &Source::parse(text).expect("a source"), &same), Ok(()), "{text}");
+        }
+        let fork = Source::parse("someone/tileception-2fas").expect("a source");
+        assert_eq!(
+            conflict(&record, &fork, &same),
+            Err("plugin ID 2fas is taken by robinvandernoord/tileception-2fas; remove it first".into())
+        );
+        // The same package under another ID would replace its uv tool.
+        let renamed = package(
+            "[project]\nname = \"tileception_2fas\"\n[project.scripts]\nx = \"m:main\"\n[tool.tileception]\nid = \"totp\"\n",
+        )
+        .expect("a pyproject");
+        assert!(conflict(&record, &fork, &renamed).is_err());
+        // Something else entirely is fine.
+        assert_eq!(conflict(&record, &fork, &pyproject("tileception-odoo")), Ok(()));
+    }
+
+    /// A directory of its own under the system's temporary directory.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tileception-plugin-install-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    #[test]
+    fn removing_deletes_only_a_manifest_installing_made() {
+        let dir = scratch("manifests");
+        let manifest = dir.join("2fas.toml");
+        let mut plugin = installed("robinvandernoord/tileception-2fas", "tileception-2fas");
+
+        // Written by hand before installing: it stays, and the user is told.
+        plugin.wrote_manifest = false;
+        std::fs::write(&manifest, "command = \"/opt/my-2fas\"\nargs = [\"serve\", \"--verbose\"]\n").unwrap();
+        let note = remove_manifest(&plugin, &manifest).unwrap();
+        assert!(manifest.exists());
+        assert!(note.is_some_and(|note| note.contains("kept")));
+
+        // Made by installing: it goes.
+        plugin.wrote_manifest = true;
+        assert_eq!(remove_manifest(&plugin, &manifest), Ok(None));
+        assert!(!manifest.exists());
+
+        // An older record that does not say, with the manifest Tileception
+        // writes itself: that is recognised.
+        plugin.wrote_manifest = false;
+        std::fs::write(&manifest, minimal_manifest(&plugin.command)).unwrap();
+        assert_eq!(remove_manifest(&plugin, &manifest), Ok(None));
+        assert!(!manifest.exists());
+
+        // Already removed by the plugin's own uninstall.
+        assert_eq!(remove_manifest(&plugin, &manifest), Ok(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn updating_reports_every_plugin() {
+        let commit = |digit: char| std::iter::repeat_n(digit, 40).collect::<String>();
+        let results = vec![
+            ("2fas".to_string(), Ok(Updated::Moved { from: Some(commit('0')), to: commit('f') })),
+            ("github".to_string(), Err("uv tool install failed: no network".to_string())),
+            ("odoo".to_string(), Ok(Updated::Current)),
+            ("weather".to_string(), Err("weather was not installed from a repository".to_string())),
+        ];
+        let (title, result) = update_summary(&results);
+        assert_eq!(title, "Could not update 2 of 4 plugins");
+        assert_eq!(
+            result,
+            Err("Failed: github, weather\n\
+                 Updated: 2fas\n\
+                 Up to date: odoo\n\
+                 2fas: 0000000 \u{2192} fffffff\n\
+                 github: uv tool install failed: no network\n\
+                 weather: weather was not installed from a repository"
+                .into())
+        );
+        let (title, result) = update_summary(&results[..1]);
+        assert_eq!((title.as_str(), result), ("Plugins", Ok("Updated: 2fas\n2fas: 0000000 \u{2192} fffffff".into())));
+        let (title, _) = update_summary(&results[1..2]);
+        assert_eq!(title, "Could not update github");
     }
 }

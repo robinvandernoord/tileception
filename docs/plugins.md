@@ -28,13 +28,15 @@ one.
 
 Type `plugins add owner/repo` in the launcher, for example
 `plugins add robinvandernoord/tileception-2fas`. A full GitHub URL works too,
-and `owner/repo@v0.2.0` picks a tag, branch or commit. Enter reads the
-repository's `pyproject.toml` and shows what it is: its package, version,
-description and what it needs on your machine. Nothing is installed yet.
-Enter again installs it with [uv](https://docs.astral.sh/uv/):
+and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. Enter finds
+the commit that is (the default branch, unless you named one), reads the
+repository's `pyproject.toml` at that commit and shows what it is: its
+package, version, description, what it needs on your machine and the commit.
+Nothing is installed yet. Enter again installs exactly that commit with
+[uv](https://docs.astral.sh/uv/), even if the repository has changed since:
 
 ```sh
-uv tool install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas'
+uv tool install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d'
 ```
 
 Each plugin gets its own environment, and uv fetches a Python that suits the
@@ -47,13 +49,25 @@ such as an API key or a login, Tileception opens a terminal with its
 Installing runs the repository's code as you, with your files and
 credentials. Only install plugins you trust.
 
+A plugin ID can only be installed from one repository. Installing another
+repository whose plugin has the same ID, or the same Python package, is
+refused until the installed one is removed; installing the same repository
+again is fine.
+
 `plugins` in the launcher lists what is installed this way, with a row to
 configure each, and one to update them all. `plugins configure`,
 `plugins update` and `plugins remove`, each optionally followed by the start
-of a plugin ID, list the installed plugins to do that to. Removing runs the
-plugin's own `uninstall` first, so it can stop its timers, then removes the
-package and its manifest. A plugin's configuration and cache stay unless its
-`uninstall` removes them.
+of a plugin ID, list the installed plugins to do that to.
+
+Updating is the only step that moves a plugin to a newer commit: it finds the
+commit the repository's default branch (or the tag or branch you installed)
+is at now, and installs that. A notification lists each plugin, updated, up
+to date or failed; one failure does not stop the others.
+
+Removing runs the plugin's own `uninstall` first, so it can stop its timers,
+then removes the package, and its manifest if installing made it. A manifest
+you wrote yourself before installing stays. A plugin's configuration and
+cache stay unless its `uninstall` removes them.
 
 The same from a shell or a key binding:
 
@@ -67,7 +81,7 @@ tileception msg plugins remove odoo
 
 `add` installs without showing the package first: asking for it on the command
 line is the confirmation. These commands return once the work has started.
-What was installed is kept in
+What was installed, at which commit, is kept in
 `$XDG_DATA_HOME/tileception/installed-plugins.toml`. Plugins installed by hand
 work as before, but `update` and `remove` only know the ones in this file.
 

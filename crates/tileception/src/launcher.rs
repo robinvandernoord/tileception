@@ -1399,9 +1399,9 @@ impl Tileception {
             Manage::Source(text) => {
                 let Ok(source) = Source::parse(&text) else { return };
                 match self.installer.looked.clone() {
-                    Some((looked, Ok(package))) if looked == source => {
+                    Some((looked, Ok(lookup))) if looked == source => {
                         self.close_launcher();
-                        self.plugin_install(source, package).map(drop)
+                        self.plugin_install(source, lookup).map(drop)
                     }
                     _ => {
                         let result = self.plugin_look_up(source);
@@ -1470,10 +1470,11 @@ impl Tileception {
                 Ok(source) if installer.looking.as_ref() == Some(&source) => (
                     glyph::GLOBE,
                     format!("Reading {source}\u{2026}"),
-                    "Fetching its pyproject.toml from GitHub".into(),
+                    "Finding its commit and reading its pyproject.toml from GitHub".into(),
                 ),
                 Ok(source) => match &installer.looked {
-                    Some((looked, Ok(package))) if *looked == source => {
+                    Some((looked, Ok(lookup))) if *looked == source => {
+                        let package = &lookup.package;
                         let mut detail = Vec::new();
                         if !package.description.is_empty() {
                             detail.push(package.description.clone());
@@ -1484,10 +1485,11 @@ impl Tileception {
                         detail.push("runs its code as you".into());
                         let version =
                             if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
-                        (glyph::PLUS, format!("Install {}{version}", package.name), detail.join(" \u{b7} "))
+                        let commit = crate::plugin_install::short(&lookup.commit);
+                        (glyph::PLUS, format!("Install {}{version} at {commit}", package.name), detail.join(" \u{b7} "))
                     }
                     Some((looked, Err(error))) if *looked == source => {
-                        (glyph::ALERT, format!("Could not read {source}"), format!("{error}; Enter tries again"))
+                        (glyph::ALERT, format!("Cannot add {source}"), error.clone())
                     }
                     _ => (
                         glyph::GLOBE,
@@ -1514,7 +1516,7 @@ impl Tileception {
             Manage::Remove(plugin_id) => (
                 glyph::CLOSE,
                 format!("Remove {}", self.plugin_name(plugin_id)),
-                "Runs its uninstall, then removes the package and its manifest".into(),
+                "Runs its uninstall, then removes the package and the manifest installing made".into(),
             ),
         }
     }
@@ -1601,6 +1603,7 @@ impl Tileception {
                 match (&self.installer.looked, source) {
                     _ if self.installer.busy.is_some() => "Wait",
                     (Some((looked, Ok(_))), Some(source)) if *looked == source => "Install",
+                    (Some((looked, Err(_))), Some(source)) if *looked == source => "Try again",
                     _ => "Look up",
                 }
             }
