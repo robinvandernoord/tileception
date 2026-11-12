@@ -1,5 +1,7 @@
 //! The card under the bar's updates chip: what is waiting by kind, the
-//! housekeeping offers, and the buttons that install.
+//! housekeeping offers, and the buttons that install. Below them, what waits
+//! on each machine linked through handoff, with a button that asks for an
+//! install there.
 
 use tileception_core::{Point, Rect};
 use tileception_updates::{self as backend, apt};
@@ -26,6 +28,8 @@ pub(crate) enum Hit {
     Clean,
     Release,
     Restart,
+    /// Asks a linked machine to install what waits there.
+    Machine(tileception_handoff::PeerId),
 }
 
 impl crate::ui::PointerAction for Hit {
@@ -37,11 +41,32 @@ impl crate::ui::PointerAction for Hit {
 /// One block of the card, top to bottom.
 enum Part {
     Header,
-    Group { label: &'static str, warning: bool, names: String, count: usize },
+    Group {
+        label: &'static str,
+        warning: bool,
+        names: String,
+        count: usize,
+    },
     Rule,
-    Offer { title: String, detail: String, button: &'static str, hit: Hit },
+    Offer {
+        title: String,
+        detail: String,
+        button: &'static str,
+        hit: Hit,
+    },
+    /// A linked machine: what waits there, and whether it can be asked to
+    /// install it.
+    Machine {
+        title: String,
+        detail: String,
+        error: bool,
+        hit: Option<Hit>,
+    },
     Progress,
-    Note { text: String, error: bool },
+    Note {
+        text: String,
+        error: bool,
+    },
     Buttons(Vec<(&'static str, Hit)>),
     Footer(String),
 }
@@ -52,7 +77,7 @@ impl Part {
             Part::Header => 46.0,
             Part::Group { .. } => 28.0,
             Part::Rule => 13.0,
-            Part::Offer { .. } => 46.0,
+            Part::Offer { .. } | Part::Machine { .. } => 46.0,
             Part::Progress => 50.0,
             Part::Note { .. } => 26.0,
             Part::Buttons(_) => 42.0,
@@ -120,6 +145,11 @@ impl Tileception {
             Hit::Release => {
                 self.close_updates_popover();
                 self.open_updates(Page::Release);
+                Ok(())
+            }
+            // A failure shows in the machine's line.
+            Hit::Machine(peer) => {
+                let _ = self.install_on(peer, false);
                 Ok(())
             }
             Hit::Restart => {
@@ -220,6 +250,16 @@ impl Tileception {
                 parts.push(Part::Footer(format!("{} download", backend::human_size(totals.bytes))));
             }
         }
+        let machines = self.remote_update_rows();
+        if !machines.is_empty() {
+            parts.push(Part::Rule);
+            parts.extend(machines.into_iter().map(|(peer, row)| Part::Machine {
+                title: row.title,
+                detail: row.detail,
+                error: row.error,
+                hit: row.install.then_some(Hit::Machine(peer)),
+            }));
+        }
         parts
     }
 
@@ -258,7 +298,9 @@ impl Tileception {
                 Part::Header if !self.updates.busy() => {
                     controls.push((Rect::new(rect.right() - 28.0, rect.y + 8.0, 28.0, 28.0), Hit::Check));
                 }
-                Part::Offer { hit, .. } => controls.push((Self::offer_button(*rect), *hit)),
+                Part::Offer { hit, .. } | Part::Machine { hit: Some(hit), .. } => {
+                    controls.push((Self::offer_button(*rect), *hit));
+                }
                 Part::Buttons(buttons) => {
                     let rects = Self::button_rects(*rect, buttons.len());
                     controls.extend(rects.into_iter().zip(buttons.iter().map(|(_, hit)| *hit)));
@@ -354,6 +396,15 @@ impl Tileception {
                     painter.text(title, Rect::new(rect.x, rect.y + 4.0, rect.w - 96.0, 20.0), body);
                     painter.text(detail, Rect::new(rect.x, rect.y + 22.0, rect.w - 96.0, 18.0), small);
                     button(painter, Self::offer_button(rect), label, false, false);
+                }
+                Part::Machine { title, detail, error, hit } => {
+                    let width = if hit.is_some() { rect.w - 96.0 } else { rect.w };
+                    painter.text(title, Rect::new(rect.x, rect.y + 4.0, width, 20.0), body);
+                    let tint = if *error { theme.danger } else { theme.muted };
+                    painter.text(detail, Rect::new(rect.x, rect.y + 22.0, width, 18.0), small.colour(tint));
+                    if hit.is_some() {
+                        button(painter, Self::offer_button(rect), "Install", false, false);
+                    }
                 }
                 Part::Progress => {
                     let (title, label, fraction) = updates.progress().unwrap_or(("", "", 0.0));

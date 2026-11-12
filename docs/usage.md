@@ -421,6 +421,14 @@ Click the chip for a card with the updates by kind and three buttons:
 administrator: polkit asks for the password in Tileception's prompt and
 remembers it for a few minutes. See [Administrator rights](#administrator-rights).
 
+When computers share one mouse and keyboard through handoff (`[handoff]` in
+config.toml), the card also lists the other machines, each with what waits there, and the chip counts their updates while none wait
+here (`3 on laptop`). **Install** beside a machine asks for its updates to be
+installed there: that machine asks whoever is at it, and only their
+**Install** there starts it, with that machine's own administrator prompt.
+Move the pointer over to answer both. The machine's line shows the progress
+and how it ended. Machines dismissed from sharing are left out.
+
 Tileception refreshes the package lists by itself every few hours, which
 needs no password. It leaves that on a metered connection and below 30% on
 battery; **Check** still works then.
@@ -562,6 +570,8 @@ From scripts and key bindings:
 | `tileception msg updates mirrors` | Test the mirrors; ask again for the results |
 | `tileception msg updates mirror <url>` | Use this mirror |
 | `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first |
+| `tileception msg handoff updates` | List what waits on each machine linked with handoff |
+| `tileception msg handoff updates install [security] [machine]` | Ask a linked machine to install its updates, or its security updates; it asks the person there first |
 
 Where two sources have an update by the same name, such as a Flatpak in both
 the system and your own installation, or a package and a snap, name it with

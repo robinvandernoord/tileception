@@ -7,7 +7,8 @@
 //! the pointer crosses at those edges. Nothing about the arrangement is
 //! saved: every new connection asks again. Locking pauses sharing until it
 //! is resumed by hand. Windows shown on a machine whose connection is lost
-//! wait for it to link again.
+//! wait for it to link again. The update manager's card lists what waits on
+//! the other machines too.
 
 mod clipboard;
 mod drag;
@@ -17,6 +18,7 @@ pub mod pair;
 mod prompt;
 mod screens;
 mod stream;
+mod updates;
 mod windows;
 
 use std::{collections::BTreeMap, sync::Mutex};
@@ -154,6 +156,8 @@ pub struct Handoff {
     pub(crate) files: files::Files,
     /// The last absolute pointer position, to turn absolute motion into steps.
     pub(crate) absolute: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
+    /// What waits in the other machines' update managers.
+    pub(crate) updates: updates::RemoteUpdates,
 }
 
 impl Handoff {
@@ -226,6 +230,14 @@ pub enum HandoffCommand {
     Home,
     /// Brings this machine's windows back from other machines, or from one.
     Reclaim(Option<String>),
+    /// What updates wait on the other machines.
+    Updates,
+    /// Asks a machine to install what waits there, or its security updates.
+    /// The person there is asked first.
+    InstallUpdates {
+        peer: Option<String>,
+        security_only: bool,
+    },
 }
 
 pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
@@ -248,7 +260,16 @@ pub fn parse(args: &[&str]) -> Result<HandoffCommand, String> {
         ["reclaim"] => Ok(HandoffCommand::Reclaim(None)),
         // A machine's name may have spaces.
         ["reclaim", name @ ..] => Ok(HandoffCommand::Reclaim(Some(name.join(" ")))),
-        _ => Err("handoff takes status, edge, dismiss, retry, resume, home or reclaim".into()),
+        ["updates"] => Ok(HandoffCommand::Updates),
+        ["updates", "install", rest @ ..] => {
+            let (security_only, name) = match rest {
+                ["security", name @ ..] => (true, name),
+                name => (false, name),
+            };
+            let peer = (!name.is_empty()).then(|| name.join(" "));
+            Ok(HandoffCommand::InstallUpdates { peer, security_only })
+        }
+        _ => Err("handoff takes status, edge, dismiss, retry, resume, home, reclaim or updates".into()),
     }
 }
 
@@ -374,6 +395,7 @@ impl Tileception {
             self.drags_peer_gone(peer);
             self.windows_peer_gone(peer);
         }
+        self.updates_handoff_stopped();
         // Including windows still waiting for a machine that went away.
         self.reclaim_windows(None);
         let waiting: Vec<PeerId> = self.handoff.windows.remote.values().map(|remote| remote.peer).collect();
@@ -418,6 +440,7 @@ impl Tileception {
                 if entry.link != Link::Dismissed || !self.handoff.prompt.dismissed.contains(&peer) {
                     entry.link = Link::Asking { ours: None, theirs: false };
                 }
+                self.share_updates();
             }
             Event::Received { peer, message } => self.handoff_message(peer, message),
             Event::Disconnected { peer } => {
@@ -428,6 +451,7 @@ impl Tileception {
                 self.clipboard_peer_gone(peer);
                 self.drags_peer_gone(peer);
                 self.windows_peer_lost(peer);
+                self.updates_peer_gone(peer);
                 if !self.handoff.prompt.dismissed.contains(&peer) {
                     self.handoff.peers.remove(&peer);
                 }
@@ -453,6 +477,7 @@ impl Tileception {
                     // The other user placed this machine: that is asking again.
                     self.handoff.prompt.dismissed.remove(&peer);
                     entry.link = Link::Asking { ours: None, theirs: true };
+                    self.share_updates();
                 }
                 Link::Linked { .. } => {}
             },
@@ -461,6 +486,7 @@ impl Tileception {
                 self.handoff.prompt.dismissed.insert(peer);
                 self.unlink(peer);
                 self.windows_peer_gone(peer);
+                self.updates_peer_gone(peer);
             }
             Message::Paused => {
                 if let Link::Linked { paused, .. } = &mut entry.link
@@ -548,6 +574,9 @@ impl Tileception {
                     height: height.min(16384) as i32,
                 };
                 self.peer_screen(peer, room);
+            }
+            message @ (Message::Updates(_) | Message::InstallUpdates { .. } | Message::UpdatesDeclined { .. }) => {
+                self.updates_message(peer, message);
             }
             message => self.window_message(peer, message),
         }
@@ -642,6 +671,7 @@ impl Tileception {
         if theirs {
             self.linked(peer);
         }
+        self.share_updates();
         self.schedule_render();
         Ok(())
     }
@@ -654,6 +684,7 @@ impl Tileception {
         self.handoff.send(peer, Message::Dismissed);
         self.unlink(peer);
         self.windows_peer_gone(peer);
+        self.updates_peer_gone(peer);
         self.schedule_render();
     }
 
@@ -675,6 +706,7 @@ impl Tileception {
                         entry.link = Link::Asking { ours: None, theirs: false };
                     }
                 }
+                self.share_updates();
                 self.schedule_render();
             }
             HandoffCommand::Resume => self.handoff_resume()?,
@@ -691,6 +723,11 @@ impl Tileception {
                         None => "no window of this machine is on another".into(),
                     });
                 }
+            }
+            HandoffCommand::Updates => return Ok(self.remote_updates_status()),
+            HandoffCommand::InstallUpdates { peer, security_only } => {
+                let peer = self.handoff.find(peer.as_deref())?;
+                self.install_on(peer, security_only)?;
             }
         }
         Ok(String::new())
@@ -793,6 +830,19 @@ mod tests {
         assert_eq!(
             parse(&["reclaim", "Robin's", "laptop"]),
             Ok(HandoffCommand::Reclaim(Some("Robin's laptop".into())))
+        );
+        assert_eq!(parse(&["updates"]), Ok(HandoffCommand::Updates));
+        assert_eq!(
+            parse(&["updates", "install"]),
+            Ok(HandoffCommand::InstallUpdates { peer: None, security_only: false })
+        );
+        assert_eq!(
+            parse(&["updates", "install", "security", "Robin's", "laptop"]),
+            Ok(HandoffCommand::InstallUpdates { peer: Some("Robin's laptop".into()), security_only: true })
+        );
+        assert_eq!(
+            parse(&["updates", "install", "laptop"]),
+            Ok(HandoffCommand::InstallUpdates { peer: Some("laptop".into()), security_only: false })
         );
     }
 }

@@ -212,6 +212,10 @@ Shell:
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
   handoff reclaim [machine] bring this machine's windows back from others
+  handoff updates           what updates wait on the linked machines
+  handoff updates install [security] [machine]
+                            ask a machine to install what waits there; the
+                            person there says yes and gives the password
   updates                   list pending updates and what else waits
   updates check             refresh the package lists (asks for your password)
   updates install [security|package...]

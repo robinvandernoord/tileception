@@ -729,7 +729,7 @@ impl Tileception {
         if let Some((label, ..)) = self.network_chip() {
             chips.push((ChipKind::Network, label));
         }
-        if let Some((label, _)) = self.updates.chip().filter(|_| self.updates_available()) {
+        if let Some((label, _)) = self.updates_chip().filter(|_| self.updates_available()) {
             chips.push((ChipKind::Updates, label));
         }
         if let Some((captured, sharing)) = self.bar.capture
@@ -1309,7 +1309,7 @@ impl Tileception {
                 _ => false,
             };
             let (icon, tint) = match chip.kind {
-                ChipKind::Updates => match self.updates.chip().map(|(_, tone)| tone) {
+                ChipKind::Updates => match self.updates_chip().map(|(_, tone)| tone) {
                     Some(crate::updates::Tone::Warning) => (glyph::ALERT, theme.warning),
                     Some(crate::updates::Tone::Busy) => (glyph::RESTART, theme.accent),
                     _ => (UPDATES, theme.accent),

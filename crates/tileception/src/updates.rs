@@ -607,6 +607,7 @@ impl Tileception {
                 self.close_updates();
             }
         }
+        self.share_updates();
     }
 
     fn updates_event(&mut self, event: Event) {
@@ -656,6 +657,7 @@ impl Tileception {
 
     /// Something the chip, the popover or the window shows has changed.
     pub(crate) fn updates_changed(&mut self) {
+        self.share_updates();
         self.updates.window.invalidate();
         if self.launcher.open {
             self.refresh_updates_rows();

@@ -86,14 +86,10 @@ impl crate::ui::PointerAction for PointerAction {
             }
             Self::Invoke { identifier, kind: NotificationKind::Local, key } => state.local_action(*identifier, key),
             Self::Close { identifier, kind: NotificationKind::Question, .. } => {
-                state.withdraw_question(*identifier);
-                state.answer_typing(*identifier, None);
-                state.answer_shortcut(*identifier);
+                state.answer_question(*identifier, None)
             }
             Self::Invoke { identifier, kind: NotificationKind::Question, key } => {
-                state.withdraw_question(*identifier);
-                state.answer_typing(*identifier, Some(key));
-                state.answer_shortcut(*identifier);
+                state.answer_question(*identifier, Some(key));
             }
             Self::Close { identifier, history, .. } => {
                 if *history {
@@ -319,6 +315,15 @@ impl Tileception {
         self.notifications.questions.insert(notification_id);
         self.schedule_render();
         notification_id
+    }
+
+    /// A question was answered with one of its buttons, or closed (None):
+    /// the answer goes to whichever asked it.
+    fn answer_question(&mut self, notification_id: u32, key: Option<&str>) {
+        self.withdraw_question(notification_id);
+        self.answer_typing(notification_id, key);
+        self.answer_shortcut(notification_id);
+        self.answer_install_question(notification_id, key);
     }
 
     /// Takes away a question that no longer needs an answer.
@@ -597,9 +602,7 @@ impl Tileception {
             // Tileception's own: the service knows nothing of it.
             self.local_action(notification.id, key);
         } else if self.notifications.questions.contains(&notification.id) {
-            self.withdraw_question(notification.id);
-            self.answer_typing(notification.id, Some(key));
-            self.answer_shortcut(notification.id);
+            self.answer_question(notification.id, Some(key));
         } else {
             self.notification_request(Request::Invoke { id: notification.id, action: key.to_string(), token: None });
         }
