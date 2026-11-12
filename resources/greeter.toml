@@ -22,6 +22,10 @@ xsession_wrapper = "startx /usr/bin/env"
 # Who logged in last and with which session. The directory must be writable
 # by the greeter's user (_greetd on Debian and Ubuntu).
 # state_file = "/var/lib/tileception-greeter/state.toml"
+# Fades in place of movement: the password field does not shake, the launcher
+# does not slide in and the waiting dots hold still. Locked sessions read this
+# too, and also reduce motion when their animation_ms is 0.
+reduce_motion = false
 
 [panels]
 # Columns of panels, each top to bottom, sized by ratio. On a portrait screen

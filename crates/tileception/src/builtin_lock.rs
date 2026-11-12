@@ -88,7 +88,9 @@ impl Tileception {
         let unavailable = locker.user.is_none() || locker.worker.is_none();
         let login = locker.user.clone().unwrap_or_else(|| "Locked".into());
         let notifications = self.notification_status().map_or(0, |(count, _)| count);
-        let mut screen = Greeter::lock(&login, notifications);
+        // Without animations in the session, the lock screen holds still too.
+        let still = self.world.settings.animation <= 0.0;
+        let mut screen = Greeter::lock(&login, notifications, still);
         if unavailable {
             screen.notice = Some(UNAVAILABLE.into());
         }

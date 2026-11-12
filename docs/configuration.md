@@ -62,6 +62,8 @@ wallpaper_fit = "fill"
 
 `gap` sets the spacing between windows and around the screen edge.
 `animation_ms` sets the duration of zoom and move animations in milliseconds.
+At `0`, the lock screen holds still too, as with the login screen's
+[`reduce_motion`](greeter.md#settings).
 
 Colours accept `#rrggbb` or `#rrggbbaa`. Buttons, switches and other
 filled controls use `accent`. Thin lines, such as the shown tab's underline, and
