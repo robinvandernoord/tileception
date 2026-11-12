@@ -124,9 +124,6 @@ Report testing in the conversation, the commit or the pull request instead.
     in triage before they show publicly.
 - Smart home in Settings: import devices, configure cloud sensors, switch
   `[home] enabled` and refresh the device inventory by hand.
-- Smart home history: support temperature, humidity or both, including
-  standalone sensors. Let users choose which readings to show in Settings,
-  according to what each device reports.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
