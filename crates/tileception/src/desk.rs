@@ -84,6 +84,14 @@ impl Tileception {
         true
     }
 
+    /// The desk key went up where this machine did not see it, as while the
+    /// keyboard is forwarded to another: ends the hold without acting.
+    pub(crate) fn desk_key_lost(&mut self, keycode: u32) {
+        if self.desk.key.as_ref().is_some_and(|held| held.keycode == keycode) {
+            self.end_desk_key();
+        }
+    }
+
     /// Forgets a held desk key and ends its peek, as when the screen locks.
     pub(crate) fn end_desk_key(&mut self) {
         if let Some(timer) = self.desk.key.take().and_then(|held| held.timer) {

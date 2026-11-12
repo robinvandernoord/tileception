@@ -1020,6 +1020,7 @@ impl Tileception {
         self.update_toplevels();
         self.update_duck();
         self.configure_dashboard_items();
+        self.refresh_dashboard_pointer();
         let _ = self.display_handle.flush_clients();
         self.flush_dashboard_clients();
     }

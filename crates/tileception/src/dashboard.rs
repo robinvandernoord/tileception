@@ -7,7 +7,14 @@
 //! in any format and language it likes, or a surface it draws itself over a
 //! restricted Wayland connection (see `dashboard_surface.rs`).
 
-use std::{cell::RefCell, collections::HashMap, io::Read, path::Path};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    io::Read,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use smithay::{
@@ -63,6 +70,42 @@ pub struct Picture {
     pub src: String,
     /// What clicking it does.
     pub action: Option<ActionKind>,
+    /// Which picture `src` names, worked out once when the resource is
+    /// read, so the source itself need not be copied or hashed each frame.
+    #[serde(skip)]
+    pub digest: u64,
+}
+
+impl Picture {
+    /// Notes which picture this is and keeps a copy of it without its
+    /// source, which may be a large `data:` URI, for laying out.
+    pub fn seal(&mut self) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.src.hash(&mut hasher);
+        self.digest = hasher.finish();
+    }
+
+    fn light(&self) -> Picture {
+        Picture {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            size: self.size,
+            src: String::new(),
+            action: self.action.clone(),
+            digest: self.digest,
+        }
+    }
+}
+
+impl Items {
+    /// Seals every picture; see [`Picture::seal`].
+    pub fn seal(&mut self) {
+        for item in &mut self.items {
+            if let Item::Image(picture) = item {
+                picture.seal();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -95,12 +138,29 @@ impl Size {
 
 /// A decoded picture and its size in pixels.
 type Decoded = (MemoryRenderBuffer, (f64, f64));
+/// Premultiplied RGBA pixels, their width and height.
+type Pixels = (Vec<u8>, u32, u32);
+/// A picture by plugin and digest of its source.
+type PictureKey = (String, u64);
+/// What the decoding threads finished: `None` for a picture that failed.
+type Finished = Arc<Mutex<Vec<(PictureKey, Option<Pixels>)>>>;
 
-/// Pictures as decoded, by plugin and source; `None` for one that would not
-/// load, so it is not tried every frame.
+/// A picture being read and decoded on its own thread, or done.
+enum Loading {
+    Busy,
+    Ready(Decoded),
+    Failed,
+}
+
+/// Pictures by plugin and source. They are read and decoded off the
+/// compositor's thread, which a large or complex picture would hold up.
 #[derive(Default)]
 pub struct Dashboard {
-    pictures: RefCell<HashMap<(String, String), Option<Decoded>>>,
+    pictures: RefCell<HashMap<PictureKey, Loading>>,
+    /// Decoded on their threads, waiting to become buffers here.
+    decoded: Finished,
+    /// Rung by a thread that finished, for a frame that shows it.
+    ping: Option<smithay::reexports::calloop::ping::Ping>,
 }
 
 /// One item on the dashboard and where it goes.
@@ -179,9 +239,36 @@ impl Tileception {
         (self.launcher.open && self.launcher.home) || self.desk.peeking
     }
 
-    /// A plugin's items changed: pictures are read anew.
-    pub(crate) fn dashboard_changed(&mut self) {
-        self.dashboard.pictures.borrow_mut().clear();
+    /// A plugin's items were read again, or all plugins' (`None`). Its
+    /// pictures from files are read anew; a `data:` URI names its picture
+    /// by its content, so one that stays the same is kept.
+    pub(crate) fn dashboard_changed(&mut self, plugin: Option<&str>) {
+        if self.dashboard.ping.is_none() {
+            match smithay::reexports::calloop::ping::make_ping() {
+                Ok((ping, source)) => {
+                    let inserted = self.loop_handle.insert_source(source, |_, _, state| state.schedule_render());
+                    match inserted {
+                        Ok(_) => self.dashboard.ping = Some(ping),
+                        Err(error) => tracing::warn!("dashboard pictures: {error}"),
+                    }
+                }
+                Err(error) => tracing::warn!("dashboard pictures: {error}"),
+            }
+        }
+        let offered = self.plugins.as_ref().map(crate::plugins::Host::dashboard_items).unwrap_or_default();
+        let keep: std::collections::HashSet<(String, u64)> = offered
+            .iter()
+            .filter_map(|(owner, item)| match item {
+                Item::Image(picture) if plugin.is_some_and(|plugin| plugin != *owner) => {
+                    Some((owner.to_string(), picture.digest))
+                }
+                Item::Image(picture) if plugin.is_some() && picture.src.starts_with("data:") => {
+                    Some((owner.to_string(), picture.digest))
+                }
+                _ => None,
+            })
+            .collect();
+        self.dashboard.pictures.borrow_mut().retain(|key, _| keep.contains(key));
         if self.dashboard_shown() {
             self.schedule_render();
         }
@@ -204,7 +291,7 @@ impl Tileception {
                     let laid = crate::panel::card_layout(card, 0.0, 0.0, width);
                     Shown::Card { plugin, card: card.clone(), laid }
                 }
-                Item::Image(picture) => Shown::Picture { plugin, picture: picture.clone() },
+                Item::Image(picture) => Shown::Picture { plugin, picture: picture.light() },
                 Item::Surface(surface) => Shown::Surface { plugin, surface: surface.clone() },
             });
         }
@@ -275,9 +362,9 @@ impl Tileception {
                 }
                 Shown::Picture { plugin, picture } => {
                     let inner = self.draw_frame(painter, slot.rect, &picture.title, plugin);
-                    if let Some((buffer, size)) = self.dashboard_picture(plugin, &picture.src) {
+                    if let Some((buffer, size)) = self.dashboard_picture(plugin, picture) {
                         painter.image_scaled(&buffer, size, fit(size, inner));
-                    } else {
+                    } else if self.dashboard_picture_failed(plugin, picture.digest) {
                         let style = Style::new(theme.font_size * 0.9, theme.muted).align(Align::Centre);
                         painter.text("No picture", inner, style);
                     }
@@ -308,22 +395,61 @@ impl Tileception {
         inner(rect)
     }
 
-    /// A plugin's picture, decoded once.
-    fn dashboard_picture(&self, plugin: &str, src: &str) -> Option<Decoded> {
-        let key = (plugin.to_string(), src.to_string());
+    fn dashboard_picture_failed(&self, plugin: &str, digest: u64) -> bool {
+        matches!(self.dashboard.pictures.borrow().get(&(plugin.to_string(), digest)), Some(Loading::Failed))
+    }
+
+    /// A plugin's picture once decoded; until then `None`, and decoding
+    /// starts on a thread of its own.
+    fn dashboard_picture(&self, plugin: &str, picture: &Picture) -> Option<Decoded> {
         let mut pictures = self.dashboard.pictures.borrow_mut();
-        if let Some(found) = pictures.get(&key) {
-            return found.clone();
+        // Take in what the threads finished.
+        let finished =
+            std::mem::take(&mut *self.dashboard.decoded.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for (key, pixels) in finished {
+            if !pictures.contains_key(&key) {
+                continue;
+            }
+            let loaded = pixels.map(|(pixels, width, height)| {
+                let size = (width as i32, height as i32);
+                let buffer =
+                    MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, size, 1, Transform::Normal, None);
+                (buffer, (f64::from(width), f64::from(height)))
+            });
+            if loaded.is_none() {
+                tracing::warn!("Plugin {}: could not load a dashboard picture", key.0);
+            }
+            pictures.insert(key, loaded.map_or(Loading::Failed, Loading::Ready));
         }
-        let loaded = load_picture(src);
-        if loaded.is_none() {
-            tracing::warn!("Plugin {plugin}: could not load dashboard picture");
+        let key = (plugin.to_string(), picture.digest);
+        match pictures.get(&key) {
+            Some(Loading::Ready(decoded)) => return Some(decoded.clone()),
+            Some(_) => return None,
+            None => {}
         }
+        // The source itself stays with the plugin's items, not the layout.
+        let offered = self.plugins.as_ref().map(crate::plugins::Host::dashboard_items).unwrap_or_default();
+        let src = offered.iter().find_map(|(owner, item)| match item {
+            Item::Image(found) if *owner == plugin && found.digest == picture.digest => Some(found.src.clone()),
+            _ => None,
+        })?;
         if pictures.len() >= 64 {
             pictures.clear();
         }
-        pictures.insert(key, loaded.clone());
-        loaded
+        pictures.insert(key.clone(), Loading::Busy);
+        let decoded = self.dashboard.decoded.clone();
+        let ping = self.dashboard.ping.clone();
+        let spawned = std::thread::Builder::new().name("dashboard picture".into()).spawn(move || {
+            let pixels = load_picture(&src);
+            decoded.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((key, pixels));
+            if let Some(ping) = ping {
+                ping.ping();
+            }
+        });
+        if let Err(error) = spawned {
+            tracing::warn!("could not start decoding a dashboard picture: {error}");
+        }
+        None
     }
 }
 
@@ -343,20 +469,11 @@ pub(crate) fn fit((width, height): (f64, f64), room: Rect) -> Rect {
 }
 
 /// Reads and decodes a picture: an absolute path to a regular file, or a
-/// base64 `data:` URI.
-fn load_picture(src: &str) -> Option<Decoded> {
+/// base64 `data:` URI. Runs on a thread of its own.
+fn load_picture(src: &str) -> Option<Pixels> {
     let bytes = picture_bytes(src)?;
     let svg = src.ends_with(".svg") || src.starts_with("data:image/svg") || bytes.trim_ascii_start().starts_with(b"<");
-    let (pixels, width, height) = if svg { render_svg(&bytes)? } else { decode_raster(&bytes)? };
-    let buffer = MemoryRenderBuffer::from_slice(
-        &pixels,
-        Fourcc::Abgr8888,
-        (width as i32, height as i32),
-        1,
-        Transform::Normal,
-        None,
-    );
-    Some((buffer, (f64::from(width), f64::from(height))))
+    if svg { render_svg(&bytes) } else { decode_raster(&bytes) }
 }
 
 fn picture_bytes(src: &str) -> Option<Vec<u8>> {

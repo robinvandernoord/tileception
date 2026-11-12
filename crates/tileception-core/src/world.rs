@@ -1128,7 +1128,14 @@ impl World {
             return false;
         }
         let present = self.tree.windows_in(self.tree.root());
-        let remembered = |window: &WindowId| cleared.windows.contains(window);
+        // Remembered where they were, unless one restored on its own has
+        // since been floated or tiled: that one stays as it is now, like a
+        // window opened meanwhile.
+        let floated_then = |window: &WindowId| cleared.layout.floats.iter().any(|(floated, _)| floated == window);
+        let remembered = |window: &WindowId| {
+            cleared.windows.contains(window)
+                && (!present.contains(window) || floated_then(window) == self.tree.is_floating(*window))
+        };
         let remap: HashMap<WindowId, WindowId> = waiting
             .iter()
             .chain(present.iter().filter(|window| remembered(window)))
@@ -1146,6 +1153,9 @@ impl World {
             .filter(|window| remembered(window))
             .filter_map(|window| Some((*window, self.floats.get(window)?.rect)))
             .collect();
+        // What happened meanwhile wins: views saved, the window worked in.
+        let saved = self.saved.clone();
+        let (focus_now, mru_now) = (self.focus, self.mru.clone());
         self.minimized.retain(|minimized| !waiting.contains(&minimized.window));
         if !self.restore_layout(&cleared.layout, &remap, now) {
             // Our own snapshot always restores; should it not, the windows
@@ -1175,11 +1185,30 @@ impl World {
                 self.push_frame(common);
             }
         }
-        self.mru = cleared.mru.into_iter().filter(|window| self.contains_window(*window)).collect();
-        self.mru.extend(opened.iter().map(|(window, _)| *window));
-        let focus = opened
-            .last()
-            .map(|(window, _)| *window)
+        // Saved views keep every window they had, minimized ones too, which
+        // going to the view brings back.
+        self.saved = saved.map(|view| {
+            let view = view?;
+            let leaves: Vec<NodeId> = view.windows.iter().filter_map(|window| self.tree.leaf_of(*window)).collect();
+            let node = leaves
+                .iter()
+                .copied()
+                .reduce(|first, second| self.tree.common_ancestor(first, second))
+                .unwrap_or(self.tree.root());
+            let windows: Vec<WindowId> = view
+                .windows
+                .into_iter()
+                .filter(|window| self.contains_window(*window) || self.is_minimized(*window))
+                .collect();
+            (!windows.is_empty()).then_some(SavedView { node, windows })
+        });
+        let mut mru: Vec<WindowId> = cleared.mru.into_iter().filter(|window| !mru_now.contains(window)).collect();
+        mru.extend(mru_now);
+        mru.extend(opened.iter().map(|(window, _)| *window));
+        let mut seen = std::collections::HashSet::new();
+        self.mru = mru.into_iter().filter(|window| self.contains_window(*window) && seen.insert(*window)).collect();
+        let focus = focus_now
+            .filter(|window| self.contains_window(*window))
             .or(cleared.focus.filter(|window| self.contains_window(*window)))
             .or(self.mru.last().copied());
         self.set_focus(focus);
@@ -2371,6 +2400,30 @@ mod tests {
         // 1 keeps its column; 2 and 3 share theirs as before, without 4.
         let one = before.iter().find(|(window, _)| *window == WindowId(1)).unwrap().1;
         assert!(rect_of(&world, WindowId(1)).w < one.w + 1e-6);
+    }
+
+    #[test]
+    fn bringing_the_desk_back_keeps_what_changed_meanwhile() {
+        let mut world = four();
+        world.focus_window(WindowId(1), 0.0);
+        world.save_view(1);
+        world.minimize(WindowId(4), 0.0);
+        world.toggle_desk(0.0);
+        // Back on its own and floated, then worked in.
+        world.restore(WindowId(2), 0.0);
+        world.toggle_float(WindowId(2), 0.0);
+        world.focus_window(WindowId(2), 0.0);
+        world.save_view(2);
+        world.toggle_desk(0.0);
+        world.tree().check_invariants();
+        assert!(world.tree().is_floating(WindowId(2)), "stays floating");
+        assert_eq!(world.focus(), Some(WindowId(2)), "the window worked in keeps focus");
+        assert!(world.has_saved_view(2), "a view saved meanwhile stays");
+        assert!(world.is_minimized(WindowId(4)));
+        // The earlier view still holds the window minimized before, and
+        // going there brings it back.
+        assert!(world.recall_view(1, 0.0));
+        assert!(world.contains_window(WindowId(4)));
     }
 
     #[test]

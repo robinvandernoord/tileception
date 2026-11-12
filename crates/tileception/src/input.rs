@@ -259,6 +259,10 @@ impl Tileception {
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
+            // A desk key held as the keyboard moved away ends here.
+            if key_state == KeyState::Released {
+                self.desk_key_lost(code.raw());
+            }
             self.forward_key(peer, code, key_state, time);
         } else if visible {
             self.deliver_key(code, key_state, time);
@@ -1221,6 +1225,7 @@ impl Tileception {
         }
         if self.launcher.open
             && !self.is_locked()
+            && !self.dashboard_has_pointer()
             && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
@@ -1305,7 +1310,7 @@ impl Tileception {
                 frame = frame.stop(Axis::Vertical);
             }
         }
-        if self.dashboard_has_pointer() {
+        if !self.is_locked() && self.dashboard_has_pointer() {
             self.dashboard_pointer_axis(frame);
             return;
         }

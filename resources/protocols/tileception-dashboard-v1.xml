@@ -32,6 +32,7 @@
     <enum name="error">
       <entry name="role" value="0" summary="the surface already has a role"/>
       <entry name="taken" value="1" summary="the item already has a surface"/>
+      <entry name="too_many" value="2" summary="the plugin already has six items"/>
     </enum>
 
     <request name="destroy" type="destructor">

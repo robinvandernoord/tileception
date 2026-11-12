@@ -502,6 +502,8 @@ pub struct Changed {
     pub cards: bool,
     /// The dashboard's items.
     pub dashboard: bool,
+    /// Whose dashboard items were read again; all when unset.
+    pub dashboard_plugin: Option<String>,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -752,7 +754,15 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, dashboard: reloaded, resources: Vec::new() }
+        Changed {
+            routes,
+            panels: reloaded,
+            bar: reloaded,
+            cards: reloaded,
+            dashboard: reloaded,
+            dashboard_plugin: None,
+            resources: Vec::new(),
+        }
     }
 
     /// A resource was read: panels are kept parsed, others as they are.
@@ -812,7 +822,8 @@ impl Host {
             match serde_json::from_value::<crate::dashboard::Items>(value) {
                 Ok(mut items) => {
                     items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
-                    self.dashboards.insert(plugin, items.items);
+                    items.seal();
+                    self.dashboards.insert(plugin.clone(), items.items);
                 }
                 Err(error) => {
                     tracing::warn!("Plugin {plugin}: invalid dashboard items: {error}");
@@ -820,6 +831,7 @@ impl Host {
                 }
             }
             changed.dashboard = true;
+            changed.dashboard_plugin = Some(plugin);
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -1197,7 +1209,7 @@ impl Tileception {
             self.panel_changed();
         }
         if changed.dashboard {
-            self.dashboard_changed();
+            self.dashboard_changed(changed.dashboard_plugin.as_deref());
         }
         if changed.bar || (changed.cards && self.launcher.open) {
             self.schedule_render();

@@ -154,19 +154,30 @@ impl Tileception {
 
     /// A commit on a dashboard item's surface. True when it was one.
     pub(crate) fn dashboard_commit(&mut self, surface: &WlSurface) -> bool {
-        if compositor::get_role(surface) != Some(ROLE) {
+        // Every surface of a dashboard client, subsurfaces too.
+        let ours = surface
+            .client()
+            .is_some_and(|client| client.get_data::<ClientState>().is_some_and(|data| data.dashboard.is_some()));
+        if !ours {
             return false;
         }
-        let size = smithay::wayland::compositor::with_states(surface, |states| {
+        let pixels = smithay::wayland::compositor::with_states(surface, |states| {
+            let scale =
+                states.cached_state.get::<smithay::wayland::compositor::SurfaceAttributes>().current().buffer_scale;
             states
                 .data_map
                 .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()
                 .and_then(|state| state.lock().ok().and_then(|state| state.buffer_size()))
+                .map(|size| (size, scale))
         });
-        if size.is_some_and(|size| size.w > LARGEST_BUFFER || size.h > LARGEST_BUFFER) {
+        let too_large = pixels.is_some_and(|(size, scale)| {
+            let scale = scale.max(1);
+            size.w.saturating_mul(scale) > LARGEST_BUFFER || size.h.saturating_mul(scale) > LARGEST_BUFFER
+        });
+        if too_large {
             surface.post_error(
                 smithay::reexports::wayland_server::protocol::wl_surface::Error::InvalidSize,
-                format!("dashboard items are at most {LARGEST_BUFFER} pixels a side"),
+                format!("dashboard buffers are at most {LARGEST_BUFFER} pixels a side"),
             );
             return true;
         }
@@ -269,16 +280,22 @@ impl Tileception {
             .map(|(room, item)| (item.surface.clone(), room))
     }
 
+    /// The item's surface that takes the pointer here, if any: only where
+    /// the welcome screen itself takes it, not under the notification panel
+    /// or an overlay drawn over it.
+    fn dashboard_target(&self, point: Point) -> Option<(WlSurface, Rect)> {
+        if !(self.dashboard_shown() && self.launcher.home && self.launcher_takes(point)) {
+            return None;
+        }
+        self.dashboard_surface_under(&self.dashboard_slots(self.home_panel()), point)
+    }
+
     /// The pointer over the dashboard: an item's surface gets motion on the
     /// dashboard's own seat; anything else leaves it. True when it took it.
     pub(crate) fn dashboard_pointer_motion(&mut self, point: Point, time: u32) -> bool {
         let Some(display) = &self.dashboard_surfaces.display else { return false };
         let pointer = display.pointer.clone();
-        let under = if self.dashboard_shown() && self.launcher.home {
-            self.dashboard_surface_under(&self.dashboard_slots(self.home_panel()), point)
-        } else {
-            None
-        };
+        let under = self.dashboard_target(point);
         let focus =
             under.as_ref().map(|(surface, room)| (surface.clone(), smithay::utils::Point::from((room.x, room.y))));
         let took = focus.is_some();
@@ -332,9 +349,24 @@ impl Tileception {
         true
     }
 
-    /// Whether the pointer is over a dashboard item's surface.
+    /// Whether the pointer is over a dashboard item's surface on screen.
     pub(crate) fn dashboard_has_pointer(&self) -> bool {
-        self.dashboard_surfaces.display.as_ref().is_some_and(|display| display.pointer.current_focus().is_some())
+        self.dashboard_shown()
+            && self.dashboard_surfaces.display.as_ref().is_some_and(|display| display.pointer.current_focus().is_some())
+    }
+
+    /// Takes the pointer from an item that is no longer under it because
+    /// the dashboard went away or its items moved, without waiting for the
+    /// mouse to move.
+    pub(crate) fn refresh_dashboard_pointer(&mut self) {
+        let Some(display) = &self.dashboard_surfaces.display else { return };
+        let Some(focus) = display.pointer.current_focus() else { return };
+        let point = Point::new(self.pointer.x, self.pointer.y);
+        if self.dashboard_target(point).is_some_and(|(surface, _)| surface == focus) {
+            return;
+        }
+        let time = self.start.elapsed().as_millis() as u32;
+        self.dashboard_pointer_motion(point, time);
     }
 
     /// Where the welcome screen's panel is, for the dashboard beside it.
@@ -374,6 +406,11 @@ impl Dispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tilecept
         let Some(owner) = client.get_data::<ClientState>().and_then(|data| data.dashboard.clone()) else { return };
         if compositor::get_role(&surface) != Some(ROLE) && compositor::give_role(&surface, ROLE).is_err() {
             resource.post_error(tileception_dashboard_v1::Error::Role, "the surface already has another role");
+            return;
+        }
+        let mine = state.dashboard_surfaces.items.keys().filter(|(plugin, _)| *plugin == owner.plugin).count();
+        if mine >= crate::dashboard::PLUGIN_ITEMS {
+            resource.post_error(tileception_dashboard_v1::Error::TooMany, "a plugin has at most six items");
             return;
         }
         let key = (owner.plugin, item);

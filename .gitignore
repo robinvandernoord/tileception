@@ -2,3 +2,4 @@
 *.dmg
 uv.lock
 .idea/
+__pycache__/
