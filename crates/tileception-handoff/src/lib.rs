@@ -16,6 +16,6 @@ pub use held::{Held, Released, Source};
 pub use picture::{Area, Canvas, Header, pack, pack_pointer, pack_thumbnail, unpack_pointer, unpack_rgba};
 pub use service::{DEFAULT_PORT, Event, Messenger, PeerId, Service, Settings, random_id};
 pub use wire::{
-    CHUNK, DragKind, DragPreview, MAX_POPUPS, Message, PICTURE_BUDGET, PROTOCOL, Picture, PointerImage, Resumed, Room,
-    Scroll, Target, Thumbnail, Tile,
+    CHUNK, DragKind, DragPreview, MAX_POPUPS, MAX_UPDATE_NAMES, Message, PICTURE_BUDGET, PROTOCOL, PendingUpdates,
+    Picture, PointerImage, Resumed, Room, Scroll, Target, Thumbnail, Tile, UPDATE_TEXT, UpdatesTask,
 };

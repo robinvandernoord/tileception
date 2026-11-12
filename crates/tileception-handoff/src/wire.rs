@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -16,6 +16,12 @@ pub const PICTURE_BUDGET: usize = 60 * 1024;
 
 /// The most popups a picture lists; any more are drawn but not told apart.
 pub const MAX_POPUPS: usize = 16;
+
+/// The most update names a [`PendingUpdates`] lists; the count says the rest.
+pub const MAX_UPDATE_NAMES: usize = 3;
+
+/// The most characters of one text in a [`PendingUpdates`].
+pub const UPDATE_TEXT: usize = 240;
 
 /// Which selection a clipboard message is about.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -301,6 +307,51 @@ pub enum Message {
         width: u32,
         height: u32,
     },
+    /// What waits in the sender's update manager, sent on linking and
+    /// whenever it changes. None when the sender has no update manager
+    /// running.
+    Updates(Option<PendingUpdates>),
+    /// Asks the receiver to install what waits there: every update, or
+    /// those for security. Nothing installs on this alone: the receiver
+    /// asks the person at it first, then installs as it always does, with
+    /// its own administrator prompt. A refusal comes back as
+    /// `UpdatesDeclined`; what follows shows in its `Updates`.
+    InstallUpdates {
+        security_only: bool,
+    },
+    /// An `InstallUpdates` was not taken up, and why.
+    UpdatesDeclined {
+        reason: String,
+    },
+}
+
+/// What waits in a machine's update manager, as its own card sums it up.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct PendingUpdates {
+    pub count: u32,
+    pub security: u32,
+    /// Still to download.
+    pub bytes: u64,
+    /// The first few by the names people know them by, security first.
+    pub names: Vec<String>,
+    /// Earlier updates wait for a restart.
+    pub restart: bool,
+    /// Why the updates could not be listed.
+    pub error: Option<String>,
+    /// A task running there.
+    pub task: Option<UpdatesTask>,
+    /// The person there is being asked about an install asked for from
+    /// another machine.
+    pub asking: bool,
+    /// How its last task ended: what it says, or why it failed.
+    pub outcome: Option<Result<String, String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct UpdatesTask {
+    pub title: String,
+    /// How far it is, 0 to 100.
+    pub percent: u8,
 }
 
 /// What a drag carries, for showing by the pointer.
@@ -402,6 +453,27 @@ mod tests {
             }),
             Frame::App(Message::Data { request: 1, bytes: vec![0; CHUNK] }),
             Frame::App(Message::PickColour),
+            Frame::App(Message::Updates(None)),
+            Frame::App(Message::Updates(Some(PendingUpdates {
+                count: 3,
+                security: 1,
+                bytes: 12_345_678,
+                names: vec!["openssl".into(), "Firefox".into()],
+                restart: true,
+                error: None,
+                task: Some(UpdatesTask { title: "Install updates".into(), percent: 40 }),
+                asking: false,
+                outcome: Some(Err("dpkg was interrupted".into())),
+            }))),
+            Frame::App(Message::Updates(Some(PendingUpdates {
+                error: Some("apt-get failed".into()),
+                asking: true,
+                outcome: Some(Ok("Updates installed.".into())),
+                ..PendingUpdates::default()
+            }))),
+            Frame::App(Message::InstallUpdates { security_only: true }),
+            Frame::App(Message::InstallUpdates { security_only: false }),
+            Frame::App(Message::UpdatesDeclined { reason: "said no there".into() }),
         ];
         for frame in frames {
             let bytes = encode(&frame).expect("encodes");
@@ -425,6 +497,25 @@ mod tests {
             last: true,
         };
         let bytes = encode(&Frame::App(Message::WindowPicture(picture))).expect("encodes");
+        assert!(bytes.len() + crate::secure::TAG <= crate::secure::MAX_MESSAGE);
+    }
+
+    #[test]
+    fn the_longest_pending_updates_fit_one_noise_message() {
+        // Every character four bytes, the most there is.
+        let text = || "\u{1f600}".repeat(UPDATE_TEXT);
+        let pending = PendingUpdates {
+            count: u32::MAX,
+            security: u32::MAX,
+            bytes: u64::MAX,
+            names: vec![text(); MAX_UPDATE_NAMES],
+            restart: true,
+            error: Some(text()),
+            task: Some(UpdatesTask { title: text(), percent: 100 }),
+            asking: true,
+            outcome: Some(Err(text())),
+        };
+        let bytes = encode(&Frame::App(Message::Updates(Some(pending)))).expect("encodes");
         assert!(bytes.len() + crate::secure::TAG <= crate::secure::MAX_MESSAGE);
     }
 
