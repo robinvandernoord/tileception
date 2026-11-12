@@ -391,8 +391,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "plugin" => {
             let mut parts = rest.trim().splitn(3, char::is_whitespace);
             let plugin =
-                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin plugin_id and a tool")?;
-            let tool = parts.next().ok_or("plugin needs a tool after the plugin plugin_id")?;
+                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin id and a tool")?;
+            let tool = parts.next().ok_or("plugin needs a tool after the plugin id")?;
             let arguments = match parts.next().map(str::trim).filter(|json| !json.is_empty()) {
                 Some(json) => serde_json::from_str::<serde_json::Value>(json)
                     .ok()
@@ -411,7 +411,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 "mode" => crate::doctor_policy::Mode::parse(tail)
                     .map(Command::DoctorMode)
                     .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
-                "use" if tail.is_empty() => Err("doctor use needs an agent plugin_id from the ACP Registry".into()),
+                "use" if tail.is_empty() => Err("doctor use needs an agent id from the ACP Registry".into()),
                 "use" => Ok(Command::DoctorUse(tail.to_string())),
                 "ask" if tail.is_empty() => Err("doctor ask needs a question".into()),
                 "ask" => Ok(Command::Doctor(Some(tail.to_string()))),
@@ -522,7 +522,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "restore" => match args.first() {
             None => Action::Restore(None),
             Some(id_text) => Action::Restore(Some(tileception_core::WindowId(
-                id_text.parse().map_err(|_| "restore takes nothing or a window plugin_id".to_string())?,
+                id_text.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
             ))),
         },
         "next-tab" => Action::NextTab,
@@ -683,6 +683,22 @@ mod tests {
                 assert!(!err.starts_with("unknown"), "help lists {verb:?}: {err}");
             }
         }
+    }
+
+    #[test]
+    fn plugins_commands_and_their_errors() {
+        assert_eq!(parse("plugins add a/b"), Ok(Command::AddPlugin("a/b".into())));
+        assert_eq!(parse("plugins update"), Ok(Command::UpdatePlugins(None)));
+        assert_eq!(parse("plugins update odoo"), Ok(Command::UpdatePlugins(Some("odoo".into()))));
+        assert_eq!(parse("plugins remove odoo"), Ok(Command::RemovePlugin("odoo".into())));
+        assert_eq!(parse("plugins configure odoo"), Ok(Command::ConfigurePlugin("odoo".into())));
+        assert_eq!(parse("plugins list"), Ok(Command::InstalledPlugins));
+        assert!(parse("plugins add").is_err());
+        // Errors speak of ids in words, not of variable names.
+        assert_eq!(parse("plugin"), Err("plugin needs a plugin id and a tool".into()));
+        assert_eq!(parse("plugin home"), Err("plugin needs a tool after the plugin id".into()));
+        assert_eq!(parse("doctor use"), Err("doctor use needs an agent id from the ACP Registry".into()));
+        assert_eq!(parse("restore x"), Err("restore takes nothing or a window id".into()));
     }
 
     #[test]
