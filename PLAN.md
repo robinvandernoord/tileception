@@ -83,8 +83,6 @@ Report testing in the conversation, the commit or the pull request instead.
     - Lock screen: the indoor temperature, read-only, following the lock
       screen's privacy level, without input or actions. Never launcher
       plugins.
-    - Doctor: plugins offered to Doctor's agent as MCP servers, under
-      Doctor's policy for running tools.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
