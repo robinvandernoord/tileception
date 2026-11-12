@@ -133,8 +133,9 @@ speed = 0
 swipe_distance = 60
 # Swipes and pinches bound to moving around (focus, step-in, step-out,
 # overview, maximize, back, forward) move the view with your fingers. Let go
-# before swipe_distance (or a pinch's usual amount) to cancel. false runs
-# each gesture all at once when it has gone far enough.
+# before swipe_distance (or a pinch's usual amount) to cancel. Swipes bound
+# to resize drag the divider as far as your fingers go, and it stays where
+# you let go. false runs each gesture all at once when it has gone far enough.
 follow_fingers = true
 
 [greeter]
@@ -504,7 +505,9 @@ repeat_rate = 30
 # Touchpad gestures, named by finger count and the way the fingers move.
 # Swipes take 3 to 5 fingers, pinches 2 to 5. Each gesture runs its binding
 # once; a gesture without a binding goes to the program under the pointer,
-# so two-finger pinches still zoom web pages unless Super is held.
+# so two-finger pinches still zoom web pages unless Super is held. Holding
+# Super, three fingers move the focused window and four drag the divider
+# beside it (the resize amount only counts with follow_fingers = false).
 "Swipe3Left" = "focus right"
 "Swipe3Right" = "focus left"
 "Swipe3Up" = "focus down"
@@ -517,6 +520,14 @@ repeat_rate = 30
 "Swipe4Down" = "maximize"
 "Swipe4Left" = "forward"
 "Swipe4Right" = "back"
+"Super+Swipe3Left" = "move left"
+"Super+Swipe3Right" = "move right"
+"Super+Swipe3Up" = "move up"
+"Super+Swipe3Down" = "move down"
+"Super+Swipe4Left" = "resize left 40"
+"Super+Swipe4Right" = "resize right 40"
+"Super+Swipe4Up" = "resize up 40"
+"Super+Swipe4Down" = "resize down 40"
 
 # The touchscreen. A swipe in from an edge (TouchEdgeTop, Bottom, Left,
 # Right), and three to five fingers that land together (TouchSwipe3Left,
