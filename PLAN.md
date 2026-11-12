@@ -151,10 +151,9 @@ Report testing in the conversation, the commit or the pull request instead.
   panels, Ctrl+Space layout switching, more than one screen, reduced motion,
   an accent taken from a shared wallpaper, and the full tile-to-window morph
   at login.
-- Handoff hardening: key rotation and revocation, keyboard-layout ownership,
-  edge mapping for unequal monitors and pointer-locked apps, shortcut routing
-  inside a streamed window, audio and owner-side portal dialogs. Each machine's
-  keyboard follows only that machine's own pointer.
+- Handoff hardening: key rotation and revocation, pointer locks inside a
+  streamed window (a program there gets relative motion and holds the pointer
+  where the window is shown), audio and owner-side portal dialogs.
 - Handoff video: video-heavy windows need a real video codec rather than
   compressed tiles (choose between VA-API, openh264 or ffmpeg first). Popups
   stay where they opened when the window's place there changes.
