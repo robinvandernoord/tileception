@@ -18,7 +18,8 @@
     },
     "display": {
         "color": {
-            "keys": "#d42a1e"
+            "keys": "#d42a1e",
+            "title": "#d42a1e"
         }
     }
 }
