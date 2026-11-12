@@ -278,10 +278,10 @@ mod tests {
         let low = LockConfig::default();
         assert!(!low.shows_in_full(CALENDAR));
         assert_eq!(low.toggled(CALENDAR), Some(Shown::Full));
-        let on = config("[notification_apps]\nCalendar = \"full\"\n");
-        assert!(on.shows_in_full(CALENDAR));
-        assert_eq!(on.toggled(CALENDAR), None);
-        assert_eq!(on.app_keys(CALENDAR), ["org.gnome.Calendar", "Calendar"]);
+        let opted_in = config("[notification_apps]\nCalendar = \"full\"\n");
+        assert!(opted_in.shows_in_full(CALENDAR));
+        assert_eq!(opted_in.toggled(CALENDAR), None);
+        assert_eq!(opted_in.app_keys(CALENDAR), ["org.gnome.Calendar", "Calendar"]);
         // "full" for everyone: off writes "count", on removes it.
         let high = config("notifications = \"full\"\n");
         assert_eq!(high.toggled(CALENDAR), Some(Shown::Count));
