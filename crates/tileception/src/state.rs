@@ -164,6 +164,8 @@ pub struct Tileception {
     pub tap_fired: Vec<crate::commands::Command>,
     /// Super+D: held to peek, tapped to clear the desk.
     pub desk: crate::desk::Desk,
+    pub dashboard: crate::dashboard::Dashboard,
+    pub dashboard_surfaces: crate::dashboard_surface::Surfaces,
     pub key_repeat: crate::key_repeat::KeyRepeat,
     /// Set by a lock screen or greeter key to repeat while it is held.
     pub greeter_repeat: Option<crate::key_repeat::Repeat>,
@@ -366,6 +368,8 @@ impl Tileception {
             tap_armed: None,
             tap_fired: Vec::new(),
             desk: Default::default(),
+            dashboard: Default::default(),
+            dashboard_surfaces: Default::default(),
             key_repeat: Default::default(),
             greeter_repeat: None,
             pending_press: None,
@@ -1015,7 +1019,9 @@ impl Tileception {
         self.update_home();
         self.update_toplevels();
         self.update_duck();
+        self.configure_dashboard_items();
         let _ = self.display_handle.flush_clients();
+        self.flush_dashboard_clients();
     }
 }
 
@@ -1119,6 +1125,8 @@ fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set for a dashboard plugin's own connection.
+    pub dashboard: Option<crate::dashboard_surface::Owner>,
 }
 
 impl ClientData for ClientState {

@@ -175,9 +175,20 @@ minimized, and windows closed in the meantime are left out.
 While the desk is clear you can still open windows, or restore single ones
 from the strip. The next **Super+D** brings the rest back around them.
 
-Hold **Super+D** instead of tapping it to peek: windows show only as outlines
-for as long as you hold it, and come back when you let go. The desk is not
+Hold **Super+D** instead of tapping it to peek: windows fade to outlines over
+the dashboard for as long as you hold it, and come back when you let go. The desk is not
 cleared. A hold lasts past the keyboard's repeat delay.
+
+### The dashboard
+
+When the desk is clear or empty, the welcome screen shows a dashboard beside
+it: how many notifications there are (click to open them) and what
+[plugins](plugins.md#dashboard) put there, such as cards, pictures and
+animations. Holding **Super+D** fades the windows to outlines and shows the
+dashboard behind them. With nothing typed in the welcome screen, **Escape**
+brings back a desk that **Super+D** cleared, like pressing it again. The
+dashboard needs room beside the welcome screen; on a narrow screen it does not
+show.
 
 ### Floating a window by dragging
 

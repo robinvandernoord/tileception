@@ -694,6 +694,10 @@ impl Tileception {
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
+        // A plugin's own surface on the dashboard takes the pointer there.
+        if !self.is_locked() && self.dashboard_pointer_motion(point, time) {
+            return;
+        }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
             self.launcher_motion(point);
             return;
@@ -937,6 +941,12 @@ impl Tileception {
         if self.power_menu.is_none()
             && (self.tray.open || self.network.zoom.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
+        {
+            return;
+        }
+        if !self.is_locked()
+            && self.dashboard_has_pointer()
+            && self.dashboard_pointer_button(button, state == ButtonState::Pressed, time)
         {
             return;
         }
@@ -1294,6 +1304,10 @@ impl Tileception {
             if event.amount(Axis::Vertical) == Some(0.0) {
                 frame = frame.stop(Axis::Vertical);
             }
+        }
+        if self.dashboard_has_pointer() {
+            self.dashboard_pointer_axis(frame);
+            return;
         }
         pointer.axis(self, frame);
         pointer.frame(self);

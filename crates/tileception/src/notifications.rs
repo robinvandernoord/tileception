@@ -387,6 +387,16 @@ impl Tileception {
         self.notification_request(Request::DismissAll);
     }
 
+    /// How many notifications the history holds.
+    pub fn notification_count(&self) -> usize {
+        self.notifications.history.len()
+    }
+
+    /// The newest notification's summary.
+    pub fn latest_notification(&self) -> Option<String> {
+        self.notifications.history.last().map(|notification| notification.summary.clone())
+    }
+
     pub fn notification_scroll(&mut self, delta: isize) {
         let len = self.notifications.history.len();
         self.notifications.offset = self.notifications.offset.saturating_add_signed(delta).min(len.saturating_sub(1));

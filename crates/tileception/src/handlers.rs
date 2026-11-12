@@ -117,6 +117,9 @@ impl CompositorHandler for Tileception {
             return;
         }
         on_commit_buffer_handler::<Self>(surface);
+        if self.dashboard_commit(surface) {
+            return;
+        }
         // Shown in the next frame, not whenever the screen is next polled.
         self.schedule_render();
         // Not before the surface has drawn: foot crashes on an enter before
@@ -206,7 +209,11 @@ impl SeatHandler for Tileception {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        // Dashboard plugins draw inside their frames, not the pointer.
+        if self.is_dashboard_seat(seat) {
+            return;
+        }
         self.cursor_status = image;
     }
 

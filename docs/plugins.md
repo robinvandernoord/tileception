@@ -2,7 +2,7 @@
 
 Plugins are executable commands speaking MCP over stdio. They can add launcher
 sources, cards under the launcher, a block in the notification panel, chips in
-the bar, and tools for `tileception msg plugin`. They run as the session user, with the session's
+the bar, items on the [dashboard](#dashboard), and tools for `tileception msg plugin`. They run as the session user, with the session's
 environment and permissions. Installing a manifest enables its executable. Only
 install plugins you trust.
 
@@ -83,13 +83,16 @@ args = ["--stdio"]
 # cards = false
 [bar]
 # enabled = false
+[dashboard]
+# enabled = false
+# surface = true
 ```
 
 `command` names one executable, not a shell command line. Arguments are separate
 strings. Config fields overlay the matching manifest, so disabling an installed
 plugin only needs `enabled = false`, and hiding its bar chips only
 `[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
-block. A panel block shows whenever the plugin offers one, and so do its cards
+block, and dashboard items only for plugins with a `[dashboard]` block. A panel block shows whenever the plugin offers one, and so do its cards
 under the launcher unless `[launcher]` says `cards = false`.
 
 Omitted prefixes come from `launcher_info`. An explicit empty prefix list
@@ -357,6 +360,64 @@ stays open and what is typed and found stays as it is. Copy also leaves the
 launcher open; open, run, terminal and settings actions close it. Send
 `notifications/resources/updated` when a card changes, for instance each second
 for a countdown; Tileception reads the resource again and redraws.
+
+### Dashboard
+
+The dashboard shows beside the welcome screen when the desk is clear or empty,
+and behind the windows while Super+D is held (see [Using
+Tileception](usage.md#the-dashboard)). Plugins with a `[dashboard]` block put
+items on it from a `tileception://dashboard` resource, up to six each:
+
+```json
+{"items":[
+  {"type":"card","id":"tea","title":"Tea","value":"2:41","icon":"glyph:clock"},
+  {"type":"image","id":"radar","title":"Rain radar","size":"medium",
+   "src":"/home/me/.cache/radar.png","action":{"type":"open","target":"https://example.org/radar"}},
+  {"type":"surface","id":"lamp","title":"Lava lamp","size":"large"}]}
+```
+
+- `card` is the panel block's card, drawn the same way.
+- `image` is a PNG, JPEG, WebP or SVG: an absolute path to a regular file of at
+  most 8 MiB, or a `data:image/...;base64,` URI. It is read when shown and read
+  again after `notifications/resources/updated`, so any program in any language
+  that writes an image can draw on the dashboard. Clicking it runs its
+  `action`, if it has one.
+- `surface` is drawn by the plugin itself, over Wayland (below).
+
+`size` is `small`, `medium` or `large`; every item is as wide as its column.
+Tileception lays the items out in a column on each side of the welcome screen,
+top to bottom, and leaves out what does not fit. Pictures and surfaces get a
+frame with their `title` and the plugin's name, drawn by Tileception.
+
+#### Dashboard surfaces
+
+A plugin whose `[dashboard]` block sets `surface = true` is started with
+`WAYLAND_SOCKET`, one end of a Wayland connection made for it alone. Wayland
+client libraries (libwayland in C, pywayland, wayland-rs and others) use it in
+place of `WAYLAND_DISPLAY` without further code. The connection offers
+`wl_compositor`, `wl_subcompositor`, `wl_shm`, `wp_viewporter`, a `wl_seat`
+with a pointer and no keyboard, and
+[`tileception_dashboard_v1`](../resources/protocols/tileception-dashboard-v1.xml),
+installed as `/usr/share/tileception/protocols/tileception-dashboard-v1.xml`.
+Nothing else exists there: no windows, outputs, clipboard or screen capture.
+
+Create a `wl_surface` for each `surface` item and pass it to
+`tileception_dashboard_v1.get_item` with the item's `id`. The `configure`
+event gives the size to draw at and the buffer scale; 0 by 0 means the item is
+not on screen now. Tileception clips what is drawn to that size. Frame
+callbacks arrive only while the item is on screen, so a plugin that draws on
+each callback uses no time while the dashboard is hidden. The surface receives
+pointer motion, buttons and scroll while the pointer is over it. Buffers are
+at most 4096 pixels a side.
+
+The protocol limits what a plugin can do to the desktop, not what its process
+can do: it runs as the session user like any other plugin.
+
+[`resources/plugins/lava-lamp`](../resources/plugins/lava-lamp) is a complete
+example in Python with pywayland: a lava lamp that changes colour when clicked,
+and a card whose Shake button calls the plugin's tool. Point the manifest's
+`command` at `lava-lamp.py` and copy it to
+`~/.local/share/tileception/plugins/`.
 
 ### Commands
 

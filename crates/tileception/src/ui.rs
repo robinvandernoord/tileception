@@ -826,6 +826,28 @@ impl<'a> Painter<'a> {
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
+    /// The whole of a buffer of this many pixels, scaled into `rect`.
+    pub fn image_scaled(&mut self, buffer: &MemoryRenderBuffer, pixels: (f64, f64), rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let scale = self.state.scale;
+        let position = (((rect.x + self.offset.0) * scale).round(), ((rect.y + self.offset.1) * scale).round());
+        let shown = (((rect.w * scale).round() as i32).max(1), ((rect.h * scale).round() as i32).max(1));
+        let alpha = (self.alpha < 1.0).then_some(self.alpha);
+        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+            self.renderer,
+            position,
+            buffer,
+            alpha,
+            Some(smithay::utils::Rectangle::from_size(pixels.into())),
+            Some(shown.into()),
+            smithay::backend::renderer::element::Kind::Unspecified,
+        ) {
+            self.layers.push(OutputElement::Memory(element));
+        }
+    }
+
     pub fn image_sized(&mut self, buffer: &MemoryRenderBuffer, position: (f64, f64), size: Option<(i32, i32)>) {
         if self.alpha <= 0.0 {
             return;

@@ -78,6 +78,9 @@ pub struct PluginConfig {
     /// Chips in the bar: only with this block, unless it says
     /// `enabled = false`.
     pub bar: Option<BarOptions>,
+    /// Items on the dashboard of a cleared desk: only with this block,
+    /// unless it says `enabled = false`.
+    pub dashboard: Option<DashboardOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
 }
@@ -86,6 +89,17 @@ impl PluginConfig {
     /// Whether the plugin's chips show in the bar.
     pub fn in_bar(&self) -> bool {
         self.bar.as_ref().is_some_and(|bar| bar.enabled != Some(false))
+    }
+
+    /// Whether the plugin draws dashboard surfaces, over a connection of
+    /// its own.
+    pub fn draws_surfaces(&self) -> bool {
+        self.on_dashboard() && self.dashboard.as_ref().is_some_and(|dashboard| dashboard.surface == Some(true))
+    }
+
+    /// Whether the plugin's items show on the dashboard.
+    pub fn on_dashboard(&self) -> bool {
+        self.dashboard.as_ref().is_some_and(|dashboard| dashboard.enabled != Some(false))
     }
 
     /// Whether the plugin's cards show under the launcher.
@@ -108,6 +122,16 @@ pub struct LauncherOptions {
 #[serde(default, deny_unknown_fields)]
 pub struct BarOptions {
     pub enabled: Option<bool>,
+}
+
+/// A plugin's `[dashboard]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardOptions {
+    pub enabled: Option<bool>,
+    /// Started with `WAYLAND_SOCKET`, a connection of its own on which it
+    /// may draw its `surface` items.
+    pub surface: Option<bool>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -175,6 +199,15 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         let base = base.bar.get_or_insert_default();
         if bar.enabled.is_some() {
             base.enabled = bar.enabled;
+        }
+    }
+    if let Some(dashboard) = overlay.dashboard {
+        let base = base.dashboard.get_or_insert_default();
+        if dashboard.enabled.is_some() {
+            base.enabled = dashboard.enabled;
+        }
+        if dashboard.surface.is_some() {
+            base.surface = dashboard.surface;
         }
     }
 }
@@ -456,6 +489,8 @@ pub const PANEL: &str = "tileception://panel";
 pub const BAR: &str = "tileception://bar";
 /// The resource holding a plugin's cards under the launcher.
 pub const LAUNCHER: &str = "tileception://launcher";
+/// The resource holding a plugin's items on the dashboard.
+pub const DASHBOARD: &str = "tileception://dashboard";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -465,6 +500,8 @@ pub struct Changed {
     pub bar: bool,
     /// The cards under the launcher.
     pub cards: bool,
+    /// The dashboard's items.
+    pub dashboard: bool,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -495,6 +532,12 @@ pub enum Event {
         plugin: String,
         uri: String,
         result: Result<Value, String>,
+    },
+    /// A plugin that draws dashboard surfaces started: Tileception's end
+    /// of its Wayland connection.
+    DashboardClient {
+        plugin: String,
+        stream: std::os::unix::net::UnixStream,
     },
     /// A message a plugin sent on its own.
     Notification {
@@ -576,6 +619,7 @@ impl Worker {
             wake: Arc::new(ear),
             resources: Vec::new(),
             dirty: std::collections::BTreeSet::new(),
+            events: Some(events.clone()),
         };
         let thread = std::thread::Builder::new()
             .name(format!("plugin {name}"))
@@ -627,6 +671,8 @@ pub struct Host {
     bars: BTreeMap<String, crate::panel::block::Bar>,
     /// Cards under the launcher by plugin.
     cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
+    /// Dashboard items by plugin.
+    dashboards: BTreeMap<String, Vec<crate::dashboard::Item>>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
 }
@@ -650,6 +696,7 @@ impl Host {
             panels: BTreeMap::new(),
             bars: BTreeMap::new(),
             cards: BTreeMap::new(),
+            dashboards: BTreeMap::new(),
             resources: BTreeMap::new(),
         };
         host.reload();
@@ -690,6 +737,7 @@ impl Host {
         self.panels.clear();
         self.bars.clear();
         self.cards.clear();
+        self.dashboards.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -704,7 +752,7 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, resources: Vec::new() }
+        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, dashboard: reloaded, resources: Vec::new() }
     }
 
     /// A resource was read: panels are kept parsed, others as they are.
@@ -760,6 +808,18 @@ impl Host {
                 }
             }
             changed.cards = true;
+        } else if uri == DASHBOARD {
+            match serde_json::from_value::<crate::dashboard::Items>(value) {
+                Ok(mut items) => {
+                    items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
+                    self.dashboards.insert(plugin, items.items);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid dashboard items: {error}");
+                    self.dashboards.remove(&plugin);
+                }
+            }
+            changed.dashboard = true;
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -802,6 +862,17 @@ impl Host {
             .filter(|(_, config)| config.launcher_cards())
             .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.cards.get(plugin_id)?)))
             .flat_map(|(plugin_id, cards)| cards.iter().map(move |card| (plugin_id, card)))
+            .collect()
+    }
+
+    /// The dashboard items of plugins with a `[dashboard]` block, in the
+    /// user's order.
+    pub fn dashboard_items(&self) -> Vec<(&str, &crate::dashboard::Item)> {
+        self.arranged()
+            .into_iter()
+            .filter(|(_, config)| config.on_dashboard())
+            .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.dashboards.get(plugin_id)?)))
+            .flat_map(|(plugin_id, items)| items.iter().map(move |item| (plugin_id, item)))
             .collect()
     }
 
@@ -1082,6 +1153,7 @@ impl Tileception {
             Event::Action { place: Place::Command, generation, result } => {
                 self.plugin_command_reply(generation, result)
             }
+            Event::DashboardClient { plugin, stream } => self.dashboard_client(plugin, stream),
             Event::Resource { epoch, plugin, uri, result } => {
                 let Some(plugins) = &mut self.plugins else { return };
                 let changed = plugins.handle_resource(epoch, plugin, uri, result);
@@ -1124,6 +1196,9 @@ impl Tileception {
         if changed.panels {
             self.panel_changed();
         }
+        if changed.dashboard {
+            self.dashboard_changed();
+        }
         if changed.bar || (changed.cards && self.launcher.open) {
             self.schedule_render();
         }
@@ -1147,6 +1222,8 @@ struct Source {
     resources: Vec<String>,
     /// Resources the plugin said changed, not yet read again.
     dirty: std::collections::BTreeSet<String>,
+    /// Where a dashboard connection goes as soon as the plugin starts.
+    events: Option<channel::Sender<Event>>,
 }
 
 /// A worker: describe the plugin, then serve requests, read changed
@@ -1202,8 +1279,14 @@ impl Source {
                 return Err("Plugin is restarting; try again shortly".into());
             }
             let environment = self.environment.read().expect("plugin environment lock").clone();
-            self.session =
-                Some(Session::start(&self.name, &self.config, self.stopping.clone(), &environment, self.wake.clone())?);
+            self.session = Some(Session::start(
+                &self.name,
+                &self.config,
+                self.stopping.clone(),
+                &environment,
+                self.wake.clone(),
+                self.events.as_ref(),
+            )?);
         }
         self.session.as_mut().ok_or_else(|| "Plugin failed to start".into())
     }
@@ -1554,6 +1637,7 @@ impl Session {
         stopping: Arc<AtomicBool>,
         environment: &Environment,
         wake: Arc<UnixDatagram>,
+        events: Option<&channel::Sender<Event>>,
     ) -> Result<Self, PluginError> {
         let command =
             config.command.as_deref().filter(|command| !command.is_empty()).ok_or("Missing executable command")?;
@@ -1568,6 +1652,25 @@ impl Session {
                 }
             }
         }
+        // Its own Wayland connection, for drawing on the dashboard only.
+        let mut dashboard = None;
+        if config.draws_surfaces() {
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|error| error.to_string())?;
+            let descriptor = theirs.as_raw_fd();
+            process.env("WAYLAND_SOCKET", descriptor.to_string());
+            #[allow(unsafe_code, reason = "the plugin inherits its end of the dashboard connection")]
+            // SAFETY: only async-signal-safe fcntl runs between fork and exec,
+            // on a descriptor this process owns until the child has started.
+            unsafe {
+                process.pre_exec(move || {
+                    if libc::fcntl(descriptor, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            dashboard = Some((ours, theirs));
+        }
         let mut child = process
             .args(config.args.as_deref().unwrap_or_default())
             .stdin(Stdio::piped())
@@ -1579,6 +1682,14 @@ impl Session {
         let input = child.stdin.take().ok_or("Missing plugin stdin")?;
         let output = child.stdout.take().ok_or("Missing plugin stdout")?;
         let stderr = child.stderr.take().ok_or("Missing plugin stderr")?;
+        // Our end joins the dashboard's display before the plugin is asked
+        // anything, so it may connect first; closing our copy of its end
+        // leaves the plugin's the only one.
+        if let Some((ours, _theirs)) = dashboard
+            && let Some(events) = events
+        {
+            let _ = events.send(Event::DashboardClient { plugin: name.to_string(), stream: ours });
+        }
         let name = name.to_string();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
@@ -2117,6 +2228,39 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_items_and_surfaces_are_opt_in() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.cards]
+            command = "cards"
+            [plugins.cards.dashboard]
+
+            [plugins.lamp]
+            command = "lamp"
+            [plugins.lamp.dashboard]
+            surface = true
+
+            [plugins.off.dashboard]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(!settings.plugins["plain"].on_dashboard());
+        assert!(settings.plugins["cards"].on_dashboard() && !settings.plugins["cards"].draws_surfaces());
+        assert!(settings.plugins["lamp"].draws_surfaces());
+        // Switched off in the config: no items and no connection either.
+        let dashboard = DashboardOptions { enabled: None, surface: Some(true) };
+        let mut manifest = PluginConfig { dashboard: Some(dashboard), ..PluginConfig::default() };
+        assert!(manifest.draws_surfaces());
+        overlay(&mut manifest, settings.plugins["off"].clone());
+        assert!(!manifest.on_dashboard() && !manifest.draws_surfaces());
+    }
+
+    #[test]
     fn launcher_cards_show_unless_switched_off() {
         let file: crate::config::ConfigFile = toml::from_str(
             r#"
@@ -2233,6 +2377,7 @@ for line in sys.stdin:
             wake: Arc::new(reader),
             resources: Vec::new(),
             dirty: std::collections::BTreeSet::new(),
+            events: None,
         };
         let current = Arc::new(AtomicU64::new(0));
         assert_eq!(source.invoke("fail", json!({}), &current, 0), Err("Please sign in".into()));

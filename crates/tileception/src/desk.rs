@@ -2,7 +2,7 @@
 //! brings back what clearing it took away. Held past the key-repeat delay it
 //! peeks instead: windows show as outlines until the key is let go.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::{
     RegistrationToken,
@@ -17,7 +17,12 @@ pub struct Desk {
     key: Option<HeldKey>,
     /// Windows show as outlines while this is set.
     pub peeking: bool,
+    /// When the peek last began or ended, for the fade.
+    changed: Option<Instant>,
 }
+
+/// How long windows take to fade to outlines and back, in seconds.
+const FADE: f64 = 0.15;
 
 struct HeldKey {
     keycode: u32,
@@ -90,7 +95,15 @@ impl Tileception {
     fn set_desk_peek(&mut self, peeking: bool) {
         if self.desk.peeking != peeking {
             self.desk.peeking = peeking;
+            self.desk.changed = Some(Instant::now());
             self.schedule_render();
         }
+    }
+
+    /// How far windows have faded to outlines: 0 not at all, 1 fully.
+    pub(crate) fn peek_fade(&self) -> f32 {
+        let progress = self.desk.changed.map_or(1.0, |changed| (changed.elapsed().as_secs_f64() / FADE).min(1.0));
+        let eased = crate::ui::ease_out(progress) as f32;
+        if self.desk.peeking { eased } else { 1.0 - eased }
     }
 }
