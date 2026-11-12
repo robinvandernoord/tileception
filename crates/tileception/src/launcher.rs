@@ -160,8 +160,23 @@ enum Entry {
         row: crate::plugins::Row,
     },
     PluginStatus(String),
+    /// Installing and managing plugins, under `plugins`.
+    Manage(Manage),
     /// Something the update manager can do, under `up`.
     Update(UpdateRow),
+}
+
+/// What `plugins` and its words offer for installed plugins.
+#[derive(Debug, Clone, PartialEq)]
+enum Manage {
+    /// Enter types `plugins add `.
+    Add,
+    /// A repository typed after `plugins add`: looked up, then installed.
+    Source(String),
+    Configure(String),
+    /// One installed plugin, or all of them.
+    Update(Option<String>),
+    Remove(String),
 }
 
 /// The update manager's rows.
@@ -845,22 +860,33 @@ impl Tileception {
         if launcher.plugin_query.is_some() {
             return launcher.plugin_rows.clone();
         }
+        if let Some(rows) = self.manage_rows(text) {
+            return rows;
+        }
         if text == "plugins" {
             let Some(plugins) = &self.plugins else {
                 return Vec::new();
             };
-            return plugins
-                .routes
-                .iter()
-                .map(|route| {
-                    Entry::PluginStatus(format!(
-                        "{}: {} ({})",
-                        route.info.name,
-                        route.info.description,
-                        route.prefixes.join(", ")
-                    ))
-                })
-                .chain(plugins.diagnostics.iter().cloned().map(Entry::PluginStatus))
+            let installed = &self.installer.record.plugins;
+            let manage = std::iter::once(Manage::Add)
+                .chain(installed.keys().map(|plugin_id| Manage::Configure(plugin_id.clone())))
+                .chain((!installed.is_empty()).then_some(Manage::Update(None)));
+            return manage
+                .map(Entry::Manage)
+                .chain(
+                    plugins
+                        .routes
+                        .iter()
+                        .map(|route| {
+                            Entry::PluginStatus(format!(
+                                "{}: {} ({})",
+                                route.info.name,
+                                route.info.description,
+                                route.prefixes.join(", ")
+                            ))
+                        })
+                        .chain(plugins.diagnostics.iter().cloned().map(Entry::PluginStatus)),
+                )
                 .collect();
         }
         if let Some(app) = launcher.details.as_ref().and_then(|app_id| launcher.index.get(app_id)) {
@@ -1059,6 +1085,7 @@ impl Tileception {
         match self.launcher.entries.get(self.launcher.selected) {
             Some(Entry::Place(place)) => place.completion.clone(),
             Some(Entry::Plugin { row, .. }) if !self.launcher.plugin_pending => row.completion.clone(),
+            Some(Entry::Manage(Manage::Add)) => Some("plugins add ".into()),
             _ => None,
         }
     }
@@ -1323,10 +1350,172 @@ impl Tileception {
                 }
             }
             Entry::PluginStatus(_) => {}
+            Entry::Manage(manage) => self.run_manage(manage),
             Entry::Update(row) => {
                 self.close_launcher();
                 self.run_update_row(row);
             }
+        }
+    }
+
+    /// `plugins add`, `plugins configure`, `plugins update` and `plugins
+    /// remove`, each with what follows it.
+    fn manage_rows(&self, text: &str) -> Option<Vec<Entry>> {
+        let rest = text.strip_prefix("plugins ")?.trim_start();
+        let (verb, argument) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let argument = argument.trim();
+        let installed = |make: fn(String) -> Manage| -> Vec<Entry> {
+            self.installer
+                .record
+                .plugins
+                .keys()
+                .filter(|plugin_id| plugin_id.starts_with(argument))
+                .map(|plugin_id| Entry::Manage(make(plugin_id.clone())))
+                .collect()
+        };
+        Some(match verb {
+            "add" if argument.is_empty() => vec![Entry::Manage(Manage::Add)],
+            "add" => vec![Entry::Manage(Manage::Source(argument.to_string()))],
+            "configure" => installed(Manage::Configure),
+            "update" => {
+                let all = (argument.is_empty() && !self.installer.record.plugins.is_empty())
+                    .then_some(Entry::Manage(Manage::Update(None)));
+                all.into_iter().chain(installed(|plugin_id| Manage::Update(Some(plugin_id)))).collect()
+            }
+            "remove" => installed(Manage::Remove),
+            _ => return None,
+        })
+    }
+
+    /// Enter on a row of [`Self::manage_rows`].
+    fn run_manage(&mut self, manage: Manage) {
+        use crate::plugin_install::Source;
+        let result = match manage {
+            Manage::Add => {
+                self.launcher.input.set("plugins add ");
+                self.refresh_launcher();
+                return;
+            }
+            Manage::Source(text) => {
+                let Ok(source) = Source::parse(&text) else { return };
+                match self.installer.looked.clone() {
+                    Some((looked, Ok(package))) if looked == source => {
+                        self.close_launcher();
+                        self.plugin_install(source, package).map(drop)
+                    }
+                    _ => {
+                        let result = self.plugin_look_up(source);
+                        self.installer_changed();
+                        result
+                    }
+                }
+            }
+            Manage::Configure(plugin_id) => {
+                self.close_launcher();
+                self.plugin_configure(&plugin_id).map(drop)
+            }
+            Manage::Update(plugin_id) => {
+                self.close_launcher();
+                self.plugin_update(plugin_id.as_deref()).map(drop)
+            }
+            Manage::Remove(plugin_id) => {
+                self.close_launcher();
+                self.plugin_remove(&plugin_id).map(drop)
+            }
+        };
+        if let Err(error) = result {
+            self.notify_locally("Plugins", &error, tileception_notify::Urgency::Normal);
+        }
+    }
+
+    /// The installer looked something up or finished: the rows show it.
+    pub(crate) fn installer_changed(&mut self) {
+        if !self.launcher.open || self.launcher.plugin_query.is_some() || self.launcher.prompt.is_some() {
+            return;
+        }
+        self.launcher.entries = self.launcher_entries();
+        self.launcher.selected = self.launcher.selected.min(self.launcher.entries.len().saturating_sub(1));
+        self.schedule_render();
+    }
+
+    /// A plugin's name, else its ID.
+    fn plugin_name(&self, plugin_id: &str) -> String {
+        self.plugins
+            .as_ref()
+            .and_then(|plugins| plugins.routes.iter().find(|route| route.plugin_id == plugin_id))
+            .map(|route| route.info.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| plugin_id.to_string())
+    }
+
+    /// A [`Manage`] row's glyph, title and detail.
+    fn manage_text(&self, manage: &Manage) -> (&'static str, String, String) {
+        use crate::plugin_install::Source;
+        let installer = &self.installer;
+        let source_of =
+            |plugin_id: &str| installer.record.plugins.get(plugin_id).map(|installed| installed.source.clone());
+        match manage {
+            Manage::Add => (
+                glyph::PLUS,
+                "Add a plugin from GitHub".into(),
+                "Type plugins add owner/repo, such as robinvandernoord/tileception-2fas".into(),
+            ),
+            Manage::Source(text) => match Source::parse(text) {
+                Err(error) => (glyph::ALERT, "Not a GitHub repository".into(), error),
+                Ok(_) if installer.busy.is_some() => (
+                    glyph::CLOCK,
+                    format!("{}\u{2026}", installer.busy.as_deref().unwrap_or_default()),
+                    "Wait for it to finish; a notification says when".into(),
+                ),
+                Ok(source) if installer.looking.as_ref() == Some(&source) => (
+                    glyph::GLOBE,
+                    format!("Reading {source}\u{2026}"),
+                    "Fetching its pyproject.toml from GitHub".into(),
+                ),
+                Ok(source) => match &installer.looked {
+                    Some((looked, Ok(package))) if *looked == source => {
+                        let mut detail = Vec::new();
+                        if !package.description.is_empty() {
+                            detail.push(package.description.clone());
+                        }
+                        if !package.needs.is_empty() {
+                            detail.push(format!("needs {}", package.needs.join(", ")));
+                        }
+                        detail.push("runs its code as you".into());
+                        let version =
+                            if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
+                        (glyph::PLUS, format!("Install {}{version}", package.name), detail.join(" \u{b7} "))
+                    }
+                    Some((looked, Err(error))) if *looked == source => {
+                        (glyph::ALERT, format!("Could not read {source}"), format!("{error}; Enter tries again"))
+                    }
+                    _ => (
+                        glyph::GLOBE,
+                        format!("Look up {source}"),
+                        "Reads its pyproject.toml from GitHub; nothing is installed yet".into(),
+                    ),
+                },
+            },
+            Manage::Configure(plugin_id) => (
+                glyph::SETTINGS,
+                format!("Configure {}", self.plugin_name(plugin_id)),
+                format!("Runs its setup in a terminal \u{b7} {}", source_of(plugin_id).unwrap_or_default()),
+            ),
+            Manage::Update(None) => (
+                glyph::RESTART,
+                "Update installed plugins".into(),
+                installer.record.plugins.keys().cloned().collect::<Vec<_>>().join(", "),
+            ),
+            Manage::Update(Some(plugin_id)) => (
+                glyph::RESTART,
+                format!("Update {}", self.plugin_name(plugin_id)),
+                format!("From {}", source_of(plugin_id).unwrap_or_default()),
+            ),
+            Manage::Remove(plugin_id) => (
+                glyph::CLOSE,
+                format!("Remove {}", self.plugin_name(plugin_id)),
+                "Runs its uninstall, then removes the package and its manifest".into(),
+            ),
         }
     }
 
@@ -1400,6 +1589,24 @@ impl Tileception {
         };
         if let Err(error) = result {
             self.notify_locally("Updates", &error, tileception_notify::Urgency::Normal);
+        }
+    }
+
+    /// What Enter does on a [`Manage`] row, for the footer.
+    fn manage_enter(&self, manage: &Manage) -> &'static str {
+        match manage {
+            Manage::Add => "Choose",
+            Manage::Source(text) => {
+                let source = crate::plugin_install::Source::parse(text).ok();
+                match (&self.installer.looked, source) {
+                    _ if self.installer.busy.is_some() => "Wait",
+                    (Some((looked, Ok(_))), Some(source)) if *looked == source => "Install",
+                    _ => "Look up",
+                }
+            }
+            Manage::Configure(_) => "Configure",
+            Manage::Update(_) => "Update",
+            Manage::Remove(_) => "Remove",
         }
     }
 
@@ -2079,6 +2286,7 @@ impl Tileception {
             Some(Entry::Run(_)) => "Run",
             Some(Entry::Place(_) | Entry::Window(_)) => "Open",
             Some(Entry::Command(_)) => "Do it",
+            Some(Entry::Manage(manage)) => self.manage_enter(manage),
             Some(Entry::Ask(_)) => "Ask",
             Some(Entry::Detail { row: Detail::Command | Detail::File, .. }) => "Copy",
             Some(Entry::Detail { .. }) => "Open",
@@ -2200,6 +2408,11 @@ impl Tileception {
                     .get(&format!("{app}.desktop"))
                     .map_or(app.clone(), |desktop| desktop.name.clone());
                 (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Entry::Manage(manage) => {
+                let (glyph, title, detail) = self.manage_text(manage);
+                glyph_box(painter, glyph, if glyph == glyph::ALERT { theme.warning } else { theme.accent });
+                (title, Some(detail))
             }
             Entry::Update(row) => {
                 let (icon, title, detail) = self.update_row_text(*row);

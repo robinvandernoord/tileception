@@ -48,6 +48,15 @@ pub enum Command {
     ReloadConfig,
     /// Rescans plugin manifests and restarts their workers without editing config.
     ReloadPlugins,
+    /// Installs a plugin from a GitHub repository (`owner/repo[@rev]`).
+    AddPlugin(String),
+    /// Updates one installed plugin, or all of them.
+    UpdatePlugins(Option<String>),
+    RemovePlugin(String),
+    /// Runs a plugin's `configure` in a terminal.
+    ConfigurePlugin(String),
+    /// Lists the plugins installed from repositories.
+    InstalledPlugins,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
     Unlock,
@@ -258,6 +267,11 @@ Smart home ([home] in config.toml):
 
 Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
+  plugins add <owner/repo>  install a plugin from GitHub with uv, then set it up
+  plugins list              plugins installed from repositories
+  plugins configure <id>    run a plugin's setup in a terminal
+  plugins update [id]       update one installed plugin, or all of them
+  plugins remove <id>       run a plugin's uninstall and remove it
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -319,7 +333,16 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "plugins" => {
             return match args.as_slice() {
                 ["reload"] => Ok(Command::ReloadPlugins),
-                _ => Err("plugins needs reload".into()),
+                ["add", source] => Ok(Command::AddPlugin((*source).into())),
+                ["update"] => Ok(Command::UpdatePlugins(None)),
+                ["update", plugin_id] => Ok(Command::UpdatePlugins(Some((*plugin_id).into()))),
+                ["remove", plugin_id] => Ok(Command::RemovePlugin((*plugin_id).into())),
+                ["configure", plugin_id] => Ok(Command::ConfigurePlugin((*plugin_id).into())),
+                ["list"] => Ok(Command::InstalledPlugins),
+                _ => {
+                    Err("plugins needs reload, list, add <owner/repo>, update [plugin_id], remove <plugin_id> or configure <plugin_id>"
+                        .into())
+                }
             };
         }
         "unlock" => return Ok(Command::Unlock),
@@ -368,8 +391,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "plugin" => {
             let mut parts = rest.trim().splitn(3, char::is_whitespace);
             let plugin =
-                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin id and a tool")?;
-            let tool = parts.next().ok_or("plugin needs a tool after the plugin id")?;
+                parts.next().filter(|plugin| !plugin.is_empty()).ok_or("plugin needs a plugin plugin_id and a tool")?;
+            let tool = parts.next().ok_or("plugin needs a tool after the plugin plugin_id")?;
             let arguments = match parts.next().map(str::trim).filter(|json| !json.is_empty()) {
                 Some(json) => serde_json::from_str::<serde_json::Value>(json)
                     .ok()
@@ -388,7 +411,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 "mode" => crate::doctor_policy::Mode::parse(tail)
                     .map(Command::DoctorMode)
                     .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
-                "use" if tail.is_empty() => Err("doctor use needs an agent id from the ACP Registry".into()),
+                "use" if tail.is_empty() => Err("doctor use needs an agent plugin_id from the ACP Registry".into()),
                 "use" => Ok(Command::DoctorUse(tail.to_string())),
                 "ask" if tail.is_empty() => Err("doctor ask needs a question".into()),
                 "ask" => Ok(Command::Doctor(Some(tail.to_string()))),
@@ -499,7 +522,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "restore" => match args.first() {
             None => Action::Restore(None),
             Some(id_text) => Action::Restore(Some(tileception_core::WindowId(
-                id_text.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
+                id_text.parse().map_err(|_| "restore takes nothing or a window plugin_id".to_string())?,
             ))),
         },
         "next-tab" => Action::NextTab,
@@ -574,6 +597,11 @@ impl Tileception {
                 self.reload_plugins()?;
                 return Ok("Plugin rediscovery started\n".into());
             }
+            Command::AddPlugin(source) => return self.plugin_add(&source),
+            Command::UpdatePlugins(plugin_id) => return self.plugin_update(plugin_id.as_deref()),
+            Command::RemovePlugin(plugin_id) => return self.plugin_remove(&plugin_id),
+            Command::ConfigurePlugin(plugin_id) => return self.plugin_configure(&plugin_id),
+            Command::InstalledPlugins => return Ok(crate::plugin_install::listing()),
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),

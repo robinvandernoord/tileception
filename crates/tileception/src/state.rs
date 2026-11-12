@@ -195,6 +195,8 @@ pub struct Tileception {
     pub launcher: crate::launcher::Launcher,
     /// Plugins, once started.
     pub plugins: Option<crate::plugins::Host>,
+    /// Installs, updates and removes plugins from repositories.
+    pub installer: crate::plugin_install::Installer,
     pub settings: crate::settings::Settings,
     pub(crate) ui_pressed: Option<crate::ui::PointerTarget>,
     /// A middle click pasted into one of the compositor's own fields: its
@@ -392,6 +394,7 @@ impl Tileception {
             colour_pick: None,
             launcher,
             plugins: None,
+            installer: Default::default(),
             settings: Default::default(),
             ui_pressed: None,
             middle_pasted: false,
