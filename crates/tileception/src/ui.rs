@@ -898,6 +898,27 @@ impl<'a> Painter<'a> {
         (width, height)
     }
 
+    /// One line of text centred in `rect` by the pixels it draws instead of
+    /// its line box, for a short label in a small shape, such as a count in
+    /// a badge: digits have no descenders, so their line box leaves them off
+    /// centre. Returns its size, like [`Painter::text`].
+    pub fn text_on_ink(&mut self, label: &str, rect: Rect, style: Style) -> (f64, f64) {
+        let image = self.state.text.borrow_mut().styled(
+            label,
+            &self.state.theme.font,
+            style.size,
+            style.colour,
+            rect.w.max(1.0) as f32,
+            style.weight,
+            0,
+        );
+        let Some(image) = image else { return (0.0, 0.0) };
+        let (centre_x, centre_y) = image.ink.map(|ink| ink.centre()).unwrap_or((image.width / 2.0, image.height / 2.0));
+        let position = (rect.x + rect.w / 2.0 - centre_x, rect.y + rect.h / 2.0 - centre_y);
+        self.image(&image.buffer, position);
+        (image.width, image.height)
+    }
+
     /// The size text would take, without drawing it.
     pub fn measure(&self, label: &str, max_width: f64, style: Style) -> (f64, f64) {
         self.measure_font(label, max_width, style, &self.state.theme.font)

@@ -48,6 +48,50 @@ pub struct TextImage {
     pub text: Arc<str>,
     /// Where each character is, for selecting text.
     pub glyphs: Arc<[GlyphBox]>,
+    /// What the text covers within the image, if it drew anything.
+    pub ink: Option<Ink>,
+}
+
+/// The part of a [`TextImage`] its glyphs cover, in logical pixels from the
+/// image's top left. The line box also holds room for accents and
+/// descenders, so a label without them sits off its centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ink {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl Ink {
+    pub fn centre(&self) -> (f64, f64) {
+        ((self.left + self.right) / 2.0, (self.top + self.bottom) / 2.0)
+    }
+}
+
+/// The box around the pixels of `pixels` (`width` wide, premultiplied
+/// RGBA) at least half as opaque as the most opaque one, so the faint
+/// edges of anti-aliasing don't widen it to whole pixels on either side.
+fn ink(pixels: &[u8], width: i32, scale: f32) -> Option<Ink> {
+    let peak = pixels.as_chunks::<4>().0.iter().map(|pixel| pixel[3]).max().filter(|&alpha| alpha > 0)?;
+    let width = width.max(1) as usize;
+    let (mut left, mut top, mut right, mut bottom) = (usize::MAX, usize::MAX, 0, 0);
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        if u16::from(pixel[3]) * 2 >= u16::from(peak) {
+            let (x_pos, y_pos) = (index % width, index / width);
+            left = left.min(x_pos);
+            top = top.min(y_pos);
+            right = right.max(x_pos + 1);
+            bottom = bottom.max(y_pos + 1);
+        }
+    }
+    let scale = f64::from(scale);
+    Some(Ink {
+        left: left as f64 / scale,
+        top: top as f64 / scale,
+        right: right as f64 / scale,
+        bottom: bottom as f64 / scale,
+    })
 }
 
 /// A drawn character: its place in the image in logical pixels (the whole
@@ -379,6 +423,7 @@ impl Text {
             .filter_map(|(rect, span)| Some((rect.map(|coord| coord / scale), span.link.clone()?)))
             .collect();
         let (text, glyphs) = glyph_boxes(&buffer, scale, 0.0);
+        let ink = ink(&pixels, pixel_width, scale);
         let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Abgr8888,
@@ -388,7 +433,7 @@ impl Text {
             None,
         );
         let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
-        Some(RichImage { image: TextImage { buffer, width, height, text, glyphs }, links })
+        Some(RichImage { image: TextImage { buffer, width, height, text, glyphs, ink }, links })
     }
 
     /// One line of text, shortened with "..." to fit `max_width` pixels.
@@ -666,6 +711,7 @@ impl Text {
             }
         }
         let (text, glyphs) = glyph_boxes(&buffer, scale, scroll);
+        let ink = ink(&pixels, pixel_width, scale);
         let buffer = MemoryRenderBuffer::from_slice(
             &pixels,
             Fourcc::Abgr8888,
@@ -675,6 +721,41 @@ impl Text {
             None,
         );
         let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
-        Some(TextImage { buffer, width, height, text, glyphs })
+        Some(TextImage { buffer, width, height, text, glyphs, ink })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 4×3 image with `opaque` pixels fully covered and `faint` ones at a
+    /// quarter.
+    fn pixels(opaque: &[(usize, usize)], faint: &[(usize, usize)]) -> Vec<u8> {
+        let mut pixels = vec![0; 4 * 3 * 4];
+        for (&(x_pos, y_pos), alpha) in
+            opaque.iter().map(|place| (place, 255)).chain(faint.iter().map(|place| (place, 64)))
+        {
+            pixels[(y_pos * 4 + x_pos) * 4 + 3] = alpha;
+        }
+        pixels
+    }
+
+    #[test]
+    fn ink_covers_the_drawn_pixels_without_their_faint_edges() {
+        let ink = ink(&pixels(&[(1, 1), (2, 1)], &[(0, 0), (3, 2)]), 4, 1.0).expect("pixels were drawn");
+        assert_eq!(ink, Ink { left: 1.0, top: 1.0, right: 3.0, bottom: 2.0 });
+        assert_eq!(ink.centre(), (2.0, 1.5));
+    }
+
+    #[test]
+    fn ink_is_in_logical_pixels() {
+        let ink = ink(&pixels(&[(1, 1), (2, 2)], &[]), 4, 2.0).expect("pixels were drawn");
+        assert_eq!(ink, Ink { left: 0.5, top: 0.5, right: 1.5, bottom: 1.5 });
+    }
+
+    #[test]
+    fn nothing_drawn_has_no_ink() {
+        assert_eq!(ink(&pixels(&[], &[]), 4, 1.0), None);
     }
 }

@@ -1373,9 +1373,7 @@ impl Tileception {
             let fill = if dnd { (theme.muted, theme.muted) } else { theme.accent_fill() };
             painter.shape(badge, Shape { fill, ..Shape::filled(Colour::TRANSPARENT, (BADGE_H / 2.0) as f32) });
             let ink = if dnd { theme.surface } else { theme.on_accent };
-            // Digits have no descenders: centring the line box leaves them high.
-            let line = Rect::new(badge.x, badge.y + 1.0, badge.w, badge.h);
-            painter.text(&label, line, badge_style(theme, ink).align(Align::Centre));
+            painter.text_on_ink(&label, badge, badge_style(theme, ink));
         }
 
         // Tooltips and previews open towards the layout.
