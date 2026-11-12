@@ -118,7 +118,7 @@ struct Value {
 /// product = power (("*" | "/" | "mod") power)*
 /// power   = unary ("^" power)?
 /// unary   = "-" unary | "+" unary | postfix
-/// postfix = atom "%"* ("of" unary)?
+/// postfix = atom "%"* ("of" power)?
 /// atom    = number | constant | function "(" sum ")" | "(" sum ")"
 /// ```
 struct Parser<'a> {
