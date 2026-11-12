@@ -80,8 +80,6 @@ Report testing in the conversation, the commit or the pull request instead.
     a btrfs root is present.
   - Doctor answers "what changed since Tuesday?" from the apt history.
   - Updates of machines linked through handoff, in the same card.
-  - Possibly: the updates as a tile to zoom into, each source a nested tile
-    sized by its download.
 - Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
   binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
   can answer what changed in a version and when something arrived.
