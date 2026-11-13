@@ -133,8 +133,10 @@ Set `isError: true` for tool failures. Resources are JSON text in
 a local image such as PNG or SVG, or `glyph:<name>` for Tileception's own
 symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
 `home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
-`wifi_off`, `bluetooth`, `bell`, `lock`, `clock`, `play`, `pause`, `stop`,
-`next`, `previous`, `plus`, `minus`, `check` and `close`. Panel blocks, launcher
+`wifi_off`, `bluetooth`, `headphones`, `headset`, `speaker`, `mouse`,
+`keyboard`, `gamepad`, `phone`, `laptop`, `monitor`, `camera`, `bell`, `lock`,
+`clock`, `play`, `pause`, `stop`, `next`, `previous`, `plus`, `minus`, `check`
+and `close`. Panel blocks, launcher
 cards and bar chips only draw `glyph:` icons.
 
 ### Launcher

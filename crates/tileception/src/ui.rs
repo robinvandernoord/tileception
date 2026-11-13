@@ -267,6 +267,17 @@ pub mod glyph {
     /// A wired network: three linked boxes.
     pub const ETHERNET: &str = r#"<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="3" y="16" width="6" height="6" rx="1"/><rect x="15" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>"#;
     pub const BLUETOOTH: &str = r#"<path d="M7 7l10 10-5 5V2l5 5L7 17"/>"#;
+    /// Headphones: a band over two ear cups.
+    pub const HEADPHONES: &str = r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/>"#;
+    /// A headset: the headphones' band and cups with a microphone boom.
+    pub const HEADSET: &str = r#"<path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="12" width="4" height="6" rx="1.5"/><rect x="17" y="12" width="4" height="6" rx="1.5"/><path d="M5 18v.5A3.5 3.5 0 0 0 8.5 22H11"/>"#;
+    /// A loudspeaker box with its woofer and tweeter.
+    pub const SPEAKER: &str =
+        r#"<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><path d="M12 6.5h.01"/>"#;
+    pub const MOUSE: &str = r#"<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>"#;
+    pub const PHONE: &str = r#"<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>"#;
+    pub const GAMEPAD: &str = r#"<path d="M7 7h10a4 4 0 0 1 4 4v3.5a2.5 2.5 0 0 1-4.5 1.5L15 14H9l-1.5 2A2.5 2.5 0 0 1 3 14.5V11a4 4 0 0 1 4-4z"/><path d="M7 9.5v3M5.5 11h3M15.5 10.5h.01M17.5 12h.01"/>"#;
+    pub const LAPTOP: &str = r#"<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>"#;
     pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
     pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
     pub const LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
@@ -343,6 +354,16 @@ pub mod glyph {
             "fan" => FAN,
             "wifi_off" => WIFI_OFF,
             "bluetooth" => BLUETOOTH,
+            "headphones" => HEADPHONES,
+            "headset" => HEADSET,
+            "speaker" => SPEAKER,
+            "mouse" => MOUSE,
+            "keyboard" => KEYBOARD,
+            "gamepad" => GAMEPAD,
+            "phone" => PHONE,
+            "laptop" => LAPTOP,
+            "monitor" => MONITOR,
+            "camera" => CAMERA,
             "bell" => BELL,
             "lock" => LOCK,
             "play" => PLAY,
