@@ -41,6 +41,8 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub updates: crate::updates::UpdatesConfig,
+    /// Events in the bar from .ics files and URLs.
+    pub calendar: crate::calendar::CalendarConfig,
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
@@ -438,7 +440,10 @@ impl Tileception {
         let path = path();
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let config = Config::parse(&text)?;
-        self.apply_config(config)?;
+        let result = self.apply_config(config);
+        // An open Settings follows the file, keeping what was edited there.
+        self.settings_config_changed(&text);
+        result?;
         tracing::info!("config reloaded");
         Ok(())
     }
@@ -457,9 +462,11 @@ impl Tileception {
                 keyboard_config.repeat_delay.unwrap_or(400),
             );
         }
-        if let Some(terminal) = &config.file.general.terminal {
-            self.terminal = terminal.clone();
-        }
+        // As at startup, so removing `terminal` returns to the detected one.
+        self.terminal = std::env::var("TILECEPTION_TERMINAL")
+            .ok()
+            .or_else(|| config.file.general.terminal.clone())
+            .unwrap_or_else(|| crate::state::default_terminal(self.launcher.apps()));
         if self.theme != config.theme {
             self.theme = config.theme.clone();
             self.update_appearance();
@@ -477,6 +484,9 @@ impl Tileception {
             || old.home != self.config.file.home
         {
             self.apply_plugins();
+        }
+        if old.calendar != self.config.file.calendar {
+            self.apply_calendar();
         }
         if republish {
             self.publish_greeter_card();

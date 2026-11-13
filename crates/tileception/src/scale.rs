@@ -303,6 +303,8 @@ impl Tileception {
         if changed {
             self.send_scale_everywhere();
         }
+        // Linked machines learn how much of their edge is left.
+        self.share_edges();
         self.schedule_render();
     }
 

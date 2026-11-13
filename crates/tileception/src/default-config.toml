@@ -12,7 +12,8 @@
 # Pixels between windows and around the screen edge.
 gap = 12
 
-# Length of a zoom or move, in milliseconds.
+# Length of a zoom or move, in milliseconds. At 0, the lock screen holds
+# still too.
 animation_ms = 280
 
 # Smallest scale at which a resting window stays interactive. Larger windows
@@ -52,12 +53,15 @@ autostart = []
 # complete list instead.
 # default_binds = true
 # On an empty desktop (after login, or after closing the last window) show the
-# launcher with a clock: type to search, tap Super for a plain desktop.
+# launcher with a clock: type to search, tap Super for a plain desktop and
+# again to bring it back.
 # welcome = true
 # Map the whole edge proportionally when the pointer crosses to an adjacent
 # screen, including between screens of different sizes. Off: use their
 # positions in the desktop arrangement. Also called Full-edge pointer crossing
-# in Settings. Applies when saved; no special build is needed.
+# in Settings. Applies when saved; no special build is needed. With handoff,
+# it also maps this machine's shared edge onto the whole edge of the other;
+# off, the two edges meet centred, pixel for pixel.
 # stretch_screen_edges = false
 
 [clipboard]
@@ -216,6 +220,15 @@ enabled = false
 # when one cannot be reconnected.
 # reconnect = true
 
+[calendar]
+# Events in the bar from .ics files (~/ is your home folder) and https or
+# webcal addresses: the one on now, or else the next one today, beside the
+# clock, and in its calendar the coming week and the days with events.
+# Nothing is read or shown without sources.
+# sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
+# Minutes between reading them again.
+# refresh_minutes = 15
+
 [shell]
 # Each part of the desktop is Tileception's own ("builtin"), switched off
 # ("none"), or a command that runs in its place. Changes apply on save.
@@ -330,8 +343,12 @@ tray_max_icons = 3
 # Handoff: share this mouse, keyboard and clipboard with other Tileception
 # machines on the network that know the same passphrase. When one appears,
 # drag its card to the edge of the screen where it stands; the pointer then
-# crosses there once its user has placed this machine too. Ctrl+Super+Escape
-# brings input back. Locking pauses sharing until you resume it on the card.
+# crosses there once its user has placed this machine too, where no other
+# screen of either machine lies beyond the edge, and not while a game or
+# other program locks the pointer. Ctrl+Super+Escape brings input back. Each
+# keyboard types with its own machine's layout wherever it types, and the
+# shortcuts of the machine the pointer is on apply, also in a window from
+# another machine. Locking pauses sharing until you resume it on the card.
 # Pick several random words for the passphrase: guesses are slowed down, but
 # a short phrase can still be guessed. Nothing listens until this is enabled
 # with a passphrase. `tileception msg handoff` shows what is connected.
@@ -438,7 +455,7 @@ repeat_rate = 30
 #   brightness up|down    the screen's backlight; brightness set <n>
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
-#   desktop               show or hide the Desktop tile
+#   desktop               clear the desk, or bring back what it cleared
 #   colour-scheme <s>     tell apps to use dark, light or default styles,
 #                         until this file is next loaded
 #   reload                reload this file
