@@ -978,7 +978,8 @@ impl Tileception {
                         theme.border,
                         3.0,
                     );
-                    painter.image_scaled(&shot.preview, shot.preview_size, corner, (width, height));
+                    let pixels = (f64::from(shot.preview_size.0.max(1)), f64::from(shot.preview_size.1.max(1)));
+                    painter.image_scaled(&shot.preview, pixels, Rect::new(corner.0, corner.1, width, height));
                 });
                 let doctor = match shot.doctor {
                     None => "",

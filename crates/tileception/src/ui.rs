@@ -823,9 +823,6 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// An image rasterised at the output's scale, at its own size; or a
-    /// picture of `size` pixels drawn `size` logical pixels large, so it is
-    /// enlarged with the scale.
     /// The whole of a buffer of this many pixels, scaled into `rect`.
     pub fn image_scaled(&mut self, buffer: &MemoryRenderBuffer, pixels: (f64, f64), rect: Rect) {
         if self.alpha <= 0.0 {
@@ -848,6 +845,9 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// An image rasterised at the output's scale, at its own size; or a
+    /// picture of `size` pixels drawn `size` logical pixels large, so it is
+    /// enlarged with the scale.
     pub fn image_sized(&mut self, buffer: &MemoryRenderBuffer, position: (f64, f64), size: Option<(i32, i32)>) {
         if self.alpha <= 0.0 {
             return;
@@ -873,36 +873,6 @@ impl<'a> Painter<'a> {
             alpha,
             src,
             size,
-            smithay::backend::renderer::element::Kind::Unspecified,
-        ) {
-            self.layers.push(OutputElement::Memory(element));
-        }
-    }
-
-    /// A whole picture of `pixels` drawn `shown` logical pixels large,
-    /// scaled up or down to that size.
-    pub fn image_scaled(
-        &mut self,
-        buffer: &MemoryRenderBuffer,
-        pixels: (i32, i32),
-        position: (f64, f64),
-        shown: (f64, f64),
-    ) {
-        if self.alpha <= 0.0 {
-            return;
-        }
-        let scale = self.state.scale;
-        let position = (((position.0 + self.offset.0) * scale).round(), ((position.1 + self.offset.1) * scale).round());
-        let alpha = (self.alpha < 1.0).then_some(self.alpha);
-        let src = smithay::utils::Rectangle::from_size((f64::from(pixels.0.max(1)), f64::from(pixels.1.max(1))).into());
-        let size = (((shown.0 * scale).round() as i32).max(1), ((shown.1 * scale).round() as i32).max(1));
-        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
-            self.renderer,
-            position,
-            buffer,
-            alpha,
-            Some(src),
-            Some(size.into()),
             smithay::backend::renderer::element::Kind::Unspecified,
         ) {
             self.layers.push(OutputElement::Memory(element));
