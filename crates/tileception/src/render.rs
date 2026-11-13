@@ -27,7 +27,7 @@ use smithay::{
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
 };
-use tileception_core::{DropTarget, Node, NodeId, Rect, WindowId, WindowRole};
+use tileception_core::{Node, NodeId, Rect, WindowId, WindowRole};
 
 use crate::{
     cursor::Cursor,
@@ -327,8 +327,6 @@ impl Tileception {
 
         // Then the window being dragged, then where it would land.
         if let Some(drag) = self.move_drag.filter(|drag| !drag.free) {
-            // Above the picture, which is under the pointer as it reaches the zone.
-            elements.extend(self.float_zone_elements(renderer, drag.target));
             let rect = Rect::new(
                 self.pointer.x - drag.grab.0 * drag.size.0,
                 self.pointer.y - drag.grab.1 * drag.size.1,
@@ -361,37 +359,6 @@ impl Tileception {
         // Bottommost: desktop widgets and wallpaper.
         elements.extend(self.layer_elements(renderer, &[Layer::Bottom, Layer::Background]));
         (elements, scene)
-    }
-
-    /// The zone that floats a dragged window, lit while the pointer is on it.
-    fn float_zone_elements(&self, renderer: &mut GlesRenderer, target: Option<DropTarget>) -> Vec<OutputElement> {
-        let zone = self.world.float_zone();
-        let lit = target == Some(DropTarget::Float);
-        let mut painter = crate::ui::Painter::new(self, renderer);
-        let theme = painter.theme();
-        let radius = (zone.h / 2.0) as f32;
-        let base = theme.surface_raised.alpha(0.96);
-        painter.shape(
-            zone,
-            Shape {
-                radius,
-                fill: (base, base),
-                border_width: if lit { 2.0 } else { 1.0 },
-                border: if lit { theme.accent } else { theme.accent.alpha(0.5) },
-                glow_radius: 18.0,
-                glow: Colour([0.0, 0.0, 0.0, 0.3]),
-                ..Default::default()
-            },
-        );
-        if lit {
-            let tint = theme.accent.alpha(0.24);
-            painter.shape(zone, Shape { radius, fill: (tint, tint), ..Default::default() });
-        }
-        let ink = theme.text;
-        let style = crate::ui::Style::new(theme.font_size, ink).align(crate::ui::Align::Centre);
-        painter.glyph(crate::ui::glyph::WINDOW, Rect::new(zone.x + 12.0, zone.y, 24.0, zone.h), 18, ink);
-        painter.text("Float here", Rect::new(zone.x + 36.0, zone.y, zone.w - 48.0, zone.h), style);
-        painter.finish()
     }
 
     /// The context area's windows, tabs and tiles, topmost first: cut to the

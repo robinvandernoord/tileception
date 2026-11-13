@@ -95,8 +95,6 @@ const MIN_FLOAT: f64 = 48.0;
 const EDGE_BAND: f64 = 0.25;
 /// Pixels from the edge of the framed space that dock beside all of it.
 const SCREEN_EDGE_BAND: f64 = 16.0;
-/// The size of the zone that floats a dragged window, in pixels.
-const FLOAT_ZONE: (f64, f64) = (220.0, 44.0);
 
 #[derive(Debug, Clone, Copy)]
 struct Float {
@@ -571,20 +569,9 @@ impl World {
         out
     }
 
-    /// The zone at the top of the area that floats a tiled window dropped
-    /// on it, shown while one is dragged.
-    pub fn float_zone(&self) -> Rect {
-        let area = self.frame_area();
-        let (width, height) = (FLOAT_ZONE.0.min(area.w * 0.5), FLOAT_ZONE.1.min(area.h * 0.2));
-        Rect::new(area.x + (area.w - width) / 2.0, area.y + SCREEN_EDGE_BAND + 12.0, width, height)
-    }
-
     /// Where `dragged` would land if let go at screen `point`.
     pub fn drop_target(&self, point: Point, dragged: WindowId, view: Rect) -> Option<DropTarget> {
         let area = self.frame_area();
-        if !self.tree.is_floating(dragged) && self.float_zone().contains(point) {
-            return Some(DropTarget::Float);
-        }
         let transform = self.xform(view);
         // Right at the edge of the framed space: dock beside all of it.
         if !self.overview && area.contains(point) {
@@ -646,7 +633,7 @@ impl World {
                 Some(part.inset(half_gap))
             }
             DropTarget::Tab(tile) => self.node_rect(tile, view).map(|rect| rect.inset(half_gap)),
-            DropTarget::Float => Some(self.default_float_rect()),
+            DropTarget::Float => self.node_rect(self.tree.desktop(), view).map(|rect| rect.inset(half_gap)),
         }
     }
 
@@ -2112,21 +2099,6 @@ mod tests {
         world.restore(WindowId(1), 1.0);
         let rect = world.float_rect(WindowId(1)).unwrap();
         assert!(half.contains_rect(&rect), "{rect:?} on {half:?}");
-    }
-
-    #[test]
-    fn dropping_a_tile_on_the_float_zone_floats_it() {
-        let mut world = four();
-        let zone = world.float_zone();
-        let point = Point::new(zone.x + zone.w / 2.0, zone.y + zone.h / 2.0);
-        let view = world.view(1e9);
-        assert_eq!(world.drop_target(point, WindowId(2), view), Some(DropTarget::Float));
-        assert!(world.drop_preview(DropTarget::Float, view).is_some(), "previews where it will float");
-        world.apply_drop(WindowId(2), DropTarget::Float, 0.0);
-        assert!(world.tree().is_floating(WindowId(2)));
-        world.tree().check_invariants();
-        // A floating window over the zone is just moving.
-        assert_ne!(world.drop_target(point, WindowId(2), world.view(1e9)), Some(DropTarget::Float));
     }
 
     #[test]
