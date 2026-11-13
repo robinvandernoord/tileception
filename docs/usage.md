@@ -270,11 +270,27 @@ word navigation and clipboard shortcuts work. Choose **Review** to see the
 exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
+"Include a screenshot of the screen" starts unchecked too. Checking it takes a
+screenshot of the screen under the dialog, without the dialog, and shows a
+preview of it with its size; unchecking it removes the screenshot again. A
+GitHub link cannot carry a picture, so **Open in browser** saves the
+screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
+folder (usually `/tmp`, readable only by you, replacing the last one) and puts
+it on the clipboard, and the issue body gets a hidden note where it belongs:
+press **Ctrl+V** there to attach it, or drag the file into the issue. What you
+had copied (up to 32 MB) comes back to the clipboard once the screenshot is
+pasted, or after two minutes (only the latter with clipboard persistence on,
+whose helper serves the paste), unless you copy something else first; another
+machine's clipboard shared through handoff stays replaced. Nothing is copied
+or saved before you open the issue.
 Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
 "Include the last Doctor question and answer", also unchecked. Checking it
-adds your last question and the agent's answer, shortened if long.
+adds your last question and the agent's answer, shortened if long. The
+screenshot leaves the Doctor panel out unless this option is checked, since the
+panel shows more than the last exchange; changing the option takes the
+screenshot again.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the
