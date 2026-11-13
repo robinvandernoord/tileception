@@ -491,8 +491,10 @@ fingers move. `disable_while_typing` suppresses touchpad input while typing.
 `speed` accepts values from -1 to 1; positive values make the pointer faster.
 `swipe_distance` is the distance in pixels before a swipe binding runs and must
 be greater than zero. Swipes and pinches that move around move the view with
-your fingers, and letting go early cancels them; set `follow_fingers = false`
-to have them run all at once instead.
+your fingers, and letting go early cancels them. Swipes bound to `resize` drag
+the divider as far as your fingers go, whatever amount the binding gives; the
+amount only says which way. Set `follow_fingers = false` to have all of them
+run all at once instead, a resize then moving the divider by its amount.
 
 For physical clicks, set `click_method = "areas"` to use button areas, or
 `click_method = "clickfinger"` to choose the button by finger count. Leaving it

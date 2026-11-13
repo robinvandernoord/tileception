@@ -675,9 +675,16 @@ of the Settings draft:
 | Three-finger pinch in / out     | Zoom one level out / in                        |
 | Four-finger swipe up / down     | Show the overview / zoom to the focused window |
 | Four-finger swipe left / right  | Go forward / back through previous views       |
+| **Super** + three-finger swipe  | Move the focused window that way               |
+| **Super** + four-finger swipe   | Drag the divider beside the focused window     |
 
 Swipes move the layout with your fingers, so swiping left brings the window on
-the right into focus.
+the right into focus. Letting go before a swipe has gone far enough goes back.
+
+Holding **Super** manages windows instead: a three-finger swipe moves the
+focused window past its neighbour, like **Super+Shift** and an arrow key, and a
+four-finger swipe moves the divider next to it as far as your fingers go, like
+dragging it with the pointer. The divider stays where you let go.
 
 You can also hold **Super** and pinch with two fingers to zoom out or in.
 Gestures without a Tileception binding are passed to the application, so an
