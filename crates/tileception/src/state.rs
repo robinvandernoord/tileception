@@ -1128,7 +1128,7 @@ pub(crate) fn shell_word(value: &str) -> String {
 /// The terminal when none is configured: the user's choice in
 /// `xdg-terminals.list`, else the first of these that is installed, else
 /// any installed terminal emulator.
-fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
+pub(crate) fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
     if let Some(chosen) = apps.preferred_terminal() {
         return chosen.exec.clone();
     }
