@@ -104,7 +104,7 @@ impl Tileception {
         self.power_menu = None;
         self.launcher.open = false;
         self.settings_release();
-        self.notifications.open = false;
+        self.close_notifications();
         self.move_drag = None;
         self.resize_drag = None;
         self.gap_drag = None;

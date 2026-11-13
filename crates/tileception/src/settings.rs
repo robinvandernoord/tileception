@@ -1100,7 +1100,7 @@ impl Tileception {
         if !self.settings.open {
             return;
         }
-        self.notifications.open = false;
+        self.close_notifications();
         self.settings.page = Some(page);
         self.settings.query.clear();
         self.settings.search_input.clear();
@@ -1136,7 +1136,7 @@ impl Tileception {
         self.power_menu = None;
         self.close_tray();
         self.close_launcher();
-        self.notifications.open = false;
+        self.close_notifications();
         if !self.settings.error {
             self.settings.message.clear();
         }
