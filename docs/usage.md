@@ -174,7 +174,10 @@ show. Press it again to bring them back exactly where they were. Windows you had
 minimized, and windows closed in the meantime are left out.
 
 While the desk is clear you can still open windows, or restore single ones
-from the strip. The next **Super+D** brings the rest back around them.
+from the strip. While any window is on the desk, **Super+D** clears it, and
+these windows join the ones waiting; once the desk is empty, **Super+D**
+brings them all back together. Windows you minimize yourself with **Super+H**
+stay minimized.
 
 Hold **Super+D** instead of tapping it to peek: windows fade to outlines over
 the dashboard for as long as you hold it, and come back when you let go. The desk is not
@@ -190,6 +193,13 @@ dashboard behind them. With nothing typed in the welcome screen, **Escape**
 brings back a desk that **Super+D** cleared, like pressing it again. The
 dashboard needs room beside the welcome screen; on a narrow screen it does not
 show.
+
+Drag an item on the welcome screen's dashboard to move it, within its column
+or to the other one: the others make room while you drag, and letting go puts
+it there. Drag a picture or plugin surface by its title; a card from anywhere
+but its buttons. The order is saved in
+`~/.local/state/tileception/dashboard-order.toml`; delete it to go back to the
+plugins' order.
 
 ### Floating a window by dragging
 

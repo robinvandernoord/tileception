@@ -31,15 +31,18 @@ struct HeldKey {
 }
 
 impl Tileception {
-    /// Clears the desk, or brings back what clearing it took away. On a
-    /// split screen this is every area's desk: when any of them is clear,
-    /// all come back; otherwise all are cleared.
+    /// Clears the desk while any window is on it, or else brings back what
+    /// clearing it took away. On a split screen this is every area's desk:
+    /// while a window is on any of them, all are cleared; otherwise all
+    /// come back. Windows opened on a cleared desk are cleared with the
+    /// rest and come back with them; those minimized by hand stay.
     pub fn toggle_desk(&mut self) {
         if let Some(window_id) = self.fullscreen {
             self.set_fullscreen(window_id, false);
         }
         let now = self.now();
-        let clearing = !self.desk_cleared();
+        let clearing = (0..self.area_count())
+            .any(|index| self.with_local_area(index, |state| state.world.desk_has_windows()) == Some(true));
         let mut changed = false;
         for index in 0..self.area_count() {
             let toggled = self.with_local_area(index, |state| {
