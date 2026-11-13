@@ -159,6 +159,8 @@ Report testing in the conversation, the commit or the pull request instead.
 - Window rules for saved views; views stay purely about the camera.
 - Updates of machines linked through handoff in the update manager: what
   waits on each, and installing there from here.
+- The update manager in the Super+X power menu, such as a "Restart and
+  install" action; updates stay in the update manager.
 - Picking Doctor's agent during `tileception-setup`.
 - Bindings that repeat while held, pass through to the app or work while
   locked (beyond the media keys); click-to-kill.
