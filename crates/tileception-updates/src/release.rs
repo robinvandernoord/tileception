@@ -13,6 +13,9 @@ pub struct System {
     pub version: String,
     /// `noble`.
     pub codename: String,
+    /// The Ubuntu release the package archive is for: `noble`, also on
+    /// Linux Mint, whose own codename is `zena`.
+    pub archive: String,
 }
 
 pub fn parse_system(text: &str) -> System {
@@ -27,6 +30,7 @@ pub fn parse_system(text: &str) -> System {
         pretty: field("PRETTY_NAME"),
         version: field("VERSION_ID"),
         codename: field("VERSION_CODENAME"),
+        archive: Some(field("UBUNTU_CODENAME")).filter(|name| !name.is_empty()).unwrap_or(field("VERSION_CODENAME")),
     }
 }
 
@@ -185,7 +189,6 @@ pub struct Readiness {
     pub third_party: Vec<String>,
     /// Running on battery; none on a desktop.
     pub on_battery: Option<bool>,
-    pub snapshots: bool,
     pub restart: bool,
 }
 
@@ -251,15 +254,6 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
         Some(false) => list.push(check("On mains power", "The charger is connected.".into(), State::Ready)),
         None => {}
     }
-    list.push(if readiness.snapshots {
-        check("Snapshot", "Timeshift is installed: take a snapshot before you start.".into(), State::Optional)
-    } else {
-        check(
-            "Snapshot",
-            "Timeshift is not installed. Optional, but a snapshot is the only undo.".into(),
-            State::Optional,
-        )
-    });
     list
 }
 
@@ -284,6 +278,7 @@ mod tests {
                 pretty: "Ubuntu 24.04.5 LTS".into(),
                 version: "24.04".into(),
                 codename: String::new(),
+                archive: String::new(),
             }
         );
     }

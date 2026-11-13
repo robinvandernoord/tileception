@@ -660,11 +660,12 @@ impl Tileception {
                 }
             }
             Page::Settings => {
-                rows.push(Row::Heading("Automatic updates".into(), "through unattended-upgrades".into()));
+                let tool = updates.automatic.tool.name();
+                rows.push(Row::Heading("Automatic updates".into(), format!("through {tool}")));
                 if updates.automatic.available {
                     rows.push(Row::Automatic);
                 } else {
-                    rows.push(Row::Text("unattended-upgrades is not installed, so nothing updates by itself.".into()));
+                    rows.push(Row::Text(format!("{tool} is not installed, so nothing updates by itself.")));
                 }
                 let mirrors = &updates.mirrors;
                 let note = mirrors.current.clone().unwrap_or_else(|| "none found in the package sources".into());
@@ -1908,7 +1909,7 @@ impl Tileception {
                             if automatic.enabled { theme.accent } else { theme.muted },
                         );
                         painter.text(
-                            &format!("{state}: installs updates by itself, on apt's daily timer"),
+                            &format!("{state}: installs updates by itself, once a day"),
                             Rect::new(rect.x + 34.0, rect.y + 5.0, rect.w - 130.0, 20.0),
                             body,
                         );

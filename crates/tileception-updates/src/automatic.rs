@@ -1,16 +1,41 @@
 //! Automatic updates through `unattended-upgrades`, where the distribution
-//! has it. Tileception only turns its periodic run on or off and says what
-//! it covers; the schedule stays apt's own timers.
+//! has it, or through Update Manager's automation on Linux Mint.
+//! Tileception only turns the periodic run on or off and says what it
+//! covers; the schedule stays the system's own timers.
 
-use crate::{Files, Runner};
+use crate::{Files, Runner, mint};
 
 /// The file apt's periodic run reads its switches from.
 pub const CONFIG: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
 
+/// What runs the automatic updates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tool {
+    #[default]
+    Unattended,
+    /// Update Manager's automation on Linux Mint.
+    Mint,
+}
+
+impl Tool {
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Unattended => "unattended-upgrades",
+            Tool::Mint => "Update Manager",
+        }
+    }
+
+    /// The one found here: Mint's own where it is installed.
+    pub fn here(files: &Files) -> Tool {
+        if mint::available(files) { Tool::Mint } else { Tool::Unattended }
+    }
+}
+
 /// How automatic updates are set up here.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Automatic {
-    /// `unattended-upgrades` is installed.
+    pub tool: Tool,
+    /// The tool is installed.
     pub available: bool,
     /// Its periodic run is on.
     pub enabled: bool,
@@ -74,6 +99,15 @@ pub fn parse(dump: &str, distro: &str, codename: &str) -> (bool, Vec<String>) {
 
 /// Reads how automatic updates are set up.
 pub fn read(runner: &dyn Runner, files: &Files) -> Automatic {
+    let unattended = read_unattended(runner, files);
+    if Tool::here(files) == Tool::Mint {
+        return mint::read(runner, files, unattended);
+    }
+    unattended
+}
+
+/// Read the previously managed backend even when Mint automation is installed.
+fn read_unattended(runner: &dyn Runner, files: &Files) -> Automatic {
     let available = files.exists("/usr/bin/unattended-upgrade");
     if !available {
         return Automatic::default();
@@ -94,7 +128,7 @@ pub fn read(runner: &dyn Runner, files: &Files) -> Automatic {
     };
     let dump = runner.run("apt-config", &["dump"]).unwrap_or_default();
     let (enabled, covers) = parse(&dump, &distro, &field("VERSION_CODENAME"));
-    Automatic { available, enabled, covers }
+    Automatic { tool: Tool::Unattended, available, enabled, covers }
 }
 
 /// The switches file with the periodic run turned on or off, keeping what

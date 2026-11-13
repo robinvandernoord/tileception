@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 
-use crate::{Files, apps, apt, automatic, firmware, mirrors, snapshots};
+use crate::{Files, apps, apt, automatic, firmware, mint, mirrors};
 
 /// Where the helper is installed. The polkit policy names this path.
 pub const HELPER: &str = "/usr/libexec/tileception-updates-helper";
@@ -42,7 +42,7 @@ pub enum Task {
     Firmware(Vec<String>),
     /// Hold these packages at their version, or let them update again.
     Hold { names: Vec<String>, hold: bool },
-    /// Turn the periodic run of `unattended-upgrades` on or off.
+    /// Turn automatic updates on or off, retiring unattended-upgrades on Mint.
     Automatic(bool),
     /// Use this mirror for the release and its updates, then refresh.
     Mirror(String),
@@ -167,7 +167,7 @@ impl Task {
                 command.extend(names.iter().cloned());
                 vec![command]
             }
-            // The file is written by `run`; nothing else runs.
+            // Backend-specific changes are handled by `run`.
             Task::Automatic(_) => Vec::new(),
             Task::Mirror(url) => {
                 if !mirrors::valid(url) {
@@ -360,18 +360,67 @@ fn replace_source(path: &std::path::Path, text: &str) -> Result<(), String> {
 pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
     let commands = task.commands()?;
     let files = Files::default();
-    if let Task::Automatic(enable) = task {
-        let text = automatic::rewrite(&files.read(automatic::CONFIG).unwrap_or_default(), *enable);
+    let write_automatic = |enable, line: &mut dyn FnMut(&str)| -> Result<(), String> {
+        let existing = match std::fs::read_to_string(files.path(automatic::CONFIG)) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("could not read {}: {error}", automatic::CONFIG)),
+        };
+        let text = automatic::rewrite(existing.as_deref().unwrap_or_default(), enable);
         line(&format!("Writing {}", automatic::CONFIG));
-        return std::fs::write(files.path(automatic::CONFIG), text)
-            .map_err(|error| format!("could not write {}: {error}", automatic::CONFIG));
+        if existing.is_some() {
+            replace_source(&files.path(automatic::CONFIG), &text)
+        } else {
+            std::fs::write(files.path(automatic::CONFIG), text)
+                .map_err(|error| format!("could not write {}: {error}", automatic::CONFIG))
+        }
+    };
+    if let Task::Automatic(enable) = task {
+        if automatic::Tool::here(&files) == automatic::Tool::Mint {
+            let config = files.path(automatic::CONFIG);
+            let previous = match std::fs::read_to_string(&config) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("could not read {}: {error}", automatic::CONFIG)),
+            };
+            let mut retirement_attempted = false;
+            let result = mint::set(&crate::System, &files, *enable, line, |line| {
+                retirement_attempted = true;
+                write_automatic(false, line)?;
+                let dump = crate::Runner::run(&crate::System, "apt-config", &["dump"])?;
+                if automatic::parse(&dump, "", "").0 {
+                    return Err("unattended-upgrades remains enabled by another APT configuration file".into());
+                }
+                Ok(())
+            });
+            if let Err(error) = &result
+                && *enable
+                && retirement_attempted
+            {
+                line(&format!("Putting {} back", automatic::CONFIG));
+                let restored = match previous {
+                    Some(text) if std::fs::read_to_string(&config).ok().as_ref() == Some(&text) => Ok(()),
+                    Some(text) => replace_source(&config, &text),
+                    None => match std::fs::remove_file(&config) {
+                        Ok(()) => Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        Err(error) => Err(format!("could not remove {}: {error}", automatic::CONFIG)),
+                    },
+                };
+                if let Err(failure) = restored {
+                    return Err(format!("{error}; restoring unattended-upgrades failed: {failure}"));
+                }
+            }
+            return result;
+        }
+        return write_automatic(*enable, line);
     }
     // The sources as they were, to put back when the new mirror fails.
     let mut restore: Vec<(&str, String)> = Vec::new();
     let result = (|| {
         if let Task::Mirror(url) = task {
             let current = mirrors::current(&files).ok_or("no Ubuntu mirror was found in the package sources")?;
-            for path in [mirrors::SOURCES, mirrors::LIST] {
+            for path in mirrors::FILES {
                 let Some(text) = files.read(path) else { continue };
                 let changed = mirrors::rewrite(&text, &current, url);
                 if changed != text {
@@ -380,12 +429,6 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                     restore.push((path, text));
                 }
             }
-        }
-        match task {
-            Task::Install(names) | Task::InstallKeeping { names, .. } => snapshot(names, line),
-            // No names would mean a full upgrade to the snapshot.
-            Task::Kernels { install, .. } if !install.is_empty() => snapshot(install, line),
-            _ => {}
         }
         // Read before the install, which marks what it names as installed by hand.
         let automatic = match task {
@@ -480,43 +523,6 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
         }
     }
     result
-}
-
-/// Takes a snapshot before an install that brings a kernel or Mesa, where
-/// a tool for it is present. A failed snapshot is said, not fatal: it must
-/// not keep security updates out.
-fn snapshot(names: &[String], line: &mut dyn FnMut(&str)) {
-    let Some(tool) = snapshots::tool() else { return };
-    let names = if names.is_empty() {
-        let simulation = program(&["apt-get".into(), "-s".into(), "dist-upgrade".into()])
-            .and_then(|mut command| command.output().ok())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_default();
-        apt::parse_simulation(&simulation).into_iter().map(|update| update.name).collect()
-    } else {
-        names.to_vec()
-    };
-    let Some(reason) = snapshots::reason(&names) else { return };
-    line(&format!("Taking a snapshot with {} before {reason}", tool.name()));
-    for arguments in tool.commands(reason, &snapshots::stamp()) {
-        line(&format!("$ {}", arguments.join(" ")));
-        let output = program(&arguments).and_then(|mut command| command.output().ok());
-        let Some(output) = output else {
-            line(&format!("W: could not start {}; installing without a snapshot", arguments[0]));
-            return;
-        };
-        for printed in String::from_utf8_lossy(&output.stdout).lines() {
-            line(printed);
-        }
-        if !output.status.success() {
-            line(&format!("W: {}; installing without a snapshot", reason_of(&output.stderr)));
-            return;
-        }
-    }
-}
-
-fn reason_of(errors: &[u8]) -> String {
-    reason(&String::from_utf8_lossy(errors))
 }
 
 #[cfg(test)]

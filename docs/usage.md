@@ -498,13 +498,6 @@ when no fallback is installed, and when the queue would leave none.
 Leftover headers, and leftover modules and tools, of kernels that are gone are
 listed apart and queued per kind. Nothing on this page runs `autoremove`.
 
-Where Timeshift or Snapper is installed, or the root file system is btrfs,
-Tileception takes a snapshot before installing a kernel or Mesa update and
-before a release upgrade: with Timeshift or Snapper when one is there, or else
-as a read-only btrfs snapshot of `/` in `/.tileception-snapshots`. A failed
-snapshot is said in the log and the install goes ahead, so that security
-updates are never kept out; a release upgrade is not started without one.
-
 While a kernel or firmware update waits, the power menu shows **Restart and
 install** (key **N**) beside **Restart**: it installs everything that waits,
 firmware included, and restarts once that has succeeded.
@@ -512,15 +505,20 @@ firmware included, and restarts once that has succeeded.
 The Settings page turns automatic updates on and off. Tileception does not
 schedule anything itself: the switch turns the periodic run of
 `unattended-upgrades` on or off in `/etc/apt/apt.conf.d/20auto-upgrades`, and
-the row says what it covers, such as security updates or Ubuntu Pro. Where
-`unattended-upgrades` is not installed, the row says so.
+the row says what it covers, such as security updates or Ubuntu Pro. On
+Linux Mint it switches Update Manager's automatic upgrades timer instead,
+preserving its system blacklist, and covers what Update Manager installs: every update
+but its blacklist, or fewer when `/etc/mintupdate-automatic-upgrades.conf`
+narrows it. Where neither is installed, the row says so.
 
 Below that, the page shows the Ubuntu mirror in use. **Test mirrors** asks the
 mirror in use, the main archive and the mirrors Ubuntu lists for your country
 for a small file and part of a larger one, and lists them fastest first with
 their speed, how long they took to answer and how far behind the main archive
 they are. **Use** switches to one: it rewrites the Ubuntu entries of the
-package sources, leaving the security pocket alone, and refreshes the lists;
+package sources, leaving the security pocket alone, and refreshes the lists.
+On Linux Mint these are in `official-package-repositories.list`, beside Mint's
+own mirror, which stays as it is;
 when that refresh fails, the old sources are put back. Once a day the mirror
 in use is tested by itself, and the page and the window's sidebar warn when it
 cannot be reached or is a day or more behind.

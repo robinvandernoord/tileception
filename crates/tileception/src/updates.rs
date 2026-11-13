@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
 pub use tileception_updates::task::Task;
 use tileception_updates::{
-    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, snapshots, task,
+    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, task,
 };
 use zeroize::Zeroizing;
 
@@ -91,8 +91,6 @@ pub struct Scan {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    /// What takes a snapshot before kernel, Mesa and release upgrades.
-    snapshots: Option<snapshots::Tool>,
     automatic: automatic::Automatic,
     /// The mirror in use, from the package sources.
     mirror: Option<String>,
@@ -174,7 +172,6 @@ pub struct Updates {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    snapshots: Option<snapshots::Tool>,
     /// The Flatpak and Snap updates last listed.
     apps: Vec<apt::Update>,
     /// Flatpak and Snap were asked at least once, so `apps` says what
@@ -691,7 +688,6 @@ impl Tileception {
         self.updates.third_party = scan.third_party;
         self.updates.free = scan.free;
         self.updates.track = scan.track;
-        self.updates.snapshots = scan.snapshots;
         self.updates.automatic = scan.automatic;
         self.updates.mirrors.current = scan.mirror;
         if scan.mirror_check.is_some() {
@@ -1087,7 +1083,6 @@ impl Tileception {
             security: totals.security,
             third_party: self.updates.third_party.clone(),
             on_battery: self.battery.reading.map(|reading| reading.charge == crate::battery::Charge::Discharging),
-            snapshots: self.updates.snapshots.is_some(),
             restart: self.updates.snapshot.restart,
         })
     }
@@ -1101,26 +1096,7 @@ impl Tileception {
             return Err(format!("not ready for {name}: see `updates open release`"));
         }
         let sudo = if task::is_root() { "" } else { "sudo " };
-        // A snapshot first, where there is something to take it with; the
-        // upgrade waits for it and is not started when it fails.
-        let snapshot = match self.updates.snapshots {
-            Some(tool) => {
-                let commands: Vec<String> = tool
-                    .commands(&format!("the upgrade to {name}"), &snapshots::stamp())
-                    .iter()
-                    .map(|command| format!("{sudo}{}", shell_words(command)))
-                    .collect();
-                format!(
-                    "echo 'Taking a snapshot with {} first.'; {{ {}; }} || {{ echo 'The snapshot failed; the upgrade was not started.'; echo 'Press Enter to close.'; read -r _; exit 1; }}; ",
-                    tool.name(),
-                    commands.join(" && ")
-                )
-            }
-            None => String::new(),
-        };
-        self.run_in_terminal(&format!(
-            "{snapshot}{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"
-        ))
+        self.run_in_terminal(&format!("{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"))
     }
 
     pub(crate) fn updates_command(&mut self, command: UpdatesCommand) -> Result<String, String> {
@@ -1190,7 +1166,7 @@ impl Tileception {
             UpdatesCommand::Automatic(None) => return Ok(self.updates_automatic_status()),
             UpdatesCommand::Automatic(Some(enable)) => {
                 if !self.updates.automatic.available {
-                    return Err("unattended-upgrades is not installed".into());
+                    return Err(format!("{} is not installed", self.updates.automatic.tool.name()));
                 }
                 self.updates_start(Task::Automatic(enable))?;
             }
@@ -1259,7 +1235,7 @@ impl Tileception {
     fn updates_automatic_status(&self) -> String {
         let automatic = &self.updates.automatic;
         if !automatic.available {
-            return "unattended-upgrades is not installed\n".into();
+            return format!("{} is not installed\n", automatic.tool.name());
         }
         let state = if automatic.enabled { "on" } else { "off" };
         format!("automatic updates are {state}; they cover {}\n", automatic.covers.join(", "))
@@ -1457,21 +1433,6 @@ pub(crate) fn install_tasks(chosen: &[&apt::Update], all_apt: bool) -> Vec<Task>
     tasks
 }
 
-/// A command for a shell, each word quoted where it needs it.
-fn shell_words(words: &[String]) -> String {
-    words
-        .iter()
-        .map(|word| {
-            if word.chars().all(|character| character.is_ascii_alphanumeric() || "-_./:=".contains(character)) {
-                word.clone()
-            } else {
-                format!("'{}'", word.replace('\'', "'\\''"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// A tested mirror in a line: "2.4 MB/s · 0.12 s · up to date".
 pub(crate) fn describe_mirror(mirror: &mirrors::Mirror, reference: Option<i64>) -> String {
     if let Some(error) = &mirror.error {
@@ -1499,7 +1460,7 @@ fn scan(with_offer: bool, network: bool) -> Scan {
     let mut snapshot = backend::scan(&runner, &files, network);
     // Restarting is easier to explain than logging out and in again.
     snapshot.restart |= replaced();
-    let codename = snapshot.system.codename.clone();
+    let codename = snapshot.system.archive.clone();
     let mirror = mirrors::current(&files);
     let mirror_check = (with_offer && network && mirror.is_some())
         .then(|| mirrors::check_current(&runner, &files, &codename))
@@ -1510,7 +1471,6 @@ fn scan(with_offer: bool, network: bool) -> Scan {
         third_party: release::third_party(&files),
         free: release::free_space(&runner),
         track: release::track(&files),
-        snapshots: snapshots::tool(),
         automatic: automatic::read(&runner, &files),
         mirror,
         mirror_check,
@@ -1612,7 +1572,7 @@ fn run(
             Ok(Some(Request::Mirrors)) => {
                 let files = Files::default();
                 let runner = backend::System;
-                let codename = release::system(&files).codename;
+                let codename = release::system(&files).archive;
                 let found = mirrors::survey(&runner, &files, &codename);
                 let reference =
                     found.iter().find(|mirror| mirror.url == mirrors::ARCHIVE).and_then(|mirror| mirror.published);
@@ -2185,12 +2145,6 @@ mod tests {
         assert!(history_text(&history, None).contains("updated apt 2.8.3 \u{2192} 2.8.4"));
         assert_eq!(parse(&["history", "since", "2026-11-10"]), Ok(UpdatesCommand::History(Some("2026-11-10".into()))));
         assert!(parse(&["history", "since", "Tuesday"]).is_err());
-    }
-
-    #[test]
-    fn words_reach_the_shell_whole() {
-        let words: Vec<String> = ["timeshift", "--comments", "Tileception: before it's done"].map(String::from).into();
-        assert_eq!(shell_words(&words), "timeshift --comments 'Tileception: before it'\\''s done'");
     }
 
     #[test]

@@ -12,9 +12,9 @@ pub mod automatic;
 pub mod firmware;
 pub mod history;
 pub mod kernels;
+mod mint;
 pub mod mirrors;
 pub mod release;
-pub mod snapshots;
 pub mod task;
 
 use std::path::{Path, PathBuf};
