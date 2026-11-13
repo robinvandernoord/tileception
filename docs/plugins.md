@@ -24,6 +24,67 @@ Tileception starts them as `tileception plugin <id>`. Change or disable them in
 `[plugins.<id>]` like any other plugin; a manifest with the same ID replaces
 one.
 
+## Installing from GitHub
+
+Type `plugins add owner/repo` in the launcher, for example
+`plugins add robinvandernoord/tileception-2fas`. A full GitHub URL works too,
+and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. Enter finds
+the commit that is (the default branch, unless you named one), reads the
+repository's `pyproject.toml` at that commit and shows what it is: its
+package, version, description, what it needs on your machine and the commit.
+Nothing is installed yet. Enter again installs exactly that commit with
+[uv](https://docs.astral.sh/uv/), even if the repository has changed since:
+
+```sh
+uv tool install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d'
+```
+
+Each plugin gets its own environment, and uv fetches a Python that suits the
+package when the system has none. The plugin then sets itself up without
+asking anything (`install --non-interactive`), and plugins are reloaded. A
+notification says when it is done. If the plugin still needs answers from you,
+such as an API key or a login, Tileception opens a terminal with its
+`configure` step, and reloads plugins again once that ends.
+
+Installing runs the repository's code as you, with your files and
+credentials. Only install plugins you trust.
+
+A plugin ID can only be installed from one repository. Installing another
+repository whose plugin has the same ID, or the same Python package, is
+refused until the installed one is removed; installing the same repository
+again is fine.
+
+`plugins` in the launcher lists what is installed this way, with a row to
+configure each, and one to update them all. `plugins configure`,
+`plugins update` and `plugins remove`, each optionally followed by the start
+of a plugin ID, list the installed plugins to do that to.
+
+Updating is the only step that moves a plugin to a newer commit: it finds the
+commit the repository's default branch (or the tag or branch you installed)
+is at now, and installs that. A notification lists each plugin, updated, up
+to date or failed; one failure does not stop the others.
+
+Removing runs the plugin's own `uninstall` first, so it can stop its timers,
+then removes the package, and its manifest if installing made it. A manifest
+you wrote yourself before installing stays. A plugin's configuration and
+cache stay unless its `uninstall` removes them.
+
+The same from a shell or a key binding:
+
+```sh
+tileception msg plugins add robinvandernoord/tileception-odoo
+tileception msg plugins list
+tileception msg plugins configure odoo
+tileception msg plugins update        # every installed plugin, or name one
+tileception msg plugins remove odoo
+```
+
+`add` installs without showing the package first: asking for it on the command
+line is the confirmation. These commands return once the work has started.
+What was installed, at which commit, is kept in
+`$XDG_DATA_HOME/tileception/installed-plugins.toml`. Plugins installed by hand
+work as before, but `update` and `remove` only know the ones in this file.
+
 ## Try the example
 
 The Rust example needs no credentials, services or script interpreter:
@@ -363,6 +424,49 @@ for a countdown; Tileception reads the resource again and redraws.
 `tileception msg plugin <id> <tool> [json]` calls a plugin's tool with a JSON
 object of arguments, for scripts and key bindings, and prints the answer: its
 `text` field, else the JSON. The command waits up to five seconds.
+
+## Making a plugin installable
+
+`plugins add` installs Python packages: a repository with a `pyproject.toml`
+whose `[project]` has one console script, such as `tileception-odoo`. That
+script takes these subcommands:
+
+| Subcommand | Does | Required |
+| --- | --- | --- |
+| `serve` | Speaks MCP on stdin and stdout; the manifest runs this | yes |
+| `install --non-interactive` | Writes the manifest and anything else it needs, such as systemd units, and asks nothing | yes |
+| `configure` | Asks what it needs in the terminal, then finishes what `install` could not | when it has questions |
+| `status` | Prints JSON with at least `"configured"` (`true` or `false`) and `"detail"` | when it has `configure` |
+| `uninstall` | Undoes `install`: stops timers, removes units and the manifest. `--purge` also removes configuration and cache | yes |
+
+`install --non-interactive` runs after every install and update, so it must be
+safe to run again. It gets no terminal, and must not wait for input. When it
+cannot finish without answers, it does what it can and makes `status` say
+`"configured": false`; Tileception then runs `configure` in a terminal.
+`configure` may use `input`, `getpass`, a full-screen picker or another
+program's login, such as `gh auth login`. Exit 0 once the plugin works.
+
+When `install` writes no manifest, Tileception writes
+`~/.local/share/tileception/plugins/<id>.toml` itself, with the script's
+absolute path and `args = ["serve"]`. Prefixes then come from `launcher_info`.
+
+An optional `[tool.tileception]` table in `pyproject.toml` says more:
+
+```toml
+[tool.tileception]
+id = "2fas"                      # the manifest's name; default: the package name without tileception-
+script = "tileception-2fas"      # when [project.scripts] has more than one
+extras = ["security-key"]        # installed with the package
+needs = ["the 2fas CLI"]         # shown before installing
+```
+
+`requires-python` is passed to uv, which finds or downloads a Python that
+fits.
+
+For questions that fit the launcher, a plugin can do better than a terminal:
+while it is not configured, answer every search with a "Set up" row whose
+action is a [prompt](#prompts), and save what the prompt's fields send to its
+tool. Keep `configure` as well, for `tileception msg plugins configure`.
 
 ## Lifecycle and limits
 

@@ -48,6 +48,15 @@ pub enum Command {
     ReloadConfig,
     /// Rescans plugin manifests and restarts their workers without editing config.
     ReloadPlugins,
+    /// Installs a plugin from a GitHub repository (`owner/repo[@rev]`).
+    AddPlugin(String),
+    /// Updates one installed plugin, or all of them.
+    UpdatePlugins(Option<String>),
+    RemovePlugin(String),
+    /// Runs a plugin's `configure` in a terminal.
+    ConfigurePlugin(String),
+    /// Lists the plugins installed from repositories.
+    InstalledPlugins,
     /// Ends a screen lock whatever the locker does: the way out when a locker
     /// is stuck, from a console (Ctrl+Alt+F3) as the same user.
     Unlock,
@@ -260,6 +269,11 @@ Smart home ([home] in config.toml):
 
 Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
+  plugins add <owner/repo>  install a plugin from GitHub with uv, then set it up
+  plugins list              plugins installed from repositories
+  plugins configure <id>    run a plugin's setup in a terminal
+  plugins update [id]       update one installed plugin, or all of them
+  plugins remove <id>       run a plugin's uninstall and remove it
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -321,7 +335,16 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "plugins" => {
             return match args.as_slice() {
                 ["reload"] => Ok(Command::ReloadPlugins),
-                _ => Err("plugins needs reload".into()),
+                ["add", source] => Ok(Command::AddPlugin((*source).into())),
+                ["update"] => Ok(Command::UpdatePlugins(None)),
+                ["update", plugin_id] => Ok(Command::UpdatePlugins(Some((*plugin_id).into()))),
+                ["remove", plugin_id] => Ok(Command::RemovePlugin((*plugin_id).into())),
+                ["configure", plugin_id] => Ok(Command::ConfigurePlugin((*plugin_id).into())),
+                ["list"] => Ok(Command::InstalledPlugins),
+                _ => {
+                    Err("plugins needs reload, list, add <owner/repo>, update [plugin_id], remove <plugin_id> or configure <plugin_id>"
+                        .into())
+                }
             };
         }
         "unlock" => return Ok(Command::Unlock),
@@ -576,6 +599,11 @@ impl Tileception {
                 self.reload_plugins()?;
                 return Ok("Plugin rediscovery started\n".into());
             }
+            Command::AddPlugin(source) => return self.plugin_add(&source),
+            Command::UpdatePlugins(plugin_id) => return self.plugin_update(plugin_id.as_deref()),
+            Command::RemovePlugin(plugin_id) => return self.plugin_remove(&plugin_id),
+            Command::ConfigurePlugin(plugin_id) => return self.plugin_configure(&plugin_id),
+            Command::InstalledPlugins => return Ok(crate::plugin_install::listing()),
             Command::Unlock => self.force_unlock(),
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),
@@ -658,6 +686,22 @@ mod tests {
                 assert!(!err.starts_with("unknown"), "help lists {verb:?}: {err}");
             }
         }
+    }
+
+    #[test]
+    fn plugins_commands_and_their_errors() {
+        assert_eq!(parse("plugins add a/b"), Ok(Command::AddPlugin("a/b".into())));
+        assert_eq!(parse("plugins update"), Ok(Command::UpdatePlugins(None)));
+        assert_eq!(parse("plugins update odoo"), Ok(Command::UpdatePlugins(Some("odoo".into()))));
+        assert_eq!(parse("plugins remove odoo"), Ok(Command::RemovePlugin("odoo".into())));
+        assert_eq!(parse("plugins configure odoo"), Ok(Command::ConfigurePlugin("odoo".into())));
+        assert_eq!(parse("plugins list"), Ok(Command::InstalledPlugins));
+        assert!(parse("plugins add").is_err());
+        // Errors speak of ids in words, not of variable names.
+        assert_eq!(parse("plugin"), Err("plugin needs a plugin id and a tool".into()));
+        assert_eq!(parse("plugin home"), Err("plugin needs a tool after the plugin id".into()));
+        assert_eq!(parse("doctor use"), Err("doctor use needs an agent id from the ACP Registry".into()));
+        assert_eq!(parse("restore x"), Err("restore takes nothing or a window id".into()));
     }
 
     #[test]
