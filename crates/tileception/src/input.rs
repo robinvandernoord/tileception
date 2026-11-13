@@ -999,6 +999,16 @@ impl Tileception {
         if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
             self.launcher_release();
         }
+        // A press beside the welcome screen closes the dashboard's list of
+        // what can be added, and does nothing more.
+        if self.launcher.open
+            && self.launcher.home
+            && state == ButtonState::Pressed
+            && !self.launcher_takes(pointer_at)
+            && self.dashboard_close_adding()
+        {
+            return;
+        }
         if self.launcher.open && self.launcher_takes(pointer_at) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
                 self.launcher_click(pointer_at);

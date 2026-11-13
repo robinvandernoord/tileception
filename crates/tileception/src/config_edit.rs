@@ -94,6 +94,53 @@ pub fn add_plugin(file: &Path, plugin_id: &str, command: &str, args: &[String], 
     write(file, &doc)
 }
 
+/// Switches a plugin's dashboard items on: `[plugins.<id>.dashboard]
+/// enabled = true`, and with `plugin` also `[plugins.<id>] enabled = true`.
+pub fn show_plugin_dashboard(file: &Path, plugin_id: &str, plugin: bool) -> Result<(), String> {
+    let mut doc = read(file)?;
+    switch_on_dashboard(&mut doc, plugin_id, plugin)?;
+    write(file, &doc)
+}
+
+fn switch_on_dashboard(doc: &mut DocumentMut, plugin_id: &str, plugin: bool) -> Result<(), String> {
+    let plugins = doc
+        .entry("plugins")
+        .or_insert_with(|| {
+            let mut plugins = toml_edit::Table::new();
+            plugins.set_implicit(true);
+            Item::Table(plugins)
+        })
+        .as_table_mut()
+        .ok_or("[plugins] is not a table")?;
+    let entry = plugins
+        .entry(plugin_id)
+        .or_insert_with(|| {
+            // Only switches: the manifest says what the plugin is.
+            let mut entry = toml_edit::Table::new();
+            entry.set_implicit(true);
+            entry.set_position(Some(isize::MAX));
+            Item::Table(entry)
+        })
+        .as_table_mut()
+        .ok_or_else(|| format!("[plugins.{plugin_id}] is not a table"))?;
+    if plugin {
+        entry.set_implicit(false);
+        entry["enabled"] = toml_edit::value(true);
+    }
+    let after = entry.position();
+    let dashboard = entry
+        .entry("dashboard")
+        .or_insert_with(|| {
+            let mut dashboard = toml_edit::Table::new();
+            dashboard.set_position(after);
+            Item::Table(dashboard)
+        })
+        .as_table_mut()
+        .ok_or_else(|| format!("[plugins.{plugin_id}.dashboard] is not a table"))?;
+    dashboard["enabled"] = toml_edit::value(true);
+    Ok(())
+}
+
 /// Appends the plugin's table after everything else, leaving the rest of
 /// the file as it was.
 fn insert_plugin(
@@ -622,6 +669,31 @@ mod tests {
         insert_plugin(&mut file, "block", "/bin/block", &[], false).unwrap();
         assert_eq!(file.to_string(), format!("{original}\n[plugins.block]\ncommand = \"/bin/block\"\n"));
         crate::config::Config::parse(&file.to_string()).unwrap();
+    }
+
+    #[test]
+    fn switching_on_a_dashboard_keeps_the_rest() {
+        // A plugin the file does not mention yet.
+        let mut fresh = doc("[shell]\nbar = \"builtin\"\n\n[plugins.timers]\nenabled = true\n");
+        switch_on_dashboard(&mut fresh, "lamp", false).unwrap();
+        let text = fresh.to_string();
+        assert!(
+            text.ends_with("[plugins.timers]\nenabled = true\n\n[plugins.lamp.dashboard]\nenabled = true\n"),
+            "{text}"
+        );
+        // One the file switched off, with its dashboard: both go on, and the
+        // dashboard's block stays with its plugin.
+        let mut off = doc(
+            "[plugins.lamp]\nenabled = false\n# Mine.\n\n[plugins.lamp.dashboard]\nenabled = false\n\n[shell]\nbar = \"none\"\n",
+        );
+        switch_on_dashboard(&mut off, "lamp", true).unwrap();
+        let text = off.to_string();
+        assert_eq!(
+            text,
+            "[plugins.lamp]\nenabled = true\n# Mine.\n\n[plugins.lamp.dashboard]\nenabled = true\n\n[shell]\nbar = \"none\"\n"
+        );
+        let parsed: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(parsed["plugins"]["lamp"]["dashboard"]["enabled"].as_bool(), Some(true));
     }
 
     #[test]

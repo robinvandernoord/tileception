@@ -9,7 +9,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     hash::{Hash, Hasher},
     io::Read,
     path::Path,
@@ -29,7 +29,7 @@ use crate::{
     plugins::ActionKind,
     shapes::Shape,
     theme::Colour,
-    ui::{Align, Painter, Style, glyph},
+    ui::{Align, Button, Look, Painter, Style, glyph},
 };
 
 /// The most items one plugin puts on the dashboard.
@@ -165,6 +165,14 @@ const LAYOUT: &str = "dashboard-layout.toml";
 const GAP: f64 = MARGIN / 2.0;
 /// The grid a dragged item snaps to.
 const GRID: f64 = 8.0;
+/// The round button on an item's corner that removes it.
+const REMOVE: f64 = 24.0;
+/// The button in the welcome screen's footer that opens what can be added
+/// to the dashboard, and the width of that list.
+const ADD: f64 = 32.0;
+const OFFER_LIST: f64 = 320.0;
+/// A row of that list.
+const OFFER_ROW: f64 = 44.0;
 
 /// Pictures by plugin and source. They are read and decoded off the
 /// compositor's thread, which a large or complex picture would hold up.
@@ -173,7 +181,12 @@ const GRID: f64 = 8.0;
 pub struct Dashboard {
     /// Items by key, as last put; others go in the first free place.
     spots: BTreeMap<String, Spot>,
+    /// Items the user removed, by key. They keep their spot for when they
+    /// come back.
+    hidden: BTreeSet<String>,
     drag: Option<Drag>,
+    /// Whether the list of what can be added is open.
+    adding: bool,
     pictures: RefCell<HashMap<PictureKey, Loading>>,
     /// Decoded on their threads, waiting to become buffers here.
     decoded: Finished,
@@ -184,15 +197,14 @@ pub struct Dashboard {
 impl Dashboard {
     /// With the places saved last time.
     pub fn load() -> Self {
-        let spots = crate::panel::order::read_state(LAYOUT)
+        let stored = crate::panel::order::read_state(LAYOUT)
             .and_then(|text| toml::from_str::<Stored>(&text).ok())
-            .map(|stored| stored.spots)
             .unwrap_or_default();
-        Dashboard { spots, ..Default::default() }
+        Dashboard { spots: stored.spots, hidden: stored.hidden, ..Default::default() }
     }
 
     fn save(&self) {
-        match toml::to_string(&Stored { spots: self.spots.clone() }) {
+        match toml::to_string(&Stored { hidden: self.hidden.clone(), spots: self.spots.clone() }) {
             Ok(text) => crate::panel::order::write_state(LAYOUT, &text),
             Err(error) => tracing::warn!("could not save {LAYOUT}: {error}"),
         }
@@ -201,7 +213,10 @@ impl Dashboard {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
-    #[serde(default)]
+    /// Before `spots`: TOML puts plain values ahead of tables.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    hidden: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     spots: BTreeMap<String, Spot>,
 }
 
@@ -300,6 +315,55 @@ pub(crate) enum Shown {
 pub(crate) enum Click {
     Notifications,
     Plugin(String, ActionKind),
+    /// The button that removes the item with this key.
+    Remove(String),
+    /// The button that opens or closes the list of what can be added.
+    Add,
+    /// Brings back the removed item with this key.
+    Restore(String),
+    /// Switches on a plugin's dashboard items, and with `true` the plugin
+    /// itself, in config.toml.
+    SwitchOn(String, bool),
+}
+
+/// Something the list of the "+" button offers to put on the dashboard.
+pub(crate) struct Offer {
+    title: String,
+    detail: &'static str,
+    click: Click,
+}
+
+/// The "+" button and, while it is open, its list with a rectangle for
+/// each row.
+pub(crate) struct Adding {
+    pub button: Rect,
+    pub list: Option<Rect>,
+    rows: Vec<(Rect, Offer)>,
+}
+
+impl Adding {
+    /// The button or row here, as a pointer target.
+    pub(crate) fn target_at(&self, point: Point) -> Option<(Rect, Click)> {
+        if self.button.contains(point) {
+            return Some((self.button, Click::Add));
+        }
+        self.rows.iter().find(|(rect, _)| rect.contains(point)).map(|(rect, offer)| (*rect, offer.click.clone()))
+    }
+
+    pub(crate) fn covers(&self, point: Point) -> bool {
+        self.button.contains(point) || self.list.is_some_and(|list| list.contains(point))
+    }
+}
+
+/// Where the "+" goes in the welcome screen's footer: left of the
+/// settings button (see `launcher_settings_button`).
+pub(crate) fn add_button(footer: Rect) -> Rect {
+    Rect::new(footer.right() - 80.0, footer.y + (footer.h - ADD) / 2.0, ADD, ADD)
+}
+
+/// The button that removes an item: round, on its top right corner.
+pub(crate) fn remove_button(rect: Rect) -> Rect {
+    Rect::new(rect.right() - REMOVE * 0.75, rect.y - REMOVE * 0.25, REMOVE, REMOVE)
 }
 
 /// The dashboard's room beside a centre panel: the screen within a margin,
@@ -512,8 +576,10 @@ impl Tileception {
     fn dashboard_items(&self, width: f64) -> (Vec<String>, Vec<Shown>) {
         let mut keys = Vec::new();
         let mut shown = Vec::new();
+        // There until removed, also with none: an item that comes and goes
+        // with the count could not be put back on purpose.
         let count = self.notification_count();
-        if count > 0 {
+        if self.shell().notifications().is_builtin() && !self.dashboard.hidden.contains("notifications") {
             keys.push("notifications".to_string());
             shown.push(Shown::Notifications { count, latest: self.latest_notification().unwrap_or_default() });
         }
@@ -536,16 +602,206 @@ impl Tileception {
             while keys.contains(&key) {
                 key.push('+');
             }
-            keys.push(key);
-            shown.push(what);
+            if !self.dashboard.hidden.contains(&key) {
+                keys.push(key);
+                shown.push(what);
+            }
         }
         (keys, shown)
+    }
+
+    /// Every item's key that is offered now, removed or not.
+    fn dashboard_offered(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        if self.shell().notifications().is_builtin() {
+            keys.push("notifications".to_string());
+        }
+        let offered = self.plugins.as_ref().map(crate::plugins::Host::dashboard_items).unwrap_or_default();
+        for (plugin, item) in offered {
+            let item_id = match item {
+                Item::Card(card) => &card.key,
+                Item::Image(picture) => &picture.key,
+                Item::Surface(surface) => &surface.key,
+            };
+            let mut key = format!("{plugin}/{item_id}");
+            while keys.contains(&key) {
+                key.push('+');
+            }
+            keys.push(key);
+        }
+        keys
+    }
+
+    /// What can be put on the dashboard: removed items, and installed
+    /// plugins with dashboard items that are switched off.
+    fn dashboard_offers(&self) -> Vec<Offer> {
+        let titles: HashMap<String, String> = {
+            let mut keys = Vec::new();
+            let mut titles = HashMap::new();
+            let offered = self.plugins.as_ref().map(crate::plugins::Host::dashboard_items).unwrap_or_default();
+            for (plugin, item) in offered {
+                let (item_id, title) = match item {
+                    Item::Card(card) => (&card.key, &card.title),
+                    Item::Image(picture) => (&picture.key, &picture.title),
+                    Item::Surface(surface) => (&surface.key, &surface.title),
+                };
+                let mut key = format!("{plugin}/{item_id}");
+                while keys.contains(&key) {
+                    key.push('+');
+                }
+                let title = if title.is_empty() { item_id.clone() } else { title.clone() };
+                titles.insert(key.clone(), format!("{title} ({plugin})"));
+                keys.push(key);
+            }
+            titles
+        };
+        let counted = self.shell().notifications().is_builtin();
+        let mut offers: Vec<Offer> = self
+            .dashboard
+            .hidden
+            .iter()
+            .filter(|key| counted || key.as_str() != "notifications")
+            .map(|key| Offer {
+                title: match key.as_str() {
+                    "notifications" => "Notifications".to_string(),
+                    _ => titles.get(key).cloned().unwrap_or_else(|| key.clone()),
+                },
+                detail: "Removed: bring it back",
+                click: Click::Restore(key.clone()),
+            })
+            .collect();
+        let dormant = self.plugins.as_ref().map(crate::plugins::Host::dashboard_dormant).unwrap_or_default();
+        offers.extend(dormant.iter().map(|(plugin, running)| Offer {
+            title: plugin.clone(),
+            detail: if *running { "Plugin: show its items" } else { "Plugin, off: switch it on" },
+            click: Click::SwitchOn(plugin.clone(), !running),
+        }));
+        offers
+    }
+
+    /// The "+" button in the welcome screen's footer, left of the
+    /// settings button, and its list above it while open. None when there
+    /// is nothing to add.
+    pub(crate) fn dashboard_adding(&self, footer: Rect) -> Option<Adding> {
+        let offers = self.dashboard_offers();
+        if offers.is_empty() {
+            return None;
+        }
+        let button = add_button(footer);
+        if !self.dashboard.adding {
+            return Some(Adding { button, list: None, rows: Vec::new() });
+        }
+        let height = offers.len() as f64 * OFFER_ROW + 12.0;
+        let width = OFFER_LIST.min(footer.w - 24.0);
+        let top = (button.y - 8.0 - height).max(self.screen_room().y);
+        let list = Rect::new(footer.right() - 12.0 - width, top, width, height);
+        let rows = offers
+            .into_iter()
+            .enumerate()
+            .map(|(index, offer)| {
+                (Rect::new(list.x + 6.0, list.y + 6.0 + index as f64 * OFFER_ROW, list.w - 12.0, OFFER_ROW), offer)
+            })
+            .collect();
+        Some(Adding { button, list: Some(list), rows })
+    }
+
+    /// Closes the list of what can be added. True when it was open.
+    pub(crate) fn dashboard_close_adding(&mut self) -> bool {
+        let open = std::mem::take(&mut self.dashboard.adding);
+        if open {
+            self.schedule_render();
+        }
+        open
+    }
+
+    /// Brings back a removed item.
+    fn dashboard_restore(&mut self, key: &str) {
+        if self.dashboard.hidden.remove(key) {
+            self.dashboard.save();
+        }
+        self.schedule_render();
+    }
+
+    /// Switches a plugin's dashboard items on in config.toml, and the
+    /// plugin too when it is off, then reads the config again.
+    fn dashboard_switch_on(&mut self, plugin: &str, also_plugin: bool) {
+        let path = crate::config::path();
+        match crate::config_edit::show_plugin_dashboard(&path, plugin, also_plugin) {
+            Ok(()) => {
+                if let Err(error) = self.reload_config() {
+                    tracing::warn!("config: {error}");
+                }
+            }
+            Err(error) => tracing::warn!("{}: {error}", path.display()),
+        }
+        self.schedule_render();
+    }
+
+    /// Takes an item off the dashboard until it is brought back.
+    pub(crate) fn dashboard_remove(&mut self, key: &str) {
+        if self.dashboard.hidden.insert(key.to_string()) {
+            self.dashboard.save();
+        }
+        self.schedule_render();
+    }
+
+    /// `msg dashboard`: lists the items, removes one, or brings removed
+    /// ones back (`show all` for every one).
+    pub(crate) fn dashboard_command(&mut self, args: &[String]) -> Result<String, String> {
+        match args {
+            [] => {
+                let offered = self.dashboard_offered();
+                let mut lines: Vec<String> = offered
+                    .iter()
+                    .map(|key| format!("{key}{}", if self.dashboard.hidden.contains(key) { " removed" } else { "" }))
+                    .collect();
+                // Removed items that nothing offers now still count.
+                lines.extend(
+                    self.dashboard
+                        .hidden
+                        .iter()
+                        .filter(|key| !offered.contains(key))
+                        .map(|key| format!("{key} removed")),
+                );
+                Ok(if lines.is_empty() { "no items".to_string() } else { lines.join("\n") })
+            }
+            [verb, key] if verb == "hide" => {
+                self.dashboard_remove(key);
+                Ok("ok".to_string())
+            }
+            [verb, key] if verb == "show" => {
+                let changed = if key == "all" {
+                    !std::mem::take(&mut self.dashboard.hidden).is_empty()
+                } else {
+                    self.dashboard.hidden.remove(key.as_str())
+                };
+                if !changed {
+                    return Err(format!("{key} is not removed"));
+                }
+                self.dashboard.save();
+                self.schedule_render();
+                Ok("ok".to_string())
+            }
+            _ => Err("dashboard takes nothing, hide <item> or show <item>|all".to_string()),
+        }
     }
 
     /// A press on the dashboard of the welcome screen. Its controls (a
     /// card's buttons, a surface's inside) keep it; anywhere else the item
     /// is held, to drag it elsewhere or, let go where it is, to click it.
-    pub(crate) fn dashboard_press(&mut self, slots: &[Slot], point: Point) -> bool {
+    pub(crate) fn dashboard_press(&mut self, slots: &[Slot], adding: Option<&Adding>, point: Point) -> bool {
+        if Self::dashboard_remove_at(slots, point).is_some() {
+            return false;
+        }
+        if let Some(adding) = adding {
+            if adding.covers(point) {
+                return false;
+            }
+            // A press anywhere else closes the list, and does nothing more.
+            if self.dashboard_close_adding() {
+                return true;
+            }
+        }
         let Some(slot) = slots.iter().find(|slot| slot.rect.contains(point)) else { return false };
         match &slot.what {
             Shown::Card { card, laid, .. } if crate::panel::card_action_at(card, laid, point).is_some() => {
@@ -599,6 +855,9 @@ impl Tileception {
             return false;
         }
         let slots = self.dashboard_slots(self.home_panel());
+        if Self::dashboard_remove_at(&slots, point).is_some() {
+            return false;
+        }
         slots.iter().find(|slot| slot.rect.contains(point)).is_some_and(|slot| match &slot.what {
             Shown::Card { card, laid, .. } => crate::panel::card_action_at(card, laid, point).is_none(),
             Shown::Surface { .. } => !inner(slot.rect).contains(point),
@@ -643,8 +902,20 @@ impl Tileception {
         true
     }
 
+    /// The button that removes an item, when the pointer is on it. Items
+    /// later in the list are drawn over earlier ones, so they win.
+    pub(crate) fn dashboard_remove_at(slots: &[Slot], point: Point) -> Option<(Rect, Click)> {
+        slots.iter().rev().find_map(|slot| {
+            let button = remove_button(slot.rect);
+            button.contains(point).then(|| (button, Click::Remove(slot.key.clone())))
+        })
+    }
+
     /// A card's control here, which is a button of its own, and its rectangle.
     pub(crate) fn dashboard_control_at(slots: &[Slot], point: Point) -> Option<(Rect, Click)> {
+        if let Some(remove) = Self::dashboard_remove_at(slots, point) {
+            return Some(remove);
+        }
         let slot = slots.iter().find(|slot| slot.rect.contains(point))?;
         let Shown::Card { plugin, card, laid } = &slot.what else { return None };
         let (rect, action) = crate::panel::card_action_at(card, laid, point)?;
@@ -671,6 +942,19 @@ impl Tileception {
         match click {
             Click::Notifications => self.toggle_notifications(),
             Click::Plugin(plugin, action) => self.launcher_card_action(&plugin, action),
+            Click::Remove(key) => self.dashboard_remove(&key),
+            Click::Add => {
+                self.dashboard.adding = !self.dashboard.adding;
+                self.schedule_render();
+            }
+            Click::Restore(key) => {
+                self.dashboard.adding = false;
+                self.dashboard_restore(&key);
+            }
+            Click::SwitchOn(plugin, also_plugin) => {
+                self.dashboard.adding = false;
+                self.dashboard_switch_on(&plugin, also_plugin);
+            }
         }
     }
 
@@ -688,9 +972,14 @@ impl Tileception {
                     painter.popup(slot.rect);
                     let icon = Rect::new(slot.rect.x + 12.0, slot.rect.y, 28.0, slot.rect.h);
                     painter.glyph(glyph::BELL, icon, 20, theme.accent);
-                    let title =
-                        if *count == 1 { "1 notification".to_string() } else { format!("{count} notifications") };
-                    let text = Rect::new(slot.rect.x + 48.0, slot.rect.y + 14.0, slot.rect.w - 60.0, 22.0);
+                    let title = match count {
+                        0 => "No notifications".to_string(),
+                        1 => "1 notification".to_string(),
+                        _ => format!("{count} notifications"),
+                    };
+                    // Without a latest summary under it, the title is centred.
+                    let top = if latest.is_empty() { (slot.rect.h - 22.0) / 2.0 } else { 14.0 };
+                    let text = Rect::new(slot.rect.x + 48.0, slot.rect.y + top, slot.rect.w - 60.0, 22.0);
                     painter.text(&title, text, Style::new(theme.font_size * 1.05, theme.text).bold());
                     let detail = Rect::new(text.x, text.bottom() + 2.0, text.w, 22.0);
                     painter.text(latest, detail, Style::new(theme.font_size * 0.9, theme.muted).lines(1));
@@ -717,6 +1006,18 @@ impl Tileception {
                 }
             }
         }
+        // The button that removes the item under the pointer, on the welcome
+        // screen only: a peek takes no input.
+        if dragged.is_none() && self.launcher.open && self.launcher.home {
+            let hovered = slots
+                .iter()
+                .rev()
+                .find(|slot| slot.rect.contains(pointer) || remove_button(slot.rect).contains(pointer));
+            if let Some(slot) = hovered {
+                let button = remove_button(slot.rect);
+                painter.button(button, Button::glyph(glyph::CLOSE, Look::Plain).round(), button.contains(pointer));
+            }
+        }
         // Where the dragged item will go, outlined.
         if let Some(slot) = slots.iter().find(|slot| Some(slot.key.as_str()) == dragged) {
             painter.shape(
@@ -729,6 +1030,35 @@ impl Tileception {
                     ..Shape::filled(Colour::TRANSPARENT, theme.popup_radius)
                 },
             );
+        }
+    }
+
+    /// The "+" button, faint until the pointer is on it, and its list.
+    pub(crate) fn draw_adding(&self, painter: &mut Painter, adding: &Adding) {
+        if self.dashboard_dragging() {
+            return;
+        }
+        let pointer = Point::new(self.pointer.x, self.pointer.y);
+        let theme = painter.theme();
+        let lit = adding.list.is_some() || adding.button.contains(pointer);
+        painter.button(adding.button, Button::glyph(glyph::PLUS, Look::Quiet), lit);
+        let Some(list) = adding.list else { return };
+        painter.popup(list);
+        for (row, offer) in &adding.rows {
+            let badge = Rect::new(row.x + 6.0, row.y + 8.0, 28.0, 28.0);
+            let (fill, colour) = crate::panel::tint(theme, crate::panel::block::Tint::Muted);
+            painter.fill(badge, fill, 6.0);
+            let icon = match offer.click {
+                Click::Restore(_) => glyph::PLUS,
+                _ => glyph::WINDOW,
+            };
+            painter.glyph(icon, badge, 15, colour);
+            let text_x = badge.right() + 10.0;
+            let text_w = (row.right() - text_x - 4.0).max(1.0);
+            let title = Style::new(theme.font_size * 0.92, theme.text).lines(1);
+            painter.text(&offer.title, Rect::new(text_x, row.y + 5.0, text_w, 18.0), title);
+            let detail = Style::new(theme.font_size * 0.78, theme.muted).lines(1);
+            painter.text(offer.detail, Rect::new(text_x, row.y + 22.0, text_w, 16.0), detail);
         }
     }
 
@@ -919,6 +1249,30 @@ mod tests {
     fn room() -> Room {
         // 1920 by 1080 with a 620 wide panel in the middle.
         Room::beside(Rect::new(0.0, 0.0, 1920.0, 1080.0), Rect::new(650.0, 300.0, 620.0, 400.0)).unwrap()
+    }
+
+    #[test]
+    fn removed_items_are_saved_beside_the_spots() {
+        let mut stored = Stored::default();
+        stored.hidden.insert("notifications".to_string());
+        stored.spots.insert("timers/tea".to_string(), Spot { across: 8.0, down: 16.0, right: true, bottom: false });
+        let text = toml::to_string(&stored).unwrap();
+        let read: Stored = toml::from_str(&text).unwrap();
+        assert!(read.hidden.contains("notifications"));
+        assert_eq!(read.spots, stored.spots);
+        // A file from before items could be removed still reads.
+        let old: Stored = toml::from_str("[spots.notifications]\nx = 0.0\ny = 0.0\n").unwrap();
+        assert!(old.hidden.is_empty());
+    }
+
+    #[test]
+    fn the_remove_button_stays_out_of_the_neighbours() {
+        let room = room();
+        let items = vec![(None, 140.0), (None, 140.0)];
+        let rects: Vec<Rect> = room.arrange(&items).into_iter().map(Option::unwrap).collect();
+        let button = remove_button(rects[1]);
+        assert!(!button.intersects(&rects[0]), "{button:?} over {:?}", rects[0]);
+        assert!(button.contains(Point::new(rects[1].right() - 2.0, rects[1].y + 2.0)));
     }
 
     #[test]

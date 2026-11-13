@@ -426,7 +426,10 @@ items on it from a `tileception://dashboard` resource, up to six each:
 `size` is `small`, `medium` or `large`; every item is as wide as its column.
 Tileception puts the items beside the welcome screen, down the left of it and
 then the right, in the panel's plugin order and each plugin's own order, and
-leaves out what does not fit. Users can drag them anywhere beside it. Pictures and surfaces get a
+leaves out what does not fit. Users can drag them anywhere beside it, and
+remove single items, which stay away by their `id` until brought back. An
+installed plugin with a `[dashboard]` block that is switched off, or whose
+dashboard is, is offered under the **+** in the welcome screen's footer. Pictures and surfaces get a
 frame with their `title` and the plugin's name, drawn by Tileception.
 
 #### Dashboard surfaces

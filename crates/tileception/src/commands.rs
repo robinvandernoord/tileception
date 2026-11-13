@@ -82,6 +82,8 @@ pub enum Command {
     Tray,
     /// Prints how much the image caches hold.
     Caches,
+    /// Lists the dashboard's items, removes one or brings removed ones back.
+    Dashboard(Vec<String>),
     TrayDebug(Option<usize>),
     /// Slides out the strip of minimized windows for a moment.
     ShowMinimized,
@@ -142,6 +144,9 @@ Inspecting:
   network status            print the wired connection and the Wi-Fi networks
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
+  dashboard                 list the welcome screen's dashboard items
+  dashboard hide <item>     remove an item from the dashboard
+  dashboard show <item>|all bring removed items back
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
@@ -348,6 +353,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             };
         }
         "caches" => return Ok(Command::Caches),
+        "dashboard" => return Ok(Command::Dashboard(args.iter().map(|arg| arg.to_string()).collect())),
         "tray" => {
             return match args.as_slice() {
                 [] => Ok(Command::Tray),
@@ -598,6 +604,7 @@ impl Tileception {
             }
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),
+            Command::Dashboard(args) => return self.dashboard_command(&args),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),

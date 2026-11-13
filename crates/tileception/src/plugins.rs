@@ -657,6 +657,9 @@ pub struct Host {
     epoch: u64,
     /// Enabled plugins, highest priority first.
     order: Vec<(String, PluginConfig)>,
+    /// Installed plugins with a `[dashboard]` block that is switched off,
+    /// or that are switched off themselves: whether the plugin is on.
+    dormant: Vec<(String, bool)>,
     /// The order the user chose for the panel and the bar, by plugin.
     arrangement: Vec<String>,
     infos: BTreeMap<String, Result<Described, String>>,
@@ -688,6 +691,7 @@ impl Host {
             generations: Arc::default(),
             epoch: 0,
             order: Vec::new(),
+            dormant: Vec::new(),
             arrangement: crate::panel::order::load(),
             infos: BTreeMap::new(),
             found: Vec::new(),
@@ -732,6 +736,7 @@ impl Host {
         }
         self.retired.retain(|thread| !thread.is_finished());
         self.order.clear();
+        self.dormant.clear();
         self.infos.clear();
         self.found.clear();
         self.routes.clear();
@@ -888,6 +893,12 @@ impl Host {
             .collect()
     }
 
+    /// Installed plugins that could put items on the dashboard but are
+    /// switched off there, and whether each is on otherwise.
+    pub fn dashboard_dormant(&self) -> &[(String, bool)] {
+        &self.dormant
+    }
+
     /// Puts the plugins with blocks in this order, keeping the others'
     /// places, and saves it.
     pub fn arrange_panels(&mut self, shown: &[&str]) {
@@ -911,6 +922,9 @@ impl Host {
             Event::Discovered { epoch, plugins, diagnostics } if epoch == self.epoch => {
                 self.found = diagnostics;
                 for (plugin_id, config) in plugins {
+                    if config.dashboard.is_some() && (config.enabled == Some(false) || !config.on_dashboard()) {
+                        self.dormant.push((plugin_id.clone(), config.enabled != Some(false)));
+                    }
                     if config.enabled == Some(false) {
                         continue;
                     }

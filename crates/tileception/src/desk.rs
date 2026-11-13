@@ -62,12 +62,6 @@ impl Tileception {
         }
     }
 
-    /// Whether Super+D cleared the desk of the screen, or of any of its areas.
-    pub(crate) fn desk_cleared(&mut self) -> bool {
-        (0..self.area_count())
-            .any(|index| self.with_local_area(index, |state| state.world.desk_cleared()) == Some(true))
-    }
-
     /// A key bound to `desktop` went down: it acts when let go, or peeks
     /// if held.
     pub(crate) fn desk_key_pressed(&mut self, keycode: u32) {

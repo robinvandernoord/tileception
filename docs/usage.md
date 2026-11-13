@@ -199,9 +199,7 @@ When the desk is clear or empty, the welcome screen shows a dashboard beside
 it: how many notifications there are (click to open them) and what
 [plugins](plugins.md#dashboard) put there, such as cards, pictures and
 animations. Holding **Super+D** fades the windows to outlines and shows the
-dashboard behind them. With nothing typed in the welcome screen, **Escape**
-brings back a desk that **Super+D** cleared, like pressing it again. The
-dashboard needs room beside the welcome screen; on a narrow screen it does not
+dashboard behind them. The dashboard needs room beside the welcome screen; on a narrow screen it does not
 show. Tap **Super** to put the welcome screen and dashboard away for a plain
 desktop, and tap it again to bring them back.
 
@@ -214,13 +212,18 @@ buttons. Where the items are is saved in
 the screen so they keep their place on a screen of another size; delete it to
 go back to the first-come layout.
 
-### Floating a window by dragging
+To remove an item, point at it and click the round **x** on its corner. It
+stays away, also after a restart, until you bring it back with the **+** beside
+the settings button in the welcome screen's footer. The **+** shows while there
+is something to add: it lists the items you removed, and installed plugins with
+dashboard items that are switched off. Choosing a plugin there switches its
+dashboard items on in `config.toml`, and the plugin too when it was off.
 
-While you drag a tiled window, a **Float here** pill appears at the top of the
-area. Drop the window on it to make it float; the outline shows where it will
-land. Drag a floating window to another tile's edge to tile it again. When
-there are no tiled windows, dropping anywhere on the empty space floats the
-window too.
+`tileception msg dashboard` lists the items by name (`notifications`, or a
+plugin's id and the item's, such as `timers/tea`) and says which are removed;
+`tileception msg dashboard hide <item>` removes one, and
+`tileception msg dashboard show <item>` (or `show all`) brings them back.
+Removed items are kept in the same file, so deleting it brings them back too.
 
 ### Minimized windows
 
