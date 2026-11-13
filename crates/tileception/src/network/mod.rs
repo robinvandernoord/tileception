@@ -360,7 +360,7 @@ impl Tileception {
         self.close_minimap();
         self.close_tray();
         self.close_updates_popover();
-        self.notifications.open = false;
+        self.close_notifications();
         let duration = self.world.settings.animation;
         self.network.zoom.set(true, duration);
         self.network.selected = 0;

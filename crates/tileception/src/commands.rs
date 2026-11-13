@@ -103,6 +103,8 @@ pub enum Command {
     Network(NetworkCommand),
     /// A key pressed while the network card is open (not available as text).
     NetworkKey(u32, crate::config::Mods),
+    /// A key pressed while the notification panel has the keyboard (not available as text).
+    NotificationPanelKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
@@ -597,6 +599,7 @@ impl Tileception {
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::Network(command) => return self.network_command(command),
             Command::NetworkKey(sym, mods) => self.network_key(sym, mods),
+            Command::NotificationPanelKey(sym, mods) => self.notification_panel_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::Settings => self.toggle_settings(),

@@ -34,6 +34,11 @@ pub struct Notifications {
     active: BTreeMap<u32, Arc<Notification>>,
     history: Vec<Arc<Notification>>,
     pub open: bool,
+    /// Whether the open panel has the keyboard: from opening it or a click
+    /// in it until a click elsewhere.
+    pub focused: bool,
+    /// The notification chosen in the panel with the keyboard, by id.
+    selected: Option<u32>,
     /// The screen the panel or the popups showing appeared on; the active
     /// one when unset.
     pub home: Option<Output>,
@@ -57,6 +62,9 @@ const LOCAL_CATEGORY: &str = "x-tileception.local";
 
 /// The category of questions waiting for an answer, which stay off a lock screen.
 const PROMPT_CATEGORY: &str = "x-tileception.prompt";
+
+/// How many notifications Page Up and Page Down scroll the panel by.
+const PAGE: isize = 5;
 
 /// How long a notification of Tileception's own stays up.
 const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -177,11 +185,174 @@ impl Tileception {
         }
         // Open on another screen, it comes over to this one.
         self.notifications.open = !self.notifications.open || !self.notifications_here();
+        self.notifications.focused = self.notifications.open;
         self.notifications.home = self.outputs.active.clone();
         self.notifications.offset = 0;
+        self.notifications.selected = None;
         if self.notifications.open {
+            self.doctor.focused = false;
             self.refresh_notification_history();
         }
+        self.force_keyboard_focus_sync();
+    }
+
+    pub fn close_notifications(&mut self) {
+        let focused = self.notifications.focused;
+        self.notifications.open = false;
+        self.notifications.focused = false;
+        if focused {
+            self.force_keyboard_focus_sync();
+        }
+    }
+
+    /// Whether keys go to the open panel.
+    pub fn notifications_keyboard(&self) -> bool {
+        self.notifications.open && self.notifications.focused
+    }
+
+    /// A left press anywhere while the panel is open, before anything takes
+    /// it: inside, the panel takes the keyboard; outside, the desktop gets it
+    /// back. The press itself is handled as usual. A modal dialog, the power
+    /// menu or the tray's menu keeps the keyboard where it is.
+    pub fn notifications_press(&mut self, point: Point) {
+        if !self.notifications.open
+            || self.is_locked()
+            || self.feedback.is_some()
+            || self.password_prompt.is_some()
+            || self.power_menu.is_some()
+            || self.colour_pick.is_some()
+            || self.tray.open
+        {
+            return;
+        }
+        // What shell_pointer_target puts above the panel takes the press.
+        let covered = self.overlay_under(point)
+            || self.handoff_pointer_target(point).is_some()
+            || (self.launcher.open && !self.launcher.home && self.launcher_takes(point))
+            || self.doctor_contains(point);
+        let inside = !covered && self.notifications_here() && self.notification_panel().contains(point);
+        if inside != self.notifications.focused {
+            self.notifications.focused = inside;
+            if inside {
+                self.doctor.focused = false;
+            }
+            self.force_keyboard_focus_sync();
+        }
+    }
+
+    /// Keys while the panel has the keyboard. Delete or C clears the history;
+    /// the arrows, the page keys, Home and End scroll it. Tab and Shift+Tab
+    /// choose a notification, Enter opens it and Backspace dismisses it. D
+    /// switches Do not disturb, M mutes the sound and Esc closes the panel.
+    pub fn notification_panel_key(&mut self, sym: u32, mods: crate::config::Mods) {
+        use smithay::input::keyboard::keysyms;
+        if mods.ctrl || mods.alt || mods.logo {
+            return;
+        }
+        let selected = self.selected_notification();
+        let last = self.notifications.history.len() as isize - 1;
+        let place = selected.as_ref().map(|(index, _)| *index as isize);
+        let top = self.notifications.offset as isize;
+        match crate::text_input::plain(sym) {
+            keysyms::KEY_Escape => self.close_notifications(),
+            keysyms::KEY_Delete | keysyms::KEY_c | keysyms::KEY_C => self.clear_notifications(),
+            keysyms::KEY_d | keysyms::KEY_D => self.toggle_dnd(),
+            keysyms::KEY_m | keysyms::KEY_M => {
+                use crate::media::{Adjust, Control, Level};
+                let mute = Control::Level(Level::Volume, Adjust::Mute(tileception_media::Toggle::Flip));
+                if let Err(error) = self.media_command(mute) {
+                    tracing::info!("{error}");
+                }
+            }
+            keysyms::KEY_Tab if mods.shift => self.select_notification(place.map_or(last, |place| place - 1)),
+            keysyms::KEY_ISO_Left_Tab => self.select_notification(place.map_or(last, |place| place - 1)),
+            // From nothing chosen, Tab starts at the top card in view.
+            keysyms::KEY_Tab => self.select_notification(place.map_or(top, |place| place + 1)),
+            keysyms::KEY_Up => self.notification_scroll(-1),
+            keysyms::KEY_Down => self.notification_scroll(1),
+            keysyms::KEY_Page_Up => self.notification_scroll(-PAGE),
+            keysyms::KEY_Page_Down => self.notification_scroll(PAGE),
+            keysyms::KEY_Home => self.notifications.offset = 0,
+            keysyms::KEY_End => self.notification_scroll(last.max(0)),
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space => {
+                if let Some((_, notification)) = &selected {
+                    self.open_notification(notification);
+                }
+            }
+            keysyms::KEY_BackSpace => {
+                if let Some((index, notification)) = &selected {
+                    let index = *index;
+                    // The next one down takes its place, or the one above at the end.
+                    let next = self
+                        .history_newest_first()
+                        .nth(index + 1)
+                        .or_else(|| index.checked_sub(1).and_then(|above| self.history_newest_first().nth(above)))
+                        .map(|next| next.id);
+                    self.dismiss_from_history(notification);
+                    self.notifications.selected = next;
+                    self.reveal_selected();
+                }
+            }
+            _ => return,
+        }
+        self.schedule_render();
+    }
+
+    /// The history as the panel lists it.
+    fn history_newest_first(&self) -> impl Iterator<Item = &Arc<Notification>> {
+        self.notifications.history.iter().rev()
+    }
+
+    /// The chosen notification and its place in the list, while it is there.
+    fn selected_notification(&self) -> Option<(usize, Arc<Notification>)> {
+        let selected = self.notifications.selected?;
+        self.history_newest_first()
+            .enumerate()
+            .find(|(_, notification)| notification.id == selected)
+            .map(|(index, notification)| (index, notification.clone()))
+    }
+
+    /// Chooses the notification at `index` in the list, kept within it, and
+    /// scrolls it into view.
+    fn select_notification(&mut self, index: isize) {
+        let len = self.notifications.history.len();
+        if len == 0 {
+            return;
+        }
+        let index = index.clamp(0, len as isize - 1) as usize;
+        let selected = self.history_newest_first().nth(index).map(|notification| notification.id);
+        self.notifications.selected = selected;
+        self.reveal_selected();
+    }
+
+    /// Scrolls the panel so the chosen notification shows in full.
+    fn reveal_selected(&mut self) {
+        let Some((index, notification)) = self.selected_notification() else { return };
+        if index < self.notifications.offset {
+            self.notifications.offset = index;
+            return;
+        }
+        while self.notifications.offset < index
+            && !self.notification_cards().iter().any(|card| card.notification.id == notification.id)
+        {
+            self.notifications.offset += 1;
+        }
+    }
+
+    /// What a click on the card does: its default action, if it has one.
+    fn open_notification(&mut self, notification: &Notification) {
+        if notification.default_action {
+            self.press_notification_button(notification, "default");
+        } else if let Some((key, _)) = notification.actions.first() {
+            self.press_notification_button(notification, &key.clone());
+        }
+    }
+
+    /// What the card's close button does in the panel.
+    fn dismiss_from_history(&mut self, notification: &Notification) {
+        let kind = self.notification_kind(notification);
+        let action = PointerAction::Close { identifier: notification.id, kind, history: true };
+        crate::ui::PointerAction::activate(&action, self, Rect::default(), Point::new(0.0, 0.0));
     }
 
     /// Whether the notifications show on the output being drawn or handled.
@@ -569,13 +740,7 @@ impl Tileception {
         }
         for card in self.notification_cards() {
             let notification = &card.notification;
-            let kind = if notification.category.as_deref() == Some(LOCAL_CATEGORY) {
-                NotificationKind::Local
-            } else if self.notifications.questions.contains(&notification.id) {
-                NotificationKind::Question
-            } else {
-                NotificationKind::Service
-            };
+            let kind = self.notification_kind(notification);
             if card.close.contains(point) {
                 return Some(PointerTarget::button(
                     card.close,
@@ -598,6 +763,16 @@ impl Tileception {
             }
         }
         None
+    }
+
+    fn notification_kind(&self, notification: &Notification) -> NotificationKind {
+        if notification.category.as_deref() == Some(LOCAL_CATEGORY) {
+            NotificationKind::Local
+        } else if self.notifications.questions.contains(&notification.id) {
+            NotificationKind::Question
+        } else {
+            NotificationKind::Service
+        }
     }
 
     /// Presses one of a notification's buttons, by its action key: clicked,
@@ -831,12 +1006,23 @@ impl Tileception {
                     Style::new(theme.font_size * 0.9, theme.muted).align(Align::Centre),
                 );
             }
-            let hints: &[(&str, &str)] = if self.builtin_notifications() {
-                &[("Esc", "Close"), ("Scroll", "Older")]
+            let builtin = self.builtin_notifications();
+            let mut hints: Vec<(&str, &str)> = if !self.notifications_keyboard() {
+                if builtin { vec![("Esc", "Close"), ("Scroll", "Older")] } else { vec![("Esc", "Close")] }
+            } else if self.notifications.selected.is_some() && self.selected_notification().is_some() {
+                vec![("Enter", "Open"), ("Backspace", "Dismiss"), ("Del", "Clear all"), ("Esc", "Close")]
+            } else if builtin && count > 0 {
+                vec![("Del", "Clear all"), ("Tab", "Choose"), ("D", "Do not disturb"), ("M", "Mute")]
+            } else if builtin {
+                vec![("D", "Do not disturb"), ("M", "Mute"), ("Esc", "Close")]
             } else {
-                &[("Esc", "Close")]
+                vec![("M", "Mute"), ("Esc", "Close")]
             };
-            painter.key_hints(hints, panel.x + 18.0, panel.bottom() - 26.0, false);
+            // As many as fit.
+            while hints.len() > 1 && painter.key_hints(&hints, 0.0, 0.0, true) > panel.w - 36.0 {
+                hints.pop();
+            }
+            painter.key_hints(&hints, panel.x + 18.0, panel.bottom() - 26.0, false);
         }
 
         for card in self.notification_cards() {
@@ -863,10 +1049,10 @@ impl Tileception {
         if card.popup {
             painter.popup(rect);
         } else {
-            painter.shape(
-                rect,
-                Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.surface, theme.popup_radius) },
-            );
+            // The card chosen with the keyboard has the focus ring.
+            let chosen = self.notifications_keyboard() && self.notifications.selected == Some(notification.id);
+            let (border_width, border) = if chosen { (2.0, theme.accent) } else { (1.0, theme.border) };
+            painter.shape(rect, Shape { border_width, border, ..Shape::filled(theme.surface, theme.popup_radius) });
         }
         // The accent stripe on the left edge; red for critical notifications.
         let stripe = Rect::new(rect.x + 5.0, rect.y + 14.0, 3.0, rect.h - 28.0);

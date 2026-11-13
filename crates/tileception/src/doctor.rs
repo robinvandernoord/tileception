@@ -734,6 +734,7 @@ impl Tileception {
         }
         self.doctor.open = true;
         self.doctor.focused = true;
+        self.notifications.focused = false;
         self.doctor.edited = Instant::now();
         if self.doctor.registry.is_none() && !self.doctor.loading {
             self.load_registry(false);

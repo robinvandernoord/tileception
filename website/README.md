@@ -57,13 +57,13 @@ Files in the remote web root that are not in `public/` are deleted.
 Set these on GitHub under Settings → Environments → `website` (or as
 repository secrets and variables):
 
-| Name | Kind | Value |
-| --- | --- | --- |
-| `OVH_FTP_HOST` | secret | FTP server from the OVH control panel, e.g. `ftp.cluster0XX.hosting.ovh.net` |
-| `OVH_FTP_USER` | secret | FTP login |
-| `OVH_FTP_PASSWORD` | secret | its password |
-| `OVH_FTP_PROTOCOL` | variable | `ftp` (default) or `sftp` on plans with SSH access |
-| `OVH_FTP_DIR` | variable | remote web root, default `www` |
+| Name               | Kind     | Value                                                                        |
+| ------------------ | -------- | ---------------------------------------------------------------------------- |
+| `OVH_FTP_HOST`     | secret   | FTP server from the OVH control panel, e.g. `ftp.cluster0XX.hosting.ovh.net` |
+| `OVH_FTP_USER`     | secret   | FTP login                                                                    |
+| `OVH_FTP_PASSWORD` | secret   | its password                                                                 |
+| `OVH_FTP_PROTOCOL` | variable | `ftp` (default) or `sftp` on plans with SSH access                           |
+| `OVH_FTP_DIR`      | variable | remote web root, default `www`                                               |
 
 OVH lists the FTP server and login under Web Cloud → Hosting plans → your plan →
 FTP-SSH. Enable the free SSL certificate for `tileception.space` there as well;

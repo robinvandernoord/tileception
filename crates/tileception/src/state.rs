@@ -811,6 +811,7 @@ impl Tileception {
             || (self.doctor.open && self.doctor.focused)
             || self.duck.typing()
             || self.network.zoom.open
+            || self.notifications_keyboard()
         {
             None
         } else {

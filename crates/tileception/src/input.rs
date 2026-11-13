@@ -409,11 +409,32 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
             }
+            if panels
+                && state.notifications_keyboard()
+                && (!state.launcher.open || state.launcher.home)
+                && !(state.doctor.open && state.doctor.focused)
+            {
+                // The open panel has the keyboard; Super shortcuts and keys
+                // that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::NotificationPanelKey(sym, Mods::from_state(mods))]);
+            }
             if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
                 // and Esc closes the notification panel first.
                 if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
-                    state.notifications.open = false;
+                    state.close_notifications();
                     return FilterResult::Intercept(Vec::new());
                 }
                 let mut bound = held;
@@ -463,7 +484,7 @@ impl Tileception {
                 && held == Mods::default()
                 && (state.notifications.open || !state.selection.windows.is_empty())
             {
-                state.notifications.open = false;
+                state.close_notifications();
                 state.selection.windows.clear();
                 return FilterResult::Intercept(Vec::new());
             }
@@ -882,6 +903,11 @@ impl Tileception {
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        // Before the shell's buttons capture the press, so a click on one in
+        // the panel gives the panel the keyboard too.
+        if state == ButtonState::Pressed && button == BTN_LEFT {
+            self.notifications_press(tileception_core::Point::new(self.pointer.x, self.pointer.y));
+        }
         if !self.is_locked() && button == BTN_MIDDLE && self.shell_middle_button(state == ButtonState::Pressed) {
             return;
         }

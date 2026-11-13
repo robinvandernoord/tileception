@@ -7,16 +7,16 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 
 ## Decisions
 
-| Topic | Decision |
-| --- | --- |
-| Name | Tileception (binary `tileception`); chosen for findability. |
-| Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
-| Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
-| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
-| Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock. |
-| Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
-| Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
-| Distribution | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host. |
+| Topic            | Decision                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name             | Tileception (binary `tileception`); chosen for findability.                                                                                                                                                                                  |
+| Display server   | Wayland compositor. X11 apps run through Xwayland. No native X11 WM.                                                                                                                                                                         |
+| Foundation       | Written from scratch on Smithay. niri and anvil are reading material only.                                                                                                                                                                   |
+| Design           | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
+| Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock.                             |
+| Configuration    | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands.                                                                                                                      |
+| Licensing        | Dropped. No trial or license code; updates use APT rather than an in-app updater.                                                                                                                                                            |
+| Distribution     | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host.                             |
 
 ## Architecture
 

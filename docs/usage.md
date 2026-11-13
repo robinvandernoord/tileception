@@ -332,6 +332,26 @@ again, gives the keyboard back without answering.
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
 to silence ordinary notification popups.
 
+The panel takes the keyboard when it opens, and again when you click in it; a
+click elsewhere gives the keyboard back to your windows. While it has the
+keyboard:
+
+| Key                         | Does                                           |
+| --------------------------- | ---------------------------------------------- |
+| **Delete** or **C**         | Clear all                                      |
+| **Up** / **Down**           | Scroll the history by one                      |
+| **Page Up** / **Page Down** | Scroll by five                                 |
+| **Home** / **End**          | Jump to the newest or the oldest               |
+| **Tab** / **Shift+Tab**     | Choose the next or previous notification       |
+| **Enter**                   | Open the chosen notification, as a click would |
+| **Backspace**               | Dismiss the chosen notification                |
+| **D**                       | Switch Do not disturb                          |
+| **M**                       | Mute or unmute the sound                       |
+| **Escape**                  | Close the panel                                |
+
+Super shortcuts, and keys that do not type such as volume and media keys, keep
+working while the panel has the keyboard.
+
 The panel's actions work from scripts and key bindings too:
 `tileception msg notifications clear` does what **Clear all** does, and
 `tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
@@ -470,13 +490,13 @@ battery; **Check** still works then.
 **Tab** and **Shift+Tab** switch between them, the arrow keys move through the
 list, **Space** ticks a row and **Enter** runs the page's main button.
 
-| Page | What it does |
-| --- | --- |
+| Page      | What it does                                                                                                                                                                                                                                                                                                                                 |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
-| Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
-| Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
-| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed. |
-| Settings | Automatic updates, and the Ubuntu mirror. See below. |
+| Kernels   | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below.                                                                                                                                                                                                                                                            |
+| Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions.                                                                              |
+| History   | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
+| Settings  | Automatic updates, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                         |
 
 Flatpaks of the system and of your own installation, and snaps, are listed
 under **Apps**. Asking for them uses the network, so they are listed when the
@@ -563,16 +583,16 @@ when that refresh fails, the old sources are put back. Once a day the mirror
 in use is tested by itself, and the page and the window's sidebar warn when it
 cannot be reached or is a day or more behind.
 
-| Key | Action on the Kernels page |
-| --- | --- |
-| A | Switch between the recommended view and all variants |
+| Key         | Action on the Kernels page                             |
+| ----------- | ------------------------------------------------------ |
+| A           | Switch between the recommended view and all variants   |
 | Q, or Space | Queue the highlighted kernel, or take it off the queue |
-| I / D | Queue the highlighted kernel to install / to remove |
-| U | Tick or untick the leftovers |
-| P | Preview the queue, and go back |
-| C | Clear the queue |
-| R | Refresh the package lists |
-| Enter | Apply the queue |
+| I / D       | Queue the highlighted kernel to install / to remove    |
+| U           | Tick or untick the leftovers                           |
+| P           | Preview the queue, and go back                         |
+| C           | Clear the queue                                        |
+| R           | Refresh the package lists                              |
+| Enter       | Apply the queue                                        |
 
 Type `up` in the launcher for the same actions as rows. The first row always
 opens Updates; below it are install everything, install the security updates,
@@ -580,26 +600,26 @@ clean up old kernels, upgrade to the next release and check now.
 
 From scripts and key bindings:
 
-| Command | Action |
-| --- | --- |
-| `tileception msg updates` | List what is waiting |
-| `tileception msg updates check` | Refresh the package lists |
-| `tileception msg updates install` | Install every update |
-| `tileception msg updates install security` | Install the security updates |
-| `tileception msg updates install <package>...` | Install the named updates |
-| `tileception msg updates kernels` | List kernels: running, fallback, old, available |
-| `tileception msg updates clean` | Remove old kernels and leftover kernel packages |
-| `tileception msg updates autoremove` | Remove packages that are no longer needed |
-| `tileception msg updates repair` | Repair the package system, when apt asks for it |
-| `tileception msg updates log` | Print what the last task printed |
-| `tileception msg updates upgrade` | Start the release upgrade in a terminal |
-| `tileception msg updates changelog <name>` | Show what changed in an update |
-| `tileception msg updates hold <package>...` | Hold APT packages at their version; `unhold` releases them |
-| `tileception msg updates skip <name>` | Skip the waiting version of an update; `unskip` brings it back |
-| `tileception msg updates automatic [on\|off]` | Say how automatic updates are set up, or switch them |
-| `tileception msg updates mirrors` | Test the mirrors; ask again for the results |
-| `tileception msg updates mirror <url>` | Use this mirror |
-| `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first |
+| Command                                              | Action                                                         |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| `tileception msg updates`                            | List what is waiting                                           |
+| `tileception msg updates check`                      | Refresh the package lists                                      |
+| `tileception msg updates install`                    | Install every update                                           |
+| `tileception msg updates install security`           | Install the security updates                                   |
+| `tileception msg updates install <package>...`       | Install the named updates                                      |
+| `tileception msg updates kernels`                    | List kernels: running, fallback, old, available                |
+| `tileception msg updates clean`                      | Remove old kernels and leftover kernel packages                |
+| `tileception msg updates autoremove`                 | Remove packages that are no longer needed                      |
+| `tileception msg updates repair`                     | Repair the package system, when apt asks for it                |
+| `tileception msg updates log`                        | Print what the last task printed                               |
+| `tileception msg updates upgrade`                    | Start the release upgrade in a terminal                        |
+| `tileception msg updates changelog <name>`           | Show what changed in an update                                 |
+| `tileception msg updates hold <package>...`          | Hold APT packages at their version; `unhold` releases them     |
+| `tileception msg updates skip <name>`                | Skip the waiting version of an update; `unskip` brings it back |
+| `tileception msg updates automatic [on\|off]`        | Say how automatic updates are set up, or switch them           |
+| `tileception msg updates mirrors`                    | Test the mirrors; ask again for the results                    |
+| `tileception msg updates mirror <url>`               | Use this mirror                                                |
+| `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first                  |
 
 Where two sources have an update by the same name, such as a Flatpak in both
 the system and your own installation, or a package and a snap, name it with
