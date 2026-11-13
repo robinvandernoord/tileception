@@ -71,6 +71,8 @@ pub enum Command {
         tool: String,
         arguments: serde_json::Value,
     },
+    /// Writes `[plugins.<id>]` for a command to config.toml.
+    PluginAdd(crate::plugins::Add),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
     /// For the bundled Bluetooth plugin: status, on, off, reconnect,
@@ -80,6 +82,8 @@ pub enum Command {
     Tray,
     /// Prints how much the image caches hold.
     Caches,
+    /// Lists the dashboard's items, removes one or brings removed ones back.
+    Dashboard(Vec<String>),
     TrayDebug(Option<usize>),
     /// Slides out the strip of minimized windows for a moment.
     ShowMinimized,
@@ -140,6 +144,9 @@ Inspecting:
   network status            print the wired connection and the Wi-Fi networks
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
+  dashboard                 list the welcome screen's dashboard items
+  dashboard hide <item>     remove an item from the dashboard
+  dashboard show <item>|all bring removed items back
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
@@ -175,7 +182,7 @@ Views:
   forward                   the next space you framed
   save <1-9>                save the current view in a slot
   go <1-9>                  go to a saved view
-  desktop                   show or hide the Desktop tile
+  desktop                   clear the desk, or bring back what it cleared
   minimap                   open or close the map of the whole tree in the bar
   network                   open or close the network card in the bar
   network wifi [on|off]     switch Wi-Fi on or off (toggles without on or off)
@@ -183,7 +190,7 @@ Views:
 
 Shell:
   launcher                  open the launcher
-  settings                  open or close Settings (drafts are kept)
+  settings                  open or close Settings (asks about unapplied changes)
   notifications             open the notification list
   notifications clear       clear the history and dismiss every popup
   answer-notification       give the newest popup with buttons the keyboard:
@@ -260,6 +267,11 @@ Smart home ([home] in config.toml):
 
 Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
+  plugin add [--id <id>] [--bar] <command> [args...]
+                            set a plugin up: write [plugins.<id>] to
+                            config.toml, which starts it; the id comes from
+                            the command's name unless given, and --bar shows
+                            its chips in the bar
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -271,7 +283,8 @@ Pretend input (headless or nested only):
   click [x y] [left|right|middle]
   press [left|right|middle] hold a button down (drags), and let go with
   release [left|right|middle]
-  key <combo>               press a key, such as Return or Super+slash
+  key <combo> [hold <ms>]   press a key, such as Return or Super+slash; with
+                            hold, let go after that many milliseconds
   keydown <key>             hold a key down (keydown Alt, then press and
                             motion: an Alt+drag)
   keyup <key>               let a held key go
@@ -340,6 +353,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             };
         }
         "caches" => return Ok(Command::Caches),
+        "dashboard" => return Ok(Command::Dashboard(args.iter().map(|arg| arg.to_string()).collect())),
         "tray" => {
             return match args.as_slice() {
                 [] => Ok(Command::Tray),
@@ -367,6 +381,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "home" => return crate::home::parse(rest).map(|command| Command::Home(command, rest.trim().to_string())),
+        "plugin" if args.first() == Some(&"add") => {
+            return crate::plugins::Add::parse(&args[1..]).map(Command::PluginAdd);
+        }
         "plugin" => {
             let mut parts = rest.trim().splitn(3, char::is_whitespace);
             let plugin =
@@ -478,7 +495,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "back" => Action::Back,
         "forward" => Action::Forward,
         "maximize" => Action::Maximize,
-        "desktop" => Action::ToggleDesktop,
+        "desktop" => Action::ToggleDesk,
         "float" => Action::ToggleFloat,
         "fullscreen" => Action::Fullscreen,
         "lock" => Action::Lock,
@@ -580,12 +597,14 @@ impl Tileception {
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),
             Command::Plugin { plugin, tool, arguments } => return self.plugin_command(&plugin, &tool, arguments),
+            Command::PluginAdd(add) => return self.add_plugin(add),
             Command::Battery => return Ok(self.battery_status()),
             Command::Bluetooth(text) => {
                 return self.plugin_command("bluetooth", "command", serde_json::json!({ "text": text }));
             }
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),
+            Command::Dashboard(args) => return self.dashboard_command(&args),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
@@ -696,5 +715,16 @@ mod tests {
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());
         assert!(parse("").is_err());
+        assert_eq!(
+            parse("plugin add --bar /usr/bin/weather --units metric"),
+            Ok(Command::PluginAdd(crate::plugins::Add {
+                plugin_id: None,
+                bar: true,
+                command: "/usr/bin/weather".into(),
+                args: vec!["--units".into(), "metric".into()],
+            }))
+        );
+        assert!(parse("plugin add").is_err());
+        assert!(matches!(parse("plugin home toggle"), Ok(Command::Plugin { .. })));
     }
 }
