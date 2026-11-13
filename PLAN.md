@@ -59,6 +59,19 @@ finished, remove its item (keep any part still to come) instead of ticking it
 off or adding notes such as "implemented", "verified" or "remains untried".
 Report testing in the conversation, the commit or the pull request instead.
 
+### Next
+
+- Dashboard surfaces, the rest. Decided:
+  - The dashboard's display also offers `linux-dmabuf` (with the same
+    feedback as the main display) and fractional scale, so GPU-drawn
+    surfaces do not go through shared memory and a fractional output scale
+    draws sharp.
+  - A cap on each dashboard client's shared memory pools, on top of the
+    4096-pixel cap on buffers.
+  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
+    network) as a manifest option. The protocol limits what it can do to the
+    desktop, not to the user's files.
+
 ### Later
 
 - Plugins in more places (the launcher conventions are in

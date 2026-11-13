@@ -27,7 +27,7 @@ use smithay::{
     utils::{IsAlive, Physical, Point, Rectangle, Scale},
     wayland::shell::wlr_layer::Layer,
 };
-use tileception_core::{Node, NodeId, Rect, WindowId, WindowRole};
+use tileception_core::{DropTarget, Node, NodeId, Rect, WindowId, WindowRole};
 
 use crate::{
     cursor::Cursor,
@@ -327,6 +327,8 @@ impl Tileception {
 
         // Then the window being dragged, then where it would land.
         if let Some(drag) = self.move_drag.filter(|drag| !drag.free) {
+            // Above the picture, which is under the pointer as it reaches the zone.
+            elements.extend(self.float_zone_elements(renderer, drag.target));
             let rect = Rect::new(
                 self.pointer.x - drag.grab.0 * drag.size.0,
                 self.pointer.y - drag.grab.1 * drag.size.1,
@@ -361,6 +363,37 @@ impl Tileception {
         (elements, scene)
     }
 
+    /// The zone that floats a dragged window, lit while the pointer is on it.
+    fn float_zone_elements(&self, renderer: &mut GlesRenderer, target: Option<DropTarget>) -> Vec<OutputElement> {
+        let zone = self.world.float_zone();
+        let lit = target == Some(DropTarget::Float);
+        let mut painter = crate::ui::Painter::new(self, renderer);
+        let theme = painter.theme();
+        let radius = (zone.h / 2.0) as f32;
+        let base = theme.surface_raised.alpha(0.96);
+        painter.shape(
+            zone,
+            Shape {
+                radius,
+                fill: (base, base),
+                border_width: if lit { 2.0 } else { 1.0 },
+                border: if lit { theme.accent } else { theme.accent.alpha(0.5) },
+                glow_radius: 18.0,
+                glow: Colour([0.0, 0.0, 0.0, 0.3]),
+                ..Default::default()
+            },
+        );
+        if lit {
+            let tint = theme.accent.alpha(0.24);
+            painter.shape(zone, Shape { radius, fill: (tint, tint), ..Default::default() });
+        }
+        let ink = theme.text;
+        let style = crate::ui::Style::new(theme.font_size, ink).align(crate::ui::Align::Centre);
+        painter.glyph(crate::ui::glyph::WINDOW, Rect::new(zone.x + 12.0, zone.y, 24.0, zone.h), 18, ink);
+        painter.text("Float here", Rect::new(zone.x + 36.0, zone.y, zone.w - 48.0, zone.h), style);
+        painter.finish()
+    }
+
     /// The context area's windows, tabs and tiles, topmost first: cut to the
     /// area on a split screen, so its neighbours slide out under the next area.
     fn area_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
@@ -374,6 +407,39 @@ impl Tileception {
         // reach over a neighbour or past their own window's border (within
         // the area, on a split screen).
         let mut elements: Vec<OutputElement> = Vec::new();
+        let fade = self.peek_fade();
+        if fade > 0.0 {
+            // Holding Super+D: windows fade to outlines over the dashboard.
+            let outline = Shape {
+                radius: theme.radius,
+                border_width: 1.5,
+                border: theme.text.alpha(0.55 * fade),
+                ..Default::default()
+            };
+            for drawn in &drawn_windows {
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, outline);
+            }
+            // Plugins' own surfaces go over the frames drawn for them.
+            let slots = self.dashboard_slots(self.home_centre());
+            elements.extend(self.dashboard_surface_elements(renderer, &slots));
+            let mut painter = crate::ui::Painter::new(self, renderer);
+            painter.alpha = fade;
+            self.draw_dashboard(&mut painter, &slots);
+            elements.extend(painter.finish());
+            if fade < 1.0 {
+                for drawn in &drawn_windows {
+                    let faded = match self.windows.get(&drawn.window_id) {
+                        Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade),
+                        _ => self.picture_faded(renderer, drawn.window_id, &drawn.content, 1.0 - fade),
+                    };
+                    elements.extend(faded);
+                }
+            }
+            return match self.area_clip() {
+                Some(clip) => clip_elements(elements, &clip, self.scale),
+                None => elements,
+            };
+        }
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
@@ -754,12 +820,23 @@ fn live(
     drawn: &Drawn,
     scale: f64,
 ) -> Vec<OutputElement> {
+    live_faded(renderer, window, drawn, scale, 1.0)
+}
+
+/// A live window at some opacity.
+fn live_faded(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    drawn: &Drawn,
+    scale: f64,
+    alpha: f32,
+) -> Vec<OutputElement> {
     let origin = physical_point((drawn.origin.x, drawn.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
         Some(toplevel) => {
-            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
+            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, alpha, Kind::Unspecified)
         }
-        None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
+        None => window.render_elements(renderer, origin, Scale::from(1.0), alpha),
     };
     enlarged(surfaces, origin, scale * drawn.scale.0).collect()
 }

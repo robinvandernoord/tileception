@@ -52,7 +52,8 @@ autostart = []
 # complete list instead.
 # default_binds = true
 # On an empty desktop (after login, or after closing the last window) show the
-# launcher with a clock: type to search, tap Super for a plain desktop.
+# launcher with a clock: type to search, tap Super for a plain desktop and
+# again to bring it back.
 # welcome = true
 # Map the whole edge proportionally when the pointer crosses to an adjacent
 # screen, including between screens of different sizes. Off: use their
@@ -438,7 +439,7 @@ repeat_rate = 30
 #   brightness up|down    the screen's backlight; brightness set <n>
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
-#   desktop               show or hide the Desktop tile
+#   desktop               clear the desk, or bring back what it cleared
 #   colour-scheme <s>     tell apps to use dark, light or default styles,
 #                         until this file is next loaded
 #   reload                reload this file

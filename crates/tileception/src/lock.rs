@@ -44,6 +44,7 @@ impl SessionLockHandler for Tileception {
         self.pending_press = None;
         self.tap_armed = None;
         self.tap_fired.clear();
+        self.end_desk_key();
         self.move_drag = None;
         self.resize_drag = None;
         self.gap_drag = None;

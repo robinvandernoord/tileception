@@ -48,7 +48,7 @@ pub enum Action {
     Back,
     Forward,
     Maximize,
-    ToggleDesktop,
+    ToggleDesk,
     ToggleFloat,
     NextTab,
     PrevTab,
@@ -259,6 +259,10 @@ impl Tileception {
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
+            // A desk key held as the keyboard moved away ends here.
+            if key_state == KeyState::Released {
+                self.desk_key_lost(code.raw());
+            }
             self.forward_key(peer, code, key_state, time);
         } else if visible {
             self.deliver_key(code, key_state, time);
@@ -498,10 +502,16 @@ impl Tileception {
             self.key_to_owner(code, key_state);
         }
         let tapped = std::mem::take(&mut self.tap_fired);
-        let commands = commands.unwrap_or_default();
+        let mut commands = commands.unwrap_or_default();
+        if pressed && matches!(commands.as_slice(), [Command::Action(Action::ToggleDesk)]) {
+            // A tap acts when let go; a hold peeks.
+            self.desk_key_pressed(keycode);
+            commands.clear();
+        }
         let greeter_repeat = self.greeter_repeat.take();
         if !pressed {
             self.key_released(keycode, modifier);
+            self.desk_key_released(keycode);
         } else if let Some(repeat) = greeter_repeat.or_else(|| Repeat::for_commands(&commands)) {
             self.start_key_repeat(keycode, repeat);
         } else {
@@ -609,7 +619,7 @@ impl Tileception {
             Action::Back => self.world.back(now),
             Action::Forward => self.world.forward(now),
             Action::Maximize => self.world.maximize(now),
-            Action::ToggleDesktop => self.world.toggle_desktop(now),
+            Action::ToggleDesk => self.toggle_desk(),
             Action::ToggleFloat => {
                 if let Some(focused) = self.world.focus() {
                     self.world.toggle_float(focused, now);
@@ -663,7 +673,7 @@ impl Tileception {
                 | Action::RecallView(_)
                 | Action::NextTab
                 | Action::PrevTab
-                | Action::ToggleDesktop
+                | Action::ToggleDesk
                 | Action::Minimize
                 | Action::Restore(_)
         ) {
@@ -707,6 +717,16 @@ impl Tileception {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
+            return;
+        }
+        // A held dashboard item follows the pointer; the plugins' surfaces
+        // are left out until it is let go.
+        if !self.is_locked() && self.dashboard_drag_motion(point) {
+            self.dashboard_pointer_motion(point, time);
+            return;
+        }
+        // A plugin's own surface on the dashboard takes the pointer there.
+        if !self.is_locked() && self.dashboard_pointer_motion(point, time) {
             return;
         }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
@@ -957,6 +977,15 @@ impl Tileception {
         if self.power_menu.is_none()
             && (self.tray.open || self.network.zoom.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
+        {
+            return;
+        }
+        if state == ButtonState::Released && button == BTN_LEFT && self.dashboard_release() {
+            return;
+        }
+        if !self.is_locked()
+            && self.dashboard_has_pointer()
+            && self.dashboard_pointer_button(button, state == ButtonState::Pressed, time)
         {
             return;
         }
@@ -1231,6 +1260,7 @@ impl Tileception {
         }
         if self.launcher.open
             && !self.is_locked()
+            && !self.dashboard_has_pointer()
             && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
@@ -1314,6 +1344,10 @@ impl Tileception {
             if event.amount(Axis::Vertical) == Some(0.0) {
                 frame = frame.stop(Axis::Vertical);
             }
+        }
+        if !self.is_locked() && self.dashboard_has_pointer() {
+            self.dashboard_pointer_axis(frame);
+            return;
         }
         pointer.axis(self, frame);
         pointer.frame(self);

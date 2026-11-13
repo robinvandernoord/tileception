@@ -128,6 +128,8 @@ install -D -m 755 "$built_updates_helper" "$root/usr/libexec/tileception-updates
 install -D -m 644 resources/org.tileception.updates.policy \
     "$root/usr/share/polkit-1/actions/org.tileception.updates.policy"
 install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
+install -D -m 644 resources/protocols/tileception-dashboard-v1.xml \
+    "$root/usr/share/tileception/protocols/tileception-dashboard-v1.xml"
 mkdir -p "$root/usr/share/accountsservice/interfaces"
 ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
     "$root/usr/share/accountsservice/interfaces/org.tileception.Greeter.xml"

@@ -136,7 +136,7 @@ group where the first selected window was. Use **Super+U** to zoom back out, or
 | Super+G                     | Combine selected windows into tabs                             |
 | Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
 | Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
-| Super+D                     | Show or hide the Desktop tile                                  |
+| Super+D                     | Clear the desk, or bring back what it cleared                  |
 | Super+H                     | Minimize windows                                               |
 | Super+Shift+H               | Restore the most recently minimized window                     |
 | Super+C                     | Close windows                                                  |
@@ -165,14 +165,52 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
-### The Desktop tile
+### Clearing the desk
 
-**Super+D** shows or hides the Desktop tile, a space in the layout for floating
-windows. Drag a tiled window onto it to make that window floating, or drag a
-floating window to another tile's edge to make it tiled again.
+**Super+D** clears the desk of the screen: every window there, tiled and
+floating, goes to the minimized-window strip. On a split screen this clears
+every area, each into its own strip, so the welcome screen and its dashboard
+show. Press it again to bring them back exactly where they were. Windows you had minimized before stay
+minimized, and windows closed in the meantime are left out.
 
-The Desktop tile is also visible when there are no tiled windows. Floating
-windows remain available when the tile is hidden.
+While the desk is clear you can still open windows, or restore single ones
+from the strip. While any window is on the desk, **Super+D** clears it, and
+these windows join the ones waiting; once the desk is empty, **Super+D**
+brings them all back together. Windows you minimize yourself with **Super+H**
+stay minimized.
+
+Hold **Super+D** instead of tapping it to peek: windows fade to outlines over
+the dashboard for as long as you hold it, and come back when you let go. The desk is not
+cleared. A hold lasts past the keyboard's repeat delay.
+
+### The dashboard
+
+When the desk is clear or empty, the welcome screen shows a dashboard beside
+it: how many notifications there are (click to open them) and what
+[plugins](plugins.md#dashboard) put there, such as cards, pictures and
+animations. Holding **Super+D** fades the windows to outlines and shows the
+dashboard behind them. With nothing typed in the welcome screen, **Escape**
+brings back a desk that **Super+D** cleared, like pressing it again. The
+dashboard needs room beside the welcome screen; on a narrow screen it does not
+show. Tap **Super** to put the welcome screen and dashboard away for a plain
+desktop, and tap it again to bring them back.
+
+Drag an item on the welcome screen's dashboard to put it anywhere beside the
+welcome screen. It snaps to an 8-pixel grid, and an item dropped on another
+moves to the nearest free place; the others stay where they are. Drag a
+picture or plugin surface by its title, anything else from anywhere but its
+buttons. Where the items are is saved in
+`~/.local/state/tileception/dashboard-layout.toml`, from the nearest corner of
+the screen so they keep their place on a screen of another size; delete it to
+go back to the first-come layout.
+
+### Floating a window by dragging
+
+While you drag a tiled window, a **Float here** pill appears at the top of the
+area. Drop the window on it to make it float; the outline shows where it will
+land. Drag a floating window to another tile's edge to tile it again. When
+there are no tiled windows, dropping anywhere on the empty space floats the
+window too.
 
 ### Minimized windows
 

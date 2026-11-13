@@ -11,7 +11,7 @@ use smithay::{
     backend::{
         allocator::gbm::GbmDevice,
         drm::{DrmDeviceFd, DrmNode},
-        egl::{EGLContext, EGLDisplay},
+        egl::{EGLContext, EGLDevice, EGLDisplay},
         renderer::{ImportDma, ImportMemWl, gles::GlesRenderer},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -39,23 +39,43 @@ pub fn init(
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("renderD")))
             .ok_or_else(|| std::io::Error::other("no render node in /dev/dri"))
-    })?;
-    tracing::info!("headless on {}", path.display());
-    let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
-    let descriptor = DrmDeviceFd::new(DeviceFd::from(OwnedFd::from(file)));
-    let node = DrmNode::from_path(&path)?;
-    let gbm = GbmDevice::new(descriptor)?;
-    // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
-    #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
-    let egl = unsafe { EGLDisplay::new(gbm)? };
-    // SAFETY: The newly created context belongs exclusively to this event-loop thread.
-    #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
-    let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl)?)? };
+    });
+    let renderer = match path {
+        Ok(path) => {
+            tracing::info!("headless on {}", path.display());
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            let descriptor = DrmDeviceFd::new(DeviceFd::from(OwnedFd::from(file)));
+            let node = DrmNode::from_path(&path)?;
+            let gbm = GbmDevice::new(descriptor)?;
+            // SAFETY: This GBM device is owned by Smithay and has no externally managed EGL display.
+            #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
+            let egl = unsafe { EGLDisplay::new(gbm)? };
+            // SAFETY: The newly created context belongs exclusively to this event-loop thread.
+            #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
+            let renderer = unsafe { GlesRenderer::new(EGLContext::new(&egl)?)? };
+            let feedback = DmabufFeedbackBuilder::new(node.dev_id(), renderer.dmabuf_formats()).build()?;
+            let mut dmabuf_state = DmabufState::new();
+            let global =
+                dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
+            state.dmabuf = Some((dmabuf_state, global));
+            renderer
+        }
+        Err(error) => {
+            // Without a GPU, as in containers and CI: Mesa's software
+            // renderer. Clients then share memory only, without dmabuf.
+            let device = EGLDevice::enumerate()?.find(EGLDevice::is_software).ok_or(error)?;
+            tracing::info!("headless on the software renderer");
+            // SAFETY: This EGL device display is created and owned here only.
+            #[allow(unsafe_code, reason = "Smithay requires an explicit opt-in to initialize a native EGL display")]
+            let egl = unsafe { EGLDisplay::new(device)? };
+            // SAFETY: The newly created context belongs exclusively to this event-loop thread.
+            #[allow(unsafe_code, reason = "Smithay requires the caller to guarantee exclusive EGL context ownership")]
+            unsafe {
+                GlesRenderer::new(EGLContext::new(&egl)?)?
+            }
+        }
+    };
     state.shm_state.update_formats(renderer.shm_formats());
-    let feedback = DmabufFeedbackBuilder::new(node.dev_id(), renderer.dmabuf_formats()).build()?;
-    let mut dmabuf_state = DmabufState::new();
-    let global = dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
-    state.dmabuf = Some((dmabuf_state, global));
 
     let (width, height) = std::env::var("TILECEPTION_HEADLESS_SIZE")
         .ok()

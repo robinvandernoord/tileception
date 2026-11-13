@@ -1180,7 +1180,7 @@ fn describe_command(command: &str) -> String {
         ("forward", _) => "Next view",
         ("save", _) => return format!("Save view {first}"),
         ("go", _) => return format!("Go to view {first}"),
-        ("desktop", _) => "Show or hide the Desktop",
+        ("desktop", _) => "Show desktop",
         ("minimap", _) => "Minimap",
         ("launcher", _) => "Open the launcher",
         ("settings", _) => "Open Settings",

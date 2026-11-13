@@ -95,6 +95,8 @@ const MIN_FLOAT: f64 = 48.0;
 const EDGE_BAND: f64 = 0.25;
 /// Pixels from the edge of the framed space that dock beside all of it.
 const SCREEN_EDGE_BAND: f64 = 16.0;
+/// The size of the zone that floats a dragged window, in pixels.
+const FLOAT_ZONE: (f64, f64) = (220.0, 44.0);
 
 #[derive(Debug, Clone, Copy)]
 struct Float {
@@ -158,6 +160,20 @@ impl Camera {
     }
 }
 
+/// The desk as it was before Super+D cleared it: its layout, the windows
+/// that clearing minimized, and focus.
+#[derive(Debug, Clone)]
+struct ClearedDesk {
+    layout: LayoutSnapshot,
+    windows: Vec<WindowId>,
+    focus: Option<WindowId>,
+    mru: Vec<WindowId>,
+    /// Windows opened while the desk was clear that a later Super+D took
+    /// away too, with where they floated, if they did. They come back
+    /// beside the layout, like windows opened meanwhile.
+    later: Vec<(WindowId, Option<Rect>)>,
+}
+
 /// Where navigation stood: what is framed, the history and focus. Taken
 /// before a gesture navigates, to go back there if the gesture is cancelled.
 #[derive(Debug, Clone)]
@@ -188,6 +204,8 @@ pub struct World {
     last_float: HashMap<WindowId, Rect>,
     /// Minimized windows, out of the tree, oldest first.
     minimized: Vec<Minimized>,
+    /// Set while Super+D has cleared the desk.
+    cleared: Option<ClearedDesk>,
     /// The output area the framed space fills, in pixels.
     screen: Rect,
 }
@@ -215,6 +233,7 @@ impl World {
     }
 
     pub fn restore_layout(&mut self, snapshot: &LayoutSnapshot, remap: &HashMap<WindowId, WindowId>, now: f64) -> bool {
+        self.cleared = None;
         let Some(tree) = Tree::restore(&snapshot.root, remap) else { return false };
         if snapshot.floats.iter().any(|(_, rect)| {
             ![rect.x, rect.y, rect.w, rect.h].iter().all(|coordinate| coordinate.is_finite())
@@ -285,6 +304,7 @@ impl World {
             floats: HashMap::new(),
             last_float: HashMap::new(),
             minimized: Vec::new(),
+            cleared: None,
             screen,
         }
     }
@@ -551,9 +571,20 @@ impl World {
         out
     }
 
+    /// The zone at the top of the area that floats a tiled window dropped
+    /// on it, shown while one is dragged.
+    pub fn float_zone(&self) -> Rect {
+        let area = self.frame_area();
+        let (width, height) = (FLOAT_ZONE.0.min(area.w * 0.5), FLOAT_ZONE.1.min(area.h * 0.2));
+        Rect::new(area.x + (area.w - width) / 2.0, area.y + SCREEN_EDGE_BAND + 12.0, width, height)
+    }
+
     /// Where `dragged` would land if let go at screen `point`.
     pub fn drop_target(&self, point: Point, dragged: WindowId, view: Rect) -> Option<DropTarget> {
         let area = self.frame_area();
+        if !self.tree.is_floating(dragged) && self.float_zone().contains(point) {
+            return Some(DropTarget::Float);
+        }
         let transform = self.xform(view);
         // Right at the edge of the framed space: dock beside all of it.
         if !self.overview && area.contains(point) {
@@ -615,7 +646,7 @@ impl World {
                 Some(part.inset(half_gap))
             }
             DropTarget::Tab(tile) => self.node_rect(tile, view).map(|rect| rect.inset(half_gap)),
-            DropTarget::Float => self.node_rect(self.tree.desktop(), view).map(|rect| rect.inset(half_gap)),
+            DropTarget::Float => Some(self.default_float_rect()),
         }
     }
 
@@ -890,7 +921,17 @@ impl World {
 
     /// Takes a window out of the layout without closing it; its neighbours
     /// take its space, as when it closes. Returns whether it was minimized.
+    /// Minimized like this, bringing back a cleared desk leaves it alone.
     pub fn minimize(&mut self, win: WindowId, now: f64) -> bool {
+        if let Some(cleared) = &mut self.cleared {
+            cleared.windows.retain(|window| *window != win);
+            cleared.later.retain(|(window, _)| *window != win);
+        }
+        self.hide(win, now)
+    }
+
+    /// Minimizes a window, for the user or for clearing the desk.
+    fn hide(&mut self, win: WindowId, now: f64) -> bool {
         let Some(home) = self.home_of(win) else { return false };
         self.tree.detach(win);
         if let Some(float) = self.floats.remove(&win) {
@@ -1053,12 +1094,187 @@ impl World {
         Rect::new(screen.x + screen.w * 0.2 + off, screen.y + screen.h * 0.2 + off, screen.w * 0.6, screen.h * 0.6)
     }
 
-    /// Shows or hides the Desktop's tile in the layout.
-    pub fn toggle_desktop(&mut self, now: f64) {
-        let shown = self.tree.desktop_shown();
-        self.tree.set_desktop_shown(!shown);
-        self.relayout();
+    // ----- clearing the desk -----
+
+    /// Whether Super+D has cleared the desk and some of the windows it
+    /// minimized are still waiting to come back.
+    pub fn desk_cleared(&self) -> bool {
+        self.cleared.as_ref().is_some_and(|cleared| {
+            cleared
+                .windows
+                .iter()
+                .chain(cleared.later.iter().map(|(window, _)| window))
+                .any(|window| self.is_minimized(*window))
+        })
+    }
+
+    /// Whether any window is in the layout, tiled or floating.
+    pub fn desk_has_windows(&self) -> bool {
+        !self.tree.windows_in(self.tree.root()).is_empty()
+    }
+
+    /// Clears the desk while anything is on it, else brings back what
+    /// clearing it minimized. Returns whether anything changed.
+    pub fn toggle_desk(&mut self, now: f64) -> bool {
+        if self.desk_has_windows() { self.clear_desk(now) } else { self.bring_back_desk(now) }
+    }
+
+    /// Minimizes every window in the layout, tiled and floating, and
+    /// remembers them with the layout they came from. Windows already
+    /// minimized are not part of it. On a desk cleared already, the windows
+    /// that are back or opened since join those waiting, so they all come
+    /// back together.
+    pub fn clear_desk(&mut self, now: f64) -> bool {
+        let windows = self.tree.windows_in(self.tree.root());
+        if windows.is_empty() {
+            return false;
+        }
+        if self.desk_cleared()
+            && let Some(mut cleared) = self.cleared.take()
+        {
+            // Back from the strip and still as it was: it keeps its place
+            // in the layout. Opened since, or floated or tiled since: it
+            // comes back as it is now.
+            for window in &windows {
+                let floated_then = cleared.layout.floats.iter().any(|(floated, _)| floated == window);
+                let known = cleared.windows.contains(window);
+                if known && floated_then == self.tree.is_floating(*window) {
+                    continue;
+                }
+                cleared.windows.retain(|candidate| candidate != window);
+                cleared.later.push((*window, self.floats.get(window).map(|float| float.rect)));
+            }
+            // The window worked in since keeps focus when they come back.
+            cleared.focus = self.focus.or(cleared.focus);
+            let mut mru: Vec<WindowId> =
+                cleared.mru.iter().copied().filter(|window| !self.mru.contains(window)).collect();
+            mru.extend(self.mru.iter().copied());
+            cleared.mru = mru;
+            self.cleared = Some(cleared);
+        } else {
+            self.cleared = Some(ClearedDesk {
+                layout: self.snapshot(),
+                windows: windows.clone(),
+                focus: self.focus,
+                mru: self.mru.clone(),
+                later: Vec::new(),
+            });
+        }
+        // Floating windows first, then tiles from the last: each tile's home
+        // is then beside a neighbour that is still there.
+        let (floats, tiles): (Vec<_>, Vec<_>) = windows.into_iter().partition(|window| self.tree.is_floating(*window));
+        for window in floats.into_iter().rev().chain(tiles.into_iter().rev()) {
+            self.hide(window, now);
+        }
+        self.overview = false;
         self.retarget(now);
+        true
+    }
+
+    /// Puts the windows that clearing the desk minimized back into the
+    /// layout they came from. Those closed meanwhile are left out; those
+    /// restored one by one keep their place in that layout, and windows
+    /// opened meanwhile stay, beside it.
+    pub fn bring_back_desk(&mut self, now: f64) -> bool {
+        let Some(cleared) = self.cleared.take() else { return false };
+        let waiting: Vec<WindowId> =
+            cleared.windows.iter().copied().filter(|window| self.is_minimized(*window)).collect();
+        // Cleared by a later Super+D: back beside the layout, as they were.
+        let later: Vec<(WindowId, Option<Rect>)> =
+            cleared.later.iter().copied().filter(|(window, _)| self.is_minimized(*window)).collect();
+        if waiting.is_empty() && later.is_empty() {
+            return false;
+        }
+        let present = self.tree.windows_in(self.tree.root());
+        // Remembered where they were, unless one restored on its own has
+        // since been floated or tiled: that one stays as it is now, like a
+        // window opened meanwhile.
+        let floated_then = |window: &WindowId| cleared.layout.floats.iter().any(|(floated, _)| floated == window);
+        let remembered = |window: &WindowId| {
+            cleared.windows.contains(window)
+                && (!present.contains(window) || floated_then(window) == self.tree.is_floating(*window))
+        };
+        let remap: HashMap<WindowId, WindowId> = waiting
+            .iter()
+            .chain(present.iter().filter(|window| remembered(window)))
+            .map(|window| (*window, *window))
+            .collect();
+        // Opened while the desk was clear, with where they float, if they do.
+        let opened: Vec<(WindowId, Option<Rect>)> = present
+            .iter()
+            .filter(|window| !remembered(window))
+            .map(|window| (*window, self.floats.get(window).map(|float| float.rect)))
+            .chain(later.iter().copied())
+            .collect();
+        // Restored one by one: they float where they are now.
+        let moved: Vec<(WindowId, Rect)> = present
+            .iter()
+            .filter(|window| remembered(window))
+            .filter_map(|window| Some((*window, self.floats.get(window)?.rect)))
+            .collect();
+        // What happened meanwhile wins: views saved, the window worked in.
+        let saved = self.saved.clone();
+        let (focus_now, mru_now) = (self.focus, self.mru.clone());
+        self.minimized.retain(|minimized| {
+            !waiting.contains(&minimized.window) && !later.iter().any(|(window, _)| *window == minimized.window)
+        });
+        if !self.restore_layout(&cleared.layout, &remap, now) {
+            // Our own snapshot always restores; should it not, the windows
+            // still get back into the layout.
+            for window in waiting {
+                self.dock_new(window);
+            }
+        }
+        for (window, rect) in moved {
+            if let Some(float) = self.floats.get_mut(&window) {
+                float.rect = rect;
+            }
+        }
+        for (window, rect) in &opened {
+            match rect {
+                Some(rect) => self.add_float(*window, Some(*rect)),
+                None => self.dock_new(*window),
+            }
+        }
+        self.relayout();
+        // Keep the windows opened meanwhile in view, as when they opened.
+        for (window, _) in &opened {
+            if let Some(tile) = self.tree.tile_of(*window)
+                && !self.tree.is_ancestor_or_self(self.framed, tile)
+            {
+                let common = self.tree.common_ancestor(self.framed, tile);
+                self.push_frame(common);
+            }
+        }
+        // Saved views keep every window they had, minimized ones too, which
+        // going to the view brings back.
+        self.saved = saved.map(|view| {
+            let view = view?;
+            let leaves: Vec<NodeId> = view.windows.iter().filter_map(|window| self.tree.leaf_of(*window)).collect();
+            let node = leaves
+                .iter()
+                .copied()
+                .reduce(|first, second| self.tree.common_ancestor(first, second))
+                .unwrap_or(self.tree.root());
+            let windows: Vec<WindowId> = view
+                .windows
+                .into_iter()
+                .filter(|window| self.contains_window(*window) || self.is_minimized(*window))
+                .collect();
+            (!windows.is_empty()).then_some(SavedView { node, windows })
+        });
+        let mut mru: Vec<WindowId> = cleared.mru.into_iter().filter(|window| !mru_now.contains(window)).collect();
+        mru.extend(mru_now);
+        mru.extend(opened.iter().map(|(window, _)| *window));
+        let mut seen = std::collections::HashSet::new();
+        self.mru = mru.into_iter().filter(|window| self.contains_window(*window) && seen.insert(*window)).collect();
+        let focus = focus_now
+            .filter(|window| self.contains_window(*window))
+            .or(cleared.focus.filter(|window| self.contains_window(*window)))
+            .or(self.mru.last().copied());
+        self.set_focus(focus);
+        self.retarget(now);
+        true
     }
 
     /// Moves a split boundary by a distance in screen pixels.
@@ -1899,6 +2115,21 @@ mod tests {
     }
 
     #[test]
+    fn dropping_a_tile_on_the_float_zone_floats_it() {
+        let mut world = four();
+        let zone = world.float_zone();
+        let point = Point::new(zone.x + zone.w / 2.0, zone.y + zone.h / 2.0);
+        let view = world.view(1e9);
+        assert_eq!(world.drop_target(point, WindowId(2), view), Some(DropTarget::Float));
+        assert!(world.drop_preview(DropTarget::Float, view).is_some(), "previews where it will float");
+        world.apply_drop(WindowId(2), DropTarget::Float, 0.0);
+        assert!(world.tree().is_floating(WindowId(2)));
+        world.tree().check_invariants();
+        // A floating window over the zone is just moving.
+        assert_ne!(world.drop_target(point, WindowId(2), world.view(1e9)), Some(DropTarget::Float));
+    }
+
+    #[test]
     fn floats_hang_above_the_layout() {
         let mut world = world();
         world.add_window(WindowId(1), Placement::Dock, 0.0);
@@ -2163,6 +2394,176 @@ mod tests {
         assert_eq!(world.tree().windows_in(tile), vec![WindowId(1), WindowId(2)]);
         assert!(!world.restore_last(0.0));
         world.tree().check_invariants();
+    }
+
+    #[test]
+    fn clearing_the_desk_minimizes_everything_and_brings_it_back_as_it_was() {
+        let mut world = four();
+        world.add_window(WindowId(5), Placement::Float, 0.0);
+        let float = Rect::new(100.0, 120.0, 400.0, 300.0);
+        world.set_float_rect(WindowId(5), float);
+        world.focus_window(WindowId(2), 0.0);
+        let before = rects(&world);
+        assert!(world.toggle_desk(0.0));
+        world.tree().check_invariants();
+        assert!(world.desk_cleared());
+        assert!(rects(&world).is_empty());
+        assert_eq!(world.minimized().count(), 5);
+        assert_eq!(world.focus(), None);
+        assert!(world.toggle_desk(0.0));
+        world.tree().check_invariants();
+        assert!(!world.desk_cleared());
+        assert_eq!(world.minimized().count(), 0);
+        assert!(same_rects(&rects(&world), &before), "{:?}\nvs {before:?}", rects(&world));
+        assert_eq!(world.focus(), Some(WindowId(2)));
+    }
+
+    #[test]
+    fn bringing_the_desk_back_leaves_earlier_minimized_windows_alone() {
+        let mut world = four();
+        world.minimize(WindowId(3), 0.0);
+        world.toggle_desk(0.0);
+        assert_eq!(world.minimized().count(), 4);
+        world.toggle_desk(0.0);
+        assert!(world.is_minimized(WindowId(3)));
+        assert_eq!(world.minimized().collect::<Vec<_>>(), vec![WindowId(3)]);
+        assert!(world.contains_window(WindowId(1)) && world.contains_window(WindowId(4)));
+    }
+
+    #[test]
+    fn a_clear_desk_with_nothing_on_it_does_nothing() {
+        let mut world = world();
+        assert!(!world.toggle_desk(0.0));
+        assert!(!world.desk_cleared());
+    }
+
+    #[test]
+    fn bringing_the_desk_back_after_changes_meanwhile() {
+        let mut world = four();
+        let before = rects(&world);
+        world.toggle_desk(0.0);
+        // One closes, one comes back on its own and a new one opens.
+        world.remove_window(WindowId(4), 0.0);
+        assert!(world.restore(WindowId(2), 0.0));
+        world.add_window(WindowId(9), Placement::Dock, 0.0);
+        assert!(world.desk_cleared(), "1 and 3 are still waiting");
+        assert!(world.toggle_desk(0.0), "2 and 9 are cleared too");
+        assert_eq!(world.minimized().count(), 4);
+        assert!(world.toggle_desk(0.0));
+        world.tree().check_invariants();
+        assert!(!world.desk_cleared());
+        for window in [1, 2, 3, 9] {
+            assert!(world.contains_window(WindowId(window)), "{window} is back");
+        }
+        assert!(!world.contains_window(WindowId(4)));
+        assert_eq!(world.minimized().count(), 0);
+        assert_eq!(world.focus(), Some(WindowId(9)), "the newest window keeps focus");
+        let framed = world.tree().windows_in(world.framed());
+        assert!(framed.contains(&WindowId(9)) && framed.contains(&WindowId(1)), "all in view: {framed:?}");
+        // 1 keeps its column; 2 and 3 share theirs as before, without 4.
+        let one = before.iter().find(|(window, _)| *window == WindowId(1)).unwrap().1;
+        assert!(rect_of(&world, WindowId(1)).w < one.w + 1e-6);
+    }
+
+    #[test]
+    fn bringing_the_desk_back_keeps_what_changed_meanwhile() {
+        let mut world = four();
+        world.focus_window(WindowId(1), 0.0);
+        world.save_view(1);
+        world.minimize(WindowId(4), 0.0);
+        world.toggle_desk(0.0);
+        // Back on its own and floated, then worked in.
+        world.restore(WindowId(2), 0.0);
+        world.toggle_float(WindowId(2), 0.0);
+        world.focus_window(WindowId(2), 0.0);
+        world.save_view(2);
+        assert!(world.toggle_desk(0.0), "2 is cleared too");
+        assert!(world.is_minimized(WindowId(2)));
+        assert!(world.toggle_desk(0.0));
+        world.tree().check_invariants();
+        assert!(world.tree().is_floating(WindowId(2)), "stays floating");
+        assert_eq!(world.focus(), Some(WindowId(2)), "the window worked in keeps focus");
+        assert!(world.has_saved_view(2), "a view saved meanwhile stays");
+        assert!(world.is_minimized(WindowId(4)));
+        // The earlier view still holds the window minimized before, and
+        // going there brings it back.
+        assert!(world.recall_view(1, 0.0));
+        assert!(world.contains_window(WindowId(4)));
+    }
+
+    #[test]
+    fn a_window_opened_on_a_cleared_desk_is_cleared_and_comes_back_with_the_rest() {
+        let mut world = world();
+        world.add_window(WindowId(1), Placement::Dock, 0.0);
+        assert!(world.toggle_desk(0.0));
+        assert!(world.toggle_desk(0.0));
+        assert!(world.contains_window(WindowId(1)), "back");
+        assert!(world.toggle_desk(0.0));
+        world.add_window(WindowId(2), Placement::Dock, 0.0);
+        assert!(world.toggle_desk(0.0), "clears the new window");
+        assert!(world.is_minimized(WindowId(1)) && world.is_minimized(WindowId(2)));
+        assert!(!world.desk_has_windows());
+        assert!(world.toggle_desk(0.0), "both come back");
+        world.tree().check_invariants();
+        assert!(world.contains_window(WindowId(1)) && world.contains_window(WindowId(2)));
+        assert_eq!(world.minimized().count(), 0);
+        assert!(!world.desk_cleared());
+    }
+
+    #[test]
+    fn a_window_restored_on_a_cleared_desk_is_cleared_again_in_its_place() {
+        let mut world = four();
+        let before = rects(&world);
+        world.toggle_desk(0.0);
+        assert!(world.restore(WindowId(2), 0.0));
+        assert!(world.toggle_desk(0.0), "2 is on the desk, so it is cleared");
+        assert_eq!(world.minimized().count(), 4);
+        assert!(world.toggle_desk(0.0));
+        assert!(same_rects(&rects(&world), &before), "{:?}\nvs {before:?}", rects(&world));
+    }
+
+    #[test]
+    fn windows_minimized_by_hand_do_not_come_back_with_the_desk() {
+        let mut world = four();
+        world.toggle_desk(0.0);
+        // Restored, then minimized by hand.
+        assert!(world.restore(WindowId(2), 0.0));
+        assert!(world.minimize(WindowId(2), 0.0));
+        // Opened, cleared with the desk, restored and minimized by hand.
+        world.add_window(WindowId(9), Placement::Dock, 0.0);
+        assert!(world.toggle_desk(0.0));
+        assert!(world.restore(WindowId(9), 0.0));
+        assert!(world.minimize(WindowId(9), 0.0));
+        assert!(world.toggle_desk(0.0));
+        world.tree().check_invariants();
+        assert!(world.is_minimized(WindowId(2)) && world.is_minimized(WindowId(9)));
+        for window in [1, 3, 4] {
+            assert!(world.contains_window(WindowId(window)), "{window} is back");
+        }
+    }
+
+    #[test]
+    fn a_window_floating_when_cleared_later_floats_where_it_was() {
+        let mut world = four();
+        world.toggle_desk(0.0);
+        world.add_window(WindowId(9), Placement::Float, 0.0);
+        let rect = world.floats.get(&WindowId(9)).unwrap().rect;
+        assert!(world.toggle_desk(0.0));
+        assert!(world.toggle_desk(0.0));
+        assert!(world.tree().is_floating(WindowId(9)));
+        assert!(world.floats.get(&WindowId(9)).unwrap().rect.approx_eq(&rect, 1e-9));
+    }
+
+    #[test]
+    fn a_desk_whose_windows_all_came_back_is_cleared_again() {
+        let mut world = four();
+        world.toggle_desk(0.0);
+        for window in 1..=4 {
+            world.restore(WindowId(window), 0.0);
+        }
+        assert!(!world.desk_cleared());
+        assert!(world.toggle_desk(0.0), "clears again");
+        assert_eq!(world.minimized().count(), 4);
     }
 
     #[test]

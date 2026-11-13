@@ -209,11 +209,14 @@ impl Tileception {
         if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
-        if self.panel_reordering() {
+        if self.panel_reordering() || self.dashboard_dragging() {
             return Some(smithay::input::pointer::CursorIcon::Grabbing);
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
+        }
+        if self.dashboard_grabbable(point) {
+            return Some(smithay::input::pointer::CursorIcon::Grab);
         }
         (self.feedback.is_some()
             || self.password_prompt.is_some()
@@ -823,6 +826,28 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// The whole of a buffer of this many pixels, scaled into `rect`.
+    pub fn image_scaled(&mut self, buffer: &MemoryRenderBuffer, pixels: (f64, f64), rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let scale = self.state.scale;
+        let position = (((rect.x + self.offset.0) * scale).round(), ((rect.y + self.offset.1) * scale).round());
+        let shown = (((rect.w * scale).round() as i32).max(1), ((rect.h * scale).round() as i32).max(1));
+        let alpha = (self.alpha < 1.0).then_some(self.alpha);
+        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+            self.renderer,
+            position,
+            buffer,
+            alpha,
+            Some(smithay::utils::Rectangle::from_size(pixels.into())),
+            Some(shown.into()),
+            smithay::backend::renderer::element::Kind::Unspecified,
+        ) {
+            self.layers.push(OutputElement::Memory(element));
+        }
+    }
+
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
@@ -851,36 +876,6 @@ impl<'a> Painter<'a> {
             alpha,
             src,
             size,
-            smithay::backend::renderer::element::Kind::Unspecified,
-        ) {
-            self.layers.push(OutputElement::Memory(element));
-        }
-    }
-
-    /// A whole picture of `pixels` drawn `shown` logical pixels large,
-    /// scaled up or down to that size.
-    pub fn image_scaled(
-        &mut self,
-        buffer: &MemoryRenderBuffer,
-        pixels: (i32, i32),
-        position: (f64, f64),
-        shown: (f64, f64),
-    ) {
-        if self.alpha <= 0.0 {
-            return;
-        }
-        let scale = self.state.scale;
-        let position = (((position.0 + self.offset.0) * scale).round(), ((position.1 + self.offset.1) * scale).round());
-        let alpha = (self.alpha < 1.0).then_some(self.alpha);
-        let src = smithay::utils::Rectangle::from_size((f64::from(pixels.0.max(1)), f64::from(pixels.1.max(1))).into());
-        let size = (((shown.0 * scale).round() as i32).max(1), ((shown.1 * scale).round() as i32).max(1));
-        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
-            self.renderer,
-            position,
-            buffer,
-            alpha,
-            Some(src),
-            Some(size.into()),
             smithay::backend::renderer::element::Kind::Unspecified,
         ) {
             self.layers.push(OutputElement::Memory(element));

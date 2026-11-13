@@ -13,11 +13,12 @@ struct Stored {
     order: Vec<String>,
 }
 
+/// The file the plugins' order is kept in.
+const PLUGINS: &str = "plugin-order.toml";
+
 /// The saved order, or none.
 pub fn load() -> Vec<String> {
-    std::fs::read_to_string(path())
-        .ok()
-        .filter(|text| text.len() <= 64 * 1024)
+    read_state(PLUGINS)
         .and_then(|text| toml::from_str::<Stored>(&text).ok())
         .map(|stored| stored.order)
         .unwrap_or_default()
@@ -25,24 +26,37 @@ pub fn load() -> Vec<String> {
 
 /// Saves an order, replacing the file at once so a crash keeps the old one.
 pub fn save(order: &[String]) {
-    let result = (|| {
-        let data = toml::to_string(&Stored { order: order.to_vec() }).map_err(std::io::Error::other)?;
-        let path = path();
-        std::fs::create_dir_all(path.parent().expect("state directory"))?;
-        let temporary = path.with_extension("toml.tmp");
-        std::fs::write(&temporary, data)?;
-        std::fs::rename(temporary, path)
-    })();
-    if let Err(error) = result {
-        tracing::warn!("could not save the plugin order: {error}");
+    match toml::to_string(&Stored { order: order.to_vec() }) {
+        Ok(text) => write_state(PLUGINS, &text),
+        Err(error) => tracing::warn!("could not save {PLUGINS}: {error}"),
     }
 }
 
-fn path() -> PathBuf {
+/// A file of Tileception's state directory, unless missing or too large.
+pub fn read_state(file: &str) -> Option<String> {
+    std::fs::read_to_string(path(file)).ok().filter(|text| text.len() <= 64 * 1024)
+}
+
+/// Writes a file of Tileception's state directory, replacing it at once so
+/// a crash keeps the old one.
+pub fn write_state(file: &str, text: &str) {
+    let result = (|| {
+        let path = path(file);
+        std::fs::create_dir_all(path.parent().expect("state directory"))?;
+        let temporary = path.with_extension("toml.tmp");
+        std::fs::write(&temporary, text)?;
+        std::fs::rename(temporary, path)
+    })();
+    if let Err(error) = result {
+        tracing::warn!("could not save {file}: {error}");
+    }
+}
+
+fn path(file: &str) -> PathBuf {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
-    root.join("tileception/plugin-order.toml")
+    root.join("tileception").join(file)
 }
 
 /// The plugins in `priority` (highest first) as the user arranged them: those
