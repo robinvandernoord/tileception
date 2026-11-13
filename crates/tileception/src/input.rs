@@ -719,6 +719,12 @@ impl Tileception {
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
             return;
         }
+        // A held dashboard item follows the pointer; the plugins' surfaces
+        // are left out until it is let go.
+        if !self.is_locked() && self.dashboard_drag_motion(point) {
+            self.dashboard_pointer_motion(point, time);
+            return;
+        }
         // A plugin's own surface on the dashboard takes the pointer there.
         if !self.is_locked() && self.dashboard_pointer_motion(point, time) {
             return;
@@ -972,6 +978,9 @@ impl Tileception {
             && (self.tray.open || self.network.zoom.open || state == ButtonState::Released)
             && self.bar_button(button, state == ButtonState::Pressed)
         {
+            return;
+        }
+        if state == ButtonState::Released && button == BTN_LEFT && self.dashboard_release() {
             return;
         }
         if !self.is_locked()

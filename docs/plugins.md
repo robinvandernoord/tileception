@@ -386,7 +386,8 @@ items on it from a `tileception://dashboard` resource, up to six each:
 
 `size` is `small`, `medium` or `large`; every item is as wide as its column.
 Tileception lays the items out in a column on each side of the welcome screen,
-top to bottom, and leaves out what does not fit. Pictures and surfaces get a
+top to bottom, and leaves out what does not fit. Until the user drags them
+elsewhere, they come in the panel's plugin order and each plugin's own order. Pictures and surfaces get a
 frame with their `title` and the plugin's name, drawn by Tileception.
 
 #### Dashboard surfaces

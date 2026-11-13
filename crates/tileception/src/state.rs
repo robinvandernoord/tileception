@@ -368,7 +368,7 @@ impl Tileception {
             tap_armed: None,
             tap_fired: Vec::new(),
             desk: Default::default(),
-            dashboard: Default::default(),
+            dashboard: crate::dashboard::Dashboard::load(),
             dashboard_surfaces: Default::default(),
             key_repeat: Default::default(),
             greeter_repeat: None,

@@ -284,7 +284,7 @@ impl Tileception {
     /// the welcome screen itself takes it, not under the notification panel
     /// or an overlay drawn over it.
     fn dashboard_target(&self, point: Point) -> Option<(WlSurface, Rect)> {
-        if !(self.dashboard_shown() && self.launcher.home && self.launcher_takes(point)) {
+        if !(self.dashboard_shown() && self.launcher.home && self.launcher_takes(point)) || self.dashboard_holding() {
             return None;
         }
         self.dashboard_surface_under(&self.dashboard_slots(self.home_panel()), point)

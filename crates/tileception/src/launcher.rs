@@ -1928,6 +1928,10 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
+        if self.dashboard_press(&layout.dashboard, point) {
+            self.schedule_render();
+            return;
+        }
         if let Some(target) = self.launcher_pointer_target(point) {
             target.activate(self, point);
         } else if !layout.covers(point) && !self.launcher.home {
