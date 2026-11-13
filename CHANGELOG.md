@@ -2,6 +2,41 @@
 
 <!-- next-version-placeholder -->
 
+## v0.18.0 (2026-11-13)
+
+### Features
+* **notifications:** add keyboard navigation to notification panel
+* **smart-home:** manage device imports and cloud options in settings
+* **battery:** accept more theme colours for thresholds
+* **doctor:** give the agent release history
+* **feedback:** add optional screenshot attachments
+* **updates:** show live mirror test progress
+* **updates:** support Linux Mint update management
+* **website:** refresh Tileception site icons
+* **session:** show Tileception logo in fastfetch
+* **updates:** add multi-source update management
+
+### Fixes
+* **handoff:** avoid overwriting files with duplicate names
+* **greeter:** keep sessions with an empty TryExec
+* **notify:** preserve caller-supplied replacement IDs
+* **power:** suspend when the lock is switched off
+* **apps:** ignore empty TryExec values
+* **apps:** honor default associations regardless of group order
+* **calc:** evaluate percentages of powers correctly
+* **windows:** keep requested size within layout slot
+* **xwayland:** offset window placement by output origin
+* **fastfetch:** show text logo and system modules
+* **settings:** read shared Wayland keymaps from offset zero
+* **updates:** fit update window controls to narrow areas
+* **floats:** keep floating windows inside their area
+* **ui:** center badge labels by their visible ink
+* **clipboard:** paste arbitrary X11 selection types
+
+### Documentation
+* **smart-home:** document settings-based device setup
+* **usage:** explain feedback screenshots
+
 ## v0.17.0 (2026-11-12)
 
 ### Features
