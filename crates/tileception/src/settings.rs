@@ -511,7 +511,7 @@ const FIELDS: &[Field] = &[
         8,
         "general.stretch_screen_edges",
         "Full-edge pointer crossing",
-        "Map the whole screen edge proportionally onto the neighboring screen.",
+        "Map the whole screen edge proportionally onto the neighboring screen or shared computer.",
         Control::Toggle,
     ),
     field(8, "touchscreens", "Touchscreens", "Choose the display each touchscreen controls.", Control::Section),

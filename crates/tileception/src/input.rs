@@ -256,6 +256,8 @@ impl Tileception {
     /// A key, from a keyboard or from `tileception msg key` in tests.
     pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
         self.ui_pressed = None;
+        // This machine's own keys are typed with its own layout.
+        self.type_with(Source::Local);
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
@@ -271,6 +273,11 @@ impl Tileception {
 
     /// A key for this machine, from here or from another machine.
     pub(crate) fn deliver_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        // The owner of another machine's window with the keyboard here learns
+        // what the keys it may get are typed with, before this one changes it.
+        if let Some(owner) = self.remote_keyboard_owner() {
+            self.tell_keymap(owner);
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = key_state == KeyState::Pressed;

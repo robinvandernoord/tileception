@@ -19,7 +19,7 @@ use smithay::{
 };
 use tileception_handoff::{Message, PeerId, Scroll, Source};
 
-use super::{Edge, Side, output_bounds};
+use super::{Edge, Side, edges::Span, output_bounds};
 use crate::{Tileception, input::AxisInput};
 
 /// evdev key codes are xkb's less eight.
@@ -100,6 +100,8 @@ impl Tileception {
     /// A local key while input belongs to another machine. The keyboard here
     /// still tracks it, so modifiers are right when input comes back.
     pub(crate) fn forward_key(&mut self, peer: PeerId, code: Keycode, key_state: KeyState, time: u32) {
+        // Told before this key changes the layout, as it changes there too.
+        self.tell_keymap(peer);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = key_state == KeyState::Pressed;
         let serial = SERIAL_COUNTER.next_serial();
@@ -155,6 +157,12 @@ impl Tileception {
             return false;
         }
         let Some(peer) = self.handoff.peer_at(&output.name(), side) else { return false };
+        // A game or 3D program holding the pointer keeps it, as it keeps it
+        // on its screen: only the return-home shortcut leaves then.
+        if self.pointer_held() {
+            self.handoff.push = 0.0;
+            return false;
+        }
         // A drag stays on its machine, unless it drags a window or a
         // program's data.
         if self.move_drag.is_none() && self.handoff.held.holds_button(source) && !self.may_carry_drag(peer, source) {
@@ -168,6 +176,15 @@ impl Tileception {
         if !crossing {
             return false;
         }
+        // Where nothing of that machine faces the pointer, it stays at the edge.
+        let reached = match side {
+            Side::Left | Side::Right => position.y - screen.y,
+            Side::Top | Side::Bottom => position.x - screen.x,
+        };
+        let Some(along) = self.cross_at(peer, &output.name(), side, reached) else {
+            self.handoff.push = 0.0;
+            return false;
+        };
         let beyond = match side {
             Side::Left => screen.x - position.x,
             Side::Right => position.x - screen.right(),
@@ -180,11 +197,6 @@ impl Tileception {
             return false;
         }
         self.handoff.push = 0.0;
-        let along = match side {
-            Side::Left | Side::Right => (position.y - screen.y) / screen.h,
-            Side::Top | Side::Bottom => (position.x - screen.x) / screen.w,
-        }
-        .clamp(0.0, 1.0);
         // A dragged window goes along, ahead of the pointer.
         if !self.carry_window(peer, source) {
             return false;
@@ -282,14 +294,20 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Puts the pointer just inside an edge, at a fraction along it.
+    /// Puts the pointer just inside an edge, at a fraction along its free
+    /// part.
     fn place_at_edge(&mut self, edge: &Edge, along: f64) -> bool {
         let Some(output) = self.output_named(&edge.output) else { return false };
+        let span = self.edge_span(&edge.output, edge.side);
         self.activate_output(&output);
         let screen = self.output_rect();
-        let along = along.clamp(0.0, 1.0);
-        let across = (screen.x + along * screen.w).min(screen.right() - 1.0);
-        let down = (screen.y + along * screen.h).min(screen.bottom() - 1.0);
+        let whole = match edge.side {
+            Side::Left | Side::Right => screen.h,
+            Side::Top | Side::Bottom => screen.w,
+        };
+        let point = span.unwrap_or(Span { start: 0.0, length: whole }).point(along);
+        let across = (screen.x + point).min(screen.right() - 1.0);
+        let down = (screen.y + point).min(screen.bottom() - 1.0);
         self.pointer = match edge.side {
             Side::Left => (screen.x + 1.0, down),
             Side::Right => (screen.right() - 2.0, down),
@@ -381,6 +399,8 @@ impl Tileception {
         }
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         let time = self.input_time();
+        // Typed with that machine's layout, shortcuts included.
+        self.type_with(Source::Peer(peer));
         self.deliver_key(Keycode::new(key + XKB_OFFSET), state, time);
         self.schedule_render();
     }
