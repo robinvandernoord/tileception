@@ -1,6 +1,6 @@
 //! Plugins: executables speaking MCP over stdio, found through manifests and
 //! `[plugins.<id>]`. They add launcher sources and cards, panel blocks, bar
-//! chips and commands.
+//! chips, readings on the lock screen and commands.
 //!
 //! The compositor owns one [`Host`]. Every plugin gets a worker thread that
 //! owns its process and all of its I/O, so a slow plugin holds up only
@@ -45,9 +45,23 @@ pub enum Place {
     Panel,
     /// `tileception msg plugin` and key bindings.
     Command,
+    /// Tileception's own lock screen: readings only, so it never calls a
+    /// tool.
+    Lock,
 }
 
 impl Place {
+    /// The place a plugin's `tileception://` resource fills, for the places
+    /// that have one.
+    fn showing(uri: &str) -> Option<Place> {
+        match uri {
+            LAUNCHER => Some(Place::Launcher),
+            PANEL => Some(Place::Panel),
+            LOCK => Some(Place::Lock),
+            _ => None,
+        }
+    }
+
     /// Whether a new request cancels the place's earlier ones. The panel's
     /// clicks and commands all go through; each gets its own number.
     fn cancels(self) -> bool {
@@ -58,7 +72,7 @@ impl Place {
 /// The current request generation of every place; for places that do not
 /// cancel, the last request's number.
 #[derive(Default)]
-struct Generations([AtomicU64; 3]);
+struct Generations([AtomicU64; 4]);
 
 impl Generations {
     fn get(&self, place: Place) -> &AtomicU64 {
@@ -78,6 +92,9 @@ pub struct PluginConfig {
     /// Chips in the bar: only with this block, unless it says
     /// `enabled = false`.
     pub bar: Option<BarOptions>,
+    /// Readings on the lock screen: only with this block, unless it says
+    /// `enabled = false`.
+    pub lock: Option<LockOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
 }
@@ -86,6 +103,11 @@ impl PluginConfig {
     /// Whether the plugin's chips show in the bar.
     pub fn in_bar(&self) -> bool {
         self.bar.as_ref().is_some_and(|bar| bar.enabled != Some(false))
+    }
+
+    /// Whether the plugin's readings show on the lock screen.
+    pub fn on_lock_screen(&self) -> bool {
+        self.lock.as_ref().is_some_and(|lock| lock.enabled != Some(false))
     }
 
     /// Whether the plugin's cards show under the launcher.
@@ -107,6 +129,13 @@ pub struct LauncherOptions {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BarOptions {
+    pub enabled: Option<bool>,
+}
+
+/// A plugin's `[lock]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockOptions {
     pub enabled: Option<bool>,
 }
 
@@ -175,6 +204,12 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         let base = base.bar.get_or_insert_default();
         if bar.enabled.is_some() {
             base.enabled = bar.enabled;
+        }
+    }
+    if let Some(lock) = overlay.lock {
+        let base = base.lock.get_or_insert_default();
+        if lock.enabled.is_some() {
+            base.enabled = lock.enabled;
         }
     }
 }
@@ -456,6 +491,8 @@ pub const PANEL: &str = "tileception://panel";
 pub const BAR: &str = "tileception://bar";
 /// The resource holding a plugin's cards under the launcher.
 pub const LAUNCHER: &str = "tileception://launcher";
+/// The resource holding a plugin's readings on the lock screen.
+pub const LOCK: &str = "tileception://lock";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -465,6 +502,8 @@ pub struct Changed {
     pub bar: bool,
     /// The cards under the launcher.
     pub cards: bool,
+    /// The readings on the lock screen.
+    pub lock: bool,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -627,6 +666,8 @@ pub struct Host {
     bars: BTreeMap<String, crate::panel::block::Bar>,
     /// Cards under the launcher by plugin.
     cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
+    /// Readings on the lock screen by plugin.
+    locks: BTreeMap<String, Vec<crate::panel::block::Reading>>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
 }
@@ -650,6 +691,7 @@ impl Host {
             panels: BTreeMap::new(),
             bars: BTreeMap::new(),
             cards: BTreeMap::new(),
+            locks: BTreeMap::new(),
             resources: BTreeMap::new(),
         };
         host.reload();
@@ -690,6 +732,7 @@ impl Host {
         self.panels.clear();
         self.bars.clear();
         self.cards.clear();
+        self.locks.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -704,10 +747,11 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, resources: Vec::new() }
+        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, lock: reloaded, resources: Vec::new() }
     }
 
-    /// A resource was read: panels are kept parsed, others as they are.
+    /// A resource was read: those of places and the bar are kept parsed,
+    /// others as they are.
     pub fn handle_resource(
         &mut self,
         epoch: u64,
@@ -726,45 +770,73 @@ impl Host {
                 return changed;
             }
         };
-        if uri == PANEL {
-            match serde_json::from_value::<crate::panel::block::Block>(value) {
-                Ok(block) => {
-                    self.panels.insert(plugin, block);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid panel block: {error}");
-                    self.panels.remove(&plugin);
-                }
+        match Place::showing(&uri) {
+            Some(Place::Panel) => self.read_panel(plugin, value, &mut changed),
+            Some(Place::Launcher) => self.read_cards(plugin, value, &mut changed),
+            Some(Place::Lock) => self.read_lock(plugin, value, &mut changed),
+            _ if uri == BAR => self.read_bar(plugin, value, &mut changed),
+            _ => {
+                self.resources.insert((plugin.clone(), uri.clone()), value);
+                changed.resources.push((plugin, uri));
             }
-            changed.panels = true;
-        } else if uri == BAR {
-            match serde_json::from_value::<crate::panel::block::Bar>(value) {
-                Ok(bar) => {
-                    self.bars.insert(plugin, bar);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid bar chips: {error}");
-                    self.bars.remove(&plugin);
-                }
-            }
-            changed.bar = true;
-        } else if uri == LAUNCHER {
-            match serde_json::from_value::<crate::panel::block::Launcher>(value) {
-                Ok(mut launcher) => {
-                    launcher.cards.truncate(crate::panel::block::LAUNCHER_CARDS);
-                    self.cards.insert(plugin, launcher.cards);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid launcher cards: {error}");
-                    self.cards.remove(&plugin);
-                }
-            }
-            changed.cards = true;
-        } else {
-            self.resources.insert((plugin.clone(), uri.clone()), value);
-            changed.resources.push((plugin, uri));
         }
         changed
+    }
+
+    fn read_panel(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Block>(value) {
+            Ok(block) => {
+                self.panels.insert(plugin, block);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid panel block: {error}");
+                self.panels.remove(&plugin);
+            }
+        }
+        changed.panels = true;
+    }
+
+    fn read_bar(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Bar>(value) {
+            Ok(bar) => {
+                self.bars.insert(plugin, bar);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid bar chips: {error}");
+                self.bars.remove(&plugin);
+            }
+        }
+        changed.bar = true;
+    }
+
+    fn read_cards(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Launcher>(value) {
+            Ok(mut launcher) => {
+                launcher.cards.truncate(crate::panel::block::LAUNCHER_CARDS);
+                self.cards.insert(plugin, launcher.cards);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid launcher cards: {error}");
+                self.cards.remove(&plugin);
+            }
+        }
+        changed.cards = true;
+    }
+
+    /// Readings for the lock screen. They are kept whatever the lock
+    /// screen shows, which leaves out what its privacy hides.
+    fn read_lock(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Lock>(value) {
+            Ok(mut lock) => {
+                lock.readings.truncate(crate::panel::block::LOCK_READINGS);
+                self.locks.insert(plugin, lock.readings);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid lock screen readings: {error}");
+                self.locks.remove(&plugin);
+            }
+        }
+        changed.lock = true;
     }
 
     /// Enabled plugins in the user's order, else highest priority first.
@@ -802,6 +874,18 @@ impl Host {
             .filter(|(_, config)| config.launcher_cards())
             .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.cards.get(plugin_id)?)))
             .flat_map(|(plugin_id, cards)| cards.iter().map(move |card| (plugin_id, card)))
+            .collect()
+    }
+
+    /// The readings on the lock screen of plugins with a `[lock]` block,
+    /// in the user's order. Launcher sources never show there: a plugin
+    /// gets there only through its `tileception://lock` resource.
+    pub fn lock_readings(&self) -> Vec<&crate::panel::block::Reading> {
+        self.arranged()
+            .into_iter()
+            .filter(|(_, config)| config.on_lock_screen())
+            .filter_map(|(plugin_id, _)| self.locks.get(plugin_id))
+            .flatten()
             .collect()
     }
 
@@ -1124,7 +1208,7 @@ impl Tileception {
         if changed.panels {
             self.panel_changed();
         }
-        if changed.bar || (changed.cards && self.launcher.open) {
+        if changed.bar || (changed.cards && self.launcher.open) || (changed.lock && self.draws_lock_screen()) {
             self.schedule_render();
         }
         if !changed.resources.is_empty() && self.settings.open {
@@ -2138,6 +2222,57 @@ mod tests {
         overlay(&mut manifest, settings.plugins["hidden"].clone());
         assert!(!manifest.launcher_cards());
         assert_eq!(manifest.launcher.unwrap().prefixes, Some(vec!["t".into()]));
+    }
+
+    #[test]
+    fn the_lock_screen_is_opt_in() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+            [plugins.plain.launcher]
+            prefixes = ["p"]
+            [plugins.plain.bar]
+
+            [plugins.shown]
+            command = "shown"
+            [plugins.shown.lock]
+
+            [plugins.home.lock]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        // Not with a launcher source or bar chips: only with a [lock] block.
+        assert!(!settings.plugins["plain"].on_lock_screen());
+        assert!(settings.plugins["shown"].on_lock_screen());
+        // The bundled home manifest has the block; the config switches it off
+        // and keeps the rest of the manifest.
+        let options = crate::bundled::Options { home: Some(None), ..crate::bundled::Options::default() };
+        let mut home = crate::bundled::manifests(&options)
+            .unwrap()
+            .into_iter()
+            .find_map(|(plugin_id, config)| (plugin_id == "home").then_some(config))
+            .unwrap();
+        assert!(home.on_lock_screen() && home.in_bar());
+        let manifests = crate::bundled::manifests(&crate::bundled::Options::default()).unwrap();
+        assert!(manifests.iter().all(|(_, config)| !config.on_lock_screen()), "only home");
+        overlay(&mut home, settings.plugins["home"].clone());
+        assert!(!home.on_lock_screen() && home.in_bar());
+        assert!(home.command.is_some());
+        // A manifest of its own says the same.
+        let manifest: PluginConfig = toml::from_str("command = \"weather\"\n[lock]\n").unwrap();
+        assert!(manifest.on_lock_screen());
+        assert!(toml::from_str::<PluginConfig>("[lock]\nprefixes = [\"w\"]\n").is_err());
+    }
+
+    #[test]
+    fn lock_readings_are_the_lock_resource() {
+        assert_eq!(Place::showing(LOCK), Some(Place::Lock));
+        assert_eq!(Place::showing(PANEL), Some(Place::Panel));
+        assert_eq!(Place::showing(BAR), None);
+        assert!(!Place::Lock.cancels());
     }
 
     #[test]

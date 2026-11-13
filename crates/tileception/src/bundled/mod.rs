@@ -55,6 +55,7 @@ pub fn manifests(options: &Options) -> Result<Vec<(String, PluginConfig)>, Strin
         let extra = devices.iter().flat_map(|path| ["--devices".to_string(), path.clone()]).collect();
         let (plugin_id, mut config) = manifest("home", extra);
         config.bar = Some(crate::plugins::BarOptions::default());
+        config.lock = Some(crate::plugins::LockOptions::default());
         manifests.push((plugin_id, config));
     }
     manifests.push(manifest("folders", Vec::new()));

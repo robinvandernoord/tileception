@@ -737,20 +737,28 @@ impl Tileception {
         let font_size = f64::from(theme.font_size);
         let min_time = font_size * 1.6 * 1.25 + 24.0;
         let pill_style = Style::new(theme.font_size * 0.85, theme.muted);
-        let mut pills = self.battery.reading.as_ref().map(|reading| reading.describe()).into_iter().collect::<Vec<_>>();
-        pills.extend(machine(&greeter.hostname, &greeter.kernel));
+        // Plugins' readings first, while locked; then the machine.
+        let mut pills: Vec<(Option<&'static str>, String)> =
+            self.lock_readings(greeter).into_iter().map(|(symbol, label)| (Some(symbol), label)).collect();
+        pills.extend(self.battery.reading.as_ref().map(|reading| (None, reading.describe())));
+        pills.extend(machine(&greeter.hostname, &greeter.kernel).into_iter().map(|label| (None, label)));
         let mut room = inner.h;
         if !pills.is_empty() && room >= PILL_H + 12.0 + min_time {
             room -= PILL_H + 12.0;
             let mut left = inner.x;
-            for label in &pills {
-                let width = painter.measure(label, 400.0, pill_style).0 + 20.0;
+            for (symbol, label) in &pills {
+                let icon = if symbol.is_some() { 18.0 } else { 0.0 };
+                let width = painter.measure(label, 400.0, pill_style).0 + 20.0 + icon;
                 if left + width > inner.right() {
                     break;
                 }
                 let pill = Rect::new(left, inner.bottom() - PILL_H, width, PILL_H);
                 painter.fill(pill, theme.surface_raised, (PILL_H / 2.0) as f32);
-                painter.text(label, pill, pill_style.align(Align::Centre));
+                if let Some(symbol) = symbol {
+                    painter.glyph(symbol, Rect::new(pill.x + 8.0, pill.y, 16.0, pill.h), 13, theme.muted);
+                }
+                let text = Rect::new(pill.x + icon, pill.y, pill.w - icon, pill.h);
+                painter.text(label, text, pill_style.align(Align::Centre));
                 left += width + 6.0;
             }
         }

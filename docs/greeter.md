@@ -79,8 +79,9 @@ read when the greeter starts.
   a file such as `/etc/motd`.
 - **Lock screen:** `[lock]` decides what a locked Tileception session shows before
   it is unlocked: `show_media` for the player controls and
-  `show_notification_count` for the number of new notifications. Locked sessions
-  read this table too.
+  `show_notification_count` for the number of new notifications. With both off,
+  plugins' readings such as the indoor temperature stay hidden too. Locked
+  sessions read this table too.
 - **Keyboard layouts:** with several layouts, such as `layout = "us,nl"` in
   `[keyboard]`, **Ctrl+Space** switches between them. Anyone can pick another
   layout from the bar on the login screen; the greeter remembers it for that

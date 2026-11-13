@@ -282,6 +282,42 @@ pub struct Launcher {
 /// The most cards one plugin shows under the launcher.
 pub const LAUNCHER_CARDS: usize = 4;
 
+/// What a plugin shows on Tileception's own lock screen, read from its
+/// `tileception://lock` resource: readings such as the indoor temperature.
+/// Nothing on the lock screen takes input, so readings have no actions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lock {
+    pub readings: Vec<Reading>,
+}
+
+/// One reading on the lock screen: a `glyph:` icon, then the title and
+/// the value, such as "Indoors 21°".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reading {
+    pub title: String,
+    pub value: String,
+    pub icon: Option<String>,
+}
+
+impl Reading {
+    /// What the lock screen says: the title and the value, cut short.
+    pub fn label(&self) -> String {
+        let label = format!("{} {}", self.title.trim(), self.value.trim());
+        let label = label.trim();
+        match label.char_indices().nth(LOCK_LABEL) {
+            Some((end, _)) => format!("{}\u{2026}", label[..end].trim_end()),
+            None => label.to_string(),
+        }
+    }
+}
+
+/// The most readings one plugin shows on the lock screen.
+pub const LOCK_READINGS: usize = 2;
+/// The most characters of a reading's label.
+const LOCK_LABEL: usize = 32;
+
 /// Colours from the theme for icons and badges.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -348,5 +384,24 @@ mod tests {
         assert!((card.progress.unwrap().share() - 0.355).abs() < 1e-9);
         assert!((Progress { value: 250.0 }.share() - 1.0).abs() < 1e-9);
         assert!(Progress { value: f64::NAN }.share().abs() < 1e-9);
+    }
+
+    #[test]
+    fn lock_readings_take_no_actions() {
+        let lock: Lock = serde_json::from_str(
+            r#"{"readings":[
+                {"title":"Indoors","value":"21\u00b0","icon":"glyph:thermometer",
+                 "action":{"type":"tool","name":"toggle"}},
+                {"title":"A very long name for a reading that goes on","value":"and on"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(lock.readings[0].label(), "Indoors 21\u{b0}");
+        // An action is not part of a reading, so it is not even kept.
+        let kept = serde_json::to_value(&lock.readings[0]).unwrap();
+        assert!(kept.get("action").is_none(), "{kept}");
+        let long = lock.readings[1].label();
+        assert!(long.ends_with('\u{2026}') && long.chars().count() <= LOCK_LABEL + 1, "{long}");
+        assert_eq!(Reading { value: "21\u{b0}".into(), ..Reading::default() }.label(), "21\u{b0}");
     }
 }

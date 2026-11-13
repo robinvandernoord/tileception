@@ -418,7 +418,8 @@ The block folds to one line while nothing is on and unfolds when something
 turns on; click its title to fold or unfold it yourself, or a room's name to
 fold that room. Devices that are switched off at the wall show as unreachable
 at the bottom of their room. While something is on, a chip in the bar says
-what; click it to open the block.
+what; click it to open the block. The built-in lock screen shows the indoor
+temperature in its clock tile.
 
 In the launcher, type `home` and a space to switch devices and rooms:
 `home living` switches a room, `home airco 21` sets the air conditioner and
