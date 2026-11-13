@@ -59,6 +59,19 @@ finished, remove its item (keep any part still to come) instead of ticking it
 off or adding notes such as "implemented", "verified" or "remains untried".
 Report testing in the conversation, the commit or the pull request instead.
 
+### Next
+
+- Dashboard surfaces, the rest. Decided:
+  - The dashboard's display also offers `linux-dmabuf` (with the same
+    feedback as the main display) and fractional scale, so GPU-drawn
+    surfaces do not go through shared memory and a fractional output scale
+    draws sharp.
+  - A cap on each dashboard client's shared memory pools, on top of the
+    4096-pixel cap on buffers.
+  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
+    network) as a manifest option. The protocol limits what it can do to the
+    desktop, not to the user's files.
+
 ### Later
 
 - Plugins in more places (the launcher conventions are in
@@ -83,8 +96,6 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
-  - Possibly: `tileception msg plugin add <command>` writes the config
-    entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
 - Notifications on Tileception's own lock screen (external lockers draw
@@ -113,34 +124,22 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
-- Smart home history: support temperature, humidity or both, including
-  standalone sensors. Let users choose which readings to show in Settings,
-  according to what each device reports.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
-- Bluetooth device icons by type: the block, nearby list, launcher rows and
-  bar chip use one Bluetooth glyph for every device. Pick a glyph from BlueZ's
-  `Icon` property (`audio-headset`, `audio-headphones`, `input-mouse`,
-  `input-keyboard`, `phone`, ...), adding the few missing glyphs to `ui.rs`,
-  and keep the Bluetooth glyph for unknown types.
 
 ### Maybe someday
 
 - Window management gestures on the touchpad.
-- Top bar calendar events from an .ics file or URL.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
 - Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, Ctrl+Space layout switching, more than one screen, reduced motion,
-  an accent taken from a shared wallpaper, and the full tile-to-window morph
-  at login.
-- Handoff hardening: key rotation and revocation, keyboard-layout ownership,
-  edge mapping for unequal monitors and pointer-locked apps, shortcut routing
-  inside a streamed window, audio and owner-side portal dialogs. Each machine's
-  keyboard follows only that machine's own pointer.
+  panels, more than one screen, and the full tile-to-window morph at login.
+- Handoff hardening: key rotation and revocation, pointer locks inside a
+  streamed window (a program there gets relative motion and holds the pointer
+  where the window is shown), audio and owner-side portal dialogs.
 - Handoff video: video-heavy windows need a real video codec rather than
   compressed tiles (choose between VA-API, openh264 or ffmpeg first). Popups
   stay where they opened when the window's place there changes.
