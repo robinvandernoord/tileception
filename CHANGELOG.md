@@ -2,6 +2,22 @@
 
 <!-- next-version-placeholder -->
 
+## v0.19.0 (2026-11-13)
+
+### Features
+* **settings:** confirm close and follow config changes
+* **calendar:** show and browse ical events
+* **plugins:** add plugins with tileception msg
+* **handoff:** route input across mismatched screens
+* **smart-home:** add configurable reading history
+* **greeter:** support reduced motion
+* **bluetooth:** show device kinds in icons
+* **desk:** add Super+D peek and plugin dashboard
+
+### Fixes
+* **plugins:** reject unsendable plugin arguments
+* **desk:** remove tiled drag-to-float target
+
 ## v0.18.0 (2026-11-13)
 
 ### Features
