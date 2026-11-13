@@ -401,6 +401,9 @@ pub(crate) fn import_devices(
             device.version = earlier.version.clone();
         }
     }
+    if let Some(previous) = &previous {
+        imported.keep_choices(previous);
+    }
     Ok(imported)
 }
 

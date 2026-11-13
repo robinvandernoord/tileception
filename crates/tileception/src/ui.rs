@@ -209,11 +209,14 @@ impl Tileception {
         if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
-        if self.panel_reordering() {
+        if self.panel_reordering() || self.dashboard_dragging() {
             return Some(smithay::input::pointer::CursorIcon::Grabbing);
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
+        }
+        if self.dashboard_grabbable(point) {
+            return Some(smithay::input::pointer::CursorIcon::Grab);
         }
         (self.feedback.is_some()
             || self.password_prompt.is_some()
@@ -264,6 +267,17 @@ pub mod glyph {
     /// A wired network: three linked boxes.
     pub const ETHERNET: &str = r#"<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="3" y="16" width="6" height="6" rx="1"/><rect x="15" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>"#;
     pub const BLUETOOTH: &str = r#"<path d="M7 7l10 10-5 5V2l5 5L7 17"/>"#;
+    /// Headphones: a band over two ear cups.
+    pub const HEADPHONES: &str = r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/>"#;
+    /// A headset: the headphones' band and cups with a microphone boom.
+    pub const HEADSET: &str = r#"<path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="12" width="4" height="6" rx="1.5"/><rect x="17" y="12" width="4" height="6" rx="1.5"/><path d="M5 18v.5A3.5 3.5 0 0 0 8.5 22H11"/>"#;
+    /// A loudspeaker box with its woofer and tweeter.
+    pub const SPEAKER: &str =
+        r#"<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><path d="M12 6.5h.01"/>"#;
+    pub const MOUSE: &str = r#"<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>"#;
+    pub const PHONE: &str = r#"<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>"#;
+    pub const GAMEPAD: &str = r#"<path d="M7 7h10a4 4 0 0 1 4 4v3.5a2.5 2.5 0 0 1-4.5 1.5L15 14H9l-1.5 2A2.5 2.5 0 0 1 3 14.5V11a4 4 0 0 1 4-4z"/><path d="M7 9.5v3M5.5 11h3M15.5 10.5h.01M17.5 12h.01"/>"#;
+    pub const LAPTOP: &str = r#"<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>"#;
     pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
     pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
     pub const LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
@@ -340,6 +354,16 @@ pub mod glyph {
             "fan" => FAN,
             "wifi_off" => WIFI_OFF,
             "bluetooth" => BLUETOOTH,
+            "headphones" => HEADPHONES,
+            "headset" => HEADSET,
+            "speaker" => SPEAKER,
+            "mouse" => MOUSE,
+            "keyboard" => KEYBOARD,
+            "gamepad" => GAMEPAD,
+            "phone" => PHONE,
+            "laptop" => LAPTOP,
+            "monitor" => MONITOR,
+            "camera" => CAMERA,
             "bell" => BELL,
             "lock" => LOCK,
             "play" => PLAY,
@@ -540,7 +564,7 @@ pub struct LocalTime {
 }
 
 impl LocalTime {
-    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    #[allow(unsafe_code, reason = "time accepts a null pointer and only returns the current time")]
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
@@ -823,6 +847,28 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// The whole of a buffer of this many pixels, scaled into `rect`.
+    pub fn image_scaled(&mut self, buffer: &MemoryRenderBuffer, pixels: (f64, f64), rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let scale = self.state.scale;
+        let position = (((rect.x + self.offset.0) * scale).round(), ((rect.y + self.offset.1) * scale).round());
+        let shown = (((rect.w * scale).round() as i32).max(1), ((rect.h * scale).round() as i32).max(1));
+        let alpha = (self.alpha < 1.0).then_some(self.alpha);
+        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+            self.renderer,
+            position,
+            buffer,
+            alpha,
+            Some(smithay::utils::Rectangle::from_size(pixels.into())),
+            Some(shown.into()),
+            smithay::backend::renderer::element::Kind::Unspecified,
+        ) {
+            self.layers.push(OutputElement::Memory(element));
+        }
+    }
+
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
@@ -851,36 +897,6 @@ impl<'a> Painter<'a> {
             alpha,
             src,
             size,
-            smithay::backend::renderer::element::Kind::Unspecified,
-        ) {
-            self.layers.push(OutputElement::Memory(element));
-        }
-    }
-
-    /// A whole picture of `pixels` drawn `shown` logical pixels large,
-    /// scaled up or down to that size.
-    pub fn image_scaled(
-        &mut self,
-        buffer: &MemoryRenderBuffer,
-        pixels: (i32, i32),
-        position: (f64, f64),
-        shown: (f64, f64),
-    ) {
-        if self.alpha <= 0.0 {
-            return;
-        }
-        let scale = self.state.scale;
-        let position = (((position.0 + self.offset.0) * scale).round(), ((position.1 + self.offset.1) * scale).round());
-        let alpha = (self.alpha < 1.0).then_some(self.alpha);
-        let src = smithay::utils::Rectangle::from_size((f64::from(pixels.0.max(1)), f64::from(pixels.1.max(1))).into());
-        let size = (((shown.0 * scale).round() as i32).max(1), ((shown.1 * scale).round() as i32).max(1));
-        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
-            self.renderer,
-            position,
-            buffer,
-            alpha,
-            Some(src),
-            Some(size.into()),
             smithay::backend::renderer::element::Kind::Unspecified,
         ) {
             self.layers.push(OutputElement::Memory(element));

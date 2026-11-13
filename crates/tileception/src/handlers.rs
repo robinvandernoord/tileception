@@ -117,6 +117,9 @@ impl CompositorHandler for Tileception {
             return;
         }
         on_commit_buffer_handler::<Self>(surface);
+        if self.dashboard_commit(surface) {
+            return;
+        }
         // Shown in the next frame, not whenever the screen is next polled.
         self.schedule_render();
         // Not before the surface has drawn: foot crashes on an enter before
@@ -161,7 +164,10 @@ impl CompositorHandler for Tileception {
                     let resizing = self.resize_drag.is_some_and(|drag| drag.window == window_id);
                     // Fullscreen is the screen's size, not the window's own.
                     let fullscreen = self.fullscreen == Some(window_id);
-                    if !resizing && !fullscreen && (width > rect.w + 0.5 || height > rect.h + 0.5) {
+                    // Settings draws at the size it is given; a frame drawn
+                    // before a refit must not undo it.
+                    let settings = self.is_settings_window(window_id);
+                    if !resizing && !fullscreen && !settings && (width > rect.w + 0.5 || height > rect.h + 0.5) {
                         self.world.grow_float(window_id, width, height);
                         self.apply_layout();
                     }
@@ -206,7 +212,11 @@ impl SeatHandler for Tileception {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        // Dashboard plugins draw inside their frames, not the pointer.
+        if self.is_dashboard_seat(seat) {
+            return;
+        }
         self.cursor_status = image;
     }
 

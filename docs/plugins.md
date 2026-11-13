@@ -2,7 +2,7 @@
 
 Plugins are executable commands speaking MCP over stdio. They can add launcher
 sources, cards under the launcher, a block in the notification panel, chips in
-the bar, and tools for `tileception msg plugin`. They run as the session user, with the session's
+the bar, items on the [dashboard](#dashboard), and tools for `tileception msg plugin`. They run as the session user, with the session's
 environment and permissions. Installing a manifest enables its executable. Only
 install plugins you trust.
 
@@ -83,13 +83,16 @@ args = ["--stdio"]
 # cards = false
 [bar]
 # enabled = false
+[dashboard]
+# enabled = false
+# surface = true
 ```
 
 `command` names one executable, not a shell command line. Arguments are separate
 strings. Config fields overlay the matching manifest, so disabling an installed
 plugin only needs `enabled = false`, and hiding its bar chips only
 `[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
-block. A panel block shows whenever the plugin offers one, and so do its cards
+block, and dashboard items only for plugins with a `[dashboard]` block. A panel block shows whenever the plugin offers one, and so do its cards
 under the launcher unless `[launcher]` says `cards = false`.
 
 Omitted prefixes come from `launcher_info`. An explicit empty prefix list
@@ -105,6 +108,40 @@ another (see [Panel block](#panel-block)). Every rejected prefix is logged and
 shown by `plugins`; a source can retain its other prefixes. A plugin overriding a
 built-in prefix takes precedence for that prefix. Reserve `plugins` for
 discovery diagnostics.
+
+### Adding a plugin from the command line
+
+`tileception msg plugin add <command> [args...]` writes a `[plugins.<id>]`
+entry with that command and its arguments to `config.toml`, keeping the rest
+of the file as it is. The config reload that follows starts the plugin. For
+example:
+
+```sh
+tileception msg plugin add python3 ~/plugins/weather.py
+tileception msg plugin add --bar --id lamps /opt/lamps/bin/lamps-mcp --stdio
+```
+
+The id comes from the executable's name, without its extension or a
+`tileception-` prefix, or from the script or package when the command is an
+interpreter or runner such as `python3`, `node`, `bash`, `deno`, `npx` or
+`uvx` (`python3 ~/plugins/weather.py` and `deno run -A ~/plugins/weather.ts`
+both become `weather`). Give another with
+`--id <id>`: lowercase letters, digits, `-` and `_`. Tileception does not start
+the plugin to ask for an id: MCP's server name is a display name, and the
+plugin should not run before it is set up. `--bar` adds the `[bar]` block, so
+the plugin's chips show. Options go before the command; everything after it is
+the plugin's arguments. An argument that is empty or contains spaces is
+refused, since it would reach the compositor split in two; edit `config.toml`
+for one. Plugins do not start in the folder you ran the command from, so name
+scripts by absolute path (the shell expands `~/`): a relative script path that
+Tileception cannot find is refused.
+Ask Doctor to set up a plugin and it can run this command once you approve it.
+
+The command must be an executable on the compositor's `PATH` or an absolute
+path. Adding is refused when the id is already in `config.toml`, used by an
+installed manifest or a bundled plugin, or reserved (`add`, `plugins`), and
+when the same command and arguments are already set up under another id. The
+id `add` cannot be called with `tileception msg plugin <id> <tool>`.
 
 ## MCP convention
 
@@ -130,8 +167,10 @@ Set `isError: true` for tool failures. Resources are JSON text in
 a local image such as PNG or SVG, or `glyph:<name>` for Tileception's own
 symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
 `home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
-`wifi_off`, `bluetooth`, `bell`, `lock`, `clock`, `play`, `pause`, `stop`,
-`next`, `previous`, `plus`, `minus`, `check` and `close`. Panel blocks, launcher
+`wifi_off`, `bluetooth`, `headphones`, `headset`, `speaker`, `mouse`,
+`keyboard`, `gamepad`, `phone`, `laptop`, `monitor`, `camera`, `bell`, `lock`,
+`clock`, `play`, `pause`, `stop`, `next`, `previous`, `plus`, `minus`, `check`
+and `close`. Panel blocks, launcher
 cards and bar chips only draw `glyph:` icons.
 
 ### Launcher
@@ -289,8 +328,9 @@ folding, the chosen view and the selected row across updates.
 - Items are `group` (a heading that folds its items when clicked), `row` and
   `card`. A row has an `id`, `title`, `detail`, `icon`, `tint`, `dim` (dimmer
   title), `alert` (detail in the danger colour), `enabled`, an optional
-  `switch` (`on`, `pending`, `action`) and `levels`. Clicking a row with levels
-  selects it and shows them.
+  `switch` (`on`, `pending`, `action`), `levels` and a `trend` like a card's,
+  drawn small at the right of a row without a switch. Clicking a row with
+  levels selects it and shows them.
 - A level is a bar from 0 to 100 with `title`, `value`, `unit` or `steps`
   (words spread over the range) and `look` (`plain` or `warmth`). Dragging
   sends its tool action with `value` added to the arguments, up to eight times
@@ -299,7 +339,9 @@ folding, the chosen view and the selected row across updates.
   `tint`, `lit`, `enabled`, `title_action`, `buttons`, a `stepper` (`value`,
   `minus`, `plus`), a `switch`, rows of `choices` (`title` and `options` with
   `title`, `selected`, `action`), a `trend` (`span` in seconds and `lines` of
-  `[seconds ago, value]` points, `dashed` for a target) and a `progress` bar
+  `[seconds ago, value]` points, `dashed` for a target, `secondary` for a
+  second kind of reading, such as humidity beside temperature, drawn in the
+  second accent colour on a scale of its own) and a `progress` bar
   along the bottom (`value` from 0 to 100). Without a `value`, the title starts
   where the reading would.
 - A button has a `title`, `icon`, `primary` (filled with the accent, for the
@@ -357,6 +399,68 @@ stays open and what is typed and found stays as it is. Copy also leaves the
 launcher open; open, run, terminal and settings actions close it. Send
 `notifications/resources/updated` when a card changes, for instance each second
 for a countdown; Tileception reads the resource again and redraws.
+
+### Dashboard
+
+The dashboard shows beside the welcome screen when the desk is clear or empty,
+and behind the windows while Super+D is held (see [Using
+Tileception](usage.md#the-dashboard)). Plugins with a `[dashboard]` block put
+items on it from a `tileception://dashboard` resource, up to six each:
+
+```json
+{"items":[
+  {"type":"card","id":"tea","title":"Tea","value":"2:41","icon":"glyph:clock"},
+  {"type":"image","id":"radar","title":"Rain radar","size":"medium",
+   "src":"/home/me/.cache/radar.png","action":{"type":"open","target":"https://example.org/radar"}},
+  {"type":"surface","id":"lamp","title":"Lava lamp","size":"large"}]}
+```
+
+- `card` is the panel block's card, drawn the same way.
+- `image` is a PNG, JPEG, WebP or SVG: an absolute path to a regular file of at
+  most 8 MiB, or a `data:image/...;base64,` URI. It is read when shown and read
+  again after `notifications/resources/updated`, so any program in any language
+  that writes an image can draw on the dashboard. Clicking it runs its
+  `action`, if it has one.
+- `surface` is drawn by the plugin itself, over Wayland (below).
+
+`size` is `small`, `medium` or `large`; every item is as wide as its column.
+Tileception puts the items beside the welcome screen, down the left of it and
+then the right, in the panel's plugin order and each plugin's own order, and
+leaves out what does not fit. Users can drag them anywhere beside it, and
+remove single items, which stay away by their `id` until brought back. An
+installed plugin with a `[dashboard]` block that is switched off, or whose
+dashboard is, is offered under the **+** in the welcome screen's footer. Pictures and surfaces get a
+frame with their `title` and the plugin's name, drawn by Tileception.
+
+#### Dashboard surfaces
+
+A plugin whose `[dashboard]` block sets `surface = true` is started with
+`WAYLAND_SOCKET`, one end of a Wayland connection made for it alone. Wayland
+client libraries (libwayland in C, pywayland, wayland-rs and others) use it in
+place of `WAYLAND_DISPLAY` without further code. The connection offers
+`wl_compositor`, `wl_subcompositor`, `wl_shm`, `wp_viewporter`, a `wl_seat`
+with a pointer and no keyboard, and
+[`tileception_dashboard_v1`](../resources/protocols/tileception-dashboard-v1.xml),
+installed as `/usr/share/tileception/protocols/tileception-dashboard-v1.xml`.
+Nothing else exists there: no windows, outputs, clipboard or screen capture.
+
+Create a `wl_surface` for each `surface` item and pass it to
+`tileception_dashboard_v1.get_item` with the item's `id`. The `configure`
+event gives the size to draw at and the buffer scale; 0 by 0 means the item is
+not on screen now. Tileception clips what is drawn to that size. Frame
+callbacks arrive only while the item is on screen, so a plugin that draws on
+each callback uses no time while the dashboard is hidden. The surface receives
+pointer motion, buttons and scroll while the pointer is over it. Buffers are
+at most 4096 pixels a side.
+
+The protocol limits what a plugin can do to the desktop, not what its process
+can do: it runs as the session user like any other plugin.
+
+[`resources/plugins/lava-lamp`](../resources/plugins/lava-lamp) is a complete
+example in Python with pywayland: a lava lamp that changes colour when clicked,
+and a card whose Shake button calls the plugin's tool. Point the manifest's
+`command` at `lava-lamp.py` and copy it to
+`~/.local/share/tileception/plugins/`.
 
 ### Commands
 

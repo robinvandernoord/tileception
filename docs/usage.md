@@ -17,11 +17,20 @@ between views.
 
 ## Settings
 
-Settings keeps unapplied drafts while you move between categories or close and
-reopen its window. Back returns to the category and keeps the screen's draft,
-including unfinished input. Apply changes saves and applies it in one step;
-Discard screen explicitly removes that screen's edits since opening it.
-Drafts last for the current session and are not saved across a compositor restart.
+Settings keeps unapplied drafts while you move between categories. Back returns
+to the category and keeps the screen's draft, including unfinished input. Apply
+changes saves and applies it in one step; Discard screen explicitly removes that
+screen's edits since opening it.
+
+Closing Settings with unapplied changes asks first: **Apply** saves them and
+closes, **Discard** closes without them, and **Cancel** (or Escape) keeps
+Settings open. Enter chooses Apply. Closing keeps no draft, so Settings always
+opens on `config.toml` as it is then.
+
+While Settings is open it follows `config.toml`: when the file changes on disk,
+settings you have not touched show the new values. A setting or screen you have
+edited keeps your edit, and Settings says so when the file changed it too;
+applying then saves your version over the file's.
 
 In Settings, use **Ctrl+Page Up/Down** to switch categories and **Alt+Up** to
 go Back. **Tab** and **Shift+Tab** move between controls, **Page Up/Down**
@@ -39,7 +48,8 @@ Wayland's counterclockwise convention; mirroring happens before rotation.
 **Apply changes** previews display changes for 15 seconds without saving the
 configuration. Choose **Keep changes** to save, or **Revert** to restore the
 previous setup. Escape, Alt+Up, closing Settings and the countdown ending also
-restore it. Your draft stays available to retry. A display change or config
+restore it. Your draft stays available to retry, unless you close Settings and
+discard it. A display change or config
 reload cancels an active preview. If saving fails, the preview reverts and the
 error appears in Settings.
 
@@ -136,7 +146,7 @@ group where the first selected window was. Use **Super+U** to zoom back out, or
 | Super+G                     | Combine selected windows into tabs                             |
 | Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
 | Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
-| Super+D                     | Show or hide the Desktop tile                                  |
+| Super+D                     | Clear the desk, or bring back what it cleared                  |
 | Super+H                     | Minimize windows                                               |
 | Super+Shift+H               | Restore the most recently minimized window                     |
 | Super+C                     | Close windows                                                  |
@@ -165,14 +175,55 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
-### The Desktop tile
+### Clearing the desk
 
-**Super+D** shows or hides the Desktop tile, a space in the layout for floating
-windows. Drag a tiled window onto it to make that window floating, or drag a
-floating window to another tile's edge to make it tiled again.
+**Super+D** clears the desk of the screen: every window there, tiled and
+floating, goes to the minimized-window strip. On a split screen this clears
+every area, each into its own strip, so the welcome screen and its dashboard
+show. Press it again to bring them back exactly where they were. Windows you had minimized before stay
+minimized, and windows closed in the meantime are left out.
 
-The Desktop tile is also visible when there are no tiled windows. Floating
-windows remain available when the tile is hidden.
+While the desk is clear you can still open windows, or restore single ones
+from the strip. While any window is on the desk, **Super+D** clears it, and
+these windows join the ones waiting; once the desk is empty, **Super+D**
+brings them all back together. Windows you minimize yourself with **Super+H**
+stay minimized.
+
+Hold **Super+D** instead of tapping it to peek: windows fade to outlines over
+the dashboard for as long as you hold it, and come back when you let go. The desk is not
+cleared. A hold lasts past the keyboard's repeat delay.
+
+### The dashboard
+
+When the desk is clear or empty, the welcome screen shows a dashboard beside
+it: how many notifications there are (click to open them) and what
+[plugins](plugins.md#dashboard) put there, such as cards, pictures and
+animations. Holding **Super+D** fades the windows to outlines and shows the
+dashboard behind them. The dashboard needs room beside the welcome screen; on a narrow screen it does not
+show. Tap **Super** to put the welcome screen and dashboard away for a plain
+desktop, and tap it again to bring them back.
+
+Drag an item on the welcome screen's dashboard to put it anywhere beside the
+welcome screen. It snaps to an 8-pixel grid, and an item dropped on another
+moves to the nearest free place; the others stay where they are. Drag a
+picture or plugin surface by its title, anything else from anywhere but its
+buttons. Where the items are is saved in
+`~/.local/state/tileception/dashboard-layout.toml`, from the nearest corner of
+the screen so they keep their place on a screen of another size; delete it to
+go back to the first-come layout.
+
+To remove an item, point at it and click the round **x** on its corner. It
+stays away, also after a restart, until you bring it back with the **+** beside
+the settings button in the welcome screen's footer. The **+** shows while there
+is something to add: it lists the items you removed, and installed plugins with
+dashboard items that are switched off. Choosing a plugin there switches its
+dashboard items on in `config.toml`, and the plugin too when it was off.
+
+`tileception msg dashboard` lists the items by name (`notifications`, or a
+plugin's id and the item's, such as `timers/tea`) and says which are removed;
+`tileception msg dashboard hide <item>` removes one, and
+`tileception msg dashboard show <item>` (or `show all`) brings them back.
+Removed items are kept in the same file, so deleting it brings them back too.
 
 ### Minimized windows
 
@@ -410,7 +461,11 @@ With [smart home devices](configuration.md#smart-home) set up, the notification
 panel has a **Home** block. An air conditioner shows its room temperature, a
 target you change with **-** and **+**, its mode and fan speed, and a trend
 line of the last six hours of temperature and target underneath. Below it are
-the lights and plugs by room, each with a switch. Click a light to show its
+the lights, plugs and sensors by room, each light and plug with a switch, and
+each sensor with a small trend line of its last six hours. Temperature is drawn
+in the accent colour and humidity in the second accent colour, each on its own
+scale. For a device that reports both, **Settings**, **Smart home**,
+**History** chooses temperature, humidity or both. Click a light to show its
 brightness and colour sliders. **All** lists everything in one list instead,
 with what is on first, and **All off** switches off every light and plug.
 
@@ -433,7 +488,9 @@ all.
 ### Bluetooth
 
 The notification panel's **Bluetooth** block lists paired devices with a switch
-to connect each. **Pair device** searches for 30 seconds; flip a nearby
+to connect each, each with a symbol for its kind (headphones, headset, speaker,
+mouse, keyboard, game controller, phone, computer, display or camera) when the
+device says what it is. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 

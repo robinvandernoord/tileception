@@ -162,6 +162,10 @@ pub struct Tileception {
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
     pub tap_fired: Vec<crate::commands::Command>,
+    /// Super+D: held to peek, tapped to clear the desk.
+    pub desk: crate::desk::Desk,
+    pub dashboard: crate::dashboard::Dashboard,
+    pub dashboard_surfaces: crate::dashboard_surface::Surfaces,
     pub key_repeat: crate::key_repeat::KeyRepeat,
     /// Set by a lock screen or greeter key to repeat while it is held.
     pub greeter_repeat: Option<crate::key_repeat::Repeat>,
@@ -237,6 +241,8 @@ pub struct Tileception {
     /// This instance may be the polkit agent at all.
     pub polkit_wanted: bool,
     pub network: crate::network::Network,
+    /// Events from `[calendar]`.
+    pub calendar: crate::calendar::Agenda,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -363,6 +369,9 @@ impl Tileception {
             touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
+            desk: Default::default(),
+            dashboard: crate::dashboard::Dashboard::load(),
+            dashboard_surfaces: Default::default(),
             key_repeat: Default::default(),
             greeter_repeat: None,
             pending_press: None,
@@ -423,6 +432,7 @@ impl Tileception {
             polkit: Default::default(),
             polkit_wanted: false,
             network: Default::default(),
+            calendar: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,
@@ -1030,7 +1040,10 @@ impl Tileception {
         self.update_home();
         self.update_toplevels();
         self.update_duck();
+        self.configure_dashboard_items();
+        self.refresh_dashboard_pointer();
         let _ = self.display_handle.flush_clients();
+        self.flush_dashboard_clients();
     }
 }
 
@@ -1118,7 +1131,7 @@ pub(crate) fn shell_word(value: &str) -> String {
 /// The terminal when none is configured: the user's choice in
 /// `xdg-terminals.list`, else the first of these that is installed, else
 /// any installed terminal emulator.
-fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
+pub(crate) fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
     if let Some(chosen) = apps.preferred_terminal() {
         return chosen.exec.clone();
     }
@@ -1134,6 +1147,8 @@ fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set for a dashboard plugin's own connection.
+    pub dashboard: Option<crate::dashboard_surface::Owner>,
 }
 
 impl ClientData for ClientState {

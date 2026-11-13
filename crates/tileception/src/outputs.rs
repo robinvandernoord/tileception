@@ -817,6 +817,12 @@ impl Tileception {
         self.split().map_or(1, |areas| areas.shares.len())
     }
 
+    /// The context screen's room less what bars reserve, across all its
+    /// areas on a split screen.
+    pub fn screen_room(&self) -> Rect {
+        self.split().map_or_else(|| self.world.screen(), |areas| areas.usable)
+    }
+
     /// The area of the context screen in use.
     pub fn area_index(&self) -> usize {
         self.split().map_or(0, |areas| areas.context)
@@ -1347,6 +1353,8 @@ impl Tileception {
             });
             right = right.max(position[0].saturating_add(width));
         }
+        // Linked machines learn how much of their edge is left.
+        self.share_edges();
     }
 
     pub fn configure_outputs(&mut self) -> Result<(), String> {

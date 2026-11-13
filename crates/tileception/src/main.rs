@@ -16,6 +16,7 @@ mod battery;
 mod builtin_lock;
 mod bundled;
 mod calc;
+mod calendar;
 mod capture;
 mod clipboard;
 mod colour_pick;
@@ -24,6 +25,9 @@ mod config;
 mod config_edit;
 mod controls;
 mod cursor;
+mod dashboard;
+mod dashboard_surface;
+mod desk;
 mod doctor;
 mod doctor_policy;
 mod drag;
@@ -38,6 +42,7 @@ mod handlers;
 mod handoff;
 mod headless;
 mod home;
+mod ics;
 mod idle;
 mod inject;
 mod input;
@@ -362,6 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.start_xwayland();
     state.init_launcher();
     state.init_plugins();
+    state.apply_calendar();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);
@@ -371,6 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // not with the next frame.
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
+        state.flush_dashboard_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
@@ -441,6 +448,7 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
     state.start_greeter(file)?;
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
+        state.flush_dashboard_clients();
     })?;
     if let Some(socket) = socket {
         let _ = std::fs::remove_file(socket);

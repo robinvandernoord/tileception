@@ -170,6 +170,7 @@ impl Tileception {
     }
 
     pub fn send_layer_frames(&self, time: std::time::Duration) {
+        self.send_dashboard_frames(time);
         let Some(output) = self.output.as_ref() else { return };
         let map = layer_map_for_output(output);
         for layer in map.layers() {

@@ -374,6 +374,39 @@ impl Tileception {
         // reach over a neighbour or past their own window's border (within
         // the area, on a split screen).
         let mut elements: Vec<OutputElement> = Vec::new();
+        let fade = self.peek_fade();
+        if fade > 0.0 {
+            // Holding Super+D: windows fade to outlines over the dashboard.
+            let outline = Shape {
+                radius: theme.radius,
+                border_width: 1.5,
+                border: theme.text.alpha(0.55 * fade),
+                ..Default::default()
+            };
+            for drawn in &drawn_windows {
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, outline);
+            }
+            // Plugins' own surfaces go over the frames drawn for them.
+            let slots = self.dashboard_slots(self.home_centre());
+            elements.extend(self.dashboard_surface_elements(renderer, &slots));
+            let mut painter = crate::ui::Painter::new(self, renderer);
+            painter.alpha = fade;
+            self.draw_dashboard(&mut painter, &slots);
+            elements.extend(painter.finish());
+            if fade < 1.0 {
+                for drawn in &drawn_windows {
+                    let faded = match self.windows.get(&drawn.window_id) {
+                        Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade),
+                        _ => self.picture_faded(renderer, drawn.window_id, &drawn.content, 1.0 - fade),
+                    };
+                    elements.extend(faded);
+                }
+            }
+            return match self.area_clip() {
+                Some(clip) => clip_elements(elements, &clip, self.scale),
+                None => elements,
+            };
+        }
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
@@ -754,12 +787,23 @@ fn live(
     drawn: &Drawn,
     scale: f64,
 ) -> Vec<OutputElement> {
+    live_faded(renderer, window, drawn, scale, 1.0)
+}
+
+/// A live window at some opacity.
+fn live_faded(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    drawn: &Drawn,
+    scale: f64,
+    alpha: f32,
+) -> Vec<OutputElement> {
     let origin = physical_point((drawn.origin.x, drawn.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
         Some(toplevel) => {
-            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
+            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, alpha, Kind::Unspecified)
         }
-        None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
+        None => window.render_elements(renderer, origin, Scale::from(1.0), alpha),
     };
     enlarged(surfaces, origin, scale * drawn.scale.0).collect()
 }

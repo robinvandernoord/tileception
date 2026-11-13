@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="tileception_dashboard_v1">
+  <copyright>
+    Part of Tileception. Any client may implement it.
+  </copyright>
+
+  <description summary="draw items on Tileception's dashboard">
+    A plugin with a [dashboard] block that sets surface = true is started
+    with WAYLAND_SOCKET, a connection Tileception made for it alone. That
+    connection offers wl_compositor, wl_subcompositor, wl_shm, wp_viewporter
+    and this global, and nothing else: no windows, no input devices, no
+    clipboard, no outputs, no screen capture.
+
+    The plugin lists its items in its tileception://dashboard resource. For
+    each item of type "surface" it creates a wl_surface and passes it to
+    get_item with the item's id. Tileception chooses where the item goes and
+    how large it is, tells the plugin in a configure event, clips what the
+    plugin draws to that size and frames it with the item's title and the
+    plugin's name.
+
+    Frame callbacks arrive only while the item is on screen, so a plugin that
+    draws on each frame callback costs nothing while the dashboard is hidden.
+    The surface gets pointer motion, buttons and scroll while the pointer is
+    over it, and never the keyboard.
+  </description>
+
+  <interface name="tileception_dashboard_v1" version="1">
+    <description summary="hands out dashboard items">
+      The global for drawing dashboard items.
+    </description>
+
+    <enum name="error">
+      <entry name="role" value="0" summary="the surface already has a role"/>
+      <entry name="taken" value="1" summary="the item already has a surface"/>
+      <entry name="too_many" value="2" summary="the plugin already has six items"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop using the global">
+        Items already made stay.
+      </description>
+    </request>
+
+    <request name="get_item">
+      <description summary="draw an item with this surface">
+        Gives the surface the dashboard item role. The item is the one with
+        this id among the plugin's surface items; until the plugin lists it,
+        the item is not shown. An item has one surface at a time.
+      </description>
+      <arg name="id" type="new_id" interface="tileception_dashboard_item_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="item" type="string" summary="the item's id in the plugin's resource"/>
+    </request>
+  </interface>
+
+  <interface name="tileception_dashboard_item_v1" version="1">
+    <description summary="one item's surface">
+      Draw at the size of the last configure event, with the buffer scale it
+      gives. Content beyond that size is not shown.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop drawing the item">
+        The surface loses its role; the item shows a placeholder.
+      </description>
+    </request>
+
+    <event name="configure">
+      <description summary="the item's size">
+        The size in logical pixels and the buffer scale to draw at, sent
+        when the item is placed and whenever either changes. A size of 0 by
+        0 means the item is not placed now, for instance when it does not
+        fit; keep the last buffer.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+      <arg name="scale" type="int" summary="the buffer scale, at least 1"/>
+    </event>
+  </interface>
+</protocol>
