@@ -386,7 +386,9 @@ ending first. When it ends, the chip moves on to what is on then, or to the
 next event. All-day events, and timed ones lasting a day or more, stay out
 of the chip, which would otherwise name them all day. Clicking it, or the
 clock, opens the calendar, which lists today's events and those of the coming
-week that have not ended. Sources are read again every `refresh_minutes`, and
+week that have not ended. A dot marks each day with events, from a year back
+to a year ahead; clicking a day lists its events instead, and clicking it
+again, or the month's name, goes back to what is coming. Sources are read again every `refresh_minutes`, and
 when the config changes. A source that cannot be read is named in the
 calendar and the session log, a URL by its host only, since a calendar's
 address is often secret; its events from the last time it could be read

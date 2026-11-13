@@ -223,8 +223,8 @@ enabled = false
 [calendar]
 # Events in the bar from .ics files (~/ is your home folder) and https or
 # webcal addresses: the one on now, or else the next one today, beside the
-# clock, and the coming week in its calendar. Nothing is read or shown
-# without sources.
+# clock, and in its calendar the coming week and the days with events.
+# Nothing is read or shown without sources.
 # sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
 # Minutes between reading them again.
 # refresh_minutes = 15

@@ -1,7 +1,7 @@
 //! `[calendar]`: events from .ics files and URLs, read again every few
 //! minutes on a thread of their own. The bar shows the one on now, or else
-//! the next one today, beside the clock, and the clock's calendar lists what
-//! is coming.
+//! the next one today, beside the clock, and the clock's calendar marks the
+//! days with events and lists what is coming, or what is on a clicked day.
 
 use std::{collections::HashMap, sync::mpsc, time::Duration};
 
@@ -14,8 +14,11 @@ use crate::{
 };
 
 const DAY: i64 = 86_400;
-/// How far ahead the calendar looks.
+/// How far ahead the calendar's list of what is coming looks.
 pub const DAYS_AHEAD: i64 = 7;
+/// How far back and ahead events are read, for the months the calendar
+/// can turn to.
+const DAYS_READ: i64 = 366;
 /// A calendar larger than this is not read.
 const MAX_BYTES: &str = "8M";
 /// How soon a round with a source that could not be read is tried again.
@@ -40,7 +43,7 @@ impl Default for CalendarConfig {
 /// The events read last, and the thread reading them.
 #[derive(Default)]
 pub struct Agenda {
-    /// From the start of the day they were read on, a week ahead, by start.
+    /// From a year before the day they were read on to a year after, by start.
     pub events: Vec<Occurrence>,
     /// Sources that could not be read, the last time.
     pub errors: Vec<String>,
@@ -122,10 +125,10 @@ impl Tileception {
     }
 }
 
-/// Every source's occurrences from the start of today, a week ahead.
+/// Every source's occurrences from a year back to a year ahead.
 fn read_all(sources: &[String], last_good: &mut HashMap<String, Vec<u8>>) -> Read {
     let now = now();
-    let (from, until) = (local_midnight(now, 0), local_midnight(now, DAYS_AHEAD + 1));
+    let (from, until) = (local_midnight(now, -DAYS_READ), local_midnight(now, DAYS_READ + 1));
     let named = |tzid: &str| TimeZone::named(tzid).map(|zone| Box::new(zone) as Box<dyn Zone>);
     let zones = Zones { local: &LocalZone, named: &named };
     read_sources(sources, last_good, fetch, &zones, from, until)
@@ -218,7 +221,17 @@ pub fn now() -> i64 {
 pub fn local_midnight(utc: i64, days: i64) -> i64 {
     let Some(today) = crate::ui::LocalTime::at(utc) else { return utc - utc.rem_euclid(DAY) + days * DAY };
     let day = crate::bar::days_from_civil(today.year, today.month as i32 + 1, today.day);
-    LocalZone.to_utc((day + days) * DAY)
+    day_start(day + days)
+}
+
+/// UTC time of the local midnight that starts `day`, in days since 1970.
+pub fn day_start(day: i64) -> i64 {
+    LocalZone.to_utc(day * DAY)
+}
+
+/// The events on `day` (days since 1970, local), by start.
+pub fn on_day(events: &[Occurrence], day: i64, limit: usize) -> Vec<&Occurrence> {
+    crate::ics::upcoming(events, day_start(day), day_start(day + 1), limit)
 }
 
 /// The system's local time zone, through libc.
