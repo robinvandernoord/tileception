@@ -7,6 +7,7 @@ use smithay::{
 use tileception_core::{Point, Rect, WindowId};
 
 pub(crate) mod client;
+mod closing;
 mod colour;
 mod connect;
 mod defaults_page;
@@ -16,6 +17,7 @@ mod home_page;
 mod interaction;
 mod keymap;
 mod network_page;
+mod refresh;
 pub(crate) mod sections;
 
 use crate::{
@@ -640,6 +642,8 @@ pub struct Settings {
     /// Full-edge crossing as it was when the Displays screen opened, for its Cancel.
     edges_before: Option<Option<toml::Value>>,
     display_preview: Option<display_preview::Preview>,
+    /// Closing asks what to do with unapplied changes; the focused choice.
+    close_confirm: Option<closing::Choice>,
 }
 
 fn values(file: &ConfigFile) -> Result<Vec<Option<toml::Value>>, String> {
@@ -1088,8 +1092,6 @@ impl Tileception {
             .collect()
     }
 
-    /// Opens Settings in a floating window on the Desktop, or closes it.
-    /// Drafts are kept while it is closed.
     /// Opens Settings on the page with this title, as plugins ask.
     pub fn open_settings_named(&mut self, title: &str) {
         match CATEGORIES.iter().position(|category| category.title.eq_ignore_ascii_case(title.trim())) {
@@ -1115,25 +1117,19 @@ impl Tileception {
         self.schedule_render();
     }
 
+    /// Opens Settings in a floating window on the Desktop, or closes it,
+    /// asking first about unapplied changes. It opens on config.toml as it is
+    /// now: closing keeps no draft.
     pub fn toggle_settings(&mut self) {
         self.section_cancel_recording();
         if self.is_locked() {
             return;
         }
         if self.settings.open {
-            self.close_settings();
+            self.request_close_settings();
             return;
         }
-        if (self.settings.before.is_empty() || self.settings.changed() == 0)
-            && self.settings.editor.is_none()
-            && self.settings.editing.is_none()
-            && self.settings.parked_editors.is_empty()
-            && self.settings.connect.as_ref().is_none_or(|form| !form.busy())
-            && self.settings.section.is_none()
-            && self.settings.parked_sections.is_empty()
-            && self.settings.keymap.is_none()
-            && let Err(error) = self.settings_load()
-        {
+        if let Err(error) = self.settings_load() {
             tracing::warn!("could not open Settings: {error}");
             return;
         }
@@ -1178,6 +1174,9 @@ impl Tileception {
         let (width, height) = (width.min(screen.w), height.min(screen.h));
         let fitted = Rect::new(screen.x + (screen.w - width) / 2., screen.y + (screen.h - height) / 2., width, height);
         self.world.set_float_rect(window, fitted);
+        // Draw at the new size from now on, rather than old-sized frames
+        // until the window confirms it.
+        self.settings.size = (width, height);
         self.settings.dropdown = None;
         self.settings.colour = None;
         self.apply_layout();
@@ -1187,10 +1186,12 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Takes the Settings window away, wherever it is; the draft stays.
+    /// Takes the Settings window away, wherever it is, without asking, and
+    /// drops what was not applied. `request_close_settings` asks first.
     pub(crate) fn close_settings(&mut self) {
         self.settings_revert_displays();
         self.settings_release();
+        self.section_cancel_recording();
         self.settings.open = false;
         if let Some(client) = self.settings.client.take() {
             self.loop_handle.remove(client.source);
@@ -1200,7 +1201,31 @@ impl Tileception {
         self.settings.focus = None;
         self.settings.colour = None;
         self.settings.dropdown = None;
+        self.settings_drop_draft();
         self.schedule_render();
+    }
+
+    /// Forgets unapplied changes and every screen, editor and picker that
+    /// holds some. A smart-home import that is still running carries on and
+    /// finishes in the background.
+    fn settings_drop_draft(&mut self) {
+        let settings = &mut self.settings;
+        settings.close_confirm = None;
+        settings.editing = None;
+        settings.editor = None;
+        settings.parked_editors.clear();
+        settings.section = None;
+        settings.parked_sections.clear();
+        settings.keymap = None;
+        settings.edges_before = None;
+        settings.level_drag = None;
+        settings.needs_reload = false;
+        settings.draft.clone_from(&settings.before);
+        settings.document_draft.clone_from(&settings.document_before);
+        if settings.connect.as_ref().is_none_or(|form| !form.busy()) {
+            settings.connect = None;
+        }
+        self.settings_discard_apps();
     }
 
     pub(crate) fn is_settings_window(&self, window: WindowId) -> bool {
@@ -1294,6 +1319,8 @@ impl Tileception {
                 self.settings_release();
                 self.section_cancel_recording();
             }
+            client::Event::CloseRequested => self.request_close_settings(),
+            // The window is gone, so there is nowhere left to ask.
             client::Event::Closed => self.close_settings(),
         }
         self.settings_update_cursor();
@@ -1645,7 +1672,7 @@ impl Tileception {
     }
 
     pub fn settings_scroll(&mut self, amount: f64) {
-        if self.settings.display_preview.is_some() {
+        if self.settings.display_preview.is_some() || self.settings.close_confirm.is_some() {
             return;
         }
         self.settings.pressed = None;
@@ -1807,7 +1834,7 @@ impl Tileception {
             self.settings.apps_menu = None;
         }
         match hit {
-            Hit::Close => self.toggle_settings(),
+            Hit::Close => self.request_close_settings(),
             Hit::Search => {
                 if self.settings.search_input.text != self.settings.query {
                     self.settings.search_input = crate::text_input::TextInput::new(self.settings.query.clone());
@@ -2139,7 +2166,7 @@ impl Tileception {
     pub fn settings_key(&mut self, sym: u32, mods: Mods) {
         self.settings.pressed = None;
         self.invalidate_settings_client();
-        if self.settings_display_preview_key(sym, mods) {
+        if self.settings_close_key(sym, mods) || self.settings_display_preview_key(sym, mods) {
             return;
         }
         let page_navigation = self.settings.editor.is_none()
@@ -2238,7 +2265,7 @@ impl Tileception {
                 self.settings.search_input.clear();
                 self.settings.scroll = 0.;
             } else {
-                self.toggle_settings();
+                self.request_close_settings();
             }
         } else if mods.ctrl && matches!(sym, keysyms::KEY_f | keysyms::KEY_F) {
             if self.settings_finish_edit() {
@@ -2762,6 +2789,7 @@ impl Tileception {
         self.settings_pointer_feedback(&mut painter);
         self.draw_keymap_picker(&mut painter);
         self.settings_draw_display_preview(&mut painter);
+        self.settings_draw_close_confirm(&mut painter);
         painter.finish()
     }
 

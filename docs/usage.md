@@ -17,11 +17,20 @@ between views.
 
 ## Settings
 
-Settings keeps unapplied drafts while you move between categories or close and
-reopen its window. Back returns to the category and keeps the screen's draft,
-including unfinished input. Apply changes saves and applies it in one step;
-Discard screen explicitly removes that screen's edits since opening it.
-Drafts last for the current session and are not saved across a compositor restart.
+Settings keeps unapplied drafts while you move between categories. Back returns
+to the category and keeps the screen's draft, including unfinished input. Apply
+changes saves and applies it in one step; Discard screen explicitly removes that
+screen's edits since opening it.
+
+Closing Settings with unapplied changes asks first: **Apply** saves them and
+closes, **Discard** closes without them, and **Cancel** (or Escape) keeps
+Settings open. Enter chooses Apply. Closing keeps no draft, so Settings always
+opens on `config.toml` as it is then.
+
+While Settings is open it follows `config.toml`: when the file changes on disk,
+settings you have not touched show the new values. A setting or screen you have
+edited keeps your edit, and Settings says so when the file changed it too;
+applying then saves your version over the file's.
 
 In Settings, use **Ctrl+Page Up/Down** to switch categories and **Alt+Up** to
 go Back. **Tab** and **Shift+Tab** move between controls, **Page Up/Down**
@@ -39,7 +48,8 @@ Wayland's counterclockwise convention; mirroring happens before rotation.
 **Apply changes** previews display changes for 15 seconds without saving the
 configuration. Choose **Keep changes** to save, or **Revert** to restore the
 previous setup. Escape, Alt+Up, closing Settings and the countdown ending also
-restore it. Your draft stays available to retry. A display change or config
+restore it. Your draft stays available to retry, unless you close Settings and
+discard it. A display change or config
 reload cancels an active preview. If saving fails, the preview reverts and the
 error appears in Settings.
 

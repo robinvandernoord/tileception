@@ -270,6 +270,35 @@ impl Tileception {
         self.schedule_render();
     }
 
+    /// Brings the open and parked screens up to date after config.toml
+    /// changed on disk. Returns the screens whose edits were kept over it.
+    pub(super) fn sections_refreshed(&mut self) -> Vec<&'static str> {
+        let Ok(source) = self.settings_document() else { return Vec::new() };
+        let mut screens: Vec<_> = self.settings.section.take().into_iter().collect();
+        let open = !screens.is_empty();
+        screens.append(&mut self.settings.parked_sections);
+        let mut kept = Vec::new();
+        for screen in &mut screens {
+            match screen.refreshed(&source) {
+                Ok(model::Refresh::Same) => {}
+                Ok(model::Refresh::Kept) => kept.push(FIELDS[screen.field].label),
+                Ok(model::Refresh::New(mut fresh)) => {
+                    self.section_detected_displays(&mut fresh);
+                    fresh.keep_view(screen);
+                    *screen = *fresh;
+                }
+                // Its edits stay; staging reports what is wrong with them.
+                Err(error) => tracing::warn!("could not refresh a Settings screen: {error}"),
+            }
+        }
+        let mut screens = screens.into_iter();
+        if open {
+            self.settings.section = screens.next();
+        }
+        self.settings.parked_sections = screens.collect();
+        kept
+    }
+
     fn section_back(&mut self, discard: bool) {
         self.section_cancel_recording();
         if discard && let Some(before) = self.settings.edges_before.take() {
@@ -301,7 +330,7 @@ impl Tileception {
             self.settings.message = "Unfinished draft kept. Reopen its screen to finish it before Apply.".into();
             self.settings.error = false;
         } else {
-            self.settings.message = "Draft kept. Apply saves it; closing Settings keeps it for later.".into();
+            self.settings.message = "Draft kept. Apply saves it.".into();
         }
     }
 
@@ -415,6 +444,7 @@ impl Tileception {
         screen.focus = Some(action);
         screen.searching = action == Action::Search;
         screen.error.clear();
+        screen.notice.clear();
         match action {
             Action::Row(index) => {
                 screen.selected = Some(index);
@@ -699,8 +729,8 @@ impl Tileception {
                 screen.list_scroll = 0.;
             } else if screen.edit.take().is_none() {
                 if inline {
-                    // Keep the draft when closing a page, just like the other pages.
-                    self.close_settings();
+                    // Close as from the other pages, asking about unapplied changes.
+                    self.request_close_settings();
                 } else {
                     self.section_back(false);
                 }

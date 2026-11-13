@@ -440,7 +440,10 @@ impl Tileception {
         let path = path();
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let config = Config::parse(&text)?;
-        self.apply_config(config)?;
+        let result = self.apply_config(config);
+        // An open Settings follows the file, keeping what was edited there.
+        self.settings_config_changed(&text);
+        result?;
         tracing::info!("config reloaded");
         Ok(())
     }
