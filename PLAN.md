@@ -113,15 +113,11 @@ Report testing in the conversation, the commit or the pull request instead.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.
-- Feedback from inside Tileception:
-  - Optional screenshot attachment: explicit opt-in, preview the captured
-    image before including it, and allow removing it before opening the
-    issue.
-  - For people without a GitHub account: a small relay (OVH host or a
-    serverless function) holding a GitHub App's key, which files the issue
-    as the App's bot. The key never ships in Tileception. The relay needs
-    rate limiting, a length cap and a spam check, and new issues should wait
-    in triage before they show publicly.
+- Feedback from inside Tileception for people without a GitHub account: a
+  small relay (OVH host or a serverless function) holding a GitHub App's
+  key, which files the issue as the App's bot. The key never ships in
+  Tileception. The relay needs rate limiting, a length cap and a spam check,
+  and new issues should wait in triage before they show publicly.
 - Smart home in Settings: import devices, configure cloud sensors, switch
   `[home] enabled` and refresh the device inventory by hand.
 - Smart home history: support temperature, humidity or both, including
