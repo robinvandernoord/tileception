@@ -4010,6 +4010,24 @@ mod tests {
     }
 
     #[test]
+    fn exports_only_missing_or_changed_files() {
+        let root = std::env::temp_dir().join(format!("tileception-doctor-unchanged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        export_docs_to(&root).unwrap();
+        let (kept, edited, removed) = (root.join("docs/usage.md"), root.join("README.md"), root.join("CHANGELOG.md"));
+        let bundled = std::fs::read_to_string(&edited).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options().write(true).open(&kept).unwrap().set_modified(old).unwrap();
+        std::fs::write(&edited, "changed by hand").unwrap();
+        std::fs::remove_file(&removed).unwrap();
+        export_docs_to(&root).unwrap();
+        assert_eq!(std::fs::metadata(&kept).unwrap().modified().unwrap(), old, "an unchanged file was rewritten");
+        assert_eq!(std::fs::read_to_string(&edited).unwrap(), bundled);
+        assert_eq!(std::fs::read_to_string(&removed).unwrap(), include_str!("../../../CHANGELOG.md"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn tells_the_agent_about_the_changelog() {
         let context = doctor_context("Ask");
         assert!(context.contains("tileception/CHANGELOG.md"));

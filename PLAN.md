@@ -134,8 +134,6 @@ Report testing in the conversation, the commit or the pull request instead.
 
 - Window management gestures on the touchpad.
 - Top bar calendar events from an .ics file or URL.
-- Compare contents or hashes before exporting Doctor's bundled documentation
-  and default config, writing only missing or changed files.
 - Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
