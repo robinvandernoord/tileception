@@ -63,9 +63,6 @@ Report testing in the conversation, the commit or the pull request instead.
 
 - Updates of machines linked through handoff, in the update manager's card:
   what waits on each, and installing there from here.
-- Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
-  binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
-  can answer what changed in a version and when something arrived.
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the

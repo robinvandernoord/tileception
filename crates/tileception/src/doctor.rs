@@ -3655,12 +3655,18 @@ fn state_dir() -> PathBuf {
 
 /// Refresh the version-matched guides without adding their contents to prompts.
 fn export_doctor_docs() -> std::io::Result<()> {
-    let root = state_dir();
+    export_docs_to(&state_dir())
+}
+
+/// The README, changelog and guides under `root`, laid out as in the source
+/// tree so their links between each other keep working.
+fn export_docs_to(root: &std::path::Path) -> std::io::Result<()> {
     let docs = root.join("docs");
     std::fs::create_dir_all(&docs)?;
     let readme = include_str!("../../../README.md")
         .replace("(crates/tileception/src/default-config.toml)", "(default-config.toml)");
     write_if_changed(&root.join("README.md"), &readme)?;
+    write_if_changed(&root.join("CHANGELOG.md"), include_str!("../../../CHANGELOG.md"))?;
     for (name, content) in [
         ("usage.md", include_str!("../../../docs/usage.md")),
         ("configuration.md", include_str!("../../../docs/configuration.md")),
@@ -3830,6 +3836,7 @@ fn doctor_context(mode: &str) -> String {
          - Every option with its default and an explanation is in {defaults}.\n\
          - Tileception's documentation index is {docs}. Read it to find relevant guides when needed. \
          These guides match this binary and are available without a source checkout.\n\
+         - {version} What changed in each version, and when, is in {changelog}, newest first.\n\
          - The log is {log}.\n\
          - Read and write files with the file tools the client offers, so the user sees diffs and gets backups. \
          The user's permission mode is \"{mode}\".\n\
@@ -3838,8 +3845,23 @@ fn doctor_context(mode: &str) -> String {
         log = state.join("tileception/tileception.log").display(),
         defaults = state.join("tileception/default-config.toml").display(),
         docs = state.join("tileception/docs/index.md").display(),
+        changelog = state.join("tileception/CHANGELOG.md").display(),
+        version = running_version(env!("CARGO_PKG_VERSION")),
         mode = mode,
     )
+}
+
+/// Which Tileception this is, for the agent. A prerelease such as `1.2.0-rc.1`
+/// has no entry in the changelog, which leaves prereleases out until the
+/// release itself.
+fn running_version(version: &str) -> String {
+    match version.split_once('-') {
+        Some((release, _)) => format!(
+            "This is Tileception {version}, a test release of {release}; its changes may not be in the \
+             changelog yet."
+        ),
+        None => format!("This is Tileception {version}."),
+    }
 }
 
 /// Premultiplied, as the renderer wants pictures.
@@ -3933,6 +3955,7 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
 
@@ -3955,6 +3978,51 @@ mod tests {
         let text = last_exchange(&long).expect("a question was asked");
         assert!(text.contains(&format!("{}\n[shortened]", "é".repeat(REPORT_QUESTION))));
         assert!(!text.contains("answer"));
+    }
+
+    #[test]
+    fn exports_the_changelog_beside_the_guides() {
+        let root = std::env::temp_dir().join(format!("tileception-doctor-docs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        export_docs_to(&root).unwrap();
+        let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+        assert_eq!(changelog, include_str!("../../../CHANGELOG.md"));
+        // A prerelease (1.2.0-rc.1) gets no entry of its own: vommit leaves
+        // prereleases out of the changelog.
+        let version = env!("CARGO_PKG_VERSION");
+        if !version.contains('-') {
+            assert!(changelog.contains(&format!("## v{version}")));
+        }
+        // Every guide the index and README point to was exported with them.
+        for (file, text) in [
+            (root.join("docs/index.md"), std::fs::read_to_string(root.join("docs/index.md")).unwrap()),
+            (root.join("README.md"), std::fs::read_to_string(root.join("README.md")).unwrap()),
+        ] {
+            let folder = file.parent().unwrap();
+            for link in text.split("](").skip(1).filter_map(|rest| rest.split(')').next()) {
+                let target = link.split('#').next().unwrap();
+                if target.ends_with(".md") && target != "PLAN.md" {
+                    assert!(folder.join(target).is_file(), "{} links to missing {target}", file.display());
+                }
+            }
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn tells_the_agent_about_the_changelog() {
+        let context = doctor_context("Ask");
+        assert!(context.contains("tileception/CHANGELOG.md"));
+        assert!(context.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn says_when_this_is_a_test_release() {
+        assert_eq!(running_version("1.2.0"), "This is Tileception 1.2.0.");
+        assert_eq!(
+            running_version("1.2.0-rc.1"),
+            "This is Tileception 1.2.0-rc.1, a test release of 1.2.0; its changes may not be in the changelog yet."
+        );
     }
 
     #[test]
