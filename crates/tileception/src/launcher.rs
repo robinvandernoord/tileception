@@ -251,6 +251,8 @@ enum PointerAction {
     Prompt(prompt::Target),
     /// A control on a plugin's card under the launcher.
     Card(String, crate::plugins::ActionKind),
+    /// Something on the dashboard beside the welcome screen.
+    Dashboard(crate::dashboard::Click),
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -271,6 +273,7 @@ impl crate::ui::PointerAction for PointerAction {
             }
             Self::Prompt(target) => state.prompt_activate(*target, point),
             Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
+            Self::Dashboard(click) => state.dashboard_click(click.clone()),
         }
     }
 
@@ -373,7 +376,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Step out", "zoom out", glyph::ZOOM_OUT, Does::Line("step-out")),
     builtin("Back", "previous view history", glyph::ARROW_LEFT, Does::Line("back")),
     builtin("Forward", "next view history", glyph::ARROW_RIGHT, Does::Line("forward")),
-    builtin("Show desktop", "desktop tile", glyph::OVERVIEW, Does::Line("desktop")),
+    builtin("Show desktop", "clear desk minimize all hide windows", glyph::OVERVIEW, Does::Line("desktop")),
 ];
 
 /// A command started with `>` and what it printed.
@@ -752,6 +755,13 @@ impl Tileception {
             self.close_launcher();
             return;
         }
+        // Super put the welcome screen away and the desktop is still empty
+        // (a window showing ends that): Super again brings it back as it
+        // was, with the dashboard, instead of the plain launcher.
+        if std::mem::take(&mut self.launcher.home_dismissed) {
+            self.open_launcher(true);
+            return;
+        }
         self.open_launcher(false);
     }
 
@@ -1077,6 +1087,7 @@ impl Tileception {
         match sym {
             // The welcome screen is the desktop, not something to close:
             // Esc only clears the search there. Super still hides it.
+            keysyms::KEY_Escape if self.launcher.home && self.dashboard_close_adding() => {}
             keysyms::KEY_Escape if self.launcher.home => self.launcher.input.clear(),
             keysyms::KEY_Escape => self.close_launcher(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_selected(mods),
@@ -1509,7 +1520,7 @@ impl Tileception {
 
     /// Does what a card under the launcher asks. A tool runs like the
     /// panel's, so the typed search and its results stay as they are.
-    fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
+    pub(crate) fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
         match action {
             crate::plugins::ActionKind::Tool { name, arguments } => {
                 if let Some(plugins) = &self.plugins {
@@ -1661,7 +1672,7 @@ impl Tileception {
 
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
-    fn fly_to_window(&mut self, window_id: WindowId) {
+    pub(crate) fn fly_to_window(&mut self, window_id: WindowId) {
         if let Some(area) = self.area_for_window(window_id) {
             self.activate_area(&area);
         }
@@ -1828,7 +1839,36 @@ impl Tileception {
                 cards.push((plugin.to_string(), card.clone(), laid));
             }
         }
-        LauncherLayout { panel, field, text, caption, rows, first, output, prompt, footer, media, cards }
+        let dashboard = if self.launcher.home { self.dashboard_slots(panel) } else { Vec::new() };
+        let adding = if self.launcher.home { self.dashboard_adding(footer) } else { None };
+        LauncherLayout {
+            panel,
+            field,
+            text,
+            caption,
+            rows,
+            first,
+            output,
+            prompt,
+            footer,
+            media,
+            cards,
+            dashboard,
+            adding,
+        }
+    }
+
+    /// Where the welcome screen's panel stands, across its width, for the
+    /// dashboard beside it when the welcome screen is not open.
+    pub(crate) fn home_centre(&self) -> Rect {
+        let screen = self.output_rect();
+        let width = (screen.w - 32.0).clamp(1.0, PANEL_W);
+        Rect::new(screen.x + (screen.w - width) / 2.0, screen.y, width, screen.h)
+    }
+
+    /// The launcher's panel as laid out now.
+    pub(crate) fn launcher_panel(&self) -> Rect {
+        self.launcher_layout().panel
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -1849,6 +1889,15 @@ impl Tileception {
 
     pub(crate) fn launcher_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
         let layout = self.launcher_layout();
+        // The dashboard's list of what can be added lies over the panel.
+        if let Some(adding) = &layout.adding {
+            if let Some((rect, click)) = adding.target_at(point) {
+                return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+            }
+            if adding.covers(point) {
+                return None;
+            }
+        }
         if let Some(area) = layout.prompt {
             if launcher_settings_button(layout.footer).contains(point) {
                 return Some(crate::ui::PointerTarget::button(
@@ -1880,6 +1929,15 @@ impl Tileception {
                 return Some(crate::ui::PointerTarget::button(rect, PointerAction::Card(plugin.clone(), action)));
             }
         }
+        if let Some((rect, click)) = Tileception::dashboard_remove_at(&layout.dashboard, point) {
+            return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+        }
+        if layout.dashboard.iter().any(|slot| slot.rect.contains(point)) {
+            // Only a card's controls (and the button removing an item) are buttons; the items themselves are
+            // held to drag them, and clicked when let go where they were.
+            let (rect, click) = Tileception::dashboard_control_at(&layout.dashboard, point)?;
+            return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+        }
         if self.launcher.plugin_pending {
             return None;
         }
@@ -1901,6 +1959,10 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
+        if self.dashboard_press(&layout.dashboard, layout.adding.as_ref(), point) {
+            self.schedule_render();
+            return;
+        }
         if let Some(target) = self.launcher_pointer_target(point) {
             target.activate(self, point);
         } else if !layout.covers(point) && !self.launcher.home {
@@ -2170,7 +2232,9 @@ impl Tileception {
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
-        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - 52.).max(1.), footer.h), |painter| {
+        // Room for the settings button, and the dashboard's "+" beside it.
+        let buttons = if layout.adding.is_some() { 88. } else { 52. };
+        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - buttons).max(1.), footer.h), |painter| {
             painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
         });
         let settings = launcher_settings_button(footer);
@@ -2184,6 +2248,11 @@ impl Tileception {
             18,
             if hovered { theme.accent } else { theme.muted },
         );
+        // With the footer, so it slides in with the panel; its list goes
+        // over the panel's rows.
+        if let Some(adding) = &layout.adding {
+            self.draw_adding(&mut painter, adding);
+        }
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
             painter.popup(card.rect);
@@ -2195,7 +2264,12 @@ impl Tileception {
             let pointer = Point::new(self.pointer.x, self.pointer.y);
             self.draw_plugin_card(&mut painter, card, laid, pointer, theme.surface);
         }
-        painter.finish()
+        painter.offset = (0.0, 0.0);
+        self.draw_dashboard(&mut painter, &layout.dashboard);
+        let mut elements = painter.finish();
+        // Plugins' own surfaces, inside the frames drawn for them.
+        elements.splice(0..0, self.dashboard_surface_elements(renderer, &layout.dashboard));
+        elements
     }
 
     /// One row of results: an icon, a title over a detail line, and on the
@@ -2815,6 +2889,10 @@ struct LauncherLayout {
     /// A plugin's prompt, instead of the rows.
     prompt: Option<Rect>,
     footer: Rect,
+    /// The dashboard beside the welcome screen.
+    dashboard: Vec<crate::dashboard::Slot>,
+    /// Its "+" button and, while open, the list of what can be added.
+    adding: Option<crate::dashboard::Adding>,
 }
 
 impl LauncherLayout {
@@ -2823,6 +2901,11 @@ impl LauncherLayout {
         self.panel.contains(point)
             || self.media.as_ref().is_some_and(|card| card.rect.contains(point))
             || self.cards.iter().any(|(_, _, laid)| laid.rect.contains(point))
+            || self
+                .dashboard
+                .iter()
+                .any(|slot| slot.rect.contains(point) || crate::dashboard::remove_button(slot.rect).contains(point))
+            || self.adding.as_ref().is_some_and(|adding| adding.covers(point))
     }
 }
 
