@@ -127,7 +127,8 @@ pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scop
 /// input, `screenshot` (writes anywhere), `quit` or `unlock`.
 const SAFE_VERBS: [&str; 7] = ["tree", "reload", "volume", "mic", "brightness", "media", "home"];
 
-/// `tileception msg <safe verb> ...` and nothing chained onto it, plus the
+/// `tileception msg <safe verb> ...` and nothing chained onto it, the
+/// update manager's read-only `updates`, `updates history` and the like, the
 /// read-only `tileception home status` and `tileception config set
 /// home.enabled ...`, which only read state or touch Tileception's own
 /// settings.
@@ -137,8 +138,11 @@ fn tileception_command(command: &str) -> bool {
         return false;
     }
     if let Some(tail) = command.strip_prefix("tileception msg ") {
-        return tail.split_whitespace().eq(["plugins", "reload"])
-            || tail.split_whitespace().next().is_some_and(|verb| SAFE_VERBS.contains(&verb));
+        let words: Vec<&str> = tail.split_whitespace().collect();
+        return words == ["plugins", "reload"]
+            // The update manager's read-only answers: what waits, and what apt did.
+            || matches!(words.as_slice(), ["updates"] | ["updates", "status" | "history" | "kernels" | "log", ..])
+            || words.first().is_some_and(|verb| SAFE_VERBS.contains(verb));
     }
     if command == "tileception home status" {
         return true;
@@ -344,11 +348,19 @@ mod tests {
         assert!(auto_choice(Mode::Config, &msg, &choices(), &places).is_some());
         let chained = action("execute", &[], Some("tileception msg tree; rm -rf ~"));
         assert_eq!(auto_choice(Mode::Config, &chained, &choices(), &places), None);
-        for risky in ["tileception msg spawn rm -rf ~", "tileception msg doctor mode yolo", "tileception msg type hi"] {
+        for risky in [
+            "tileception msg spawn rm -rf ~",
+            "tileception msg doctor mode yolo",
+            "tileception msg type hi",
+            "tileception msg updates install",
+            "tileception msg updates mirror http://evil",
+        ] {
             assert_eq!(auto_choice(Mode::Config, &action("execute", &[], Some(risky)), &choices(), &places), None);
         }
         // The smart home's read-only and own-setting commands go ahead too.
         for fine in [
+            "tileception msg updates",
+            "tileception msg updates history since 2026-11-10",
             "tileception home status",
             "tileception config set home.enabled true",
             "tileception config set home.enabled false",

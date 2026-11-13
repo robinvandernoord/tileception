@@ -179,6 +179,14 @@ fn target_of(selection: SelectionTarget) -> Target {
 }
 
 impl Tileception {
+    /// Whether what was copied here offers `mime_type`.
+    pub(crate) fn selection_offers(&self, selection: SelectionTarget, mime_type: &str) -> bool {
+        matches!(
+            self.handoff.clipboard.owners.get(&target_of(selection)),
+            Some(Owner::Here { mime_types, .. }) if mime_types.iter().any(|offered| offered == mime_type)
+        )
+    }
+
     /// Something here copied or cleared a selection.
     pub fn selection_offered(&mut self, selection: SelectionTarget, mime_types: Option<Vec<String>>) {
         let clipboard = &mut self.handoff.clipboard;
@@ -383,8 +391,7 @@ impl Tileception {
         };
         if !requested {
             // Owned by an X11 program.
-            let xwm = self.xwm.as_mut()?;
-            xwm.send_selection(selection, mime_type, writer.into(), self.loop_handle.clone()).ok()?;
+            self.send_x11_selection(selection, mime_type, writer.into()).then_some(())?;
         }
         Some(reader)
     }

@@ -1,6 +1,8 @@
 //! The Updates window: a real toplevel drawn by the compositor, like
-//! Settings. Its pages list the pending updates, the kernels with a queue
-//! of installs and removals, the next release with what to look at first, and the apt history.
+//! Settings. Its pages list the pending updates by source package, app and
+//! device, the kernels with a queue of installs and removals, the next
+//! release with what to look at first, the apt history, and the mirror and
+//! automatic updates.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,10 +31,11 @@ pub enum Page {
     Kernels,
     Release,
     History,
+    Settings,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Available, Page::Kernels, Page::Release, Page::History];
+    const ALL: [Page; 5] = [Page::Available, Page::Kernels, Page::Release, Page::History, Page::Settings];
 
     pub fn parse(name: &str) -> Option<Page> {
         match name {
@@ -40,6 +43,7 @@ impl Page {
             "kernels" => Some(Page::Kernels),
             "release" => Some(Page::Release),
             "history" => Some(Page::History),
+            "settings" | "mirror" | "mirrors" | "automatic" => Some(Page::Settings),
             _ => None,
         }
     }
@@ -50,6 +54,7 @@ impl Page {
             Page::Kernels => "Kernels",
             Page::Release => "Release",
             Page::History => "History",
+            Page::Settings => "Settings",
         }
     }
 }
@@ -65,8 +70,11 @@ pub(crate) struct Window {
     scroll: f64,
     /// The highlighted row of the page's list.
     selected: usize,
-    /// Updates left out of the next install.
-    skipped: BTreeSet<String>,
+    /// Updates left out of the next install, by source and name.
+    skipped: BTreeSet<apt::Key>,
+    /// Firmware chosen for the next install: firmware is never ticked by
+    /// default.
+    firmware: BTreeSet<apt::Key>,
     /// Kernels queued to install or remove, by image package.
     queue: BTreeMap<String, kernels::Queued>,
     /// The leftover headers, and the leftover modules and tools, are queued too.
@@ -95,12 +103,16 @@ enum Sheet {
     Queue,
     /// What installing the ticked updates would do.
     Install,
+    /// The same review, with a restart after the confirmed install.
+    InstallRestart,
     /// What removing the unneeded dependencies would do.
     Autoremove,
     /// What settling broken dependencies would do.
     Repair,
     /// What the last task printed.
     Log,
+    /// What changed in an update.
+    Notes,
 }
 
 impl Sheet {
@@ -108,9 +120,11 @@ impl Sheet {
         match self {
             Sheet::Queue => "What the queue would do",
             Sheet::Install => "What installing would do",
+            Sheet::InstallRestart => "What installing before restarting would do",
             Sheet::Autoremove => "Clean-up preview",
             Sheet::Repair => "What a repair would do",
             Sheet::Log => "The last task",
+            Sheet::Notes => "Release notes",
         }
     }
 }
@@ -128,6 +142,7 @@ impl Default for Window {
             scroll: 0.0,
             selected: 0,
             skipped: BTreeSet::new(),
+            firmware: BTreeSet::new(),
             queue: BTreeMap::new(),
             headers: false,
             support: false,
@@ -150,7 +165,9 @@ impl Window {
 
     pub(super) fn set_preview(&mut self, request: u64, text: String) {
         if request == self.preview_request && self.preview.is_some() && self.sheet != Sheet::Log {
-            self.preview = Some(if text.trim().is_empty() { "apt-get printed nothing.".into() } else { text });
+            let empty =
+                if self.sheet == Sheet::Notes { "No release notes were found." } else { "apt-get printed nothing." };
+            self.preview = Some(if text.trim().is_empty() { empty.into() } else { text });
             self.scroll = 0.0;
         }
     }
@@ -161,7 +178,9 @@ impl Window {
 
     /// Forgets choices about packages that are gone after a new look.
     pub(super) fn settle(&mut self, snapshot: &Snapshot, found: &[kernels::Kernel]) {
-        self.skipped.retain(|name| snapshot.updates.iter().any(|update| update.name == *name));
+        let listed = |key: &apt::Key| snapshot.updates.iter().any(|update| update.key() == *key);
+        self.skipped.retain(listed);
+        self.firmware.retain(listed);
         self.queue.retain(|package, queued| {
             found.iter().find(|kernel| kernel.package == *package).is_some_and(|kernel| match queued {
                 kernels::Queued::Install => !kernel.installed,
@@ -170,6 +189,28 @@ impl Window {
         });
         self.headers &= !kernels::unused_headers(&snapshot.packages).is_empty();
         self.support &= !kernels::unused_support(&snapshot.packages).is_empty();
+    }
+
+    /// Whether an update is ticked for the next install.
+    pub(super) fn ticked(&self, update: &apt::Update) -> bool {
+        if update.source == apt::Source::Firmware {
+            self.firmware.contains(&update.key())
+        } else {
+            !self.skipped.contains(&update.key())
+        }
+    }
+
+    fn toggle(&mut self, update: &apt::Update, tick: bool) {
+        let (set, add) = if update.source == apt::Source::Firmware {
+            (&mut self.firmware, tick)
+        } else {
+            (&mut self.skipped, !tick)
+        };
+        if add {
+            set.insert(update.key());
+        } else {
+            set.remove(&update.key());
+        }
     }
 
     pub(super) fn task_done(&mut self, task: &Task) {
@@ -196,7 +237,17 @@ enum Leftover {
 #[derive(Debug, Clone, PartialEq)]
 enum Row {
     Heading(String, String),
-    Update(usize),
+    /// A source package's updates, an app or a device: the first update
+    /// and how many follow it.
+    Group(usize, usize),
+    /// An update that waits until it is let through: a skipped version,
+    /// then the held packages.
+    Muted(usize),
+    /// Automatic updates, with the switch.
+    Automatic,
+    /// A tested mirror.
+    Mirror(usize),
+    Warning(String),
     /// A kernel series: its name, and how many builds are installed and available.
     Series(String, usize, usize),
     Kernel(usize),
@@ -212,9 +263,10 @@ impl Row {
     fn height(&self) -> f64 {
         match self {
             Row::Heading(..) | Row::Series(..) => 32.0,
-            Row::Update(_) | Row::Entry(_) => 30.0,
-            Row::Kernel(_) | Row::Leftovers(_) | Row::Unneeded => 34.0,
-            Row::Check(_) => 48.0,
+            Row::Entry(_) | Row::Muted(_) | Row::Warning(_) => 30.0,
+            Row::Group(..) => 44.0,
+            Row::Kernel(_) | Row::Leftovers(_) | Row::Unneeded | Row::Mirror(_) => 34.0,
+            Row::Check(_) | Row::Automatic => 48.0,
             Row::Text(_) => 18.0,
         }
     }
@@ -222,7 +274,15 @@ impl Row {
     fn selectable(&self) -> bool {
         matches!(
             self,
-            Row::Update(_) | Row::Series(..) | Row::Kernel(_) | Row::Entry(_) | Row::Leftovers(_) | Row::Unneeded
+            Row::Group(..)
+                | Row::Muted(_)
+                | Row::Series(..)
+                | Row::Kernel(_)
+                | Row::Entry(_)
+                | Row::Leftovers(_)
+                | Row::Unneeded
+                | Row::Automatic
+                | Row::Mirror(_)
         )
     }
 }
@@ -257,6 +317,16 @@ enum Hit {
     Copy,
     Doctor,
     Move,
+    /// The release notes of the highlighted update.
+    Notes,
+    /// Skips the highlighted update's version, or stops skipping it.
+    Skip(bool),
+    /// Holds the highlighted package, or releases it.
+    Hold(bool),
+    /// Turns automatic updates on or off.
+    Automatic(bool),
+    TestMirrors,
+    UseMirror(usize),
 }
 
 impl crate::ui::PointerAction for Hit {
@@ -282,9 +352,36 @@ const SIDE: f64 = 184.0;
 const FOOTER: f64 = 54.0;
 const DETAIL: f64 = 58.0;
 
-fn footer_button(footer: Rect, slot: usize, width: f64) -> Rect {
+/// Narrow headers put their actions below the title, wrapping at button widths.
+fn header_button_rows(width: f64, count: usize) -> usize {
+    if count == 0 || width >= 160.0 + count as f64 * 112.0 {
+        return 0;
+    }
+    count.div_ceil(header_button_columns(width, count))
+}
+
+fn header_button_columns(width: f64, count: usize) -> usize {
+    (((width - 32.0 + 8.0) / 112.0).floor().max(1.0) as usize).min(count.max(1))
+}
+
+/// The width of each of `count` buttons in a footer: `widest`, or less when
+/// the window is narrow (a split screen's area), so they stay inside it.
+fn footer_button_width(footer: Rect, count: usize, widest: f64) -> f64 {
+    let count = count.max(1) as f64;
+    let room = footer.w - 32.0 - (count - 1.0) * 8.0;
+    widest.min(room / count).max(1.0)
+}
+
+/// Button `slot` of `count`, counted from the right.
+fn footer_button(footer: Rect, slot: usize, count: usize, widest: f64) -> Rect {
+    let width = footer_button_width(footer, count, widest);
     let right = footer.right() - 16.0 - slot as f64 * (width + 8.0);
     Rect::new(right - width, footer.y + (footer.h - 32.0) / 2.0, width, 32.0)
+}
+
+/// What is left of a footer for text beside its buttons.
+fn footer_text_room(footer: Rect, count: usize, widest: f64) -> f64 {
+    footer.w - 36.0 - count as f64 * (footer_button_width(footer, count, widest) + 8.0)
 }
 
 fn row_button(row: Rect) -> Rect {
@@ -323,11 +420,14 @@ impl Tileception {
         self.close_tray();
         self.close_launcher();
         let screen = self.world.screen();
-        self.updates.window.size =
-            (880.0_f64.min(screen.w - 40.0).max(480.0), 580.0_f64.min(screen.h - 40.0).max(360.0));
+        // Never wider than the screen, or on a split screen its area.
+        self.updates.window.size = (
+            880.0_f64.min(screen.w - 40.0).max(480.0).min(screen.w),
+            580.0_f64.min(screen.h - 40.0).max(360.0).min(screen.h),
+        );
         self.updates.window.open = true;
         // What the window lists should be as it is now, not hours old.
-        self.updates_request(super::Request::Scan { offer: false });
+        self.updates_request(super::Request::Scan { offer: false, apps: true });
         match Client::start(self, client::Kind::Updates) {
             Ok(client) => self.updates.window.client = Some(client),
             Err(error) => {
@@ -497,7 +597,11 @@ impl Tileception {
         let mut rows = Vec::new();
         if let Some(preview) = &updates.window.preview {
             if preview.is_empty() {
-                rows.push(Row::Text("Asking apt-get what this would do...".into()));
+                let waiting = match updates.window.sheet {
+                    Sheet::Notes => "Reading the release notes...",
+                    _ => "Asking apt-get what this would do...",
+                };
+                rows.push(Row::Text(waiting.into()));
             }
             if updates.window.sheet == Sheet::Repair && !preview.is_empty() {
                 rows.push(Row::Text("First `dpkg --configure -a` finishes what was left half installed. Then:".into()));
@@ -511,14 +615,20 @@ impl Tileception {
                 if let Some(error) = &snapshot.error {
                     rows.push(Row::Text(error.clone()));
                 }
-                let security = snapshot.updates.iter().filter(|update| update.security).count();
-                for index in 0..snapshot.updates.len() {
-                    if index == 0 && security > 0 {
-                        rows.push(Row::Heading("Security".into(), String::new()));
-                    } else if index == security {
-                        rows.push(Row::Heading("Software".into(), String::new()));
+                let mut heading = "";
+                for (start, count) in groups(&snapshot.updates) {
+                    let update = &snapshot.updates[start];
+                    let (title, note) = match update.source {
+                        _ if update.security => ("Security", ""),
+                        apt::Source::Apt => ("Software", "by source package"),
+                        apt::Source::Firmware => ("Firmware", "installed only when you tick it"),
+                        _ => ("Apps", "Flatpak and Snap"),
+                    };
+                    if title != heading {
+                        heading = title;
+                        rows.push(Row::Heading(title.into(), note.into()));
                     }
-                    rows.push(Row::Update(index));
+                    rows.push(Row::Group(start, count));
                 }
                 if snapshot.updates.is_empty() && snapshot.error.is_none() {
                     let text = if updates.scanned { "Everything is up to date." } else { "Looking for updates..." };
@@ -542,6 +652,34 @@ impl Tileception {
                 if !plan.unneeded.is_empty() {
                     rows.push(Row::Heading("Housekeeping".into(), String::new()));
                     rows.push(Row::Unneeded);
+                }
+                let muted = updates.skipped.len() + snapshot.held.len();
+                if muted > 0 {
+                    rows.push(Row::Heading("Skipped and held".into(), "wait until you let them through".into()));
+                    rows.extend((0..muted).map(Row::Muted));
+                }
+            }
+            Page::Settings => {
+                rows.push(Row::Heading("Automatic updates".into(), "through unattended-upgrades".into()));
+                if updates.automatic.available {
+                    rows.push(Row::Automatic);
+                } else {
+                    rows.push(Row::Text("unattended-upgrades is not installed, so nothing updates by itself.".into()));
+                }
+                let mirrors = &updates.mirrors;
+                let note = mirrors.current.clone().unwrap_or_else(|| "none found in the package sources".into());
+                rows.push(Row::Heading("Mirror".into(), note));
+                if let Some(warning) = mirrors.warning() {
+                    rows.push(Row::Warning(warning));
+                }
+                rows.extend((0..mirrors.candidates.len()).map(Row::Mirror));
+                if mirrors.candidates.is_empty() {
+                    let text = if mirrors.testing {
+                        "Testing the mirrors near you..."
+                    } else {
+                        "Test the mirrors to compare their speed and how far behind each is."
+                    };
+                    rows.push(Row::Text(text.into()));
                 }
             }
             Page::Kernels => {
@@ -601,7 +739,8 @@ impl Tileception {
             })
             .collect();
         let body = Rect::new(side.right(), panel.y, panel.w - side.w, panel.h);
-        let header_h = if window.page == Page::Release { 132.0 } else { 56.0 };
+        let header_h = if window.page == Page::Release { 132.0 } else { 56.0 }
+            + header_button_rows(body.w, self.updates_header_buttons().len()) as f64 * 38.0;
         let header = Rect::new(body.x, body.y, body.w, header_h);
         let footer = Rect::new(body.x, body.bottom() - FOOTER, body.w, FOOTER);
         let has_detail = window.preview.is_none() && window.page != Page::Release;
@@ -755,18 +894,56 @@ impl Tileception {
         self.updates_select_first();
     }
 
-    /// The names of the ticked updates; none when every update is ticked.
-    fn updates_ticked(&self) -> (usize, u64, Vec<String>) {
+    /// What the ticks choose: how many, how much to download, the APT
+    /// names (none when every APT update is ticked and none is skipped) and the
+    /// tasks.
+    fn updates_ticked(&self) -> (usize, u64, Vec<String>, Vec<Task>) {
         let window = &self.updates.window;
-        let ticked: Vec<&apt::Update> =
-            self.updates.snapshot.updates.iter().filter(|update| !window.skipped.contains(&update.name)).collect();
+        let pending = &self.updates.snapshot.updates;
+        let ticked: Vec<&apt::Update> = pending.iter().filter(|update| window.ticked(update)).collect();
         let bytes = ticked.iter().map(|update| update.size).sum();
-        let names = if window.skipped.is_empty() {
+        // A full upgrade would install skipped versions too.
+        let all_apt = !self.updates.skips_apt()
+            && pending.iter().filter(|update| update.source == apt::Source::Apt).all(|update| window.ticked(update));
+        let names = if all_apt {
             Vec::new()
         } else {
-            ticked.iter().map(|update| update.name.clone()).collect()
+            ticked.iter().filter(|update| update.source == apt::Source::Apt).map(|update| update.name.clone()).collect()
         };
-        (ticked.len(), bytes, names)
+        (ticked.len(), bytes, names, super::install_tasks(&ticked, all_apt))
+    }
+
+    /// The updates of the highlighted row: a group's, or a muted one with
+    /// whether it is held.
+    fn updates_selected_updates(&self) -> (Vec<apt::Update>, Option<bool>) {
+        let updates = &self.updates;
+        match self.updates_selected_row() {
+            Some(Row::Group(start, count)) => {
+                (updates.snapshot.updates.iter().skip(start).take(count).cloned().collect(), None)
+            }
+            Some(Row::Muted(index)) => match updates.muted(index) {
+                Some((update, held)) => (vec![update.clone()], Some(held)),
+                None => (Vec::new(), None),
+            },
+            _ => (Vec::new(), None),
+        }
+    }
+
+    /// Opens the release notes of an update.
+    pub(crate) fn updates_show_notes(&mut self, name: &str) -> Result<(), String> {
+        let update = self.updates.find(name)?.clone();
+        self.updates_show_notes_of(update);
+        Ok(())
+    }
+
+    fn updates_show_notes_of(&mut self, update: apt::Update) {
+        let window = &mut self.updates.window;
+        window.sheet = Sheet::Notes;
+        window.preview = Some(String::new());
+        window.scroll = 0.0;
+        window.preview_request = window.preview_request.wrapping_add(1);
+        let request = window.preview_request;
+        self.updates_request_notes(request, update);
     }
 
     fn updates_window_activate(&mut self, hit: Hit) {
@@ -791,16 +968,52 @@ impl Tileception {
                 self.updates.window.selected = row;
                 Ok(())
             }
-            Hit::Tick(index) => {
-                if let Some(update) = self.updates.snapshot.updates.get(index) {
-                    let name = update.name.clone();
-                    let skipped = &mut self.updates.window.skipped;
-                    if !skipped.remove(&name) {
-                        skipped.insert(name);
+            Hit::Tick(row) => {
+                if let Some(Row::Group(start, count)) = self.updates_rows().get(row).cloned() {
+                    let members: Vec<apt::Update> =
+                        self.updates.snapshot.updates.iter().skip(start).take(count).cloned().collect();
+                    let window = &mut self.updates.window;
+                    // A group partly ticked becomes wholly ticked.
+                    let tick = !members.iter().all(|update| window.ticked(update));
+                    for update in &members {
+                        window.toggle(update, tick);
                     }
+                    window.selected = row;
                 }
                 Ok(())
             }
+            Hit::Notes => {
+                if let Some(update) = self.updates_selected_updates().0.into_iter().next() {
+                    self.updates_show_notes_of(update);
+                }
+                Ok(())
+            }
+            Hit::Skip(skip) => {
+                let (chosen, _) = self.updates_selected_updates();
+                chosen.iter().try_for_each(|update| self.updates_skip_update(update, skip))
+            }
+            Hit::Hold(hold) => {
+                let (chosen, _) = self.updates_selected_updates();
+                let names: Vec<String> = chosen
+                    .iter()
+                    .filter(|update| update.source == apt::Source::Apt)
+                    .map(|update| update.name.clone())
+                    .collect();
+                if names.is_empty() { Ok(()) } else { self.updates_hold(names, hold) }
+            }
+            Hit::Automatic(enable) => self.updates_start(Task::Automatic(enable)),
+            Hit::TestMirrors => {
+                self.updates_test_mirrors();
+                Ok(())
+            }
+            Hit::UseMirror(index) => match self.updates.mirrors.candidates.get(index) {
+                Some(mirror) if mirror.error.is_some() => Err("That mirror cannot be reached.".into()),
+                Some(mirror) => {
+                    let url = mirror.url.clone();
+                    self.updates_start(Task::Mirror(url))
+                }
+                None => Ok(()),
+            },
             Hit::Kernel(index) => self.updates_kernel_action(index),
             Hit::Fold(row) => {
                 if let Some(Row::Series(series, ..)) = self.updates_rows().get(row).cloned() {
@@ -842,17 +1055,30 @@ impl Tileception {
                 if self.updates.window.preview.as_ref().is_some_and(String::is_empty) {
                     return;
                 }
-                let (count, _, names) = self.updates_ticked();
+                let (count, _, _, tasks) = self.updates_ticked();
+                // Every APT update is ticked: a full upgrade, or with a skip
+                // the install that keeps it, which can take packages away too.
+                let full = matches!(tasks.first(), Some(Task::Install(_)))
+                    && self
+                        .updates
+                        .snapshot
+                        .updates
+                        .iter()
+                        .filter(|update| update.source == apt::Source::Apt)
+                        .all(|update| self.updates.window.ticked(update));
                 if count == 0 {
                     Err("Tick at least one update.".into())
-                } else if self.updates.window.preview.is_none()
-                    && names.is_empty()
-                    && self.updates.snapshot.plan.removes()
-                {
+                } else if self.updates.window.preview.is_none() && full && self.updates.snapshot.plan.removes() {
                     // Never take packages away unseen.
                     self.updates_open_sheet(Sheet::Install)
                 } else {
-                    self.updates_start(Task::Install(names))
+                    let restart =
+                        self.updates.window.preview.is_some() && self.updates.window.sheet == Sheet::InstallRestart;
+                    self.updates_start_all(tasks).map(|()| {
+                        if restart {
+                            self.updates.after = Some(crate::power::PowerAction::Restart);
+                        }
+                    })
                 }
             }
             Hit::Sheet(sheet) => self.updates_open_sheet(sheet),
@@ -864,10 +1090,10 @@ impl Tileception {
             Hit::Run => match self.updates.window.sheet {
                 _ if self.updates.window.preview.as_ref().is_none_or(String::is_empty) => Ok(()),
                 Sheet::Queue => return self.updates_window_activate(Hit::Apply),
-                Sheet::Install => return self.updates_window_activate(Hit::Install),
+                Sheet::Install | Sheet::InstallRestart => return self.updates_window_activate(Hit::Install),
                 Sheet::Autoremove => self.updates_start(Task::Autoremove),
                 Sheet::Repair => self.updates_start(Task::Repair),
-                Sheet::Log => Ok(()),
+                Sheet::Log | Sheet::Notes => Ok(()),
             },
             Hit::Dismiss => {
                 self.updates.outcome = None;
@@ -940,13 +1166,22 @@ impl Tileception {
                 let (install, remove) = self.updates_queue_plan();
                 apt::transaction_args(&install, &remove, self.updates.window.purge, true)?
             }
-            Sheet::Install => {
-                let (count, _, names) = self.updates_ticked();
+            Sheet::Install | Sheet::InstallRestart => {
+                let (count, _, _, tasks) = self.updates_ticked();
                 if count == 0 {
                     return Err("Tick at least one update.".into());
                 }
-                apt::upgrade_args(&names, true)?
+                let task = tasks
+                    .into_iter()
+                    .find(|task| matches!(task, Task::Install(_) | Task::InstallKeeping { .. }))
+                    .ok_or("Only APT updates can be previewed.")?;
+                let task = self.updates_constrained_task(task)?;
+                let command = task.commands()?.remove(0);
+                let mut args: Vec<String> = command.into_iter().skip(1).collect();
+                args.insert(0, "-s".into());
+                args
             }
+            Sheet::Notes => return Err("Choose an update for its release notes.".into()),
             Sheet::Autoremove => apt::autoremove_args(true),
             Sheet::Repair => apt::repair_args(true),
             Sheet::Log => {
@@ -974,9 +1209,23 @@ impl Tileception {
         if !self.updates.snapshot.plan.removes() || self.updates.snapshot.updates.is_empty() {
             return self.updates_install(false);
         }
+        self.updates_review_install(false)
+    }
+
+    pub(super) fn updates_review_install(&mut self, restart: bool) -> Result<(), String> {
         self.open_updates(Page::Available);
         self.updates.window.skipped.clear();
-        self.updates_open_sheet(Sheet::Install)
+        if restart {
+            self.updates.window.firmware = self
+                .updates
+                .snapshot
+                .updates
+                .iter()
+                .filter(|update| update.source == apt::Source::Firmware)
+                .map(apt::Update::key)
+                .collect();
+        }
+        self.updates_open_sheet(if restart { Sheet::InstallRestart } else { Sheet::Install })
     }
 
     /// A kernel's button: queues an offered one to install or an installed
@@ -1056,7 +1305,11 @@ impl Tileception {
             keysyms::KEY_Home => self.updates_move_selection(0, Some(false)),
             keysyms::KEY_End => self.updates_move_selection(0, Some(true)),
             keysyms::KEY_space => match self.updates_selected_row() {
-                Some(Row::Update(index)) => self.updates_window_activate(Hit::Tick(index)),
+                Some(Row::Group(..)) => self.updates_window_activate(Hit::Tick(selected)),
+                Some(Row::Automatic) if !self.updates.busy() => {
+                    let enabled = self.updates.automatic.enabled;
+                    self.updates_window_activate(Hit::Automatic(!enabled));
+                }
                 Some(Row::Kernel(index)) => self.updates_window_activate(Hit::Kernel(index)),
                 Some(Row::Leftovers(kind)) => self.updates_window_activate(Hit::Leftovers(kind)),
                 Some(Row::Series(..)) => self.updates_window_activate(Hit::Fold(selected)),
@@ -1084,8 +1337,21 @@ impl Tileception {
                 Page::Available => self.updates_window_activate(Hit::Install),
                 Page::Kernels => self.updates_window_activate(Hit::Apply),
                 Page::Release => self.updates_window_activate(Hit::Upgrade),
+                Page::Settings => match self.updates_selected_row() {
+                    Some(Row::Mirror(index)) => self.updates_window_activate(Hit::UseMirror(index)),
+                    Some(Row::Automatic) => {
+                        let enabled = self.updates.automatic.enabled;
+                        self.updates_window_activate(Hit::Automatic(!enabled));
+                    }
+                    _ => {}
+                },
                 Page::History => {}
             },
+            keysyms::KEY_n if plain && self.updates.window.preview.is_none() => {
+                if matches!(self.updates_selected_row(), Some(Row::Group(..) | Row::Muted(_))) {
+                    self.updates_window_activate(Hit::Notes);
+                }
+            }
             keysyms::KEY_F5 if !self.updates.busy() => self.updates_window_activate(Hit::Refresh),
             _ => {}
         }
@@ -1101,19 +1367,24 @@ impl Tileception {
         let back = ("Back".to_string(), Hit::Back, false);
         match (updates.window.preview.as_ref(), updates.window.sheet) {
             (None, _) | (Some(_), Sheet::Queue) => {}
-            (Some(preview), Sheet::Install) => {
+            (Some(preview), Sheet::Install | Sheet::InstallRestart) => {
                 if preview.is_empty() {
                     return vec![back];
                 }
                 let (count, ..) = self.updates_ticked();
-                return vec![(format!("Install {count}"), Hit::Install, true), back];
+                let label = if updates.window.sheet == Sheet::InstallRestart {
+                    format!("Install {count} and restart")
+                } else {
+                    format!("Install {count}")
+                };
+                return vec![(label, Hit::Install, true), back];
             }
             (Some(preview), Sheet::Autoremove) => {
                 let count = apt::parse_plan(preview).removed.len();
                 return if count == 0 { vec![back] } else { vec![(format!("Remove {count}"), Hit::Run, true), back] };
             }
             (Some(_), Sheet::Repair) => return vec![("Repair".into(), Hit::Run, true), back],
-            (Some(_), Sheet::Log) => return vec![back, ("Copy".into(), Hit::Copy, false)],
+            (Some(_), Sheet::Log | Sheet::Notes) => return vec![back, ("Copy".into(), Hit::Copy, false)],
         }
         // A task that failed: what went wrong comes before anything else.
         if updates.failed() {
@@ -1169,11 +1440,25 @@ impl Tileception {
                 }
             }
             Page::History if updates.log().is_some() => vec![("Last task log".into(), Hit::Sheet(Sheet::Log), false)],
-            Page::History => Vec::new(),
+            Page::History | Page::Settings => Vec::new(),
         }
     }
 
     fn updates_detail_buttons(&self) -> Vec<(&'static str, Hit)> {
+        if self.updates.window.page == Page::Available && !self.updates.busy() {
+            let (chosen, muted) = self.updates_selected_updates();
+            let Some(first) = chosen.first() else { return Vec::new() };
+            let apt = first.source == apt::Source::Apt;
+            // Rightmost first.
+            return match muted {
+                Some(true) => vec![("Release", Hit::Hold(false)), ("Notes", Hit::Notes)],
+                Some(false) => vec![("Unskip", Hit::Skip(false)), ("Notes", Hit::Notes)],
+                None if apt => {
+                    vec![("Hold", Hit::Hold(true)), ("Skip version", Hit::Skip(true)), ("Notes", Hit::Notes)]
+                }
+                None => vec![("Skip version", Hit::Skip(true)), ("Notes", Hit::Notes)],
+            };
+        }
         if self.updates.window.page != Page::History || !matches!(self.updates_selected_row(), Some(Row::Entry(_))) {
             return Vec::new();
         }
@@ -1201,15 +1486,21 @@ impl Tileception {
     fn updates_window_controls(&self, frame: &Frame) -> Vec<(Rect, Hit)> {
         let updates = &self.updates;
         let mut controls: Vec<(Rect, Hit)> = frame.nav.iter().map(|(rect, page)| (*rect, Hit::Page(*page))).collect();
-        for (slot, (_, hit)) in self.updates_header_buttons().into_iter().enumerate() {
-            controls.push((Self::updates_header_button(frame.header, slot), hit));
+        let header_buttons = self.updates_header_buttons();
+        let count = header_buttons.len();
+        for (slot, (_, hit)) in header_buttons.into_iter().enumerate() {
+            controls.push((Self::updates_header_button(frame.header, slot, count), hit));
         }
-        for (slot, (_, hit, _)) in self.updates_footer_buttons().into_iter().enumerate() {
-            controls.push((footer_button(frame.footer, slot, 124.0), hit));
+        let footer_buttons = self.updates_footer_buttons();
+        let count = footer_buttons.len();
+        for (slot, (_, hit, _)) in footer_buttons.into_iter().enumerate() {
+            controls.push((footer_button(frame.footer, slot, count, 124.0), hit));
         }
         if let Some(detail) = frame.detail {
-            for (slot, (_, hit)) in self.updates_detail_buttons().into_iter().enumerate() {
-                controls.push((footer_button(detail, slot, 104.0), hit));
+            let detail_buttons = self.updates_detail_buttons();
+            let count = detail_buttons.len();
+            for (slot, (_, hit)) in detail_buttons.into_iter().enumerate() {
+                controls.push((footer_button(detail, slot, count, 104.0), hit));
             }
         }
         let checks = self.updates_release_checks();
@@ -1220,8 +1511,19 @@ impl Tileception {
             }
             let Some(visible) = crate::settings::intersect(*rect, frame.list) else { continue };
             match row {
-                Row::Update(update) if !updates.busy() => {
-                    controls.push((Rect::new(rect.x, visible.y, 32.0, visible.h), Hit::Tick(*update)));
+                Row::Group(..) if !updates.busy() => {
+                    controls.push((Rect::new(rect.x, visible.y, 32.0, visible.h), Hit::Tick(index)));
+                }
+                Row::Automatic if !updates.busy() => {
+                    controls.push((row_button(*rect), Hit::Automatic(!updates.automatic.enabled)));
+                }
+                Row::Mirror(mirror) if !updates.busy() => {
+                    let usable = updates.mirrors.candidates.get(*mirror).is_some_and(|mirror| {
+                        mirror.error.is_none() && Some(&mirror.url) != updates.mirrors.current.as_ref()
+                    });
+                    if usable {
+                        controls.push((row_button(*rect), Hit::UseMirror(*mirror)));
+                    }
                 }
                 Row::Kernel(kernel) if !updates.busy() => {
                     if found.get(*kernel).is_some_and(|kernel| !kernel.running) {
@@ -1255,6 +1557,7 @@ impl Tileception {
         }
         match window.page {
             Page::Available => vec![("Check", Hit::Refresh)],
+            Page::Settings if !self.updates.mirrors.testing => vec![("Test mirrors", Hit::TestMirrors)],
             Page::Kernels => vec![
                 ("Check", Hit::Refresh),
                 (if window.all_variants { "Recommended" } else { "All variants" }, Hit::Variants),
@@ -1264,9 +1567,17 @@ impl Tileception {
         }
     }
 
-    fn updates_header_button(header: Rect, slot: usize) -> Rect {
-        let width = 104.0;
-        Rect::new(header.right() - 16.0 - width - slot as f64 * (width + 8.0), header.y + 13.0, width, 30.0)
+    fn updates_header_button(header: Rect, slot: usize, count: usize) -> Rect {
+        let wrapped = header_button_rows(header.w, count) > 0;
+        let columns = if wrapped { header_button_columns(header.w, count) } else { count };
+        let width = footer_button_width(header, columns, 104.0);
+        let offset_y = if wrapped { 56.0 + (slot / columns) as f64 * 38.0 } else { 13.0 };
+        Rect::new(
+            header.right() - 16.0 - width - (slot % columns) as f64 * (width + 8.0),
+            header.y + offset_y,
+            width,
+            30.0,
+        )
     }
 
     fn updates_window_target(&self, point: Point) -> Option<PointerTarget> {
@@ -1345,10 +1656,12 @@ impl Tileception {
                     .and_then(|summary| summary.rsplit(", ").next().map(str::to_string))
                     .unwrap_or_default(),
                 Page::Release => updates.release().unwrap_or_default().to_string(),
+                Page::Settings if updates.mirrors.warning().is_some() => "Mirror".to_string(),
                 _ => String::new(),
             };
             if !badge.is_empty() {
-                let tint = if *page == Page::Available && totals.security > 0 { theme.warning } else { theme.accent };
+                let warn = (*page == Page::Available && totals.security > 0) || *page == Page::Settings;
+                let tint = if warn { theme.warning } else { theme.accent };
                 text_right(
                     &mut painter,
                     &badge,
@@ -1403,21 +1716,30 @@ impl Tileception {
             }
             Page::Release => ("Release".to_string(), format!("You're on {}", snapshot.system.pretty)),
             Page::History => ("History".to_string(), "from the apt log".to_string()),
+            Page::Settings => (
+                "Settings".to_string(),
+                if updates.mirrors.testing { "testing the mirrors".to_string() } else { String::new() },
+            ),
+        };
+        let header_buttons = self.updates_header_buttons();
+        let count = header_buttons.len();
+        let room = if header_button_rows(header.w, count) > 0 {
+            header.w - 36.0
+        } else {
+            footer_text_room(header, count, 104.0)
         };
         let (width, _) = painter.text(
             &title,
-            Rect::new(header.x + 18.0, header.y, header.w - 140.0, 56.0),
+            Rect::new(header.x + 18.0, header.y, room.max(1.0), 56.0),
             Style::new(size * 1.12, theme.text).bold(),
         );
-        let header_buttons = self.updates_header_buttons();
-        let taken = 30.0 + width + header_buttons.len() as f64 * 112.0 + 24.0;
         painter.text(
             &note,
-            Rect::new(header.x + 30.0 + width, header.y + 1.0, (header.w - taken).max(1.0), 56.0),
+            Rect::new(header.x + 30.0 + width, header.y + 1.0, (room - width - 12.0).max(1.0), 56.0),
             muted,
         );
         for (slot, (label, _)) in header_buttons.into_iter().enumerate() {
-            draw_button(&mut painter, Self::updates_header_button(header, slot), label, Look::Plain, pointer);
+            draw_button(&mut painter, Self::updates_header_button(header, slot, count), label, Look::Plain, pointer);
         }
         if window.page == Page::Release {
             let hero = Rect::new(header.x + 16.0, header.y + 56.0, header.w - 32.0, 64.0);
@@ -1504,30 +1826,144 @@ impl Tileception {
                             if window.preview.is_some() { "monospace" } else { &theme.font },
                         );
                     }
-                    Row::Update(update) => {
-                        let Some(update) = snapshot.updates.get(*update) else { continue };
-                        draw_tick(painter, tick_box(rect), !window.skipped.contains(&update.name));
-                        let (label, tint) = match (update.security, update.kind) {
-                            (true, _) => ("Security", theme.warning),
-                            (_, apt::Kind::Kernel) => ("Kernel", theme.accent_end),
-                            (_, apt::Kind::Desktop) => ("Desktop", theme.accent),
-                            (_, apt::Kind::System) => ("System", theme.muted),
-                        };
+                    Row::Group(start, count) => {
+                        let members: Vec<&apt::Update> = snapshot.updates.iter().skip(*start).take(*count).collect();
+                        let Some(update) = members.first().copied() else { continue };
+                        let ticked = members.iter().filter(|update| window.ticked(update)).count();
+                        draw_tick(painter, tick_box(Rect::new(rect.x, rect.y, rect.w, 30.0)), ticked == members.len());
+                        if ticked > 0 && ticked < members.len() {
+                            painter.glyph(
+                                glyph::MINUS,
+                                tick_box(Rect::new(rect.x, rect.y, rect.w, 30.0)),
+                                12,
+                                theme.accent,
+                            );
+                        }
+                        let (label, tint) = badge(update, theme);
                         draw_badge(painter, Rect::new(rect.x + 34.0, rect.y + 7.0, 62.0, 16.0), label, tint);
                         let name_w = ((rect.w - 190.0) * 0.42).max(80.0);
-                        painter.text(&update.name, Rect::new(rect.x + 106.0, rect.y, name_w - 8.0, rect.h), body);
+                        let title = if update.source == apt::Source::Apt { update.group() } else { update.label() };
+                        let top = Rect::new(rect.x + 106.0, rect.y, name_w - 8.0, 30.0);
+                        painter.text(title, top, body);
                         let versions = match &update.old {
                             Some(old) => format!("{old} \u{2192} {}", update.new),
                             None => format!("new \u{2192} {}", update.new),
                         };
                         painter.text_font(
                             &versions,
-                            Rect::new(rect.x + 106.0 + name_w, rect.y, rect.w - 190.0 - name_w, rect.h),
+                            Rect::new(rect.x + 106.0 + name_w, rect.y, rect.w - 190.0 - name_w, 30.0),
                             Style::new(size * 0.8, theme.muted),
                             "monospace",
                         );
-                        let bytes = if update.size > 0 { backend::human_size(update.size) } else { "cached".into() };
-                        text_right(painter, &bytes, Rect::new(rect.right() - 80.0, rect.y, 72.0, rect.h), muted);
+                        let total: u64 = members.iter().map(|update| update.size).sum();
+                        let bytes = if total > 0 { backend::human_size(total) } else { "cached".into() };
+                        text_right(painter, &bytes, Rect::new(rect.right() - 80.0, rect.y, 72.0, 30.0), muted);
+                        // What it is, and the packages it brings.
+                        let mut about = Vec::new();
+                        if members.len() > 1 || update.name != title {
+                            about
+                                .push(members.iter().map(|update| update.name.as_str()).collect::<Vec<_>>().join(", "));
+                        }
+                        if !update.summary.is_empty() {
+                            about.push(update.summary.clone());
+                        }
+                        painter.text(
+                            &about.join(" \u{b7} "),
+                            Rect::new(rect.x + 106.0, rect.y + 24.0, rect.w - 196.0, 18.0),
+                            Style::new(size * 0.78, theme.muted.alpha(0.85)),
+                        );
+                    }
+                    Row::Muted(index) => {
+                        let Some((update, held)) = updates.muted(*index) else { continue };
+                        painter.glyph(
+                            if held { glyph::LOCK } else { glyph::MINUS },
+                            tick_box(rect),
+                            13,
+                            theme.muted.alpha(0.7),
+                        );
+                        let faint = Style::new(size * 0.88, theme.muted.alpha(0.75));
+                        let name_w = ((rect.w - 190.0) * 0.42).max(80.0);
+                        painter.text(update.label(), Rect::new(rect.x + 106.0, rect.y, name_w - 8.0, rect.h), faint);
+                        draw_badge(
+                            painter,
+                            Rect::new(rect.x + 34.0, rect.y + 7.0, 62.0, 16.0),
+                            if held { "Held" } else { "Skipped" },
+                            theme.muted,
+                        );
+                        let versions = format!("{} \u{2192} {}", update.old.as_deref().unwrap_or("new"), update.new);
+                        painter.text_font(
+                            &versions,
+                            Rect::new(rect.x + 106.0 + name_w, rect.y, rect.w - 190.0 - name_w, rect.h),
+                            Style::new(size * 0.8, theme.muted.alpha(0.7)),
+                            "monospace",
+                        );
+                    }
+                    Row::Automatic => {
+                        let automatic = &updates.automatic;
+                        let state = if automatic.enabled { "On" } else { "Off" };
+                        painter.glyph(
+                            if automatic.enabled { glyph::CHECK } else { glyph::MINUS },
+                            Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, 20.0),
+                            15,
+                            if automatic.enabled { theme.accent } else { theme.muted },
+                        );
+                        painter.text(
+                            &format!("{state}: installs updates by itself, on apt's daily timer"),
+                            Rect::new(rect.x + 34.0, rect.y + 5.0, rect.w - 130.0, 20.0),
+                            body,
+                        );
+                        let covers = if automatic.covers.is_empty() {
+                            "It is set to install nothing.".to_string()
+                        } else {
+                            format!("Covers {}", automatic.covers.join(", "))
+                        };
+                        painter.text(&covers, Rect::new(rect.x + 34.0, rect.y + 24.0, rect.w - 130.0, 18.0), muted);
+                        if !updates.busy() {
+                            let label = if automatic.enabled { "Turn off" } else { "Turn on" };
+                            draw_button(painter, row_button(rect), label, Look::Plain, pointer);
+                        }
+                    }
+                    Row::Mirror(index) => {
+                        let mirrors = &updates.mirrors;
+                        let Some(mirror) = mirrors.candidates.get(*index) else { continue };
+                        let current = Some(&mirror.url) == mirrors.current.as_ref();
+                        let ink = if mirror.stale(mirrors.reference) { theme.muted } else { theme.text };
+                        let url_w = ((rect.w - 120.0) * 0.55).max(160.0);
+                        painter.text_font(
+                            &mirror.url,
+                            Rect::new(rect.x + 10.0, rect.y, url_w, rect.h),
+                            Style::new(size * 0.84, ink),
+                            "monospace",
+                        );
+                        let tint = if mirror.stale(mirrors.reference) { theme.warning } else { theme.muted };
+                        painter.text(
+                            &super::describe_mirror(mirror, mirrors.reference),
+                            Rect::new(rect.x + 20.0 + url_w, rect.y, rect.w - url_w - 120.0, rect.h),
+                            muted.colour(tint),
+                        );
+                        if current {
+                            text_right(
+                                painter,
+                                "in use",
+                                Rect::new(rect.x, rect.y, rect.w - 20.0, rect.h),
+                                muted.colour(theme.accent),
+                            );
+                        } else if mirror.error.is_none() && !updates.busy() {
+                            draw_button(painter, row_button(rect), "Use", Look::Plain, pointer);
+                        }
+                    }
+                    Row::Warning(text) => {
+                        painter.glyph(
+                            glyph::ALERT,
+                            Rect::new(rect.x + 6.0, rect.y + 5.0, 20.0, 20.0),
+                            15,
+                            theme.warning,
+                        );
+                        painter.text(
+                            text,
+                            Rect::new(rect.x + 34.0, rect.y, rect.w - 40.0, rect.h),
+                            body.colour(theme.warning),
+                        );
                     }
                     Row::Series(series, installed, available) => {
                         let folded = window.folded.contains(series);
@@ -1698,15 +2134,33 @@ impl Tileception {
             painter.fill(detail, theme.surface, 0.0);
             painter.fill(Rect::new(detail.x, detail.y, detail.w, 1.0), theme.border, 0.0);
             let buttons = self.updates_detail_buttons();
-            let room = detail.w - 36.0 - buttons.len() as f64 * 112.0;
+            let room = footer_text_room(detail, buttons.len(), 104.0);
             let lines = Rect::new(detail.x + 18.0, detail.y + 8.0, room, 20.0);
             let second = Rect::new(lines.x, lines.y + 20.0, lines.w, 20.0);
             match (window.page, self.updates_selected_row()) {
-                (Page::Available, Some(Row::Update(index))) => {
-                    if let Some(update) = snapshot.updates.get(index) {
-                        painter.text(&update.name, lines, body.bold());
+                (Page::Available, Some(Row::Group(..) | Row::Muted(_))) => {
+                    let (chosen, waits) = self.updates_selected_updates();
+                    if let Some(update) = chosen.first() {
+                        let title = match update.source {
+                            apt::Source::Apt if chosen.len() > 1 => {
+                                format!("{} \u{b7} {} packages", update.group(), chosen.len())
+                            }
+                            _ => update.label().to_string(),
+                        };
+                        painter.text(&title, lines, body.bold());
                         let origin = if update.origin.is_empty() { "unknown source" } else { &update.origin };
-                        painter.text(&format!("From {origin}"), second, muted);
+                        let note = match (waits, update.source) {
+                            (Some(true), _) => format!("Held with apt-mark \u{b7} from {origin}"),
+                            (Some(false), _) => {
+                                format!("Version {} skipped \u{b7} the next one shows again", update.new)
+                            }
+                            (None, apt::Source::Firmware) => {
+                                format!("{} \u{b7} from {origin} \u{b7} tick it to install", update.summary)
+                            }
+                            (None, apt::Source::Apt) => format!("From {origin}"),
+                            (None, source) => format!("{} \u{b7} from {origin}", source.label()),
+                        };
+                        painter.text(&note, second, muted);
                     }
                 }
                 (Page::Available, Some(Row::Unneeded)) => {
@@ -1767,8 +2221,9 @@ impl Tileception {
                 }
                 _ => {}
             }
+            let count = buttons.len();
             for (slot, (label, _)) in buttons.into_iter().enumerate() {
-                draw_button(&mut painter, footer_button(detail, slot, 104.0), label, Look::Plain, pointer);
+                draw_button(&mut painter, footer_button(detail, slot, count, 104.0), label, Look::Plain, pointer);
             }
         }
 
@@ -1776,7 +2231,7 @@ impl Tileception {
         let footer = frame.footer;
         painter.fill(Rect::new(footer.x, footer.y, footer.w, 1.0), theme.border, 0.0);
         let buttons = self.updates_footer_buttons();
-        let room = footer.w - 36.0 - buttons.len() as f64 * 132.0;
+        let room = footer_text_room(footer, buttons.len(), 124.0);
         let line = Rect::new(footer.x + 18.0, footer.y, room, footer.h);
         if let Some((title, label, fraction)) = updates.progress() {
             painter.text(&format!("{title} \u{b7} {label}"), Rect::new(line.x, line.y + 8.0, line.w, 22.0), body);
@@ -1790,7 +2245,11 @@ impl Tileception {
             let sheet = window.preview.as_ref().map(|preview| (window.sheet, apt::parse_plan(preview)));
             let (text, tint) = match (updates.outcome(), window.page) {
                 (Some(Err(reason)), _) => (reason.clone(), theme.danger),
-                _ if matches!(sheet, Some((Sheet::Install | Sheet::Autoremove | Sheet::Repair | Sheet::Log, _))) => {
+                _ if matches!(
+                    sheet,
+                    Some((Sheet::Install | Sheet::InstallRestart | Sheet::Autoremove | Sheet::Repair | Sheet::Log, _))
+                ) =>
+                {
                     match sheet {
                         Some((Sheet::Log, _)) => ("Kept until the next task ends.".to_string(), theme.muted),
                         Some((_, plan)) if window.preview.as_ref().is_some_and(String::is_empty) => {
@@ -1805,7 +2264,7 @@ impl Tileception {
                     }
                 }
                 (_, Page::Available) => {
-                    let (count, bytes, _) = self.updates_ticked();
+                    let (count, bytes, ..) = self.updates_ticked();
                     let restart = if snapshot.restart { " \u{b7} a restart is waiting" } else { "" };
                     let text = if snapshot.updates.is_empty() {
                         match updates.outcome() {
@@ -1847,17 +2306,28 @@ impl Tileception {
                     (text.to_string(), theme.muted)
                 }
                 (_, Page::History) => ("Read-only. To undo an update, use a terminal.".to_string(), theme.muted),
+                (_, Page::Settings) => {
+                    let text = match updates.mirrors.current.as_ref() {
+                        Some(_) if updates.mirrors.candidates.is_empty() => {
+                            "Testing asks each mirror for a small file and part of a larger one.".to_string()
+                        }
+                        Some(_) => "Using a mirror rewrites the Ubuntu sources and refreshes the lists.".to_string(),
+                        None => "No Ubuntu mirror was found in the package sources.".to_string(),
+                    };
+                    (text, theme.muted)
+                }
             };
             painter.text(&text, line, muted.colour(tint));
         }
         let ready = release::ready(&checks);
+        let count = buttons.len();
         for (slot, (label, hit, primary)) in buttons.into_iter().enumerate() {
             let look = match (primary, hit) {
                 (true, _) => Look::Primary,
                 (false, Hit::Security) => Look::Warning,
                 _ => Look::Plain,
             };
-            let rect = footer_button(footer, slot, 124.0);
+            let rect = footer_button(footer, slot, count, 124.0);
             let enabled = ready || hit != Hit::Upgrade || !primary;
             painter.button(rect, Button::new(&label, look).enabled(enabled), rect.contains(pointer));
         }
@@ -1900,6 +2370,38 @@ fn draw_tick(painter: &mut Painter, rect: Rect, ticked: bool) {
     }
 }
 
+/// The badge of an update: why it matters, or where it comes from.
+fn badge(update: &apt::Update, theme: &crate::theme::Theme) -> (&'static str, Colour) {
+    match (update.security, update.kind) {
+        (true, _) => ("Security", theme.warning),
+        (_, apt::Kind::Kernel) => ("Kernel", theme.accent_end),
+        (_, apt::Kind::Desktop) => ("Desktop", theme.accent),
+        (_, apt::Kind::System) => ("System", theme.muted),
+        (_, apt::Kind::App) => (update.source.label(), theme.accent),
+        (_, apt::Kind::Firmware) => ("Firmware", theme.danger),
+    }
+}
+
+/// The updates as rows: a source package's binaries together, each app
+/// and device alone. They must be sorted so that a group is contiguous.
+fn groups(updates: &[apt::Update]) -> Vec<(usize, usize)> {
+    let mut found: Vec<(usize, usize)> = Vec::new();
+    for (index, update) in updates.iter().enumerate() {
+        let joins = found.last().is_some_and(|(start, _)| {
+            let first = &updates[*start];
+            update.source == apt::Source::Apt
+                && first.source == apt::Source::Apt
+                && first.security == update.security
+                && first.group() == update.group()
+        });
+        match found.last_mut() {
+            Some((_, count)) if joins => *count += 1,
+            _ => found.push((index, 1)),
+        }
+    }
+    found
+}
+
 fn draw_badge(painter: &mut Painter, rect: Rect, label: &str, tint: Colour) {
     let theme = painter.theme();
     painter.shape(rect, Shape { border_width: 1.0, border: tint.alpha(0.7), ..Shape::filled(tint.alpha(0.1), 4.0) });
@@ -1909,6 +2411,40 @@ fn draw_badge(painter: &mut Painter, rect: Rect, label: &str, tint: Colour) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_name_in_two_sources_is_ticked_apart() {
+        let system = apt::Update {
+            name: "org.mozilla.firefox//stable".into(),
+            source: apt::Source::Flatpak,
+            ..apt::Update::default()
+        };
+        let user = apt::Update { source: apt::Source::FlatpakUser, ..system.clone() };
+        let mut window = Window::default();
+        window.toggle(&user, false);
+        assert!(window.ticked(&system) && !window.ticked(&user));
+        window.toggle(&user, true);
+        assert!(window.ticked(&user));
+    }
+
+    #[test]
+    fn a_source_packages_binaries_share_a_row() {
+        let update = |name: &str, package: &str, source: apt::Source| apt::Update {
+            name: name.into(),
+            package: package.into(),
+            source,
+            ..apt::Update::default()
+        };
+        let updates = [
+            update("libc-bin", "glibc", apt::Source::Apt),
+            update("libc6", "glibc", apt::Source::Apt),
+            update("curl", "", apt::Source::Apt),
+            update("org.a//stable", "", apt::Source::Flatpak),
+            update("org.b//stable", "", apt::Source::Flatpak),
+        ];
+        assert_eq!(groups(&updates), [(0, 2), (2, 1), (3, 1), (4, 1)]);
+        assert!(groups(&[]).is_empty());
+    }
 
     #[test]
     fn names_wrap_into_lines() {

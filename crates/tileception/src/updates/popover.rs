@@ -66,7 +66,7 @@ const PAD: f64 = 14.0;
 
 /// "openssl, curl, 2 more".
 fn names(updates: &[&apt::Update]) -> String {
-    let shown: Vec<&str> = updates.iter().take(2).map(|update| update.name.as_str()).collect();
+    let shown: Vec<&str> = updates.iter().take(2).map(|update| update.label()).collect();
     match updates.len().saturating_sub(shown.len()) {
         0 => shown.join(", "),
         more => format!("{}, {more} more", shown.join(", ")),
@@ -159,6 +159,8 @@ impl Tileception {
         parts.extend(group("Kernel", false, &|update| !update.security && update.kind == apt::Kind::Kernel));
         parts.extend(group("Desktop", false, &|update| !update.security && update.kind == apt::Kind::Desktop));
         parts.extend(group("Software", false, &|update| !update.security && update.kind == apt::Kind::System));
+        parts.extend(group("Apps", false, &|update| update.kind == apt::Kind::App));
+        parts.extend(group("Firmware", false, &|update| update.kind == apt::Kind::Firmware));
         if let Some(error) = &updates.snapshot.error {
             parts.push(Part::Note { text: error.clone(), error: true });
         } else if pending.is_empty() && !updates.busy() {

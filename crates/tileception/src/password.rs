@@ -145,12 +145,15 @@ impl Tileception {
     fn password_prompt_answered(&mut self, purpose: Purpose, password: Option<zeroize::Zeroizing<String>>) {
         match (purpose, password) {
             (Purpose::Sudo(task), Some(password)) => {
-                if let Err(error) = self.updates_run(task, Some(password)) {
+                if let Err(error) = self.updates_with_password(task, password) {
                     tracing::warn!("{error}");
                 }
                 self.polkit_next();
             }
-            (Purpose::Sudo(_), None) => self.polkit_next(),
+            (Purpose::Sudo(_), None) => {
+                self.updates_drop_pending();
+                self.polkit_next();
+            }
             (Purpose::Polkit(cookie), password) => self.polkit_answer(&cookie, password),
         }
     }

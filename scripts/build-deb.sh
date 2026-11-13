@@ -106,6 +106,11 @@ chmod 644 "$root/usr/share/wayland-sessions/tileception.desktop"
 mkdir -p "$root/usr/share/slick-greeter/badges"
 scripts/session-badge.sh > "$root/usr/share/slick-greeter/badges/tileception.svg"
 chmod 644 "$root/usr/share/slick-greeter/badges/tileception.svg"
+# Fastfetch's logo, and its config for Tileception sessions (tileception-session
+# adds that directory to XDG_CONFIG_DIRS).
+install -D -m 644 resources/fastfetch/logo "$root/usr/share/fastfetch/logos/tileception"
+install -D -m 644 resources/fastfetch/config.jsonc \
+    "$root/usr/share/tileception/xdg/fastfetch/config.jsonc"
 install -D -m 644 resources/tileception-portals.conf \
     "$root/usr/share/xdg-desktop-portal/tileception-portals.conf"
 install -D -m 644 resources/tileception.portal \

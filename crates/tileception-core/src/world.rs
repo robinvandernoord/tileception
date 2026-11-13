@@ -313,8 +313,16 @@ impl World {
         self.screen
     }
 
+    /// Changes the room the world fills. Floating windows that no longer fit,
+    /// as when a screen is split under them, move and shrink onto it.
     pub fn set_screen(&mut self, screen: Rect) {
         self.screen = screen;
+        if screen.w <= 0.0 || screen.h <= 0.0 {
+            return;
+        }
+        for float in self.floats.values_mut() {
+            float.rect = fit_on(float.rect, screen);
+        }
     }
 
     pub fn contains_window(&self, win: WindowId) -> bool {
@@ -501,6 +509,17 @@ impl World {
             let top = (center_y - height / 2.0).clamp(screen.y, screen.bottom() - height);
             float.rect = Rect::new(left, top, width, height);
         }
+    }
+
+    /// Moves a floating window wholly onto the screen, shrinking it if it is
+    /// larger. Returns whether it changed.
+    pub fn fit_float(&mut self, win: WindowId) -> bool {
+        let screen = self.screen;
+        let Some(float) = self.floats.get_mut(&win) else { return false };
+        let fitted = fit_on(float.rect, screen);
+        let changed = fitted != float.rect;
+        float.rect = fitted;
+        changed
     }
 
     pub fn set_float_rect(&mut self, win: WindowId, rect: Rect) {
@@ -1021,6 +1040,8 @@ impl World {
     /// Floats a window: at `rect`, where it floated before, or centred.
     fn add_float(&mut self, win: WindowId, rect: Option<Rect>) {
         let rect = rect.or_else(|| self.last_float.get(&win).copied()).unwrap_or_else(|| self.default_float_rect());
+        // The screen may have shrunk or been split since it floated there.
+        let rect = fit_on(rect, self.screen);
         self.floats.insert(win, Float { rect, sized: true });
         self.tree.float(win);
     }
@@ -1525,6 +1546,18 @@ impl World {
     }
 }
 
+/// `rect` moved wholly onto `screen`, no larger than it. An empty screen
+/// (not known yet) leaves it as it is.
+fn fit_on(rect: Rect, screen: Rect) -> Rect {
+    if screen.w <= 0.0 || screen.h <= 0.0 || screen.contains_rect(&rect) {
+        return rect;
+    }
+    let (width, height) = (rect.w.min(screen.w), rect.h.min(screen.h));
+    let left = rect.x.clamp(screen.x, screen.right() - width);
+    let top = rect.y.clamp(screen.y, screen.bottom() - height);
+    Rect::new(left, top, width, height)
+}
+
 /// A snapshot without its Desktop node, and the floats that node held.
 fn without_desktop(node: crate::tree::LayoutNode) -> (Option<crate::tree::LayoutNode>, Vec<WindowId>) {
     use crate::tree::LayoutNode;
@@ -1820,6 +1853,49 @@ mod tests {
         world.grow_float(WindowId(1), 1e6, 1e6);
         let huge = world.float_rect(WindowId(1)).unwrap();
         assert_eq!((huge.x, huge.y, huge.w, huge.h), (screen.x, screen.y, screen.w, screen.h));
+    }
+
+    #[test]
+    fn floats_fit_a_smaller_screen() {
+        let mut world = world();
+        let screen = world.screen();
+        world.add_window(WindowId(1), Placement::Float, 0.0);
+        world.set_float_rect(WindowId(1), Rect::new(screen.x + 40.0, screen.y + 20.0, screen.w - 80.0, 300.0));
+        // Split in two: the window was wider than the left half.
+        let half = Rect::new(screen.x, screen.y, screen.w / 2.0, screen.h);
+        world.set_screen(half);
+        let fitted = world.float_rect(WindowId(1)).unwrap();
+        assert!(half.contains_rect(&fitted), "{fitted:?} on {half:?}");
+        assert_eq!((fitted.w, fitted.h), (half.w, 300.0));
+        // A window that still fits keeps its place.
+        world.set_float_rect(WindowId(1), Rect::new(half.x + 10.0, half.y + 10.0, 100.0, 100.0));
+        world.set_screen(Rect::new(half.x, half.y, half.w - 1.0, half.h));
+        assert_eq!(world.float_rect(WindowId(1)), Some(Rect::new(half.x + 10.0, half.y + 10.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn fitting_a_float_pulls_it_back_on_screen() {
+        let mut world = world();
+        let screen = world.screen();
+        world.add_window(WindowId(1), Placement::Float, 0.0);
+        world.set_float_rect(WindowId(1), Rect::new(screen.x - 50.0, screen.y + 10.0, 200.0, 100.0));
+        assert!(world.fit_float(WindowId(1)));
+        assert_eq!(world.float_rect(WindowId(1)), Some(Rect::new(screen.x, screen.y + 10.0, 200.0, 100.0)));
+        assert!(!world.fit_float(WindowId(1)), "already on screen");
+    }
+
+    #[test]
+    fn restored_floats_fit_the_screen_they_return_to() {
+        let mut world = world();
+        let screen = world.screen();
+        world.add_window(WindowId(1), Placement::Float, 0.0);
+        world.set_float_rect(WindowId(1), Rect::new(screen.right() - 300.0, screen.y, 250.0, 100.0));
+        world.minimize(WindowId(1), 0.0);
+        let half = Rect::new(screen.x, screen.y, screen.w / 2.0, screen.h);
+        world.set_screen(half);
+        world.restore(WindowId(1), 1.0);
+        let rect = world.float_rect(WindowId(1)).unwrap();
+        assert!(half.contains_rect(&rect), "{rect:?} on {half:?}");
     }
 
     #[test]
