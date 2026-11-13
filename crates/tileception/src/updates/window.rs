@@ -541,7 +541,8 @@ impl Tileception {
                 self.stop_key_repeat();
                 self.updates.window.pressed = None;
             }
-            client::Event::Closed => self.close_updates(),
+            // Nothing in the updates window is lost by closing it.
+            client::Event::Closed | client::Event::CloseRequested => self.close_updates(),
         }
         let point = Point::new(self.updates.window.pointer.0, self.updates.window.pointer.1);
         let cursor = self.updates_window_target(point).map_or(CursorIcon::Default, |target| target.cursor);

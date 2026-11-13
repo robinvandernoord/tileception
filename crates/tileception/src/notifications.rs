@@ -172,9 +172,8 @@ impl Tileception {
                 }
             }
         }
-        if self.notifications.open {
-            self.refresh_notification_history();
-        }
+        // The dashboard shows how many there are, also with the panel shut.
+        self.refresh_notification_history();
         self.check_answering();
         self.schedule_render();
     }
@@ -556,6 +555,16 @@ impl Tileception {
     pub fn clear_notifications(&mut self) {
         self.notification_request(Request::ClearHistory);
         self.notification_request(Request::DismissAll);
+    }
+
+    /// How many notifications the history holds.
+    pub fn notification_count(&self) -> usize {
+        self.notifications.history.len()
+    }
+
+    /// The newest notification's summary.
+    pub fn latest_notification(&self) -> Option<String> {
+        self.notifications.history.last().map(|notification| notification.summary.clone())
     }
 
     pub fn notification_scroll(&mut self, delta: isize) {

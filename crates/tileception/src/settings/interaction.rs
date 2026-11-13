@@ -22,10 +22,15 @@ impl crate::ui::PointerAction for PageAction {
             Self::Dismiss => {
                 state.settings.dropdown = None;
                 state.settings.colour = None;
+                // Leaving a field keeps what was typed, as a press on another
+                // control does, and takes the focus off it.
+                if state.settings_finish_edit() {
+                    state.settings.focus = None;
+                }
             }
             Self::Hit(hit) => {
                 if *hit == Hit::Close {
-                    state.close_settings();
+                    state.request_close_settings();
                     return;
                 }
                 if state.settings.section.is_some() {
@@ -70,11 +75,17 @@ impl Tileception {
         if title.contains(point) {
             return Some(Target::new(title, PageAction::Move, CursorIcon::Grab));
         }
-        (self.settings.dropdown.is_some() || self.settings.colour.is_some())
-            .then(|| Target::new(frame.panel, PageAction::Dismiss, CursorIcon::Default))
+        (self.settings.dropdown.is_some()
+            || self.settings.colour.is_some()
+            || self.settings.editing.is_some()
+            || self.settings.focus.is_some())
+        .then(|| Target::new(frame.panel, PageAction::Dismiss, CursorIcon::Default))
     }
 
     pub(super) fn settings_pointer_target(&self, point: Point) -> Option<Target> {
+        if let Some(target) = self.close_confirm_pointer_target(point) {
+            return Some(target);
+        }
         if let Some(target) = self.display_preview_pointer_target(point) {
             return Some(target);
         }

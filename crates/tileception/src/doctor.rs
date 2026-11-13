@@ -3813,7 +3813,9 @@ fn doctor_context(mode: &str) -> String {
          configured, such as the rubber duck (`duck`), are only there.\n\
          - Plugins: `tileception msg plugins reload` rescans installed plugin manifests and restarts plugins \
          without restarting Tileception or changing config.toml. Use it after installing or changing a manifest. \
-         The launcher query `plugins` shows discovery results and errors.\n\
+         The launcher query `plugins` shows discovery results and errors. To set up a plugin the user asks \
+         for, run `tileception msg plugin add [--id <id>] [--bar] <command> [args...]`, which writes its \
+         `[plugins.<id>]` entry to config.toml and so starts it; plugins.md explains the id and refusals.\n\
          - Smart home devices (Tuya lights, plugs, air conditioners, sensors): `tileception msg home` lists them \
          with their state, and `tileception msg home why <name>` explains why one is unreachable and what to check. \
          `tileception msg home on|off|toggle <name>`, `home brightness <name> <percent>`, `home target <name> <degrees>`, \
