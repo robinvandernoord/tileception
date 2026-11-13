@@ -241,6 +241,8 @@ pub struct Tileception {
     /// This instance may be the polkit agent at all.
     pub polkit_wanted: bool,
     pub network: crate::network::Network,
+    /// Events from `[calendar]`.
+    pub calendar: crate::calendar::Agenda,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
@@ -430,6 +432,7 @@ impl Tileception {
             polkit: Default::default(),
             polkit_wanted: false,
             network: Default::default(),
+            calendar: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,

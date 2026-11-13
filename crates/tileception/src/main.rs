@@ -16,6 +16,7 @@ mod battery;
 mod builtin_lock;
 mod bundled;
 mod calc;
+mod calendar;
 mod capture;
 mod clipboard;
 mod colour_pick;
@@ -41,6 +42,7 @@ mod handlers;
 mod handoff;
 mod headless;
 mod home;
+mod ics;
 mod idle;
 mod inject;
 mod input;
@@ -365,6 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.start_xwayland();
     state.init_launcher();
     state.init_plugins();
+    state.apply_calendar();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);

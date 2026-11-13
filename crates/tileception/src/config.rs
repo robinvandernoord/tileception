@@ -41,6 +41,8 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub updates: crate::updates::UpdatesConfig,
+    /// Events in the bar from .ics files and URLs.
+    pub calendar: crate::calendar::CalendarConfig,
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
@@ -479,6 +481,9 @@ impl Tileception {
             || old.home != self.config.file.home
         {
             self.apply_plugins();
+        }
+        if old.calendar != self.config.file.calendar {
+            self.apply_calendar();
         }
         if republish {
             self.publish_greeter_card();

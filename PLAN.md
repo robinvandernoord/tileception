@@ -132,7 +132,6 @@ Report testing in the conversation, the commit or the pull request instead.
 ### Maybe someday
 
 - Window management gestures on the touchpad.
-- Top bar calendar events from an .ics file or URL.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.

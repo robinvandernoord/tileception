@@ -366,6 +366,41 @@ run `tileception msg restart`) to start swaync through autostart. Super+N then o
 With `notifications = "none"`, Tileception's notification service is disabled,
 but Super+N still opens the built-in sound controls.
 
+### Calendar events
+
+The built-in bar can show events from calendars in iCalendar (.ics) format:
+files, and `https://`, `http://` or `webcal://` addresses, such as the secret
+address a calendar service gives for sharing a calendar.
+
+```toml
+[calendar]
+sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
+# refresh_minutes = 15
+```
+
+Next to the clock, a chip names the event on now and when it ends, such as
+"until 14:30 Review", or else the next event today and when it starts, such
+as "15:00 Standup". Of events on at the same time, it names the one that
+started last, such as a meeting within a longer block, and of those the one
+ending first. When it ends, the chip moves on to what is on then, or to the
+next event. All-day events, and timed ones lasting a day or more, stay out
+of the chip, which would otherwise name them all day. Clicking it, or the
+clock, opens the calendar, which lists today's events and those of the coming
+week that have not ended. Sources are read again every `refresh_minutes`, and
+when the config changes. A source that cannot be read is named in the
+calendar and the session log, a URL by its host only, since a calendar's
+address is often secret; its events from the last time it could be read
+still show, and it is tried again after a minute. Without
+sources, which is the default, nothing is read and nothing shows.
+
+Recurring events repeat daily, weekly (also on several weekdays), monthly or
+yearly, with an interval, a count or an end date, skipping excluded dates and
+showing moved or changed occurrences in their place. A rule that also picks
+days in other ways, such as "the last Friday of the month", shows only its
+first occurrence. Times are UTC, local, or in a named zone (`TZID`) looked up
+in the system's time zone database; an unknown zone name, such as a Windows
+one, is taken as local time. Cancelled events are left out.
+
 ## Window rules
 
 Rules decide how newly opened windows are placed. Each `[[rules]]` entry adds

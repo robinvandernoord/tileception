@@ -50,6 +50,11 @@ const CALENDAR_W: f64 = 392.0;
 /// The notification count's badge on the bell.
 const BADGE_H: f64 = 14.0;
 const CALENDAR_H: f64 = 380.0;
+/// Below the month: the events heading, then a row per event.
+const AGENDA_HEAD: f64 = 34.0;
+const AGENDA_ROW: f64 = 40.0;
+/// The most events the calendar lists.
+const AGENDA_MAX: usize = 6;
 
 const BACK: &str = r#"<path d="M15 6l-6 6 6 6"/>"#;
 const FORWARD: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
@@ -265,6 +270,8 @@ enum Hit {
     Plugin(usize),
     Updates,
     Network,
+    /// The calendar event's chip: the one on now, or the next today.
+    Event,
     Clock,
     Battery,
     Notifications,
@@ -329,6 +336,8 @@ enum ChipKind {
     /// A plugin's chip, by its place in [`Tileception::plugin_chips`].
     Plugin(usize),
     Network,
+    /// The event on now, or else the next today, from `[calendar]`.
+    Event,
 }
 
 #[derive(Debug, Clone)]
@@ -732,6 +741,12 @@ impl Tileception {
         if let Some((label, _)) = self.updates.chip().filter(|_| self.updates_available()) {
             chips.push((ChipKind::Updates, label));
         }
+        if let Some((event, ongoing)) = self.calendar_chip()
+            && let (Some(start), Some(end), Some(now)) =
+                (LocalTime::at(event.start), LocalTime::at(event.end), LocalTime::now())
+        {
+            chips.push((ChipKind::Event, event_chip(&event.summary, ongoing, &start, &end, &now)));
+        }
         if let Some((captured, sharing)) = self.bar.capture
             && captured.elapsed() < CAPTURE_LINGER
         {
@@ -813,6 +828,7 @@ impl Tileception {
                     ChipKind::Dnd => Hit::Dnd,
                     ChipKind::Plugin(index) => Hit::Plugin(index),
                     ChipKind::Network => Hit::Network,
+                    ChipKind::Event => Hit::Event,
                     ChipKind::Capture => Hit::Bar,
                 },
             )
@@ -988,7 +1004,7 @@ impl Tileception {
             Hit::Plugin(index) => self.plugin_chip_clicked(index),
             Hit::Updates => self.toggle_updates_popover(),
             Hit::Network => self.toggle_network(),
-            Hit::Clock => self.open_calendar(),
+            Hit::Clock | Hit::Event => self.open_calendar(),
             Hit::Notifications => self.shell_notifications(),
             Hit::Tray(slot) => self.tray_slot_button(slot, crate::input::BTN_LEFT),
             Hit::Battery | Hit::Bar => {}
@@ -1099,10 +1115,27 @@ impl Tileception {
     fn calendar_card_for(&self, clock: Rect) -> Rect {
         let out = self.output_rect();
         let width = CALENDAR_W.min(out.w - 16.0).max(1.0);
-        let height = CALENDAR_H.min(out.h - BAR_H - 16.0).max(1.0);
+        let height = (CALENDAR_H + self.agenda_height()).min(out.h - BAR_H - 16.0).max(1.0);
         let left = (clock.center().x - width / 2.0).min(out.right() - width - 8.0).max(out.x + 8.0);
         let edge = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
         Rect::new(left, self.bar_popup_y(Rect::new(out.x, edge, out.w, BAR_H), height), width, height)
+    }
+
+    /// The events the calendar lists, while `[calendar]` has sources.
+    fn agenda(&self) -> Vec<&crate::ics::Occurrence> {
+        let now = crate::calendar::now();
+        let until = crate::calendar::local_midnight(now, crate::calendar::DAYS_AHEAD + 1);
+        crate::ics::upcoming(&self.calendar.events, now, until, AGENDA_MAX)
+    }
+
+    /// Room for the events below the month: a row for each, or for saying
+    /// there are none, and one per source that could not be read.
+    fn agenda_height(&self) -> f64 {
+        if self.config.file.calendar.sources.is_empty() {
+            return 0.0;
+        }
+        let rows = self.agenda().len().max(1) + self.calendar.errors.len().min(2);
+        AGENDA_HEAD + rows as f64 * AGENDA_ROW
     }
 
     fn calendar_parts(&self, card: Rect) -> (Rect, Rect, Rect) {
@@ -1305,6 +1338,7 @@ impl Tileception {
                 (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)) => true,
                 (ChipKind::Network, _) if self.network.zoom.open => true,
                 (ChipKind::Network, Some(Hit::Network)) => true,
+                (ChipKind::Event, Some(Hit::Event)) => true,
                 (ChipKind::Plugin(index), Some(Hit::Plugin(hovered))) => index == hovered,
                 _ => false,
             };
@@ -1330,6 +1364,7 @@ impl Tileception {
                 ChipKind::Network => (glyph::WIFI_DISABLED, theme.muted),
                 ChipKind::Capture => (SCREEN, theme.danger),
                 ChipKind::Dnd => (glyph::MOON, theme.warning),
+                ChipKind::Event => (glyph::CALENDAR, theme.accent),
             };
             painter.shape(
                 chip.rect,
@@ -1713,7 +1748,79 @@ impl Tileception {
                 }
             }
         }
+        if self.agenda_height() > 0.0 {
+            self.draw_agenda(painter, card, today);
+        }
         (painter.alpha, painter.offset) = (alpha, offset);
+    }
+
+    /// Today's events and the coming week's, below the month.
+    fn draw_agenda(&self, painter: &mut Painter, card: Rect, today: i64) {
+        let theme = &self.theme;
+        let left = card.x + 20.0;
+        let width = card.w - 40.0;
+        let top = card.y + CALENDAR_H - 8.0;
+        painter.fill(Rect::new(left, top, width, 1.0), theme.text.alpha(0.08), 0.0);
+        painter.text(
+            "COMING UP",
+            Rect::new(left, top + 8.0, width, 20.0),
+            Style::new(theme.font_size * 0.7, theme.muted).bold(),
+        );
+        let now = crate::calendar::now();
+        let mut row_y = top + AGENDA_HEAD;
+        let title = Style::new(theme.font_size * 0.9, theme.text);
+        let detail = Style::new(theme.font_size * 0.74, theme.muted);
+        let events = self.agenda();
+        if events.is_empty() {
+            painter.text("Nothing in the coming week", Rect::new(left, row_y, width, 22.0), detail);
+            row_y += AGENDA_ROW;
+        }
+        for event in events {
+            let Some(start) = LocalTime::at(event.start) else { continue };
+            let day = days_from_civil(start.year, start.month as i32 + 1, start.day);
+            let ongoing = event.start <= now;
+            let lit = ongoing || (!event.all_day && day == today);
+            // A mark in the accent colour, faint for later days.
+            let mark = Rect::new(left, row_y + 3.0, 3.0, AGENDA_ROW - 12.0);
+            painter.fill(mark, theme.accent.alpha(if lit { 0.9 } else { 0.35 }), 1.5);
+            let summary = event.summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            let summary = if summary.is_empty() { "Event".to_string() } else { summary };
+            let text_left = left + 12.0;
+            painter.text(&summary, Rect::new(text_left, row_y, width - 12.0, 20.0), title);
+            let mut when = if ongoing || day <= today {
+                "Today".to_string()
+            } else if day == today + 1 {
+                "Tomorrow".to_string()
+            } else {
+                short_date(&start)
+            };
+            if event.all_day {
+                when.push_str(", all day");
+            } else if ongoing {
+                let end = LocalTime::at(event.end)
+                    .zip(LocalTime::at(now))
+                    .map(|(end, here)| ends_at(&end, &here))
+                    .unwrap_or_default();
+                when = format!("Now, until {end}");
+            } else {
+                let end = LocalTime::at(event.end).filter(|_| event.end > event.start);
+                when = match end {
+                    Some(end) => format!("{when}, {} \u{2013} {}", start.clock(), end.clock()),
+                    None => format!("{when}, {}", start.clock()),
+                };
+            }
+            if !event.location.trim().is_empty() {
+                let place = event.location.split_whitespace().collect::<Vec<_>>().join(" ");
+                when = format!("{when} \u{b7} {place}");
+            }
+            painter.text(&when, Rect::new(text_left, row_y + 18.0, width - 12.0, 18.0), detail);
+            row_y += AGENDA_ROW;
+        }
+        for error in self.calendar.errors.iter().take(2) {
+            let rect = Rect::new(left, row_y, width, 34.0);
+            painter.text(error, rect, detail.colour(theme.danger).lines(2));
+            row_y += AGENDA_ROW;
+        }
     }
 
     /// Starts or stops an outside bar after `[shell] bar` changed, or at startup.
@@ -1764,8 +1871,29 @@ fn short_date(now: &LocalTime) -> String {
     format!("{} {} {}", DAYS[now.weekday], now.day, &MONTHS[now.month][..3])
 }
 
+/// The event chip's text: "14:00  Review" for the next event, "until
+/// 14:30  Review" for one on now, with the weekday when it ends on a later
+/// day.
+fn event_chip(summary: &str, ongoing: bool, start: &LocalTime, end: &LocalTime, now: &LocalTime) -> String {
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = if summary.is_empty() { "Event".to_string() } else { summary };
+    if ongoing { format!("until {}  {summary}", ends_at(end, now)) } else { format!("{}  {summary}", start.clock()) }
+}
+
+/// When an event on now ends: its time today, with the weekday later this
+/// week, and with the date after that.
+fn ends_at(end: &LocalTime, now: &LocalTime) -> String {
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let day = |time: &LocalTime| days_from_civil(time.year, time.month as i32 + 1, time.day);
+    match day(end) - day(now) {
+        ..=0 => end.clock(),
+        1..=6 => format!("{} {}", DAYS[end.weekday], end.clock()),
+        _ => format!("{} {}", short_date(end), end.clock()),
+    }
+}
+
 /// A month `delta` months after `month` (1 to 12) of `year`.
-fn add_months(year: i32, month: i32, delta: i32) -> (i32, i32) {
+pub(crate) fn add_months(year: i32, month: i32, delta: i32) -> (i32, i32) {
     let index = year * 12 + (month - 1) + delta;
     (index.div_euclid(12), index.rem_euclid(12) + 1)
 }
@@ -1782,7 +1910,7 @@ fn badge_style(theme: &crate::theme::Theme, colour: Colour) -> Style {
 }
 
 /// Days since 1970-01-01 for a date in the proleptic Gregorian calendar.
-fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     let adjusted_year = i64::from(if month <= 2 { year - 1 } else { year });
     let era = adjusted_year.div_euclid(400);
     let yoe = adjusted_year - era * 400;
@@ -1793,7 +1921,7 @@ fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
 }
 
 /// The date for a day number from [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i32, i32, i32) {
+pub(crate) fn civil_from_days(days: i64) -> (i32, i32, i32) {
     let shifted_days = days + 719_468;
     let era = shifted_days.div_euclid(146_097);
     let doe = shifted_days - era * 146_097;
@@ -1807,7 +1935,7 @@ fn civil_from_days(days: i64) -> (i32, i32, i32) {
 }
 
 /// 0 for Monday up to 6 for Sunday.
-fn monday_index(days: i64) -> i64 {
+pub(crate) fn monday_index(days: i64) -> i64 {
     // 1970-01-01 was a Thursday.
     (days + 3).rem_euclid(7)
 }
@@ -1845,5 +1973,28 @@ mod tests {
         assert_eq!(add_months(2026, 10, 3), (2027, 1));
         assert_eq!(add_months(2026, 1, -1), (2025, 12));
         assert_eq!(add_months(2026, 12, 0), (2026, 12));
+    }
+
+    #[test]
+    fn the_event_chip_says_when() {
+        // Monday 9 November 2026 and the days after.
+        let local = |day: i32, weekday: usize, hour: i32, minute: i32| LocalTime {
+            year: 2026,
+            hour,
+            minute,
+            second: 0,
+            weekday,
+            day,
+            month: 10,
+        };
+        let now = local(9, 1, 14, 5);
+        let (start, end) = (local(9, 1, 14, 0), local(9, 1, 14, 30));
+        assert_eq!(event_chip("Review", false, &start, &end, &now), "14:00  Review");
+        assert_eq!(event_chip(" Design\n review ", true, &start, &end, &now), "until 14:30  Design review");
+        assert_eq!(event_chip("", true, &start, &end, &now), "until 14:30  Event");
+        // One ending on a later day names the day.
+        assert_eq!(event_chip("Trip", true, &start, &local(10, 2, 9, 0), &now), "until Tue 09:00  Trip");
+        // The calendar names the date of one ending a week or more later.
+        assert_eq!(ends_at(&local(16, 1, 9, 0), &now), "Mon 16 Nov 09:00");
     }
 }

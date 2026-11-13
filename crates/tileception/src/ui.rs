@@ -564,7 +564,7 @@ pub struct LocalTime {
 }
 
 impl LocalTime {
-    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    #[allow(unsafe_code, reason = "time accepts a null pointer and only returns the current time")]
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
