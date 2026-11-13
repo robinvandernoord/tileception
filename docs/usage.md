@@ -511,8 +511,8 @@ preserving its system blacklist, and covers what Update Manager installs: every 
 but its blacklist, or fewer when `/etc/mintupdate-automatic-upgrades.conf`
 narrows it. Where neither is installed, the row says so.
 
-Below that, the page shows the Ubuntu mirror in use. **Test mirrors** asks the
-mirror in use, the main archive and the mirrors Ubuntu lists for your country
+Below that, the page shows the Ubuntu mirror in use. **Test**, in the row
+below the mirror, asks the mirror in use, the main archive and the mirrors Ubuntu lists for your country
 for a small file and part of a larger one, and lists them fastest first with
 their speed, how long they took to answer and how far behind the main archive
 they are. **Use** switches to one: it rewrites the Ubuntu entries of the
@@ -534,9 +534,9 @@ cannot be reached or is a day or more behind.
 | R | Refresh the package lists |
 | Enter | Apply the queue |
 
-Type `up` in the launcher for the same actions as rows: install everything,
-install the security updates, choose updates, clean up old kernels, upgrade to
-the next release and check now.
+Type `up` in the launcher for the same actions as rows. The first row always
+opens Updates; below it are install everything, install the security updates,
+clean up old kernels, upgrade to the next release and check now.
 
 From scripts and key bindings:
 

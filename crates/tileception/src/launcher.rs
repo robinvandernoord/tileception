@@ -1339,7 +1339,9 @@ impl Tileception {
         }
         let updates = &self.updates;
         let totals = updates.snapshot.totals();
-        let mut rows = Vec::new();
+        // The manager leads whatever is waiting, so Enter does the same
+        // thing for "updates" as it does when nothing is.
+        let mut rows = vec![UpdateRow::Choose];
         if !updates.busy() {
             if totals.count > 0 {
                 rows.push(UpdateRow::Install);
@@ -1348,7 +1350,6 @@ impl Tileception {
                 rows.push(UpdateRow::Security);
             }
         }
-        rows.push(UpdateRow::Choose);
         if updates.cleanup_summary().is_some() {
             rows.push(UpdateRow::Clean);
         }
@@ -1441,7 +1442,7 @@ impl Tileception {
                     None if totals.count == 0 => format!("Up to date \u{b7} {}", updates.checked()),
                     None => "Pick packages in the Updates window".into(),
                 };
-                (glyph::WINDOW, if totals.count == 0 { "Open Updates" } else { "Choose updates" }.into(), detail)
+                (glyph::WINDOW, "Open Updates".into(), detail)
             }
             UpdateRow::Clean => (
                 glyph::CLEAR,

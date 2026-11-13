@@ -138,8 +138,12 @@ pub enum Event {
         request: u64,
         text: String,
     },
-    /// The candidate mirrors as tested, the main archive's date with them.
-    Mirrors(Vec<mirrors::Mirror>, Option<i64>),
+    /// The mirrors about to be tested, in the order they are tested.
+    MirrorQueue(Vec<String>),
+    /// One mirror, just tested.
+    MirrorTested(mirrors::Mirror),
+    /// Every mirror in the queue was tested.
+    MirrorsTested,
     /// A minute went by: a reminder that had to wait may be due.
     Tick,
 }
@@ -236,13 +240,27 @@ pub(crate) struct Mirrors {
     pub(crate) current: Option<String>,
     /// The mirror in use, tested, with the main archive's date.
     pub(crate) check: Option<(mirrors::Mirror, Option<i64>)>,
+    /// The tested mirrors: in the order they were tested while a test
+    /// runs, fastest first once it ends.
     pub(crate) candidates: Vec<mirrors::Mirror>,
+    /// The mirrors still to be tested in this test, the next one first.
+    pub(crate) waiting: Vec<String>,
     /// The main archive's date when the candidates were tested.
     pub(crate) reference: Option<i64>,
     pub(crate) testing: bool,
+    /// Whether the running test has found the mirrors it tests. Until it
+    /// has, the candidates are the last test's results.
+    pub(crate) queued: bool,
 }
 
 impl Mirrors {
+    /// While a test runs, how many mirrors it has tested and how many it
+    /// tests in all; nothing while it is still finding them.
+    pub(crate) fn test_progress(&self) -> Option<(usize, usize)> {
+        let total = self.candidates.len() + self.waiting.len();
+        (self.testing && self.queued && total > 0).then_some((self.candidates.len(), total))
+    }
+
     /// Why the mirror in use should change: unreachable or stale.
     pub(crate) fn warning(&self) -> Option<String> {
         let (mirror, reference) = self.check.as_ref()?;
@@ -627,17 +645,32 @@ impl Tileception {
             }
             Event::Finished { task, result, log, quiet } => self.updates_finished(task, result, log, quiet),
             Event::Preview { request, text } => self.updates.window.set_preview(request, text),
-            Event::Mirrors(found, reference) => {
+            Event::MirrorQueue(queue) => {
+                let mirrors = &mut self.updates.mirrors;
+                mirrors.candidates.clear();
+                mirrors.reference = None;
+                mirrors.waiting = queue;
+                mirrors.queued = true;
+            }
+            Event::MirrorTested(mirror) => {
+                let mirrors = &mut self.updates.mirrors;
+                mirrors.waiting.retain(|url| *url != mirror.url);
+                if mirror.url == mirrors::ARCHIVE {
+                    mirrors.reference = mirror.published;
+                }
+                mirrors.candidates.push(mirror);
+            }
+            Event::MirrorsTested => {
                 let mirrors = &mut self.updates.mirrors;
                 mirrors.testing = false;
-                mirrors.reference = reference;
+                mirrors.waiting.clear();
+                mirrors::rank(&mut mirrors.candidates);
                 // The mirror in use was just tested too: its warning follows.
                 if let Some(current) = &mirrors.current
-                    && let Some(mirror) = found.iter().find(|mirror| mirror.url == *current)
+                    && let Some(mirror) = mirrors.candidates.iter().find(|mirror| mirror.url == *current)
                 {
-                    mirrors.check = Some((mirror.clone(), reference));
+                    mirrors.check = Some((mirror.clone(), mirrors.reference));
                 }
-                mirrors.candidates = found;
             }
         }
         self.updates_changed();
@@ -1223,6 +1256,7 @@ impl Tileception {
     pub(crate) fn updates_test_mirrors(&mut self) {
         if !self.updates.mirrors.testing && self.updates_request(Request::Mirrors) {
             self.updates.mirrors.testing = true;
+            self.updates.mirrors.queued = false;
             self.updates_changed();
         }
     }
@@ -1247,8 +1281,12 @@ impl Tileception {
         if let Some(warning) = mirrors.warning() {
             text.push_str(&format!("warning: {warning}\n"));
         }
-        if mirrors.testing {
-            text.push_str("testing the mirrors; ask again in a moment\n");
+        match mirrors.test_progress() {
+            Some((done, total)) => {
+                text.push_str(&format!("testing the mirrors: {done} of {total} done; ask again in a moment\n"));
+            }
+            None if mirrors.testing => text.push_str("finding the mirrors near you; ask again in a moment\n"),
+            None => {}
         }
         for mirror in &mirrors.candidates {
             text.push_str(&format!("  {}  {}\n", mirror.url, describe_mirror(mirror, mirrors.reference)));
@@ -1573,10 +1611,18 @@ fn run(
                 let files = Files::default();
                 let runner = backend::System;
                 let codename = release::system(&files).archive;
-                let found = mirrors::survey(&runner, &files, &codename);
-                let reference =
-                    found.iter().find(|mirror| mirror.url == mirrors::ARCHIVE).and_then(|mirror| mirror.published);
-                Event::Mirrors(found, reference)
+                // Each mirror is reported as it is tested, so the window
+                // shows how far the test is.
+                let queue = mirrors::nearby(&runner, &files);
+                if events.send(Event::MirrorQueue(queue.clone())).is_err() {
+                    return;
+                }
+                for url in queue {
+                    if events.send(Event::MirrorTested(mirrors::test(&runner, &url, &codename))).is_err() {
+                        return;
+                    }
+                }
+                Event::MirrorsTested
             }
             Ok(Some(Request::Run { task, password, quiet })) => {
                 let mut log = String::new();
@@ -1983,6 +2029,21 @@ fn reminder_due(waited: Duration, after_days: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_mirror_test_counts_nothing_until_it_finds_mirrors() {
+        let tested = |url: &str| mirrors::Mirror { url: url.into(), ..mirrors::Mirror::default() };
+        // The last test's results stay, but a new test has not done them.
+        let mut found = Mirrors { candidates: vec![tested("a"), tested("b")], testing: true, ..Mirrors::default() };
+        assert_eq!(found.test_progress(), None);
+        found.candidates.clear();
+        found.waiting = vec!["a".into(), "b".into()];
+        found.queued = true;
+        assert_eq!(found.test_progress(), Some((0, 2)));
+        found.candidates.push(tested("a"));
+        found.waiting.remove(0);
+        assert_eq!(found.test_progress(), Some((1, 2)));
+    }
 
     fn update(name: &str, security: bool) -> apt::Update {
         apt::Update {

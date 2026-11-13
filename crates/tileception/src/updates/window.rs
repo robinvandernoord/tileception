@@ -247,6 +247,10 @@ enum Row {
     Automatic,
     /// A tested mirror.
     Mirror(usize),
+    /// Tests the mirrors, with its button.
+    TestMirrors,
+    /// A mirror the running test has yet to reach; the first is being tested.
+    Waiting(usize),
     Warning(String),
     /// A kernel series: its name, and how many builds are installed and available.
     Series(String, usize, usize),
@@ -265,7 +269,12 @@ impl Row {
             Row::Heading(..) | Row::Series(..) => 32.0,
             Row::Entry(_) | Row::Muted(_) | Row::Warning(_) => 30.0,
             Row::Group(..) => 44.0,
-            Row::Kernel(_) | Row::Leftovers(_) | Row::Unneeded | Row::Mirror(_) => 34.0,
+            Row::Kernel(_)
+            | Row::Leftovers(_)
+            | Row::Unneeded
+            | Row::Mirror(_)
+            | Row::TestMirrors
+            | Row::Waiting(_) => 34.0,
             Row::Check(_) | Row::Automatic => 48.0,
             Row::Text(_) => 18.0,
         }
@@ -283,6 +292,7 @@ impl Row {
                 | Row::Unneeded
                 | Row::Automatic
                 | Row::Mirror(_)
+                | Row::TestMirrors
         )
     }
 }
@@ -674,13 +684,11 @@ impl Tileception {
                     rows.push(Row::Warning(warning));
                 }
                 rows.extend((0..mirrors.candidates.len()).map(Row::Mirror));
-                if mirrors.candidates.is_empty() {
-                    let text = if mirrors.testing {
-                        "Testing the mirrors near you..."
-                    } else {
-                        "Test the mirrors to compare their speed and how far behind each is."
-                    };
-                    rows.push(Row::Text(text.into()));
+                rows.extend((0..mirrors.waiting.len()).map(Row::Waiting));
+                if mirrors.testing && mirrors.test_progress().is_none() {
+                    rows.push(Row::Text("Finding the mirrors near you...".into()));
+                } else if !mirrors.testing {
+                    rows.push(Row::TestMirrors);
                 }
             }
             Page::Kernels => {
@@ -1007,6 +1015,9 @@ impl Tileception {
                 self.updates_test_mirrors();
                 Ok(())
             }
+            // While a test runs the comparison is incomplete, so no mirror
+            // is chosen from it, by pointer or key.
+            Hit::UseMirror(_) if self.updates.mirrors.testing => Ok(()),
             Hit::UseMirror(index) => match self.updates.mirrors.candidates.get(index) {
                 Some(mirror) if mirror.error.is_some() => Err("That mirror cannot be reached.".into()),
                 Some(mirror) => {
@@ -1313,6 +1324,7 @@ impl Tileception {
                 }
                 Some(Row::Kernel(index)) => self.updates_window_activate(Hit::Kernel(index)),
                 Some(Row::Leftovers(kind)) => self.updates_window_activate(Hit::Leftovers(kind)),
+                Some(Row::TestMirrors) if !self.updates.busy() => self.updates_window_activate(Hit::TestMirrors),
                 Some(Row::Series(..)) => self.updates_window_activate(Hit::Fold(selected)),
                 Some(Row::Unneeded) if !self.updates.busy() => {
                     self.updates_window_activate(Hit::Sheet(Sheet::Autoremove));
@@ -1340,6 +1352,7 @@ impl Tileception {
                 Page::Release => self.updates_window_activate(Hit::Upgrade),
                 Page::Settings => match self.updates_selected_row() {
                     Some(Row::Mirror(index)) => self.updates_window_activate(Hit::UseMirror(index)),
+                    Some(Row::TestMirrors) => self.updates_window_activate(Hit::TestMirrors),
                     Some(Row::Automatic) => {
                         let enabled = self.updates.automatic.enabled;
                         self.updates_window_activate(Hit::Automatic(!enabled));
@@ -1518,7 +1531,7 @@ impl Tileception {
                 Row::Automatic if !updates.busy() => {
                     controls.push((row_button(*rect), Hit::Automatic(!updates.automatic.enabled)));
                 }
-                Row::Mirror(mirror) if !updates.busy() => {
+                Row::Mirror(mirror) if !updates.busy() && !updates.mirrors.testing => {
                     let usable = updates.mirrors.candidates.get(*mirror).is_some_and(|mirror| {
                         mirror.error.is_none() && Some(&mirror.url) != updates.mirrors.current.as_ref()
                     });
@@ -1532,6 +1545,7 @@ impl Tileception {
                     }
                 }
                 Row::Leftovers(kind) if !updates.busy() => controls.push((row_button(*rect), Hit::Leftovers(*kind))),
+                Row::TestMirrors if !updates.busy() => controls.push((row_button(*rect), Hit::TestMirrors)),
                 Row::Unneeded if !updates.busy() => {
                     controls.push((row_button(*rect), Hit::Sheet(Sheet::Autoremove)));
                 }
@@ -1558,7 +1572,6 @@ impl Tileception {
         }
         match window.page {
             Page::Available => vec![("Check", Hit::Refresh)],
-            Page::Settings if !self.updates.mirrors.testing => vec![("Test mirrors", Hit::TestMirrors)],
             Page::Kernels => vec![
                 ("Check", Hit::Refresh),
                 (if window.all_variants { "Recommended" } else { "All variants" }, Hit::Variants),
@@ -1719,7 +1732,11 @@ impl Tileception {
             Page::History => ("History".to_string(), "from the apt log".to_string()),
             Page::Settings => (
                 "Settings".to_string(),
-                if updates.mirrors.testing { "testing the mirrors".to_string() } else { String::new() },
+                match updates.mirrors.test_progress() {
+                    Some((done, total)) => format!("testing mirror {} of {total}", (done + 1).min(total)),
+                    None if updates.mirrors.testing => "finding the mirrors near you".to_string(),
+                    None => String::new(),
+                },
             ),
         };
         let header_buttons = self.updates_header_buttons();
@@ -1949,9 +1966,29 @@ impl Tileception {
                                 Rect::new(rect.x, rect.y, rect.w - 20.0, rect.h),
                                 muted.colour(theme.accent),
                             );
-                        } else if mirror.error.is_none() && !updates.busy() {
+                        } else if mirror.error.is_none() && !updates.busy() && !mirrors.testing {
                             draw_button(painter, row_button(rect), "Use", Look::Plain, pointer);
                         }
+                    }
+                    Row::Waiting(index) => {
+                        let Some(url) = updates.mirrors.waiting.get(*index) else { continue };
+                        let url_w = ((rect.w - 120.0) * 0.55).max(160.0);
+                        painter.text_font(
+                            url,
+                            Rect::new(rect.x + 10.0, rect.y, url_w, rect.h),
+                            Style::new(size * 0.84, theme.muted),
+                            "monospace",
+                        );
+                        let (state, tint) = if *index == 0 {
+                            ("testing\u{2026}", theme.accent)
+                        } else {
+                            ("waiting", theme.muted.alpha(0.7))
+                        };
+                        painter.text(
+                            state,
+                            Rect::new(rect.x + 20.0 + url_w, rect.y, rect.w - url_w - 120.0, rect.h),
+                            muted.colour(tint),
+                        );
                     }
                     Row::Warning(text) => {
                         painter.glyph(
@@ -2085,6 +2122,23 @@ impl Tileception {
                         );
                         if !updates.busy() {
                             draw_button(painter, row_button(rect), "Review", Look::Plain, pointer);
+                        }
+                    }
+                    Row::TestMirrors => {
+                        painter.glyph(glyph::RESTART, tick_box(rect), 14, theme.muted);
+                        let (label, note) = if updates.mirrors.candidates.is_empty() {
+                            ("Test the mirrors near you", "compares their speed and how far behind each is")
+                        } else {
+                            ("Test again", "the results above are from the last test")
+                        };
+                        let (width, _) = painter.text(label, Rect::new(rect.x + 34.0, rect.y, 320.0, rect.h), body);
+                        painter.text(
+                            note,
+                            Rect::new(rect.x + 46.0 + width, rect.y, rect.w - 150.0 - width, rect.h),
+                            muted,
+                        );
+                        if !updates.busy() {
+                            draw_button(painter, row_button(rect), "Test", Look::Plain, pointer);
                         }
                     }
                     Row::Check(check) => {
@@ -2234,8 +2288,17 @@ impl Tileception {
         let buttons = self.updates_footer_buttons();
         let room = footer_text_room(footer, buttons.len(), 124.0);
         let line = Rect::new(footer.x + 18.0, footer.y, room, footer.h);
-        if let Some((title, label, fraction)) = updates.progress() {
-            painter.text(&format!("{title} \u{b7} {label}"), Rect::new(line.x, line.y + 8.0, line.w, 22.0), body);
+        // A mirror test shows its progress here too, when no task does.
+        let mirror_test = updates.mirrors.test_progress().map(|(done, total)| {
+            let next = updates.mirrors.waiting.first().map_or(String::new(), |url| format!(" \u{b7} {url}"));
+            (format!("Testing mirrors \u{b7} {done} of {total} done{next}"), done as f64 / total as f64)
+        });
+        let progress = updates
+            .progress()
+            .map(|(title, label, fraction)| (format!("{title} \u{b7} {label}"), fraction))
+            .or(mirror_test);
+        if let Some((text, fraction)) = progress {
+            painter.text(&text, Rect::new(line.x, line.y + 8.0, line.w, 22.0), body);
             let track = Rect::new(line.x, footer.y + 36.0, footer.w - 36.0, 4.0);
             painter.fill(track, theme.border, 2.0);
             painter.shape(

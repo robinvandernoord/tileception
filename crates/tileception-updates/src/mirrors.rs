@@ -405,18 +405,21 @@ pub fn check_current(runner: &dyn Runner, files: &Files, codename: &str) -> Opti
     Some((test(runner, &current, codename), reference))
 }
 
-/// Lists and tests the candidates, the main archive first so the others
-/// compare against it.
-pub fn survey(runner: &dyn Runner, files: &Files, codename: &str) -> Vec<Mirror> {
+/// The mirrors worth testing: the one in use, the main archive (so the
+/// others compare against it), then the ones near this machine.
+pub fn nearby(runner: &dyn Runner, files: &Files) -> Vec<String> {
     let mut nearby = runner.run("curl", &["-fsSL", "--max-time", "8", NEARBY]).unwrap_or_default();
     // Ubuntu's list for the country may hold the main archive alone.
     if let (Some(country), Some(listed)) = (country(files), files.read(LISTED)) {
         nearby.push('\n');
         nearby.push_str(&listed_in(&listed, &country).join("\n"));
     }
-    let mut found: Vec<Mirror> =
-        candidates(current(files).as_deref(), &nearby).iter().take(12).map(|url| test(runner, url, codename)).collect();
-    // Fastest first, unreachable ones last; the order is stable for equals.
+    candidates(current(files).as_deref(), &nearby).into_iter().take(12).collect()
+}
+
+/// Orders tested mirrors fastest first, unreachable ones last; the order is
+/// stable for equals.
+pub fn rank(found: &mut [Mirror]) {
     found.sort_by(|left, right| match (left.speed, right.speed, &left.error, &right.error) {
         (_, _, None, Some(_)) => std::cmp::Ordering::Less,
         (_, _, Some(_), None) => std::cmp::Ordering::Greater,
@@ -425,7 +428,6 @@ pub fn survey(runner: &dyn Runner, files: &Files, codename: &str) -> Vec<Mirror>
         (None, Some(_), ..) => std::cmp::Ordering::Greater,
         _ => std::cmp::Ordering::Equal,
     });
-    found
 }
 
 /// A lag for people: "up to date", "3 hours behind", "2 days behind".
