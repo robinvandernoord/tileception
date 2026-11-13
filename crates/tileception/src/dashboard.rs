@@ -280,7 +280,9 @@ impl Tileception {
 
     /// The items and where they go, beside the welcome screen's panel.
     pub(crate) fn dashboard_slots(&self, centre: Rect) -> Vec<Slot> {
-        let columns = columns(self.world.screen(), centre);
+        // Across the whole screen: the welcome screen and the peek both
+        // centre on it, also on a split screen.
+        let columns = columns(self.screen_room(), centre);
         let Some(width) = columns.first().map(|column| column.w) else { return Vec::new() };
         let mut shown = Vec::new();
         let count = self.notification_count();

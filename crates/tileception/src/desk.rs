@@ -1,5 +1,5 @@
-//! Super+D. A tap clears the active area's desk into the minimized strip, or
-//! brings back what clearing it took away. Held past the key-repeat delay it
+//! Super+D. A tap clears the screen's desk, every area of a split screen,
+//! into the minimized strips, or brings back what clearing it took away. Held past the key-repeat delay it
 //! peeks instead: windows show as outlines until the key is let go.
 
 use std::time::{Duration, Instant};
@@ -31,14 +31,23 @@ struct HeldKey {
 }
 
 impl Tileception {
-    /// Clears the desk, or brings back what clearing it took away.
+    /// Clears the desk, or brings back what clearing it took away. On a
+    /// split screen this is every area's desk: when any of them is clear,
+    /// all come back; otherwise all are cleared.
     pub fn toggle_desk(&mut self) {
         if let Some(window_id) = self.fullscreen {
             self.set_fullscreen(window_id, false);
         }
         let now = self.now();
-        let clearing = !self.world.desk_cleared();
-        if !self.world.toggle_desk(now) {
+        let clearing = !self.desk_cleared();
+        let mut changed = false;
+        for index in 0..self.area_count() {
+            let toggled = self.with_local_area(index, |state| {
+                if clearing { state.world.clear_desk(now) } else { state.world.bring_back_desk(now) }
+            });
+            changed |= toggled.unwrap_or(false);
+        }
+        if !changed {
             return;
         }
         if clearing {
@@ -48,6 +57,12 @@ impl Tileception {
         } else {
             tracing::info!("brought the desk back");
         }
+    }
+
+    /// Whether Super+D cleared the desk of the screen, or of any of its areas.
+    pub(crate) fn desk_cleared(&mut self) -> bool {
+        (0..self.area_count())
+            .any(|index| self.with_local_area(index, |state| state.world.desk_cleared()) == Some(true))
     }
 
     /// A key bound to `desktop` went down: it acts when let go, or peeks

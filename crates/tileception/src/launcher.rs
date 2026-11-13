@@ -1081,9 +1081,7 @@ impl Tileception {
             // The welcome screen is the desktop, not something to close:
             // Esc only clears the search there, or with nothing typed brings
             // back a desk that Super+D cleared. Super still hides it.
-            keysyms::KEY_Escape
-                if self.launcher.home && self.launcher.input.text.is_empty() && self.world.desk_cleared() =>
-            {
+            keysyms::KEY_Escape if self.launcher.home && self.launcher.input.text.is_empty() && self.desk_cleared() => {
                 if let Err(error) = self.execute(crate::commands::Command::Action(crate::input::Action::ToggleDesk)) {
                     tracing::warn!("{error}");
                 }

@@ -167,9 +167,10 @@ Floating windows can be moved and resized with the same Alt-drag controls.
 
 ### Clearing the desk
 
-**Super+D** clears the desk of the active area: every window there, tiled and
-floating, goes to the minimized-window strip. Press it again to bring them
-back exactly where they were. Windows you had minimized before stay
+**Super+D** clears the desk of the screen: every window there, tiled and
+floating, goes to the minimized-window strip. On a split screen this clears
+every area, each into its own strip, so the welcome screen and its dashboard
+show. Press it again to bring them back exactly where they were. Windows you had minimized before stay
 minimized, and windows closed in the meantime are left out.
 
 While the desk is clear you can still open windows, or restore single ones
