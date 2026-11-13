@@ -89,6 +89,54 @@ pub struct DeviceEntry {
     /// Data points by number.
     #[serde(default)]
     pub mapping: BTreeMap<String, DataPoint>,
+    /// Which readings its history shows, chosen in Settings; unset shows
+    /// every reading it reports. Kept across imports and refreshes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readings: Option<Readings>,
+}
+
+/// The readings chosen for a device's history, for one that reports both
+/// temperature and humidity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Readings {
+    Temperature,
+    Humidity,
+    Both,
+}
+
+impl Readings {
+    pub const ALL: [Readings; 3] = [Readings::Temperature, Readings::Humidity, Readings::Both];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Readings::Temperature => "Temperature",
+            Readings::Humidity => "Humidity",
+            Readings::Both => "Both",
+        }
+    }
+}
+
+impl DeviceFile {
+    /// Carries what is kept locally over from an earlier file to a freshly
+    /// fetched one: the readings chosen for each device's history.
+    pub fn keep_choices(&mut self, earlier: &DeviceFile) {
+        for device in &mut self.devices {
+            if let Some(old) = earlier.devices.iter().find(|old| old.device_id == device.device_id) {
+                device.readings = old.readings;
+            }
+        }
+    }
+
+    /// The file without the readings chosen in Settings: whether two files
+    /// differ in more than those choices.
+    pub fn without_choices(&self) -> DeviceFile {
+        let mut file = self.clone();
+        for device in &mut file.devices {
+            device.readings = None;
+        }
+        file
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -168,5 +216,35 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(load(&path).expect("loads"), file);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn chosen_readings_are_kept_across_imports() {
+        let entry = |device_id: &str, readings| DeviceEntry {
+            device_id: device_id.into(),
+            name: device_id.into(),
+            category: "wsdcg".into(),
+            readings,
+            ..Default::default()
+        };
+        let earlier = DeviceFile {
+            devices: vec![entry("a", Some(Readings::Humidity)), entry("gone", Some(Readings::Temperature))],
+            ..Default::default()
+        };
+        // An entry without a choice does not write one.
+        let text = serde_json::to_string(&earlier).expect("serialized");
+        assert!(text.contains(r#""readings":"humidity""#), "{text}");
+        assert_eq!(serde_json::to_value(entry("b", None)).expect("serialized").get("readings"), None);
+
+        let mut fetched = DeviceFile { devices: vec![entry("a", None), entry("b", None)], ..Default::default() };
+        fetched.keep_choices(&earlier);
+        assert_eq!(fetched.devices[0].readings, Some(Readings::Humidity));
+        assert_eq!(fetched.devices[1].readings, None);
+        // Files that differ only in the choices are the same inventory.
+        assert_eq!(
+            fetched.without_choices(),
+            DeviceFile { devices: vec![entry("a", None), entry("b", None)], ..Default::default() }
+        );
+        assert_ne!(fetched, fetched.without_choices());
     }
 }

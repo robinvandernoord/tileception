@@ -66,6 +66,8 @@ pub(in crate::settings) struct Screen {
     pub search: TextInput,
     pub searching: bool,
     pub error: String,
+    /// The file changed on disk while this screen held edits.
+    pub notice: String,
     pub(super) edit: Option<(Field, TextInput)>,
     pub(super) focus: Option<Action>,
     pub(super) menu: Option<Menu>,
@@ -77,6 +79,16 @@ pub(in crate::settings) struct Screen {
     pub advanced: bool,
     pub(super) monitors: Vec<displays::Monitor>,
     pub(super) map_drag: Option<displays::Drag>,
+}
+
+/// What became of a screen when its source changed.
+pub(in crate::settings) enum Refresh {
+    /// Its section did not change.
+    Same,
+    /// It keeps edits over a changed section.
+    Kept,
+    /// Read again, as it had no edits.
+    New(Box<Screen>),
 }
 
 pub(super) struct Spec;
@@ -216,6 +228,7 @@ impl Screen {
             search: TextInput::default(),
             searching: false,
             error: String::new(),
+            notice: String::new(),
             edit: None,
             focus: None,
             menu: None,
@@ -241,6 +254,48 @@ impl Screen {
             || self.edit.as_ref().is_some_and(|(field, input)| input.text != self.read(&field.path))
             || self.rows.iter().any(Row::changed)
     }
+    /// Follows the draft document after it became `source`. A screen with no
+    /// edits is read again; an edited one keeps its edits, which then replace
+    /// the new section on Apply.
+    pub fn refreshed(&mut self, source: &str) -> Result<Refresh, String> {
+        let excerpt = crate::config_edit::section_text(source, FIELDS[self.field].key)?;
+        if super::super::refresh::same_toml(&excerpt, &self.original) {
+            // Only its layout around it changed; staging compares the text.
+            self.original = excerpt;
+            return Ok(Refresh::Same);
+        }
+        if self.changed() {
+            self.original = excerpt;
+            self.notice =
+                "config.toml changed on disk. Your edits here are kept; applying them replaces the file's.".into();
+            return Ok(Refresh::Kept);
+        }
+        Ok(Refresh::New(Box::new(Self::new(self.field, source)?)))
+    }
+
+    /// Keeps what the person was looking at from the screen this one replaces:
+    /// the selected entry, scrolling, search and an untouched field's caret.
+    pub fn keep_view(&mut self, old: &Self) {
+        if let Some(name) = old.row().map(|row| row.name.clone())
+            && let Some(index) = self.rows.iter().position(|row| row.name == name)
+        {
+            self.selected = Some(index);
+            self.scroll = old.scroll;
+            if let Some((field, _)) = &old.edit {
+                let text = self.read(&field.path);
+                self.edit = Some((field.clone(), TextInput::new(text)));
+            }
+        }
+        self.list_scroll = old.list_scroll;
+        self.search = TextInput::new(old.search.text.clone());
+        self.search.cursor = old.search.cursor;
+        self.searching = old.searching;
+        self.reveal = old.reveal;
+        self.advanced = old.advanced;
+        self.focus = old.focus;
+        self.error = self.validate_displays().err().unwrap_or_default();
+    }
+
     pub(super) fn row(&self) -> Option<&Row> {
         self.selected.and_then(|index| self.rows.get(index))
     }
@@ -1180,7 +1235,7 @@ fn describe_command(command: &str) -> String {
         ("forward", _) => "Next view",
         ("save", _) => return format!("Save view {first}"),
         ("go", _) => return format!("Go to view {first}"),
-        ("desktop", _) => "Show or hide the Desktop",
+        ("desktop", _) => "Show desktop",
         ("minimap", _) => "Minimap",
         ("launcher", _) => "Open the launcher",
         ("settings", _) => "Open Settings",
@@ -1223,4 +1278,73 @@ fn describe_command(command: &str) -> String {
         }
     };
     text.into()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
+mod tests {
+    use super::*;
+
+    fn displays(source: &str) -> Screen {
+        let field = FIELDS.iter().position(|field| field.key == "outputs").unwrap();
+        Screen::new(field, source).unwrap()
+    }
+
+    fn scale(screen: &Screen) -> String {
+        screen.read(&Path::Key("scale".into()))
+    }
+
+    const SCALED: &str = "[outputs.winit]\nscale = 1.25\n";
+    const AUTO: &str = "[outputs.winit]\nscale = \"auto\"\n";
+
+    #[test]
+    fn untouched_screens_read_the_new_source() {
+        let mut screen = displays(SCALED);
+        assert_eq!(scale(&screen), "1.25");
+        let Ok(Refresh::New(mut fresh)) = screen.refreshed(AUTO) else { panic!("an untouched screen is read again") };
+        fresh.keep_view(&screen);
+        assert_eq!(scale(&fresh), "auto");
+        assert_eq!(fresh.row().unwrap().name, "winit");
+        assert!(!fresh.changed());
+    }
+
+    #[test]
+    fn edited_screens_keep_their_edits() {
+        let mut screen = displays(SCALED);
+        screen.write(&Path::Key("scale".into()), Value::Float(1.5));
+        assert!(matches!(screen.refreshed(AUTO), Ok(Refresh::Kept)));
+        assert_eq!(scale(&screen), "1.5");
+        // The edit now replaces the new section.
+        assert_eq!(screen.original, crate::config_edit::section_text(AUTO, "outputs").unwrap());
+        assert!(screen.source().unwrap().contains("scale = 1.5"));
+    }
+
+    #[test]
+    fn other_sections_changing_leave_screens_alone() {
+        let mut screen = displays(SCALED);
+        screen.write(&Path::Key("scale".into()), Value::Float(1.5));
+        let source = format!("[theme]\nradius = 4\n\n{SCALED}");
+        assert!(matches!(screen.refreshed(&source), Ok(Refresh::Same)));
+        assert_eq!(scale(&screen), "1.5");
+    }
+
+    #[test]
+    fn an_untouched_open_field_shows_the_new_value() {
+        let mut screen = displays(SCALED);
+        let field = Spec::key("scale", "Scale", "", Form::Scale);
+        screen.edit = Some((field, TextInput::new("1.25")));
+        assert!(!screen.changed());
+        let Ok(Refresh::New(mut fresh)) = screen.refreshed(AUTO) else { panic!("an untouched screen is read again") };
+        fresh.keep_view(&screen);
+        assert_eq!(fresh.edit.as_ref().map(|(_, input)| input.text.as_str()), Some("auto"));
+    }
+
+    #[test]
+    fn scale_input_that_is_not_a_number_is_refused() {
+        let mut screen = displays(AUTO);
+        let field = Spec::key("scale", "Scale", "", Form::Scale);
+        screen.edit = Some((field, TextInput::new("auto1.5")));
+        assert_eq!(screen.finish_input(), Err("Scale must be auto or a number from 0.5 to 4.".into()));
+        assert!(screen.edit.is_some(), "the input stays to be corrected");
+    }
 }

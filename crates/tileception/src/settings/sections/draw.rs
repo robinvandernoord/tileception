@@ -739,6 +739,8 @@ impl Tileception {
         painter.fill(Rect::new(layout.panel.x, layout.panel.bottom() - 68., layout.panel.w, 1.), theme.border, 0.);
         let status = if !screen.error.is_empty() {
             screen.error.as_str()
+        } else if !screen.notice.is_empty() {
+            screen.notice.as_str()
         } else if screen.kind == Kind::Displays && !self.settings.message.is_empty() {
             self.settings.message.as_str()
         } else if screen.kind == Kind::Displays {
@@ -754,9 +756,14 @@ impl Tileception {
                 // The settings-wide error colours its own message only, not
                 // the hint shown in its place on other screens.
                 if !screen.error.is_empty()
-                    || screen.kind == Kind::Displays && self.settings.error && !self.settings.message.is_empty()
+                    || screen.notice.is_empty()
+                        && screen.kind == Kind::Displays
+                        && self.settings.error
+                        && !self.settings.message.is_empty()
                 {
                     theme.danger
+                } else if !screen.notice.is_empty() {
+                    theme.text
                 } else {
                     theme.muted
                 },
