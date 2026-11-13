@@ -717,8 +717,7 @@ impl Tileception {
                 if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let size: Size<i32, Logical> =
-                    (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                let size = slot_size(&placement.rect);
                 let Some(window) = self.windows.get(&placement.window) else {
                     // Another machine's window: its owner sizes it, and keeps
                     // its menus on this screen.
@@ -942,6 +941,15 @@ pub(crate) fn wants_float(window: &Window) -> bool {
     false
 }
 
+/// The size to ask of a window laid out in `slot`: the whole pixels it holds.
+/// Rounding up would make the window half a pixel too big, so it would be
+/// drawn a hair smaller than it is, resampled and blurry.
+pub(crate) fn slot_size(slot: &Rect) -> Size<i32, Logical> {
+    // A slot a rounding error short of a whole pixel still gets that pixel.
+    let whole = |length: f64| (length + 1e-6).floor().max(1.0) as i32;
+    (whole(slot.w), whole(slot.h)).into()
+}
+
 /// The largest size a window lets itself be, either side unlimited if `None`.
 pub(crate) fn max_size(window: &Window) -> (Option<i32>, Option<i32>) {
     let size = if let Some(toplevel) = window.toplevel() {
@@ -1121,4 +1129,23 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_never_asks_for_more_than_its_slot_holds() {
+        for (length, expected) in [(312.5, 312), (312.4, 312), (312.9, 312), (313.0, 313), (312.9999999, 313), (0.3, 1)]
+        {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert_eq!((size.w, size.h), (expected, expected), "slot {length}");
+        }
+        // Drawn at its slot, such a window needs no scaling, so it stays sharp.
+        for length in [312.5, 631.0, 383.0 / 2.0, 1274.0 / 3.0] {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert!(f64::from(size.w) <= length + 1e-6, "slot {length}");
+        }
+    }
 }
