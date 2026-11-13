@@ -3819,8 +3819,10 @@ fn doctor_context(mode: &str) -> String {
          `home mode <name> cool|heat|dry|fan|auto` control them; `tileception home status` connects for a few seconds \
          and lists what answers. The panel's Home block is switched on with `[home] enabled = true` in the config, \
          `tileception config set home.enabled true` or `tileception msg home enable`. To set up devices or fetch their \
-         local keys again, the user runs `tileception home import` in a terminal: it asks for the Tuya IoT Platform \
-         project's Access ID, data center and Access Secret (`--client-id`, `--region`, `--secret-file` make it \
+         local keys again, the user opens Settings > Smart home (`tileception msg settings` opens Settings), which \
+         walks through the Tuya project, imports and lists the devices, and has Refresh devices and switches for \
+         reading cloud sensors and refreshing at startup. In a terminal, `tileception home import` does the same \
+         import: it asks for the Tuya IoT Platform project's Access ID, data center and Access Secret (`--client-id`, `--region`, `--secret-file` make it \
          unattended; `--cloud-sensors`/`--no-cloud-sensors` choose whether battery sensors are read from the cloud \
          every 10 minutes). Devices behind a Zigbee or Bluetooth gateway are not \
          supported yet and show as unavailable.\n\
