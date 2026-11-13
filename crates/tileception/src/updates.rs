@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
 pub use tileception_updates::task::Task;
 use tileception_updates::{
-    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, snapshots, task,
+    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, task,
 };
 use zeroize::Zeroizing;
 
@@ -91,8 +91,6 @@ pub struct Scan {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    /// What takes a snapshot before kernel, Mesa and release upgrades.
-    snapshots: Option<snapshots::Tool>,
     automatic: automatic::Automatic,
     /// The mirror in use, from the package sources.
     mirror: Option<String>,
@@ -140,8 +138,12 @@ pub enum Event {
         request: u64,
         text: String,
     },
-    /// The candidate mirrors as tested, the main archive's date with them.
-    Mirrors(Vec<mirrors::Mirror>, Option<i64>),
+    /// The mirrors about to be tested, in the order they are tested.
+    MirrorQueue(Vec<String>),
+    /// One mirror, just tested.
+    MirrorTested(mirrors::Mirror),
+    /// Every mirror in the queue was tested.
+    MirrorsTested,
     /// A minute went by: a reminder that had to wait may be due.
     Tick,
 }
@@ -174,7 +176,6 @@ pub struct Updates {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    snapshots: Option<snapshots::Tool>,
     /// The Flatpak and Snap updates last listed.
     apps: Vec<apt::Update>,
     /// Flatpak and Snap were asked at least once, so `apps` says what
@@ -239,13 +240,27 @@ pub(crate) struct Mirrors {
     pub(crate) current: Option<String>,
     /// The mirror in use, tested, with the main archive's date.
     pub(crate) check: Option<(mirrors::Mirror, Option<i64>)>,
+    /// The tested mirrors: in the order they were tested while a test
+    /// runs, fastest first once it ends.
     pub(crate) candidates: Vec<mirrors::Mirror>,
+    /// The mirrors still to be tested in this test, the next one first.
+    pub(crate) waiting: Vec<String>,
     /// The main archive's date when the candidates were tested.
     pub(crate) reference: Option<i64>,
     pub(crate) testing: bool,
+    /// Whether the running test has found the mirrors it tests. Until it
+    /// has, the candidates are the last test's results.
+    pub(crate) queued: bool,
 }
 
 impl Mirrors {
+    /// While a test runs, how many mirrors it has tested and how many it
+    /// tests in all; nothing while it is still finding them.
+    pub(crate) fn test_progress(&self) -> Option<(usize, usize)> {
+        let total = self.candidates.len() + self.waiting.len();
+        (self.testing && self.queued && total > 0).then_some((self.candidates.len(), total))
+    }
+
     /// Why the mirror in use should change: unreachable or stale.
     pub(crate) fn warning(&self) -> Option<String> {
         let (mirror, reference) = self.check.as_ref()?;
@@ -630,17 +645,32 @@ impl Tileception {
             }
             Event::Finished { task, result, log, quiet } => self.updates_finished(task, result, log, quiet),
             Event::Preview { request, text } => self.updates.window.set_preview(request, text),
-            Event::Mirrors(found, reference) => {
+            Event::MirrorQueue(queue) => {
+                let mirrors = &mut self.updates.mirrors;
+                mirrors.candidates.clear();
+                mirrors.reference = None;
+                mirrors.waiting = queue;
+                mirrors.queued = true;
+            }
+            Event::MirrorTested(mirror) => {
+                let mirrors = &mut self.updates.mirrors;
+                mirrors.waiting.retain(|url| *url != mirror.url);
+                if mirror.url == mirrors::ARCHIVE {
+                    mirrors.reference = mirror.published;
+                }
+                mirrors.candidates.push(mirror);
+            }
+            Event::MirrorsTested => {
                 let mirrors = &mut self.updates.mirrors;
                 mirrors.testing = false;
-                mirrors.reference = reference;
+                mirrors.waiting.clear();
+                mirrors::rank(&mut mirrors.candidates);
                 // The mirror in use was just tested too: its warning follows.
                 if let Some(current) = &mirrors.current
-                    && let Some(mirror) = found.iter().find(|mirror| mirror.url == *current)
+                    && let Some(mirror) = mirrors.candidates.iter().find(|mirror| mirror.url == *current)
                 {
-                    mirrors.check = Some((mirror.clone(), reference));
+                    mirrors.check = Some((mirror.clone(), mirrors.reference));
                 }
-                mirrors.candidates = found;
             }
         }
         self.updates_changed();
@@ -691,7 +721,6 @@ impl Tileception {
         self.updates.third_party = scan.third_party;
         self.updates.free = scan.free;
         self.updates.track = scan.track;
-        self.updates.snapshots = scan.snapshots;
         self.updates.automatic = scan.automatic;
         self.updates.mirrors.current = scan.mirror;
         if scan.mirror_check.is_some() {
@@ -1087,7 +1116,6 @@ impl Tileception {
             security: totals.security,
             third_party: self.updates.third_party.clone(),
             on_battery: self.battery.reading.map(|reading| reading.charge == crate::battery::Charge::Discharging),
-            snapshots: self.updates.snapshots.is_some(),
             restart: self.updates.snapshot.restart,
         })
     }
@@ -1101,26 +1129,7 @@ impl Tileception {
             return Err(format!("not ready for {name}: see `updates open release`"));
         }
         let sudo = if task::is_root() { "" } else { "sudo " };
-        // A snapshot first, where there is something to take it with; the
-        // upgrade waits for it and is not started when it fails.
-        let snapshot = match self.updates.snapshots {
-            Some(tool) => {
-                let commands: Vec<String> = tool
-                    .commands(&format!("the upgrade to {name}"), &snapshots::stamp())
-                    .iter()
-                    .map(|command| format!("{sudo}{}", shell_words(command)))
-                    .collect();
-                format!(
-                    "echo 'Taking a snapshot with {} first.'; {{ {}; }} || {{ echo 'The snapshot failed; the upgrade was not started.'; echo 'Press Enter to close.'; read -r _; exit 1; }}; ",
-                    tool.name(),
-                    commands.join(" && ")
-                )
-            }
-            None => String::new(),
-        };
-        self.run_in_terminal(&format!(
-            "{snapshot}{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"
-        ))
+        self.run_in_terminal(&format!("{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"))
     }
 
     pub(crate) fn updates_command(&mut self, command: UpdatesCommand) -> Result<String, String> {
@@ -1190,7 +1199,7 @@ impl Tileception {
             UpdatesCommand::Automatic(None) => return Ok(self.updates_automatic_status()),
             UpdatesCommand::Automatic(Some(enable)) => {
                 if !self.updates.automatic.available {
-                    return Err("unattended-upgrades is not installed".into());
+                    return Err(format!("{} is not installed", self.updates.automatic.tool.name()));
                 }
                 self.updates_start(Task::Automatic(enable))?;
             }
@@ -1247,6 +1256,7 @@ impl Tileception {
     pub(crate) fn updates_test_mirrors(&mut self) {
         if !self.updates.mirrors.testing && self.updates_request(Request::Mirrors) {
             self.updates.mirrors.testing = true;
+            self.updates.mirrors.queued = false;
             self.updates_changed();
         }
     }
@@ -1259,7 +1269,7 @@ impl Tileception {
     fn updates_automatic_status(&self) -> String {
         let automatic = &self.updates.automatic;
         if !automatic.available {
-            return "unattended-upgrades is not installed\n".into();
+            return format!("{} is not installed\n", automatic.tool.name());
         }
         let state = if automatic.enabled { "on" } else { "off" };
         format!("automatic updates are {state}; they cover {}\n", automatic.covers.join(", "))
@@ -1271,8 +1281,12 @@ impl Tileception {
         if let Some(warning) = mirrors.warning() {
             text.push_str(&format!("warning: {warning}\n"));
         }
-        if mirrors.testing {
-            text.push_str("testing the mirrors; ask again in a moment\n");
+        match mirrors.test_progress() {
+            Some((done, total)) => {
+                text.push_str(&format!("testing the mirrors: {done} of {total} done; ask again in a moment\n"));
+            }
+            None if mirrors.testing => text.push_str("finding the mirrors near you; ask again in a moment\n"),
+            None => {}
         }
         for mirror in &mirrors.candidates {
             text.push_str(&format!("  {}  {}\n", mirror.url, describe_mirror(mirror, mirrors.reference)));
@@ -1457,21 +1471,6 @@ pub(crate) fn install_tasks(chosen: &[&apt::Update], all_apt: bool) -> Vec<Task>
     tasks
 }
 
-/// A command for a shell, each word quoted where it needs it.
-fn shell_words(words: &[String]) -> String {
-    words
-        .iter()
-        .map(|word| {
-            if word.chars().all(|character| character.is_ascii_alphanumeric() || "-_./:=".contains(character)) {
-                word.clone()
-            } else {
-                format!("'{}'", word.replace('\'', "'\\''"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// A tested mirror in a line: "2.4 MB/s · 0.12 s · up to date".
 pub(crate) fn describe_mirror(mirror: &mirrors::Mirror, reference: Option<i64>) -> String {
     if let Some(error) = &mirror.error {
@@ -1499,7 +1498,7 @@ fn scan(with_offer: bool, network: bool) -> Scan {
     let mut snapshot = backend::scan(&runner, &files, network);
     // Restarting is easier to explain than logging out and in again.
     snapshot.restart |= replaced();
-    let codename = snapshot.system.codename.clone();
+    let codename = snapshot.system.archive.clone();
     let mirror = mirrors::current(&files);
     let mirror_check = (with_offer && network && mirror.is_some())
         .then(|| mirrors::check_current(&runner, &files, &codename))
@@ -1510,7 +1509,6 @@ fn scan(with_offer: bool, network: bool) -> Scan {
         third_party: release::third_party(&files),
         free: release::free_space(&runner),
         track: release::track(&files),
-        snapshots: snapshots::tool(),
         automatic: automatic::read(&runner, &files),
         mirror,
         mirror_check,
@@ -1612,11 +1610,19 @@ fn run(
             Ok(Some(Request::Mirrors)) => {
                 let files = Files::default();
                 let runner = backend::System;
-                let codename = release::system(&files).codename;
-                let found = mirrors::survey(&runner, &files, &codename);
-                let reference =
-                    found.iter().find(|mirror| mirror.url == mirrors::ARCHIVE).and_then(|mirror| mirror.published);
-                Event::Mirrors(found, reference)
+                let codename = release::system(&files).archive;
+                // Each mirror is reported as it is tested, so the window
+                // shows how far the test is.
+                let queue = mirrors::nearby(&runner, &files);
+                if events.send(Event::MirrorQueue(queue.clone())).is_err() {
+                    return;
+                }
+                for url in queue {
+                    if events.send(Event::MirrorTested(mirrors::test(&runner, &url, &codename))).is_err() {
+                        return;
+                    }
+                }
+                Event::MirrorsTested
             }
             Ok(Some(Request::Run { task, password, quiet })) => {
                 let mut log = String::new();
@@ -2024,6 +2030,21 @@ fn reminder_due(waited: Duration, after_days: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_new_mirror_test_counts_nothing_until_it_finds_mirrors() {
+        let tested = |url: &str| mirrors::Mirror { url: url.into(), ..mirrors::Mirror::default() };
+        // The last test's results stay, but a new test has not done them.
+        let mut found = Mirrors { candidates: vec![tested("a"), tested("b")], testing: true, ..Mirrors::default() };
+        assert_eq!(found.test_progress(), None);
+        found.candidates.clear();
+        found.waiting = vec!["a".into(), "b".into()];
+        found.queued = true;
+        assert_eq!(found.test_progress(), Some((0, 2)));
+        found.candidates.push(tested("a"));
+        found.waiting.remove(0);
+        assert_eq!(found.test_progress(), Some((1, 2)));
+    }
+
     fn update(name: &str, security: bool) -> apt::Update {
         apt::Update {
             name: name.into(),
@@ -2185,12 +2206,6 @@ mod tests {
         assert!(history_text(&history, None).contains("updated apt 2.8.3 \u{2192} 2.8.4"));
         assert_eq!(parse(&["history", "since", "2026-11-10"]), Ok(UpdatesCommand::History(Some("2026-11-10".into()))));
         assert!(parse(&["history", "since", "Tuesday"]).is_err());
-    }
-
-    #[test]
-    fn words_reach_the_shell_whole() {
-        let words: Vec<String> = ["timeshift", "--comments", "Tileception: before it's done"].map(String::from).into();
-        assert_eq!(shell_words(&words), "timeshift --comments 'Tileception: before it'\\''s done'");
     }
 
     #[test]

@@ -1,15 +1,31 @@
 //! "Send feedback": confirm an exact preview and optional system details
 //! before opening a pre-filled GitHub issue in the browser. The issue is
 //! filed under the user's own GitHub account; nothing is sent from here.
+//!
+//! A link cannot carry a picture, so an optional screenshot goes on the
+//! clipboard and into a file when the issue opens, for the user to paste
+//! or attach on GitHub themselves.
 
 use std::{
     fmt::Write as _,
     ops::Range,
-    sync::atomic::{AtomicU64, Ordering},
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
-use smithay::{backend::renderer::gles::GlesRenderer, input::keyboard::keysyms};
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer},
+    },
+    input::keyboard::keysyms,
+    reexports::calloop::channel,
+    utils::Transform,
+};
 use tileception_core::{Point, Rect};
 
 use crate::{
@@ -22,17 +38,75 @@ use crate::{
 
 const NEW_ISSUE: &str = "https://github.com/robinvandernoord/tileception/issues/new";
 static NEXT_DIALOG: AtomicU64 = AtomicU64::new(0);
+static NEXT_SHOT: AtomicU64 = AtomicU64::new(0);
+/// The message field keeps at least this height for the preview.
+const MESSAGE_MIN: f64 = 56.0;
+/// A preview row lower than this becomes a thumbnail beside its switch.
+const SHOT_MIN: f64 = 40.0;
+/// The screenshot's preview fits in this, in logical pixels.
+const PREVIEW: (u32, u32) = (240, 150);
 
 /// The new-issue page with `title` (may be empty) and a body holding the
 /// version. The `feedback` label comes from the issue template, which GitHub
 /// applies for anyone; labels in the query only stick for people who may
 /// label issues.
 pub fn issue_url(title: &str) -> String {
-    issue_url_with_body(title, &issue_body("", None, None))
+    issue_url_with_body(title, &issue_body("", None, None, None))
 }
 
-fn issue_body(message: &str, conversation: Option<&str>, details: Option<&str>) -> String {
-    let mut body = format!("{}\n\n---\nTileception {}\n", message.trim_end(), env!("CARGO_PKG_VERSION"));
+/// Where the screenshot is saved when the issue opens, for attaching it by
+/// hand once the clipboard holds something else. Each opened issue replaces
+/// the last one's. The temporary folder may be shared, so the name carries
+/// the user id: another user's file there cannot be replaced or read.
+fn screenshot_path() -> PathBuf {
+    std::env::temp_dir().join(screenshot_name(crate::greeter::current_uid()))
+}
+
+fn screenshot_name(uid: u32) -> String {
+    format!("tileception-feedback-screenshot-{uid}.png")
+}
+
+/// Writes `png` to `path` for this user's eyes only. It is written next to
+/// it first and renamed over it, which replaces a link there rather than
+/// following it, and fails on another user's file in a shared folder.
+fn save_screenshot(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let temporary = path.with_extension(format!("png.{}.new", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(png))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// A hidden note where the screenshot belongs: GitHub shows comments while
+/// editing, not in the filed issue.
+fn screenshot_note(path: &str) -> String {
+    format!("<!-- Press Ctrl+V here to add the screenshot, or drag in {path} -->")
+}
+
+/// The preview's size, scaled down proportionally to fit `room`.
+fn fit_preview(size: (i32, i32), room: (f64, f64)) -> (f64, f64) {
+    let (width, height) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+    let scale = (room.0 / width).min(room.1 / height).clamp(0.0, 1.0);
+    ((width * scale).max(1.0), (height * scale).max(1.0))
+}
+
+fn issue_body(message: &str, screenshot: Option<&str>, conversation: Option<&str>, details: Option<&str>) -> String {
+    let mut body = message.trim_end().to_string();
+    if let Some(screenshot) = screenshot {
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str(&screenshot_note(screenshot));
+    }
+    let _ = write!(body, "\n\n---\nTileception {}\n", env!("CARGO_PKG_VERSION"));
     if let Some(conversation) = conversation {
         body.push('\n');
         body.push_str(conversation);
@@ -54,6 +128,10 @@ pub struct Feedback {
     title: crate::text_input::TextInput,
     message: crate::text_input::TextInput,
     details: Option<String>,
+    /// Off until the user checks it; then the screen under the dialog.
+    screenshot: Screenshot,
+    /// Left out of the frame while its screenshot is taken.
+    hidden: bool,
     /// Doctor's last question and answer, when opened from Doctor; only
     /// sent once the user checks it.
     conversation: Option<String>,
@@ -70,13 +148,73 @@ pub struct Feedback {
 }
 
 impl Feedback {
+    /// The Doctor panel goes in the screenshot only with the conversation:
+    /// it shows more than the last question and answer, so leaving the
+    /// conversation out leaves the panel out too.
+    fn shows_doctor(&self) -> bool {
+        self.conversation.is_some() && self.with_conversation
+    }
+
     fn body(&self) -> String {
+        let screenshot =
+            matches!(self.screenshot, Screenshot::Ready(_)).then(|| screenshot_path().display().to_string());
         issue_body(
             &self.message.text,
+            screenshot.as_deref(),
             self.conversation.as_deref().filter(|_| self.with_conversation),
             self.details.as_deref(),
         )
     }
+}
+
+enum Screenshot {
+    Off,
+    /// Asked for; the number tells it from one asked for before.
+    Taking(u64),
+    Ready(Shot),
+    Failed,
+}
+
+impl Screenshot {
+    fn checked(&self) -> bool {
+        matches!(self, Self::Taking(_) | Self::Ready(_))
+    }
+}
+
+/// The exact picture that goes with the issue, and its preview.
+struct Shot {
+    png: Arc<[u8]>,
+    size: (u32, u32),
+    preview: MemoryRenderBuffer,
+    preview_size: (i32, i32),
+    /// Whether the Doctor panel is in the picture, or `None` when Doctor
+    /// was not open on that screen.
+    doctor: Option<bool>,
+}
+
+/// A screenshot made ready off the compositor thread.
+struct Prepared {
+    png: Vec<u8>,
+    size: (u32, u32),
+    preview: (Vec<u8>, u32, u32),
+}
+
+/// The screen as PNG, in full, with a preview that fits [`PREVIEW`].
+fn prepare(mut rgba: Vec<u8>, width: u32, height: u32) -> Option<Prepared> {
+    use image::imageops::FilterType;
+    // The scene has no meaningful alpha.
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        pixel[3] = 255;
+    }
+    let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, rgba)?);
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image.to_rgb8())
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|err| tracing::warn!("feedback screenshot: {err}"))
+        .ok()?;
+    let preview = image.resize(PREVIEW.0, PREVIEW.1, FilterType::Triangle).to_rgba8();
+    let preview = (preview.as_raw().clone(), preview.width(), preview.height());
+    Some(Prepared { png, size: (width, height), preview })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -84,6 +222,7 @@ enum Action {
     Title,
     Message,
     Conversation,
+    Screenshot,
     Details,
     Cancel,
     Review,
@@ -123,6 +262,8 @@ impl PointerAction for Action {
 struct Layout {
     panel: Rect,
     preview: Rect,
+    /// The screenshot's preview and what happens to it.
+    shot: Option<Rect>,
     title: Rect,
     message: Rect,
     controls: Vec<(Action, Rect)>,
@@ -162,6 +303,8 @@ impl Tileception {
             title: crate::text_input::TextInput::new(title),
             message: crate::text_input::TextInput::default().multiline(4096),
             details: None,
+            screenshot: Screenshot::Off,
+            hidden: false,
             conversation,
             with_conversation: false,
             selected: if title.is_empty() { Action::Title } else { Action::Message },
@@ -191,20 +334,59 @@ impl Tileception {
             Action::Cancel => self.close_feedback(),
             Action::Open => {
                 let Some(feedback) = &self.feedback else { return };
-                let url =
-                    if feedback.details.is_none() && !feedback.with_conversation && feedback.message.text.is_empty() {
-                        issue_url(&feedback.title.text)
-                    } else {
-                        issue_url_with_body(&feedback.title.text, &feedback.body())
-                    };
+                let png = match &feedback.screenshot {
+                    // Opening now would leave out the picture the user asked for.
+                    Screenshot::Taking(_) => return,
+                    Screenshot::Ready(shot) => Some(shot.png.clone()),
+                    Screenshot::Off | Screenshot::Failed => None,
+                };
+                let url = if feedback.details.is_none()
+                    && !feedback.with_conversation
+                    && png.is_none()
+                    && feedback.message.text.is_empty()
+                {
+                    issue_url(&feedback.title.text)
+                } else {
+                    issue_url_with_body(&feedback.title.text, &feedback.body())
+                };
                 self.close_feedback();
+                if let Some(png) = png {
+                    let path = screenshot_path();
+                    if let Err(err) = save_screenshot(&path, &png) {
+                        tracing::warn!("could not save {}: {err}", path.display());
+                    }
+                    self.lend_clipboard_png(png);
+                }
                 self.spawn("xdg-open", &[url]);
             }
+            Action::Screenshot => {
+                let Some(feedback) = &mut self.feedback else { return };
+                feedback.selected = Action::Screenshot;
+                feedback.scroll = 0;
+                if feedback.screenshot.checked() {
+                    // Removed: the picture is dropped, never saved or copied.
+                    feedback.screenshot = Screenshot::Off;
+                    self.schedule_render();
+                } else {
+                    let shot = NEXT_SHOT.fetch_add(1, Ordering::Relaxed);
+                    feedback.screenshot = Screenshot::Taking(shot);
+                    self.feedback_screenshot(shot);
+                }
+            }
             Action::Conversation => {
-                if let Some(feedback) = &mut self.feedback {
-                    feedback.with_conversation = !feedback.with_conversation;
-                    feedback.selected = Action::Conversation;
-                    feedback.scroll = 0;
+                // Open on any screen: the picture may come from another one
+                // than the dialog is on now, if the active screen changed.
+                let doctor_open = self.doctor.open;
+                let Some(feedback) = &mut self.feedback else { return };
+                feedback.with_conversation = !feedback.with_conversation;
+                feedback.selected = Action::Conversation;
+                feedback.scroll = 0;
+                // The Doctor panel comes and goes with the conversation:
+                // take the picture again so it matches the switch.
+                if feedback.screenshot.checked() && doctor_open {
+                    let shot = NEXT_SHOT.fetch_add(1, Ordering::Relaxed);
+                    feedback.screenshot = Screenshot::Taking(shot);
+                    self.feedback_screenshot(shot);
                 }
                 self.schedule_render();
             }
@@ -229,6 +411,87 @@ impl Tileception {
             }
             Action::Title | Action::Message => {}
         }
+    }
+
+    /// Leaves the dialog out of the frame, or brings it back, around its screenshot.
+    pub(crate) fn feedback_hidden(&mut self, hidden: bool) {
+        if let Some(feedback) = &mut self.feedback {
+            feedback.hidden = hidden;
+        }
+    }
+
+    /// The Doctor panel is left out of the dialog's screenshot unless the
+    /// conversation goes with the report.
+    pub(crate) fn feedback_hides_doctor(&self) -> bool {
+        self.feedback.as_ref().is_some_and(|feedback| feedback.hidden && !feedback.shows_doctor())
+    }
+
+    /// Open and drawn: not left out for its own screenshot.
+    pub(crate) fn feedback_visible(&self) -> bool {
+        self.feedback.as_ref().is_some_and(|feedback| !feedback.hidden)
+    }
+
+    fn feedback_waiting_for(&self, shot: u64) -> bool {
+        self.feedback
+            .as_ref()
+            .is_some_and(|feedback| matches!(feedback.screenshot, Screenshot::Taking(taking) if taking == shot))
+    }
+
+    /// Encodes the screen under the dialog off the event loop.
+    pub(crate) fn feedback_screen_taken(&mut self, shot: u64, rgba: Vec<u8>, (width, height): (u32, u32)) {
+        if !self.feedback_waiting_for(shot) {
+            return;
+        }
+        // Taken in the context of the screen in the picture.
+        let doctor = self.doctor_here().then(|| self.feedback.as_ref().is_some_and(Feedback::shows_doctor));
+        let (sender, receiver) = channel::channel::<Option<Prepared>>();
+        let registered = self.loop_handle.insert_source(receiver, move |event, _, state| {
+            let prepared = match event {
+                channel::Event::Msg(prepared) => prepared,
+                channel::Event::Closed => None,
+            };
+            state.feedback_shot_ready(shot, prepared, doctor);
+        });
+        if let Err(err) = registered {
+            tracing::warn!("feedback screenshot: {err}");
+            return self.feedback_screen_failed(shot);
+        }
+        let spawned = std::thread::Builder::new().name("tileception-feedback-shot".into()).spawn(move || {
+            let _ = sender.send(prepare(rgba, width, height));
+        });
+        if let Err(err) = spawned {
+            tracing::warn!("feedback screenshot: {err}");
+            self.feedback_screen_failed(shot);
+        }
+    }
+
+    pub(crate) fn feedback_screen_failed(&mut self, shot: u64) {
+        if self.feedback_waiting_for(shot)
+            && let Some(feedback) = &mut self.feedback
+        {
+            feedback.screenshot = Screenshot::Failed;
+            self.schedule_render();
+        }
+    }
+
+    fn feedback_shot_ready(&mut self, shot: u64, prepared: Option<Prepared>, doctor: Option<bool>) {
+        if !self.feedback_waiting_for(shot) {
+            return;
+        }
+        let Some(prepared) = prepared else { return self.feedback_screen_failed(shot) };
+        let (rgba, width, height) = prepared.preview;
+        let preview_size = (width as i32, height as i32);
+        let preview = MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, preview_size, 1, Transform::Normal, None);
+        if let Some(feedback) = &mut self.feedback {
+            feedback.screenshot = Screenshot::Ready(Shot {
+                png: prepared.png.into(),
+                size: prepared.size,
+                preview,
+                preview_size,
+                doctor,
+            });
+        }
+        self.schedule_render();
     }
 
     fn feedback_system_details(&self) -> String {
@@ -287,19 +550,37 @@ impl Tileception {
         let bottom = panel.bottom() - if tight { 40.0 } else { 48.0 };
         let button_h = if tight { 28.0 } else { 36.0 };
         let details = Rect::new(left, bottom - 40.0, inner, 28.0);
+        let screenshot = Rect::new(left, details.y - 32.0, inner, 28.0);
         let conversation = self
             .feedback
             .as_ref()
             .is_some_and(|feedback| feedback.conversation.is_some())
-            .then(|| Rect::new(left, details.y - 32.0, inner, 28.0));
-        let switches = conversation.unwrap_or(details);
+            .then(|| Rect::new(left, screenshot.y - 32.0, inner, 28.0));
+        let switches = conversation.unwrap_or(screenshot);
         let title = Rect::new(left, top + 16.0, inner, 28.0);
-        let message = Rect::new(left, title.bottom() + 30.0, inner, (switches.y - title.bottom() - 42.0).max(1.0));
+        let message_top = title.bottom() + 30.0;
+        let shot =
+            self.feedback.as_ref().filter(|feedback| !matches!(feedback.screenshot, Screenshot::Off)).map(|_| {
+                // What the message can spare, keeping it MESSAGE_MIN high.
+                let room = switches.y - 24.0 - MESSAGE_MIN - message_top;
+                let height = ((switches.y - top) * 0.45).min(room).min(f64::from(PREVIEW.1) + 8.0);
+                if height >= SHOT_MIN {
+                    Rect::new(left, switches.y - 8.0 - height, inner, height)
+                } else {
+                    // No room above: a thumbnail at the end of its switch.
+                    let height = screenshot.h - 4.0;
+                    let width = height * 1.6 + 8.0;
+                    Rect::new(screenshot.right() - width - 4.0, screenshot.y + 2.0, width, height)
+                }
+            });
+        let above = shot.filter(|shot| shot.y < switches.y).map_or(switches.y, |shot| shot.y - 4.0);
+        let message = Rect::new(left, message_top, inner, (above - message_top - 12.0).max(1.0));
         let review = self.feedback.as_ref().is_some_and(|feedback| feedback.review);
         let mut controls = if review { Vec::new() } else { vec![(Action::Title, title), (Action::Message, message)] };
         if let Some(conversation) = conversation {
             controls.push((Action::Conversation, conversation));
         }
+        controls.push((Action::Screenshot, screenshot));
         controls.push((Action::Details, details));
         // Buttons sit together on the right, the step forward last, and
         // shrink alike when the screen is narrow.
@@ -321,7 +602,8 @@ impl Tileception {
             panel,
             title,
             message,
-            preview: Rect::new(left, top, inner, (switches.y - top - 20.0).max(1.0)),
+            preview: Rect::new(left, top, inner, (above - top - 20.0).max(1.0)),
+            shot,
             controls,
         }
     }
@@ -548,7 +830,7 @@ impl Tileception {
     }
 
     pub(crate) fn feedback_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        let Some(feedback) = &self.feedback else { return Vec::new() };
+        let Some(feedback) = self.feedback.as_ref().filter(|feedback| !feedback.hidden) else { return Vec::new() };
         let layout = self.feedback_layout();
         let theme = &self.theme;
         let mut painter = Painter::new(self, renderer);
@@ -571,7 +853,7 @@ impl Tileception {
             let selected = feedback.selected == *action;
             match action {
                 Action::Title | Action::Message => {}
-                Action::Conversation | Action::Details => {
+                Action::Conversation | Action::Screenshot | Action::Details => {
                     if selected {
                         painter.shape(
                             *rect,
@@ -583,14 +865,20 @@ impl Tileception {
                         );
                     }
                     let track = Rect::new(rect.x + 8.0, rect.y + (rect.h - 20.0) / 2.0, 36.0, 20.0);
-                    let (checked, text) = if *action == Action::Conversation {
-                        (feedback.with_conversation, "Include the last Doctor question and answer")
-                    } else {
-                        (feedback.details.is_some(), "Include system details")
+                    let (checked, text) = match action {
+                        Action::Conversation => {
+                            (feedback.with_conversation, "Include the last Doctor question and answer")
+                        }
+                        Action::Screenshot => (feedback.screenshot.checked(), "Include a screenshot of the screen"),
+                        _ => (feedback.details.is_some(), "Include system details"),
                     };
                     crate::panel::draw_switch(&mut painter, track, checked, false, true);
-                    let label =
-                        Rect::new(track.right() + 12.0, rect.y, (rect.right() - track.right() - 20.0).max(1.0), rect.h);
+                    // Stops short of a thumbnail drawn at the end of the row.
+                    let end = layout
+                        .shot
+                        .filter(|shot| matches!(action, Action::Screenshot) && rect.contains_rect(shot))
+                        .map_or(rect.right() - 8.0, |shot| shot.x - 8.0);
+                    let label = Rect::new(track.right() + 12.0, rect.y, (end - track.right() - 12.0).max(1.0), rect.h);
                     painter.text(text, label, Style::new(theme.font_size, theme.text));
                 }
                 _ => {
@@ -606,6 +894,9 @@ impl Tileception {
                     painter.button(*rect, Button::new(text, look).focused(selected), hover);
                 }
             }
+        }
+        if let Some(rect) = layout.shot {
+            self.draw_feedback_shot(&mut painter, rect);
         }
         if !feedback.review {
             for (action, rect, label, placeholder) in [
@@ -656,6 +947,64 @@ impl Tileception {
             );
         }
         painter.finish()
+    }
+
+    /// The screenshot's preview beside what happens to it.
+    fn draw_feedback_shot(&self, painter: &mut Painter<'_>, rect: Rect) {
+        let Some(feedback) = &self.feedback else { return };
+        let theme = &self.theme;
+        painter.fill(rect, theme.background, 4.0);
+        // A thumbnail is the picture alone, without its note.
+        let compact = rect.h < SHOT_MIN;
+        let picture = if compact {
+            rect
+        } else {
+            Rect::new(rect.x + 4.0, rect.y + 4.0, f64::from(PREVIEW.0).min(rect.w / 2.0), rect.h - 8.0)
+        };
+        let note = Rect::new(
+            picture.right() + 12.0,
+            rect.y + 4.0,
+            (rect.right() - picture.right() - 20.0).max(1.0),
+            rect.h - 8.0,
+        );
+        let text = match &feedback.screenshot {
+            Screenshot::Ready(shot) => {
+                // Shrunk to fit whole, so all of what is sent can be seen.
+                let (width, height) = fit_preview(shot.preview_size, (picture.w - 2.0, picture.h - 2.0));
+                let corner = (picture.x + (picture.w - width) / 2.0, picture.y + (picture.h - height) / 2.0);
+                painter.clipped(picture, |painter| {
+                    painter.fill(
+                        Rect::new(corner.0 - 1.0, corner.1 - 1.0, width + 2.0, height + 2.0),
+                        theme.border,
+                        3.0,
+                    );
+                    painter.image_scaled(&shot.preview, shot.preview_size, corner, (width, height));
+                });
+                let doctor = match shot.doctor {
+                    None => "",
+                    Some(true) => " It includes the Doctor panel.",
+                    Some(false) => " The Doctor panel is left out.",
+                };
+                format!(
+                    "The screen under this dialog, {} by {} pixels.{doctor} Paste it into the issue with Ctrl+V. \
+                     Uncheck to remove it.",
+                    shot.size.0, shot.size.1,
+                )
+            }
+            Screenshot::Taking(_) => {
+                painter.fill(picture, theme.surface_raised, 4.0);
+                "Taking a screenshot of the screen under this dialog...".into()
+            }
+            Screenshot::Failed => {
+                painter.fill(picture, theme.surface_raised, 4.0);
+                "Could not take a screenshot. Check the option to try again.".into()
+            }
+            Screenshot::Off => return,
+        };
+        if compact {
+            return;
+        }
+        painter.text(&text, note, Style::new(theme.font_size * 0.9, theme.muted).lines(6));
     }
 
     fn draw_feedback_field(&self, painter: &mut Painter<'_>, action: Action, rect: Rect, placeholder: &str) {
@@ -740,12 +1089,63 @@ mod tests {
 
     #[test]
     fn adds_the_conversation_before_details() {
-        let body = issue_body("Broken", Some("Last Doctor question:\nWhy?\n"), Some("OS: test\n"));
+        let body = issue_body("Broken", None, Some("Last Doctor question:\nWhy?\n"), Some("OS: test\n"));
         let version = format!("Tileception {}\n", env!("CARGO_PKG_VERSION"));
         assert_eq!(
             body,
             format!("Broken\n\n---\n{version}\nLast Doctor question:\nWhy?\n\nSystem details:\nOS: test\n")
         );
-        assert_eq!(issue_body("Broken", None, None), format!("Broken\n\n---\n{version}"));
+        assert_eq!(issue_body("Broken", None, None, None), format!("Broken\n\n---\n{version}"));
+    }
+
+    #[test]
+    fn fits_the_whole_preview() {
+        assert_eq!(fit_preview((240, 150), (300.0, 200.0)), (240.0, 150.0));
+        assert_eq!(fit_preview((240, 150), (240.0, 75.0)), (120.0, 75.0));
+        assert_eq!(fit_preview((240, 150), (60.0, 150.0)), (60.0, 37.5));
+    }
+
+    #[test]
+    fn notes_where_the_screenshot_goes() {
+        let version = format!("Tileception {}\n", env!("CARGO_PKG_VERSION"));
+        let path = "/tmp/shot.png";
+        let note = screenshot_note(path);
+        assert!(note.starts_with("<!--") && note.ends_with("-->") && note.contains(path));
+        assert_eq!(issue_body("Broken", Some(path), None, None), format!("Broken\n\n{note}\n\n---\n{version}"));
+        assert_eq!(issue_body("", Some(path), None, None), format!("{note}\n\n---\n{version}"));
+    }
+
+    #[test]
+    fn saves_the_screenshot_for_this_user_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(screenshot_name(1000), "tileception-feedback-screenshot-1000.png");
+        assert!(screenshot_path().starts_with(std::env::temp_dir()));
+        let dir = std::env::temp_dir().join(format!("tileception-feedback-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder");
+        let path = dir.join(screenshot_name(1000));
+        save_screenshot(&path, b"first").expect("saved");
+        save_screenshot(&path, b"second").expect("replaced");
+        assert_eq!(std::fs::read(&path).expect("read"), b"second");
+        assert_eq!(std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        // A link put there is replaced, not followed.
+        let elsewhere = dir.join("elsewhere");
+        std::fs::write(&elsewhere, b"keep").expect("written");
+        std::fs::remove_file(&path).expect("removed");
+        std::os::unix::fs::symlink(&elsewhere, &path).expect("linked");
+        save_screenshot(&path, b"third").expect("saved over the link");
+        assert_eq!(std::fs::read(&elsewhere).expect("read"), b"keep");
+        assert_eq!(std::fs::read(&path).expect("read"), b"third");
+        assert!(!std::fs::symlink_metadata(&path).expect("metadata").file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_screenshot_is_kept_whole() {
+        let prepared = prepare(vec![200; 1920 * 1080 * 4], 1920, 1080).expect("prepared");
+        assert_eq!(prepared.size, (1920, 1080));
+        let decoded = image::load_from_memory(&prepared.png).expect("a PNG");
+        assert_eq!((decoded.width(), decoded.height()), (1920, 1080));
+        assert!(prepared.preview.1 <= PREVIEW.0 && prepared.preview.2 <= PREVIEW.1);
     }
 }

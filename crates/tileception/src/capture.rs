@@ -54,6 +54,9 @@ pub enum CaptureTarget {
     },
     /// The whole output without the rubber duck, for its question.
     Duck,
+    /// The whole output under the feedback dialog, for the report it was
+    /// asked for.
+    Feedback(u64),
     /// The whole output, for the colour picker's magnifier.
     ColourPick,
 }
@@ -90,6 +93,7 @@ impl Tileception {
                 CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
                 CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
                 CaptureTarget::Duck => {}
+                CaptureTarget::Feedback(shot) => self.feedback_screen_failed(shot),
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
             }
         }
@@ -110,6 +114,13 @@ impl Tileception {
     pub fn duck_screenshot(&mut self) {
         let region = self.output_region();
         self.pending_captures.push(PendingCapture { region, target: CaptureTarget::Duck });
+        self.schedule_render();
+    }
+
+    /// Queues a screenshot of the whole output, without the feedback dialog.
+    pub fn feedback_screenshot(&mut self, shot: u64) {
+        let region = self.output_region();
+        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::Feedback(shot) });
         self.schedule_render();
     }
 
@@ -164,6 +175,20 @@ impl Tileception {
                 Err(err) => tracing::warn!("duck capture failed: {err}"),
             }
         }
+        // So does the feedback dialog's: the report is about what is under it.
+        let feedback = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Feedback(_))).last();
+        if let Some(PendingCapture { region, target: CaptureTarget::Feedback(shot) }) = feedback {
+            self.feedback_hidden(true);
+            let scene = self.scene(renderer);
+            self.feedback_hidden(false);
+            match pixels(renderer, &mut None, &scene, region) {
+                Ok(rgba) => self.feedback_screen_taken(shot, rgba, (region.size.w as u32, region.size.h as u32)),
+                Err(err) => {
+                    tracing::warn!("feedback capture failed: {err}");
+                    self.feedback_screen_failed(shot);
+                }
+            }
+        }
         if pending.is_empty() {
             return;
         }
@@ -211,7 +236,7 @@ impl Tileception {
                         self.cancel_colour_pick();
                     }
                 },
-                CaptureTarget::Duck => {}
+                CaptureTarget::Duck | CaptureTarget::Feedback(_) => {}
             }
         }
     }

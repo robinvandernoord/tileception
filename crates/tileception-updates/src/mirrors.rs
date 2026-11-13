@@ -2,7 +2,7 @@
 //! each candidate answers and how far behind the main archive it is.
 //! Testing a mirror uses the network, so it happens only when asked.
 
-use crate::{Files, Runner};
+use crate::{Files, Runner, mint, release};
 
 /// The main archive, which the others copy from.
 pub const ARCHIVE: &str = "http://archive.ubuntu.com/ubuntu";
@@ -13,6 +13,17 @@ pub const NEARBY: &str = "http://mirrors.ubuntu.com/mirrors.txt";
 /// The deb822 file of Ubuntu's own sources, and the one-line form before it.
 pub const SOURCES: &str = "/etc/apt/sources.list.d/ubuntu.sources";
 pub const LIST: &str = "/etc/apt/sources.list";
+
+/// Where Linux Mint keeps the Ubuntu archive, beside its own: the file its
+/// Software Sources tool writes.
+pub const MINT: &str = mint::SOURCES;
+
+/// Every file that may name the Ubuntu archive.
+pub const FILES: [&str; 3] = [SOURCES, LIST, MINT];
+
+/// The mirrors python-apt lists per country, which Linux Mint's mirror
+/// picker reads too.
+pub const LISTED: &str = "/usr/share/python-apt/templates/Ubuntu.mirrors";
 
 /// How long a mirror may lag before it counts as stale.
 pub const STALE_AFTER: i64 = 24 * 3600;
@@ -49,11 +60,19 @@ fn stanzas(text: &str) -> Vec<(Vec<String>, Vec<String>)> {
         .collect()
 }
 
-/// The mirror the sources use for the release and its updates.
-pub fn current_in(sources: Option<&str>, list: Option<&str>) -> Option<String> {
+/// Whether a suite belongs to the Ubuntu release `codename`: `noble` or
+/// `noble-updates`, not Linux Mint's `zena`. Any suite does when the
+/// codename is unknown.
+fn of_release(suite: &str, codename: &str) -> bool {
+    codename.is_empty() || suite.strip_prefix(codename).is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+}
+
+/// The mirror the sources use for the Ubuntu release `codename` and its
+/// updates.
+pub fn current_in(sources: Option<&str>, list: Option<&str>, codename: &str) -> Option<String> {
     if let Some(text) = sources {
         for (uris, suites) in stanzas(text) {
-            if !suites.is_empty() && suites.iter().all(|suite| security(suite)) {
+            if !suites.is_empty() && suites.iter().all(|suite| security(suite) || !of_release(suite, codename)) {
                 continue;
             }
             if let Some(uri) = uris.iter().find(|uri| archive_like(uri)) {
@@ -72,12 +91,13 @@ pub fn current_in(sources: Option<&str>, list: Option<&str>) -> Option<String> {
         }
         let uri = words.next()?;
         let suite = words.next().unwrap_or_default();
-        (archive_like(uri) && !security(suite)).then(|| normal(uri))
+        (archive_like(uri) && !security(suite) && of_release(suite, codename)).then(|| normal(uri))
     })
 }
 
 pub fn current(files: &Files) -> Option<String> {
-    current_in(files.read(SOURCES).as_deref(), files.read(LIST).as_deref())
+    let list: String = [LIST, MINT].iter().filter_map(|path| files.read(path)).collect::<Vec<_>>().join("\n");
+    current_in(files.read(SOURCES).as_deref(), Some(&list), &release::system(files).archive)
 }
 
 fn security(suite: &str) -> bool {
@@ -238,6 +258,38 @@ pub fn valid(url: &str) -> bool {
     })
 }
 
+/// The mirrors a `#LOC:NL` section of [`LISTED`] names for `country`.
+pub fn listed_in(text: &str, country: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut here = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(code) = line.strip_prefix("#LOC:") {
+            here = code.eq_ignore_ascii_case(country);
+        } else if here && !line.is_empty() && !line.contains("ubuntu-ports") {
+            found.push(normal(line));
+        }
+    }
+    found
+}
+
+/// The country of the time zone, from `zone.tab`: `NL` for Europe/Amsterdam.
+pub fn country_in(zone: &str, table: &str) -> Option<String> {
+    table.lines().filter(|line| !line.starts_with('#')).find_map(|line| {
+        let fields: Vec<&str> = line.split('\t').collect();
+        (fields.get(2) == Some(&zone)).then(|| fields[0].to_string())
+    })
+}
+
+/// The country this machine's time zone is in.
+fn country(files: &Files) -> Option<String> {
+    let zone = files.read("/etc/timezone").map(|zone| zone.trim().to_string()).or_else(|| {
+        let link = std::fs::read_link(files.path("/etc/localtime")).ok()?;
+        let link = link.to_string_lossy();
+        Some(link.split_once("zoneinfo/")?.1.to_string())
+    })?;
+    country_in(&zone, &files.read("/usr/share/zoneinfo/zone.tab")?)
+}
+
 /// The candidate mirrors: the one in use, the main archive, and the ones
 /// Ubuntu lists for this country, each once.
 pub fn candidates(current: Option<&str>, nearby: &str) -> Vec<String> {
@@ -353,13 +405,21 @@ pub fn check_current(runner: &dyn Runner, files: &Files, codename: &str) -> Opti
     Some((test(runner, &current, codename), reference))
 }
 
-/// Lists and tests the candidates, the main archive first so the others
-/// compare against it.
-pub fn survey(runner: &dyn Runner, files: &Files, codename: &str) -> Vec<Mirror> {
-    let nearby = runner.run("curl", &["-fsSL", "--max-time", "8", NEARBY]).unwrap_or_default();
-    let mut found: Vec<Mirror> =
-        candidates(current(files).as_deref(), &nearby).iter().take(12).map(|url| test(runner, url, codename)).collect();
-    // Fastest first, unreachable ones last; the order is stable for equals.
+/// The mirrors worth testing: the one in use, the main archive (so the
+/// others compare against it), then the ones near this machine.
+pub fn nearby(runner: &dyn Runner, files: &Files) -> Vec<String> {
+    let mut nearby = runner.run("curl", &["-fsSL", "--max-time", "8", NEARBY]).unwrap_or_default();
+    // Ubuntu's list for the country may hold the main archive alone.
+    if let (Some(country), Some(listed)) = (country(files), files.read(LISTED)) {
+        nearby.push('\n');
+        nearby.push_str(&listed_in(&listed, &country).join("\n"));
+    }
+    candidates(current(files).as_deref(), &nearby).into_iter().take(12).collect()
+}
+
+/// Orders tested mirrors fastest first, unreachable ones last; the order is
+/// stable for equals.
+pub fn rank(found: &mut [Mirror]) {
     found.sort_by(|left, right| match (left.speed, right.speed, &left.error, &right.error) {
         (_, _, None, Some(_)) => std::cmp::Ordering::Less,
         (_, _, Some(_), None) => std::cmp::Ordering::Greater,
@@ -368,7 +428,6 @@ pub fn survey(runner: &dyn Runner, files: &Files, codename: &str) -> Vec<Mirror>
         (None, Some(_), ..) => std::cmp::Ordering::Greater,
         _ => std::cmp::Ordering::Equal,
     });
-    found
 }
 
 /// A lag for people: "up to date", "3 hours behind", "2 days behind".
@@ -403,11 +462,37 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
     #[test]
     fn the_mirror_in_use_is_found() {
-        assert_eq!(current_in(Some(SOURCES), None).as_deref(), Some("http://nl.archive.ubuntu.com/ubuntu"));
+        assert_eq!(current_in(Some(SOURCES), None, "noble").as_deref(), Some("http://nl.archive.ubuntu.com/ubuntu"));
         let list = "deb http://security.ubuntu.com/ubuntu jammy-security main\n\
                     deb [arch=amd64] http://ftp.snt.utwente.nl/pub/os/linux/ubuntu/ jammy main\n";
-        assert_eq!(current_in(None, Some(list)).as_deref(), Some("http://ftp.snt.utwente.nl/pub/os/linux/ubuntu"));
-        assert_eq!(current_in(None, Some("deb http://ppa.launchpad.net/x/ubuntu noble main\n")), None);
+        assert_eq!(
+            current_in(None, Some(list), "jammy").as_deref(),
+            Some("http://ftp.snt.utwente.nl/pub/os/linux/ubuntu")
+        );
+        assert_eq!(current_in(None, Some("deb http://ppa.launchpad.net/x/ubuntu noble main\n"), "noble"), None);
+    }
+
+    #[test]
+    fn listed_mirrors_are_found_for_the_country() {
+        let listed = "#LOC:BE\nhttp://be.example/ubuntu/\n#LOC:NL\nftp://ftp.example.nl/ubuntu/\n\
+                      http://nl3.archive.ubuntu.com/ubuntu/\nhttp://ports.example.nl/ubuntu-ports/\n#LOC:NO\n";
+        assert_eq!(listed_in(listed, "NL"), ["ftp://ftp.example.nl/ubuntu", "http://nl3.archive.ubuntu.com/ubuntu"]);
+        let table = "# comment\nBE\t+5050+00420\tEurope/Brussels\nNL\t+5222+00454\tEurope/Amsterdam\n";
+        assert_eq!(country_in("Europe/Amsterdam", table).as_deref(), Some("NL"));
+        assert_eq!(country_in("Mars/Olympus", table), None);
+    }
+
+    #[test]
+    fn mint_keeps_its_own_mirror_apart() {
+        let list = "deb https://linuxmint-packages.mirror.liteserver.nl zena main upstream import backport \n\
+                    deb http://nl3.archive.ubuntu.com/ubuntu noble main restricted universe multiverse\n\
+                    deb http://nl3.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse\n\
+                    deb http://security.ubuntu.com/ubuntu/ noble-security main restricted universe multiverse\n";
+        assert_eq!(current_in(None, Some(list), "noble").as_deref(), Some("http://nl3.archive.ubuntu.com/ubuntu"));
+        let rewritten = rewrite(list, "http://nl3.archive.ubuntu.com/ubuntu", "https://mirror.example.org/ubuntu");
+        assert!(rewritten.starts_with("deb https://linuxmint-packages.mirror.liteserver.nl zena main"));
+        assert!(rewritten.contains("deb https://mirror.example.org/ubuntu noble-updates main"));
+        assert!(rewritten.contains("deb http://security.ubuntu.com/ubuntu/ noble-security main"));
     }
 
     #[test]
@@ -416,7 +501,7 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
         assert!(rewritten.contains("URIs: https://mirror.example.org/ubuntu\n"));
         assert!(rewritten.contains("URIs: http://security.ubuntu.com/ubuntu/\n"));
         assert!(rewritten.contains("## comment URIs: http://nowhere/ubuntu"));
-        assert_eq!(current_in(Some(&rewritten), None).as_deref(), Some("https://mirror.example.org/ubuntu"));
+        assert_eq!(current_in(Some(&rewritten), None, "noble").as_deref(), Some("https://mirror.example.org/ubuntu"));
     }
 
     #[test]
@@ -454,7 +539,7 @@ Components: main
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 "
         );
-        assert_eq!(current_in(Some(&rewritten), None).as_deref(), Some(into));
+        assert_eq!(current_in(Some(&rewritten), None, "noble").as_deref(), Some(into));
         assert_eq!(stanzas(&rewritten).len(), 2);
 
         // So are one-line entries, with or without options.

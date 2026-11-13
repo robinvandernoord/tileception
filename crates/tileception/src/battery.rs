@@ -91,6 +91,8 @@ impl BatteryConfig {
             "accent" => Ok(theme.accent),
             "warning" => Ok(theme.warning),
             "danger" => Ok(theme.danger),
+            "muted" => Ok(theme.muted),
+            "text" => Ok(theme.text),
             hex => Colour::parse(hex).map_err(|err| format!("[battery] {err}")),
         };
         let mut levels = self
@@ -683,5 +685,10 @@ mod tests {
         let low = Reading { percent: 50, charge: Charge::Discharging, remaining: None };
         assert_eq!(config.battery.pick(&low), Some(Colour::parse("#ff0000").unwrap()));
         assert!(crate::config::Config::parse("[battery]\nlevels = [{ at = 50, colour = \"red\" }]").is_err());
+        // Every theme colour Settings offers for a threshold is accepted.
+        for name in ["accent", "warning", "danger", "muted", "text"] {
+            let text = format!("[battery]\ncharging = \"{name}\"\nlevels = [{{ at = 50, colour = \"{name}\" }}]\n");
+            assert!(crate::config::Config::parse(&text).is_ok(), "{name}");
+        }
     }
 }

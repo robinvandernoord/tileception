@@ -46,6 +46,10 @@ impl Tileception {
         let command = match self.shell().lock() {
             crate::shell::Part::Off => {
                 tracing::warn!("locking is switched off in [shell]");
+                // Suspending still happens, without a lock.
+                if suspend {
+                    self.spawn("systemctl", &["suspend".into()]);
+                }
                 return;
             }
             crate::shell::Part::Command(line) => Some(self.expand_wallpaper(&line)),

@@ -294,11 +294,27 @@ word navigation and clipboard shortcuts work. Choose **Review** to see the
 exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
+"Include a screenshot of the screen" starts unchecked too. Checking it takes a
+screenshot of the screen under the dialog, without the dialog, and shows a
+preview of it with its size; unchecking it removes the screenshot again. A
+GitHub link cannot carry a picture, so **Open in browser** saves the
+screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
+folder (usually `/tmp`, readable only by you, replacing the last one) and puts
+it on the clipboard, and the issue body gets a hidden note where it belongs:
+press **Ctrl+V** there to attach it, or drag the file into the issue. What you
+had copied (up to 32 MB) comes back to the clipboard once the screenshot is
+pasted, or after two minutes (only the latter with clipboard persistence on,
+whose helper serves the paste), unless you copy something else first; another
+machine's clipboard shared through handoff stays replaced. Nothing is copied
+or saved before you open the issue.
 Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
 "Include the last Doctor question and answer", also unchecked. Checking it
-adds your last question and the agent's answer, shortened if long.
+adds your last question and the agent's answer, shortened if long. The
+screenshot leaves the Doctor panel out unless this option is checked, since the
+panel shows more than the last exchange; changing the option takes the
+screenshot again.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the
@@ -522,13 +538,6 @@ when no fallback is installed, and when the queue would leave none.
 Leftover headers, and leftover modules and tools, of kernels that are gone are
 listed apart and queued per kind. Nothing on this page runs `autoremove`.
 
-Where Timeshift or Snapper is installed, or the root file system is btrfs,
-Tileception takes a snapshot before installing a kernel or Mesa update and
-before a release upgrade: with Timeshift or Snapper when one is there, or else
-as a read-only btrfs snapshot of `/` in `/.tileception-snapshots`. A failed
-snapshot is said in the log and the install goes ahead, so that security
-updates are never kept out; a release upgrade is not started without one.
-
 While a kernel or firmware update waits, the power menu shows **Restart and
 install** (key **N**) beside **Restart**: it installs everything that waits,
 firmware included, and restarts once that has succeeded.
@@ -536,15 +545,20 @@ firmware included, and restarts once that has succeeded.
 The Settings page turns automatic updates on and off. Tileception does not
 schedule anything itself: the switch turns the periodic run of
 `unattended-upgrades` on or off in `/etc/apt/apt.conf.d/20auto-upgrades`, and
-the row says what it covers, such as security updates or Ubuntu Pro. Where
-`unattended-upgrades` is not installed, the row says so.
+the row says what it covers, such as security updates or Ubuntu Pro. On
+Linux Mint it switches Update Manager's automatic upgrades timer instead,
+preserving its system blacklist, and covers what Update Manager installs: every update
+but its blacklist, or fewer when `/etc/mintupdate-automatic-upgrades.conf`
+narrows it. Where neither is installed, the row says so.
 
-Below that, the page shows the Ubuntu mirror in use. **Test mirrors** asks the
-mirror in use, the main archive and the mirrors Ubuntu lists for your country
+Below that, the page shows the Ubuntu mirror in use. **Test**, in the row
+below the mirror, asks the mirror in use, the main archive and the mirrors Ubuntu lists for your country
 for a small file and part of a larger one, and lists them fastest first with
 their speed, how long they took to answer and how far behind the main archive
 they are. **Use** switches to one: it rewrites the Ubuntu entries of the
-package sources, leaving the security pocket alone, and refreshes the lists;
+package sources, leaving the security pocket alone, and refreshes the lists.
+On Linux Mint these are in `official-package-repositories.list`, beside Mint's
+own mirror, which stays as it is;
 when that refresh fails, the old sources are put back. Once a day the mirror
 in use is tested by itself, and the page and the window's sidebar warn when it
 cannot be reached or is a day or more behind.
@@ -560,9 +574,9 @@ cannot be reached or is a day or more behind.
 | R | Refresh the package lists |
 | Enter | Apply the queue |
 
-Type `up` in the launcher for the same actions as rows: install everything,
-install the security updates, choose updates, clean up old kernels, upgrade to
-the next release and check now.
+Type `up` in the launcher for the same actions as rows. The first row always
+opens Updates; below it are install everything, install the security updates,
+clean up old kernels, upgrade to the next release and check now.
 
 From scripts and key bindings:
 

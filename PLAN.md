@@ -74,11 +74,6 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Later
 
-- Updates of machines linked through handoff, in the update manager's card:
-  what waits on each, and installing there from here.
-- Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
-  binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
-  can answer what changed in a version and when something arrived.
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the
@@ -126,17 +121,11 @@ Report testing in the conversation, the commit or the pull request instead.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.
-- Feedback from inside Tileception:
-  - Optional screenshot attachment: explicit opt-in, preview the captured
-    image before including it, and allow removing it before opening the
-    issue.
-  - For people without a GitHub account: a small relay (OVH host or a
-    serverless function) holding a GitHub App's key, which files the issue
-    as the App's bot. The key never ships in Tileception. The relay needs
-    rate limiting, a length cap and a spam check, and new issues should wait
-    in triage before they show publicly.
-- Smart home in Settings: import devices, configure cloud sensors, switch
-  `[home] enabled` and refresh the device inventory by hand.
+- Feedback from inside Tileception for people without a GitHub account: a
+  small relay (OVH host or a serverless function) holding a GitHub App's
+  key, which files the issue as the App's bot. The key never ships in
+  Tileception. The relay needs rate limiting, a length cap and a spam check,
+  and new issues should wait in triage before they show publicly.
 - Smart home history: support temperature, humidity or both, including
   standalone sensors. Let users choose which readings to show in Settings,
   according to what each device reports.
@@ -154,9 +143,6 @@ Report testing in the conversation, the commit or the pull request instead.
 
 - Window management gestures on the touchpad.
 - Top bar calendar events from an .ics file or URL.
-- Compare contents or hashes before exporting Doctor's bundled documentation
-  and default config, writing only missing or changed files.
-- Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
@@ -184,6 +170,9 @@ Report testing in the conversation, the commit or the pull request instead.
 - App-matched layout restoration across logins.
 - The wlr foreign-toplevel management protocol for external taskbars.
 - Window rules for saved views; views stay purely about the camera.
+- Updates of machines linked through handoff in the update manager: what
+  waits on each, and installing there from here.
+- Picking Doctor's agent during `tileception-setup`.
 - Bindings that repeat while held, pass through to the app or work while
   locked (beyond the media keys); click-to-kill.
 - Input methods (text-input and input-method protocols).

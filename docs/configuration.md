@@ -629,32 +629,42 @@ Controlling a device locally needs its local key, which only Tuya's cloud hands
 out. Fetch the keys once with a free project on the
 [Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
 your app account's data center, and link your app account under **Devices**,
-**Link App Account**. Then run:
+**Link App Account**.
+
+**Settings > Smart home** walks through this in three steps, with a how-to and
+fixes for the usual problems. Enter the project's Access ID and Access Secret,
+choose its data center and import: your devices are saved with their homes,
+rooms and local keys to `~/.config/tileception/home-devices.json`, readable by
+you only, and `[home] enabled` is switched on. After that the page lists the
+devices and whether they answer. **Refresh devices** fetches the list again,
+for example after adding a light in the app; with a saved Access Secret it needs
+no typing. The **Smart home in the panel** switch turns `[home] enabled` on
+and off.
+
+Two uses of the cloud keep the Access Secret in the device file, and the import
+asks about each:
+
+- **Read cloud-only sensors**: battery sensors only report to the cloud, so
+  they are read from there every 10 minutes.
+- **Refresh devices at startup**: devices, names, homes and rooms are fetched
+  again in the background when the compositor starts. Cached devices remain
+  usable during the refresh and if a request fails.
+
+With the secret saved, the **Cloud sensors** and **Startup refresh** buttons on
+the page switch either use on or off without importing again.
+
+The same import runs in a terminal:
 
 ```sh
 tileception home import
 ```
 
-It asks for the project's Access ID, data center and Access Secret, and saves
-your devices with their homes, rooms and local keys to
-`~/.config/tileception/home-devices.json`, readable by you only. Battery sensors
-only report to the cloud; the
-import offers to read those every 10 minutes, which keeps the Access Secret in
-the same file. (`--client-id`, `--region` and `--secret-file` make the import
-unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
-without asking.)
-
-The import separately asks whether to refresh devices, names, homes and rooms
-at compositor startup. This also needs the saved Access Secret, but works
-with cloud-sensor polling switched off. Use `--startup-refresh` or
-`--no-startup-refresh` to choose without asking. Startup refresh runs in the
-background while smart home is enabled; cached devices remain usable during
-refresh and if any request fails. Existing imports with saved credentials
-also refresh at startup and keep their sensor polling enabled. Re-run the
-import to change either choice, or to update devices manually when startup
-refresh is off. A manual refresh action in the settings screen is planned.
-
-Then switch it on:
+It asks for the Access ID, data center and Access Secret. `--client-id`,
+`--region` and `--secret-file` make it unattended;
+`--cloud-sensors`/`--no-cloud-sensors` and
+`--startup-refresh`/`--no-startup-refresh` choose the cloud uses without
+asking. Existing imports with saved credentials keep both uses on. Then switch
+it on:
 
 ```toml
 [home]

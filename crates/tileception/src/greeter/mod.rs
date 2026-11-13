@@ -37,6 +37,7 @@ use tileception_notify::Urgency;
 use zeroize::Zeroizing;
 
 pub use card::ShareConfig;
+pub(crate) use card::current_uid;
 pub use settings::GreeterFile;
 
 use self::{

@@ -724,8 +724,7 @@ impl Tileception {
                 if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let size: Size<i32, Logical> =
-                    (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                let size = slot_size(&placement.rect);
                 let Some(window) = self.windows.get(&placement.window) else {
                     // Another machine's window: its owner sizes it, and keeps
                     // its menus on this screen.
@@ -743,7 +742,7 @@ impl Tileception {
                 } else if let Some(x11) = window.x11_surface() {
                     // X11 programs place their menus from this position.
                     let loc = (placement.rect.x.round() as i32, placement.rect.y.round() as i32);
-                    let _ = x11.configure(Rectangle::new(loc.into(), size));
+                    let _ = x11.configure(Rectangle::new(self.x11_origin() + Point::from(loc), size));
                 }
             }
         }
@@ -863,7 +862,7 @@ impl Tileception {
         } else if let Some(x11) = window.x11_surface() {
             let _ = x11.set_fullscreen(enable);
             if enable {
-                let _ = x11.configure(Rectangle::new((0, 0).into(), size));
+                let _ = x11.configure(Rectangle::new(self.x11_origin(), size));
             }
         }
         self.fullscreen = enable.then_some(window_id);
@@ -892,6 +891,15 @@ impl Tileception {
             self.peek_minimized();
         }
         self.apply_layout();
+    }
+
+    /// Where this output's top left corner is on the X screen. Xwayland lays
+    /// the outputs out as Wayland does, and constrains the X pointer to them:
+    /// an X11 window placed in output coordinates on an output that is not
+    /// leftmost (or with a gap where an output was) hangs partly off every
+    /// output in X, and clicks there land at the nearest output's edge.
+    pub fn x11_origin(&self) -> Point<i32, Logical> {
+        self.output.as_ref().map_or_else(Default::default, Output::current_location)
     }
 
     /// The whole output in logical pixels, including what bars reserve.
@@ -947,6 +955,15 @@ pub(crate) fn wants_float(window: &Window) -> bool {
         return x11.is_transient_for().is_some() || dialog || fixed;
     }
     false
+}
+
+/// The size to ask of a window laid out in `slot`: the whole pixels it holds.
+/// Rounding up would make the window half a pixel too big, so it would be
+/// drawn a hair smaller than it is, resampled and blurry.
+pub(crate) fn slot_size(slot: &Rect) -> Size<i32, Logical> {
+    // A slot a rounding error short of a whole pixel still gets that pixel.
+    let whole = |length: f64| (length + 1e-6).floor().max(1.0) as i32;
+    (whole(slot.w), whole(slot.h)).into()
 }
 
 /// The largest size a window lets itself be, either side unlimited if `None`.
@@ -1133,4 +1150,23 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_never_asks_for_more_than_its_slot_holds() {
+        for (length, expected) in [(312.5, 312), (312.4, 312), (312.9, 312), (313.0, 313), (312.9999999, 313), (0.3, 1)]
+        {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert_eq!((size.w, size.h), (expected, expected), "slot {length}");
+        }
+        // Drawn at its slot, such a window needs no scaling, so it stays sharp.
+        for length in [312.5, 631.0, 383.0 / 2.0, 1274.0 / 3.0] {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert!(f64::from(size.w) <= length + 1e-6, "slot {length}");
+        }
+    }
 }
