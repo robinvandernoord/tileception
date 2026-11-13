@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::picture::Area;
+use crate::{picture::Area, trust::Key};
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -372,9 +372,30 @@ pub struct Resumed {
 /// Messages of the connection itself, around the compositor's.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub(crate) enum Frame {
-    Hello { protocol: u32, machine: u64, name: String },
+    /// Whether the sender trusts the other side's static key already. When
+    /// both do, the passphrase is not needed.
+    Trust {
+        known: bool,
+    },
+    /// SPAKE2 for the passphrase, then proof that both got the same key.
+    Pake(Vec<u8>),
+    Confirm(Vec<u8>),
+    Hello {
+        protocol: u32,
+        machine: u64,
+        name: String,
+    },
     Ping,
     App(Message),
+    /// The sender has a new static key; the one this connection was
+    /// secured with is refused from now on.
+    NewKey {
+        key: Key,
+    },
+    /// Keys the sender refuses, with the names they had, to refuse here too.
+    Forgotten {
+        keys: Vec<(Key, String)>,
+    },
 }
 
 pub(crate) fn encode(frame: &Frame) -> Result<Vec<u8>, postcard::Error> {
@@ -394,6 +415,9 @@ mod tests {
         let frames = [
             Frame::Hello { protocol: PROTOCOL, machine: 7, name: "desk".into() },
             Frame::Ping,
+            Frame::Trust { known: true },
+            Frame::NewKey { key: [7; 32] },
+            Frame::Forgotten { keys: vec![([9; 32], "old laptop".into())] },
             Frame::App(Message::Motion { right: -1.5, down: 2.25 }),
             Frame::App(Message::Selection {
                 target: Target::Primary,

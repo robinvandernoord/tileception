@@ -630,6 +630,52 @@ of the Settings draft:
 `tileception msg network status` prints the same information, and
 `tileception msg network wifi off` switches Wi-Fi off from a script or binding.
 
+## Handoff
+
+Handoff shares one mouse, keyboard and clipboard, and windows, between
+Tileception computers on the same network. Turn it on with
+`tileception pair` in a terminal (or Settings > Sharing), which chooses a
+passphrase of three random words, and run `tileception pair <those words>` on
+the other computer. When the other computer appears, drag its card to the
+screen edge where it stands; once both users have, the pointer crosses
+there. Ctrl+Super+Escape brings input back.
+
+### Trusted computers
+
+The passphrase is only for pairing. The first time two computers connect,
+both prove they know it, and each then trusts the other's key. From then on
+the key is enough: a paired computer keeps connecting after a restart and
+after the passphrase changes. Each computer's key and the list of computers
+it trusts are kept in `~/.local/state/tileception` (`handoff-key-<port>`,
+readable only by you, and `handoff-trust-<port>`).
+
+- `tileception msg handoff trusted` lists this computer's key, the computers
+  it trusts and the ones it forgot, each with a short key fingerprint.
+- `tileception pair --forget <computer>` (or `tileception msg handoff forget
+  <computer>`) stops trusting a computer, named by its name, id or
+  fingerprint. It is disconnected and refused from then on, even with the
+  passphrase, and this survives restarts. The computers connected at the time
+  forget it too, and pass that on whenever they connect to others.
+- `tileception pair --new-key` (or `tileception msg handoff new-key`) gives
+  this computer a new key. The computers connected now take it over in place
+  of the old one, which they then refuse; computers that were not connected
+  pair again with the passphrase the next time they meet.
+
+A forgotten computer that still knows the passphrase can make itself a new
+key and pair again. To keep it out, forget it and then change the passphrase
+with `tileception pair --new` on the computers it could reach: computers
+that are already paired stay paired, and only new ones need the new words.
+
+What this protects against: strangers on the network, who know neither the
+passphrase nor a trusted key; anyone recording or changing the traffic, which
+is encrypted and authenticated; and guessing, which takes a live connection
+per guess and is limited to a few a minute (paired computers still connect
+during a guessing attack). What it does not: any computer you pair is trusted
+with everything handoff carries, including typing on this computer once you
+place it at an edge. Anyone who reaches the port can see the public keys. A
+copy of a computer's key file lets someone pass for that computer until it
+gets a new key or is forgotten.
+
 ## Gestures
 
 ### Touchpad

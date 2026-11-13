@@ -192,7 +192,10 @@ peers = ["127.0.0.1:24871"]
 ```
 
 The other instance uses `name = "right"`, `port = 24871` and
-`peers = ["127.0.0.1:24870"]`. Once `tileception msg handoff` lists the other
+`peers = ["127.0.0.1:24870"]`. The instances keep their keys and trusted
+machines under their own `XDG_STATE_HOME`, so they pair with the passphrase
+the first time and by key after that; empty those directories to pair from
+scratch. Once `tileception msg handoff` lists the other
 machine, place them side by side from both ends:
 
 ```sh

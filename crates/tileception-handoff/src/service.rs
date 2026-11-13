@@ -4,11 +4,16 @@
 //! of (from mDNS and from the config), and every secured connection gets a
 //! reader and a writer thread. When two machines dial each other at once, the
 //! connection dialled by the machine with the lower id is the one kept.
+//!
+//! The service also keeps which machines are trusted (see `trust`): it pins
+//! machines that paired with the passphrase, tells connected machines when
+//! this one gets a new key, and passes forgotten keys on to them.
 
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     io,
     net::{IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -21,6 +26,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     secure,
+    trust::{self, Forgotten, Key, Keys, Standing, Trust, Trusted},
     wire::{Frame, Message, PROTOCOL},
 };
 
@@ -53,6 +59,12 @@ pub struct Settings {
     /// This machine's id, kept between runs so others recognise it after a
     /// restart; a fresh one when not given.
     pub machine: Option<PeerId>,
+    /// Where this machine's static key is kept (readable by its owner
+    /// only); a fresh key each run when not given.
+    pub key_file: Option<PathBuf>,
+    /// Where the trusted machines and forgotten keys are kept; nothing is
+    /// remembered between runs when not given.
+    pub trust_file: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -73,6 +85,13 @@ pub enum Event {
     /// A handshake failed: a different passphrase, or a stranger.
     Refused {
         address: SocketAddr,
+    },
+    /// A trusted machine was forgotten: here, or by `from`, a connected
+    /// machine that passed it on. It is disconnected if it was connected.
+    Forgotten {
+        peer: PeerId,
+        name: String,
+        from: Option<String>,
     },
     /// A machine with the same passphrase runs a version that speaks
     /// another protocol, so the two cannot share.
@@ -95,6 +114,9 @@ struct Shared {
     name: String,
     passphrase: Zeroizing<String>,
     port: u16,
+    keys: Mutex<Keys>,
+    key_file: Option<PathBuf>,
+    trust: Mutex<Trust>,
     notify: Notify,
     stopping: AtomicBool,
     serials: AtomicU64,
@@ -109,6 +131,9 @@ struct Link {
     serial: u64,
     /// Which machine dialled; decides which of two parallel links stays.
     dialler: PeerId,
+    /// The other machine's static key, and what it calls itself.
+    key: Key,
+    name: String,
     stream: TcpStream,
     outbox: Arc<Outbox>,
 }
@@ -262,11 +287,15 @@ impl Service {
         let listener = TcpListener::bind((IpAddr::V6(Ipv6Addr::UNSPECIFIED), settings.port))
             .or_else(|_| TcpListener::bind(("0.0.0.0", settings.port)))?;
         let port = listener.local_addr()?.port();
+        let keys = Keys::load_or_create(settings.key_file.as_deref())?;
         let shared = Arc::new(Shared {
             machine: settings.machine.unwrap_or_else(random_id),
             name: settings.name,
             passphrase: settings.passphrase,
             port,
+            keys: Mutex::new(keys),
+            key_file: settings.key_file,
+            trust: Mutex::new(Trust::load(settings.trust_file)),
             notify: Box::new(notify),
             stopping: AtomicBool::new(false),
             serials: AtomicU64::new(0),
@@ -320,6 +349,46 @@ impl Service {
     /// A handle for sending from other threads.
     pub fn messenger(&self) -> Messenger {
         Messenger(self.shared.clone())
+    }
+
+    /// This machine's public static key.
+    pub fn key(&self) -> Key {
+        lock(&self.shared.keys).public
+    }
+
+    /// The machines that connect with their key alone, whether connected
+    /// now or not.
+    pub fn trusted(&self) -> Vec<Trusted> {
+        lock(&self.shared.trust).trusted().to_vec()
+    }
+
+    /// The keys refused even with the passphrase, oldest first.
+    pub fn forgotten(&self) -> Vec<Forgotten> {
+        lock(&self.shared.trust).forgotten().to_vec()
+    }
+
+    /// Stops trusting a key, for good: the machine is disconnected, refused
+    /// from now on even with the passphrase, and connected machines are told
+    /// to refuse it too. A `Forgotten` event follows when it was trusted.
+    pub fn forget(&self, key: Key) {
+        self.shared.forget(vec![(key, String::new())], None);
+    }
+
+    /// Makes a new static key for this machine and tells the connected
+    /// machines, which then trust it in place of the old one and refuse the
+    /// old one. Machines not connected now need the passphrase once.
+    pub fn new_key(&self) -> io::Result<Key> {
+        let keys = Keys::generate()?;
+        if let Some(path) = &self.shared.key_file {
+            keys.save(path)?;
+        }
+        let key = keys.public;
+        *lock(&self.shared.keys) = keys;
+        for link in lock(&self.shared.links).values() {
+            link.outbox.push(Frame::NewKey { key }, false);
+        }
+        tracing::info!("handoff: this machine has a new key, {}", trust::fingerprint(&key));
+        Ok(key)
     }
 }
 
@@ -399,13 +468,12 @@ impl Shared {
                 return;
             }
             let Ok(stream) = stream else { continue };
-            if self.limited() {
-                continue;
-            }
             let shared = self.clone();
             let _ = spawn("tileception-handoff-accept", move || {
                 let address = stream.peer_addr().ok();
-                if let Err(error) = shared.clone().secure(stream, false)
+                // Trusted machines still connect while someone guesses.
+                let may_pair = !shared.limited();
+                if let Err(error) = shared.clone().secure(stream, false, may_pair)
                     && let Some(address) = address
                 {
                     shared.failed(address, &error);
@@ -426,8 +494,10 @@ impl Shared {
 
     fn failed(&self, address: SocketAddr, error: &secure::Error) {
         if matches!(error, secure::Error::Incompatible) {
-            // Not a guess at the passphrase: it was right.
+            // Not a guess at the passphrase: it was right, or never asked.
             tracing::warn!("handoff: {address} runs {error}");
+        } else if matches!(error, secure::Error::Forgotten | secure::Error::Limited) {
+            tracing::warn!("handoff: {address} {error}");
         } else if matches!(error, secure::Error::Refused) {
             lock(&self.failures).push_back(Instant::now());
             tracing::warn!("handoff: {address} {error}");
@@ -486,7 +556,7 @@ impl Shared {
                 return None;
             }
             let Ok(stream) = TcpStream::connect_timeout(address, HANDSHAKE_TIMEOUT) else { continue };
-            return match self.clone().secure(stream, true) {
+            return match self.clone().secure(stream, true, true) {
                 Ok(peer) => Some(peer),
                 Err(error) => {
                     self.failed(*address, &error);
@@ -499,12 +569,28 @@ impl Shared {
 
     /// Handshake, hello, then the connection's own threads. Returns the
     /// machine at the other end, which may turn out to be this one.
-    fn secure(self: Arc<Self>, mut stream: TcpStream, initiator: bool) -> Result<PeerId, secure::Error> {
+    fn secure(
+        self: Arc<Self>,
+        mut stream: TcpStream,
+        initiator: bool,
+        may_pair: bool,
+    ) -> Result<PeerId, secure::Error> {
         let address = stream.peer_addr()?;
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        let mut transport = secure::handshake(&mut stream, &self.passphrase, initiator)?;
+        let keys = lock(&self.keys).clone();
+        let credentials = secure::Credentials {
+            keys: &keys,
+            passphrase: &self.passphrase,
+            // Not ourselves through a configured address: that is found out
+            // below, after the passphrase.
+            standing: |key: &Key| lock(&self.trust).standing(key),
+            may_pair,
+        };
+        let secured = secure::handshake(&mut stream, &credentials, initiator)?;
+        drop(keys);
+        let (mut transport, key, paired) = (secured.transport, secured.key, secured.paired);
         let hello = Frame::Hello { protocol: PROTOCOL, machine: self.machine, name: self.name.clone() };
         secure::write_frame(&mut stream, &secure::seal(&mut transport, &hello)?)?;
         let Frame::Hello { protocol, machine: peer, name } =
@@ -519,11 +605,31 @@ impl Shared {
         if peer == self.machine {
             return Ok(peer);
         }
+        let name = trust::clean_name(&name);
+        {
+            let mut trust = lock(&self.trust);
+            // Forgotten while the handshake ran.
+            if trust.standing(&key) == Standing::Refused {
+                return Err(secure::Error::Forgotten);
+            }
+            if trust.pin(Trusted { key, machine: peer, name: name.clone() }) {
+                trust.save();
+                if paired {
+                    tracing::info!("handoff: {name} paired with the passphrase, key {}", trust::fingerprint(&key));
+                }
+            }
+        }
         stream.set_read_timeout(Some(SILENCE))?;
         let dialler = if initiator { self.machine } else { peer };
         let serial = self.serials.fetch_add(1, Ordering::SeqCst);
         let outbox = Arc::new(Outbox::default());
-        let link = Link { serial, dialler, stream: stream.try_clone()?, outbox: outbox.clone() };
+        let forgotten: Vec<(Key, String)> =
+            lock(&self.trust).forgotten().iter().map(|forgotten| (forgotten.key, forgotten.name.clone())).collect();
+        if !forgotten.is_empty() {
+            outbox.push(Frame::Forgotten { keys: forgotten }, false);
+        }
+        let link =
+            Link { serial, dialler, key, name: name.clone(), stream: stream.try_clone()?, outbox: outbox.clone() };
         // Whether this is news, and whether a connection it replaces died.
         let (fresh, died) = {
             let mut links = lock(&self.links);
@@ -572,7 +678,12 @@ impl Shared {
             match frame {
                 Ok(Frame::App(message)) => (self.notify)(Event::Received { peer, message }),
                 Ok(Frame::Ping) => {}
-                Ok(Frame::Hello { .. }) | Err(_) => break,
+                Ok(Frame::NewKey { key }) => self.new_key_of(peer, serial, key),
+                Ok(Frame::Forgotten { keys }) => {
+                    let from = lock(&self.links).get(&peer).map(|link| link.name.clone());
+                    self.forget(keys, from.map(|name| (peer, name)));
+                }
+                Ok(Frame::Hello { .. } | Frame::Trust { .. } | Frame::Pake(_) | Frame::Confirm(_)) | Err(_) => break,
             }
         }
         let _ = stream.shutdown(Shutdown::Both);
@@ -585,6 +696,73 @@ impl Shared {
                 (self.notify)(Event::Disconnected { peer });
             }
             self.dial_now.notify_all();
+        }
+    }
+
+    /// A connected machine moved to a new key.
+    fn new_key_of(&self, peer: PeerId, serial: u64, key: Key) {
+        let own = lock(&self.keys).public;
+        let mut links = lock(&self.links);
+        let Some(link) = links.get_mut(&peer).filter(|link| link.serial == serial) else { return };
+        let old = link.key;
+        let mut trust = lock(&self.trust);
+        if key == own || !trust.replace(&old, key) {
+            tracing::warn!("handoff: {} offered a new key that cannot be taken", link.name);
+            return;
+        }
+        trust.save();
+        link.key = key;
+        tracing::info!("handoff: {} has a new key, {}", link.name, trust::fingerprint(&key));
+        let name = link.name.clone();
+        // The old key is refused here now; others learn that too.
+        for (other, link) in links.iter() {
+            if *other != peer {
+                link.outbox.push(Frame::Forgotten { keys: vec![(old, name.clone())] }, false);
+            }
+        }
+    }
+
+    /// Refuses keys from now on, disconnecting machines that use them and
+    /// telling the other connected machines. `from` is the machine that
+    /// passed them on, when not this one's user.
+    fn forget(&self, keys: Vec<(Key, String)>, from: Option<(PeerId, String)>) {
+        let own = lock(&self.keys).public;
+        let mut fresh = Vec::new();
+        let mut forgotten = Vec::new();
+        {
+            let mut trust = lock(&self.trust);
+            for (key, name) in keys {
+                if key == own {
+                    continue;
+                }
+                if let Some(was) = trust.forget(key, &name) {
+                    let name = was.as_ref().map_or(name, |was| was.name.clone());
+                    fresh.push((key, trust::clean_name(&name)));
+                    forgotten.extend(was);
+                }
+            }
+            if fresh.is_empty() {
+                return;
+            }
+            trust.save();
+        }
+        {
+            let links = lock(&self.links);
+            for (peer, link) in links.iter() {
+                if fresh.iter().any(|(key, _)| *key == link.key) {
+                    let _ = link.stream.shutdown(Shutdown::Both);
+                } else if from.as_ref().is_none_or(|(sender, _)| sender != peer) {
+                    link.outbox.push(Frame::Forgotten { keys: fresh.clone() }, false);
+                }
+            }
+        }
+        let from = from.map(|(_, name)| name);
+        for was in forgotten {
+            match &from {
+                Some(sender) => tracing::info!("handoff: {sender} forgot {}; it is refused here too", was.name),
+                None => tracing::info!("handoff: forgot {}", was.name),
+            }
+            (self.notify)(Event::Forgotten { peer: was.machine, name: was.name, from: from.clone() });
         }
     }
 
@@ -698,13 +876,19 @@ mod tests {
             peers,
             discovery: false,
             machine: None,
+            key_file: None,
+            trust_file: None,
         }
     }
 
     fn start(passphrase: &str, peers: Vec<String>) -> (Service, mpsc::Receiver<Event>) {
+        start_with(settings(passphrase, peers))
+    }
+
+    fn start_with(settings: Settings) -> (Service, mpsc::Receiver<Event>) {
         let (sender, receiver) = mpsc::channel();
         let sender = Mutex::new(sender);
-        let service = Service::start(settings(passphrase, peers), move |event| {
+        let service = Service::start(settings, move |event| {
             let _ = lock(&sender).send(event);
         })
         .expect("starts");
@@ -735,5 +919,111 @@ mod tests {
         let (_second, second_events) = start("two", vec![format!("127.0.0.1:{}", first.port())]);
         assert!(matches!(next(&first_events), Event::Refused { .. }));
         assert!(matches!(next(&second_events), Event::Refused { .. }));
+    }
+
+    /// A machine that keeps its key and trust in `directory`.
+    fn kept(directory: &std::path::Path, name: &str, passphrase: &str, peers: Vec<String>) -> Settings {
+        Settings {
+            name: name.into(),
+            machine: Some(match name {
+                "first" => 1,
+                "second" => 2,
+                _ => 3,
+            }),
+            key_file: Some(directory.join(format!("{name}.key"))),
+            trust_file: Some(directory.join(format!("{name}.trust"))),
+            ..settings(passphrase, peers)
+        }
+    }
+
+    fn connected(events: &mpsc::Receiver<Event>) -> PeerId {
+        loop {
+            if let Event::Connected { peer, .. } = next(events) {
+                return peer;
+            }
+        }
+    }
+
+    fn scratch() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("tileception-handoff-trust-{:016x}", random_id()))
+    }
+
+    #[test]
+    fn paired_machines_reconnect_after_the_passphrase_changed() {
+        let directory = scratch();
+        let (first, first_events) = start_with(kept(&directory, "first", "old words", Vec::new()));
+        let address = vec![format!("127.0.0.1:{}", first.port())];
+        let (second, second_events) = start_with(kept(&directory, "second", "old words", address.clone()));
+        assert_eq!(connected(&first_events), 2);
+        assert_eq!(connected(&second_events), 1);
+        assert_eq!(first.trusted().iter().map(|trusted| trusted.key).collect::<Vec<_>>(), [second.key()]);
+        drop((first, second));
+
+        let (first, first_events) = start_with(kept(&directory, "first", "new words", Vec::new()));
+        let address = vec![format!("127.0.0.1:{}", first.port())];
+        let (_second, second_events) = start_with(kept(&directory, "second", "other words", address));
+        assert_eq!(connected(&first_events), 2);
+        assert_eq!(connected(&second_events), 1);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn forgotten_machines_stay_out() {
+        let directory = scratch();
+        let (first, first_events) = start_with(kept(&directory, "first", "same", Vec::new()));
+        let address = vec![format!("127.0.0.1:{}", first.port())];
+        let (second, second_events) = start_with(kept(&directory, "second", "same", address));
+        connected(&first_events);
+        connected(&second_events);
+        first.forget(second.key());
+        let events = [next(&first_events), next(&first_events)];
+        assert!(events.iter().any(|event| matches!(event, Event::Forgotten { peer: 2, from: None, .. })));
+        assert!(events.iter().any(|event| matches!(event, Event::Disconnected { peer: 2 })));
+        assert!(first.trusted().is_empty());
+        assert_eq!(first.forgotten().iter().map(|forgotten| forgotten.key).collect::<Vec<_>>(), [second.key()]);
+        drop(first);
+        // Still refused after a restart, passphrase and all.
+        let (first, first_events) = start_with(kept(&directory, "first", "same", Vec::new()));
+        drop(second);
+        let address = vec![format!("127.0.0.1:{}", first.port())];
+        let (_second, _second_events) = start_with(kept(&directory, "second", "same", address));
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(first_events.try_iter().all(|event| !matches!(event, Event::Connected { .. })));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn a_new_key_is_taken_over_and_forgetting_is_passed_on() {
+        let directory = scratch();
+        let (first, first_events) = start_with(kept(&directory, "first", "same", Vec::new()));
+        let address = vec![format!("127.0.0.1:{}", first.port())];
+        let (second, second_events) = start_with(kept(&directory, "second", "same", address.clone()));
+        let (third, third_events) = start_with(kept(&directory, "third", "same", address));
+        let mut seen = vec![connected(&first_events), connected(&first_events)];
+        seen.sort_unstable();
+        assert_eq!(seen, [2, 3]);
+        connected(&second_events);
+        connected(&third_events);
+
+        let old = second.key();
+        let new = second.new_key().expect("a new key");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !first.trusted().iter().any(|trusted| trusted.key == new) {
+            assert!(Instant::now() < deadline, "the new key was not taken over");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(first.forgotten().iter().any(|forgotten| forgotten.key == old));
+
+        // The third machine learns from the first that the second's old key
+        // is refused, and that the second is forgotten.
+        first.forget(new);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !third.forgotten().iter().any(|forgotten| forgotten.key == old)
+            || !third.forgotten().iter().any(|forgotten| forgotten.key == new)
+        {
+            assert!(Instant::now() < deadline, "forgetting was not passed on");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

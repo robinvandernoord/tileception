@@ -11,9 +11,12 @@ use crate::config_edit::{get_value, set_value};
 
 pub const HELP: &str = "\
 Usage: tileception pair [--file <path>] [<passphrase words...> | --new | --off | --show]
+       tileception pair --forget <computer> | --new-key
 
 Handoff shares this mouse, keyboard and clipboard with other Tileception
-computers that know the same passphrase.
+computers. A computer that knows the same passphrase pairs; from then on
+both trust each other's key, and the passphrase is only needed by computers
+that have not paired yet.
 
   (nothing)        show the passphrase and connected computers; in a terminal,
                    offer to turn handoff on, choosing three random words when
@@ -22,10 +25,16 @@ computers that know the same passphrase.
                    that went away
   <words...>       join: use the passphrase another computer shows, and turn
                    handoff on
-  --new            choose three new random words (paired computers then need
-                   them too) and turn handoff on
+  --new            choose three new random words and turn handoff on; paired
+                   computers stay paired, new ones need the new words
   --off            turn handoff off, keeping the passphrase
   --show           only show, change nothing
+  --forget <computer>
+                   stop trusting a paired computer (by name, id or key) for
+                   good, here and on the computers connected now; change the
+                   passphrase too, or it can pair again with a new key
+  --new-key        give this computer a new key; connected computers take it
+                   over, others need the passphrase once
 
 Options:
   --file <path>   use this config instead of $XDG_CONFIG_HOME/tileception/config.toml
@@ -33,6 +42,7 @@ Options:
 Examples:
   tileception pair
   tileception pair citizen calzone dazzler
+  tileception pair --forget old-laptop && tileception pair --new
 ";
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -57,6 +67,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
             set_value(&file, "handoff.enabled", "false")?;
         }
         [flag] if flag == "--new" => turn_on(&file, super::suggest_passphrase()?)?,
+        [flag, name @ ..] if flag == "--forget" => {
+            if name.is_empty() {
+                return Err("--forget needs a computer: its name, id or key".into());
+            }
+            let mut args = vec!["handoff", "forget"];
+            args.extend(name.iter().map(String::as_str));
+            command(&args)?;
+            println!(
+                "Forgot {}. To keep it from pairing again, change the passphrase: tileception pair --new",
+                name.join(" ")
+            );
+            return Ok(());
+        }
+        [flag] if flag == "--new-key" => {
+            print!("{}", request(&["handoff", "new-key"])?);
+            return Ok(());
+        }
         [flag, ..] if flag.starts_with('-') => {
             return Err(format!("unknown option {flag}; see tileception pair --help"));
         }
@@ -129,6 +156,13 @@ fn show(file: &Path, offer: bool) -> Result<(), String> {
             println!("  {machine}");
         }
     }
+    if let Ok(trusted) = request(&["handoff", "trusted"]) {
+        println!();
+        println!("Keys (tileception pair --forget <computer> stops trusting one):");
+        for line in trusted.lines() {
+            println!("  {line}");
+        }
+    }
     let dismissed = dismissed(&machines);
     if !dismissed.is_empty() {
         let names = dismissed.join(", ");
@@ -154,11 +188,16 @@ fn show(file: &Path, offer: bool) -> Result<(), String> {
 
 /// Runs a command in the session.
 fn command(args: &[&str]) -> Result<(), String> {
+    request(args).map(drop)
+}
+
+/// Runs a command in the session, returning what it says.
+fn request(args: &[&str]) -> Result<String, String> {
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     let reply = crate::ipc::request(&args).map_err(|error| format!("cannot reach the session: {error}"))?;
     match reply.strip_prefix("error") {
         Some(error) => Err(error.trim_start_matches(':').trim().to_string()),
-        None => Ok(()),
+        None => Ok(reply),
     }
 }
 

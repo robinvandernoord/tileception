@@ -3479,10 +3479,12 @@ name = "tileception-handoff"
 version = "0.17.0"
 dependencies = [
  "getrandom 0.3.4",
+ "hmac",
  "lz4_flex",
  "mdns-sd",
  "postcard",
  "serde",
+ "sha2",
  "snow",
  "spake2",
  "tracing",
