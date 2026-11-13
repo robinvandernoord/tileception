@@ -20,9 +20,6 @@ pub enum PowerAction {
     LogOut,
     Suspend,
     Restart,
-    /// Installs what waits, then restarts: offered while a kernel or
-    /// firmware update waits, which only a restart puts to use.
-    RestartInstall,
     PowerOff,
     More,
     Uefi,
@@ -38,7 +35,6 @@ impl PowerAction {
             PowerAction::LogOut => "Log out",
             PowerAction::Suspend => "Suspend",
             PowerAction::Restart => "Restart",
-            PowerAction::RestartInstall => "Restart and install",
             PowerAction::PowerOff => "Power off",
             PowerAction::More => "More...",
             PowerAction::Uefi => "UEFI",
@@ -54,7 +50,6 @@ impl PowerAction {
             PowerAction::LogOut => 'i',
             PowerAction::Suspend => 's',
             PowerAction::Restart => 'r',
-            PowerAction::RestartInstall => 'n',
             PowerAction::PowerOff => 'u',
             PowerAction::More => 'm',
             PowerAction::Uefi => 'u',
@@ -66,7 +61,7 @@ impl PowerAction {
             PowerAction::Lock => glyph::LOCK,
             PowerAction::LogOut => glyph::LOG_OUT,
             PowerAction::Suspend => glyph::MOON,
-            PowerAction::Restart | PowerAction::RestartInstall => glyph::RESTART,
+            PowerAction::Restart => glyph::RESTART,
             PowerAction::PowerOff => glyph::POWER,
             PowerAction::More => glyph::CHEVRON_RIGHT,
             PowerAction::Uefi => glyph::RESTART,
@@ -168,18 +163,9 @@ impl Tileception {
         self.power_page(if menu.uefi_available { Page::ConfirmUefi } else { Page::More }, MORE_UEFI);
     }
 
-    /// The actions on the main page: Restart and install joins them while
-    /// an update waits for a restart.
+    /// The actions on the main page.
     pub(crate) fn power_actions(&self) -> Vec<PowerAction> {
-        let mut actions = PowerAction::ALL.to_vec();
-        if self.updates.installs_on_restart() && !self.updates.busy() {
-            let after = actions
-                .iter()
-                .position(|action| *action == PowerAction::Restart)
-                .map_or(actions.len(), |index| index + 1);
-            actions.insert(after, PowerAction::RestartInstall);
-        }
-        actions
+        PowerAction::ALL.to_vec()
     }
 
     fn power_columns(&self) -> usize {
@@ -393,11 +379,6 @@ impl Tileception {
             // Lock first, so the machine wakes up locked.
             PowerAction::Suspend => self.lock_session(true),
             PowerAction::Restart => self.spawn("systemctl", &["reboot".into()]),
-            PowerAction::RestartInstall => {
-                if let Err(error) = self.updates_install_and_restart() {
-                    self.notify_locally("Restart and install", &error, tileception_notify::Urgency::Normal);
-                }
-            }
             PowerAction::PowerOff => self.spawn("systemctl", &["poweroff".into()]),
             PowerAction::More => self.power_page(Page::More, 0),
             PowerAction::Uefi => self.spawn("systemctl", &["reboot".into(), "--firmware-setup".into()]),
@@ -637,8 +618,6 @@ impl Tileception {
             );
             let label = match action {
                 _ if !enabled => "Suspend off",
-                // Restart, with what it does besides on a second line.
-                PowerAction::RestartInstall => "Restart",
                 action => action.label(),
             };
             let style = Style::new(theme.font_size, foreground).align(Align::Centre);
@@ -647,14 +626,6 @@ impl Tileception {
                 Rect::new(rect.x + 6.0, rect.y + rect.h * 0.62, rect.w - 12.0, 22.0),
                 if active { style.bold() } else { style },
             );
-            if action == PowerAction::RestartInstall {
-                painter.text(
-                    "and install",
-                    Rect::new(rect.x + 6.0, rect.y + rect.h * 0.62 + 20.0, rect.w - 12.0, 18.0),
-                    Style::new(theme.font_size * 0.8, if active { theme.accent } else { theme.muted })
-                        .align(Align::Centre),
-                );
-            }
             // The letter that picks it, in the corner.
             let key = action.key().to_ascii_uppercase().to_string();
             let chip = Rect::new(rect.right() - 26.0, rect.y + 8.0, 18.0, 18.0);

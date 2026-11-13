@@ -468,12 +468,6 @@ impl Updates {
         self.release().map(|name| (name.to_string(), Tone::Accent))
     }
 
-    /// Whether a restart would install something: a kernel waits among the
-    /// updates, or firmware that fwupd flashes while the computer starts.
-    pub(crate) fn installs_on_restart(&self) -> bool {
-        self.snapshot.updates.iter().any(|update| matches!(update.kind, apt::Kind::Kernel | apt::Kind::Firmware))
-    }
-
     /// A muted row's update: the skipped versions, then the held packages.
     /// The flag says it is held.
     pub(crate) fn muted(&self, index: usize) -> Option<(&apt::Update, bool)> {
@@ -1085,21 +1079,6 @@ impl Tileception {
         self.updates.after = if self.updates.after == Some(action) { None } else { Some(action) };
         self.schedule_render();
         true
-    }
-
-    /// Installs everything that waits, firmware too, then restarts: what
-    /// the power menu's Restart and install does.
-    pub(crate) fn updates_install_and_restart(&mut self) -> Result<(), String> {
-        // With a skip, the review shows what the install that keeps it does.
-        if self.updates.snapshot.plan.removes() {
-            return self.updates_review_install(true);
-        }
-        let chosen: Vec<&apt::Update> = self.updates.snapshot.updates.iter().collect();
-        let tasks = install_tasks(&chosen, !self.updates.skips_apt());
-        self.updates_start_all(tasks)?;
-        self.updates.after = Some(crate::power::PowerAction::Restart);
-        self.schedule_render();
-        Ok(())
     }
 
     /// Asks what `apt-get` would do with these arguments, which simulate.
