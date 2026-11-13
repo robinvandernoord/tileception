@@ -217,8 +217,11 @@ fn executable_checks_and_nested_ids() {
             executable.display()
         ),
     );
+    // An empty TryExec names nothing to look for; the entry stays.
+    fixture.write("apps/empty.desktop", "[Desktop Entry]\nType=Application\nName=Empty\nExec=fixture-tool\nTryExec=\n");
     let index = AppIndex::scan_with_options(&[fixture.0.join("apps")], "Tileception", "C", &[]);
     assert!(index.get("absolute.desktop").is_some());
+    assert!(index.get("empty.desktop").is_some());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
