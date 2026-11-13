@@ -271,7 +271,8 @@ Pretend input (headless or nested only):
   click [x y] [left|right|middle]
   press [left|right|middle] hold a button down (drags), and let go with
   release [left|right|middle]
-  key <combo>               press a key, such as Return or Super+slash
+  key <combo> [hold <ms>]   press a key, such as Return or Super+slash; with
+                            hold, let go after that many milliseconds
   keydown <key>             hold a key down (keydown Alt, then press and
                             motion: an Alt+drag)
   keyup <key>               let a held key go
