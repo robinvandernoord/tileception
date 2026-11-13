@@ -601,6 +601,8 @@ impl Tileception {
 
     /// The keys that type `sym` in the active layout.
     fn chord_for(&mut self, sym: xkb::Keysym) -> Option<Vec<Keycode>> {
+        // Its keys are this machine's own, typed with its own layout.
+        self.type_with(tileception_handoff::Source::Local);
         let keyboard = self.seat.get_keyboard()?;
         let layout =
             keyboard.with_xkb_state(self, |context| context.xkb().lock().map(|xkb| xkb.active_layout().0).unwrap_or(0));

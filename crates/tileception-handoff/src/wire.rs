@@ -6,7 +6,7 @@ use crate::picture::Area;
 
 /// Bumped whenever a message changes shape; machines on different versions
 /// refuse each other instead of misreading.
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 
 /// Clipboard contents travel in pieces of at most this many bytes.
 pub const CHUNK: usize = 32 * 1024;
@@ -301,6 +301,37 @@ pub enum Message {
         width: u32,
         height: u32,
     },
+    /// How long the part of the edge linked to the receiver is where the
+    /// pointer crosses, in the sender's logical pixels: less than the whole
+    /// edge where another of its screens lies beyond, 0 while none is free.
+    /// `Enter` and `Return` give fractions of the receiver's part.
+    Span {
+        length: f64,
+    },
+    /// The keyboard layout the sender's keys (`Key`, `WindowKey`) are typed
+    /// with from now on.
+    Keymap(Keymap),
+}
+
+/// A keyboard layout, by xkb's names, and which of its layouts is active
+/// (as with `layout = "us,nl"`, where 1 types Dutch).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Keymap {
+    pub model: String,
+    pub layout: String,
+    pub variant: String,
+    pub options: Option<String>,
+    pub active: u32,
+}
+
+impl Keymap {
+    /// Whether both are the same keymap, whichever of its layouts is active.
+    pub fn same_names(&self, other: &Keymap) -> bool {
+        self.model == other.model
+            && self.layout == other.layout
+            && self.variant == other.variant
+            && self.options == other.options
+    }
 }
 
 /// What a drag carries, for showing by the pointer.
@@ -402,6 +433,14 @@ mod tests {
             }),
             Frame::App(Message::Data { request: 1, bytes: vec![0; CHUNK] }),
             Frame::App(Message::PickColour),
+            Frame::App(Message::Span { length: 1080.0 }),
+            Frame::App(Message::Keymap(Keymap {
+                model: "pc105".into(),
+                layout: "us,de".into(),
+                variant: ",nodeadkeys".into(),
+                options: Some("grp:alt_shift_toggle".into()),
+                active: 1,
+            })),
         ];
         for frame in frames {
             let bytes = encode(&frame).expect("encodes");

@@ -11,8 +11,10 @@
 
 mod clipboard;
 mod drag;
+mod edges;
 mod files;
 mod forward;
+mod keymap;
 pub mod pair;
 mod prompt;
 mod screens;
@@ -23,7 +25,7 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
-use tileception_handoff::{DEFAULT_PORT, Event, Held, Message, PeerId, Service, Settings};
+use tileception_handoff::{DEFAULT_PORT, Event, Held, Message, PeerId, Service, Settings, Source};
 use zeroize::Zeroizing;
 
 pub use clipboard::RemoteClip;
@@ -154,6 +156,10 @@ pub struct Handoff {
     pub(crate) files: files::Files,
     /// The last absolute pointer position, to turn absolute motion into steps.
     pub(crate) absolute: Option<smithay::utils::Point<f64, smithay::utils::Logical>>,
+    /// How long each side's part of a shared edge is.
+    pub(crate) edges: edges::Edges,
+    /// The keyboard layout each machine types with.
+    pub(crate) layouts: keymap::Layouts,
 }
 
 impl Handoff {
@@ -411,6 +417,9 @@ impl Tileception {
             }
             Event::Connected { peer, name, .. } => {
                 self.handoff.incompatible.remove(&name);
+                // A new connection is told everything again.
+                self.handoff.edges.forget(peer);
+                self.keymap_peer_gone(peer);
                 // A new connection asks again, unless this user said no.
                 let entry =
                     self.handoff.peers.entry(peer).or_insert(Peer { name: name.clone(), link: Link::Dismissed });
@@ -428,6 +437,8 @@ impl Tileception {
                 self.clipboard_peer_gone(peer);
                 self.drags_peer_gone(peer);
                 self.windows_peer_lost(peer);
+                self.handoff.edges.forget(peer);
+                self.keymap_peer_gone(peer);
                 if !self.handoff.prompt.dismissed.contains(&peer) {
                     self.handoff.peers.remove(&peer);
                 }
@@ -461,6 +472,7 @@ impl Tileception {
                 self.handoff.prompt.dismissed.insert(peer);
                 self.unlink(peer);
                 self.windows_peer_gone(peer);
+                self.handoff.edges.forget(peer);
             }
             Message::Paused => {
                 if let Link::Linked { paused, .. } = &mut entry.link
@@ -540,6 +552,8 @@ impl Tileception {
             | Message::DragLink { .. }
             | Message::DragEnd { .. }
             | Message::DragUpdate { .. }) => self.drag_message(peer, message),
+            Message::Span { length } => self.peer_span(peer, length),
+            Message::Keymap(keymap) => self.peer_keymap(peer, keymap),
             Message::ScreenSize { width, height } => {
                 let room = tileception_handoff::Room {
                     left: 0,
@@ -569,6 +583,10 @@ impl Tileception {
             peer,
             Message::ScreenSize { width: screen.w.round().max(1.0) as u32, height: screen.h.round().max(1.0) as u32 },
         );
+        // Where the pointer crosses, and what keys from here mean.
+        self.handoff.edges.retell(peer);
+        self.share_edges();
+        self.tell_keymap(peer);
         self.resume_windows(peer);
     }
 
@@ -590,6 +608,8 @@ impl Tileception {
         if self.handoff.forwarding.is_some() {
             self.stop_forwarding(forward::Back::Home);
         }
+        // The lock screen types with this machine's layout.
+        self.type_with(Source::Local);
         let peers: Vec<PeerId> = self.handoff.peers.keys().copied().collect();
         for peer in peers {
             self.drags_peer_gone(peer);
@@ -626,8 +646,8 @@ impl Tileception {
         if self.handoff.edge_taken(&edge.output, edge.side) {
             return Err("another machine is at that edge".into());
         }
-        if !self.outer_edge(&edge.output, edge.side) {
-            return Err("another screen of this machine is at that edge".into());
+        if self.edge_span(&edge.output, edge.side).is_none() {
+            return Err("other screens of this machine cover that edge".into());
         }
         let entry = self.handoff.peers.get_mut(&peer).ok_or("that machine is gone")?;
         let theirs = match &entry.link {
@@ -736,19 +756,6 @@ impl Tileception {
             status.push('\n');
         }
         status
-    }
-
-    /// Whether nothing of this machine lies beyond an edge of a screen.
-    pub(crate) fn outer_edge(&self, output: &str, side: Side) -> bool {
-        let Some(target) = self.output_named(output) else { return false };
-        let Some(rect) = output_bounds(&target) else { return false };
-        let beyond = match side {
-            Side::Left => tileception_core::Point::new(rect.x - 1.0, rect.y + rect.h / 2.0),
-            Side::Right => tileception_core::Point::new(rect.right() + 1.0, rect.y + rect.h / 2.0),
-            Side::Top => tileception_core::Point::new(rect.x + rect.w / 2.0, rect.y - 1.0),
-            Side::Bottom => tileception_core::Point::new(rect.x + rect.w / 2.0, rect.bottom() + 1.0),
-        };
-        !self.all_outputs().iter().filter_map(output_bounds).any(|other| other.contains(beyond))
     }
 }
 
