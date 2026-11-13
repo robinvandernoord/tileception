@@ -1,6 +1,6 @@
 //! Plugins: executables speaking MCP over stdio, found through manifests and
 //! `[plugins.<id>]`. They add launcher sources and cards, panel blocks, bar
-//! chips and commands.
+//! chips, commands and tools for Doctor's agent.
 //!
 //! The compositor owns one [`Host`]. Every plugin gets a worker thread that
 //! owns its process and all of its I/O, so a slow plugin holds up only
@@ -45,6 +45,8 @@ pub enum Place {
     Panel,
     /// `tileception msg plugin` and key bindings.
     Command,
+    /// Tools offered to Doctor's agent, called once Doctor's policy allows.
+    Doctor,
 }
 
 impl Place {
@@ -58,7 +60,7 @@ impl Place {
 /// The current request generation of every place; for places that do not
 /// cancel, the last request's number.
 #[derive(Default)]
-struct Generations([AtomicU64; 3]);
+struct Generations([AtomicU64; 4]);
 
 impl Generations {
     fn get(&self, place: Place) -> &AtomicU64 {
@@ -78,6 +80,9 @@ pub struct PluginConfig {
     /// Chips in the bar: only with this block, unless it says
     /// `enabled = false`.
     pub bar: Option<BarOptions>,
+    /// Tools for Doctor's agent: offered whenever the plugin offers them,
+    /// unless this block says `enabled = false`.
+    pub doctor: Option<DoctorOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
 }
@@ -91,6 +96,11 @@ impl PluginConfig {
     /// Whether the plugin's cards show under the launcher.
     pub fn launcher_cards(&self) -> bool {
         self.launcher.as_ref().and_then(|launcher| launcher.cards) != Some(false)
+    }
+
+    /// Whether Doctor's agent gets the plugin's tools.
+    pub fn for_doctor(&self) -> bool {
+        self.doctor.as_ref().and_then(|doctor| doctor.enabled) != Some(false)
     }
 }
 
@@ -108,6 +118,15 @@ pub struct LauncherOptions {
 #[serde(default, deny_unknown_fields)]
 pub struct BarOptions {
     pub enabled: Option<bool>,
+}
+
+/// A plugin's `[doctor]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DoctorOptions {
+    pub enabled: Option<bool>,
+    /// Only these of the tools the plugin offers to Doctor.
+    pub tools: Option<Vec<String>>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -175,6 +194,15 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         let base = base.bar.get_or_insert_default();
         if bar.enabled.is_some() {
             base.enabled = bar.enabled;
+        }
+    }
+    if let Some(doctor) = overlay.doctor {
+        let base = base.doctor.get_or_insert_default();
+        if doctor.enabled.is_some() {
+            base.enabled = doctor.enabled;
+        }
+        if doctor.tools.is_some() {
+            base.tools = doctor.tools;
         }
     }
 }
@@ -448,6 +476,8 @@ pub struct Described {
     pub launcher: Option<Info>,
     /// The `tileception://` resources it offers, subscribed to.
     pub resources: Vec<String>,
+    /// Its `tools/list` entries.
+    pub tools: Vec<Value>,
 }
 
 /// The resource holding a plugin's panel block.
@@ -456,6 +486,45 @@ pub const PANEL: &str = "tileception://panel";
 pub const BAR: &str = "tileception://bar";
 /// The resource holding a plugin's cards under the launcher.
 pub const LAUNCHER: &str = "tileception://launcher";
+/// The resource naming the tools a plugin offers Doctor's agent.
+pub const DOCTOR: &str = "tileception://doctor";
+
+/// What a plugin offers Doctor's agent: some of its tools, by name, and
+/// what to tell the agent about them.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct DoctorOffer {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+}
+
+/// The tools Doctor's agent gets from a plugin: its `tools/list` entries
+/// for what it offers Doctor, narrowed to the `[doctor]` block's `tools`.
+pub fn doctor_tools(listed: &[Value], offer: &DoctorOffer, options: Option<&DoctorOptions>) -> Vec<Value> {
+    let chosen = options.and_then(|options| options.tools.as_ref());
+    listed
+        .iter()
+        .filter(|tool| {
+            let Some(name) = tool["name"].as_str() else { return false };
+            offer.tools.iter().any(|offered| offered == name)
+                && chosen.is_none_or(|chosen| chosen.iter().any(|wanted| wanted == name))
+        })
+        .map(|tool| {
+            let mut tool = tool.clone();
+            // Answers go to the agent as the plugin gave them, checked by nobody.
+            if let Some(entry) = tool.as_object_mut() {
+                entry.remove("outputSchema");
+            }
+            tool
+        })
+        .collect()
+}
+
+/// Whether a `tools/list` entry says its tool only reads.
+pub fn read_only(tool: &Value) -> bool {
+    tool["annotations"]["readOnlyHint"] == true
+}
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -627,8 +696,13 @@ pub struct Host {
     bars: BTreeMap<String, crate::panel::block::Bar>,
     /// Cards under the launcher by plugin.
     cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
+    /// What each plugin offers Doctor's agent.
+    doctor: BTreeMap<String, DoctorOffer>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
+    /// Numbers for calls that are never cancelled, unique across places,
+    /// so commands and Doctor's calls can wait on the command socket by them.
+    calls: AtomicU64,
 }
 
 impl Host {
@@ -650,7 +724,9 @@ impl Host {
             panels: BTreeMap::new(),
             bars: BTreeMap::new(),
             cards: BTreeMap::new(),
+            doctor: BTreeMap::new(),
             resources: BTreeMap::new(),
+            calls: AtomicU64::new(0),
         };
         host.reload();
         host
@@ -690,6 +766,7 @@ impl Host {
         self.panels.clear();
         self.bars.clear();
         self.cards.clear();
+        self.doctor.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -760,6 +837,16 @@ impl Host {
                 }
             }
             changed.cards = true;
+        } else if uri == DOCTOR {
+            match serde_json::from_value::<DoctorOffer>(value) {
+                Ok(offer) => {
+                    self.doctor.insert(plugin, offer);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid Doctor tools: {error}");
+                    self.doctor.remove(&plugin);
+                }
+            }
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -811,6 +898,34 @@ impl Host {
         let priority: Vec<&str> = self.order.iter().map(|(plugin_id, _)| plugin_id.as_str()).collect();
         self.arrangement = crate::panel::order::rearrange(&priority, &self.arrangement, shown);
         crate::panel::order::save(&self.arrangement);
+    }
+
+    /// The plugins offering Doctor's agent tools, in priority order.
+    pub fn doctor_plugins(&self) -> Vec<&str> {
+        self.order
+            .iter()
+            .filter(|(plugin_id, config)| {
+                config.for_doctor() && self.workers.contains_key(plugin_id) && self.doctor.contains_key(plugin_id)
+            })
+            .map(|(plugin_id, _)| plugin_id.as_str())
+            .collect()
+    }
+
+    /// The tools a plugin offers Doctor's agent, and what to tell the agent
+    /// about them; `None` when it offers none.
+    pub fn doctor_offer(&self, plugin: &str) -> Option<(Vec<Value>, Option<String>)> {
+        let (_, config) = self.order.iter().find(|(plugin_id, config)| plugin_id == plugin && config.for_doctor())?;
+        let offer = self.doctor.get(plugin).filter(|_| self.workers.contains_key(plugin))?;
+        let listed = match self.infos.get(plugin) {
+            Some(Ok(described)) => described.tools.as_slice(),
+            _ => &[],
+        };
+        Some((doctor_tools(listed, offer, config.doctor.as_ref()), offer.instructions.clone()))
+    }
+
+    /// Whether the plugin is the bundled one of that name, not a replacement.
+    pub fn bundled(&self, plugin: &str) -> bool {
+        self.order.iter().any(|(plugin_id, config)| plugin_id == plugin && crate::bundled::is_bundled(plugin, config))
     }
 
     /// A resource as last read.
@@ -879,7 +994,7 @@ impl Host {
                     continue;
                 }
                 Some(Ok(Described { launcher: Some(info), .. })) => info,
-                Some(Ok(Described { launcher: None, resources })) => {
+                Some(Ok(Described { launcher: None, resources, .. })) => {
                     if resources.is_empty() {
                         diagnostics.push(format!("Plugin {plugin_id}: offers nothing Tileception uses"));
                     }
@@ -971,18 +1086,38 @@ impl Host {
         self.send_tool(Place::Launcher, plugin, name, arguments, terms)
     }
 
+    /// A number for a call that is never cancelled, for [`Host::tool_as`].
+    pub fn call_number(&self) -> u64 {
+        self.calls.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Calls a tool from a place that never cancels, under a number from
+    /// [`Host::call_number`]: [`Event::Action`] comes back with it.
+    pub fn tool_as(&self, place: Place, number: u64, plugin: String, name: String, arguments: Value) {
+        debug_assert!(!place.cancels());
+        self.dispatch(place, number, plugin, name, arguments.into(), Terms::default());
+    }
+
     fn send_tool(&self, place: Place, plugin: String, name: String, arguments: Arguments, terms: Terms) -> u64 {
-        let generation = if place.cancels() {
-            self.cancel(place)
-        } else {
-            self.generations.get(place).fetch_add(1, Ordering::Relaxed) + 1
-        };
+        let generation = if place.cancels() { self.cancel(place) } else { self.call_number() };
+        self.dispatch(place, generation, plugin, name, arguments, terms);
+        generation
+    }
+
+    fn dispatch(
+        &self,
+        place: Place,
+        generation: u64,
+        plugin: String,
+        name: String,
+        arguments: Arguments,
+        terms: Terms,
+    ) {
         if let Some(worker) = self.workers.get(&plugin) {
             worker.send(Request::Tool { place, generation, name, arguments, terms });
         } else {
             let _ = self.events.send(Event::Action { place, generation, result: Err("Plugin is unavailable".into()) });
         }
-        generation
     }
 }
 
@@ -1082,6 +1217,7 @@ impl Tileception {
             Event::Action { place: Place::Command, generation, result } => {
                 self.plugin_command_reply(generation, result)
             }
+            Event::Action { place: Place::Doctor, generation, result } => self.doctor_tool_answered(generation, result),
             Event::Resource { epoch, plugin, uri, result } => {
                 let Some(plugins) = &mut self.plugins else { return };
                 let changed = plugins.handle_resource(epoch, plugin, uri, result);
@@ -1223,7 +1359,8 @@ impl Source {
         };
         let resources = session.subscribe_all()?;
         self.resources = resources.clone();
-        Ok(Described { launcher, resources })
+        let tools = tools["tools"].as_array().cloned().unwrap_or_default();
+        Ok(Described { launcher, resources, tools })
     }
 
     /// Reads every subscribed resource.
@@ -2138,6 +2275,52 @@ mod tests {
         overlay(&mut manifest, settings.plugins["hidden"].clone());
         assert!(!manifest.launcher_cards());
         assert_eq!(manifest.launcher.unwrap().prefixes, Some(vec!["t".into()]));
+    }
+
+    #[test]
+    fn doctor_gets_the_offered_tools_unless_switched_off() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.off.doctor]
+            enabled = false
+
+            [plugins.narrow.doctor]
+            tools = ["status"]
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(settings.plugins["plain"].for_doctor() && settings.plugins["narrow"].for_doctor());
+        assert!(!settings.plugins["off"].for_doctor());
+        // The config narrows a manifest's block without switching it off.
+        let mut manifest = PluginConfig { doctor: Some(DoctorOptions::default()), ..PluginConfig::default() };
+        overlay(&mut manifest, settings.plugins["narrow"].clone());
+        assert!(manifest.for_doctor());
+        assert_eq!(manifest.doctor.as_ref().unwrap().tools, Some(vec!["status".into()]));
+        overlay(&mut manifest, settings.plugins["off"].clone());
+        assert!(!manifest.for_doctor());
+        assert_eq!(manifest.doctor.as_ref().unwrap().tools, Some(vec!["status".into()]));
+
+        let listed = [
+            json!({ "name": "launcher_search", "inputSchema": { "type": "object" } }),
+            json!({ "name": "status", "annotations": { "readOnlyHint": true }, "outputSchema": { "type": "object" } }),
+            json!({ "name": "toggle", "inputSchema": { "type": "object" } }),
+            json!({ "title": "nameless" }),
+        ];
+        let offer: DoctorOffer =
+            serde_json::from_value(json!({ "tools": ["status", "toggle", "missing"], "instructions": "Lights" }))
+                .unwrap();
+        let names = |tools: Vec<Value>| tools.iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>();
+        // Only what the plugin offers Doctor, never its launcher's tools.
+        let offered = doctor_tools(&listed, &offer, None);
+        assert_eq!(names(offered.clone()), [json!("status"), json!("toggle")]);
+        assert!(offered[0].get("outputSchema").is_none());
+        assert!(read_only(&offered[0]) && !read_only(&offered[1]));
+        assert_eq!(names(doctor_tools(&listed, &offer, manifest.doctor.as_ref())), [json!("status")]);
+        assert!(doctor_tools(&listed, &DoctorOffer::default(), None).is_empty());
     }
 
     #[test]

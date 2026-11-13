@@ -44,8 +44,9 @@ pub fn listen(event_loop: &mut EventLoop<'static, Tileception>, path: &PathBuf) 
 /// Commands a plugin answers later.
 #[derive(Default)]
 pub struct Waiting {
-    /// Set while handling a command that will be answered later.
-    deferred: Option<u64>,
+    /// Set while handling a command that will be answered later: its
+    /// number, how long it may wait and what it is told after that.
+    deferred: Option<(u64, Duration, &'static str)>,
     /// Connections waiting, by request number.
     streams: HashMap<u64, UnixStream>,
 }
@@ -57,7 +58,27 @@ impl Tileception {
     /// The command being handled is answered by [`Tileception::reply_later`]
     /// with this number.
     pub(crate) fn defer_reply(&mut self, request: u64) {
-        self.ipc.deferred = Some(request);
+        self.defer_reply_for(request, PLUGIN_WAIT, "the plugin did not answer");
+    }
+
+    /// Like [`Tileception::defer_reply`], waiting up to `wait` and then
+    /// answering `late`.
+    pub(crate) fn defer_reply_for(&mut self, request: u64, wait: Duration, late: &'static str) {
+        self.ipc.deferred = Some((request, wait, late));
+    }
+
+    /// Whether a deferred command is still waiting for its answer: not
+    /// answered, timed out or given up by its sender.
+    pub(crate) fn reply_awaited(&self, request: u64) -> bool {
+        let Some(stream) = self.ipc.streams.get(&request) else { return false };
+        // The sender only reads now: end of file means it hung up.
+        if stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let waiting =
+            matches!((&*stream).read(&mut [0u8]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock);
+        let _ = stream.set_nonblocking(false);
+        waiting
     }
 
     /// Answers a deferred command; nothing when it already timed out.
@@ -83,12 +104,12 @@ fn serve(state: &mut Tileception, stream: UnixStream) -> std::io::Result<()> {
         Ok(text) => text,
         Err(err) => format!("error: {err}\n"),
     };
-    if let Some(request) = state.ipc.deferred.take() {
+    if let Some((request, wait, late)) = state.ipc.deferred.take() {
         stream.set_write_timeout(Some(Duration::from_secs(1)))?;
         state.ipc.streams.insert(request, stream);
-        let timer = Timer::from_duration(PLUGIN_WAIT);
+        let timer = Timer::from_duration(wait);
         let _ = state.loop_handle.insert_source(timer, move |_, _, state| {
-            state.reply_later(request, Err("the plugin did not answer".into()));
+            state.reply_later(request, Err(late.into()));
             TimeoutAction::Drop
         });
         return Ok(());

@@ -2,7 +2,8 @@
 
 Plugins are executable commands speaking MCP over stdio. They can add launcher
 sources, cards under the launcher, a block in the notification panel, chips in
-the bar, and tools for `tileception msg plugin`. They run as the session user, with the session's
+the bar, tools for `tileception msg plugin` and tools for
+[Doctor's agent](#doctor-tools). They run as the session user, with the session's
 environment and permissions. Installing a manifest enables its executable. Only
 install plugins you trust.
 
@@ -11,7 +12,8 @@ install plugins you trust.
 Some plugins ship inside the `tileception` binary and need no installation:
 
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
-  launcher and its bar chip. It runs while `[home] enabled = true`.
+  launcher, its bar chip and tools for Doctor's agent. It runs while
+  `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
 - `timers`: `timer` in the launcher for timers and alarms, with a [card
   under the launcher](#launcher-cards) for each. The launcher also reads
@@ -83,6 +85,9 @@ args = ["--stdio"]
 # cards = false
 [bar]
 # enabled = false
+[doctor]
+# enabled = false
+# tools = ["status"]
 ```
 
 `command` names one executable, not a shell command line. Arguments are separate
@@ -90,7 +95,9 @@ strings. Config fields overlay the matching manifest, so disabling an installed
 plugin only needs `enabled = false`, and hiding its bar chips only
 `[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
 block. A panel block shows whenever the plugin offers one, and so do its cards
-under the launcher unless `[launcher]` says `cards = false`.
+under the launcher unless `[launcher]` says `cards = false`. Doctor's agent
+gets the tools a plugin offers it unless `[doctor]` says `enabled = false`;
+`tools` keeps only the tools it names.
 
 Omitted prefixes come from `launcher_info`. An explicit empty prefix list
 disables routing. Prefixes are nonempty words, matched case-sensitively at the
@@ -357,6 +364,31 @@ stays open and what is typed and found stays as it is. Copy also leaves the
 launcher open; open, run, terminal and settings actions close it. Send
 `notifications/resources/updated` when a card changes, for instance each second
 for a countdown; Tileception reads the resource again and redraws.
+
+### Doctor tools
+
+A `tileception://doctor` resource names the tools [Doctor](doctor.md)'s agent
+may use, from the plugin's `tools/list`, and what to tell the agent about
+them:
+
+```json
+{"tools":["status","why","set","toggle"],
+ "instructions":"The user's smart home devices. `status` lists them."}
+```
+
+Doctor gives its agent one MCP server per plugin, named after the plugin ID,
+when an agent conversation starts: a plugin installed later reaches the agent
+from the next conversation (`/clear`) or restart (`/restart`). The server is
+`tileception doctor-mcp <id>`, which the agent starts. It lists the tools with
+their `tools/list` entries (without `outputSchema`) and passes each call to
+Tileception, which applies [Doctor's permission mode](doctor.md#plugin-tools)
+and then calls the running plugin, like any other tool action. The agent never
+starts the plugin itself, and tools the plugin does not name here are refused.
+
+Mark tools that only read with the MCP annotation `"readOnlyHint": true`:
+Doctor's Tweak mode lets them go ahead without asking. Answer with
+`structuredContent`; the agent reads its `text` field when it has one, else
+the JSON. Doctor's calls have the usual three-second deadline once allowed.
 
 ### Commands
 

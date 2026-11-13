@@ -26,7 +26,7 @@ use crate::{
         Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Notice,
         Row, Stepper, Switch, Tint, Trend, View,
     },
-    plugins::{ActionKind, BAR, PANEL},
+    plugins::{ActionKind, BAR, DOCTOR, PANEL},
     ui::ago,
 };
 
@@ -612,6 +612,10 @@ impl Plugin for HomePlugin {
         room["inputSchema"]["properties"]["on"] = json!({ "type": "boolean" });
         let mut step = tool("step_target", "Raise or lower a climate device's target by steps", &["device"]);
         step["inputSchema"]["properties"]["steps"] = json!({ "type": "integer" });
+        let mut status = tool("status", "List the smart home devices with their state and reachability", &[]);
+        status["annotations"] = json!({ "readOnlyHint": true });
+        let mut why = tool("why", "Why a device is unreachable, and what to check", &["device"]);
+        why["annotations"] = json!({ "readOnlyHint": true });
         json!([
             tool("launcher_info", "Launcher metadata", &[]),
             tool("launcher_search", "Devices and rooms matching the words", &["prefix", "query"]),
@@ -622,6 +626,8 @@ impl Plugin for HomePlugin {
             tool("all_off", "Switch off every light and plug that is on, never climate devices", &[]),
             tool("next_climate", "Show the next climate device in the panel", &["device"]),
             tool("command", "Run a `tileception msg home` command, such as `status` or `why Lamp`", &["text"]),
+            status,
+            why,
         ])
     }
 
@@ -706,12 +712,24 @@ impl Plugin for HomePlugin {
                 Ok(json!({ "ok": true }))
             }
             "command" => self.command(&text("text")).map(|text| json!({ "text": text })),
+            "status" => self.command("status").map(|text| json!({ "text": text })),
+            "why" => {
+                if self.service.is_none() {
+                    return Err(self.unavailable());
+                }
+                self.why(&text("device")).map(|text| json!({ "text": text }))
+            }
             _ => Err(format!("Unknown tool {name}")),
         }
     }
 
     fn resources(&self) -> Vec<(&'static str, &'static str)> {
-        vec![(PANEL, "Smart home block"), (BAR, "Smart home chip"), (DEVICES, "Smart home devices")]
+        vec![
+            (PANEL, "Smart home block"),
+            (BAR, "Smart home chip"),
+            (DEVICES, "Smart home devices"),
+            (DOCTOR, "Smart home tools for Doctor"),
+        ]
     }
 
     fn read(&mut self, uri: &str) -> Result<Value, String> {
@@ -720,6 +738,7 @@ impl Plugin for HomePlugin {
             PANEL => serde_json::to_value(self.block()).map_err(|error| error.to_string()),
             BAR => serde_json::to_value(self.bar()).map_err(|error| error.to_string()),
             DEVICES => Ok(self.devices()),
+            DOCTOR => Ok(doctor_offer()),
             _ => Err(format!("no resource {uri}")),
         }
     }
@@ -749,6 +768,16 @@ impl Plugin for HomePlugin {
 
 fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
+}
+
+/// The tools Doctor's agent gets: reading and switching devices, not the
+/// launcher's or the panel's own.
+fn doctor_offer() -> Value {
+    json!({
+        "tools": ["status", "why", "set", "toggle", "step_target", "room", "all_off"],
+        "instructions": "The user's smart home devices (Tuya lights, plugs, air conditioners and sensors). \
+            `status` lists them with their state; name devices as it does. `why` explains an unreachable one.",
+    })
 }
 
 fn tool_action(name: &str, arguments: Value) -> ActionKind {

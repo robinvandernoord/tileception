@@ -64,6 +64,7 @@ for line in sys.stdin:
         std::env::temp_dir(),
         String::new(),
         Default::default(),
+        Vec::new(),
         emit,
     );
     next(&events, |event| *event == Event::Status(Status::Ready));
@@ -143,6 +144,7 @@ fn logs_in_streams_and_asks_permission() {
         std::env::temp_dir(),
         "You help with Tileception.".into(),
         Default::default(),
+        Vec::new(),
         emit,
     );
 
@@ -223,8 +225,15 @@ fn restarting_ends_a_turn_the_agent_does_not_stop() {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_agent.py");
     let env = [("FAKE_AGENT_NO_LOGIN".to_string(), "1".to_string())].into();
     let program = Program { command: "python3".into(), args: vec![script.into()], env };
-    let session =
-        Session::start_program("Fake".into(), program, std::env::temp_dir(), String::new(), Default::default(), emit);
+    let session = Session::start_program(
+        "Fake".into(),
+        program,
+        std::env::temp_dir(),
+        String::new(),
+        Default::default(),
+        Vec::new(),
+        emit,
+    );
     next(&events, |event| *event == Event::Status(Status::Ready));
 
     session.send(Request::Prompt { text: "hang".into(), images: Vec::new() });

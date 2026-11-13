@@ -38,10 +38,7 @@ pub struct Options {
 /// The compiled-in manifests: this very executable, started as
 /// `tileception plugin <id>`, highest priority first.
 pub fn manifests(options: &Options) -> Result<Vec<(String, PluginConfig)>, String> {
-    let exe = std::env::current_exe().map_err(|error| format!("Bundled plugins: {error}"))?;
-    // After an upgrade replaced the binary, /proc still names the old one.
-    let exe = exe.to_string_lossy();
-    let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe).to_string();
+    let exe = exe().map_err(|error| format!("Bundled plugins: {error}"))?;
     let manifest = |plugin_id: &str, extra: Vec<String>| {
         let mut args = vec!["plugin".to_string(), plugin_id.to_string()];
         args.extend(extra);
@@ -65,6 +62,22 @@ pub fn manifests(options: &Options) -> Result<Vec<(String, PluginConfig)>, Strin
     config.bar = Some(crate::plugins::BarOptions::default());
     manifests.push((plugin_id, config));
     Ok(manifests)
+}
+
+/// This executable, to start again as a plugin or tool server.
+pub fn exe() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    // After an upgrade replaced the binary, /proc still names the old one.
+    let exe = exe.to_string_lossy();
+    Ok(exe.strip_suffix(" (deleted)").unwrap_or(&exe).to_string())
+}
+
+/// Whether `config` starts this executable's bundled plugin `plugin_id`,
+/// rather than a plugin installed in its place.
+pub fn is_bundled(plugin_id: &str, config: &PluginConfig) -> bool {
+    IDS.contains(&plugin_id)
+        && config.command.as_ref().is_some_and(|command| exe().is_ok_and(|exe| *command == exe))
+        && config.args.as_ref().is_some_and(|args| args.len() >= 2 && args[0] == "plugin" && args[1] == plugin_id)
 }
 
 /// `tileception plugin <id>`: serves that plugin over stdio until stdin closes.

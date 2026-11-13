@@ -381,6 +381,10 @@ tray_max_icons = 3
 # [plugins.example.launcher]
 # prefixes = ["echo"]
 # cards = false  # hide its cards under the launcher
+# Tools a plugin offers Doctor's agent, asked for by Doctor's permission mode:
+# [plugins.home.doctor]
+# enabled = false     # none for Doctor
+# tools = ["status"]  # only these
 
 [keyboard]
 # US international unless set: AltGr gives accents and dead keys (AltGr+'

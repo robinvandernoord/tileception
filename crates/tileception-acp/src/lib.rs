@@ -178,6 +178,34 @@ pub enum Event {
     Images(bool),
 }
 
+/// A tool server the agent connects to for its sessions: an MCP server
+/// started as a program speaking over its stdio, which every ACP agent
+/// supports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServer {
+    /// What the agent calls the server; its tools are named after it.
+    pub name: String,
+    /// An absolute path.
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    /// Set for the server on top of what the agent gives it.
+    pub env: Env,
+}
+
+impl McpServer {
+    /// The entry in `session/new`'s `mcpServers`.
+    pub fn to_json(&self) -> serde_json::Value {
+        let env: Vec<serde_json::Value> =
+            self.env.iter().map(|(name, value)| serde_json::json!({ "name": name, "value": value })).collect();
+        serde_json::json!({
+            "name": self.name,
+            "command": self.command.display().to_string(),
+            "args": self.args,
+            "env": env,
+        })
+    }
+}
+
 /// A picture sent along with a prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
@@ -214,6 +242,8 @@ pub enum Request {
     RestartEnv(Env),
     /// Starts a fresh conversation with the same agent.
     NewSession,
+    /// The tool servers for conversations started from now on.
+    McpServers(Vec<McpServer>),
     /// Changes a [`SessionOption`].
     SetOption {
         id: String,
