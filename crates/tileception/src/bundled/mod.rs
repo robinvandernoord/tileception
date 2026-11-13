@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::plugins::PluginConfig;
 
 /// The bundled plugins' ids.
-const IDS: &[&str] = &["home", "folders", "timers", "bluetooth"];
+pub(crate) const IDS: &[&str] = &["home", "folders", "timers", "bluetooth"];
 
 /// What the bundled manifests depend on in the config.
 #[derive(Debug, Clone, Default, PartialEq)]

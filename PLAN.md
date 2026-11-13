@@ -96,8 +96,6 @@ Report testing in the conversation, the commit or the pull request instead.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
-  - Possibly: `tileception msg plugin add <command>` writes the config
-    entry, so Doctor can set a plugin up on request.
   - Not on the welcome screen or the login screen, not for events (window
     opened, screen added), and not for layout, input or placement.
 - Notifications on Tileception's own lock screen (external lockers draw

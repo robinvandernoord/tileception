@@ -71,6 +71,8 @@ pub enum Command {
         tool: String,
         arguments: serde_json::Value,
     },
+    /// Writes `[plugins.<id>]` for a command to config.toml.
+    PluginAdd(crate::plugins::Add),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
     /// For the bundled Bluetooth plugin: status, on, off, reconnect,
@@ -260,6 +262,11 @@ Smart home ([home] in config.toml):
 
 Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
+  plugin add [--id <id>] [--bar] <command> [args...]
+                            set a plugin up: write [plugins.<id>] to
+                            config.toml, which starts it; the id comes from
+                            the command's name unless given, and --bar shows
+                            its chips in the bar
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -368,6 +375,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "home" => return crate::home::parse(rest).map(|command| Command::Home(command, rest.trim().to_string())),
+        "plugin" if args.first() == Some(&"add") => {
+            return crate::plugins::Add::parse(&args[1..]).map(Command::PluginAdd);
+        }
         "plugin" => {
             let mut parts = rest.trim().splitn(3, char::is_whitespace);
             let plugin =
@@ -581,6 +591,7 @@ impl Tileception {
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),
             Command::Plugin { plugin, tool, arguments } => return self.plugin_command(&plugin, &tool, arguments),
+            Command::PluginAdd(add) => return self.add_plugin(add),
             Command::Battery => return Ok(self.battery_status()),
             Command::Bluetooth(text) => {
                 return self.plugin_command("bluetooth", "command", serde_json::json!({ "text": text }));
@@ -697,5 +708,16 @@ mod tests {
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());
         assert!(parse("").is_err());
+        assert_eq!(
+            parse("plugin add --bar /usr/bin/weather --units metric"),
+            Ok(Command::PluginAdd(crate::plugins::Add {
+                plugin_id: None,
+                bar: true,
+                command: "/usr/bin/weather".into(),
+                args: vec!["--units".into(), "metric".into()],
+            }))
+        );
+        assert!(parse("plugin add").is_err());
+        assert!(matches!(parse("plugin home toggle"), Ok(Command::Plugin { .. })));
     }
 }
