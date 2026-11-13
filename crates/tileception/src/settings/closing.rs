@@ -159,34 +159,15 @@ impl Tileception {
         );
         let pointer = Point::new(self.settings.pointer.0, self.settings.pointer.1);
         for (button, choice, label) in self.close_confirm_buttons() {
-            let primary = choice == Choice::Apply;
-            let hovered = button.contains(pointer);
-            painter.shape(
+            let look = match choice {
+                Choice::Apply => crate::ui::Look::Primary,
+                Choice::Discard => crate::ui::Look::Warning,
+                Choice::Cancel | Choice::Block => crate::ui::Look::Plain,
+            };
+            painter.button(
                 button,
-                Shape {
-                    fill: if primary {
-                        (theme.accent, theme.accent_end)
-                    } else {
-                        (theme.surface_raised, theme.surface_raised)
-                    },
-                    radius: 5.,
-                    border_width: if primary { 0. } else { 1. },
-                    border: if hovered { theme.muted } else { theme.border },
-                    ..Default::default()
-                },
-            );
-            if choice == focused {
-                painter.shape(
-                    Rect::new(button.x - 3., button.y - 3., button.w + 6., button.h + 6.),
-                    Shape { radius: 7., border_width: 1.5, border: theme.accent, ..Default::default() },
-                );
-            }
-            painter.text(
-                label,
-                button,
-                Style::new(12., if primary { theme.on_accent } else { theme.text })
-                    .weight(if primary { 600 } else { 400 })
-                    .align(Align::Centre),
+                crate::ui::Button::new(label, look).focused(choice == focused),
+                button.contains(pointer),
             );
         }
     }

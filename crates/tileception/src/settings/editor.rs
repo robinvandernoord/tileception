@@ -536,7 +536,7 @@ mod tests {
 
     fn whole_file(original: &str, text: &str) -> Editor {
         Editor {
-            input: TextInput { text: text.into(), ..Default::default() },
+            input: TextInput::new(text).multiline(LIMIT).code(),
             field: None,
             first: 0,
             horizontal: 0,

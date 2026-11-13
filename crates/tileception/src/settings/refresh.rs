@@ -108,7 +108,10 @@ pub(super) fn replace_input(input: &mut TextInput, text: String) {
     while !text.is_char_boundary(cursor) {
         cursor -= 1;
     }
-    *input = TextInput { text, cursor, anchor: None };
+    // A fresh text, as if the field had just been opened: nothing to undo.
+    input.clear();
+    input.text = text;
+    input.cursor = cursor;
 }
 
 /// "A", "A and B", "A, B and C".
@@ -285,12 +288,14 @@ mod tests {
 
     #[test]
     fn replaced_input_keeps_the_caret_on_a_character() {
-        let mut input = TextInput { text: "auto".into(), cursor: 4, anchor: Some(0) };
+        let mut input = TextInput::new("auto");
+        input.anchor = Some(0);
         replace_input(&mut input, "1.25".into());
         assert_eq!((input.text.as_str(), input.cursor, input.anchor), ("1.25", 4, None));
         replace_input(&mut input, "é".into());
         assert_eq!(input.cursor, 2);
-        let mut input = TextInput { text: "abc".into(), cursor: 1, anchor: None };
+        let mut input = TextInput::new("abc");
+        input.cursor = 1;
         replace_input(&mut input, "é".into());
         assert_eq!(input.cursor, 0);
     }

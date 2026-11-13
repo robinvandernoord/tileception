@@ -283,11 +283,12 @@ impl Screen {
             self.scroll = old.scroll;
             if let Some((field, _)) = &old.edit {
                 let text = self.read(&field.path);
-                self.edit = Some((field.clone(), TextInput { cursor: text.len(), text, anchor: None }));
+                self.edit = Some((field.clone(), TextInput::new(text)));
             }
         }
         self.list_scroll = old.list_scroll;
-        self.search = TextInput { text: old.search.text.clone(), cursor: old.search.cursor, anchor: None };
+        self.search = TextInput::new(old.search.text.clone());
+        self.search.cursor = old.search.cursor;
         self.searching = old.searching;
         self.reveal = old.reveal;
         self.advanced = old.advanced;
@@ -1331,7 +1332,7 @@ mod tests {
     fn an_untouched_open_field_shows_the_new_value() {
         let mut screen = displays(SCALED);
         let field = Spec::key("scale", "Scale", "", Form::Scale);
-        screen.edit = Some((field, TextInput { text: "1.25".into(), cursor: 4, anchor: None }));
+        screen.edit = Some((field, TextInput::new("1.25")));
         assert!(!screen.changed());
         let Ok(Refresh::New(mut fresh)) = screen.refreshed(AUTO) else { panic!("an untouched screen is read again") };
         fresh.keep_view(&screen);
@@ -1342,7 +1343,7 @@ mod tests {
     fn scale_input_that_is_not_a_number_is_refused() {
         let mut screen = displays(AUTO);
         let field = Spec::key("scale", "Scale", "", Form::Scale);
-        screen.edit = Some((field, TextInput { text: "auto1.5".into(), cursor: 7, anchor: None }));
+        screen.edit = Some((field, TextInput::new("auto1.5")));
         assert_eq!(screen.finish_input(), Err("Scale must be auto or a number from 0.5 to 4.".into()));
         assert!(screen.edit.is_some(), "the input stays to be corrected");
     }
