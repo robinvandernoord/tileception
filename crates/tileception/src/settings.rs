@@ -1798,7 +1798,7 @@ impl Tileception {
         self.settings.level_drag = None;
     }
 
-    fn settings_finish_edit(&mut self) -> bool {
+    pub(super) fn settings_finish_edit(&mut self) -> bool {
         let Some(index) = self.settings.editing else { return true };
         let text = self.settings.input.text.trim();
         if matches!(FIELDS[index].control, Control::Colour) && Colour::parse(text).is_err() {
