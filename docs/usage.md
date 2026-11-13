@@ -192,14 +192,17 @@ animations. Holding **Super+D** fades the windows to outlines and shows the
 dashboard behind them. With nothing typed in the welcome screen, **Escape**
 brings back a desk that **Super+D** cleared, like pressing it again. The
 dashboard needs room beside the welcome screen; on a narrow screen it does not
-show.
+show. Tap **Super** to put the welcome screen and dashboard away for a plain
+desktop, and tap it again to bring them back.
 
-Drag an item on the welcome screen's dashboard to move it, within its column
-or to the other one: the others make room while you drag, and letting go puts
-it there. Drag a picture or plugin surface by its title; a card from anywhere
-but its buttons. The order is saved in
-`~/.local/state/tileception/dashboard-order.toml`; delete it to go back to the
-plugins' order.
+Drag an item on the welcome screen's dashboard to put it anywhere beside the
+welcome screen. It snaps to an 8-pixel grid, and an item dropped on another
+moves to the nearest free place; the others stay where they are. Drag a
+picture or plugin surface by its title, anything else from anywhere but its
+buttons. Where the items are is saved in
+`~/.local/state/tileception/dashboard-layout.toml`, from the nearest corner of
+the screen so they keep their place on a screen of another size; delete it to
+go back to the first-come layout.
 
 ### Floating a window by dragging
 

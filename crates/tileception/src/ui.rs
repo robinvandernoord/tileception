@@ -209,11 +209,14 @@ impl Tileception {
         if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
-        if self.panel_reordering() {
+        if self.panel_reordering() || self.dashboard_dragging() {
             return Some(smithay::input::pointer::CursorIcon::Grabbing);
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
+        }
+        if self.dashboard_grabbable(point) {
+            return Some(smithay::input::pointer::CursorIcon::Grab);
         }
         (self.feedback.is_some()
             || self.password_prompt.is_some()

@@ -172,9 +172,8 @@ impl Tileception {
                 }
             }
         }
-        if self.notifications.open {
-            self.refresh_notification_history();
-        }
+        // The dashboard shows how many there are, also with the panel shut.
+        self.refresh_notification_history();
         self.check_answering();
         self.schedule_render();
     }

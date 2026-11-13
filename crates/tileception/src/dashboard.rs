@@ -9,7 +9,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     hash::{Hash, Hasher},
     io::Read,
     path::Path,
@@ -158,17 +158,21 @@ enum Loading {
     Failed,
 }
 
-/// The file in the state directory with the order the user dragged the
-/// items into, by key: `notifications` or `plugin/id`.
-const ORDER: &str = "dashboard-order.toml";
+/// The file in the state directory with where the user put the items, by
+/// key: `notifications` or `plugin/id`.
+const LAYOUT: &str = "dashboard-layout.toml";
+/// Space between items.
+const GAP: f64 = MARGIN / 2.0;
+/// The grid a dragged item snaps to.
+const GRID: f64 = 8.0;
 
 /// Pictures by plugin and source. They are read and decoded off the
 /// compositor's thread, which a large or complex picture would hold up.
-/// Also the order the user dragged the items into, and a drag under way.
+/// Also where the user put the items, and a drag under way.
 #[derive(Default)]
 pub struct Dashboard {
-    /// Items by key, as last saved; others follow in the plugins' order.
-    order: Vec<String>,
+    /// Items by key, as last put; others go in the first free place.
+    spots: BTreeMap<String, Spot>,
     drag: Option<Drag>,
     pictures: RefCell<HashMap<PictureKey, Loading>>,
     /// Decoded on their threads, waiting to become buffers here.
@@ -178,9 +182,64 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
-    /// With the order saved last time.
+    /// With the places saved last time.
     pub fn load() -> Self {
-        Dashboard { order: crate::panel::order::load_from(ORDER), ..Default::default() }
+        let spots = crate::panel::order::read_state(LAYOUT)
+            .and_then(|text| toml::from_str::<Stored>(&text).ok())
+            .map(|stored| stored.spots)
+            .unwrap_or_default();
+        Dashboard { spots, ..Default::default() }
+    }
+
+    fn save(&self) {
+        match toml::to_string(&Stored { spots: self.spots.clone() }) {
+            Ok(text) => crate::panel::order::write_state(LAYOUT, &text),
+            Err(error) => tracing::warn!("could not save {LAYOUT}: {error}"),
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    #[serde(default)]
+    spots: BTreeMap<String, Spot>,
+}
+
+/// Where the user put an item: its distance from the nearest corner of the
+/// dashboard's room, so it keeps its place on a screen of another size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Spot {
+    /// From the left edge, or the right with `right`.
+    #[serde(rename = "x")]
+    across: f64,
+    /// From the top edge, or the bottom with `bottom`.
+    #[serde(rename = "y")]
+    down: f64,
+    #[serde(default)]
+    right: bool,
+    #[serde(default)]
+    bottom: bool,
+}
+
+impl Spot {
+    fn from_rect(rect: Rect, bounds: Rect) -> Spot {
+        let (centre, middle) = (rect.center(), bounds.center());
+        let (right, bottom) = (centre.x > middle.x, centre.y > middle.y);
+        Spot {
+            across: if right { bounds.right() - rect.right() } else { rect.x - bounds.x },
+            down: if bottom { bounds.bottom() - rect.bottom() } else { rect.y - bounds.y },
+            right,
+            bottom,
+        }
+    }
+
+    fn rect(self, bounds: Rect, width: f64, height: f64) -> Rect {
+        Rect::new(
+            if self.right { bounds.right() - self.across - width } else { bounds.x + self.across },
+            if self.bottom { bounds.bottom() - self.down - height } else { bounds.y + self.down },
+            width,
+            height,
+        )
     }
 }
 
@@ -189,6 +248,8 @@ impl Dashboard {
 struct Drag {
     key: String,
     origin: Point,
+    /// Where it was held, from the item's top left.
+    grab: Point,
     dragging: bool,
     /// What letting go without dragging does.
     click: Option<Click>,
@@ -241,112 +302,123 @@ pub(crate) enum Click {
     Plugin(String, ActionKind),
 }
 
-/// The key in the saved order after which items go in the right column.
-const BREAK: &str = "|";
+/// The dashboard's room beside a centre panel: the screen within a margin,
+/// the two zones left and right of the panel where items go, and the
+/// width every item gets.
+pub(crate) struct Room {
+    bounds: Rect,
+    zones: [Rect; 2],
+    width: f64,
+}
 
-/// Places items of these heights in columns, top to bottom and then the
-/// next column, leaving out what does not fit. `None` is the break: what
-/// follows starts the next column, unless it already has. Returns each
-/// placed item's index and rectangle.
-pub(crate) fn place(columns: &[Rect], heights: &[Option<f64>]) -> Vec<(usize, Rect)> {
-    let mut placed = Vec::new();
-    let (mut column, mut breaks) = (0, 0);
-    let mut top = columns.first().map_or(0.0, |rect| rect.y);
-    for (index, height) in heights.iter().enumerate() {
-        let Some(height) = height else {
-            breaks += 1;
-            if column < breaks {
-                column = breaks;
-                top = columns.get(column).map_or(0.0, |rect| rect.y);
+impl Room {
+    /// None when the zones are too narrow for an item.
+    pub(crate) fn beside(area: Rect, centre: Rect) -> Option<Room> {
+        let bounds = area.inset(MARGIN);
+        let left = Rect::new(bounds.x, bounds.y, (centre.x - MARGIN - bounds.x).max(0.0), bounds.h);
+        let right_x = centre.right() + MARGIN;
+        let right = Rect::new(right_x, bounds.y, (bounds.right() - right_x).max(0.0), bounds.h);
+        let width = left.w.min(right.w).min(COLUMN.0);
+        (width >= COLUMN.1).then_some(Room { bounds, zones: [left, right], width })
+    }
+
+    /// Whether a rectangle lies in a zone, a gap away from the others.
+    fn free(&self, rect: &Rect, others: &[Rect]) -> bool {
+        let spaced =
+            Rect::new(rect.x - GAP + 0.5, rect.y - GAP + 0.5, rect.w + 2.0 * GAP - 1.0, rect.h + 2.0 * GAP - 1.0);
+        self.zones.iter().any(|zone| zone.contains_rect(rect)) && others.iter().all(|other| !spaced.intersects(other))
+    }
+
+    /// The rectangle moved into the zone on its side, if it fits there.
+    fn clamp(&self, rect: Rect) -> Option<Rect> {
+        let middle = (self.zones[0].right() + self.zones[1].x) / 2.0;
+        let zone = if rect.center().x < middle { self.zones[0] } else { self.zones[1] };
+        if rect.w > zone.w + 1e-9 || rect.h > zone.h + 1e-9 {
+            return None;
+        }
+        let left = rect.x.clamp(zone.x, zone.right() - rect.w);
+        let top = rect.y.clamp(zone.y, zone.bottom() - rect.h);
+        Some(Rect::new(left, top, rect.w, rect.h))
+    }
+
+    /// The first free place for an item this tall, as a fresh dashboard
+    /// fills: down beside the panel on the left, then on the right, then
+    /// further out.
+    fn first_free(&self, height: f64, others: &[Rect]) -> Option<Rect> {
+        for (index, zone) in self.zones.iter().enumerate() {
+            let near = if index == 0 { zone.right() - self.width } else { zone.x };
+            let mut across = vec![near];
+            for other in others {
+                across.extend([other.x - GAP - self.width, other.right() + GAP]);
             }
-            continue;
-        };
-        while let Some(rect) = columns.get(column) {
-            if top + height <= rect.bottom() {
-                break;
+            across.retain(|left| *left >= zone.x - 1e-9 && left + self.width <= zone.right() + 1e-9);
+            across.sort_by(|one, other| (one - near).abs().total_cmp(&(other - near).abs()));
+            let mut down = vec![zone.y];
+            down.extend(others.iter().map(|other| other.bottom() + GAP));
+            down.sort_by(f64::total_cmp);
+            for left in &across {
+                for top in &down {
+                    let rect = Rect::new(*left, *top, self.width, height);
+                    if self.free(&rect, others) {
+                        return Some(rect);
+                    }
+                }
             }
-            column += 1;
-            top = columns.get(column).map_or(0.0, |rect| rect.y);
         }
-        let Some(rect) = columns.get(column) else { break };
-        placed.push((index, Rect::new(rect.x, top, rect.w, *height)));
-        top += height + MARGIN / 2.0;
+        None
     }
-    placed
-}
 
-/// The order, by index, after dropping the item `dragged` at `point`, with
-/// `brk` the index of the break and `split` between the columns: the left column's items, the break, then
-/// the right column's, each column top to bottom with the dragged item
-/// below those whose middle is above the pointer. Items that did not fit
-/// keep their order at the end.
-pub(crate) fn dropped(
-    order: &[usize],
-    placed: &[(usize, Rect)],
-    (dragged, brk): (usize, usize),
-    split: f64,
-    point: Point,
-) -> Vec<usize> {
-    let (mut left, mut right, mut rest) = (Vec::new(), Vec::new(), Vec::new());
-    for (position, index) in order.iter().enumerate() {
-        if *index == dragged || *index == brk {
-            continue;
+    /// The free place on the grid nearest to where an item is wanted.
+    fn nearest_free(&self, wanted: Rect, others: &[Rect]) -> Option<Rect> {
+        let snap = |value: f64, origin: f64| origin + ((value - origin) / GRID).round() * GRID;
+        let wanted = Rect::new(snap(wanted.x, self.bounds.x), snap(wanted.y, self.bounds.y), wanted.w, wanted.h);
+        let wanted = self.clamp(wanted)?;
+        if self.free(&wanted, others) {
+            return Some(wanted);
         }
-        match placed.iter().find(|(placed_at, _)| *placed_at == position) {
-            Some((_, rect)) if rect.x < split => left.push((*index, rect.y + rect.h / 2.0)),
-            Some((_, rect)) => right.push((*index, rect.y + rect.h / 2.0)),
-            None => rest.push(*index),
+        let mut best: Option<(f64, Rect)> = None;
+        for zone in &self.zones {
+            let mut top = zone.y;
+            while top + wanted.h <= zone.bottom() + 1e-9 {
+                let mut left = zone.x;
+                while left + wanted.w <= zone.right() + 1e-9 {
+                    let rect = Rect::new(left, top, wanted.w, wanted.h);
+                    let distance = (left - wanted.x).hypot(top - wanted.y);
+                    if best.is_none_or(|(closest, _)| distance < closest) && self.free(&rect, others) {
+                        best = Some((distance, rect));
+                    }
+                    left += GRID;
+                }
+                top += GRID;
+            }
         }
+        best.map(|(_, rect)| rect)
     }
-    let column = if point.x < split { &mut left } else { &mut right };
-    let slot = column.iter().filter(|(_, middle)| *middle < point.y).count();
-    column.insert(slot, (dragged, point.y));
-    left.into_iter()
-        .map(|(index, _)| index)
-        .chain([brk])
-        .chain(right.into_iter().map(|(index, _)| index))
-        .chain(rest)
-        .collect()
-}
 
-/// Where the items go in this order, by index into `shown` (one past it
-/// for the break), and, while the item with this key is held at a point,
-/// in the order it would be in if dropped there.
-fn planned(
-    columns: &[Rect],
-    keys: &[String],
-    shown: &[Shown],
-    order: Vec<usize>,
-    dropping: Option<(&str, Point)>,
-) -> (Vec<usize>, Vec<(usize, Rect)>) {
-    let heights = |order: &[usize]| -> Vec<Option<f64>> {
-        order.iter().map(|index| shown.get(*index).map(Shown::height)).collect()
-    };
-    let placed = place(columns, &heights(&order));
-    let Some((dragged, point)) =
-        dropping.and_then(|(key, point)| Some((keys.iter().position(|candidate| candidate == key)?, point)))
-    else {
-        return (order, placed);
-    };
-    let (Some(first), Some(last)) = (columns.first(), columns.last()) else { return (order, placed) };
-    let split = (first.right() + last.x) / 2.0;
-    let order = dropped(&order, &placed, (dragged, shown.len()), split, point);
-    let placed = place(columns, &heights(&order));
-    (order, placed)
-}
-
-/// The columns beside a centre panel within an area: left, then right.
-pub(crate) fn columns(area: Rect, centre: Rect) -> Vec<Rect> {
-    let room = centre.x - area.x - 2.0 * MARGIN;
-    let width = room.min(COLUMN.0);
-    if width < COLUMN.1 {
-        return Vec::new();
+    /// Where each item goes: where the user put it if that is still free,
+    /// else in the first free place; `None` for one that does not fit.
+    fn arrange(&self, items: &[(Option<Spot>, f64)]) -> Vec<Option<Rect>> {
+        let mut placed: Vec<Rect> = Vec::new();
+        let mut rects = vec![None; items.len()];
+        for (index, (spot, height)) in items.iter().enumerate() {
+            let Some(spot) = spot else { continue };
+            if let Some(rect) = self.clamp(spot.rect(self.bounds, self.width, *height))
+                && self.free(&rect, &placed)
+            {
+                placed.push(rect);
+                rects[index] = Some(rect);
+            }
+        }
+        for (index, (_, height)) in items.iter().enumerate() {
+            if rects[index].is_none()
+                && let Some(rect) = self.first_free(*height, &placed)
+            {
+                placed.push(rect);
+                rects[index] = Some(rect);
+            }
+        }
+        rects
     }
-    let (top, height) = (area.y + MARGIN, area.h - 2.0 * MARGIN);
-    vec![
-        Rect::new(centre.x - MARGIN - width, top, width, height),
-        Rect::new(centre.right() + MARGIN, top, width, height),
-    ]
 }
 
 impl Tileception {
@@ -391,34 +463,53 @@ impl Tileception {
     }
 
     /// The items and where they go, beside the welcome screen's panel,
-    /// in the user's order and, while one is dragged, as if dropped here.
+    /// with one being dragged at the free place nearest the pointer.
     pub(crate) fn dashboard_slots(&self, centre: Rect) -> Vec<Slot> {
         // Across the whole screen: the welcome screen and the peek both
         // centre on it, also on a split screen.
-        let columns = columns(self.screen_room(), centre);
-        let Some(width) = columns.first().map(|column| column.w) else { return Vec::new() };
-        let (keys, shown, order) = self.dashboard_arranged(width);
-        let dropping = self.dashboard.drag.as_ref().filter(|drag| drag.dragging).map(|drag| drag.key.as_str());
-        let pointer = Point::new(self.pointer.x, self.pointer.y);
-        let (order, placed) = planned(&columns, &keys, &shown, order, dropping.map(|key| (key, pointer)));
-        let mut shown: Vec<Option<Shown>> = shown.into_iter().map(Some).collect();
-        placed
-            .into_iter()
-            .filter_map(|(position, rect)| {
-                let index = order[position];
-                let mut what = shown[index].take()?;
+        let Some(room) = Room::beside(self.screen_room(), centre) else { return Vec::new() };
+        let (keys, shown) = self.dashboard_items(room.width);
+        let rects = self.dashboard_rects(&room, &keys, &shown);
+        keys.into_iter()
+            .zip(shown)
+            .zip(rects)
+            .filter_map(|((key, mut what), rect)| {
+                let rect = rect?;
                 if let Shown::Card { card, laid, .. } = &mut what {
                     *laid = crate::panel::card_layout(card, rect.x, rect.y, rect.w);
                 }
-                Some(Slot { key: keys[index].clone(), rect, what })
+                Some(Slot { key, rect, what })
             })
             .collect()
     }
 
-    /// Every item's key and what it shows, in the plugins' order, and the
-    /// order to show them in: by index, as the user arranged them. The
-    /// last key, without anything shown, is the column break.
-    fn dashboard_arranged(&self, width: f64) -> (Vec<String>, Vec<Shown>, Vec<usize>) {
+    /// Where the items go, by index: see [`Room::arrange`]. The one being
+    /// dragged goes to the free place on the grid nearest the pointer.
+    fn dashboard_rects(&self, room: &Room, keys: &[String], shown: &[Shown]) -> Vec<Option<Rect>> {
+        let items: Vec<(Option<Spot>, f64)> =
+            keys.iter().zip(shown).map(|(key, what)| (self.dashboard.spots.get(key).copied(), what.height())).collect();
+        let Some((drag, index)) = self
+            .dashboard
+            .drag
+            .as_ref()
+            .filter(|drag| drag.dragging)
+            .and_then(|drag| Some((drag, keys.iter().position(|key| *key == drag.key)?)))
+        else {
+            return room.arrange(&items);
+        };
+        let mut rest = items.clone();
+        let (spot, height) = rest.remove(index);
+        let mut rects = room.arrange(&rest);
+        let others: Vec<Rect> = rects.iter().flatten().copied().collect();
+        let wanted = Rect::new(self.pointer.x - drag.grab.x, self.pointer.y - drag.grab.y, room.width, height);
+        let rect =
+            room.nearest_free(wanted, &others).or_else(|| spot.map(|spot| spot.rect(room.bounds, room.width, height)));
+        rects.insert(index, rect);
+        rects
+    }
+
+    /// Every item's key and what it shows, in the plugins' order.
+    fn dashboard_items(&self, width: f64) -> (Vec<String>, Vec<Shown>) {
         let mut keys = Vec::new();
         let mut shown = Vec::new();
         let count = self.notification_count();
@@ -448,15 +539,7 @@ impl Tileception {
             keys.push(key);
             shown.push(what);
         }
-        // The break comes last unless moved, so items fill the left column
-        // first; its index is one past the items'.
-        keys.push(BREAK.to_string());
-        let plain: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let order = crate::panel::order::arrange(&plain, &self.dashboard.order)
-            .into_iter()
-            .filter_map(|key| keys.iter().position(|candidate| candidate == key))
-            .collect();
-        (keys, shown, order)
+        (keys, shown)
     }
 
     /// A press on the dashboard of the welcome screen. Its controls (a
@@ -472,18 +555,55 @@ impl Tileception {
             _ => {}
         }
         let click = Self::dashboard_click_at(slots, point).map(|(_, click)| click);
-        self.dashboard.drag = Some(Drag { key: slot.key.clone(), origin: point, dragging: false, click });
+        let grab = Point::new(point.x - slot.rect.x, point.y - slot.rect.y);
+        self.dashboard.drag = Some(Drag { key: slot.key.clone(), origin: point, grab, dragging: false, click });
         true
     }
 
     /// The pointer moved while an item is held. True when one is.
     pub(crate) fn dashboard_drag_motion(&mut self, point: Point) -> bool {
-        let Some(drag) = &mut self.dashboard.drag else { return false };
-        if drag.dragging || (point.x - drag.origin.x).hypot(point.y - drag.origin.y) > crate::input::DRAG_THRESHOLD {
-            drag.dragging = true;
+        let Some(drag) = &self.dashboard.drag else { return false };
+        let starts =
+            !drag.dragging && (point.x - drag.origin.x).hypot(point.y - drag.origin.y) > crate::input::DRAG_THRESHOLD;
+        if starts {
+            // The others stay where they are now while this one moves.
+            self.dashboard_pin();
+            if let Some(drag) = &mut self.dashboard.drag {
+                drag.dragging = true;
+            }
+        }
+        if self.dashboard_dragging() {
             self.schedule_render();
         }
         true
+    }
+
+    /// Notes where every item is now as where the user put it.
+    fn dashboard_pin(&mut self) {
+        let Some(room) = Room::beside(self.screen_room(), self.home_panel()) else { return };
+        for slot in self.dashboard_slots(self.home_panel()) {
+            self.dashboard.spots.insert(slot.key, Spot::from_rect(slot.rect, room.bounds));
+        }
+    }
+
+    /// Whether an item is being dragged elsewhere.
+    pub(crate) fn dashboard_dragging(&self) -> bool {
+        self.dashboard.drag.as_ref().is_some_and(|drag| drag.dragging)
+    }
+
+    /// Whether a press here would hold an item of the welcome screen's
+    /// dashboard to drag it: on an item, but not on a card's controls or
+    /// inside a plugin's own surface.
+    pub(crate) fn dashboard_grabbable(&self, point: Point) -> bool {
+        if !(self.launcher.open && self.launcher.home) {
+            return false;
+        }
+        let slots = self.dashboard_slots(self.home_panel());
+        slots.iter().find(|slot| slot.rect.contains(point)).is_some_and(|slot| match &slot.what {
+            Shown::Card { card, laid, .. } => crate::panel::card_action_at(card, laid, point).is_none(),
+            Shown::Surface { .. } => !inner(slot.rect).contains(point),
+            _ => true,
+        })
     }
 
     /// Whether an item is held, so the plugins' surfaces do not get the
@@ -493,34 +613,42 @@ impl Tileception {
     }
 
     /// Lets go of a held item: a click clicks it, a drag puts it where it
-    /// was dropped and saves the order. True when an item was held.
+    /// was dropped and saves where every item is. True when an item was held.
     pub(crate) fn dashboard_release(&mut self) -> bool {
-        let Some(drag) = self.dashboard.drag.take() else { return false };
+        if self.dashboard.drag.is_none() {
+            return false;
+        }
         let point = Point::new(self.pointer.x, self.pointer.y);
-        if !(self.launcher.open && self.launcher.home) {
+        let home = self.launcher.open && self.launcher.home;
+        // Where everything shows now, the dragged item included.
+        let slots = if home { self.dashboard_slots(self.home_panel()) } else { Vec::new() };
+        let Some(drag) = self.dashboard.drag.take() else { return false };
+        if !home {
             return true;
         }
         if !drag.dragging {
-            let slots = self.dashboard_slots(self.home_panel());
             let same = slots.iter().any(|slot| slot.key == drag.key && slot.rect.contains(point));
             if let (true, Some(click)) = (same, drag.click) {
                 self.dashboard_click(click);
             }
             return true;
         }
-        let columns = columns(self.screen_room(), self.home_panel());
-        if let Some(width) = columns.first().map(|column| column.w) {
-            let (keys, shown, order) = self.dashboard_arranged(width);
-            let (moved, _) = planned(&columns, &keys, &shown, order.clone(), Some((drag.key.as_str(), point)));
-            if moved != order {
-                let plain: Vec<&str> = keys.iter().map(String::as_str).collect();
-                let arranged: Vec<&str> = moved.iter().map(|index| keys[*index].as_str()).collect();
-                self.dashboard.order = crate::panel::order::rearrange(&plain, &self.dashboard.order, &arranged);
-                crate::panel::order::save_to(ORDER, &self.dashboard.order);
-            }
+        if let Some(room) = Room::beside(self.screen_room(), self.home_panel())
+            && let Some(slot) = slots.iter().find(|slot| slot.key == drag.key)
+        {
+            self.dashboard.spots.insert(drag.key, Spot::from_rect(slot.rect, room.bounds));
+            self.dashboard.save();
         }
         self.schedule_render();
         true
+    }
+
+    /// A card's control here, which is a button of its own, and its rectangle.
+    pub(crate) fn dashboard_control_at(slots: &[Slot], point: Point) -> Option<(Rect, Click)> {
+        let slot = slots.iter().find(|slot| slot.rect.contains(point))?;
+        let Shown::Card { plugin, card, laid } = &slot.what else { return None };
+        let (rect, action) = crate::panel::card_action_at(card, laid, point)?;
+        Some((rect, Click::Plugin(plugin.clone(), action)))
     }
 
     /// What clicking here on the dashboard does, and the control's rectangle.
@@ -788,48 +916,67 @@ fn base64(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn items_fill_the_left_column_then_the_right_and_leave_out_the_rest() {
-        let columns = [Rect::new(0.0, 0.0, 100.0, 300.0), Rect::new(500.0, 0.0, 100.0, 300.0)];
-        let placed = place(&columns, &[Some(140.0), Some(140.0), Some(260.0), Some(140.0), None]);
-        let rects: Vec<_> = placed.iter().map(|(index, rect)| (*index, rect.x, rect.y)).collect();
-        assert_eq!(rects, vec![(0, 0.0, 0.0), (1, 0.0, 152.0), (2, 500.0, 0.0)], "the last does not fit");
+    fn room() -> Room {
+        // 1920 by 1080 with a 620 wide panel in the middle.
+        Room::beside(Rect::new(0.0, 0.0, 1920.0, 1080.0), Rect::new(650.0, 300.0, 620.0, 400.0)).unwrap()
     }
 
     #[test]
-    fn the_break_starts_the_right_column() {
-        let columns = [Rect::new(0.0, 0.0, 100.0, 300.0), Rect::new(500.0, 0.0, 100.0, 300.0)];
-        let placed = place(&columns, &[Some(140.0), None, Some(140.0)]);
-        let rects: Vec<_> = placed.iter().map(|(index, rect)| (*index, rect.x, rect.y)).collect();
-        assert_eq!(rects, vec![(0, 0.0, 0.0), (2, 500.0, 0.0)]);
-        // Once the left column overflowed, the break does not skip further.
-        let placed = place(&columns, &[Some(260.0), Some(260.0), None, Some(10.0)]);
-        assert_eq!(placed[2].1.x, 500.0);
-        assert!(placed[2].1.y > 260.0);
+    fn a_fresh_dashboard_fills_beside_the_panel_left_then_right() {
+        let room = room();
+        let rects = room.arrange(&[(None, 140.0), (None, 140.0), (None, 900.0)]);
+        let first = rects[0].unwrap();
+        assert!((first.right() - (650.0 - MARGIN)).abs() < 1e-9 && first.y == MARGIN, "{first:?}");
+        assert_eq!(rects[1].unwrap().y, MARGIN + 140.0 + GAP, "below the first");
+        assert_eq!(rects[2].unwrap().x, 1270.0 + MARGIN, "too tall for what is left: on the right");
     }
 
     #[test]
-    fn a_dropped_item_goes_where_it_is_let_go() {
-        let columns = [Rect::new(0.0, 0.0, 100.0, 300.0), Rect::new(500.0, 0.0, 100.0, 300.0)];
-        // Items 0 and 1 on the left, 2 on the right after the break (3).
-        let order = [0, 1, 3, 2];
-        let heights = [Some(140.0), Some(140.0), None, Some(140.0)];
-        let placed = place(&columns, &heights);
-        let drop = |dragged, across, down| dropped(&order, &placed, (dragged, 3), 300.0, Point::new(across, down));
-        assert_eq!(drop(1, 50.0, 10.0), [1, 0, 3, 2], "to the top");
-        assert_eq!(drop(0, 550.0, 290.0), [1, 3, 2, 0], "below the right one");
-        assert_eq!(drop(0, 550.0, 10.0), [1, 3, 0, 2], "above the right one");
-        assert_eq!(drop(2, 50.0, 100.0), [0, 2, 1, 3], "between the left ones");
-        assert_eq!(drop(1, 50.0, 200.0), order, "where it was");
+    fn items_stay_where_they_were_put_and_others_go_around_them() {
+        let room = room();
+        let spot = Spot { across: 0.0, down: 0.0, right: false, bottom: true };
+        let rects = room.arrange(&[(None, 140.0), (Some(spot), 140.0)]);
+        let put = rects[1].unwrap();
+        assert_eq!((put.x, put.bottom()), (MARGIN, 1080.0 - MARGIN), "bottom left corner");
+        assert!(!rects[0].unwrap().intersects(&put));
+        // A spot on top of another item's gives way.
+        let clash = room.arrange(&[(Some(spot), 140.0), (Some(spot), 140.0)]);
+        assert!(!clash[0].unwrap().intersects(&clash[1].unwrap()));
     }
 
     #[test]
-    fn no_columns_on_a_narrow_area() {
-        let area = Rect::new(0.0, 0.0, 800.0, 600.0);
-        assert!(columns(area, Rect::new(100.0, 100.0, 600.0, 400.0)).is_empty());
-        let wide = columns(Rect::new(0.0, 0.0, 1920.0, 1080.0), Rect::new(650.0, 300.0, 620.0, 400.0));
-        assert_eq!(wide.len(), 2);
-        assert!(wide[0].right() < 650.0 && wide[1].x > 1270.0);
+    fn spots_keep_to_the_nearest_corner() {
+        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let rect = Rect::new(900.0, 700.0, 80.0, 60.0);
+        let spot = Spot::from_rect(rect, bounds);
+        assert!(spot.right && spot.bottom);
+        assert!(spot.rect(bounds, 80.0, 60.0).approx_eq(&rect, 1e-9));
+        // On a larger screen it stays as far from that corner.
+        let larger = spot.rect(Rect::new(0.0, 0.0, 2000.0, 1200.0), 80.0, 60.0);
+        assert!(larger.approx_eq(&Rect::new(1900.0, 1100.0, 80.0, 60.0), 1e-9));
+    }
+
+    #[test]
+    fn a_dragged_item_snaps_to_the_grid_and_to_a_free_place() {
+        let room = room();
+        let other = Rect::new(300.0, 200.0, room.width, 140.0);
+        let wanted = Rect::new(103.0, 499.0, room.width, 140.0);
+        let snapped = room.nearest_free(wanted, &[other]).unwrap();
+        assert_eq!(((snapped.x - room.bounds.x) % GRID, (snapped.y - room.bounds.y) % GRID), (0.0, 0.0));
+        assert!((snapped.x - 103.0).abs() <= GRID && (snapped.y - 499.0).abs() <= GRID);
+        // Onto the other item: the nearest free place instead.
+        let onto = room.nearest_free(Rect::new(300.0, 210.0, room.width, 140.0), &[other]).unwrap();
+        assert!(room.free(&onto, &[other]));
+        // Over the panel: into the zone on that side.
+        let left = room.nearest_free(Rect::new(700.0, 100.0, room.width, 140.0), &[]).unwrap();
+        assert!(left.right() <= 650.0 - MARGIN + 1e-9, "{left:?}");
+        let right = room.nearest_free(Rect::new(900.0, 100.0, room.width, 140.0), &[]).unwrap();
+        assert!(right.x >= 1270.0 + MARGIN - 1e-9, "{right:?}");
+    }
+
+    #[test]
+    fn no_room_on_a_narrow_area() {
+        assert!(Room::beside(Rect::new(0.0, 0.0, 800.0, 600.0), Rect::new(100.0, 100.0, 600.0, 400.0)).is_none());
     }
 
     #[test]

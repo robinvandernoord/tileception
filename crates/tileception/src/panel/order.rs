@@ -18,32 +18,33 @@ const PLUGINS: &str = "plugin-order.toml";
 
 /// The saved order, or none.
 pub fn load() -> Vec<String> {
-    load_from(PLUGINS)
-}
-
-/// Saves an order, replacing the file at once so a crash keeps the old one.
-pub fn save(order: &[String]) {
-    save_to(PLUGINS, order);
-}
-
-/// An order saved in this file of the state directory, or none.
-pub fn load_from(file: &str) -> Vec<String> {
-    std::fs::read_to_string(path(file))
-        .ok()
-        .filter(|text| text.len() <= 64 * 1024)
+    read_state(PLUGINS)
         .and_then(|text| toml::from_str::<Stored>(&text).ok())
         .map(|stored| stored.order)
         .unwrap_or_default()
 }
 
-/// Saves an order in this file of the state directory, replacing it at once.
-pub fn save_to(file: &str, order: &[String]) {
+/// Saves an order, replacing the file at once so a crash keeps the old one.
+pub fn save(order: &[String]) {
+    match toml::to_string(&Stored { order: order.to_vec() }) {
+        Ok(text) => write_state(PLUGINS, &text),
+        Err(error) => tracing::warn!("could not save {PLUGINS}: {error}"),
+    }
+}
+
+/// A file of Tileception's state directory, unless missing or too large.
+pub fn read_state(file: &str) -> Option<String> {
+    std::fs::read_to_string(path(file)).ok().filter(|text| text.len() <= 64 * 1024)
+}
+
+/// Writes a file of Tileception's state directory, replacing it at once so
+/// a crash keeps the old one.
+pub fn write_state(file: &str, text: &str) {
     let result = (|| {
-        let data = toml::to_string(&Stored { order: order.to_vec() }).map_err(std::io::Error::other)?;
         let path = path(file);
         std::fs::create_dir_all(path.parent().expect("state directory"))?;
         let temporary = path.with_extension("toml.tmp");
-        std::fs::write(&temporary, data)?;
+        std::fs::write(&temporary, text)?;
         std::fs::rename(temporary, path)
     })();
     if let Err(error) = result {

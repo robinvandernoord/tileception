@@ -52,7 +52,8 @@ autostart = []
 # complete list instead.
 # default_binds = true
 # On an empty desktop (after login, or after closing the last window) show the
-# launcher with a clock: type to search, tap Super for a plain desktop.
+# launcher with a clock: type to search, tap Super for a plain desktop and
+# again to bring it back.
 # welcome = true
 # Map the whole edge proportionally when the pointer crosses to an adjacent
 # screen, including between screens of different sizes. Off: use their

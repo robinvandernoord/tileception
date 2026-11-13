@@ -755,6 +755,13 @@ impl Tileception {
             self.close_launcher();
             return;
         }
+        // Super put the welcome screen away and the desktop is still empty
+        // (a window showing ends that): Super again brings it back as it
+        // was, with the dashboard, instead of the plain launcher.
+        if std::mem::take(&mut self.launcher.home_dismissed) {
+            self.open_launcher(true);
+            return;
+        }
         self.open_launcher(false);
     }
 
@@ -1904,7 +1911,9 @@ impl Tileception {
             }
         }
         if layout.dashboard.iter().any(|slot| slot.rect.contains(point)) {
-            let (rect, click) = Tileception::dashboard_click_at(&layout.dashboard, point)?;
+            // Only a card's controls are buttons; the items themselves are
+            // held to drag them, and clicked when let go where they were.
+            let (rect, click) = Tileception::dashboard_control_at(&layout.dashboard, point)?;
             return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
         }
         if self.launcher.plugin_pending {

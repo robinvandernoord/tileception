@@ -385,9 +385,9 @@ items on it from a `tileception://dashboard` resource, up to six each:
 - `surface` is drawn by the plugin itself, over Wayland (below).
 
 `size` is `small`, `medium` or `large`; every item is as wide as its column.
-Tileception lays the items out in a column on each side of the welcome screen,
-top to bottom, and leaves out what does not fit. Until the user drags them
-elsewhere, they come in the panel's plugin order and each plugin's own order. Pictures and surfaces get a
+Tileception puts the items beside the welcome screen, down the left of it and
+then the right, in the panel's plugin order and each plugin's own order, and
+leaves out what does not fit. Users can drag them anywhere beside it. Pictures and surfaces get a
 frame with their `title` and the plugin's name, drawn by Tileception.
 
 #### Dashboard surfaces
