@@ -252,7 +252,7 @@ impl SelectionHandler for Tileception {
             return;
         }
         if let Some(clip) = clip {
-            clip.send(&mime_type, fd);
+            self.serve_clip(clip, &mime_type, fd);
             return;
         }
         self.send_x11_selection(ty, mime_type, fd);

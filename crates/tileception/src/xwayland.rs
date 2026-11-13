@@ -418,7 +418,7 @@ impl XwmHandler for Tileception {
                     return;
                 }
                 if let Some(clip) = clip {
-                    clip.send(&mime_type, fd);
+                    self.serve_clip(&clip, &mime_type, fd);
                     return;
                 }
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))
