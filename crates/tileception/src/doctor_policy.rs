@@ -125,7 +125,7 @@ pub fn auto_choice(mode: Mode, action: &Action, choices: &[Choice], scope: &Scop
 /// Compositor commands the agent may run unasked in config mode: ones that
 /// look or adjust, not `spawn`, `exec`, `doctor` (its own mode), pretend
 /// input, `screenshot` (writes anywhere), `quit` or `unlock`.
-const SAFE_VERBS: [&str; 7] = ["tree", "reload", "volume", "mic", "brightness", "media", "home"];
+const SAFE_VERBS: [&str; 8] = ["tree", "reload", "volume", "mic", "brightness", "media", "home", "dashboard"];
 
 /// `tileception msg <safe verb> ...` and nothing chained onto it, the
 /// update manager's read-only `updates`, `updates history` and the like, the
