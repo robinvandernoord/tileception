@@ -1,7 +1,7 @@
 //! `tileception --greeter`: a greetd greeter drawn by the compositor itself,
 //! laid out like a Tileception desktop. The login screen is a few tiles (login,
-//! clock, session), the people are tabs on the login tile, actions live in a
-//! launcher, and errors arrive as notifications. See `docs/design-greeter.html`.
+//! clock, session), the people are tabs or tiles on the login tile, actions
+//! live in a launcher, and errors arrive as notifications. See `docs/design-greeter.html`.
 //!
 //! The greeter is a lock state of the compositor ([`LockState::Greeter`]), so
 //! nothing of the desktop can be reached; logging in hands the seat back to
@@ -11,6 +11,7 @@
 //! tile with only the signed-in person, the clock, and what happened while
 //! they were away, checking the password with PAM instead of greetd.
 
+mod access;
 mod accounts;
 mod card;
 mod draw;
@@ -41,10 +42,11 @@ pub(crate) use card::current_uid;
 pub use settings::GreeterFile;
 
 use self::{
+    access::Aid,
     accounts::Account,
     greetd::{ErrorType, Greetd, Prompt, Request, Response, Responses},
     sessions::Session,
-    settings::{Memory, Panel},
+    settings::{Memory, Panel, UsersAs},
 };
 use crate::{Tileception, config::Mods, lock::LockState, text_input::SecretField, theme::Colour};
 
@@ -114,6 +116,8 @@ pub enum Action {
     Layout(usize),
     /// Any layout xkb knows, by position in the catalogue.
     Keymap(usize),
+    /// Switches larger text or high contrast.
+    Aid(Aid),
 }
 
 #[derive(Debug, Default)]
@@ -152,6 +156,10 @@ pub struct Greeter {
     focus: Panel,
     /// The highlighted row while the Session panel has focus.
     session_cursor: usize,
+    /// The highlighted switch while the Accessibility panel has focus.
+    aid_cursor: usize,
+    /// The `[theme]` look, before anyone's accent and the accessibility switches.
+    base_theme: Option<crate::theme::Theme>,
     palette: Option<Palette>,
     greetd: Option<Greetd>,
     responses: Option<Responses>,
@@ -206,9 +214,6 @@ impl Greeter {
             .and_then(|login| accounts.iter().position(|account| account.login == login))
             .unwrap_or(0);
         tracing::info!("greeter: {} people, {} sessions", accounts.len(), sessions.len());
-        if file.users_as == settings::UsersAs::Tiles {
-            tracing::info!("greeter: users_as = \"tiles\" is not drawn yet; showing tabs");
-        }
         let mut greeter = Greeter::with(file, accounts, sessions, memory, memory_path, user);
         if greeter.file.panels.columns.iter().flatten().any(|panel| *panel == Panel::Motd) {
             greeter.motd = greeter.file.motd.message();
@@ -245,6 +250,8 @@ impl Greeter {
             chosen: HashMap::new(),
             focus: Panel::Login,
             session_cursor: 0,
+            aid_cursor: 0,
+            base_theme: None,
             palette: None,
             greetd: None,
             responses: None,
@@ -314,6 +321,21 @@ impl Greeter {
     /// locked, only the signed-in person.
     fn people(&self) -> usize {
         if self.locked() { self.accounts.len() } else { self.accounts.len() + 1 }
+    }
+
+    /// Whether people are shown as tiles of their own: with `users_as =
+    /// "tiles"` and more than one person to choose from, never locked.
+    fn cards(&self) -> bool {
+        !self.locked() && self.file.users_as == UsersAs::Tiles && self.accounts.len() > 1
+    }
+
+    /// Whether an accessibility switch is on. Locked, they are the session's business.
+    fn aid_on(&self, aid: Aid) -> bool {
+        !self.locked()
+            && match aid {
+                Aid::LargerText => self.memory.larger_text,
+                Aid::HighContrast => self.memory.high_contrast,
+            }
     }
 
     fn selected(&self) -> Option<&Account> {
@@ -430,6 +452,9 @@ impl Greeter {
         if !self.other() && !self.locked() {
             list.push((Action::Person(self.accounts.len()), "Log in as someone not listed".to_string()));
         }
+        if !self.locked() {
+            list.extend(Aid::ALL.map(|aid| (Action::Aid(aid), aid.action(self.aid_on(aid)))));
+        }
         let active = self.active_layout();
         for (index, (layout, variant)) in self.layouts.iter().enumerate() {
             if self.keymap.is_some() || index != self.layout {
@@ -451,6 +476,7 @@ impl Greeter {
             let aliases = match action {
                 Action::Firmware => "bios firmware setup reboot",
                 Action::PowerOff => "power off shutdown",
+                Action::Aid(aid) => aid.aliases(),
                 _ => "",
             };
             let label = format!("{} {aliases}", label.to_lowercase());
@@ -527,6 +553,7 @@ impl Tileception {
         (greeter.greetd, greeter.responses) = (Some(connected.0), Some(connected.1));
         let theme = self.theme.clone();
         greeter.previous_accent = greeter.accent_of(&theme, greeter.user);
+        greeter.base_theme = Some(theme);
         let people: Vec<(usize, String, u32)> = greeter
             .accounts
             .iter()
@@ -536,7 +563,7 @@ impl Tileception {
         let wallpapers = greeter.file.per_user.wallpaper;
         self.greeter = Some(Box::new(greeter));
         self.lock = LockState::Greeter;
-        self.apply_greeter_accent();
+        self.apply_greeter_look();
         self.read_greeter_cards(people, wallpapers);
         self.greeter_keyboard_layouts();
         self.greeter_person_keymap();
@@ -606,7 +633,7 @@ impl Tileception {
             greeter.previous_accent = (self.theme.accent, self.theme.accent_end);
             greeter.previous_user = index;
             greeter.switched_at = Instant::now();
-            self.apply_greeter_accent();
+            self.apply_greeter_look();
         }
         self.schedule_render();
     }
@@ -627,13 +654,30 @@ impl Tileception {
         }
     }
 
-    /// Shows the selected person's accent everywhere, notifications included.
-    fn apply_greeter_accent(&mut self) {
+    /// Shows the selected person's accent everywhere, notifications included,
+    /// with the accessibility switches over it.
+    fn apply_greeter_look(&mut self) {
         let Some(greeter) = self.greeter.as_deref().filter(|greeter| !greeter.locked()) else { return };
-        let base = crate::theme::Theme::from_file(&greeter.file.theme).unwrap_or_else(|_| self.theme.clone());
+        let base = greeter.base_theme.clone().unwrap_or_else(|| self.theme.clone());
         let (accent, accent_end) = greeter.accent_of(&base, greeter.user);
-        self.theme.accent = accent;
-        self.theme.accent_end = accent_end;
+        let base = crate::theme::Theme { accent, accent_end, ..base };
+        self.theme = access::apply(&base, greeter.aid_on(Aid::LargerText), greeter.aid_on(Aid::HighContrast));
+    }
+
+    /// Turns an accessibility switch on or off, and remembers it for the next boot.
+    fn toggle_greeter_aid(&mut self, aid: Aid) {
+        let Some(greeter) = self.greeter.as_deref_mut().filter(|greeter| !greeter.locked()) else { return };
+        let memory = &mut greeter.memory;
+        match aid {
+            Aid::LargerText => memory.larger_text = !memory.larger_text,
+            Aid::HighContrast => memory.high_contrast = !memory.high_contrast,
+        }
+        if !greeter.demo
+            && let Err(error) = greeter.memory.save(&greeter.memory_path)
+        {
+            tracing::warn!("greeter: could not remember the accessibility switches: {error}");
+        }
+        self.apply_greeter_look();
     }
 
     fn select_person(&mut self, index: usize) {
@@ -659,7 +703,7 @@ impl Tileception {
         greeter.attempts = 0;
         greeter.failed_at = None;
         greeter.session_cursor = greeter.session_of_selected();
-        self.apply_greeter_accent();
+        self.apply_greeter_look();
         self.greeter_person_keymap();
     }
 
@@ -706,8 +750,10 @@ impl Tileception {
             keysyms::KEY_Down => Some(Dir::Down),
             _ => None,
         };
-        // Up and down choose a session while that panel has focus.
-        let choosing = greeter.focus == Panel::Session && matches!(dir, Some(Dir::Up | Dir::Down)) && !logo;
+        // Up and down choose a session or a switch while that panel has focus.
+        let choosing = matches!(greeter.focus, Panel::Session | Panel::Accessibility)
+            && matches!(dir, Some(Dir::Up | Dir::Down))
+            && !logo;
         if let Some(dir) = dir
             && !choosing
         {
@@ -744,6 +790,21 @@ impl Tileception {
         match sym {
             keysyms::KEY_Tab => self.step_person(if mods.shift { -1 } else { 1 }),
             keysyms::KEY_ISO_Left_Tab => self.step_person(-1),
+            keysyms::KEY_Up | keysyms::KEY_Down if greeter.focus == Panel::Accessibility => {
+                if sym == keysyms::KEY_Up && greeter.aid_cursor == 0 {
+                    self.move_greeter_focus(Dir::Up);
+                } else if sym == keysyms::KEY_Up {
+                    greeter.aid_cursor -= 1;
+                } else {
+                    greeter.aid_cursor = (greeter.aid_cursor + 1).min(Aid::ALL.len() - 1);
+                }
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space
+                if greeter.focus == Panel::Accessibility =>
+            {
+                let aid = Aid::ALL[greeter.aid_cursor.min(Aid::ALL.len() - 1)];
+                self.toggle_greeter_aid(aid);
+            }
             keysyms::KEY_Up | keysyms::KEY_Down => {
                 if sym == keysyms::KEY_Up && greeter.session_cursor == 0 {
                     self.move_greeter_focus(Dir::Up);
@@ -983,6 +1044,10 @@ impl Tileception {
                 self.set_greeter_keymap(None, Some(layout));
                 return;
             }
+            Action::Aid(aid) => {
+                self.toggle_greeter_aid(aid);
+                return;
+            }
             Action::Keymap(keymap) => {
                 let picked = greeter.known().get(keymap).map(|known| (known.layout.clone(), known.variant.clone()));
                 if picked.is_some() {
@@ -1173,6 +1238,13 @@ impl Tileception {
                 self.greeter_submit();
             }
             Some(draw::Target::Run(action)) => self.run_greeter_action(action),
+            Some(draw::Target::Aid(row)) => {
+                greeter.focus = Panel::Accessibility;
+                greeter.aid_cursor = row;
+                if let Some(aid) = Aid::ALL.get(row) {
+                    self.toggle_greeter_aid(*aid);
+                }
+            }
             Some(draw::Target::Launcher) => self.toggle_greeter_palette(),
             Some(draw::Target::Layout) => self.open_layout_picker(),
             Some(draw::Target::Panel(panel)) => {
@@ -1299,6 +1371,50 @@ impl Greeter {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn greeter(users_as: UsersAs, people: &[&str]) -> Greeter {
+        let accounts = people
+            .iter()
+            .map(|login| Account { login: (*login).into(), name: (*login).into(), uid: 1000, icon: None, accent: None })
+            .collect();
+        let file = GreeterFile { users_as, ..GreeterFile::default() };
+        Greeter::with(file, accounts, Vec::new(), Memory::default(), PathBuf::new(), 0)
+    }
+
+    #[test]
+    fn people_are_tiles_only_when_there_is_a_choice() {
+        assert!(greeter(UsersAs::Tiles, &["robin", "sam"]).cards());
+        assert!(!greeter(UsersAs::Tiles, &["robin"]).cards());
+        assert!(!greeter(UsersAs::Tabs, &["robin", "sam"]).cards());
+        let mut locked = greeter(UsersAs::Tiles, &["robin", "sam"]);
+        locked.mode = Mode::Lock { locked_at: "18:02".into(), notifications: 0 };
+        assert!(!locked.cards());
+    }
+
+    #[test]
+    fn the_launcher_switches_accessibility() {
+        let labels = |greeter: &Greeter| -> Vec<String> {
+            greeter
+                .actions(None)
+                .into_iter()
+                .filter(|(action, _)| matches!(action, Action::Aid(_)))
+                .map(|(_, label)| label)
+                .collect()
+        };
+        let mut login = greeter(UsersAs::Tabs, &["robin"]);
+        assert_eq!(labels(&login), ["Turn on larger text", "Turn on high contrast"]);
+        login.memory.larger_text = true;
+        assert_eq!(labels(&login), ["Turn off larger text", "Turn on high contrast"]);
+        login.palette = Some(Palette { query: "contrast".into(), ..Default::default() });
+        assert_eq!(labels(&login), ["Turn on high contrast"]);
+        // Locked, the session's own settings apply.
+        login.palette = None;
+        login.mode = Mode::Lock { locked_at: "18:02".into(), notifications: 0 };
+        assert!(labels(&login).is_empty());
+        assert!(!login.aid_on(Aid::LargerText));
+    }
+
     #[test]
     fn ordinals() {
         let got: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111].into_iter().map(super::ordinal).collect();
