@@ -131,7 +131,7 @@ impl Tileception {
                     drawn.scale,
                 ))
             }
-            None => Some((geometry.loc.to_f64(), (1.0, 1.0))),
+            None => Some(((geometry.loc - self.x11_origin()).to_f64(), (1.0, 1.0))),
         }
     }
 

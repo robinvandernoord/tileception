@@ -736,7 +736,7 @@ impl Tileception {
                 } else if let Some(x11) = window.x11_surface() {
                     // X11 programs place their menus from this position.
                     let loc = (placement.rect.x.round() as i32, placement.rect.y.round() as i32);
-                    let _ = x11.configure(Rectangle::new(loc.into(), size));
+                    let _ = x11.configure(Rectangle::new(self.x11_origin() + Point::from(loc), size));
                 }
             }
         }
@@ -856,7 +856,7 @@ impl Tileception {
         } else if let Some(x11) = window.x11_surface() {
             let _ = x11.set_fullscreen(enable);
             if enable {
-                let _ = x11.configure(Rectangle::new((0, 0).into(), size));
+                let _ = x11.configure(Rectangle::new(self.x11_origin(), size));
             }
         }
         self.fullscreen = enable.then_some(window_id);
@@ -885,6 +885,15 @@ impl Tileception {
             self.peek_minimized();
         }
         self.apply_layout();
+    }
+
+    /// Where this output's top left corner is on the X screen. Xwayland lays
+    /// the outputs out as Wayland does, and constrains the X pointer to them:
+    /// an X11 window placed in output coordinates on an output that is not
+    /// leftmost (or with a gap where an output was) hangs partly off every
+    /// output in X, and clicks there land at the nearest output's edge.
+    pub fn x11_origin(&self) -> Point<i32, Logical> {
+        self.output.as_ref().map_or_else(Default::default, Output::current_location)
     }
 
     /// The whole output in logical pixels, including what bars reserve.
