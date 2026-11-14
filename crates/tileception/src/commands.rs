@@ -25,6 +25,8 @@ pub enum Command {
     Spawn(String),
     /// Prints the layout tree.
     Tree,
+    /// Prints the drag under way: pointer, modifier keys and files.
+    Drag,
     /// Lists outputs, or targets one for focus/window movement.
     Outputs,
     FocusOutput(String),
@@ -133,6 +135,8 @@ running. A reply starting with \"error\" exits with status 1.
 Inspecting:
   tree                      print the layout tree, with window ids, selection,
                             lock and display-sleep status
+  drag                      print whether a program's drag is under way, the
+                            pointer, the modifier keys held and the dragged files
   outputs                   list screens, positions, scales and the active screen
   focus-output <name>       direct input and desktop bindings to this screen
   move-output <name>        move the focused/selected windows to this screen
@@ -319,6 +323,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
     let action = match verb {
         "" => return Err("empty command".into()),
         "tree" => return Ok(Command::Tree),
+        "drag" if rest.is_empty() => return Ok(Command::Drag),
+        "drag" => return Err(format!("drag takes nothing, not {rest:?}")),
         "outputs" if args.is_empty() => return Ok(Command::Outputs),
         "focus-output" | "move-output" => {
             let [name] = args.as_slice() else { return Err(format!("{verb} needs one output name")) };
@@ -561,6 +567,7 @@ impl Tileception {
             Command::Action(action) => self.run(action),
             Command::Spawn(line) => self.spawn("sh", &["-c".to_string(), line]),
             Command::Tree => return Ok(crate::ipc::describe(self)),
+            Command::Drag => return Ok(self.drag_status()),
             Command::Outputs => return Ok(self.outputs_status()),
             Command::FocusOutput(name) => {
                 let area = self.area_named(&name).ok_or_else(|| format!("unknown output {name:?}"))?;
@@ -687,6 +694,8 @@ mod tests {
         assert_eq!(parse("move left"), Ok(Command::Action(Action::Move(Dir::Left))));
         assert_eq!(parse("spawn firefox --new-window"), Ok(Command::Spawn("firefox --new-window".into())));
         assert_eq!(parse("drop 10 20.5"), Ok(Command::Drop(10.0, 20.5)));
+        assert_eq!(parse("drag"), Ok(Command::Drag));
+        assert!(parse("drag now").is_err());
         assert_eq!(parse("resize left 20"), Ok(Command::Action(Action::Resize(-20.0, 0.0))));
         assert_eq!(parse("step-in pointer"), Ok(Command::Action(Action::StepInPointer)));
         assert_eq!(parse("cycle prev"), Ok(Command::Action(Action::Cycle(false))));
