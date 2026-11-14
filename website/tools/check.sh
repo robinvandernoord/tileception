@@ -32,6 +32,12 @@ import json, re, sys, xml.dom.minidom
 html = open('index.html', encoding='utf-8').read()
 for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S):
     json.loads(block)
+# External links open in a new tab.
+for page in ('index.html', '404.html'):
+    for tag in re.findall(r'<a\b[^>]*>', open(page, encoding='utf-8').read()):
+        if re.search(r'\bhref="https?://', tag) and not (
+                'target="_blank"' in tag and 'rel="noopener"' in tag):
+            sys.exit(f'check: external link in {page} needs target="_blank" rel="noopener": {" ".join(tag.split())}')
 json.load(open('site.webmanifest'))
 xml.dom.minidom.parse('sitemap.xml')
 PY
