@@ -3,183 +3,354 @@
 // Scrolling moves a camera from level to level. Without this script, or with reduced
 // motion, the same markup reads as a stacked page.
 (() => {
-  'use strict';
-  const root = document.documentElement;
+  "use strict";
+  const $root = document.documentElement;
 
   // Copy buttons work in both modes.
-  document.querySelectorAll('button[data-copy]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const el = document.getElementById(btn.dataset.copy);
-      const done = label => { btn.textContent = label; setTimeout(() => { btn.textContent = 'Copy'; }, 1600); };
-      const select = () => { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); done('Selected'); };
-      if (navigator.clipboard) navigator.clipboard.writeText(el.textContent).then(() => done('Copied'), select);
-      else select();
+  document.querySelectorAll("button[data-copy]").forEach(($button) => {
+    $button.addEventListener("click", () => {
+      const $source = document.getElementById($button.dataset.copy);
+      function show_done(label) {
+        $button.textContent = label;
+        setTimeout(() => {
+          $button.textContent = "Copy";
+        }, 1600);
+      }
+      function select_source() {
+        const range = document.createRange();
+        range.selectNodeContents($source);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        show_done("Selected");
+      }
+      if (navigator.clipboard) {
+        navigator.clipboard
+          .writeText($source.textContent)
+          .then(() => show_done("Copied"), select_source);
+      } else {
+        select_source();
+      }
     });
   });
 
   // Install variants swap the command in place, so the block keeps its size.
-  document.querySelectorAll('.cmd-tabs').forEach(tabs => {
-    const buttons = [...tabs.querySelectorAll('[role="tab"]')];
-    const select = btn => {
-      buttons.forEach(other => other.setAttribute('aria-selected', String(other === btn)));
-      document.getElementById(btn.getAttribute('aria-controls')).textContent = btn.dataset.cmd;
-    };
-    buttons.forEach(btn => btn.addEventListener('click', () => select(btn)));
-    tabs.hidden = false;
+  document.querySelectorAll(".cmd-tabs").forEach(($tabs) => {
+    const $$buttons = [...$tabs.querySelectorAll('[role="tab"]')];
+    function select_tab($button) {
+      $$buttons.forEach(($other) =>
+        $other.setAttribute("aria-selected", String($other === $button)),
+      );
+      document.getElementById(
+        $button.getAttribute("aria-controls"),
+      ).textContent = $button.dataset.cmd;
+    }
+    $$buttons.forEach(($button) =>
+      $button.addEventListener("click", () => select_tab($button)),
+    );
+    $tabs.hidden = false;
   });
 
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
 
-  const scroller = document.getElementById('scroller');
-  const stage = document.getElementById('stage');
-  const world = document.getElementById('world');
-  const hud = document.getElementById('hud-levels');
-  const levels = [...world.querySelectorAll('.lvl')];   // document order is depth order
-  const steps = levels.length - 1;
-  if (!scroller || steps < 1) return;
-  root.classList.add('zoom');
+  const $scroller = document.getElementById("scroller");
+  const $stage = document.getElementById("stage");
+  const $world = document.getElementById("world");
+  const $hud = document.getElementById("hud-levels");
+  const $$levels = [...$world.querySelectorAll(".lvl")]; // document order is depth order
+  const steps = $$levels.length - 1;
+  if (!$scroller || steps < 1) {
+    return;
+  }
+  $root.classList.add("zoom");
 
   // The last level ends on a small copy of the first one.
-  const loop = document.getElementById('loop');
-  const mini = levels[0].cloneNode(true);
-  mini.querySelector('.portal > .lvl')?.remove();
-  mini.removeAttribute('id');
-  mini.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
-  mini.setAttribute('aria-hidden', 'true');
-  mini.setAttribute('data-nosnippet', '');
-  mini.inert = true;
-  loop.appendChild(mini);
+  const $loop = document.getElementById("loop");
+  const $mini = $$levels[0].cloneNode(true);
+  $mini.querySelector(".portal > .lvl")?.remove();
+  $mini.removeAttribute("id");
+  $mini
+    .querySelectorAll("[id]")
+    .forEach(($element) => $element.removeAttribute("id"));
+  $mini.setAttribute("aria-hidden", "true");
+  $mini.setAttribute("data-nosnippet", "");
+  $mini.inert = true;
+  $loop.appendChild($mini);
 
   // Level links at the bottom of the screen
-  const colors = { r: 'var(--red)', y: 'var(--yellow)', b: 'var(--blue)', ink: 'var(--canvas)' };
-  const hudLinks = levels.map(lvl => {
-    const a = document.createElement('a');
-    a.href = '#' + lvl.id;
-    a.style.setProperty('--c', colors[lvl.dataset.color] || colors.ink);
-    const label = document.createElement('span'); label.textContent = lvl.dataset.name;
-    a.appendChild(label);
-    hud.appendChild(a);
-    return a;
+  const colors = {
+    r: "var(--red)",
+    y: "var(--yellow)",
+    b: "var(--blue)",
+    ink: "var(--canvas)",
+  };
+  const $$hud_links = $$levels.map(($level) => {
+    const $link = document.createElement("a");
+    $link.href = "#" + $level.id;
+    $link.style.setProperty("--c", colors[$level.dataset.color] || colors.ink);
+    const $label = document.createElement("span");
+    $label.textContent = $level.dataset.name;
+    $link.appendChild($label);
+    $hud.appendChild($link);
+    return $link;
   });
 
-  const snaps = levels.map(() => { const s = document.createElement('div'); s.className = 'snap'; scroller.appendChild(s); return s; });
+  // Each snap point gets its place before it joins the page. Unplaced, they would all sit
+  // at the same spot, the browser could pick the last one as the point the page is snapped
+  // to, and once layout() spreads them out it would follow that one down to the last level.
+  const $$snaps = $$levels.map((_level, index) => {
+    const $snap = document.createElement("div");
+    $snap.className = "snap";
+    $snap.style.top = `calc(${index} * 100svh)`;
+    $scroller.appendChild($snap);
+    return $snap;
+  });
 
-  const hudTop = document.querySelector('.hud-top');
-  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-  let W = 1600, H = 1000, seg = 1, rects = [], current = -1, bandTop = 0, bandBottom = 0;
-  let vw = 0, vh = 0, top0 = 0;
+  const $hud_top = document.querySelector(".hud-top");
+  let canvas_width = 1600,
+    canvas_height = 1000,
+    step_height = 1,
+    rects = [],
+    current = -1;
+  let band_top = 0,
+    band_bottom = 0,
+    view_width = 0,
+    view_height = 0,
+    scroller_top = 0;
+
+  function clamp(value, low, high) {
+    return Math.min(Math.max(value, low), high);
+  }
 
   // Fit a level into a portal cell; returns its offset and scale inside the parent level.
-  function place(child, cell) {
-    const cw = cell.clientWidth, ch = cell.clientHeight, s = Math.min(cw / W, ch / H);
-    const ox = (cw - W * s) / 2, oy = (ch - H * s) / 2;
-    child.style.transform = `translate(${ox}px, ${oy}px) scale(${s})`;
-    return { x: cell.offsetLeft + ox, y: cell.offsetTop + oy, s };
+  function place($child, $cell) {
+    const cell_width = $cell.clientWidth,
+      cell_height = $cell.clientHeight;
+    const scale = Math.min(
+      cell_width / canvas_width,
+      cell_height / canvas_height,
+    );
+    const offset_x = (cell_width - canvas_width * scale) / 2,
+      offset_y = (cell_height - canvas_height * scale) / 2;
+    $child.style.transform = `translate(${offset_x}px, ${offset_y}px) scale(${scale})`;
+    return {
+      x: $cell.offsetLeft + offset_x,
+      y: $cell.offsetTop + offset_y,
+      scale,
+    };
   }
 
   function layout() {
     // The stage is 100svh, so a mobile URL bar sliding in or out changes nothing here.
     // Skip those resizes instead of rebuilding everything in the middle of a scroll.
-    if (stage.clientWidth === vw && stage.clientHeight === vh) return;
-    vw = stage.clientWidth; vh = stage.clientHeight;
-    const portrait = vw / vh < 0.85;
-    root.classList.toggle('portrait', portrait);
-    // Keep the level bar (and on wide screens the top bar) on black, outside the picture.
-    bandBottom = vh - hud.offsetTop + 8;
-    bandTop = portrait ? 0 : hudTop.offsetHeight + 8;
-    W = portrait ? 900 : 1600;
-    // On phones the canvas takes the screen's own proportions, within what the content needs.
-    H = portrait ? Math.round(clamp(W * (vh - bandTop - bandBottom) / vw, 1500, 1900)) : 1000;
-    root.style.setProperty('--H', H + 'px');
-    root.style.setProperty('--hr', String(H / W));
-    rects = [{ x: 0, y: 0, w: W, h: H }];
-    for (let k = 0; k < steps; k++) {
-      const p = place(levels[k + 1], levels[k].querySelector(':scope > .portal'));
-      const r = rects[k], sc = r.w / W;
-      rects.push({ x: r.x + p.x * sc, y: r.y + p.y * sc, w: r.w * p.s, h: r.h * p.s });
+    if (
+      $stage.clientWidth === view_width &&
+      $stage.clientHeight === view_height
+    ) {
+      return;
     }
-    place(mini, loop);
-    seg = vh;
-    scroller.style.height = (steps * seg + vh) + 'px';
-    snaps.forEach((s, i) => { s.style.top = (i * seg) + 'px'; });
-    top0 = scroller.getBoundingClientRect().top + scrollY;
+    view_width = $stage.clientWidth;
+    view_height = $stage.clientHeight;
+    const portrait = view_width / view_height < 0.85;
+    $root.classList.toggle("portrait", portrait);
+    // Keep the level bar (and on wide screens the top bar) on black, outside the picture.
+    band_bottom = view_height - $hud.offsetTop + 8;
+    band_top = portrait ? 0 : $hud_top.offsetHeight + 8;
+    canvas_width = portrait ? 900 : 1600;
+    // On phones the canvas takes the screen's own proportions, within what the content needs.
+    canvas_height = portrait
+      ? Math.round(
+          clamp(
+            (canvas_width * (view_height - band_top - band_bottom)) /
+              view_width,
+            1500,
+            1900,
+          ),
+        )
+      : 1000;
+    $root.style.setProperty("--H", canvas_height + "px");
+    $root.style.setProperty("--hr", String(canvas_height / canvas_width));
+    rects = [{ x: 0, y: 0, width: canvas_width, height: canvas_height }];
+    for (let depth = 0; depth < steps; depth++) {
+      const placed = place(
+        $$levels[depth + 1],
+        $$levels[depth].querySelector(":scope > .portal"),
+      );
+      const parent = rects[depth],
+        parent_scale = parent.width / canvas_width;
+      rects.push({
+        x: parent.x + placed.x * parent_scale,
+        y: parent.y + placed.y * parent_scale,
+        width: parent.width * placed.scale,
+        height: parent.height * placed.scale,
+      });
+    }
+    place($mini, $loop);
+    step_height = view_height;
+    $scroller.style.height = steps * step_height + view_height + "px";
+    $$snaps.forEach(($snap, index) => {
+      $snap.style.top = index * step_height + "px";
+    });
+    scroller_top = $scroller.getBoundingClientRect().top + scrollY;
     frame();
   }
 
-  const ease = t => t * t * (3 - 2 * t);
+  function ease(progress) {
+    return progress * progress * (3 - 2 * progress);
+  }
 
   // While the camera moves, the world is one composited layer that the GPU only scales;
   // re-rendering all of its text at a new size every frame is what makes phones stutter.
   // Once scrolling stops the hint is dropped so the browser redraws it sharp.
-  let settleTimer = 0, settled = false;
-  const settle = () => { world.classList.remove('moving'); settled = true; };
+  let settle_timer = 0,
+    settled = false;
+  function settle() {
+    $world.classList.remove("moving");
+    settled = true;
+  }
 
   function frame() {
-    const ph = vh - bandTop - bandBottom;
-    const p = clamp((scrollY - top0) / seg, 0, steps);
-    const k = Math.min(Math.floor(p), steps - 1);
+    const picture_height = view_height - band_top - band_bottom;
+    const position = clamp((scrollY - scroller_top) / step_height, 0, steps);
+    const depth = Math.min(Math.floor(position), steps - 1);
     // Scrolling snaps to one level at a time, so the zoom fills the whole step between them.
-    const t = ease(p - k);
-    const a = rects[k], b = rects[k + 1], r = b.w / a.w;
+    const progress = ease(position - depth);
+    const from = rects[depth],
+      to = rects[depth + 1],
+      ratio = to.width / from.width;
     // A zoom between two nested frames is a pure scale about one fixed point.
-    const fx = (b.x - r * a.x) / (1 - r), fy = (b.y - r * a.y) / (1 - r), m = Math.pow(r, t);
-    const cx = fx + (a.x - fx) * m, cy = fy + (a.y - fy) * m, cw = a.w * m, ch = a.h * m;
-    const S = Math.min(vw / cw, ph / ch);
-    world.style.transform = `translate(${(vw - cw * S) / 2 - cx * S}px, ${bandTop + (ph - ch * S) / 2 - cy * S}px) scale(${S})`;
+    const fixed_x = (to.x - ratio * from.x) / (1 - ratio),
+      fixed_y = (to.y - ratio * from.y) / (1 - ratio);
+    const zoom = Math.pow(ratio, progress);
+    const camera_x = fixed_x + (from.x - fixed_x) * zoom,
+      camera_y = fixed_y + (from.y - fixed_y) * zoom;
+    const camera_width = from.width * zoom,
+      camera_height = from.height * zoom;
+    const scale = Math.min(
+      view_width / camera_width,
+      picture_height / camera_height,
+    );
+    const shift_x = (view_width - camera_width * scale) / 2 - camera_x * scale;
+    const shift_y =
+      band_top +
+      (picture_height - camera_height * scale) / 2 -
+      camera_y * scale;
+    $world.style.transform = `translate(${shift_x}px, ${shift_y}px) scale(${scale})`;
 
-    const lv = t > 0.5 ? k + 1 : k;
-    if (lv !== current) {
+    const level = progress > 0.5 ? depth + 1 : depth;
+    if (level !== current) {
       // Halfway through a zoom, let the layer redraw once at the new scale so the
       // level coming in is never stretched far beyond its last rendering.
-      if (current >= 0) settle();
-      current = lv;
-      hudLinks.forEach((a, i) => { if (i === lv) a.setAttribute('aria-current', 'step'); else a.removeAttribute('aria-current'); });
+      if (current >= 0) {
+        settle();
+      }
+      current = level;
+      $$hud_links.forEach(($link, index) => {
+        if (index === level) {
+          $link.setAttribute("aria-current", "step");
+        } else {
+          $link.removeAttribute("aria-current");
+        }
+      });
     }
-    root.classList.toggle('hud-on', p > 0.35);
+    $root.classList.toggle("hud-on", position > 0.35);
   }
 
-  function scrollToLevel(i, smooth) {
-    scrollTo({ top: top0 + i * seg, behavior: smooth ? 'smooth' : 'auto' });
+  function scroll_to_level(index, smooth) {
+    scrollTo({
+      top: scroller_top + index * step_height,
+      behavior: smooth ? "smooth" : "auto",
+    });
   }
-  const levelOf = el => levels.indexOf(el.closest('.lvl'));
+
+  function level_of($element) {
+    return $$levels.indexOf($element.closest(".lvl"));
+  }
+
+  function level_for_hash(hash) {
+    return $$levels.findIndex(($level) => "#" + $level.id === hash);
+  }
 
   // In-page links go to a level's resting point instead of the element's box.
-  document.addEventListener('click', e => {
-    const a = e.target.closest('a[href^="#"]');
-    if (a) {
-      const i = levels.findIndex(l => '#' + l.id === a.getAttribute('href'));
-      if (i < 0) return;
-      e.preventDefault();
-      scrollToLevel(i, true);
-      history.replaceState(null, '', i === 0 ? location.pathname : '#' + levels[i].id);
+  document.addEventListener("click", (event) => {
+    const $link = event.target.closest('a[href^="#"]');
+    if ($link) {
+      const index = level_for_hash($link.getAttribute("href"));
+      if (index < 0) {
+        return;
+      }
+      event.preventDefault();
+      scroll_to_level(index, true);
+      history.replaceState(
+        null,
+        "",
+        index === 0 ? location.pathname : "#" + $$levels[index].id,
+      );
       return;
     }
     // Clicking a deeper level zooms to it.
-    if (e.target.closest('button, a, code, kbd')) return;
-    const lvl = e.target.closest('.lvl');
-    if (lvl && world.contains(lvl)) { const i = levelOf(lvl); if (i > current) scrollToLevel(i, true); }
+    if (event.target.closest("button, a, code, kbd")) {
+      return;
+    }
+    const $level = event.target.closest(".lvl");
+    if ($level && $world.contains($level)) {
+      const index = level_of($level);
+      if (index > current) {
+        scroll_to_level(index, true);
+      }
+    }
   });
 
   // Keyboard focus on something in another level brings that level into view.
-  document.addEventListener('focusin', e => {
-    if (!world.contains(e.target) || !e.target.matches(':focus-visible')) return;
-    const i = levelOf(e.target);
-    if (i >= 0 && i !== current) scrollToLevel(i, false);
+  document.addEventListener("focusin", (event) => {
+    if (
+      !$world.contains(event.target) ||
+      !event.target.matches(":focus-visible")
+    ) {
+      return;
+    }
+    const index = level_of(event.target);
+    if (index >= 0 && index !== current) {
+      scroll_to_level(index, false);
+    }
   });
 
+  // Runs the handler at most once per animation frame, however many events arrive.
   let queued = false;
-  const request = fn => () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; fn(); }); } };
-  addEventListener('scroll', request(() => {
-    settled = false;
-    frame();
-    // Re-adding the hint in the frame that dropped it would undo the redraw.
-    if (!settled) world.classList.add('moving');
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(settle, 150);
-  }), { passive: true });
-  addEventListener('resize', request(layout));
+  function once_per_frame(handler) {
+    return () => {
+      if (queued) {
+        return;
+      }
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        handler();
+      });
+    };
+  }
+
+  addEventListener(
+    "scroll",
+    once_per_frame(() => {
+      settled = false;
+      frame();
+      // Re-adding the hint in the frame that dropped it would undo the redraw.
+      if (!settled) {
+        $world.classList.add("moving");
+      }
+      clearTimeout(settle_timer);
+      settle_timer = setTimeout(settle, 150);
+    }),
+    { passive: true },
+  );
+  addEventListener("resize", once_per_frame(layout));
 
   layout();
-  const start = levels.findIndex(l => '#' + l.id === location.hash);
-  if (start > 0) scrollToLevel(start, false);
+  const start = level_for_hash(location.hash);
+  if (start > 0) {
+    scroll_to_level(start, false);
+  }
 })();

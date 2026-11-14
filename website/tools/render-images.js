@@ -1,27 +1,35 @@
 // Renders the social preview image, the PNG icons and favicon.ico into ../public.
 // Run from the repository root: node website/tools/render-images.js
 // Needs Playwright with Chromium (npm i -g playwright, or npx playwright install chromium).
-const fs = require('fs');
-const path = require('path');
-const { chromium } = require('playwright');
+const fs = require("fs");
+const path = require("path");
+const { chromium } = require("playwright");
 
 const tools = __dirname;
-const pub = path.join(tools, '..', 'public');
+const pub = path.join(tools, "..", "public");
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1200, height: 630 } });
-  await page.goto('file://' + path.join(tools, 'og.html'));
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 630 },
+  });
+  await page.goto("file://" + path.join(tools, "og.html"));
   await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({ path: path.join(pub, 'og.png') });
+  await page.screenshot({ path: path.join(pub, "og.png") });
 
-  const svg = fs.readFileSync(path.join(pub, 'favicon.svg'), 'utf8');
+  const svg = fs.readFileSync(path.join(pub, "favicon.svg"), "utf8");
   const render = async (size) => {
     await page.setViewportSize({ width: size, height: size });
-    await page.setContent(`<style>*{margin:0}svg{display:block}</style>${snap(svg, size)}`);
+    await page.setContent(
+      `<style>*{margin:0}svg{display:block}</style>${snap(svg, size)}`,
+    );
     return page.screenshot();
   };
-  for (const [name, size] of [['apple-touch-icon.png', 180], ['icon-192.png', 192], ['icon-512.png', 512]]) {
+  for (const [name, size] of [
+    ["apple-touch-icon.png", 180],
+    ["icon-192.png", 192],
+    ["icon-512.png", 512],
+  ]) {
     fs.writeFileSync(path.join(pub, name), await render(size));
   }
   // favicon.ico for browsers and crawlers that ask for /favicon.ico; 48 px
@@ -29,7 +37,7 @@ const pub = path.join(tools, '..', 'public');
   const sizes = [16, 32, 48];
   const pngs = [];
   for (const size of sizes) pngs.push(await render(size));
-  fs.writeFileSync(path.join(pub, 'favicon.ico'), ico(sizes, pngs));
+  fs.writeFileSync(path.join(pub, "favicon.ico"), ico(sizes, pngs));
   await browser.close();
 })();
 
@@ -38,13 +46,23 @@ const pub = path.join(tools, '..', 'public');
 function snap(svg, size) {
   const k = size / 32;
   return svg
-    .replace('viewBox="0 0 32 32"', `width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"`)
+    .replace(
+      'viewBox="0 0 32 32"',
+      `width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"`,
+    )
     .replace(/<rect([^>]*)\/>/g, (rect, attrs) => {
-      const get = (name, fallback) => Number((attrs.match(new RegExp(` ${name}="([^"]*)"`)) || [, fallback])[1]);
-      const x = get('x', 0), y = get('y', 0), w = get('width'), h = get('height');
-      const x0 = Math.round(x * k), y0 = Math.round(y * k);
+      const get = (name, fallback) =>
+        Number(
+          (attrs.match(new RegExp(` ${name}="([^"]*)"`)) || [, fallback])[1],
+        );
+      const x = get("x", 0),
+        y = get("y", 0),
+        w = get("width"),
+        h = get("height");
+      const x0 = Math.round(x * k),
+        y0 = Math.round(y * k);
       const box = ` x="${x0}" y="${y0}" width="${Math.round((x + w) * k) - x0}" height="${Math.round((y + h) * k) - y0}"`;
-      return `<rect${box}${attrs.replace(/ (x|y|width|height)="[^"]*"/g, '')}/>`;
+      return `<rect${box}${attrs.replace(/ (x|y|width|height)="[^"]*"/g, "")}/>`;
     });
 }
 
