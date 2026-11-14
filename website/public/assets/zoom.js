@@ -10,10 +10,11 @@
   document.querySelectorAll("button[data-copy]").forEach(($button) => {
     $button.addEventListener("click", () => {
       const $source = document.getElementById($button.dataset.copy);
+      const $label = $button.querySelector(".copy-label") || $button;
       function show_done(label) {
-        $button.textContent = label;
+        $label.textContent = label;
         setTimeout(() => {
-          $button.textContent = "Copy";
+          $label.textContent = "Copy";
         }, 1600);
       }
       function select_source() {
@@ -34,6 +35,18 @@
     });
   });
 
+  // Shows a command on one line as far as it fits. A long URL may wrap only after
+  // a slash, never inside a word, and the text that is copied stays one line.
+  function show_command($code, command) {
+    $code.replaceChildren();
+    command.split(/(?<=\/)/).forEach((part, index) => {
+      if (index > 0) {
+        $code.appendChild(document.createElement("wbr"));
+      }
+      $code.appendChild(document.createTextNode(part));
+    });
+  }
+
   // Install variants swap the command in place, so the block keeps its size.
   document.querySelectorAll(".cmd-tabs").forEach(($tabs) => {
     const $$buttons = [...$tabs.querySelectorAll('[role="tab"]')];
@@ -41,17 +54,66 @@
       $$buttons.forEach(($other) =>
         $other.setAttribute("aria-selected", String($other === $button)),
       );
-      document.getElementById(
-        $button.getAttribute("aria-controls"),
-      ).textContent = $button.dataset.cmd;
+      show_command(
+        document.getElementById($button.getAttribute("aria-controls")),
+        $button.dataset.cmd,
+      );
     }
     $$buttons.forEach(($button) =>
       $button.addEventListener("click", () => select_tab($button)),
     );
+    select_tab(
+      $$buttons.find(
+        ($button) => $button.getAttribute("aria-selected") === "true",
+      ) || $$buttons[0],
+    );
     $tabs.hidden = false;
   });
 
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const reduced_motion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The promo video: a silent preview loops while it is on screen (never with
+  // reduced motion), and its tile opens the whole video with sound in a dialog.
+  // Without this script the tile is a plain link to the video file.
+  const $watch = document.getElementById("watch");
+  document.querySelectorAll("[data-watch]").forEach(($link) => {
+    const $preview = $link.querySelector("video");
+    if ($preview && !reduced_motion && "IntersectionObserver" in window) {
+      $preview.preload = "auto";
+      new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            $preview.play().catch(() => {});
+          } else {
+            $preview.pause();
+          }
+        });
+      }).observe($preview);
+    }
+    if (!$watch || !$watch.showModal) {
+      return;
+    }
+    $link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const $video = $watch.querySelector("video");
+      $watch.showModal();
+      $video.currentTime = 0;
+      $video.play().catch(() => {});
+    });
+  });
+  if ($watch) {
+    $watch.addEventListener("close", () =>
+      $watch.querySelector("video").pause(),
+    );
+    // A click on the dark backdrop closes it, as Escape does.
+    $watch.addEventListener("click", (event) => {
+      if (event.target === $watch) {
+        $watch.close();
+      }
+    });
+  }
+
+  if (reduced_motion) {
     return;
   }
 
@@ -74,6 +136,11 @@
   $mini
     .querySelectorAll("[id]")
     .forEach(($element) => $element.removeAttribute("id"));
+  // The copy shows the preview's still instead of playing it a second time.
+  $mini.querySelectorAll("video").forEach(($video) => {
+    $video.removeAttribute("src");
+    $video.preload = "none";
+  });
   $mini.setAttribute("aria-hidden", "true");
   $mini.setAttribute("data-nosnippet", "");
   $mini.inert = true;
@@ -240,13 +307,18 @@
     $world.style.transform = `translate(${shift_x}px, ${shift_y}px) scale(${scale})`;
 
     const level = progress > 0.5 ? depth + 1 : depth;
+    if (position > 0.35) {
+      $root.classList.add("zoomed");
+    }
     if (level !== current) {
       // Halfway through a zoom, let the layer redraw once at the new scale so the
       // level coming in is never stretched far beyond its last rendering.
       if (current >= 0) {
         settle();
       }
+      $$levels[current]?.classList.remove("current");
       current = level;
+      $$levels[current].classList.add("current");
       $$hud_links.forEach(($link, index) => {
         if (index === level) {
           $link.setAttribute("aria-current", "step");
@@ -275,6 +347,17 @@
 
   // In-page links go to a level's resting point instead of the element's box.
   document.addEventListener("click", (event) => {
+    // A pointer click anywhere in a deeper level, even on a link or a button in
+    // its small preview, zooms in by one level, however deep the click landed.
+    // Keyboard activation (detail 0) acts on the focused element as usual.
+    const $level = event.target.closest(".lvl");
+    if (event.detail > 0 && $level && $world.contains($level)) {
+      if (level_of($level) > current) {
+        event.preventDefault();
+        scroll_to_level(current + 1, true);
+        return;
+      }
+    }
     const $link = event.target.closest('a[href^="#"]');
     if ($link) {
       const index = level_for_hash($link.getAttribute("href"));
@@ -289,17 +372,6 @@
         index === 0 ? location.pathname : "#" + $$levels[index].id,
       );
       return;
-    }
-    // Clicking a deeper level zooms to it.
-    if (event.target.closest("button, a, code, kbd")) {
-      return;
-    }
-    const $level = event.target.closest(".lvl");
-    if ($level && $world.contains($level)) {
-      const index = level_of($level);
-      if (index > current) {
-        scroll_to_level(index, true);
-      }
     }
   });
 

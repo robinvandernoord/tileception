@@ -167,20 +167,36 @@
                 </h1>
               </div>
               <div class="blk deco a-wht"></div>
-              <div class="blk a-lede mid">
+              <div class="blk a-lede end">
                 <p>
                   Tileception is a Wayland compositor for Linux. Windows sit
                   side by side in a tree of tiles, and you zoom between its
                   levels instead of digging through a stack.
                 </p>
-                <p class="hint"><strong>Scroll to zoom in.</strong></p>
-              </div>
-              <div class="blk y a-yel end">
                 <p class="small">
-                  <strong>Free and open source.</strong><br />Written in Rust on
+                  <strong>Free and open source.</strong> Written in Rust on
                   Smithay. Xwayland included.
                 </p>
+                <p class="hint"><strong>Scroll to zoom in.</strong></p>
               </div>
+              <a
+                class="blk y a-yel watch"
+                href="assets/video/promo.mp4"
+                data-watch
+                ><video
+                  src="assets/video/promo-preview.mp4"
+                  poster="assets/video/promo-preview.jpg"
+                  muted
+                  loop
+                  playsinline
+                  preload="none"
+                  aria-hidden="true"
+                ></video
+                ><span class="watch-label"
+                  ><span class="play" aria-hidden="true"></span>Watch the
+                  video<span class="watch-time">0:53</span></span
+                ></a
+              >
               <div class="blk b deco a-blu"></div>
 
               <div class="blk portal a-portal">
@@ -197,7 +213,7 @@
                       <span class="sq sq-r">Tile it.</span>
                     </h2>
                   </div>
-                  <div class="blk a-copy mid">
+                  <div class="blk a-copy end">
                     <p>
                       Open a window and it takes half of the focused tile, split
                       along the longer side. No dragging, no empty space to fill
@@ -210,12 +226,21 @@
                   </div>
                   <div class="blk split a-keys">
                     <div class="blk r end">
+                      <div class="glyph g-half" aria-hidden="true">
+                        <i></i><i class="on">$_</i>
+                      </div>
                       <p><kbd>Super+T</kbd><br />terminal</p>
                     </div>
                     <div class="blk end">
+                      <div class="glyph g-quarter" aria-hidden="true">
+                        <i></i><i></i><i class="on">www</i>
+                      </div>
                       <p><kbd>Super+B</kbd><br />browser</p>
                     </div>
                     <div class="blk end">
+                      <div class="glyph g-eighth" aria-hidden="true">
+                        <i></i><i></i><b><i></i><i class="on">~/</i></b>
+                      </div>
                       <p><kbd>Super+E</kbd><br />files</p>
                     </div>
                   </div>
@@ -234,7 +259,7 @@
                           <span class="sq sq-y">Nest it.</span>
                         </h2>
                       </div>
-                      <div class="blk a-copy mid">
+                      <div class="blk a-copy end">
                         <p>
                           Splits go inside splits, as deep as you like. Drag a
                           window onto a tile's edge to dock it there, onto its
@@ -293,7 +318,7 @@
                               <span class="sq sq-b">Zoom it.</span>
                             </h2>
                           </div>
-                          <div class="blk a-copy mid">
+                          <div class="blk a-copy end">
                             <p>
                               <kbd>Super+=</kbd> steps in toward the focused
                               window and <kbd>Super+-</kbd> steps back out. Or
@@ -306,15 +331,26 @@
                           </div>
                           <div class="blk split a-keys">
                             <div class="blk b end">
+                              <div class="glyph g-all" aria-hidden="true">
+                                <i class="on"></i><i class="on"></i
+                                ><i class="on"></i><i class="on"></i
+                                ><i class="on"></i><i class="on"></i>
+                              </div>
                               <p><kbd>Super+O</kbd><br />everything at once</p>
                             </div>
                             <div class="blk end">
+                              <div class="glyph g-one" aria-hidden="true">
+                                <i class="on">[ ]</i>
+                              </div>
                               <p>
                                 <kbd>Super+M</kbd><br />zoom onto the focused
                                 window
                               </p>
                             </div>
                             <div class="blk end">
+                              <div class="glyph g-views" aria-hidden="true">
+                                <i class="on">1</i><i>2</i><i>3</i>
+                              </div>
                               <p><kbd>Super+1</kbd><br />saved views 1 to 9</p>
                             </div>
                           </div>
@@ -445,7 +481,27 @@
                                         class="copy"
                                         data-copy="install-cmd"
                                       >
-                                        Copy
+                                        <svg
+                                          viewBox="0 0 16 16"
+                                          aria-hidden="true"
+                                        >
+                                          <rect
+                                            x="5"
+                                            y="5"
+                                            width="9"
+                                            height="9"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                          />
+                                          <path
+                                            d="M3 11V3h8"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            stroke-width="2"
+                                          />
+                                        </svg>
+                                        <span class="copy-label">Copy</span>
                                       </button>
                                     </div>
                                     <p class="small">
@@ -465,9 +521,12 @@
                                       >Back to the top</a
                                     >
                                   </div>
-                                  <div class="blk y a-note end">
-                                    <p><a href="#home">Start over ↑</a></p>
-                                  </div>
+                                  <a class="blk y a-note again" href="#home"
+                                    ><span class="again-q">Again?</span
+                                    ><span class="again-go"
+                                      >Start over&nbsp;↑</span
+                                    ></a
+                                  >
                                   <div class="blk split a-links">
                                     <a
                                       class="blk r end"
@@ -537,5 +596,22 @@
         >
       </p>
     </footer>
+
+    <dialog
+      class="watch-dialog"
+      id="watch"
+      aria-label="Tileception in 53 seconds"
+    >
+      <video
+        src="assets/video/promo.mp4"
+        poster="assets/video/promo.jpg"
+        controls
+        playsinline
+        preload="none"
+      ></video>
+      <form method="dialog">
+        <button type="submit" class="watch-close">Close</button>
+      </form>
+    </dialog>
   </body>
 </html>

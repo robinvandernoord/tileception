@@ -8,6 +8,7 @@ website/
     index.html       the page; all content is in the markup
     assets/site.css  De Stijl look, stacked layout and zoom layout
     assets/zoom.js   the scroll-driven zoom
+    assets/video     the promo video, its silent preview and their stills
     install          the `curl -fsSL https://tileception.space/install | sh` script:
                      asks how to set up, adds apt.tileception.space and installs
                      the package

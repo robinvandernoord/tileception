@@ -71,10 +71,16 @@ code {
   font-family: var(--f-mono);
   font-weight: 500;
 }
+/* A keycap: a heavier bottom edge reads as a key at a glance. */
 kbd {
+  display: inline-block;
   font-size: 0.8em;
-  padding: 0.02em 0.35em;
-  border: 0.14em solid currentColor;
+  line-height: 1.25;
+  padding: 0.04em 0.4em 0;
+  border: 0.12em solid currentColor;
+  border-bottom-width: 0.28em;
+  border-radius: 0.22em;
+  vertical-align: 0.05em;
   white-space: nowrap;
 }
 code {
@@ -141,11 +147,6 @@ code {
   flex-direction: column;
   justify-content: flex-end;
 }
-.mid {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
 .split {
   display: grid;
   gap: var(--rule);
@@ -156,13 +157,25 @@ code {
   text-decoration: none;
 }
 a.blk {
+  position: relative;
   font-weight: 700;
   font-size: 1.15em;
   text-decoration: none;
+  transition: transform 0.12s;
 }
+/* A link tile presses in, showing more of the black rule around it. */
 a.blk:hover {
-  text-decoration: underline;
-  text-decoration-thickness: 0.1em;
+  transform: scale(0.97);
+}
+.a-links a.blk::after {
+  content: "\2197";
+  position: absolute;
+  top: 0.7em;
+  right: 0.8em;
+  transition: transform 0.15s;
+}
+.a-links a.blk:hover::after {
+  transform: translate(0.12em, -0.12em);
 }
 
 .display {
@@ -338,7 +351,9 @@ h3 {
   align-items: stretch;
   background: var(--ink);
   color: var(--canvas);
-  margin: 0.2em 0 0.7em;
+  border: 0.16em solid var(--ink);
+  box-shadow: 0.35em 0.35em 0 var(--yellow);
+  margin: 0.2em 0.35em 1.05em 0;
   max-width: 100%;
 }
 .cmd code {
@@ -348,13 +363,26 @@ h3 {
   font-size: 0.8em;
   overflow-wrap: anywhere;
 }
+/* Shown, not copied: the copy button reads the code's text. */
+.cmd code::before {
+  content: "$ ";
+  color: var(--yellow);
+}
 .copy {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
   font: 700 0.7em var(--f-body);
   background: var(--yellow);
   color: var(--ink);
   border: 0;
   padding: 0 1.1em;
   cursor: pointer;
+}
+.copy svg {
+  width: 1.1em;
+  height: 1.1em;
+  flex: none;
 }
 .copy:hover {
   background: var(--canvas);
@@ -655,9 +683,11 @@ html.zoom .l2 > .a-head h2 {
 
 /* portrait canvases, 900 x 1700 */
 html.zoom.portrait .l0 {
-  grid-template: "nav nav nav" 80px "head head head" 430px "lede lede lede" 1fr "red yel portal" calc(
-      344px * var(--hr)
-    ) / 170px 330px 344px;
+  grid-template:
+    "nav nav nav" 80px "head head head" 430px "lede lede lede" 1fr "yel yel portal" calc(
+      344px * var(--hr) - 124px
+    )
+    "red red portal" 110px / 170px 330px 344px;
 }
 html.zoom.portrait .l0 > .a-wht,
 html.zoom.portrait .l0 > .a-blu {
@@ -753,19 +783,29 @@ html.zoom.hud-on .hud-top {
 html.zoom.hud-on .hud-top a {
   pointer-events: auto;
 }
+.hud-top .brand,
+.hud-top .tag,
+.hud-top .hud-get {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  border: 3px solid var(--ink);
+}
 .hud-top .brand {
   background: var(--canvas);
-  border: 3px solid var(--ink);
-  padding: 4px 10px;
+  padding: 0 10px;
   font-size: 20px;
 }
 .hud-top .hud-get {
   background: var(--red);
   color: var(--canvas);
-  border: 3px solid var(--ink);
-  padding: 6px 14px;
+  padding: 0 16px;
+  font-size: 16px;
   font-weight: 700;
   text-decoration: none;
+}
+.hud-top .hud-get:hover {
+  background: var(--ink);
 }
 html.zoom .hud-levels {
   display: flex;
@@ -848,8 +888,7 @@ html.zoom .portal .portal {
 }
 .hud-top .tag {
   font-size: 13px;
-  border-width: 3px;
-  padding: 6px 8px;
+  padding: 0 10px;
 }
 .warn {
   background: var(--yellow);
@@ -858,4 +897,413 @@ html.zoom .portal .portal {
   margin: 0.8em 0;
   font-size: 0.82em;
   line-height: 1.3;
+}
+
+/* Key tiles: a small screen showing where the window lands. The window a key
+   opens is in the level's colour (red tiles, blue zooms). */
+.glyph {
+  --on: var(--red);
+  display: grid;
+  gap: 0.18em;
+  padding: 0.18em;
+  width: 100%;
+  max-width: 7em;
+  aspect-ratio: 16 / 10;
+  margin-bottom: auto;
+  background: var(--ink);
+}
+.l3 .glyph {
+  --on: var(--blue);
+}
+.glyph i,
+.glyph b {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  background: var(--canvas);
+}
+.glyph i.on {
+  background: var(--on);
+  color: var(--canvas);
+  font: 500 0.5em/1 var(--f-mono);
+  font-style: normal;
+  padding: 0.4em;
+  align-content: start;
+}
+.glyph b {
+  gap: inherit;
+  background: var(--ink);
+}
+.glyph.g-half {
+  grid-template-columns: 1fr 1fr;
+}
+.glyph.g-quarter,
+.glyph.g-eighth {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.glyph.g-quarter > :first-child,
+.glyph.g-eighth > :first-child {
+  grid-row: span 2;
+}
+.glyph.g-eighth > b {
+  grid-template-columns: 1fr 1fr;
+}
+.glyph.g-all {
+  grid-template-columns: repeat(3, 1fr);
+}
+.glyph.g-views {
+  grid-template-columns: repeat(3, 1fr);
+  align-items: stretch;
+}
+.glyph.g-views i {
+  font: 500 0.5em/1 var(--f-mono);
+  font-style: normal;
+  padding: 0.4em;
+}
+/* The window and the outline around it stand out on its own colour. */
+.r .glyph i.on,
+.b .glyph i.on {
+  background: var(--canvas);
+  color: var(--ink);
+}
+html:not(.zoom) .glyph {
+  margin-bottom: 1em;
+}
+html.zoom.portrait .glyph {
+  position: absolute;
+  top: 1.1em;
+  right: 1.3em;
+  width: 4.2em;
+}
+html.zoom.portrait .a-keys > .blk {
+  position: relative;
+}
+
+/* The ending: a big way back, and the mini start page marks where you are. */
+a.again {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.15em;
+}
+.again-q {
+  font-family: var(--f-mono);
+  font-weight: 500;
+  font-size: 0.6em;
+}
+.again-go {
+  font: 900 3.2em/0.84 var(--f-display);
+  text-transform: uppercase;
+  transition: transform 0.15s;
+}
+a.again:hover .again-go {
+  transform: translateY(-0.08em);
+}
+html:not(.zoom) a.again {
+  min-height: 160px;
+}
+html:not(.zoom) .again-go {
+  font-size: clamp(48px, 7vw, 88px);
+}
+html.zoom .loop .portal {
+  background: var(--red);
+  outline: 0.3em solid var(--canvas);
+  outline-offset: -0.8em;
+}
+html.zoom .loop .portal::after {
+  content: "you are here";
+  position: absolute;
+  right: 1.2em;
+  bottom: 1em;
+  font: 500 1.2em/1 var(--f-mono);
+  color: var(--canvas);
+}
+
+/* A portal is a door: on hover it takes the next level's colour and a tab. */
+html.zoom .lvl > .portal {
+  --next: var(--canvas);
+}
+html.zoom .l0 > .portal,
+html.zoom .l4 > .portal {
+  --next: var(--red);
+}
+html.zoom .l1 > .portal {
+  --next: var(--yellow);
+}
+html.zoom .l2 > .portal {
+  --next: var(--blue);
+}
+html.zoom .lvl.current > .portal::after {
+  content: "Zoom in \2192";
+  position: absolute;
+  z-index: 3;
+  right: 0;
+  bottom: 0;
+  padding: 0.35em 0.5em;
+  background: var(--next);
+  color: var(--ink);
+  font: 500 0.6em/1 var(--f-mono);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+html.zoom .l2.current > .portal::after {
+  color: var(--canvas);
+}
+html.zoom .lvl.current > .loop::after {
+  content: "Start over \2191";
+  background: var(--yellow);
+  color: var(--ink);
+}
+html.zoom .lvl.current > .portal {
+  transition: outline-width 0.15s;
+  outline: 0 solid var(--next);
+}
+@media (hover: hover) {
+  html.zoom .lvl.current > .portal:hover {
+    outline-width: 0.25em;
+  }
+  html.zoom .lvl.current > .portal:hover::after {
+    opacity: 1;
+  }
+}
+/* Until the first zoom, the first door pulses. */
+html.zoom:not(.zoomed) #home > .portal {
+  animation: door 2.4s ease-in-out 1s infinite;
+}
+@keyframes door {
+  0%,
+  100% {
+    outline: 0 solid #d42a1e00;
+  }
+  50% {
+    outline: 0.3em solid var(--red);
+  }
+}
+
+html.zoom.portrait .loop .portal::after {
+  font-size: 0.7em;
+}
+html.zoom.portrait .l5 > .a-head .cmd {
+  margin-bottom: 0.8em;
+}
+html.zoom.portrait .l5 > .a-head > .small {
+  font-size: 0.72em;
+}
+html.zoom.portrait .l5 > .a-links {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  font-size: 0.8em;
+}
+
+/* The promo video: a silent preview in a yellow frame; the whole video with
+   sound opens in a dialog. */
+a.watch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+  padding: 0.45em 0.45em 0.6em;
+}
+a.watch video {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--ink);
+  border: 0.12em solid var(--ink);
+}
+.watch-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding-inline: 0.4em;
+  font-size: 0.75em;
+  line-height: 1.1;
+}
+.watch-time {
+  margin-left: auto;
+  font: 500 0.85em/1 var(--f-mono);
+}
+.play {
+  flex: none;
+  width: 1.6em;
+  height: 1.6em;
+  background: var(--ink);
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transition: transform 0.15s;
+}
+a.watch:hover .play {
+  transform: scale(1.15);
+}
+html:not(.zoom) a.watch {
+  min-height: 260px;
+}
+html:not(.zoom) a.watch video {
+  aspect-ratio: 16 / 9;
+  flex: none;
+}
+/* On a phone the tile is tall: the preview keeps its own shape at the top. */
+html.zoom.portrait a.watch {
+  justify-content: space-between;
+}
+html.zoom.portrait a.watch video {
+  flex: none;
+  aspect-ratio: 16 / 9;
+}
+html.zoom.portrait a.watch .watch-label {
+  flex-wrap: wrap;
+  font-size: 0.9em;
+  padding: 0 0.3em 0.2em;
+}
+
+.watch-dialog {
+  width: min(92vw, 1280px);
+  max-width: none;
+  padding: 0;
+  border: 6px solid var(--ink);
+  background: var(--ink);
+  box-shadow: 14px 14px 0 var(--yellow);
+}
+.watch-dialog::backdrop {
+  background: #121212e6;
+}
+.watch-dialog video {
+  display: block;
+  width: 100%;
+  max-height: 80vh;
+  background: var(--ink);
+}
+.watch-dialog form {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+.watch-close {
+  font: 700 15px var(--f-body);
+  background: var(--yellow);
+  color: var(--ink);
+  border: 0;
+  border-left: 6px solid var(--ink);
+  border-bottom: 6px solid var(--ink);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.watch-close:hover {
+  background: var(--canvas);
+}
+
+/* 404: the page is a tile in a larger composition, and the camera zooms in
+   until it fills the screen. The portal is 30% of the screen in each
+   direction, so its content is laid out at screen size and scaled by 0.3; the
+   world then scales by 1 / 0.3 about the one point that stays put. */
+.nf {
+  overflow: hidden;
+}
+.nf-world {
+  position: fixed;
+  inset: 0;
+  background: var(--ink);
+  transform-origin: 82.857% 74.286%;
+  animation: nf-zoom 1.4s cubic-bezier(0.65, 0, 0.35, 1) 0.5s both;
+}
+@keyframes nf-zoom {
+  to {
+    transform: scale(3.3333);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nf-world {
+    animation: none;
+    transform: scale(3.3333);
+  }
+}
+.nf-tile,
+.nf-portal {
+  position: absolute;
+  background: var(--canvas);
+}
+.nf-nav {
+  left: 1%;
+  top: 1.5%;
+  width: 98%;
+  height: 8%;
+}
+.nf-red {
+  left: 1%;
+  top: 11%;
+  width: 20%;
+  height: 87.5%;
+  background: var(--red);
+}
+.nf-head {
+  left: 22%;
+  top: 11%;
+  width: 55%;
+  height: 40%;
+}
+.nf-yel {
+  left: 78%;
+  top: 11%;
+  width: 21%;
+  height: 40%;
+  background: var(--yellow);
+}
+.nf-wht {
+  left: 22%;
+  top: 52%;
+  width: 35%;
+  height: 46.5%;
+}
+.nf-blu {
+  left: 89%;
+  top: 52%;
+  width: 10%;
+  height: 30%;
+  background: var(--blue);
+}
+.nf-low {
+  left: 58%;
+  top: 83%;
+  width: 41%;
+  height: 15.5%;
+}
+.nf-portal {
+  left: 58%;
+  top: 52%;
+  width: 30%;
+  height: 30%;
+  overflow: hidden;
+  background: var(--ink);
+}
+.nf .lvl.nf-lvl {
+  width: 100vw;
+  height: 100vh;
+  transform: scale(0.3);
+  transform-origin: 0 0;
+  display: grid;
+  grid-template:
+    "nav nav" auto
+    "head head" 1fr
+    "text back" minmax(120px, 30%)
+    / 1fr minmax(0, 0.6fr);
+}
+.nf .nf-lvl > .a-nav {
+  grid-area: nav;
+}
+.nf .nf-head-blk {
+  grid-area: head;
+  min-height: 0;
+}
+.nf .nf-lvl h1.display {
+  font-size: min(15vw, 22vh);
+}
+@media (max-width: 640px) {
+  .nf .lvl.nf-lvl {
+    grid-template:
+      "nav" auto
+      "head" 1fr
+      "text" auto
+      "back" auto
+      / 1fr;
+  }
 }
