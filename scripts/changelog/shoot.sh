@@ -88,11 +88,15 @@ for scene in "${scenes[@]}"; do
     fi
 done
 
-# Publish what was taken, 1600 pixels wide.
-for png in "$WORK"/*.png; do
-    [ -e "$png" ] || continue
-    ffmpeg -v error -y -i "$png" -vf scale=1600:-2 -q:v 3 "$PUBLISH/$(basename "$png" .png).jpg"
-    echo "${PUBLISH#"$ROOT"/}/$(basename "$png" .png).jpg"
+# Publish what these scenes took, 1600 pixels wide; pictures of scenes
+# from earlier runs stay unpublished.
+for scene in "${scenes[@]}"; do
+    name=$(basename "$scene" .sh)
+    for png in "$WORK/$name"-*.png; do
+        [ -e "$png" ] || continue
+        ffmpeg -v error -y -i "$png" -vf scale=1600:-2 -q:v 3 "$PUBLISH/$(basename "$png" .png).jpg"
+        echo "${PUBLISH#"$ROOT"/}/$(basename "$png" .png).jpg"
+    done
 done
 
 if [ ${#failed[@]} -gt 0 ]; then

@@ -15,6 +15,11 @@
 # or changed, and every msg names its own socket. Its launcher sees only a few
 # common apps, so the pictures never show what is installed on this machine.
 
+# The promo video gives Doctor a real agent; a scene must never start one, on
+# Robin's account and with answers that differ every run. An agent id that
+# does not exist keeps Doctor and the duck from starting any.
+export PROMO_AGENT=changelog-no-agent
+
 . "$ROOT/scripts/promo/lib.sh"
 
 # The system data an instance may see: icons and MIME types from /usr/share,

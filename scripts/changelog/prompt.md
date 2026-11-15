@@ -125,6 +125,10 @@ happens over time, such as a file being reloaded, rarely shows in a still:
 two pictures that differ only because the scene changed a file prove nothing
 to the reader. Leave such features without media.
 
+Don't open Doctor or the rubber duck in a scene. No agent is set up for
+scenes, so their panels only show an agent chooser, and a real agent would run
+on Robin's account. Leave their features without media.
+
 The scenes run on Robin's machine, and the pictures are published. They must
 not show anything of it: its user name (the power menu and lock screen greet
 the account by name), host name, installed apps, packages, Wi-Fi networks or
