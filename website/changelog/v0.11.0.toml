@@ -8,10 +8,11 @@ title = "A frosted theme"
 text = "Set `frost = true` under `[theme]` and the bar, launcher, notifications, power menu and cards turn translucent, blurring what is behind them. Windows stay solid."
 
 [features.media]
-kind = "image"
-src = "frost-after.jpg"
-alt = "The frosted launcher open over the Tileception website, whose red, yellow and blue shapes show blurred through it, with a frosted notification beside it"
-caption = "The page behind the launcher shows through, blurred. The window itself stays solid."
+kind = "compare"
+before = "frost-before.jpg"
+after = "frost-after.jpg"
+alt = "The launcher open over the Tileception website"
+caption = "The launcher in 0.10.0, and in 0.11.0 with `frost = true`: the page behind it shows through, blurred."
 
 [[features]]
 area = "compositor"
@@ -27,7 +28,7 @@ caption = "The magnifier shows the pixels under the pointer and the hex code you
 [[features]]
 area = "home"
 title = "Tuya smart home in the notification panel"
-text = "Run `tileception home import` once and set `enabled = true` under `[home]`. Super+N then shows your Tuya lights, plugs and air conditioners by room, switched over your local network."
+text = "Run `tileception home import` once and set `enabled = true` under `[home]`. Super+N then shows your Tuya lights, plugs and air conditioners by room, and switches them over your local network."
 
 [[features]]
 area = "notifications"
@@ -43,7 +44,7 @@ caption = "After Super+Enter, the popup's buttons have numbers and the arrow key
 [[features]]
 area = "launcher"
 title = "Jump to the folders you use most"
-text = "Type `z` and parts of a path, such as `z proj web`, to list the folders you visit most, as z and zoxide know them. Enter opens one in the file manager, Ctrl+Enter a terminal there."
+text = "Type `z` and parts of a path, such as `z proj web`, to list the folders you visit most, from z or zoxide. Enter opens one in the file manager, and Ctrl+Enter opens a terminal there."
 
 [[features]]
 area = "launcher"
@@ -53,7 +54,7 @@ text = "Alt+Enter on an app shows the command it runs and the `.desktop` file it
 [[features]]
 area = "bar"
 title = "The calendar opens under the clock"
-text = "Clicking the clock opens the calendar right below it, with seconds, and the screen no longer dims. The unread count is now a small badge on the bell's corner."
+text = "Clicking the clock opens the calendar right below it, and its clock shows seconds. The screen no longer dims. The bell now shows its unread count in a small corner badge."
 
 [features.media]
 kind = "compare"
@@ -69,7 +70,7 @@ text = "Holding Backspace, an arrow or a letter repeats it in the launcher, rubb
 
 [[features]]
 area = "handoff"
-title = "A colour pick follows the pointer"
+title = "The colour picker follows the pointer to other screens"
 text = "Move the pointer onto another screen, or to another machine through handoff, and the colour picker carries on there."
 
 [[features]]

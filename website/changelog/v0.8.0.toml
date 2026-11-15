@@ -14,7 +14,7 @@ text = "Choose Recommended, Minimal or Customize, and whether Tileception's logi
 
 [[features]]
 area = "greeter"
-title = "The lock screen uses the login screen's tiles"
+title = "Player controls and a notification count on the lock screen"
 text = "The built-in lock screen shows the player controls and a count of new notifications, without their text. Turn either off under `[lock]` in `/etc/tileception/greeter.toml`."
 
 [[features]]
@@ -38,7 +38,7 @@ kind = "compare"
 before = "launcher-before.jpg"
 after = "launcher-after.jpg"
 alt = "The launcher searching for window on a small screen"
-caption = "A search on a small screen. In 0.7.0 the list runs past the bottom edge. In 0.8.0 it shows four of six results and scrolls, and the launcher button sits on the bar."
+caption = "On a small screen, 0.7.0's launcher runs past the bottom edge. In 0.8.0 the list scrolls, and a launcher button sits on the bar."
 
 [[features]]
 area = "doctor"
@@ -57,7 +57,7 @@ text = "`tileception msg caches` prints how many images Tileception keeps for te
 
 [[fixes]]
 area = "ui"
-text = "On small screens the launcher scrolls, the power menu wraps into rows and the minimized-window strip pages through its windows, so all of them fit."
+text = "On small screens the launcher scrolls, the power menu wraps into rows and the minimized-window strip pages through its windows."
 
 [[fixes]]
 area = "screenshot"

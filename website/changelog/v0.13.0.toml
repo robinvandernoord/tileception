@@ -33,12 +33,12 @@ text = "The panel's Bluetooth block lists paired devices with a switch to connec
 [[features]]
 area = "bluetooth"
 title = "Bluetooth devices reconnect after sleep"
-text = "Devices that were connected before the computer slept, or before Bluetooth was switched off, reconnect a few seconds after it is back. Set `reconnect = false` under `[bluetooth]` to turn this off."
+text = "Devices that were connected before the computer slept, or before Bluetooth was switched off, reconnect a few seconds after the computer wakes or Bluetooth is back on. Set `reconnect = false` under `[bluetooth]` to turn this off."
 
 [[features]]
 area = "plugins"
 title = "Smart home in the bar and the launcher"
-text = "While something is on, a chip in the bar says what. In the launcher, `home living` switches a room and `home desk 40` dims a light."
+text = "A chip in the bar names the smart home devices that are on. In the launcher, `home living` switches a room and `home desk 40` dims a light."
 
 [[features]]
 area = "plugins"

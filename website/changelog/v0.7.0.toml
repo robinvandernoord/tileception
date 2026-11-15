@@ -10,7 +10,7 @@ text = "The built-in bar shows tray icons, including those of Qt and AppIndicato
 kind = "image"
 src = "tray-after.jpg"
 alt = "The top bar with two tray icons and an open overflow list of three more entries"
-caption = "Five test entries in the default three slots: two icons, and the overflow button with the rest. Set the slots with `tray_max_icons` under `[shell]`."
+caption = "Two tray icons and the overflow button fill the default three slots, and the button holds the rest. Set the slots with `tray_max_icons` under `[shell]`."
 
 [[fixes]]
 area = "autostart"

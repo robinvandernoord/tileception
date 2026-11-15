@@ -5,7 +5,7 @@ lede = "Two computers running Tileception can now share one mouse and keyboard, 
 [[features]]
 area = "handoff"
 title = "Two computers can share one mouse and keyboard"
-text = "On both computers, set `enabled = true` and the same `passphrase` under `[handoff]` in `config.toml`. The pointer then crosses to the other screen, and windows, drags, the clipboard and copied files go along. Ctrl+Super+Escape brings input home."
+text = "On both computers, set `enabled = true` and the same `passphrase` under `[handoff]`. The pointer then crosses to the other screen, and windows, drags, the clipboard and copied files cross with it. Ctrl+Super+Escape brings input back."
 
 [features.media]
 kind = "image"
@@ -20,7 +20,7 @@ text = "KeePassXC 2.8 and newer can type usernames and passwords into the window
 
 [[features]]
 area = "screensaver"
-title = "D-Bus requests keep the screen awake"
+title = "Apps can keep the screen awake"
 text = "Apps that ask over D-Bus (`org.freedesktop.ScreenSaver`), such as VLC and other X11 players, now pause the lock and screen-off timers, even when their window is hidden."
 
 [[features]]

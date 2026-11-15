@@ -1,11 +1,11 @@
 version = "0.18.0"
 date = 2026-11-13
-lede = "Updates now lists Flatpaks, snaps and firmware beside the APT packages, and it works on Linux Mint. The notification panel takes the keyboard, and a feedback report can carry a screenshot."
+lede = "Updates now lists Flatpaks, snaps and firmware beside the APT packages, and it works on Linux Mint. The notification panel works from the keyboard, and feedback can include a screenshot."
 
 [[features]]
 area = "notifications"
 title = "The notification panel works from the keyboard"
-text = "The panel takes the keyboard when it opens. Tab chooses a notification, Enter opens it and Backspace dismisses it. D switches Do not disturb, and Escape closes the panel."
+text = "The panel gets the keyboard when it opens. Tab chooses a notification, Enter opens it and Backspace dismisses it. D switches Do not disturb, and Escape closes the panel."
 
 [features.media]
 kind = "image"
@@ -29,7 +29,7 @@ text = "Notes, or N, shows what changed in the highlighted update. Skip version 
 area = "updates"
 issue = 69
 title = "Updates has a Settings page"
-text = "It switches automatic updates by `unattended-upgrades` on or off. It also tests the Ubuntu mirrors for speed and lag, with progress shown while it runs, and Use switches to the one you pick."
+text = "It switches automatic updates by `unattended-upgrades` on or off. It also tests the Ubuntu mirrors for speed and lag, and Use switches to the mirror you pick."
 
 [[features]]
 area = "updates"
@@ -40,7 +40,7 @@ text = "On Mint, the automatic updates switch turns Update Manager's automatic u
 area = "feedback"
 issue = 35
 title = "Feedback can include a screenshot"
-text = "A switch in the feedback dialog adds a picture of the screen behind it. The switch starts off. Open in browser copies the picture for Ctrl+V, then puts your old clipboard back."
+text = "A switch in the feedback dialog adds a picture of the screen behind it. The switch starts off. Open in browser copies the picture, so you can paste it into the issue with Ctrl+V."
 
 [features.media]
 kind = "image"
@@ -62,8 +62,8 @@ text = "In a Tileception session, `fastfetch` shows Tileception's tiles instead 
 [[features]]
 area = "battery"
 issue = 57
-title = "Battery thresholds take every theme colour"
-text = "A battery threshold can use the muted or text colour, as Settings already offered. Picking either used to fail with an error when you applied it."
+title = "Battery thresholds accept the muted and text colours"
+text = "A battery threshold can now use the muted or text colour that Settings offers. Applying either used to fail."
 
 [[fixes]]
 area = "clipboard"
@@ -83,7 +83,7 @@ text = "The Updates window fits a narrow area, and its footer buttons no longer 
 [[fixes]]
 area = "power"
 issue = 54
-text = 'With `lock = "none"` in `[shell]`, Suspend in the power menu and the launcher suspends instead of doing nothing.'
+text = 'With `lock = "none"` in `[shell]`, choosing Suspend in the power menu or the launcher now puts the computer to sleep.'
 
 [[fixes]]
 area = "notify"

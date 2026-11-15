@@ -1,6 +1,6 @@
 version = "0.15.0"
 date = 2026-11-10
-lede = "Timers and alarms start from a sentence in the launcher. Two new chips in the bar install updates and join Wi-Fi networks."
+lede = "Set timers and alarms by typing in the launcher. Two new chips in the bar install updates and join Wi-Fi networks."
 
 [[features]]
 area = "timers"
@@ -49,7 +49,7 @@ text = "Drag a block such as Bluetooth by its title to move it. The bar's chips 
 area = "plugins"
 issue = 64
 title = "Plugins can show cards under the launcher"
-text = "A plugin's cards sit below the media card, with buttons and a progress bar. `[plugins.<id>.launcher] cards = false` hides them."
+text = "A plugin's cards sit below the media card, with buttons and a progress bar. Set `cards = false` under `[plugins.<id>.launcher]` to hide them."
 
 [[features]]
 area = "plugins"
@@ -74,7 +74,7 @@ text = "When the focused window closes and only a floating window is left in vie
 [[fixes]]
 area = "state"
 issue = 51
-text = "A window that opens while another is fullscreen ends fullscreen and shows up, instead of taking the keyboard unseen."
+text = "Opening a window while another is fullscreen ends fullscreen, so the new window is in view when it gets the keyboard."
 
 [[fixes]]
 area = "input"
@@ -89,9 +89,9 @@ text = "Dragging the divider between two tiles squeezed below their minimum widt
 [[fixes]]
 area = "settings"
 issue = 59
-text = "Applying a change on the shortcut, window rule or display screens of Settings leaves that section where it was in `config.toml`."
+text = "Applying shortcut, window rule or display changes in Settings keeps that section where it was in `config.toml`."
 
 [[fixes]]
 area = "handoff"
 issue = 61
-text = "Locking always pauses sharing with linked machines, and resuming works again after a lock made while no machine was linked."
+text = "Locking always pauses sharing with linked machines. Sharing resumes afterwards, even if no machine was linked when you locked."

@@ -5,12 +5,12 @@ lede = "Doctor arrives: a panel where a coding agent answers questions about you
 [[features]]
 area = "doctor"
 title = "Ask Doctor about your setup"
-text = "Super+slash opens a panel beside the desktop where a coding agent from the ACP Registry answers in plain language. `tileception msg doctor mode` sets what it may change without asking: `ask`, `config` or `yolo`."
+text = "Super+slash opens Doctor, a panel beside the desktop where a coding agent answers questions about your setup. `tileception msg doctor mode` sets what it may change without asking: `ask`, `config` or `yolo`."
 
 [[features]]
 area = "media"
 title = "Volume, brightness and playback controls"
-text = "The media keys change volume, brightness and playback, and a small display shows the new level. `tileception msg volume up` and `mic mute` do the same from a script."
+text = "The media keys change volume, brightness and playback, and a small display shows the new level. Scripts can do the same with `tileception msg volume up` or `tileception msg mic mute`."
 
 [[features]]
 area = "desktop"
@@ -24,8 +24,8 @@ text = "Super+H minimizes the focused or selected windows, and Super+Shift+H bri
 
 [[features]]
 area = "windows"
-title = "Windows a little too big for their tile stay live"
-text = "A window slightly larger than its tile, usually because of its minimum size, is drawn live and cut off instead of as a scaled-down preview."
+title = "Windows slightly too big for their tile keep updating"
+text = "A window slightly larger than its tile, usually because of its minimum size, keeps updating, cut off at the tile's edge, instead of turning into a scaled-down preview."
 
 [[features]]
 area = "launcher"
@@ -34,8 +34,8 @@ text = "Ctrl+V pastes the clipboard's text into the launcher's search field."
 
 [[features]]
 area = "portal"
-title = "Apps follow light or dark"
-text = "Tileception tells apps whether to use light or dark styles through the desktop portal. It is dark unless you set `colour_scheme` in `[theme]`."
+title = "Apps follow the light or dark style"
+text = "Tileception tells apps through the desktop portal to use dark styles. Set `colour_scheme` under `[theme]` to change it."
 
 [[features]]
 area = "desktop"

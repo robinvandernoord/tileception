@@ -6,7 +6,7 @@ lede = "Super+D now clears the desk, and holding it lets you peek at a new dashb
 area = "desk"
 issue = 87
 title = "Super+D clears the desk"
-text = "Tap Super+D to move every window on the screen to the minimized strip, and tap it again to bring them back where they were. Hold it to peek: windows fade to outlines until you let go."
+text = "Tap Super+D to move every window to the minimized strip, and tap again to bring them back where they were. Hold it, and the windows fade to outlines until you let go."
 
 [features.media]
 kind = "compare"
@@ -19,7 +19,7 @@ caption = "Super+D in 0.18.0 opens the Desktop tile beside the windows. Held in 
 area = "desk"
 issue = 87
 title = "The welcome screen has a dashboard"
-text = "A clear or empty desk shows a dashboard beside the welcome screen: your notification count, plus cards, pictures and animations from plugins. Drag items to move them, or click the round x to remove one."
+text = "An empty desk, or one cleared with Super+D, shows a dashboard beside the welcome screen: your notification count, and cards, pictures and animations from plugins. Drag items to move them, or click the round x to remove one."
 
 [features.media]
 kind = "image"
@@ -31,7 +31,7 @@ caption = "A desk cleared with Super+D: the welcome screen, and the dashboard be
 area = "calendar"
 issue = 42
 title = "The bar shows your calendar"
-text = "List .ics files or calendar addresses under `[calendar]` in `config.toml`. A chip beside the clock names the event on now or the next one today. The calendar marks every day that has events."
+text = "List `.ics` files or calendar addresses under `[calendar]` in `config.toml`. A chip beside the clock names the current event, or the next one today. The calendar marks every day that has events."
 
 [features.media]
 kind = "image"
@@ -49,7 +49,7 @@ text = "Closing Settings with unapplied changes now asks whether to apply or dis
 kind = "image"
 src = "settings-after.jpg"
 alt = "Settings asking Apply your changes? with Discard, Cancel and Apply buttons"
-caption = "One switch changed, then the X clicked."
+caption = "Closing Settings after changing a switch asks you to apply or discard the change, or cancel."
 
 [[features]]
 area = "plugins"
@@ -61,7 +61,7 @@ text = "`tileception msg plugin add <command>` writes the plugin to `config.toml
 area = "handoff"
 issue = 84
 title = "Handoff handles screens of different sizes"
-text = "The pointer crosses to another machine only where the two screen edges face each other, as between screens of one machine. Turn on `stretch_screen_edges` for the old way. Each keyboard types with its own layout on either machine."
+text = "The pointer crosses to another machine only where the two screen edges face each other, as between screens of one machine. `stretch_screen_edges` brings back crossing along the whole edge. Each keyboard types with its own layout on either machine."
 
 [[features]]
 area = "smart-home"

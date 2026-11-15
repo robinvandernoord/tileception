@@ -5,7 +5,7 @@ lede = "Touchpads get gestures, and touchscreens work. On a laptop, Tileception 
 [[features]]
 area = "compositor"
 title = "The bar shows the battery, and the border warns when it runs low"
-text = "On a laptop, the bar shows the battery's charge. Hover it for the time left. On battery, the focus border turns yellow, orange and red at 35, 25 and 15%, and green while charging."
+text = "On a laptop, the bar shows the battery's charge, and hovering it shows the time left. On battery, the focus border turns yellow at 35%, orange at 25% and red at 15%. It is green while charging."
 
 [features.media]
 kind = "image"
@@ -31,7 +31,7 @@ text = "Alerts come at 20, 15 and 10%, and the computer hibernates at 5%. Power 
 [[features]]
 area = "compositor"
 title = "The screen locks before the computer sleeps"
-text = "Closing the lid, Suspend in the power menu and `systemctl suspend` all lock the screen first, so the desktop never shows on waking. Set `lock_before_sleep = false` under `[idle]` to turn it off."
+text = "The screen locks before the computer sleeps, whether you close the lid, choose Suspend or run `systemctl suspend`. Set `lock_before_sleep = false` under `[idle]` to turn it off."
 
 [[features]]
 area = "compositor"

@@ -10,12 +10,12 @@ text = "Run `tileception msg duck` to let a rubber duck out onto the bottom of t
 kind = "image"
 src = "duck-after.jpg"
 alt = "A pixel-art rubber duck at the bottom of the screen, with a speech bubble holding a typed question"
-caption = "Click the duck and it asks what you want to know, beside a thumbnail of your screen. Enter asks, Esc closes."
+caption = "Click the duck to type a question beside a thumbnail of your screen. Enter sends it, and Escape closes it."
 
 [[fixes]]
 area = "focus"
-text = "A new window gets the keyboard only after Tileception has sent it its first size and state, not before."
+text = "A new window gets the keyboard once Tileception has told it its first size and state."
 
 [[fixes]]
 area = "event-loop"
-text = "Tileception passes input and other events on to apps promptly."
+text = "Apps get their input from Tileception without delay."

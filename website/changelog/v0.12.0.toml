@@ -26,7 +26,7 @@ text = "Under `[outputs.\"DP-2\"]`, set a screen's `mode`, `transform`, `positio
 [[features]]
 area = "outputs"
 title = "Proportional crossing between screens"
-text = "Moving the pointer to a neighbouring screen can now map the whole edge proportionally, so the pointer lands at the matching point on a screen of another size."
+text = "When the pointer crosses to a screen of another size, it can now land at the matching point along that screen's edge."
 
 [[features]]
 area = "launcher"
@@ -47,7 +47,7 @@ caption = "Review shows the issue as GitHub will get it. System details stay out
 [[features]]
 area = "doctor"
 title = "Doctor switches the agent's own permission mode"
-text = "Ask, Tweak and Yolo now also set the agent's own mode, such as Claude's `bypassPermissions` for Yolo. Doctor holds your message until the agent confirms the change."
+text = "Ask, Tweak and Yolo now also set the agent's own permission mode. Doctor holds your message until the agent confirms the change."
 
 [[features]]
 area = "notifications"

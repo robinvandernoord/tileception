@@ -4,7 +4,7 @@ date = 2026-11-10
 [[fixes]]
 area = "render"
 issue = 63
-text = "A fullscreen window that caps its own size, such as a browser's picture-in-picture video, now grows to fit the screen and sits in the middle, instead of staying small in the top-left corner."
+text = "A fullscreen window that limits its own size, such as picture-in-picture video, now fills the screen, centred, instead of staying small in the top-left corner."
 
 [[fixes]]
 area = "paste"

@@ -1,18 +1,18 @@
 version = "0.14.0"
 date = 2026-11-10
-lede = "Doctor files problem reports with `/report` and runs the agents you already installed. Plugins reload without a restart."
+lede = "Doctor opens the feedback dialog with `/report` and runs the agents you already installed. Plugins reload without a restart."
 
 [[features]]
 area = "doctor"
 issue = 27
-title = "Report a problem from Doctor with /report"
+title = "Report a problem from Doctor with `/report`"
 text = "Type `/report` in Doctor to open the feedback dialog over it. `/report Wi-Fi drops` fills in the title. An option, unchecked at first, adds your last Doctor question and answer."
 
 [[features]]
 area = "doctor"
 issue = 30
 title = "Doctor uses agents you already installed"
-text = "Doctor runs an agent that is already on your computer, such as a global npm package or `opencode` on your `PATH`, instead of downloading it. To choose the program yourself, set it under `[doctor.agents]` in `config.toml`."
+text = "Doctor runs an agent that is already on your computer instead of downloading it. To choose the program yourself, set it under `[doctor.agents]` in `config.toml`."
 
 [[features]]
 area = "plugins"
@@ -26,14 +26,8 @@ text = "A launcher plugin can show its quick results first and append slower one
 
 [[features]]
 area = "clipboard"
-title = "Clipboard persistence comes with Tileception"
+title = "Keeping the clipboard needs no extra package"
 text = "Session installs and Debian packages include their own copy of `wl-clip-persist`, named `tileception-clip-persist`. `persist = true` under `[clipboard]` works without installing anything else."
-
-[[features]]
-area = "tools"
-issue = 31
-title = "cargo-plane installs even when cargo-binstall fails"
-text = "For building from source: when cargo-binstall fails, for example on a GitHub API rate limit, `make tools` downloads the cargo-plane release directly. Nothing is compiled."
 
 [[fixes]]
 area = "launcher"

@@ -24,13 +24,13 @@ text = "Button style in Settings, or `buttons` in `[theme]`, draws a panel's mai
 area = "updates"
 issue = 66
 title = "Updates show what they remove before installing"
-text = "Below the updates, the Available page lists packages that installing everything would remove, and updates apt keeps back or is still phasing in. When packages would go, Install shows a preview first."
+text = "The Available page lists the packages an update would remove, and the updates APT keeps back or is still phasing in. If anything would be removed, Install shows a preview first."
 
 [[features]]
 area = "updates"
 issue = 66
-title = "Repair, autoremove and the last task's log"
-text = "When apt says the package system is broken, the Updates window offers Repair. Housekeeping offers to remove dependencies nothing needs any more. The last task's output stays, under Show log and on the History page."
+title = "Repair packages and clear out unused ones"
+text = "When APT reports broken packages, the Updates window offers Repair, and Housekeeping removes dependencies nothing needs. The last task's output stays under Show log and on the History page."
 
 [[features]]
 area = "updates"
@@ -42,13 +42,13 @@ text = "Restart, power off, suspend and log out wait for a running update. Choos
 area = "updates"
 issue = 66
 title = "Updates ask for the password through polkit"
-text = 'A small helper that polkit starts as root makes the package changes. Tileception is the polkit agent, so its prompt also answers `pkexec`. Set `polkit = "none"` in `[shell]` to use another agent.'
+text = 'Tileception asks for your password through polkit, for updates and for `pkexec` too. Set `polkit = "none"` under `[shell]` to use another polkit agent.'
 
 [[features]]
 area = "updates"
 issue = 66
 title = "Package lists refresh by themselves"
-text = "Every `check_hours`, Tileception refreshes the package lists without asking for a password. It skips this on a metered connection and below 30% battery."
+text = "Tileception refreshes the package lists without a password, as often as `check_hours` says. It skips this on a metered connection and below 30% battery."
 
 [[features]]
 area = "updates"
@@ -67,7 +67,7 @@ text = "Installing chosen updates no longer marks them as installed by hand, so 
 
 [[fixes]]
 area = "updates"
-text = "The list of updates catches up within seconds when apt runs in a terminal."
+text = "The list of updates catches up within seconds when `apt` runs in a terminal."
 
 [[fixes]]
 area = "updates"

@@ -4,9 +4,9 @@ date = 2026-10-17
 [[features]]
 area = "launcher"
 title = "Give an app its own launch arguments"
-text = "List extra arguments per app under `[launch_args]`, by desktop file name, such as `firefox = [\"-P\", \"work\"]`. They are passed as they are, never through a shell, and an option the app's desktop file already sets wins."
+text = "List extra arguments per app under `[launch_args]`, by desktop file name, such as `firefox = [\"-P\", \"work\"]`. They go to the app without a shell. An option the app's desktop file already sets wins."
 
 [[features]]
 area = "packaging"
-title = "The apt key comes in a package"
-text = "The installer adds `tileception-archive-keyring`, which owns the archive's signing key, so a new key arrives as an ordinary update."
+title = "The APT key comes in a package"
+text = "The installer adds `tileception-archive-keyring`, so a new signing key arrives as an ordinary update."
