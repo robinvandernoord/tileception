@@ -511,10 +511,14 @@ html.zoom.portrait {
   --W: 900px;
   --H: 1700px;
   --hr: 1.889;
+  /* A short screen gets a shorter canvas (down to 1500px, see zoom.js), and
+     the type shrinks with it so every tile still fits; from 1845px on it keeps
+     its full size. */
+  --fit: min(1, var(--hr) / 2.05);
   --R: 14px;
-  --fs: 40px;
-  --h1: 140px;
-  --h2: 150px;
+  --fs: calc(40px * var(--fit));
+  --h1: calc(140px * var(--fit));
+  --h2: calc(150px * var(--fit));
 }
 html.zoom .scroller {
   position: relative;

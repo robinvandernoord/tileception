@@ -85,6 +85,9 @@
   height: auto;
   display: block;
 }
+.cl-page code {
+  overflow-wrap: anywhere;
+}
 .caption {
   margin-top: 10px;
   font-size: 14px;
