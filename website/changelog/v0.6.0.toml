@@ -14,7 +14,7 @@ caption = "Click the duck to type a question beside a thumbnail of your screen. 
 
 [[fixes]]
 area = "focus"
-text = "A new window gets the keyboard once Tileception has told it its first size and state."
+text = "You can type in a new window once Tileception has sent it its initial size and state."
 
 [[fixes]]
 area = "event-loop"

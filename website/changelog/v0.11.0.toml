@@ -33,7 +33,7 @@ text = "Run `tileception home import` once and set `enabled = true` under `[home
 [[features]]
 area = "notifications"
 title = "Answer popups from the keyboard"
-text = "Super+Enter numbers the buttons on the newest popup, such as a screenshot's Copy and Save. Press a number, or choose with the arrow keys and Enter. Escape gives the keyboard back."
+text = "Super+Enter numbers the buttons on the newest popup, such as a screenshot's Copy and Save. Press a number, or choose with the arrow keys and Enter. Press Escape to return to typing in your app."
 
 [features.media]
 kind = "image"

@@ -1,6 +1,6 @@
 version = "0.19.0"
 date = 2026-11-13
-lede = "Super+D now clears the desk, and holding it lets you peek at a new dashboard that plugins can fill. The bar can show your calendar, and Settings asks before it drops your changes."
+lede = "Super+D now clears the desk, and holding it lets you peek at a new dashboard with plugin content. The bar can show your calendar, and Settings asks before discarding your changes."
 
 [[features]]
 area = "desk"
@@ -37,13 +37,13 @@ text = "List `.ics` files or calendar addresses under `[calendar]` in `config.to
 kind = "image"
 src = "calendar-after.jpg"
 alt = "The bar's calendar chip reading until 18:18 Design review, with the calendar open below it"
-caption = "The chip names the meeting on now. The calendar lists what is coming up and marks days with events."
+caption = "The chip shows the current meeting. The calendar lists upcoming events and marks the days they fall on."
 
 [[features]]
 area = "settings"
 issue = 43
 title = "Settings asks before closing"
-text = "Closing Settings with unapplied changes now asks whether to apply or discard them. Edits to `config.toml` show up while Settings is open, and a field you changed yourself keeps your edit."
+text = "If you close Settings with unapplied changes, it asks whether to apply or discard them. Settings also picks up edits to `config.toml` while open, preserving any fields you have changed in the window."
 
 [features.media]
 kind = "image"
@@ -67,7 +67,7 @@ text = "The pointer crosses to another machine only where the two screen edges f
 area = "smart-home"
 issue = 79
 title = "Smart home history includes humidity"
-text = "Temperature and humidity sensors show a trend line of their last six hours. For a device that reports both, History on the Smart home page in Settings picks which one the trend shows."
+text = "Temperature and humidity sensors show a trend line for the last six hours. If a device reports both, use History on the Smart home page in Settings to choose which measurement to show."
 
 [[features]]
 area = "greeter"
@@ -79,4 +79,4 @@ text = "Set `reduce_motion = true` in `/etc/tileception/greeter.toml` and the lo
 area = "bluetooth"
 issue = 75
 title = "Bluetooth icons show the kind of device"
-text = "Headphones now show as headphones, a mouse as a mouse and a game controller as a game controller. Devices of an unknown kind keep the Bluetooth glyph."
+text = "Bluetooth devices now have icons for their type, such as headphones, a mouse or a game controller. Devices with an unknown type keep the Bluetooth icon."

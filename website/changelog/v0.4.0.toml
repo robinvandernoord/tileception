@@ -4,7 +4,7 @@ date = 2026-10-17
 [[features]]
 area = "launcher"
 title = "Give an app its own launch arguments"
-text = "List extra arguments per app under `[launch_args]`, by desktop file name, such as `firefox = [\"-P\", \"work\"]`. They go to the app without a shell. An option the app's desktop file already sets wins."
+text = "Add extra launch arguments under `[launch_args]`, using the app's desktop file name, such as `firefox = [\"-P\", \"work\"]`. Arguments are passed directly to the app without a shell. If the desktop file already sets an option, that value is used."
 
 [[features]]
 area = "packaging"

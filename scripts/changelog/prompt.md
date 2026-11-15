@@ -22,6 +22,7 @@ without pipes.
 
 If the `humanize-writing` skill is available, use it (generation mode, editorial
 register) and run its self-audit on everything you write before you finish.
+The writing rules and clarity check below apply even when the skill is unavailable.
 
 ## Sources
 
@@ -42,13 +43,14 @@ Use only these. Never add a fact they don't support; leave the claim out instead
 
 ## How to write
 
-- Get straight to the point. Short sentences with a simple structure: subject, verb,
-  what it does. No chains of clauses, no semicolons joining two thoughts, no
-  sentences that need rereading.
+- Get straight to the point. Use ordinary sentences that say what changed and
+  what the user can do. Vary their length. Keep words such as "if", "when" and
+  "because" when they make a condition or cause easier to understand.
 - Name the real thing. Give the actual key (Super+N, Backspace), setting
   (`reduce_motion`, `[calendar]` in `config.toml`), command
   (`tileception msg plugin add`) or Settings page, so readers can act on it.
-- Keep it short. A feature's text is one or two sentences, at most about 35 words.
+- Keep it short. Aim for one or two sentences and about 35 words per feature.
+  Use another sentence when a condition or exception needs explaining.
   The `lede` is one or two sentences about the release's biggest changes.
   Leave it out when the release has only one or two changes: the list says
   it all, and a sentence about the release itself ("A small release with one
@@ -56,12 +58,37 @@ Use only these. Never add a fact they don't support; leave the claim out instead
   one sentence saying what works now, from the user's side.
 - Titles are plain statements of what changed. No slogans or catchy fragments
   ("Every update in one window").
-- A playful line is welcome when it is true and specific ("Headphones look like
-  headphones, mice like mice"). Filler that only describes the page or the release
-  ("Every release, newest first") is not.
+- Describe behaviour directly. For a conflict, say which setting is used and
+  when. For focus, say where you can type. Avoid shorthand such as "wins",
+  "gets the keyboard" or "follows changes" when it leaves the reader to work
+  out what happens.
+- Prefer familiar wording to forced novelty. "If the app's desktop file already
+  sets an option, that value is used" is clearer than "An option the app's
+  desktop file already sets wins." "The wallpaper updates when its file changes"
+  is clearer than "The wallpaper follows changes to its file."
+- Leave out filler that only describes the page or release ("Every release,
+  newest first"), slogans, and repeated comparisons that add no information.
 - Plain ASCII punctuation only: no em or en dashes, no curly quotes, no ellipsis
   character. The page generator refuses them.
 - Put file names, settings and commands in backticks; the page shows them as code.
+
+## Clarity check
+
+Before taking screenshots, reread every title, entry and caption as someone
+who uses the desktop and has not read the commits. For each sentence:
+
+- Can the reader tell what changes on screen or what action to take?
+- Is every condition or exception explicit, including which value is used
+  when settings conflict?
+- Does each "it", "they" or "one" have an obvious meaning? Repeat the name
+  when that makes the sentence easier to follow.
+- Does it sound natural when read aloud? Rewrite compressed noun phrases,
+  strained metaphors and clauses that need a second reading. Clarity matters
+  more than the word target.
+
+Keep the original facts, commands and setting names. Check the sources if a
+rewrite would change a claim. Existing entries are examples of the data format,
+not a style guide; apply these checks even when their wording differs.
 
 ## Output
 

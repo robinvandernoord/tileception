@@ -30,7 +30,7 @@ text = "With NetworkManager, a chip in the bar shows how you are connected. Clic
 area = "calc"
 issue = 34
 title = "More unit conversions in the launcher"
-text = "The launcher now converts area, energy, power, pressure, angle and frequency. Amounts can come in parts, as in `5 ft 10 in in cm`, and questions work: `how many ml in a cup`."
+text = "The launcher now converts area, energy, power, pressure, angle and frequency. You can combine units, as in `5 ft 10 in in cm`, or ask a question such as `how many ml in a cup`."
 
 [features.media]
 kind = "compare"
@@ -69,12 +69,12 @@ text = "A floating window put back into the layout lands on screen, not beside i
 [[fixes]]
 area = "floating"
 issue = 50
-text = "When the focused window closes and only a floating window is left in view, that window gets the keyboard."
+text = "When the focused window closes and only a floating window is left in view, you can type in that floating window."
 
 [[fixes]]
 area = "state"
 issue = 51
-text = "Opening a window while another is fullscreen ends fullscreen, so the new window is in view when it gets the keyboard."
+text = "Opening a window while another is fullscreen exits fullscreen mode, so the new window is visible when it gains focus."
 
 [[fixes]]
 area = "input"

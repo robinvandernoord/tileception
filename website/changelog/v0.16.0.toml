@@ -30,13 +30,13 @@ text = "The Available page lists the packages an update would remove, and the up
 area = "updates"
 issue = 66
 title = "Repair packages and clear out unused ones"
-text = "When APT reports broken packages, the Updates window offers Repair, and Housekeeping removes dependencies nothing needs. The last task's output stays under Show log and on the History page."
+text = "When APT reports broken packages, use Repair in the Updates window to fix them. Housekeeping removes unused dependencies. You can read the last task's output under Show log and on the History page."
 
 [[features]]
 area = "updates"
 issue = 66
 title = "The computer stays on while packages change"
-text = "Restart, power off, suspend and log out wait for a running update. Choose one in the power menu and it follows once the task ends. Choose it again to call it off."
+text = "If you choose Restart, Power off, Suspend or Log out during an update, Tileception waits for the update to finish before carrying out the action. Choose the same action again to cancel it."
 
 [[features]]
 area = "updates"
@@ -48,13 +48,13 @@ text = 'Tileception asks for your password through polkit, for updates and for `
 area = "updates"
 issue = 66
 title = "Package lists refresh by themselves"
-text = "Tileception refreshes the package lists without a password, as often as `check_hours` says. It skips this on a metered connection and below 30% battery."
+text = "Tileception refreshes the package lists without a password at the interval set by `check_hours`. Refreshes are skipped on a metered connection or when the battery is below 30%."
 
 [[features]]
 area = "updates"
 issue = 66
 title = "Choose when update notifications come"
-text = "`remind_after_days` in `[updates]` holds the notification back until updates have waited that many days. `remind_security_only` limits it to security updates. It never comes during Do not disturb or over a fullscreen window."
+text = "Set `remind_after_days` in `[updates]` to notify only after updates have been available for that many days. `remind_security_only` limits notifications to security updates. Notifications are hidden during Do not disturb and while a window is fullscreen."
 
 [[features]]
 area = "text-input"
@@ -63,7 +63,7 @@ text = "The launcher, Doctor, the rubber duck and Settings share one set of edit
 
 [[fixes]]
 area = "updates"
-text = "Installing chosen updates no longer marks them as installed by hand, so `apt-get autoremove` can still remove the dependencies among them."
+text = "Installing selected updates no longer marks those packages as manually installed, so `apt-get autoremove` can still remove any that are unused dependencies."
 
 [[fixes]]
 area = "updates"

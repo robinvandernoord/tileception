@@ -6,7 +6,7 @@ lede = "Doctor opens the feedback dialog with `/report` and runs the agents you 
 area = "doctor"
 issue = 27
 title = "Report a problem from Doctor with `/report`"
-text = "Type `/report` in Doctor to open the feedback dialog over it. `/report Wi-Fi drops` fills in the title. An option, unchecked at first, adds your last Doctor question and answer."
+text = "Type `/report` in Doctor to open the feedback dialog. `/report Wi-Fi drops` fills in the title. You can include your last Doctor question and answer by ticking a checkbox that starts unchecked."
 
 [[features]]
 area = "doctor"
