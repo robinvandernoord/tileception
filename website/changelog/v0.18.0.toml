@@ -1,0 +1,125 @@
+version = "0.18.0"
+date = 2026-11-13
+lede = "Updates now lists Flatpaks, snaps and firmware beside the APT packages, and it works on Linux Mint. The notification panel takes the keyboard, and a feedback report can carry a screenshot."
+
+[[features]]
+area = "notifications"
+title = "The notification panel works from the keyboard"
+text = "The panel takes the keyboard when it opens. Tab chooses a notification, Enter opens it and Backspace dismisses it. D switches Do not disturb, and Escape closes the panel."
+
+[features.media]
+kind = "image"
+src = "notifications-after.jpg"
+alt = "The notification panel with three notifications, the middle one chosen, and a strip of keys along the bottom"
+caption = "Tab pressed twice: the Mail notification is chosen, and the strip below lists what Enter, Backspace, Del and Esc do."
+
+[[features]]
+area = "updates"
+issue = 69
+title = "Updates lists Flatpaks, snaps and firmware"
+text = "The Updates window shows Flatpaks, snaps and firmware from fwupd beside the APT packages, and one Install runs them all. Firmware is only installed when you tick it."
+
+[[features]]
+area = "updates"
+issue = 69
+title = "Updates can skip a version or hold a package"
+text = "Notes, or N, shows what changed in the highlighted update. Skip version leaves that version out until a newer one arrives. Hold keeps an APT package where it is with `apt-mark hold`."
+
+[[features]]
+area = "updates"
+issue = 69
+title = "Updates has a Settings page"
+text = "It switches automatic updates by `unattended-upgrades` on or off. It also tests the Ubuntu mirrors for speed and lag, with progress shown while it runs, and Use switches to the one you pick."
+
+[[features]]
+area = "updates"
+title = "Updates works on Linux Mint"
+text = "On Mint, the automatic updates switch turns Update Manager's automatic upgrades on or off and keeps its blacklist. Switching the Ubuntu mirror leaves Mint's own mirror as it is."
+
+[[features]]
+area = "feedback"
+issue = 35
+title = "Feedback can include a screenshot"
+text = "A switch in the feedback dialog adds a picture of the screen behind it. The switch starts off. Open in browser copies the picture for Ctrl+V, then puts your old clipboard back."
+
+[features.media]
+kind = "image"
+src = "feedback-after.jpg"
+alt = "The Send feedback dialog with Include a screenshot of the screen switched on and a preview of the desk behind it"
+caption = "The preview shows what goes into the issue: the desk, without the dialog."
+
+[[features]]
+area = "doctor"
+issue = 38
+title = "Doctor reads the changelog"
+text = "Doctor's agent knows which version is running and can read the changelog. Ask it what changed in a version, or when a feature arrived."
+
+[[features]]
+area = "session"
+title = "fastfetch shows the Tileception logo"
+text = "In a Tileception session, `fastfetch` shows Tileception's tiles instead of your distribution's logo. Your home configuration is left alone, and other desktops keep the usual logo."
+
+[[features]]
+area = "battery"
+issue = 57
+title = "Battery thresholds take every theme colour"
+text = "A battery threshold can use the muted or text colour, as Settings already offered. Picking either used to fail with an error when you applied it."
+
+[[fixes]]
+area = "clipboard"
+issue = 74
+text = "Images copied in an X11 program, such as a browser under Xwayland, now paste into Wayland programs and into Doctor."
+
+[[fixes]]
+area = "split-screen"
+issue = 71
+text = "Floating windows stay inside their area when you split the screen under them or drop one across the gap between areas."
+
+[[fixes]]
+area = "updates"
+issue = 71
+text = "The Updates window fits a narrow area, and its footer buttons no longer run over the sidebar."
+
+[[fixes]]
+area = "power"
+issue = 54
+text = 'With `lock = "none"` in `[shell]`, Suspend in the power menu and the launcher suspends instead of doing nothing.'
+
+[[fixes]]
+area = "notify"
+issue = 55
+text = "A script that reuses one notification id, such as `notify-send -r 4242` for the volume, updates its own popup instead of stacking new ones."
+
+[[fixes]]
+area = "calc"
+issue = 45
+text = "`50% of 2^3` in the launcher gives 4 instead of 1."
+
+[[fixes]]
+area = "handoff"
+issue = 60
+text = "Copying two files with the same name to another machine keeps both. The second gets a number, such as `report (2).txt`."
+
+[[fixes]]
+area = "apps"
+issue = 52
+text = "A default app chosen in Settings wins even when `[Added Associations]` comes first in `mimeapps.list`."
+
+[[fixes]]
+area = "apps"
+issue = 53
+text = "Apps whose desktop entry has an empty `TryExec=` line show up in the launcher."
+
+[[fixes]]
+area = "greeter"
+issue = 88
+text = "Sessions whose desktop entry has an empty `TryExec=` line show up in the login screen's session list."
+
+[[fixes]]
+area = "ui"
+issue = 73
+text = "The count on the notification bell's badge sits in the middle of the badge."
+
+[[fixes]]
+area = "xwayland"
+text = "X11 windows on a screen other than the leftmost one open fully on that screen, and clicks on them land where you click."
