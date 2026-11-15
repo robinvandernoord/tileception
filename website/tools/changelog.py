@@ -222,7 +222,8 @@ class Page:
         """A release without pictures: one block with its lists."""
         version = release["version"]
         items = "".join(
-            f'<li>{self.area(feature["area"])}{self.issue(feature.get("issue"))} {prose(feature["title"])}</li>'
+            f'<li>{self.area(feature["area"])}{self.issue(feature.get("issue"))} <b>{prose(feature["title"])}.</b>'
+            f'{" " + prose(feature["text"]) if feature["text"] else ""}</li>'
             for feature in release["features"]
         )
         items += "".join(

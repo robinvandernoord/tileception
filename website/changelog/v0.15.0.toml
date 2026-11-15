@@ -1,0 +1,97 @@
+version = "0.15.0"
+date = 2026-11-10
+lede = "Timers and alarms start from a sentence in the launcher. Two new chips in the bar install updates and join Wi-Fi networks."
+
+[[features]]
+area = "timers"
+issue = 64
+title = "Timers and alarms in the launcher"
+text = 'Type `timer 10m tea`, `timer at 7am` or "remind me to stretch in 20 minutes" in the launcher. Each timer gets a card under the launcher, with buttons to add a minute, pause and stop.'
+
+[features.media]
+kind = "image"
+src = "timers-after.jpg"
+alt = "The launcher with a reminder typed as a sentence, above cards for two timers and an alarm"
+caption = "Typing a reminder in plain words, with the cards of two running timers and an alarm below."
+
+[[features]]
+area = "updates"
+issue = 62
+title = "An update manager for APT and kernels"
+text = "A chip in the bar counts waiting updates, security updates first. Its card installs them. The Updates window lists every package, removes old kernels and starts a release upgrade."
+
+[[features]]
+area = "network"
+issue = 36
+title = "Wi-Fi and wired connections in the bar"
+text = "With NetworkManager, a chip in the bar shows how you are connected. Click it to switch Wi-Fi, join a network or disconnect. A new Network page in Settings handles saved and hidden networks."
+
+[[features]]
+area = "calc"
+issue = 34
+title = "More unit conversions in the launcher"
+text = "The launcher now converts area, energy, power, pressure, angle and frequency. Amounts can come in parts, as in `5 ft 10 in in cm`, and questions work: `how many ml in a cup`."
+
+[features.media]
+kind = "compare"
+before = "convert-before.jpg"
+after = "convert-after.jpg"
+alt = "The launcher with 5 ft 10 in in cm typed into it"
+caption = "`5 ft 10 in in cm` in the launcher. 0.14.1 finds nothing. 0.15.0 answers 177.8 cm."
+
+[[features]]
+area = "panel"
+issue = 37
+title = "Rearrange the notification panel's blocks"
+text = "Drag a block such as Bluetooth by its title to move it. The bar's chips follow the same order, and Tileception remembers it."
+
+[[features]]
+area = "plugins"
+issue = 64
+title = "Plugins can show cards under the launcher"
+text = "A plugin's cards sit below the media card, with buttons and a progress bar. `[plugins.<id>.launcher] cards = false` hides them."
+
+[[features]]
+area = "plugins"
+title = "Plugins can ask for input in the launcher"
+text = "A plugin action can open a small dialog in place of the results, for example to unlock a vault. It can ask for a password or wait while you touch a security key."
+
+[[fixes]]
+area = "floating"
+issue = 48
+text = "A click on a floating window over a divider or tab strip reaches the window instead of dragging the divider behind it."
+
+[[fixes]]
+area = "floating"
+issue = 49
+text = "A floating window put back into the layout lands on screen, not beside it."
+
+[[fixes]]
+area = "floating"
+issue = 50
+text = "When the focused window closes and only a floating window is left in view, that window gets the keyboard."
+
+[[fixes]]
+area = "state"
+issue = 51
+text = "A window that opens while another is fullscreen ends fullscreen and shows up, instead of taking the keyboard unseen."
+
+[[fixes]]
+area = "input"
+issue = 47
+text = "Letting go of the mouse button over Doctor or the notifications ends a drag, so a divider no longer follows the pointer afterwards."
+
+[[fixes]]
+area = "layout"
+issue = 56
+text = "Dragging the divider between two tiles squeezed below their minimum width no longer crashes the session."
+
+[[fixes]]
+area = "settings"
+issue = 59
+text = "Applying a change on the shortcut, window rule or display screens of Settings leaves that section where it was in `config.toml`."
+
+[[fixes]]
+area = "handoff"
+issue = 61
+text = "Locking always pauses sharing with linked machines, and resuming works again after a lock made while no machine was linked."

@@ -1,0 +1,14 @@
+version = "0.17.0"
+date = 2026-11-12
+
+[[features]]
+area = "wallpaper"
+issue = 67
+title = "The wallpaper follows changes to its file"
+text = "When a tool such as Variety overwrites the picture named by `wallpaper` in `[theme]`, Tileception shows the new one within a few seconds. You no longer need `tileception msg reload`."
+
+[[features]]
+area = "outputs"
+issue = 33
+title = "Windows return to a display that comes back"
+text = "When an external display goes away, its windows move to the screen that stays. When it comes back, after the lock screen for instance, they return to it in the layout they had."

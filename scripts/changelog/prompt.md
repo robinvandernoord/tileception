@@ -49,7 +49,10 @@ Use only these. Never add a fact they don't support; leave the claim out instead
   (`reduce_motion`, `[calendar]` in `config.toml`), command
   (`tileception msg plugin add`) or Settings page, so readers can act on it.
 - Keep it short. A feature's text is one or two sentences, at most about 35 words.
-  The `lede` is one or two sentences about the release's biggest changes. A fix is
+  The `lede` is one or two sentences about the release's biggest changes.
+  Leave it out when the release has only one or two changes: the list says
+  it all, and a sentence about the release itself ("A small release with one
+  fix") is filler. A fix is
   one sentence saying what works now, from the user's side.
 - Titles are plain statements of what changed. No slogans or catchy fragments
   ("Every update in one window").
@@ -116,6 +119,16 @@ pass it to `start`.
   side shows.
 - Something new in {version} has no "before": give the scene a line
   `# shots: after` and use `kind = "image"` with `<name>-after.jpg`.
+
+A picture must make sense to a reader who skips the caption. A change that
+happens over time, such as a file being reloaded, rarely shows in a still:
+two pictures that differ only because the scene changed a file prove nothing
+to the reader. Leave such features without media.
+
+The scenes run on Robin's machine, and the pictures are published. They must
+not show anything of it: its user name (the power menu and lock screen greet
+the account by name), host name, installed apps, packages, Wi-Fi networks or
+devices. Avoid views that show them, and look for them in every picture.
 
 Run `scripts/changelog/shoot.sh {version} <name>` and look at every picture
 it reports. Check that it shows what the entry says, at a size where the
