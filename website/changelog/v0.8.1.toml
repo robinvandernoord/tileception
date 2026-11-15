@@ -1,0 +1,10 @@
+version = "0.8.1"
+date = 2026-10-29
+
+[[fixes]]
+area = "setup"
+text = "Logging in through Tileception's login screen now unlocks your keyring with the password you type, also on systems where greetd's own login setup left it locked."
+
+[[fixes]]
+area = "greeter"
+text = "The login screen now keeps a log of its last run in `greeter.log` under `/var/lib/tileception-greeter`. greetd throws away what the login screen prints, so this file is the only record."

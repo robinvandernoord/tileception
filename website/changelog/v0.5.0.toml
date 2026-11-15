@@ -1,0 +1,62 @@
+version = "0.5.0"
+date = 2026-10-17
+lede = "Touchpads get gestures, and touchscreens work. On a laptop, Tileception shows the battery, warns when it runs low and locks the screen before the computer sleeps."
+
+[[features]]
+area = "compositor"
+title = "The bar shows the battery, and the border warns when it runs low"
+text = "On a laptop, the bar shows the battery's charge. Hover it for the time left. On battery, the focus border turns yellow, orange and red at 35, 25 and 15%, and green while charging."
+
+[features.media]
+kind = "image"
+src = "battery-after.jpg"
+alt = "Two windows side by side. The focused one has a red border, and a tooltip under the bar reads: 12%, on battery, 45 min left."
+caption = "A laptop at 12% on battery: the focused window's border is red, and hovering the battery shows the time left."
+
+[[features]]
+area = "compositor"
+title = "Touchpad gestures move around the layout"
+text = "Swipe three fingers to focus the neighbouring window and pinch three fingers to zoom. Swipe four fingers up for the overview. Bind your own under `[binds]`, such as `\"Swipe4Up\" = \"launcher\"`."
+
+[[features]]
+area = "compositor"
+title = "Touchscreens work"
+text = "Apps get touch input, so pages scroll under your finger. Swipe in from the top edge for the overview, from the bottom for minimized windows and from the right for notifications."
+
+[[features]]
+area = "compositor"
+title = "Tileception acts on a low battery"
+text = "Alerts come at 20, 15 and 10%, and the computer hibernates at 5%. Power profiles follow the charger: performance plugged in, balanced on battery, power saver at 20%. Change each under `[battery]`."
+
+[[features]]
+area = "compositor"
+title = "The screen locks before the computer sleeps"
+text = "Closing the lid, Suspend in the power menu and `systemctl suspend` all lock the screen first, so the desktop never shows on waking. Set `lock_before_sleep = false` under `[idle]` to turn it off."
+
+[[features]]
+area = "compositor"
+title = "Touchpad settings in `config.toml`"
+text = "`[touchpad]` sets tap to click, natural scrolling, ignoring the touchpad while you type, pointer speed and the click method. Changes apply when you save."
+
+[[features]]
+area = "compositor"
+title = "The keyboard defaults to US international"
+text = "AltGr types accents, and ' and \" type straight away. For another layout, set `layout` under `[keyboard]`."
+
+[[features]]
+area = "doctor"
+title = "Code blocks in Doctor have copy and run buttons"
+text = "Code blocks in Doctor's answers get a copy button. Shell commands also get a button to run them."
+
+[[features]]
+area = "cli"
+title = "`tileception --help` and `--version`"
+text = "`tileception --help` explains how to start Tileception and which files it uses. `tileception --version` prints the version."
+
+[[fixes]]
+area = "windows"
+text = "A window that asks to be maximized while it opens now shows up in the layout."
+
+[[fixes]]
+area = "acp"
+text = "Doctor can start agents from npm with Bun's `bunx` when Node.js is not installed."

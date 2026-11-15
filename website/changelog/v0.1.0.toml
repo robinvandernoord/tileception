@@ -1,0 +1,23 @@
+version = "0.1.0"
+date = 2026-10-16
+lede = "The first release: a Wayland compositor that lays windows out in a tree of tiles you can nest and zoom into, with its own launcher, notifications, lock screen and power menu."
+
+[[features]]
+area = "layout"
+title = "Windows tile into a tree you can zoom through"
+text = "Windows sit side by side as they open, groups nest inside each other, and you zoom between the levels of the tree."
+
+[[features]]
+area = "compositor"
+title = "The Tide look"
+text = "Flat graphite surfaces and small radii, with a teal accent that glows on the focused window."
+
+[[features]]
+area = "session"
+title = "A desktop of its own"
+text = "A launcher that finds your installed apps by name, notifications, a lock screen that checks your password, a power menu and a wallpaper are built in."
+
+[[features]]
+area = "release"
+title = "Install with apt"
+text = "Debian packages come from Tileception's own apt archive, and an install script sets it up."

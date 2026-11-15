@@ -1,0 +1,17 @@
+version = "0.7.0"
+date = 2026-10-18
+
+[[features]]
+area = "tray"
+title = "Tray icons in the built-in bar"
+text = "The built-in bar shows tray icons, including those of Qt and AppIndicator apps such as Nextcloud. Click an icon to activate its app, or right-click for its menu."
+
+[features.media]
+kind = "image"
+src = "tray-after.jpg"
+alt = "The top bar with two tray icons and an open overflow list of three more entries"
+caption = "Five test entries in the default three slots: two icons, and the overflow button with the rest. Set the slots with `tray_max_icons` under `[shell]`."
+
+[[fixes]]
+area = "autostart"
+text = "Apps in `~/.config/autostart` and `/etc/xdg/autostart` now start when you log in."

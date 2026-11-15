@@ -1,0 +1,64 @@
+version = "0.13.0"
+date = 2026-11-08
+lede = "Bluetooth gets its own block in the notification panel. Settings gains a Default apps page and walks you through setting up smart home devices."
+
+[[features]]
+area = "settings"
+title = "Choose your default apps in Settings"
+text = "On the new Default apps page, pick the app that opens links, folders, text files, pictures, music, video and PDFs. Show all file types lists the rest. Apply writes them to `mimeapps.list`."
+
+[features.media]
+kind = "image"
+src = "defaults-after.jpg"
+alt = "Settings on the Default apps page, with rows for web browser, email, files, text editor, images, music, video, PDF documents, archives and calendar"
+caption = "The Default apps page on a test desktop where Chromium is the only app installed."
+
+[[features]]
+area = "smart-home"
+title = "Settings guides you through smart home setup"
+text = "Until devices are imported, the Smart home page in Settings shows three steps: create a Tuya cloud project, connect your account, see your devices. It includes a how-to and fixes for common errors."
+
+[features.media]
+kind = "compare"
+before = "home-before.jpg"
+after = "home-after.jpg"
+alt = "The Smart home page in Settings before any devices are set up"
+caption = "The Smart home page with no devices yet: a card of connection buttons in 0.12.0, three numbered steps with the account form in 0.13.0."
+
+[[features]]
+area = "bluetooth"
+title = "Bluetooth in the notification panel"
+text = "The panel's Bluetooth block lists paired devices with a switch to connect each. Pair device searches for 30 seconds. Type `bt` in the launcher to connect, disconnect or forget a device."
+
+[[features]]
+area = "bluetooth"
+title = "Bluetooth devices reconnect after sleep"
+text = "Devices that were connected before the computer slept, or before Bluetooth was switched off, reconnect a few seconds after it is back. Set `reconnect = false` under `[bluetooth]` to turn this off."
+
+[[features]]
+area = "plugins"
+title = "Smart home in the bar and the launcher"
+text = "While something is on, a chip in the bar says what. In the launcher, `home living` switches a room and `home desk 40` dims a light."
+
+[[features]]
+area = "plugins"
+title = "Plugins can add panel blocks and bar chips"
+text = "Plugins can now add a block to the notification panel and chips to the bar. Their settings live under `[plugins.<id>]`, and the old `[launcher.plugins.<id>]` still works."
+
+[[features]]
+area = "gestures"
+title = "Touchpad swipes follow your fingers"
+text = "Swipes and pinches that move the view now move it with your fingers, and letting go early cancels them. Set `follow_fingers = false` under `[touchpad]` to have them run all at once."
+
+[[features]]
+area = "greeter"
+title = "The login screen shows session logos"
+text = "Each session on the login screen has its logo beside its name."
+
+[[fixes]]
+area = "terminal"
+text = "Without a `terminal` in `config.toml`, Tileception starts the one chosen in `xdg-terminals.list`, and terminals such as Ghostty open in the folder you asked for."
+
+[[fixes]]
+area = "session"
+text = "Chromium and Electron apps keep their secrets in the Secret Service instead of plain text, and Signal opens data that was set up under GNOME."

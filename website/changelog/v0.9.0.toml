@@ -1,0 +1,42 @@
+version = "0.9.0"
+date = 2026-11-02
+lede = "Two computers running Tileception can now share one mouse and keyboard, and windows move between them. KeePassXC can type your passwords into other windows."
+
+[[features]]
+area = "handoff"
+title = "Two computers can share one mouse and keyboard"
+text = "On both computers, set `enabled = true` and the same `passphrase` under `[handoff]` in `config.toml`. The pointer then crosses to the other screen, and windows, drags, the clipboard and copied files go along. Ctrl+Super+Escape brings input home."
+
+[features.media]
+kind = "image"
+src = "handoff-after.jpg"
+alt = "Two screens side by side, each with its own bar. A website window, dragged from the left screen, hangs over a drop zone on the right one."
+caption = "Two computers linked with handoff. The window from the left screen is halfway through an Alt-drag onto the right one."
+
+[[features]]
+area = "portal"
+title = "KeePassXC can auto-type passwords"
+text = "KeePassXC 2.8 and newer can type usernames and passwords into the window you are using. The first time, a notification asks whether to deny, allow once or always allow. Its global auto-type shortcut works too."
+
+[[features]]
+area = "screensaver"
+title = "D-Bus requests keep the screen awake"
+text = "Apps that ask over D-Bus (`org.freedesktop.ScreenSaver`), such as VLC and other X11 players, now pause the lock and screen-off timers, even when their window is hidden."
+
+[[features]]
+area = "power"
+title = "Suspend until a set time"
+text = "Suspend until... in the power menu wakes the computer at the time you type, such as `7:30`, `7am` or `in 90 min`. The computer's hardware clock does the waking."
+
+[[features]]
+area = "release"
+title = "Release candidates have their own APT component"
+text = "Prereleases go to the `pre` component of the APT repository. To test them, add `pre` to the `Components:` line in `/etc/apt/sources.list.d/tileception.sources`."
+
+[[fixes]]
+area = "render"
+text = "Overlays from X11 programs now show over fullscreen windows."
+
+[[fixes]]
+area = "bar"
+text = "GL driver errors no longer turn up as error notifications."
