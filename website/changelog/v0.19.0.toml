@@ -1,69 +1,82 @@
 version = "0.19.0"
 date = 2026-11-13
-lede = "Super+D now clears the desk on a tap and shows it while you hold the keys. Settings asks before it drops changes you haven't applied, and a chip beside the clock shows your next event."
+lede = "Super+D now clears the desk, and holding it lets you peek at a new dashboard that plugins can fill. The bar can show your calendar, and Settings asks before it drops your changes."
 
 [[features]]
 area = "desk"
 issue = 87
-title = "Tap Super+D to clear the desk, hold it to peek"
-text = "A tap minimizes every window and remembers the layout. Tap again to bring them back. Hold Super+D and the windows fade to outlines over the dashboard until you let go."
+title = "Super+D clears the desk"
+text = "Tap Super+D to move every window on the screen to the minimized strip, and tap it again to bring them back where they were. Hold it to peek: windows fade to outlines until you let go."
 
 [features.media]
 kind = "compare"
 before = "desk-before.jpg"
 after = "desk-after.jpg"
-alt = "Super+D with four windows open"
-caption = "In 0.18.0, Super+D added an empty Desktop tile beside your windows. In 0.19.0, holding it shows the desk."
-
-[[features]]
-area = "settings"
-issue = 43
-title = "Settings asks before dropping your changes"
-text = "Close Settings with unapplied changes and it offers Apply, Discard or Cancel. Edits you make to `config.toml` while Settings is open show up in it."
-
-[features.media]
-kind = "image"
-src = "settings-after.jpg"
-alt = "Settings open over three windows"
-
-[[features]]
-area = "calendar"
-issue = 42
-title = "Your next event beside the clock"
-text = "Add .ics files or calendar URLs under `[calendar]` in `config.toml`. A chip beside the clock shows the event that's on, or today's next one. Click it to see what's coming up."
+alt = "Super+D on a desk with four windows"
+caption = "Super+D in 0.18.0 opens the Desktop tile beside the windows. Held in 0.19.0, it shows the windows as outlines over the dashboard."
 
 [[features]]
 area = "desk"
 issue = 87
-title = "A dashboard on the empty desk"
-text = "A clear desk shows your notification count beside the welcome screen. Plugins with a `[dashboard]` block can add cards, images or a surface they draw themselves."
+title = "The welcome screen has a dashboard"
+text = "A clear or empty desk shows a dashboard beside the welcome screen: your notification count, plus cards, pictures and animations from plugins. Drag items to move them, or click the round x to remove one."
+
+[features.media]
+kind = "image"
+src = "dashboard-after.jpg"
+alt = "The welcome screen on a cleared desk, with the notification count and two plugin cards beside it"
+caption = "A desk cleared with Super+D: the welcome screen, and the dashboard beside it."
 
 [[features]]
-area = "handoff"
-issue = 84
-title = "Handoff between screens of different sizes"
-text = "The pointer crosses where two machines' screen edges face each other. Each keyboard keeps its own layout, and typing in a streamed window reaches that window."
+area = "calendar"
+issue = 42
+title = "The bar shows your calendar"
+text = "List .ics files or calendar addresses under `[calendar]` in `config.toml`. A chip beside the clock names the event on now or the next one today. The calendar marks every day that has events."
+
+[features.media]
+kind = "image"
+src = "calendar-after.jpg"
+alt = "The bar's calendar chip reading until 18:18 Design review, with the calendar open below it"
+caption = "The chip names the meeting on now. The calendar lists what is coming up and marks days with events."
+
+[[features]]
+area = "settings"
+issue = 43
+title = "Settings asks before closing"
+text = "Closing Settings with unapplied changes now asks whether to apply or discard them. Edits to `config.toml` show up while Settings is open, and a field you changed yourself keeps your edit."
+
+[features.media]
+kind = "image"
+src = "settings-after.jpg"
+alt = "Settings asking Apply your changes? with Discard, Cancel and Apply buttons"
+caption = "One switch changed, then the X clicked."
 
 [[features]]
 area = "plugins"
 issue = 41
 title = "Add a plugin with one command"
-text = "`tileception msg plugin add <command>` writes the plugin into `config.toml` and starts it. The rest of the file, comments included, stays as it was. Doctor can do this for you when you ask."
+text = "`tileception msg plugin add <command>` writes the plugin to `config.toml` and starts it. Add `--bar` to show its chips in the bar. Doctor can use it to set a plugin up for you."
+
+[[features]]
+area = "handoff"
+issue = 84
+title = "Handoff handles screens of different sizes"
+text = "The pointer crosses to another machine only where the two screen edges face each other, as between screens of one machine. Turn on `stretch_screen_edges` for the old way. Each keyboard types with its own layout on either machine."
+
+[[features]]
+area = "smart-home"
+issue = 79
+title = "Smart home history includes humidity"
+text = "Temperature and humidity sensors show a trend line of their last six hours. For a device that reports both, History on the Smart home page in Settings picks which one the trend shows."
+
+[[features]]
+area = "greeter"
+issue = 86
+title = "The login screen can reduce motion"
+text = "Set `reduce_motion = true` in `/etc/tileception/greeter.toml` and the login and lock screens fade instead of moving. A wrong password no longer shakes the field, and the waiting dots hold still."
 
 [[features]]
 area = "bluetooth"
 issue = 75
 title = "Bluetooth icons show the kind of device"
-text = "Headphones look like headphones, mice like mice. Keyboards, phones and game controllers get their own icons too."
-
-[[features]]
-area = "greeter"
-issue = 86
-title = "The login screen can hold still"
-text = "Set `reduce_motion = true` in the greeter's settings and it fades instead of moving. A wrong password no longer shakes the field."
-
-[[features]]
-area = "smart-home"
-issue = 79
-title = "Humidity history next to temperature"
-text = "Smart home history now keeps humidity as well as temperature, for climate devices and standalone sensors. Settings lets you choose per device."
+text = "Headphones now show as headphones, a mouse as a mouse and a game controller as a game controller. Devices of an unknown kind keep the Bluetooth glyph."
