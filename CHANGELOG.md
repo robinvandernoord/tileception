@@ -2,6 +2,12 @@
 
 <!-- next-version-placeholder -->
 
+## v0.19.1 (2026-11-15)
+
+### Documentation
+* **release:** generate changelog after release
+* **website:** keep zoom snap points at their intended levels
+
 ## v0.19.0 (2026-11-13)
 
 ### Features
