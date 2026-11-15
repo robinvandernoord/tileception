@@ -8,6 +8,9 @@ website/
     index.html       the page; all content is in the markup
     assets/site.css  De Stijl look, stacked layout and zoom layout
     assets/zoom.js   the scroll-driven zoom
+    assets/changelog.css, assets/changelog.js
+                     the changelog page's tiles and before/after slider
+    changelog/       the changelog page, generated, and each release's pictures
     assets/video     the promo video, its silent preview and their stills
     install          the `curl -fsSL https://tileception.space/install | sh` script:
                      asks how to set up, adds apt.tileception.space and installs
@@ -15,7 +18,13 @@ website/
     setup            a symlink to resources/tileception-setup, which install
                      fetches to ask its questions first (deploy uploads the file)
     .htaccess        Apache settings for OVH (HTTPS redirect, types, caching)
+  changelog/
+    v<version>.toml  what changed in a release, written for the changelog page
+    areas.toml       the colour and name of each area (commit scope)
+    scenes/          the scripts that take each release's screenshots
   tools/
+    changelog.py     writes public/changelog/index.html from changelog/
+    changelog.html   the changelog page's template
     check.sh         sanity checks, run in CI
     deploy.sh        mirrors public/ to OVH over FTP or SFTP
     og.html          source of og.png (the link preview image)
@@ -32,6 +41,35 @@ camera from one level into the next. Without it, the same markup is a stacked
 page, which is also what search engines and screen readers read.
 
 Colours have meanings: red is tile, yellow is nest, blue is zoom.
+
+## The changelog page
+
+`/changelog/` shows what changed in each release, with screenshots. Each
+release has a `changelog/v<version>.toml`; `scripts/changelog/prompt.md`
+describes its fields and how the entries are written. After changing the data,
+the template or `areas.toml`, regenerate the page:
+
+```sh
+python3 website/tools/changelog.py
+```
+
+`check.sh` fails when the page is out of date, when a picture is missing, and
+on dashes, curly quotes or ellipses in the text.
+
+Screenshots come from scenes in `changelog/scenes/v<version>/`, run in
+headless Tileceptions with this release and the one before:
+
+```sh
+scripts/changelog/shoot.sh 0.19.0          # every scene of 0.19.0
+scripts/changelog/shoot.sh 0.19.0 desk     # one scene
+```
+
+`scripts/changelog/build.sh` builds each release once on the cargo-plane
+builder, in a worktree at `target/changelog/worktree`, and keeps the binary in
+`target/changelog/bin/`. The scenes run locally, so they need a render node
+(or Mesa's software EGL device) and Chromium. `scripts/changelog/lib.sh`
+lists the helpers a scene can use; a scene with the line `# shots: after`
+runs only with the new release.
 
 ## Preview locally
 

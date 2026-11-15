@@ -6,7 +6,8 @@ fail() { echo "check: $*" >&2; exit 1; }
 
 for f in index.html 404.html .htaccess install setup robots.txt sitemap.xml site.webmanifest \
          favicon.svg favicon.ico apple-touch-icon.png icon-192.png icon-512.png og.png \
-         assets/site.css assets/zoom.js; do
+         assets/site.css assets/zoom.js assets/changelog.css assets/changelog.js \
+         changelog/index.html; do
   [ -s "$f" ] || fail "missing $f"
 done
 
@@ -32,8 +33,16 @@ import json, re, sys, xml.dom.minidom
 html = open('index.html', encoding='utf-8').read()
 for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S):
     json.loads(block)
+# The changelog page uses relative paths; each must exist.
+import os
+changelog = open('changelog/index.html', encoding='utf-8').read()
+for ref in re.findall(r'(?:href|src|poster)="([^"#?]+)"', changelog):
+    if re.match(r'[a-z]+:', ref):
+        continue
+    if not os.path.exists(os.path.normpath(os.path.join('changelog', ref))):
+        sys.exit(f'check: changelog/index.html references missing {ref}')
 # External links open in a new tab.
-for page in ('index.html', '404.html'):
+for page in ('index.html', '404.html', 'changelog/index.html'):
     for tag in re.findall(r'<a\b[^>]*>', open(page, encoding='utf-8').read()):
         if re.search(r'\bhref="https?://', tag) and not (
                 'target="_blank"' in tag and 'rel="noopener"' in tag):
@@ -48,5 +57,9 @@ sh -n install
 [ "$(readlink setup)" = ../../resources/tileception-setup ] \
   || fail "setup must be a symlink to ../../resources/tileception-setup"
 sh -n setup
-if command -v node >/dev/null 2>&1; then node --check assets/zoom.js; fi
+python3 ../tools/changelog.py --check
+if command -v node >/dev/null 2>&1; then
+  node --check assets/zoom.js
+  node --check assets/changelog.js
+fi
 echo "check: ok"

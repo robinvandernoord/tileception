@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Template of public/changelog/index.html: run python3 website/tools/changelog.py after
+     editing it or website/changelog/. The releases replace the marker below. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>What's new in Tileception</title>
+    <meta
+      name="description"
+      content="What changed in each Tileception release, with screenshots of the changes."
+    />
+    <link rel="canonical" href="https://tileception.space/changelog/" />
+    <!-- Not indexed until the site links to this page. -->
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#121212" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="../favicon.ico" sizes="32x32" />
+    <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../assets/site.css" />
+    <link rel="stylesheet" href="../assets/changelog.css" />
+    <script src="../assets/changelog.js" defer></script>
+  </head>
+  <body>
+    <main class="cl-page">
+      <header class="cl-head">
+        <div class="blk"><h1 class="display">What's<br />new<span class="sq sq-r"></span></h1></div>
+        <div class="blk y cl-short">
+          <a class="home" href="../">Tileception</a>
+          <span>Want the short version? <a href="https://github.com/robinvandernoord/tileception/blob/master/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a></span>
+        </div>
+      </header>
+<section class="cl-release" id="v0.19.0">
+<div class="blk cl-version"><div><h2 class="display">0.19.0</h2><time datetime="2026-11-13">2026-11-13</time></div><p>Super+D now clears the desk on a tap and shows it while you hold the keys. Settings asks before it drops changes you haven't applied, and a chip beside the clock shows your next event.</p></div>
+<article class="blk cl-hero"><div class="media"><div class="compare" style="--split: 50%" tabindex="0" role="slider" aria-label="Before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><img src="v0.19.0/desk-before.jpg" alt="Before: Super+D with four windows open" loading="lazy" /><div class="after-layer"><img src="v0.19.0/desk-after.jpg" alt="After: Super+D with four windows open" loading="lazy" /></div><div class="handle" aria-hidden="true"></div><span class="label before">Before</span><span class="label after">After</span></div></div><div class="text"><div class="labels"><span class="area" style="--c: var(--red)">Desk</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/87" target="_blank" rel="noopener">#87</a></div><h3 class="display">Tap Super+D to clear the desk, hold it to peek</h3><p>A tap minimizes every window and remembers the layout. Tap again to bring them back. Hold Super+D and the windows fade to outlines over the dashboard until you let go.</p><p class="caption">In 0.18.0, Super+D added an empty Desktop tile beside your windows. In 0.19.0, holding it shows the desk.</p></div></article>
+<div class="blk cl-side"><article class="blk cl-tile "><div class="media"><img src="v0.19.0/settings-after.jpg" alt="Settings open over three windows" loading="lazy" /></div><div class="text"><div class="labels"><span class="area" style="--c: var(--yellow)">Settings</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/43" target="_blank" rel="noopener">#43</a></div><h3>Settings asks before dropping your changes</h3><p>Close Settings with unapplied changes and it offers Apply, Discard or Cancel. Edits you make to <code>config.toml</code> while Settings is open show up in it.</p></div></article></div>
+<div class="blk cl-grid"><article class="blk cl-tile "><div class="text"><div class="labels"><span class="area" style="--c: var(--yellow)">Calendar</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/42" target="_blank" rel="noopener">#42</a></div><h3>Your next event beside the clock</h3><p>Add .ics files or calendar URLs under <code>[calendar]</code> in <code>config.toml</code>. A chip beside the clock shows the event that's on, or today's next one. Click it to see what's coming up.</p></div></article><article class="blk cl-tile y"><div class="text"><div class="labels"><span class="area" style="--c: var(--red)">Desk</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/87" target="_blank" rel="noopener">#87</a></div><h3>A dashboard on the empty desk</h3><p>A clear desk shows your notification count beside the welcome screen. Plugins with a <code>[dashboard]</code> block can add cards, images or a surface they draw themselves.</p></div></article><article class="blk cl-tile "><div class="text"><div class="labels"><span class="area" style="--c: var(--blue)">Handoff</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/84" target="_blank" rel="noopener">#84</a></div><h3>Handoff between screens of different sizes</h3><p>The pointer crosses where two machines' screen edges face each other. Each keyboard keeps its own layout, and typing in a streamed window reaches that window.</p></div></article><article class="blk cl-tile b"><div class="text"><div class="labels"><span class="area" style="--c: var(--blue)">Plugins</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/41" target="_blank" rel="noopener">#41</a></div><h3>Add a plugin with one command</h3><p><code>tileception msg plugin add &lt;command&gt;</code> writes the plugin into <code>config.toml</code> and starts it. The rest of the file, comments included, stays as it was. Doctor can do this for you when you ask.</p></div></article><article class="blk cl-tile "><div class="text"><div class="labels"><span class="area" style="--c: var(--yellow)">Bluetooth</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/75" target="_blank" rel="noopener">#75</a></div><h3>Bluetooth icons show the kind of device</h3><p>Headphones look like headphones, mice like mice. Keyboards, phones and game controllers get their own icons too.</p></div></article><article class="blk cl-tile r"><div class="text"><div class="labels"><span class="area" style="--c: var(--canvas)">Greeter</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/86" target="_blank" rel="noopener">#86</a></div><h3>The login screen can hold still</h3><p>Set <code>reduce_motion = true</code> in the greeter's settings and it fades instead of moving. A wrong password no longer shakes the field.</p></div></article><article class="blk cl-tile "><div class="text"><div class="labels"><span class="area" style="--c: var(--blue)">Smart home</span> <a class="issue" href="https://github.com/robinvandernoord/tileception/issues/79" target="_blank" rel="noopener">#79</a></div><h3>Humidity history next to temperature</h3><p>Smart home history now keeps humidity as well as temperature, for climate devices and standalone sensors. Settings lets you choose per device.</p></div></article></div>
+</section>
+    </main>
+  </body>
+</html>
