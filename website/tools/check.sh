@@ -41,6 +41,10 @@ for ref in re.findall(r'(?:href|src|poster)="([^"#?]+)"', changelog):
         continue
     if not os.path.exists(os.path.normpath(os.path.join('changelog', ref))):
         sys.exit(f'check: changelog/index.html references missing {ref}')
+# Its link preview picture is one of the site's own files.
+for image in re.findall(r'property="og:image" content="https://tileception.space/([^"]+)"', changelog):
+    if not os.path.exists(image):
+        sys.exit(f'check: changelog/index.html previews missing {image}')
 # External links open in a new tab.
 for page in ('index.html', '404.html', 'changelog/index.html'):
     for tag in re.findall(r'<a\b[^>]*>', open(page, encoding='utf-8').read()):

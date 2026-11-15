@@ -23,6 +23,9 @@ PUBLIC = WEBSITE / "public"
 PAGE = PUBLIC / "changelog" / "index.html"
 TEMPLATE = WEBSITE / "tools" / "changelog.html"
 MARKER = "<!-- releases -->"
+PREVIEW_MARKER = "<!-- preview -->"
+SITE = "https://tileception.space"
+DESCRIPTION = "What changed in each Tileception release, with screenshots of the changes."
 ISSUES = "https://github.com/robinvandernoord/tileception/issues/"
 
 COLOURS = {
@@ -278,15 +281,45 @@ class Page:
         return "\n".join(part for part in parts if part)
 
 
+def preview(release):
+    """Link preview tags: the newest release's version, intro and first picture."""
+    picture = next((feature["media"] for feature in release["features"] if feature.get("media")), None)
+    if picture is None:
+        image = f"{SITE}/og.png"
+    else:
+        name = picture.get("after") or picture.get("poster") or picture.get("src")
+        image = f"{SITE}/changelog/v{release['version']}/{name}"
+        if name.endswith((".mp4", ".webm")):
+            image = f"{SITE}/og.png"
+    title = f"What's new in Tileception {release['version']}"
+    description = re.sub(r"`([^`]+)`", r"\1", release["lede"]) or DESCRIPTION
+    tags = [
+        ("property", "og:type", "website"),
+        ("property", "og:site_name", "Tileception"),
+        ("property", "og:url", f"{SITE}/changelog/"),
+        ("property", "og:title", title),
+        ("property", "og:description", description),
+        ("property", "og:image", image),
+        ("name", "twitter:card", "summary_large_image"),
+        ("name", "twitter:title", title),
+        ("name", "twitter:description", description),
+        ("name", "twitter:image", image),
+    ]
+    return "\n".join(
+        f'    <meta {kind}="{key}" content="{html.escape(value, quote=True)}" />' for kind, key, value in tags
+    )
+
+
 def render():
     releases = [load_release(path) for path in DATA.glob("v*.toml")]
     releases.sort(key=lambda release: version_key(release["version"]), reverse=True)
     page = Page(load_areas())
     body = "\n".join(page.release(release) for release in releases)
     template = TEMPLATE.read_text(encoding="utf-8")
-    if MARKER not in template:
-        raise DataError(f"{TEMPLATE.name} lacks {MARKER}")
-    return template.replace(MARKER, body)
+    for marker in (MARKER, PREVIEW_MARKER):
+        if marker not in template:
+            raise DataError(f"{TEMPLATE.name} lacks {marker}")
+    return template.replace(PREVIEW_MARKER, preview(releases[0])).replace(MARKER, body)
 
 
 def main():
