@@ -55,8 +55,8 @@ python3 website/tools/changelog.py
 `check.sh` fails when the page is out of date, when a picture is missing, and
 on dashes, curly quotes or ellipses in the text.
 
-`make changelog VERSION=0.19.0` writes a release's entry, scenes and
-pictures with Claude Code (`scripts/changelog/entry.sh`), which may only edit
+`make release` runs this for the new version after vommit. `make changelog
+VERSION=0.19.0` writes a release's entry, scenes and pictures with Claude Code (`scripts/changelog/entry.sh`), which may only edit
 files under `website/changelog/`. Nothing is committed: review the TOML, the
 scenes and the pictures first. Without `VERSION` it takes the latest tag;
 `FORCE=1` rewrites an entry that exists.
