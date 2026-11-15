@@ -21,7 +21,6 @@ website/
   changelog/
     v<version>.toml  what changed in a release, written for the changelog page
     areas.toml       the colour and name of each area (commit scope)
-    scenes/          the scripts that take each release's screenshots
   tools/
     changelog.py     writes public/changelog/index.html from changelog/
     changelog.html   the changelog page's template
@@ -56,8 +55,15 @@ python3 website/tools/changelog.py
 `check.sh` fails when the page is out of date, when a picture is missing, and
 on dashes, curly quotes or ellipses in the text.
 
-Screenshots come from scenes in `changelog/scenes/v<version>/`, run in
-headless Tileceptions with this release and the one before:
+`make changelog VERSION=0.19.0` writes a release's entry, scenes and
+pictures with Claude Code (`scripts/changelog/entry.sh`), which may only edit
+files under `website/changelog/`. Nothing is committed: review the TOML, the
+scenes and the pictures first. Without `VERSION` it takes the latest tag;
+`FORCE=1` rewrites an entry that exists.
+
+Screenshots come from scenes in `target/changelog/scenes/v<version>/`,
+working files that are not committed, run in headless Tileceptions with this
+release and the one before:
 
 ```sh
 scripts/changelog/shoot.sh 0.19.0          # every scene of 0.19.0

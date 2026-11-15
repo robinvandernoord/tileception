@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release changelog
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -29,6 +29,8 @@ help:
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
 	@echo "make release     release a new version with vommit"
+	@echo "make changelog   write the changelog page's entry for the latest release"
+	@echo "                 with Claude Code (VERSION=0.19.0 picks one, FORCE=1 rewrites)"
 
 tools:
 	@if ! cargo plane setup codespace --help 2>/dev/null | grep -q -- '--yes'; then \
@@ -132,3 +134,6 @@ deb-docker:
 
 release:
 	vommit release
+
+changelog: tools
+	scripts/changelog/entry.sh $(VERSION)

@@ -12,9 +12,35 @@
 #                                 <after-ms> into the hold
 #
 # Every instance gets a fresh config and state, so nothing of yours is read
-# or changed, and every msg names its own socket.
+# or changed, and every msg names its own socket. Its launcher sees only a few
+# common apps, so the pictures never show what is installed on this machine.
 
 . "$ROOT/scripts/promo/lib.sh"
+
+# The system data an instance may see: icons and MIME types from /usr/share,
+# and copies of a few common apps' launcher entries.
+SYSTEM_SHARE=$OUT/system-share
+rm -rf "$SYSTEM_SHARE"
+mkdir -p "$SYSTEM_SHARE/applications"
+for dir in icons pixmaps mime; do
+    if [ -d "/usr/share/$dir" ]; then
+        ln -s "/usr/share/$dir" "$SYSTEM_SHARE/$dir"
+    fi
+done
+for app in firefox chromium chromium-browser org.gnome.Calculator org.gnome.TextEditor \
+    org.gnome.Nautilus org.gnome.Terminal xterm; do
+    if [ -f "/usr/share/applications/$app.desktop" ]; then
+        cp "/usr/share/applications/$app.desktop" "$SYSTEM_SHARE/applications/"
+    fi
+done
+
+# start, as in scripts/promo/lib.sh, with only that system data.
+eval "$(declare -f start | sed '1s/^start /promo_start /')"
+start() {
+    local name=$1 config=$2
+    shift 2
+    promo_start "$name" "$config" XDG_DATA_DIRS="$SYSTEM_SHARE" "$@"
+}
 
 DESKTOP_CONFIG=$PROMO/config/desktop.toml
 
@@ -36,7 +62,7 @@ busy_desk() {
     wait_windows "$name" 2
     page "$name" "$ROOT/docs/design-greeter.html"
     wait_windows "$name" 3
-    page "$name" "$ROOT/website/public/changelog/index.html"
+    website "$name" get
     wait_windows "$name" 4
     sleep 1.5
 }

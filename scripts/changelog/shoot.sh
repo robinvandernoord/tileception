@@ -7,8 +7,10 @@
 #   scripts/changelog/shoot.sh 0.19.0            every scene of 0.19.0
 #   scripts/changelog/shoot.sh 0.19.0 desk       only scenes/v0.19.0/desk.sh
 #
-# Scenes are website/changelog/scenes/v<version>/<name>.sh, written with the
-# helpers in scripts/changelog/lib.sh. A scene whose header has the line
+# Scenes are target/changelog/scenes/v<version>/<name>.sh, written with the
+# helpers in scripts/changelog/lib.sh. They are working files, not committed:
+# the pictures they take are what the changelog keeps. A scene whose header
+# has the line
 #   # shots: after
 # runs only with this release; without it, the scene runs for both. Both
 # binaries come from scripts/changelog/build.sh: they build on the selected
@@ -20,7 +22,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 VERSION=${1:?usage: scripts/changelog/shoot.sh <version> [scene...]}
 VERSION=${VERSION#v}
 shift
-SCENES=$ROOT/website/changelog/scenes/v$VERSION
+SCENES=$ROOT/target/changelog/scenes/v$VERSION
 PUBLISH=$ROOT/website/public/changelog/v$VERSION
 WORK=$ROOT/target/changelog/shots/v$VERSION
 

@@ -246,11 +246,17 @@
   background: var(--ink);
   padding: 0;
 }
-/* A short last row fills the width. */
-.cl-grid > .cl-tile:last-child:nth-child(3n + 2) {
+/* A row of pictures shares the width evenly. */
+.cl-pictures {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+/* A short last row of text fills the width. */
+.cl-grid:not(.cl-pictures) > .cl-tile:last-child:nth-child(3n + 2) {
   grid-column: span 2;
 }
-.cl-grid > .cl-tile:last-child:nth-child(3n + 1) {
+.cl-grid:not(.cl-pictures) > .cl-tile:last-child:nth-child(3n + 1) {
   grid-column: span 3;
 }
 .cl-fixes {
@@ -288,8 +294,10 @@
   .cl-grid {
     grid-column: span 6;
   }
-  .cl-grid {
+  .cl-grid,
+  .cl-pictures {
     grid-template-columns: 1fr;
+    grid-auto-flow: row;
   }
   .cl-grid > .cl-tile:last-child:nth-child(3n + 2),
   .cl-grid > .cl-tile:last-child:nth-child(3n + 1) {

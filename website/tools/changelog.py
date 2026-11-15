@@ -241,12 +241,16 @@ class Page:
         features = release["features"]
         if not any(feature.get("media") for feature in features):
             return self.compact(release)
-        # The first feature with a picture is the large tile; up to two more
-        # with pictures stand beside it, and the rest form a grid below.
+        # The first feature with a picture is the large tile and the next one
+        # stands beside it. Further pictures get a row of their own, so no
+        # text tile stretches to a picture's height, and the text tiles end
+        # the release.
         hero = next(feature for feature in features if feature.get("media"))
         rest = [feature for feature in features if feature is not hero]
-        side = [feature for feature in rest if feature.get("media")][:2]
-        others = [feature for feature in rest if all(feature is not chosen for chosen in side)]
+        pictured = [feature for feature in rest if feature.get("media")]
+        side = pictured[:1]
+        pictures = pictured[1:]
+        texts = [feature for feature in rest if not feature.get("media")]
         text = f'<p>{prose(hero["text"])}</p>' if hero["text"] else ""
         parts = [
             f'<section class="cl-release" id="v{version}">',
@@ -259,10 +263,13 @@ class Page:
             parts.append(
                 '<div class="blk cl-side">' + "".join(self.tile(version, feature) for feature in side) + "</div>"
             )
-        if others:
+        if pictures:
+            tiles = "".join(self.tile(version, feature) for feature in pictures)
+            parts.append(f'<div class="blk cl-grid cl-pictures">{tiles}</div>')
+        if texts:
             tiles = "".join(
-                self.tile(version, feature, "" if feature.get("media") else TILE_COLOURS[index % len(TILE_COLOURS)])
-                for index, feature in enumerate(others)
+                self.tile(version, feature, TILE_COLOURS[index % len(TILE_COLOURS)])
+                for index, feature in enumerate(texts)
             )
             parts.append(f'<div class="blk cl-grid">{tiles}</div>')
         parts.append(self.fixes(release))
