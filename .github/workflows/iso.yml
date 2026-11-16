@@ -1,0 +1,161 @@
+name: ISO
+
+# The premade ISOs: Ubuntu's Desktop ISO with Tileception's installer answers.
+# They hold nothing of Tileception itself (the installer fetches the current
+# packages), so they are only rebuilt when Ubuntu publishes a new ISO or the
+# recipe under iso/ changes. iso/plan.sh decides which.
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  push:
+    branches: [master]
+    paths:
+      - "iso/**"
+      - "packaging/tileception-archive-keyring.gpg"
+      - ".github/workflows/iso.yml"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild every ISO, even unchanged ones
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iso
+  cancel-in-progress: false
+
+env:
+  # The Ubuntu releases apt.tileception.space has packages for; keep in step
+  # with the deb matrix in release.yml.
+  SUITES: noble resolute
+  MANIFEST_URL: ${{ vars.ISO_URL || 'https://iso.su6.nl' }}/manifest.json
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      builds: ${{ steps.plan.outputs.builds }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq distro-info ubuntu-keyring jq
+      - name: Plan
+        id: plan
+        env:
+          FORCE: ${{ inputs.force && '1' || '0' }}
+        run: |
+          builds=$(iso/plan.sh "$MANIFEST_URL")
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
+          echo "To build: $builds"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.builds != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.builds) }}
+    environment:
+      name: iso
+    env:
+      # The runner's root disk is too small for three ISOs and a VM disk.
+      ISO_CACHE: /mnt/iso/cache
+      WORK: /mnt/iso/test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room
+        run: |
+          sudo mkdir -p /mnt/iso && sudo chown "$USER" /mnt/iso
+          df -h / /mnt
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xorriso gpgv ubuntu-keyring distro-info-data qemu-system-x86 qemu-utils
+      - name: Build
+        run: iso/build.sh ${{ matrix.codename }} ${{ matrix.arch }} /mnt/iso/out
+      - name: Enable KVM
+        if: matrix.arch == 'amd64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Smoke test
+        # Installs a variant that asks nothing in QEMU and checks the result.
+        # arm64 has no KVM here; its ISO differs only in Ubuntu's part.
+        if: matrix.arch == 'amd64'
+        run: iso/smoke-test.sh ${{ matrix.codename }}
+      - name: Keep the logs of a failed smoke test
+        if: failure() && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-${{ matrix.codename }}
+          path: /mnt/iso/test/*.log
+          if-no-files-found: ignore
+      - name: Upload the ISO
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          ISO_BUCKET: ${{ vars.ISO_BUCKET || 'tileception-iso' }}
+        run: |
+          : "${AWS_ACCESS_KEY_ID:?set the R2_ACCESS_KEY_ID secret}" "${R2_ENDPOINT:?set the R2_ENDPOINT secret}"
+          for iso in /mnt/iso/out/*.iso; do
+            aws s3 cp "$iso" "s3://$ISO_BUCKET/$(basename "$iso")" --endpoint-url "$R2_ENDPOINT" \
+              --content-type application/x-iso9660-image
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: entry-${{ matrix.codename }}-${{ matrix.arch }}
+          path: /mnt/iso/out/*.json
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    # After the builds that succeeded; a failed one keeps its previous ISO.
+    if: always() && needs.plan.outputs.builds != '[]' && !cancelled()
+    runs-on: ubuntu-latest
+    environment:
+      name: iso
+      url: https://tileception.space/download/
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: entry-*
+          path: entries
+          merge-multiple: true
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq distro-info jq
+      - name: Sign and publish the index
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          ISO_BUCKET: ${{ vars.ISO_BUCKET || 'tileception-iso' }}
+          APT_SSH_HOST: ${{ secrets.APT_SSH_HOST }}
+          APT_SSH_PORT: ${{ vars.APT_SSH_PORT || '2222' }}
+          APT_SSH_KEY: ${{ secrets.APT_SSH_KEY }}
+          APT_SSH_KNOWN_HOSTS: ${{ secrets.APT_SSH_KNOWN_HOSTS }}
+        run: |
+          ls entries/*.json >/dev/null 2>&1 || { echo "No ISO was built"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$APT_SSH_KEY" > ~/.ssh/apt
+          printf '%s\n' "$APT_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/apt ~/.ssh/known_hosts
+          iso/publish.sh entries "$MANIFEST_URL"
+      - name: Update the download page
+        # The page is made from manifest.json when the website deploys.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run website.yml --ref master

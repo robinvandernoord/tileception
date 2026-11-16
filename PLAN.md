@@ -71,70 +71,28 @@ Report testing in the conversation, the commit or the pull request instead.
   - Confining a dashboard plugin's process (Landlock or bubblewrap, no
     network) as a manifest option. The protocol limits what it can do to the
     desktop, not to the user's files.
-- A premade Tileception ISO: one ISO per supported Ubuntu release and
-  architecture with our defaults, no configurator. Decided:
-  - No per-user ISOs or selection codes: patching the selection into each
-    download would make our own server carry every download.
+- The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
+  download page), the rest. Decided:
+  - Before the first ISO goes out: an R2 bucket `tileception-iso` with the
+    custom domain `iso.su6.nl` (which `/download/` redirects to), the
+    `iso` environment with the R2 secrets (`R2_ACCESS_KEY_ID`,
+    `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) and the apt server's SSH
+    secrets, and the `sign-checksums` command deployed on the apt server.
+    `tileception-desktop` is published with the next release.
   - Packages for every supported Ubuntu release, interim releases included.
     The deb matrix in `release.yml` and `DEB_IMAGES` follows
     `ubuntu-distro-info --supported` (and `debian-distro-info`): a new
-    release joins at its beta, an old one leaves at its end of life. The
-    install script and `docs/installation.md` describe that rule instead of
-    naming releases.
-  - Built on Ubuntu's Desktop ISO for its graphical installer. A baked-in
-    `autoinstall.yaml` keeps language, keyboard, disk and user interactive;
-    it installs the minimal desktop, removes GNOME Shell, Ubuntu's GNOME
-    session and the Firefox snap, adds the repositories below and installs
-    `tileception-desktop`, runs `ubuntu-drivers install`, installs
-    Thunderbird from Flathub, adds zoxide's hook to `/etc/skel/.bashrc`,
-    and applies the greeter and parts with
-    `tileception-setup --non-interactive`. Packages come from the network
-    during the install, so ISOs are only rebuilt for new Ubuntu releases and
-    point releases. The live session stays GNOME.
-  - A `tileception-desktop` metapackage (`Architecture: all`) holds the
-    defaults, so changing one needs no new ISO and existing installs can
-    get the same desktop with one `apt install`. Depends: greetd, PipeWire
-    with pipewire-pulse and WirePlumber, playerctl, NetworkManager, BlueZ,
-    UPower, power-profiles-daemon, fwupd, gnome-keyring with
-    libpam-gnome-keyring, udisks2 and gvfs, CUPS with
-    system-config-printer, systemd-zram-generator, Noto fonts (core, CJK,
-    colour emoji) and adwaita-icon-theme. Recommends, so they can be
-    swapped: Ptyxis, Nautilus, GNOME Text Editor, Loupe, Papers, File
-    Roller with unzip, 7zip and unrar, Showtime, VLC, Amberol, GNOME
-    Software with its Flatpak plugin, GNOME Calculator, System Monitor,
-    Disks, Disk Usage, Document Scanner, Seahorse, Characters, Calendar,
-    Sound Recorder, Clocks, Weather, Maps, LibreOffice, the GStreamer
-    libav, ugly and bad plugins, ffmpeg, Firefox, Vivaldi, gh, htop, btop,
-    ripgrep, bat, fd-find, fzf, jq, tree, ncdu, duf, tealdeer, fastfetch,
-    git, wget, tmux, neovim and zoxide. It also installs
-    `/etc/xdg/tileception-xdg-terminals.list` naming Ptyxis, and `bat` and
-    `fd` aliases for Ubuntu's `batcat` and `fdfind`.
-  - Debs over snaps. Firefox from Mozilla's APT repository (pinned over
-    Ubuntu's snap package), Vivaldi from Vivaldi's and gh from GitHub's;
-    a small package next to `tileception-archive-keyring` carries their
-    keys, sources and the Mozilla pin. Thunderbird has no deb and comes
-    from Flathub. No Chromium: Vivaldi covers Chromium-only sites, and
-    Ubuntu, Mozilla and trustworthy repositories have no Chromium deb.
-    Ghostty stays out: it needs OpenGL 4.3, which VMs often lack.
-  - The build lives in this repository (`iso/` and `.github/workflows/iso.yml`),
-    beside the setup flags and package names it depends on, and runs
-    weekly when Ubuntu's ISOs have changed, when `iso/` changes, or by
-    hand; not on every Tileception release, since installs fetch the
-    current packages anyway. It remasters the Desktop ISO for each
-    supported release and architecture, boots it headless in QEMU (KVM)
-    through an unattended install to the greeter, and uploads the ISOs
-    straight to Cloudflare R2 behind a download host (no egress fees).
-    Only `SHA256SUMS` goes to the apt server, through a restricted SSH
-    command next to `publish`, which signs it with the archive key, so the
-    key stays off CI. Old ISOs leave when their release reaches end of
-    life.
-  - `tileception-desktop` and the vendor sources package are built in
-    `release.yml`, next to the keyring package.
-  - A static download page on the website, generated from a manifest the
-    ISO job writes (as `changelog.py` generates the changelog page): one
-    entry per release and architecture with size, SHA256, signature, LTS
-    or interim and the end of support, and a short guide to writing the
-    ISO to a USB stick. `docs/installation.md` gets an ISO section.
+    release joins at its beta, an old one leaves at its end of life, and
+    `SUITES` in `iso.yml` and on the apt server follow. The install script
+    and `docs/installation.md` describe that rule instead of naming
+    releases.
+  - On a system without GNOME, `tileception-desktop`'s recommendations
+    pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
+    `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for
+    `apt install tileception-desktop` elsewhere, find which recommendation
+    brings them and replace or drop it.
+  - The arm64 ISOs are built but not installed in CI: GitHub's arm64
+    runners have no KVM. Try one on an arm64 machine before trusting it.
   - Before release, what someone trying the ISO in a VM meets first:
     `tileception msg` without `TILECEPTION_SOCKET` counts
     `tileception-ssh-agent.sock` as a second instance, and the VMware
