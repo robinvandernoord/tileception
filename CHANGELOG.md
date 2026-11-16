@@ -4,6 +4,22 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.20.0 (2026-11-16)
+
+### Features
+* **inject:** add scroll input command
+* **settings:** support smooth scrolling in menus
+* **compositor:** support shortcut inhibition and Ptyxis
+
+### Fixes
+* **udev:** refresh modes when display resolution changes
+* **media:** provide a valid PipeWire PulseAudio cookie
+* **xwayland:** handle client maximize requests
+
+### Documentation
+* **doctor:** bundle ISO documentation
+* **iso:** add Ubuntu installer guide
+
 ## v0.19.1 (2026-11-15)
 
 ### Documentation
