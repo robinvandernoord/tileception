@@ -463,6 +463,21 @@ persistence off discards the helper's retained clipboard. If the helper cannot
 start or exits, Tileception logs an error; reload the config after resolving
 the problem to retry.
 
+## Area screenshots
+
+The menus beside **Copy** and **Save** in the area screenshot offer a JPG
+button for each quality (1 to 100) and a switch between sizes:
+
+```toml
+[capture]
+jpg_qualities = [100, 95, 85]
+sizes = ["100%", "50%", "400px"]
+```
+
+A size is a percentage of the picture, or a thumbnail at most that many pixels
+on its longest side. The first size is chosen when the menu opens. WebP is
+always lossless.
+
 ## Autostart
 
 Use `general.autostart` for shell commands to run once when Tileception starts:

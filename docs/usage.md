@@ -246,6 +246,7 @@ window.
 | Super+E       | Open your home folder                 |
 | Super+N       | Open notifications and sound controls |
 | Super+Enter   | Answer a popup's buttons by keyboard  |
+| Shift+Print   | Take or record an area of the screen  |
 | Ctrl+Print    | Pick a colour from the screen         |
 | Super+/       | Open Doctor                           |
 | Super+L       | Lock the screen                       |
@@ -350,7 +351,7 @@ account. Tileception does not submit the issue. Anonymous feedback remains
 deferred.
 
 Popups never take the keyboard by themselves. To answer one with buttons, such
-as the screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
+as the full-screen screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
 popup shows the hint): its buttons get numbers. Press a number, or choose with
 the arrow keys or **Tab** and press **Enter**. **Escape**, or **Super+Enter**
 again, gives the keyboard back without answering.
@@ -403,12 +404,50 @@ the limit in the [tray settings](configuration.md#system-tray).
 
 ### Screenshots
 
-**Print** captures the whole screen; **Shift+Print** lets you select a region.
-Both then ask whether to copy the image, save it, or do both. Dismiss the prompt
-to discard the capture, or press **Escape** during region selection to cancel.
+**Print** captures the whole screen and asks whether to copy the image, save
+it, or do both. Dismiss the prompt to discard the capture.
+
+**Shift+Print**, or "Screenshot an area" in the launcher, freezes the screen
+for picking an area. Drag one, or click a window to take all of it. A
+magnifier shows the pixels under the pointer while you pick. **F** switches
+between the frozen screen and the live one; over the live screen, the picture
+is taken when you copy or save. **Escape** cancels.
+
+Once picked, the area has handles to resize it; drag inside it to move it.
+The arrow keys move it a pixel at a time (ten with **Ctrl**), and with
+**Shift** they resize it.
+
+The tools beside the area draw on it: pen, arrow, rectangle, highlighter,
+text, numbered steps, and redact, which pixelates part of the picture so it
+cannot be read. Each has a letter key, shown when you point at it. The colour
+button holds the colours and line widths (also **1** to **6**, **[** and
+**]**); **Ctrl+Z** and **Ctrl+Y** undo and redo.
+
+The row under the area finishes:
+
+| Key               | Action                                           |
+|-------------------|--------------------------------------------------|
+| Enter or Ctrl+C   | Copy the area as a PNG                           |
+| Ctrl+S            | Save it as a PNG                                 |
+| Shift+Enter       | Copy it as another format or size                |
+| Ctrl+Shift+S      | Save it as another format or size                |
+| D                 | Send it to Doctor                                |
+| Ctrl+R            | Record the area                                  |
+
+The arrows beside **Copy** and **Save** open the same menus as Shift+Enter
+and Ctrl+Shift+S: choose a size (full, half or a thumbnail) at the top, then
+click PNG, WebP or one of the JPG qualities, each with the size of its file.
+Copying a WebP or JPG also offers a PNG, for programs that paste only PNG.
+The [capture settings](configuration.md#area-screenshots) set the qualities
+and sizes.
+
+While recording, a red line marks the area and a small bar shows the time.
+Click **Stop**, or press **Shift+Print** again, then copy the recording as an
+MP4 or GIF, or save it. Recording needs `ffmpeg`.
 
 Saved images go into `Screenshots` inside your configured Pictures folder,
-usually `~/Pictures/Screenshots`.
+usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
+your Videos folder.
 
 ### Colour picker
 
