@@ -283,6 +283,7 @@ Pretend input (headless or nested only):
   click [x y] [left|right|middle]
   press [left|right|middle] hold a button down (drags), and let go with
   release [left|right|middle]
+  scroll <notches>          turn the mouse wheel, below 0 for up
   key <combo> [hold <ms>]   press a key, such as Return or Super+slash; with
                             hold, let go after that many milliseconds
   keydown <key>             hold a key down (keydown Alt, then press and
@@ -415,8 +416,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "motion" | "click" | "press" | "release" | "key" | "keydown" | "keyup" | "type" | "gesture"
-        | "touch" => {
+        "pointer" | "motion" | "click" | "press" | "release" | "scroll" | "key" | "keydown" | "keyup" | "type"
+        | "gesture" | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {
