@@ -8,6 +8,8 @@
 - [Configuration](configuration.md): shortcuts, appearance, scaling, desktop
   components, window rules and autostart.
 - [Installation](installation.md): packages, source builds, updates and removal.
+- [The ISO](iso.md): installing Ubuntu with Tileception and its apps from a USB
+  stick.
 - [Login screen](greeter.md): the experimental greetd greeter and restoring your
   previous login screen.
 - [Doctor](doctor.md): agents, sign-in, permissions, images and commands.

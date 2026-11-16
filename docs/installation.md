@@ -1,5 +1,9 @@
 # Installation
 
+Starting a computer fresh? [The Tileception ISO](iso.md) is Ubuntu's installer
+set up to install Tileception with a set of apps. The rest of this page adds
+Tileception to a system you already have.
+
 ## Packages
 
 ### Supported systems
