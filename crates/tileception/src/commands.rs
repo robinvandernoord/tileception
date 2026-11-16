@@ -53,6 +53,8 @@ pub enum Command {
     /// Saves or copies a finished recording (from its notification).
     KeepRecording(crate::shot::record::Keep),
     ReloadConfig,
+    /// Shows another picture from the wallpaper folder.
+    NextWallpaper,
     /// Rescans plugin manifests and restarts their workers without editing config.
     ReloadPlugins,
     /// Ends a screen lock whatever the locker does: the way out when a locker
@@ -213,6 +215,7 @@ Shell:
   capture                   pick an area to copy, save, draw on or record;
                             while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
+  next-wallpaper            another picture from the wallpaper folder
                             (also: color-scheme)
   doctor                    open or close the doctor panel
   doctor ask <question>     ask the doctor about your setup
@@ -341,6 +344,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "show-minimized" => return Ok(Command::ShowMinimized),
         "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
+        "next-wallpaper" => return Ok(Command::NextWallpaper),
         "plugins" => {
             return match args.as_slice() {
                 ["reload"] => Ok(Command::ReloadPlugins),
@@ -604,6 +608,12 @@ impl Tileception {
             Command::ShotKey(sym, mods) => self.shot_key(sym, mods),
             Command::KeepRecording(keep) => self.keep_recording(keep),
             Command::ReloadConfig => self.reload_config()?,
+            Command::NextWallpaper => {
+                if self.wallpaper_rotation_folder().is_none() {
+                    return Err("the wallpaper is not a folder".into());
+                }
+                self.rotate_wallpaper(true);
+            }
             Command::ReloadPlugins => {
                 self.reload_plugins()?;
                 return Ok("Plugin rediscovery started\n".into());

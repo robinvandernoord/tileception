@@ -363,6 +363,7 @@ const COMMANDS: &[Builtin] = &[
         Does::Line("colour-scheme light"),
     ),
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
+    builtin("Next wallpaper", "background picture shuffle", glyph::NEXT, Does::Line("next-wallpaper")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
     builtin(

@@ -96,6 +96,12 @@ persist = false
 # font_size = 13
 # A background image (PNG, JPEG or WebP), also shown on the lock screen.
 # wallpaper = "~/Pictures/wallpaper.jpg"
+# Or a folder of them: a picture is picked at random each session, the same
+# on every screen. The next-wallpaper command picks another.
+# wallpaper = "~/Pictures/Wallpapers"
+# With a folder, how often to pick another, such as "30m", "2h" or "1d".
+# Empty: once per session.
+# wallpaper_interval = ""
 # How it fits the screen: fill, fit, stretch or center.
 # wallpaper_fit = "fill"
 # What applications are told through the desktop portal: dark, light, or

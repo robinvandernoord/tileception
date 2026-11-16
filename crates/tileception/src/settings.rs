@@ -35,6 +35,8 @@ enum Control {
     Number(f64, f64, f64, &'static str),
     Choice(&'static [&'static str]),
     Text,
+    /// A path, typed or chosen in the file chooser with one of these.
+    Path(&'static [crate::file_chooser::Pick]),
     Colour,
     Section,
     Keyboard,
@@ -370,7 +372,13 @@ const FIELDS: &[Field] = &[
         "Show connected devices in the notification panel.",
         Control::Toggle,
     ),
-    field(5, "home.devices", "Device file", "Empty uses the standard home-devices.json path.", Control::Text),
+    field(
+        5,
+        "home.devices",
+        "Device file",
+        "Empty uses the standard home-devices.json path.",
+        Control::Path(&[crate::file_chooser::Pick::File]),
+    ),
     field(
         6,
         "shell.lock",
@@ -399,7 +407,20 @@ const FIELDS: &[Field] = &[
     field(7, "general.terminal", "Default terminal", "Terminal command used by the desktop.", Control::Text),
     field(7, "launch_args", "Application arguments", "Extra arguments by desktop file name.", Control::Section),
     field(0, "theme.font", "Interface font", "Font family used by built-in panels.", Control::Text),
-    field(0, "theme.wallpaper", "Wallpaper", "Image path. Empty uses the background colour.", Control::Text),
+    field(
+        0,
+        "theme.wallpaper",
+        "Wallpaper",
+        "A picture, or a folder to pick one from. Empty uses the background colour.",
+        Control::Path(&[crate::file_chooser::Pick::Picture, crate::file_chooser::Pick::Folder]),
+    ),
+    field(
+        0,
+        "theme.wallpaper_interval",
+        "New picture",
+        "With a wallpaper folder: how often another picture is picked.",
+        Control::Choice(&["", "15m", "30m", "1h", "3h", "1d"]),
+    ),
     field(
         0,
         "theme.wallpaper_fit",
@@ -739,6 +760,12 @@ fn choice_label(key: &str, value: &str) -> String {
         (_, "builtin") => "Built-in".into(),
         (_, "none") => "Off".into(),
         ("theme.colour_scheme", "default") => "Each app decides".into(),
+        ("theme.wallpaper_interval", "") => "Once per session".into(),
+        ("theme.wallpaper_interval", "15m") => "Every 15 minutes".into(),
+        ("theme.wallpaper_interval", "30m") => "Every 30 minutes".into(),
+        ("theme.wallpaper_interval", "1h") => "Every hour".into(),
+        ("theme.wallpaper_interval", "3h") => "Every 3 hours".into(),
+        ("theme.wallpaper_interval", "1d") => "Every day".into(),
         (_, "center") => "Centre".into(),
         (_, "areas") => "Click areas".into(),
         (_, "clickfinger") => "Finger count".into(),
@@ -868,6 +895,46 @@ fn level_parts(row: Rect) -> LevelParts {
     }
 }
 
+/// Why changes wait: what is wrong in config.toml.
+fn problems_message(problems: &[crate::config::Problem]) -> String {
+    format!("Fix config.toml before applying (Edit config.toml): {}", crate::config::describe(problems))
+}
+
+/// What a path field's dropdown offers: the file chooser for each kind of
+/// path, then typing one.
+fn path_options(picks: &[crate::file_chooser::Pick]) -> Vec<String> {
+    use crate::file_chooser::Pick;
+    let mut options: Vec<String> = picks
+        .iter()
+        .map(|pick| match pick {
+            Pick::Picture => "Choose a picture...",
+            Pick::Folder => "Choose a folder...",
+            Pick::File => "Choose a file...",
+        })
+        .map(String::from)
+        .collect();
+    options.push("Type a path...".into());
+    options
+}
+
+/// A path as wide as `width` allows, leaving out the middle so the file
+/// name stays: `~/Pictures/.../sea.png`.
+fn elide_path(painter: &Painter, path: &str, width: f64, style: Style) -> String {
+    if painter.measure(path, f64::MAX, style).0 <= width {
+        return path.to_string();
+    }
+    let (head, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let mut keep: Vec<char> = head.chars().collect();
+    while !keep.is_empty() {
+        keep.pop();
+        let text = format!("{}.../{name}", keep.iter().collect::<String>());
+        if painter.measure(&text, f64::MAX, style).0 <= width {
+            return text;
+        }
+    }
+    format!(".../{name}")
+}
+
 fn custom_command(index: usize) -> bool {
     matches!(
         FIELDS[index].key,
@@ -896,6 +963,9 @@ fn config_line_keys(lines: &[String]) -> Vec<String> {
 
 impl Settings {
     fn options(&self, index: usize) -> Vec<String> {
+        if let Control::Path(picks) = FIELDS[index].control {
+            return path_options(picks);
+        }
         let Control::Choice(choices) = FIELDS[index].control else { return Vec::new() };
         let mut options: Vec<String> = choices.iter().map(|choice| (*choice).into()).collect();
         if FIELDS[index].key == "touchpad.click_method" {
@@ -1031,7 +1101,13 @@ impl Settings {
 impl Tileception {
     fn settings_load(&mut self) -> Result<(), String> {
         let text = crate::config_edit::panel_text()?;
-        let config = crate::config::Config::parse(&text)?;
+        // Mistakes in the file still open Settings, with what loaded; Apply
+        // waits until they are fixed (see `settings_document`).
+        let (config, problems) = crate::config::Config::parse_lenient(&text)?;
+        if !problems.is_empty() {
+            self.settings.message = problems_message(&problems);
+            self.settings.error = true;
+        }
         let before = values(&config.file)?;
         let defaults = values(&ConfigFile::default())?;
         self.settings.draft = before.clone();
@@ -1044,7 +1120,10 @@ impl Tileception {
     }
 
     fn settings_document(&self) -> Result<String, String> {
-        let config = crate::config::Config::parse(&self.settings.document_draft)?;
+        let (config, problems) = crate::config::Config::parse_lenient(&self.settings.document_draft)?;
+        if !problems.is_empty() {
+            return Err(problems_message(&problems));
+        }
         let current = values(&config.file)?;
         let changes: Vec<_> = FIELDS
             .iter()
@@ -1807,7 +1886,8 @@ impl Tileception {
             return false;
         }
         self.settings.draft[index] =
-            if matches!(FIELDS[index].control, Control::Text | Control::Keyboard) && text.is_empty() {
+            if matches!(FIELDS[index].control, Control::Text | Control::Path(_) | Control::Keyboard) && text.is_empty()
+            {
                 None
             } else {
                 Some(toml::Value::String(text.into()))
@@ -1816,6 +1896,58 @@ impl Tileception {
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.settings.error = false;
         true
+    }
+
+    /// Starts typing in a field, with its draft as the text.
+    fn settings_edit_text(&mut self, index: usize) {
+        let text = self.settings.draft[index].as_ref().and_then(toml::Value::as_str).unwrap_or("").to_string();
+        self.settings.input = crate::text_input::TextInput::new(text);
+        self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
+        self.settings.editing = Some(index);
+    }
+
+    /// Opens the file chooser for a path field, starting where its draft
+    /// points, and puts what is chosen in the draft.
+    fn settings_choose_path(&mut self, index: usize, pick: crate::file_chooser::Pick) {
+        use crate::file_chooser::Pick;
+        let current =
+            self.settings.draft[index].as_ref().and_then(toml::Value::as_str).map(crate::wallpaper::expand_home);
+        let folder = current
+            .and_then(|path| if path.is_dir() { Some(path) } else { path.parent().map(std::path::Path::to_path_buf) })
+            .filter(|folder| folder.is_dir())
+            .or_else(|| {
+                let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+                Some(if pick == Pick::File { home } else { home.join("Pictures") }).filter(|folder| folder.is_dir())
+            });
+        let title = match pick {
+            Pick::Picture => "Choose a wallpaper",
+            Pick::Folder => "Choose a wallpaper folder",
+            Pick::File => "Choose a file",
+        };
+        self.settings.message = "Waiting for the file chooser...".into();
+        self.settings.error = false;
+        self.choose_file(title, pick, folder, move |state, chosen| {
+            if !state.settings.open {
+                return;
+            }
+            match chosen {
+                Ok(Some(path)) => {
+                    if state.settings.editing == Some(index) {
+                        state.settings.editing = None;
+                    }
+                    state.settings.draft[index] = Some(toml::Value::String(crate::file_chooser::tilde(&path)));
+                    state.settings.message.clear();
+                }
+                Ok(None) => state.settings.message.clear(),
+                Err(error) => {
+                    state.settings.message =
+                        format!("Could not open the file chooser: {error}. Choose Type a path instead.");
+                    state.settings.error = true;
+                }
+            }
+            state.invalidate_settings_client();
+            state.schedule_render();
+        });
     }
 
     fn settings_activate(&mut self, hit: Hit, position: Option<f64>) {
@@ -1915,13 +2047,14 @@ impl Tileception {
             Hit::Option(index, position) => {
                 let options = self.settings.options(index);
                 if let Some(option) = options.get(position) {
-                    if custom_command(index) && position + 1 == options.len() {
-                        let text =
-                            self.settings.draft[index].as_ref().and_then(toml::Value::as_str).unwrap_or("").to_string();
-                        self.settings.input = crate::text_input::TextInput::new(text);
-                        self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-                        self.settings.editing = Some(index);
-                    } else if FIELDS[index].key == "touchpad.click_method" && position == 0 {
+                    if let Control::Path(picks) = FIELDS[index].control {
+                        match picks.get(position) {
+                            Some(pick) => self.settings_choose_path(index, *pick),
+                            None => self.settings_edit_text(index),
+                        }
+                    } else if custom_command(index) && position + 1 == options.len() {
+                        self.settings_edit_text(index);
+                    } else if FIELDS[index].key == "touchpad.click_method" && position == 0 || option.is_empty() {
                         self.settings.draft[index] = None;
                     } else {
                         self.settings.draft[index] = Some(toml::Value::String(option.clone()));
@@ -2116,6 +2249,11 @@ impl Tileception {
                 let value = self.settings.draft[index].as_ref();
                 let next = match FIELDS[index].control {
                     Control::Toggle => toml::Value::Boolean(!value.and_then(toml::Value::as_bool).unwrap_or(false)),
+                    Control::Path(_) => {
+                        self.settings.dropdown = Some((index, 0));
+                        self.schedule_render();
+                        return;
+                    }
                     Control::Choice(_) => {
                         let options = self.settings.options(index);
                         let current = value.and_then(toml::Value::as_str).unwrap_or("");
@@ -2149,10 +2287,7 @@ impl Tileception {
                         }
                     }
                     Control::Text | Control::Colour => {
-                        let text = value.and_then(toml::Value::as_str).unwrap_or("").to_string();
-                        self.settings.input = crate::text_input::TextInput::new(text);
-                        self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-                        self.settings.editing = Some(index);
+                        self.settings_edit_text(index);
                         self.schedule_render();
                         return;
                     }
@@ -3095,6 +3230,13 @@ impl Tileception {
                 );
                 let label = match (value.and_then(toml::Value::as_str), field.control) {
                     (_, _) if editing => state.input.text.clone(),
+                    (None, Control::Choice(_)) if field.key == "theme.wallpaper_interval" => {
+                        choice_label(field.key, "")
+                    }
+                    (Some(text), Control::Path(_)) => text.to_string(),
+                    (None, Control::Path(picks)) if picks.contains(&crate::file_chooser::Pick::Picture) => {
+                        "None".into()
+                    }
                     (Some(text), Control::Choice(_)) => choice_label(field.key, text),
                     (None, Control::Choice(_)) if field.key == "touchpad.click_method" => "Device default".into(),
                     _ => show(value),
@@ -3124,7 +3266,27 @@ impl Tileception {
                         },
                     );
                 }
-                let colour = swatch.is_some();
+                // A picture field shows the picture, or a folder's current one.
+                let thumbnail = match field.control {
+                    Control::Path(picks) if !editing && picks.contains(&crate::file_chooser::Pick::Picture) => {
+                        value.and_then(toml::Value::as_str).map(crate::wallpaper::expand_home).map(|path| {
+                            let showing = self.theme.wallpaper.as_ref() == Some(&path);
+                            match self.wallpaper_path() {
+                                Some(picture) if showing && path.is_dir() => (picture, false),
+                                _ => (path.clone(), path.is_dir()),
+                            }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some((path, folder)) = &thumbnail {
+                    let spot = Rect::new(control.x + 7., control.y + (control.h - 22.) / 2., 22., 22.);
+                    match (folder, self.launcher.icons.image(path, 22)) {
+                        (false, Some(image)) => painter.image(&image, (spot.x, spot.y)),
+                        _ => painter.glyph(glyph::FOLDER, spot, 16, theme.muted),
+                    }
+                }
+                let colour = swatch.is_some() || thumbnail.is_some();
                 let text_rect = Rect::new(
                     control.x + if colour { 34. } else { 10. },
                     control.y,
@@ -3151,13 +3313,17 @@ impl Tileception {
                     }
                 } else {
                     let unset = value.is_none() && !matches!(field.control, Control::Choice(_));
-                    painter.text(
-                        &label,
-                        Rect::new(text_rect.x, text_rect.y, text_rect.w - 14., text_rect.h),
-                        Style::new(11., if unset { theme.muted } else { theme.text }),
-                    );
+                    let style = Style::new(11., if unset { theme.muted } else { theme.text });
+                    let label = if matches!(field.control, Control::Path(_)) {
+                        elide_path(painter, &label, text_rect.w - 14., style)
+                    } else {
+                        label
+                    };
+                    painter.text(&label, Rect::new(text_rect.x, text_rect.y, text_rect.w - 14., text_rect.h), style);
                 }
-                if matches!(field.control, Control::Choice(_) | Control::Keyboard) {
+                if matches!(field.control, Control::Choice(_) | Control::Keyboard)
+                    || matches!(field.control, Control::Path(_)) && !editing
+                {
                     painter.glyph(
                         glyph::CHEVRON_DOWN,
                         Rect::new(control.right() - 22., control.y, 16., control.h),

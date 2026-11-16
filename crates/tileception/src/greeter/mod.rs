@@ -621,7 +621,9 @@ impl Tileception {
         }
         let screen = self.output_rect();
         let size = ((screen.w * self.scale).round() as u32, (screen.h * self.scale).round() as u32);
-        let publish = card::Publish::from_theme(&self.theme, self.config.file.greeter.share, size);
+        let mut publish = card::Publish::from_theme(&self.theme, self.config.file.greeter.share, size);
+        // From a wallpaper folder, the picture showing.
+        publish.wallpaper = self.wallpaper_path();
         let spawned = std::thread::Builder::new()
             .name("tileception-greeter-card".into())
             .spawn(move || publish.run(&card::folder()));

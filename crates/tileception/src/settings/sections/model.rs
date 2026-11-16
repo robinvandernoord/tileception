@@ -1249,6 +1249,7 @@ fn describe_command(command: &str) -> String {
         ("handoff", "home") => "Bring input back",
         ("handoff", _) => "Sharing",
         ("reload", _) => "Reload the configuration",
+        ("next-wallpaper", _) => "Next wallpaper",
         ("vt", _) => return format!("Switch to console {first}"),
         ("quit", _) => "Log out",
         ("restart", _) => "Restart Tileception",

@@ -73,8 +73,12 @@ pub struct ThemeFile {
     pub glow: f32,
     pub font: String,
     pub font_size: f32,
-    /// A background image (PNG, JPEG or WebP); `~/` is your home folder.
+    /// A background image (PNG, JPEG or WebP), or a folder of them to pick
+    /// from at random; `~/` is your home folder.
     pub wallpaper: Option<String>,
+    /// With a folder: how often another picture is picked, such as "30m".
+    /// Empty: once per session.
+    pub wallpaper_interval: String,
     /// fill, fit, stretch or center.
     pub wallpaper_fit: String,
     /// What applications are told to use: dark, light or default (their own
@@ -107,6 +111,7 @@ impl Default for ThemeFile {
             font: "Noto Sans".into(),
             font_size: 13.0,
             wallpaper: None,
+            wallpaper_interval: String::new(),
             wallpaper_fit: "fill".into(),
             colour_scheme: "dark".into(),
             buttons: "halo".into(),
@@ -136,6 +141,7 @@ pub struct Theme {
     pub font: String,
     pub font_size: f32,
     pub wallpaper: Option<std::path::PathBuf>,
+    pub wallpaper_interval: Option<std::time::Duration>,
     pub wallpaper_fit: crate::wallpaper::Scaling,
     pub colour_scheme: ColourScheme,
     pub buttons: ButtonStyle,
@@ -205,6 +211,7 @@ impl Theme {
             font: file.font.clone(),
             font_size: file.font_size.clamp(6.0, 72.0),
             wallpaper: file.wallpaper.as_deref().filter(|path| !path.is_empty()).map(crate::wallpaper::expand_home),
+            wallpaper_interval: crate::wallpaper::parse_interval(&file.wallpaper_interval)?,
             wallpaper_fit: crate::wallpaper::Scaling::parse(&file.wallpaper_fit)?,
             colour_scheme: ColourScheme::parse(&file.colour_scheme)?,
             buttons: ButtonStyle::parse(&file.buttons)?,

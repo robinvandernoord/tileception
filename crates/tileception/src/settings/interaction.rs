@@ -59,6 +59,7 @@ impl Tileception {
                 Hit::LevelAt(_) => CursorIcon::EwResize,
                 Hit::Field(index) => match FIELDS[*index].control {
                     Control::Text | Control::Colour => CursorIcon::Text,
+                    Control::Path(_) if self.settings.editing == Some(*index) => CursorIcon::Text,
                     Control::Number(..) if self.settings.editing != Some(*index) => CursorIcon::EwResize,
                     Control::Number(..) => CursorIcon::Text,
                     _ => CursorIcon::Pointer,

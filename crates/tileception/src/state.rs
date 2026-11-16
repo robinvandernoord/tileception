@@ -253,6 +253,8 @@ pub struct Tileception {
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
+    /// The picture from a wallpaper folder, shared by every screen.
+    pub wallpaper_rotation: crate::wallpaper::Rotation,
     /// Set when running without a screen.
     pub headless: Option<Box<crate::headless::Headless>>,
 }
@@ -308,6 +310,7 @@ impl Tileception {
             .unwrap_or_else(|| default_terminal(launcher.apps()));
         let settings = config.world_settings();
         let theme = config.theme.clone();
+        let wallpaper_rotation = crate::wallpaper::Rotation::new(theme.wallpaper.as_deref());
 
         Tileception {
             start: Instant::now(),
@@ -448,6 +451,7 @@ impl Tileception {
             handoff: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
+            wallpaper_rotation,
             headless: None,
         }
     }
@@ -961,6 +965,12 @@ impl Tileception {
 
 /// Dialogs and fixed-size windows float instead of tiling.
 pub(crate) fn wants_float(window: &Window) -> bool {
+    // The desktop portal's dialogs, such as its file chooser. Without
+    // xdg-foreign they cannot name the window they belong to, so they come
+    // without a parent, but they are always dialogs.
+    if app_id(window).starts_with("xdg-desktop-portal") {
+        return true;
+    }
     if let Some(toplevel) = window.toplevel() {
         let (min, max) = with_states(toplevel.wl_surface(), |states| {
             let mut guard = states.cached_state.get::<SurfaceCachedState>();

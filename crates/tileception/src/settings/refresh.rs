@@ -131,9 +131,11 @@ impl Tileception {
         if !self.settings.open || self.settings.before.is_empty() {
             return;
         }
-        // A file that does not parse leaves everything as it is; Apply
-        // reports the problem.
-        let Ok(disk) = crate::config::Config::parse(text).and_then(|config| values(&config.file)) else { return };
+        // A file that is not TOML leaves everything as it is; one with
+        // mistakes gives what loaded, and Apply reports the mistakes.
+        let Ok(disk) = crate::config::Config::parse_lenient(text).and_then(|(config, _)| values(&config.file)) else {
+            return;
+        };
         if text == self.settings.document_before && disk == self.settings.before {
             return;
         }

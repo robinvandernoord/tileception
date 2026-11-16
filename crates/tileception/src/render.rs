@@ -201,9 +201,9 @@ impl Tileception {
         self.frost.borrow_mut().begin();
         let others = self.other_area_elements(renderer, now);
         let (mut elements, scene) = self.render_elements(renderer, now, others);
-        if let Some(buffer) = wallpaper {
+        if let Some(drawn) = wallpaper {
             let output_rect = self.output_rect();
-            push_image(&mut elements, renderer, &buffer, (output_rect.x, output_rect.y), self.scale);
+            push_wallpaper(&mut elements, renderer, &drawn, (output_rect.x, output_rect.y), self.scale);
         }
         self.add_frost(renderer, &mut elements, scene);
         if self.fade_in == FadeIn::Waiting {
@@ -844,6 +844,31 @@ pub fn push_image(
         MemoryRenderBufferRenderElement::from_buffer(renderer, position, buffer, None, None, None, Kind::Unspecified)
     {
         out.push(OutputElement::Memory(element));
+    }
+}
+
+/// The wallpaper, under the one it replaces while that fades out.
+pub fn push_wallpaper(
+    out: &mut Vec<OutputElement>,
+    renderer: &mut GlesRenderer,
+    drawn: &crate::wallpaper::Drawn,
+    position: (f64, f64),
+    scale: f64,
+) {
+    let position = ((position.0 * scale).round(), (position.1 * scale).round());
+    let layers = drawn.previous.iter().map(|(buffer, alpha)| (buffer, Some(*alpha))).chain([(&drawn.buffer, None)]);
+    for (buffer, alpha) in layers {
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            position,
+            buffer,
+            alpha,
+            None,
+            None,
+            Kind::Unspecified,
+        ) {
+            out.push(OutputElement::Memory(element));
+        }
     }
 }
 
