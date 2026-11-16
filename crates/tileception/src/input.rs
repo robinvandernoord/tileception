@@ -283,6 +283,7 @@ impl Tileception {
         let pressed = key_state == KeyState::Pressed;
         let keycode = code.raw();
         let mut modifier = false;
+        let inhibited = self.shortcuts_inhibited();
         let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
             let sym = handle.modified_sym().raw();
             let raw_sym = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
@@ -333,6 +334,18 @@ impl Tileception {
                     || state.config.lookup(held, raw_sym).or_else(|| state.config.lookup(held, sym)).is_some();
                 state.shortcut_keys_pressed(trigger, types(sym), taken);
                 return FilterResult::Intercept(Vec::new());
+            }
+            if inhibited {
+                // The focused window takes every key (a virtual machine or a
+                // remote desktop), except switching consoles and quitting.
+                state.tap_armed = None;
+                if let Some(command @ Command::Action(Action::Vt(_) | Action::Quit)) =
+                    builtin(Mods::from_state(mods), sym, raw_sym, false)
+                    && pressed
+                {
+                    return FilterResult::Intercept(vec![command]);
+                }
+                return FilterResult::Forward;
             }
             if state.portal_shortcut_key(keycode, trigger, pressed) {
                 return FilterResult::Intercept(Vec::new());
