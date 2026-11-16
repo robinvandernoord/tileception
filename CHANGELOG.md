@@ -1,5 +1,7 @@
 # Changelog
 
+The release notes with screenshots are on [tileception.space/changelog](https://tileception.space/changelog/).
+
 <!-- next-version-placeholder -->
 
 ## v0.19.1 (2026-11-15)

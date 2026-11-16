@@ -1,4 +1,4 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/keydown/type/gesture/touch`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/scroll/key/keydown/type/gesture/touch`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
 
@@ -28,6 +28,8 @@ pub enum Inject {
     Click { position: Option<(f64, f64)>, button: u32 },
     /// Presses or lets go of a button, as a mouse does: held, it drags.
     Button { button: u32, pressed: bool },
+    /// Turns the mouse wheel this many notches, down for more than 0.
+    Scroll(f64),
     /// A key combination such as `Super+slash` or `Return`, let go at once
     /// or after `hold` milliseconds, as a held key is (Super+D peeks).
     Key { combo: String, hold: Option<u32> },
@@ -85,6 +87,10 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
             };
             Ok(Inject::Click { position, button })
         }
+        "scroll" => match args[..] {
+            [notches] => Ok(Inject::Scroll(number(notches)?)),
+            _ => Err("scroll needs a number of notches, below 0 for up".into()),
+        },
         "key" => match args[..] {
             [combo] => Ok(Inject::Key { combo: combo.to_string(), hold: None }),
             [combo, "hold", millis] => {
@@ -272,6 +278,15 @@ impl Tileception {
             Inject::Gesture { gesture, .. } => self.inject_touch_gesture(gesture, time),
             Inject::GestureLift => self.gesture_end(false, time),
             Inject::Touch { from, target } => self.inject_touch(from, target, time),
+            // As a wheel reports it: 120ths of a notch, and 15 pixels a notch.
+            Inject::Scroll(notches) => self.on_axis(&crate::input::AxisInput {
+                source: smithay::backend::input::AxisSource::Wheel,
+                time,
+                horizontal: None,
+                vertical: Some(notches * 15.0),
+                horizontal_v120: None,
+                vertical_v120: Some(notches * 120.0),
+            }),
         }
         Ok(())
     }
@@ -335,6 +350,8 @@ mod tests {
         assert!(parse("key", "Super+d hold").is_err());
         assert!(parse("key", "Super+d hold soon").is_err());
         assert!(parse("key", "Super+d Return").is_err());
+        assert_eq!(parse("scroll", "-2"), Ok(Inject::Scroll(-2.0)));
+        assert!(parse("scroll", "").is_err());
         assert_eq!(parse("type", "make gaps smaller"), Ok(Inject::Type("make gaps smaller".into())));
         assert!(parse("pointer", "1").is_err());
         assert!(parse("key", " ").is_err());

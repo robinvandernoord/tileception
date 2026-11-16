@@ -77,6 +77,7 @@ mod selection;
 mod settings;
 mod shapes;
 mod shell;
+mod shortcuts_inhibit;
 mod sleep;
 mod state;
 mod text;

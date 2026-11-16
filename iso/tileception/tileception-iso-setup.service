@@ -1,0 +1,15 @@
+# Finishes the premade ISO's setup at boot: what the installer could not do
+# (removing snaps, or everything when it had no network). Disables itself
+# once done.
+[Unit]
+Description=Finish setting up the Tileception desktop
+Wants=network-online.target
+After=network-online.target snapd.seeded.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/lib/tileception-iso/setup.sh firstboot
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

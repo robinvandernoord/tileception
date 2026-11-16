@@ -1,0 +1,116 @@
+/* The download page, on top of site.css: the same tiles between black rules
+   as the landing page and the changelog. */
+
+.dl-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-top: var(--rule);
+  background: var(--ink);
+}
+.dl-head,
+.dl-release,
+.dl-help {
+  display: grid;
+  gap: var(--rule);
+  padding: 0 var(--rule) var(--rule);
+}
+.dl-head {
+  grid-template-columns: 2fr 1fr;
+}
+.dl-head h1 {
+  font-size: clamp(64px, 9vw, 140px);
+}
+.dl-lede {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-size: 17px;
+}
+.dl-lede p {
+  margin: 0;
+}
+.dl-lede .home {
+  align-self: flex-start;
+  font: 900 28px/1 var(--f-display);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.dl-lede .home::before {
+  content: "\2190  ";
+}
+
+/* ---------- one block per Ubuntu release ---------- */
+.dl-release {
+  grid-template-columns: 1fr 2fr;
+}
+.dl-release h2 {
+  margin: 0 0 8px;
+  font: 900 clamp(40px, 5vw, 72px)/0.95 var(--f-display);
+  text-transform: uppercase;
+}
+.dl-release .support {
+  margin: 0;
+  font-size: 17px;
+}
+.dl-files {
+  display: grid;
+  align-content: start;
+  gap: 20px;
+}
+.dl-file {
+  display: grid;
+  gap: 6px;
+}
+.dl-file .get {
+  justify-self: start;
+  display: inline-block;
+  padding: 14px 20px;
+  background: var(--ink);
+  color: var(--canvas);
+  font-weight: 700;
+  text-decoration: none;
+}
+.dl-file .get:hover,
+.dl-file .get:focus-visible {
+  background: var(--red);
+}
+.dl-file .sum {
+  font: 500 12px/1.4 var(--f-mono);
+  overflow-wrap: anywhere;
+  opacity: 0.7;
+}
+.dl-none p {
+  margin: 0;
+  font-size: 19px;
+}
+
+/* ---------- writing, checking, alternatives ---------- */
+.dl-help {
+  grid-template-columns: repeat(3, 1fr);
+}
+.dl-help h2 {
+  margin: 0 0 12px;
+  font: 900 26px/1 var(--f-display);
+  text-transform: uppercase;
+}
+.dl-help pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--ink);
+  color: var(--canvas);
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.dl-help .b a,
+.dl-help .r a {
+  color: inherit;
+}
+
+@media (max-width: 900px) {
+  .dl-head,
+  .dl-release,
+  .dl-help {
+    grid-template-columns: 1fr;
+  }
+}

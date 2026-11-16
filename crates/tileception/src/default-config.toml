@@ -6,7 +6,7 @@
 
 [general]
 # Command for the `terminal` action. Unset: the first of ghostty, foot,
-# alacritty, kitty, lxterminal, gnome-terminal that is installed.
+# alacritty, kitty, lxterminal, ptyxis, gnome-terminal that is installed.
 # terminal = "ghostty"
 
 # Pixels between windows and around the screen edge.

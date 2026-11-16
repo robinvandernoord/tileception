@@ -40,6 +40,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install lftp
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+      - name: List the published ISOs on the download page
+        # iso.yml runs this workflow again after publishing new ISOs.
+        run: python3 website/tools/downloads.py --manifest "${{ vars.ISO_URL || 'https://iso.su6.nl' }}/manifest.json"
       - name: Upload to OVH
         env:
           OVH_FTP_HOST: ${{ secrets.OVH_FTP_HOST }}

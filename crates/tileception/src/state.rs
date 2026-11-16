@@ -97,6 +97,7 @@ pub struct Tileception {
     /// The window list for taskbars and switchers.
     pub toplevels: crate::toplevels::Toplevels,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub keyboard_shortcuts_inhibit_state: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub xwayland_shell_state: XWaylandShellState,
@@ -326,6 +327,10 @@ impl Tileception {
             pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(
                 &display_handle,
             ),
+            keyboard_shortcuts_inhibit_state:
+                smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Self>(
+                    &display_handle,
+                ),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(
                 &display_handle,
             ),
@@ -878,6 +883,15 @@ impl Tileception {
 
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
+    /// The maximize button in a program's own title bar: frames the window
+    /// on its own, like the Maximize action, and a second press goes back.
+    pub fn maximize_window(&mut self, window_id: WindowId) {
+        let Some(area) = self.area_for_window(window_id) else { return };
+        self.activate_area(&area);
+        self.world.focus_window(window_id, self.now());
+        self.run(crate::input::Action::Maximize);
+    }
+
     pub fn minimize_window(&mut self, window_id: WindowId) {
         if let Some(area) = self.area_for_window(window_id)
             && self.context_area().as_ref() != Some(&area)
@@ -1107,12 +1121,12 @@ fn terminal_name(terminal: &str) -> &str {
 /// not declare them.
 fn known_terminal_args(name: &str) -> tileception_apps::TerminalArgs {
     let exec = match name {
-        "gnome-terminal" => "--",
+        "gnome-terminal" | "ptyxis" => "--",
         "xfce4-terminal" => "-x",
         _ => "-e",
     };
     let dir = match name {
-        "ghostty" | "foot" | "alacritty" | "gnome-terminal" | "xfce4-terminal" | "lxterminal" => {
+        "ghostty" | "foot" | "alacritty" | "ptyxis" | "gnome-terminal" | "xfce4-terminal" | "lxterminal" => {
             Some("--working-directory=")
         }
         "kitty" => Some("--directory="),
@@ -1136,7 +1150,7 @@ pub(crate) fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
         return chosen.exec.clone();
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
-    ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "gnome-terminal"]
+    ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "ptyxis", "gnome-terminal"]
         .into_iter()
         .find(|terminal| std::env::split_paths(&path).any(|dir| dir.join(terminal).is_file()))
         .map(String::from)
@@ -1172,5 +1186,12 @@ mod tests {
             let size = slot_size(&Rect::new(0.0, 0.0, length, length));
             assert!(f64::from(size.w) <= length + 1e-6, "slot {length}");
         }
+    }
+
+    #[test]
+    fn ptyxis_runs_commands_after_a_double_dash_and_opens_in_a_folder() {
+        let args = known_terminal_args("ptyxis");
+        assert_eq!(args.exec.as_deref(), Some("--"));
+        assert_eq!(args.dir.as_deref(), Some("--working-directory="));
     }
 }

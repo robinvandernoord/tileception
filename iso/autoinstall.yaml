@@ -1,0 +1,26 @@
+# The premade Tileception ISO's answers for Ubuntu's Desktop installer, from
+# the root of the ISO. Language, keyboard, network, disk, user and time zone
+# stay the installer's own pages; the rest is decided here. iso/build.sh puts
+# this file and iso/tileception/ on Ubuntu's Desktop ISO.
+#
+# After the installer's own work, setup.sh adds Tileception's repository and
+# the desktop, removes GNOME Shell and switches the login screen. It needs the
+# network; when that fails, the same script runs again at first boot.
+autoinstall:
+  version: 1
+  interactive-sections:
+    - locale
+    - keyboard
+    - network
+    - storage
+    - identity
+    - timezone
+  source:
+    id: ubuntu-desktop-minimal
+  drivers:
+    install: true
+  updates: security
+  late-commands:
+    - mkdir -p /target/usr/lib/tileception-iso
+    - cp -a /cdrom/tileception/. /target/usr/lib/tileception-iso/
+    - curtin in-target -- sh /usr/lib/tileception-iso/setup.sh install || true

@@ -3673,6 +3673,7 @@ fn export_docs_to(root: &std::path::Path) -> std::io::Result<()> {
         ("configuration.md", include_str!("../../../docs/configuration.md")),
         ("plugins.md", include_str!("../../../docs/plugins.md")),
         ("installation.md", include_str!("../../../docs/installation.md")),
+        ("iso.md", include_str!("../../../docs/iso.md")),
         ("greeter.md", include_str!("../../../docs/greeter.md")),
         ("doctor.md", include_str!("../../../docs/doctor.md")),
         ("troubleshooting.md", include_str!("../../../docs/troubleshooting.md")),

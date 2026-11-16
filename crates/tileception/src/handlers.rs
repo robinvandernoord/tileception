@@ -424,13 +424,20 @@ impl XdgShellHandler for Tileception {
         }
     }
 
-    /// Tiles already fill their space, so maximizing changes nothing. Not
-    /// before the first commit: smithay's default configures right away, and
-    /// a window configured early is never placed (KeePassXC asks this way).
+    /// The maximize button frames the window on its own; pressing it again
+    /// goes back. The window is never told it is maximized, so the button
+    /// keeps asking to maximize and works as a toggle. Not before the first
+    /// commit: smithay's default configures right away, and a window
+    /// configured early is never placed (KeePassXC asks this way).
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+        if !surface.is_initial_configure_sent() {
+            return;
         }
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.maximize_window(window_id);
+        }
+        // The protocol wants an answer even when the size stays the same.
+        surface.send_configure();
     }
 
     /// A menu takes the keyboard and pointer until it is dismissed, so a click

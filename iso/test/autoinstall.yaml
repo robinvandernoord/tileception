@@ -1,0 +1,33 @@
+# The smoke test's answers: the same install as iso/autoinstall.yaml, with
+# nothing asked. iso/smoke-test.sh builds an ISO with this file, installs it
+# in QEMU and checks the result over SSH. Never published: it wipes the first
+# disk without asking. The account is tester, password tileception.
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  source:
+    id: ubuntu-desktop-minimal
+  storage:
+    layout:
+      name: direct
+  identity:
+    hostname: tileception-test
+    realname: Tileception Tester
+    username: tester
+    password: "$6$tileceptiontest$2rty23IVRvQHa28gCGA/CEbYcTaR1RqNftREv.mBTgX5kAvDdNmNFuQrZZdGLK2r/WjrpznVJuP8eFm3vp/b10"
+  timezone: Etc/UTC
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - "@SMOKE_TEST_KEY@"
+  drivers:
+    install: true
+  updates: security
+  late-commands:
+    - mkdir -p /target/usr/lib/tileception-iso
+    - cp -a /cdrom/tileception/. /target/usr/lib/tileception-iso/
+    - curtin in-target -- sh /usr/lib/tileception-iso/setup.sh install || true
+  shutdown: poweroff

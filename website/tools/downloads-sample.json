@@ -1,0 +1,8 @@
+{
+  "generated": "2026-11-16",
+  "isos": [
+    {"file": "tileception-ubuntu-26.04.1-amd64.iso", "ubuntu": "26.04.1", "codename": "resolute", "arch": "amd64", "lts": true, "eol": "2031-05-29", "size": 6481969152, "sha256": "2c5fc8e2369f45f4bc57fefbced57dea97315ccb222641706787292a028217b0"},
+    {"file": "tileception-ubuntu-26.04.1-arm64.iso", "ubuntu": "26.04.1", "codename": "resolute", "arch": "arm64", "lts": true, "eol": "2031-05-29", "size": 6012345678, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"file": "tileception-ubuntu-24.04.5-amd64.iso", "ubuntu": "24.04.5", "codename": "noble", "arch": "amd64", "lts": true, "eol": "2029-05-31", "size": 6301234567, "sha256": "1111111111111111111111111111111111111111111111111111111111111111"}
+  ]
+}

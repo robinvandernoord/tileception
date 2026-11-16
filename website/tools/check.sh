@@ -7,7 +7,7 @@ fail() { echo "check: $*" >&2; exit 1; }
 for f in index.html 404.html .htaccess install setup robots.txt sitemap.xml site.webmanifest \
          favicon.svg favicon.ico apple-touch-icon.png icon-192.png icon-512.png og.png \
          assets/site.css assets/zoom.js assets/changelog.css assets/changelog.js \
-         changelog/index.html; do
+         assets/download.css changelog/index.html download/index.html; do
   [ -s "$f" ] || fail "missing $f"
 done
 
@@ -46,7 +46,7 @@ for image in re.findall(r'property="og:image" content="https://tileception.space
     if not os.path.exists(image):
         sys.exit(f'check: changelog/index.html previews missing {image}')
 # External links open in a new tab.
-for page in ('index.html', '404.html', 'changelog/index.html'):
+for page in ('index.html', '404.html', 'changelog/index.html', 'download/index.html'):
     for tag in re.findall(r'<a\b[^>]*>', open(page, encoding='utf-8').read()):
         if re.search(r'\bhref="https?://', tag) and not (
                 'target="_blank"' in tag and 'rel="noopener"' in tag):
@@ -62,6 +62,12 @@ sh -n install
   || fail "setup must be a symlink to ../../resources/tileception-setup"
 sh -n setup
 python3 ../tools/changelog.py --check
+# The download page is made at deploy from the ISOs' manifest; it must render.
+sample=$(mktemp)
+python3 ../tools/downloads.py --manifest ../tools/downloads-sample.json --out "$sample" >/dev/null
+grep -q 'tileception-ubuntu-26.04.1-amd64.iso' "$sample" || fail "the download page lists no ISO from the sample"
+rm -f "$sample"
+LC_ALL=C grep -n '[^ -~]' ../tools/download.html && fail "tools/download.html has characters outside plain ASCII"
 if command -v node >/dev/null 2>&1; then
   node --check assets/zoom.js
   node --check assets/changelog.js

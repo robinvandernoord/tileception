@@ -71,6 +71,34 @@ Report testing in the conversation, the commit or the pull request instead.
   - Confining a dashboard plugin's process (Landlock or bubblewrap, no
     network) as a manifest option. The protocol limits what it can do to the
     desktop, not to the user's files.
+- The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
+  download page), the rest. Decided:
+  - Before the first ISO goes out: an R2 bucket `tileception-iso` with the
+    custom domain `iso.su6.nl` (which `/download/` redirects to), the R2
+    secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) in
+    the `apt` environment next to its SSH secrets, and the
+    `sign-checksums` command deployed on the apt server.
+    `tileception-desktop` is published with the next release.
+  - Packages for every supported Ubuntu release, interim releases included.
+    The deb matrix in `release.yml` and `DEB_IMAGES` follows
+    `ubuntu-distro-info --supported` (and `debian-distro-info`): a new
+    release joins at its beta, an old one leaves at its end of life, and
+    `SUITES` in `iso.yml` and on the apt server follow. The install script
+    and `docs/installation.md` describe that rule instead of naming
+    releases.
+  - On a system without GNOME, `tileception-desktop`'s recommendations
+    pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
+    `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for
+    `apt install tileception-desktop` elsewhere, find which recommendation
+    brings them and replace or drop it.
+  - The arm64 ISOs are built but not installed in CI: GitHub's arm64
+    runners have no KVM. Try one on an arm64 machine before trusting it.
+  - Before release, what someone trying the ISO in a VM meets first:
+    `tileception msg` without `TILECEPTION_SOCKET` counts
+    `tileception-ssh-agent.sock` as a second instance, and the VMware
+    absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which QEMU
+    offers through its default `vmport` on x86, and VMware itself) moves
+    nothing.
 
 ### Later
 

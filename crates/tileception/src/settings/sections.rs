@@ -83,6 +83,9 @@ struct Menu {
     options: Vec<(String, String)>,
     selected: usize,
     first: usize,
+    /// How far the list is scrolled, in pixels of scrolling; `first` is
+    /// its nearest row.
+    scrolled: f64,
     filter: TextInput,
     picker: bool,
     icons: std::collections::BTreeMap<String, String>,
@@ -462,6 +465,7 @@ impl Tileception {
                                 options: options.clone(),
                                 selected,
                                 first: 0,
+                                scrolled: 0.,
                                 filter: TextInput::default(),
                                 picker: false,
                                 icons: Default::default(),
@@ -525,6 +529,7 @@ impl Tileception {
                     options,
                     selected: 0,
                     first: 0,
+                    scrolled: 0.,
                     filter: TextInput::default(),
                     picker: true,
                     icons,
@@ -554,11 +559,10 @@ impl Tileception {
 
     pub(super) fn section_scroll(&mut self, amount: f64) {
         let layout = self.section_layout();
+        let visible = ((self.section_menu_rect(&layout).h - 44.) / 32.).floor().max(1.) as usize;
         if let Some(screen) = self.settings.section.as_mut() {
             if let Some(menu) = screen.menu.as_mut() {
-                let count = menu.filtered().len();
-                menu.first =
-                    (menu.first as f64 + (amount / 32.).round()).clamp(0., count.saturating_sub(1) as f64) as usize;
+                menu.scroll(amount, visible);
             } else if layout.list.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1)) {
                 let total = if screen.kind == Kind::Sharing {
                     430. + self.handoff.peers.len() as f64 * 48.
@@ -826,6 +830,18 @@ impl Tileception {
 }
 
 impl Menu {
+    /// Scrolls by `amount` pixels, a row per wheel notch (15 pixels), so
+    /// that `visible` rows stay filled. A touchpad's smaller steps add up.
+    fn scroll(&mut self, amount: f64, visible: usize) {
+        const ROW: f64 = 15.;
+        let last = self.filtered().len().saturating_sub(visible) as f64 * ROW;
+        // Keys and a new filter move `first` by themselves.
+        let from =
+            if (self.scrolled / ROW).round() as usize == self.first { self.scrolled } else { self.first as f64 * ROW };
+        self.scrolled = (from + amount).clamp(0., last);
+        self.first = (self.scrolled / ROW).round() as usize;
+    }
+
     fn filtered(&self) -> Vec<(&str, &str)> {
         let query = self.filter.text.to_lowercase();
         self.options
@@ -839,4 +855,52 @@ impl Menu {
 /// The index of the full-edge crossing setting.
 pub(super) fn edges() -> usize {
     FIELDS.iter().position(|field| field.key == "general.stretch_screen_edges").expect("full-edge crossing is a field")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(count: usize) -> Menu {
+        Menu {
+            field: 0,
+            options: (0..count).map(|index| (format!("Option {index}"), index.to_string())).collect(),
+            selected: 0,
+            first: 0,
+            scrolled: 0.,
+            filter: TextInput::default(),
+            picker: false,
+            icons: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_wheel_notch_scrolls_a_row() {
+        let mut menu = options(40);
+        // A wheel notch is 15 pixels.
+        menu.scroll(15., 10);
+        assert_eq!(menu.first, 1);
+        menu.scroll(-15., 10);
+        assert_eq!(menu.first, 0);
+        // A touchpad's small steps add up to rows.
+        for _ in 0..6 {
+            menu.scroll(5., 10);
+        }
+        assert_eq!(menu.first, 2);
+    }
+
+    #[test]
+    fn scrolling_stops_with_the_last_option_in_view() {
+        let mut menu = options(40);
+        menu.scroll(10_000., 10);
+        assert_eq!(menu.first, 30);
+        // Back from the end at once, without first undoing the overshoot.
+        menu.scroll(-15., 10);
+        assert_eq!(menu.first, 29);
+        menu.scroll(-10_000., 10);
+        assert_eq!(menu.first, 0);
+        let mut short = options(5);
+        short.scroll(100., 10);
+        assert_eq!(short.first, 0);
+    }
 }
