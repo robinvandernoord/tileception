@@ -177,6 +177,8 @@ pub enum Paste {
     Prompt(u64, usize),
     /// The network card's password field.
     Network,
+    /// Text being typed onto an area screenshot.
+    Shot,
 }
 
 /// One row of results.
@@ -335,6 +337,12 @@ const COMMANDS: &[Builtin] = &[
     builtin("Do not disturb", "dnd quiet silence notifications", glyph::BELL, Does::Line("do-not-disturb")),
     builtin("Notifications", "history messages", glyph::BELL, Does::Line("notifications")),
     builtin("Take a screenshot", "print screen capture", glyph::CAMERA, Does::Line("spawn tileception-screenshot")),
+    builtin(
+        "Screenshot an area",
+        "print screen capture region select draw annotate record video gif",
+        glyph::CAMERA,
+        Does::Line("capture"),
+    ),
     builtin(
         "Screenshot of a region",
         "print screen capture area select",
@@ -737,6 +745,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
+            (Paste::Shot, Clip::Text(text)) if self.shot_typing() => self.shot_insert_paste(&text),
             (Paste::Network, Clip::Text(text)) if self.network_typing() => self.network_insert_paste(&text),
             (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
@@ -1143,7 +1152,8 @@ impl Tileception {
             | Paste::Feedback(..)
             | Paste::Duck
             | Paste::Prompt(..)
-            | Paste::Network => false,
+            | Paste::Network
+            | Paste::Shot => false,
         };
         if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
             if let Some(clip) = clip.pasted(pictures) {

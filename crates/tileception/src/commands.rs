@@ -45,6 +45,13 @@ pub enum Command {
     NotificationKey(u32, crate::config::Mods),
     /// A key pressed while picking a colour (not available as text).
     ColourPickKey(u32, crate::config::Mods),
+    /// Picks an area of the screen to copy, save, draw on or record; stops
+    /// a recording.
+    Capture,
+    /// A key pressed while picking an area (not available as text).
+    ShotKey(u32, crate::config::Mods),
+    /// Saves or copies a finished recording (from its notification).
+    KeepRecording(crate::shot::record::Keep),
     ReloadConfig,
     /// Rescans plugin manifests and restarts their workers without editing config.
     ReloadPlugins,
@@ -203,6 +210,8 @@ Shell:
   copy-text <text>          put text on the clipboard
   pick-colour               pick a colour from the screen and copy it as hex
                             (also: pick-color)
+  capture                   pick an area to copy, save, draw on or record;
+                            while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
                             (also: color-scheme)
   doctor                    open or close the doctor panel
@@ -456,6 +465,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "answer-notification" => return Err(format!("answer-notification takes nothing, not {rest:?}")),
         "pick-colour" | "pick-color" if rest.is_empty() => return Ok(Command::PickColour),
         "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
+        "capture" if rest.is_empty() => return Ok(Command::Capture),
+        "capture" => return Err(format!("capture takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "feedback" => return Ok(Command::Feedback(rest.to_string())),
@@ -589,6 +600,9 @@ impl Tileception {
             Command::AnswerNotification => self.answer_notification(),
             Command::NotificationKey(sym, mods) => self.notification_key(sym, mods),
             Command::ColourPickKey(sym, mods) => self.colour_pick_key(sym, mods),
+            Command::Capture => self.capture(),
+            Command::ShotKey(sym, mods) => self.shot_key(sym, mods),
+            Command::KeepRecording(keep) => self.keep_recording(keep),
             Command::ReloadConfig => self.reload_config()?,
             Command::ReloadPlugins => {
                 self.reload_plugins()?;

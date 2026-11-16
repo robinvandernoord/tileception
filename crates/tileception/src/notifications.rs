@@ -220,6 +220,7 @@ impl Tileception {
             || self.password_prompt.is_some()
             || self.power_menu.is_some()
             || self.colour_pick.is_some()
+            || self.shot.is_some()
             || self.tray.open
         {
             return;

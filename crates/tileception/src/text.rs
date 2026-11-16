@@ -723,6 +723,50 @@ impl Text {
         let (width, height) = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
         Some(TextImage { buffer, width, height, text, glyphs, ink })
     }
+
+    /// One line of text as premultiplied RGBA pixels, `size` pixels high
+    /// whatever the output's scale, for drawing into a picture (the marks
+    /// on an area screenshot). Returns the pixels, their width and height.
+    pub fn pixels(
+        &mut self,
+        text: &str,
+        font: &str,
+        size: f32,
+        colour: [u8; 4],
+        bold: bool,
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        if text.is_empty() || size < 1.0 {
+            return None;
+        }
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        let metrics = Metrics::new(size, (size * 1.3).ceil());
+        let weight = if bold { Weight::BOLD } else { Weight::NORMAL };
+        let attrs = Attrs::new()
+            .family(if font == "monospace" { Family::Monospace } else { Family::Name(font) })
+            .weight(weight);
+        let mut buffer = Buffer::new(fonts, metrics);
+        buffer.set_wrap(Wrap::None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        let width = buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max).ceil().max(1.0) as i32;
+        let height = metrics.line_height.ceil() as i32;
+        buffer.set_size(Some(width as f32 + 1.0), Some(height as f32));
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        let [red, green, blue, alpha] = colour;
+        buffer.draw(
+            fonts,
+            &mut self.swash,
+            Color::rgba(red, green, blue, alpha),
+            |left, top, glyph_w, glyph_h, colour| {
+                for delta_y in 0..glyph_h as i32 {
+                    for delta_x in 0..glyph_w as i32 {
+                        blend(&mut pixels, width, height, (left + delta_x, top + delta_y), colour);
+                    }
+                }
+            },
+        );
+        Some((pixels, width as u32, height as u32))
+    }
 }
 
 #[cfg(test)]

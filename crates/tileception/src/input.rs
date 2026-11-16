@@ -379,6 +379,9 @@ impl Tileception {
             if state.colour_pick.is_some() {
                 return FilterResult::Intercept(vec![Command::ColourPickKey(sym, held)]);
             }
+            if state.shot.is_some() {
+                return FilterResult::Intercept(vec![Command::ShotKey(sym, held)]);
+            }
             // A popup given the keyboard with Super+Enter keeps it until a
             // button is chosen or Esc; other Super shortcuts give it back first.
             if state.notifications.answering.is_some() {
@@ -715,6 +718,14 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        // The area picker takes the pointer while it is open.
+        if self.shot.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.shot_motion();
+            return;
+        }
         // The colour picker's magnifier follows the pointer; nothing else sees it.
         if self.colour_pick.is_some() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -974,6 +985,10 @@ impl Tileception {
         if self.is_locked() {
             pointer.button(self, &ButtonEvent { button, state, serial, time });
             pointer.frame(self);
+            return;
+        }
+        if self.shot.is_some() {
+            self.shot_button(button, state == ButtonState::Pressed);
             return;
         }
         if self.colour_pick.is_some() {
@@ -1263,7 +1278,8 @@ impl Tileception {
             }
             return;
         }
-        if !self.is_locked() && self.password_prompt.is_some() {
+        // The password prompt and the area picker take the wheel from what is under them.
+        if !self.is_locked() && (self.password_prompt.is_some() || self.shot.is_some()) {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {

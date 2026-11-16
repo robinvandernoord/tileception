@@ -159,7 +159,7 @@ impl Tileception {
         let Some(peer) = self.handoff.peer_at(&output.name(), side) else { return false };
         // A game or 3D program holding the pointer keeps it, as it keeps it
         // on its screen: only the return-home shortcut leaves then.
-        if self.pointer_held() {
+        if self.pointer_held() || self.shot.is_some() {
             self.handoff.push = 0.0;
             return false;
         }

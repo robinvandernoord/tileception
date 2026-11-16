@@ -150,6 +150,14 @@ share = true
 # How big the rubber duck is: 1 is normal, 2 twice as big (0.5 to 4).
 size = 1
 
+[capture]
+# Area screenshots (Shift+Print). Enter and Copy give a PNG at full size; the
+# arrows beside Copy and Save open a menu with PNG, WebP (lossless) and JPG,
+# at these JPG qualities (1 to 100; the first is picked at first) and sizes:
+# a percentage ("50%") or a thumbnail at most this many pixels across ("400px").
+jpg_qualities = [100, 95, 85]
+sizes = ["100%", "50%", "400px"]
+
 [media]
 # Percent per volume or brightness key press. Held keys repeat.
 volume_step = 5
@@ -553,8 +561,10 @@ repeat_rate = 30
 "TouchPinch3In" = "step-out"
 "TouchPinch3Out" = "step-in pointer"
 
-# Screenshots (grim and slurp). Print captures the whole screen; Shift+Print
-# lets you drag a region. Both ask whether to copy, save, or do both.
+# Screenshots. Print captures the whole screen (with grim) and asks whether
+# to copy, save, or do both. Shift+Print picks an area over a still of the
+# screen: drag it or click a window, draw on it, then copy, save, ask the
+# Doctor or record it. Shift+Print again stops a recording.
 # Ctrl+Print picks a colour from the screen and copies it as hex.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"
@@ -577,7 +587,7 @@ repeat_rate = 30
 "Super+Ctrl+Page_Up" = "brightness up"
 "Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
-"Shift+Print" = "spawn tileception-screenshot region --ask"
+"Shift+Print" = "capture"
 "Ctrl+Print" = "pick-colour"
 
 "Super+1" = "go 1"

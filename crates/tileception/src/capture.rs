@@ -59,6 +59,10 @@ pub enum CaptureTarget {
     Feedback(u64),
     /// The whole output, for the colour picker's magnifier.
     ColourPick,
+    /// The whole output without the area picker, for the area screenshot.
+    Shot,
+    /// The recorded area, with the pointer, for the next frame of a recording.
+    Recording,
 }
 
 /// What is on screen, ready to be rendered into each capture's buffer.
@@ -95,6 +99,8 @@ impl Tileception {
                 CaptureTarget::Duck => {}
                 CaptureTarget::Feedback(shot) => self.feedback_screen_failed(shot),
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
+                CaptureTarget::Shot => self.cancel_shot(),
+                CaptureTarget::Recording => {}
             }
         }
     }
@@ -189,6 +195,32 @@ impl Tileception {
                 }
             }
         }
+        // The area picker leaves itself out of its still.
+        let shot = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Shot)).last();
+        if let Some(capture) = shot {
+            self.shot_hidden(true);
+            let scene = self.scene(renderer);
+            self.shot_hidden(false);
+            let region = capture.region;
+            match pixels(renderer, &mut None, &scene, region) {
+                Ok(rgba) => self.shot_still_taken(rgba, (region.size.w, region.size.h)),
+                Err(err) => {
+                    tracing::warn!("area screenshot capture failed: {err}");
+                    self.cancel_shot();
+                }
+            }
+        }
+        // A recording shows the pointer, but not its own Stop button.
+        let frame = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Recording)).last();
+        if let Some(capture) = frame {
+            self.recording_hidden(true);
+            let scene = self.scene_with_pointer(renderer);
+            self.recording_hidden(false);
+            match pixels(renderer, &mut None, &scene, capture.region) {
+                Ok(rgba) => self.recording_frame(rgba),
+                Err(err) => tracing::warn!("recording capture failed: {err}"),
+            }
+        }
         if pending.is_empty() {
             return;
         }
@@ -236,7 +268,7 @@ impl Tileception {
                         self.cancel_colour_pick();
                     }
                 },
-                CaptureTarget::Duck | CaptureTarget::Feedback(_) => {}
+                CaptureTarget::Duck | CaptureTarget::Feedback(_) | CaptureTarget::Shot | CaptureTarget::Recording => {}
             }
         }
     }

@@ -46,6 +46,8 @@ pub struct ConfigFile {
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
+    /// Formats and sizes for area screenshots.
+    pub capture: crate::shot::CaptureConfig,
     pub doctor: crate::doctor::DoctorConfig,
     /// What this session shows on the login screen.
     pub greeter: crate::greeter::ShareConfig,

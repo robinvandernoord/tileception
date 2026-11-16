@@ -197,6 +197,10 @@ pub struct Tileception {
     pub feedback: Option<crate::feedback::Feedback>,
     /// A colour pick in progress, which takes the pointer and keyboard.
     pub colour_pick: Option<crate::colour_pick::ColourPick>,
+    /// An area screenshot being picked.
+    pub shot: Option<crate::shot::Shot>,
+    /// An area being recorded.
+    pub recording: Option<crate::shot::record::Recording>,
     pub launcher: crate::launcher::Launcher,
     /// Plugins, once started.
     pub plugins: Option<crate::plugins::Host>,
@@ -404,6 +408,8 @@ impl Tileception {
             power_menu: None,
             feedback: None,
             colour_pick: None,
+            shot: None,
+            recording: None,
             launcher,
             plugins: None,
             settings: Default::default(),
@@ -804,6 +810,7 @@ impl Tileception {
             || self.password_prompt.is_some()
             || self.power_menu.is_some()
             || self.colour_pick.is_some()
+            || self.shot.is_some()
             || self.notifications.answering.is_some()
         {
             None

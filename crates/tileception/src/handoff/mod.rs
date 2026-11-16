@@ -505,6 +505,7 @@ impl Tileception {
                 self.handoff.away = true;
                 // Its keys stop coming: a pick it was making here ends.
                 self.cancel_colour_pick();
+                self.hand_over_shot();
             }
             // Only right after the pointer arrived here from that machine.
             Message::PickColour => {

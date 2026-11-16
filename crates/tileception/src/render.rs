@@ -259,6 +259,9 @@ impl Tileception {
         let view = self.world.view(now);
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
+        // The area picker covers everything, on its own screen.
+        elements.extend(self.shot_elements(renderer));
+        elements.extend(self.recording_elements(renderer));
         elements.extend(self.settings_identify_elements(renderer));
         if active {
             // Hover highlights belong to the dialog, so its screenshot leaves them out too.

@@ -38,6 +38,7 @@ impl Tileception {
             || self.feedback.is_some()
             || self.password_prompt.is_some()
             || self.colour_pick.is_some()
+            || self.shot.is_some()
             || self.notifications.open
             || self.network.zoom.open
             || self.duck.typing()
