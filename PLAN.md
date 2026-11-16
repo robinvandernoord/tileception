@@ -152,6 +152,33 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
+- Doctor in a window: a pop-out from the panel into a window of its own,
+  remembered across openings and logins (whether it is popped out, and its
+  place and size), with a way back into the panel. Decided:
+  - Doctor's window is a built-in window like Settings and Updates: a
+    `settings::client::Kind::Doctor`, so it is a real xdg-shell toplevel
+    that tiles, floats, focuses and moves like any other window. Doctor's
+    model stays in the compositor; the window only draws it and takes its
+    input.
+  - The panel and the window show the same conversation; only one of them
+    is open at a time.
+- Game mode: Tileception's own Super bindings step aside while a game has
+  the keyboard, so Super and Super combinations reach the game. Decided:
+  - Super+Caps Lock toggles it (check that the binding can see Caps Lock
+    with Super held, and that Caps Lock itself is not toggled as well).
+  - It also switches on by itself when a game starts. To find out: what
+    marks a game reliably (fullscreen plus Steam's `steam_app_*` app ids,
+    Proton and Wine, gamescope, Lutris and Heroic, or a per-app rule).
+  - A small overlay says game mode is on, and how to leave it, when it
+    switches on.
+  - Still open: what Super does while it is on (nothing at all, a long hold
+    that still reaches Tileception, or one reserved combination).
+  - Gaming on Tileception in general, to look into before building: VRR
+    and tearing (`wp_tearing_control`), direct scanout of a fullscreen
+    game's buffers, Xwayland games and their pointer grabs, gamescope
+    nested in Tileception, Steam and its overlay, controllers, Feral
+    GameMode, and the keyboard-shortcuts-inhibit protocol that Tileception
+    already honours (how it relates to game mode).
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
