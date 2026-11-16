@@ -19,6 +19,10 @@ use crate::{Audio, Change, Choice, Device, Event, Notifier, Percent, Shared, Str
 /// 100%, `PA_VOLUME_NORM`.
 const NORM: u64 = 0x10000;
 
+/// `NATIVE_COOKIE_LENGTH`: pipewire-pulse refuses a cookie of any other
+/// length, an empty one included.
+const COOKIE_LENGTH: usize = 256;
+
 enum Msg {
     Request(Target, Change, Percent),
     /// Make this output (true) or microphone the default.
@@ -107,6 +111,13 @@ fn run(shared: &Shared, notifier: &Notifier, sender: &mpsc::Sender<Msg>, incomin
     }
 }
 
+/// The cookie to authenticate with: the user's, or zeros where there is
+/// none yet. A fresh login has no cookie file until some PulseAudio client
+/// writes one, and PipeWire does not check what the cookie holds.
+fn cookie(file: Option<Vec<u8>>) -> Vec<u8> {
+    file.filter(|cookie| cookie.len() == COOKIE_LENGTH).unwrap_or_else(|| vec![0; COOKIE_LENGTH])
+}
+
 /// One authenticated connection.
 struct Connection {
     socket: BufReader<UnixStream>,
@@ -118,7 +129,7 @@ impl Connection {
     fn open(name: &CStr) -> Result<Self, String> {
         let path = pulseaudio::socket_path_from_env().ok_or("no PulseAudio socket")?;
         let stream = UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let cookie = pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()).unwrap_or_default();
+        let cookie = cookie(pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()));
         let mut connection = Self { socket: BufReader::new(stream), version: protocol::MAX_VERSION, seq: 0 };
         let auth =
             protocol::AuthParams { version: protocol::MAX_VERSION, supports_shm: false, supports_memfd: false, cookie };
@@ -423,6 +434,14 @@ fn scaled(volume: &ChannelVolume, target: Percent) -> ChannelVolume {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_or_malformed_cookie_becomes_zeros_of_the_length_pipewire_accepts() {
+        assert_eq!(cookie(None), vec![0; COOKIE_LENGTH]);
+        assert_eq!(cookie(Some(Vec::new())), vec![0; COOKIE_LENGTH]);
+        assert_eq!(cookie(Some(vec![7; 12])), vec![0; COOKIE_LENGTH]);
+        assert_eq!(cookie(Some(vec![7; COOKIE_LENGTH])), vec![7; COOKIE_LENGTH]);
+    }
 
     fn stereo(left: u32, right: u32) -> ChannelVolume {
         let mut volume = ChannelVolume::empty();
