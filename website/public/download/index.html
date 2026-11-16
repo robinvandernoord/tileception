@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Template of public/download/index.html: python3 website/tools/downloads.py fills in the
+     ISOs from the published manifest.json, at every deploy and after every ISO build. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Download the Tileception ISO</title>
+    <meta
+      name="description"
+      content="Ubuntu's installer, set up to install the Tileception desktop. Write it to a USB stick, boot from it and install."
+    />
+    <link rel="canonical" href="https://tileception.space/download/" />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#121212" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="../favicon.ico" sizes="32x32" />
+    <link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../assets/site.css" />
+    <link rel="stylesheet" href="../assets/download.css" />
+  </head>
+  <body>
+    <main class="dl-page">
+      <header class="dl-head">
+        <div class="blk"><h1 class="display">Get the<br />ISO<span class="sq sq-r"></span></h1></div>
+        <div class="blk y dl-lede">
+          <a class="home" href="../">Tileception</a>
+          <p>
+            This is Ubuntu's installer, set up to install Tileception. Write the ISO to a USB
+            stick, start the computer from it and choose Install. The installer downloads
+            Tileception and its apps as it goes, so the computer needs internet.
+          </p>
+          <p class="small">
+            Try Ubuntu, the other choice on the stick, starts Ubuntu's usual desktop. You get
+            Tileception after installing.
+          </p>
+        </div>
+      </header>
+      <section class="dl-release dl-none">
+        <div class="blk y"><p>No ISO is ready yet. Until then, install Tileception on Ubuntu or Debian with <a href="../#get">the command on the home page</a>.</p></div>
+      </section>
+      <section class="dl-help" aria-label="Using the ISO">
+        <div class="blk">
+          <h2>Write it to a USB stick</h2>
+          <p>
+            Use a stick of 8 GB or more. The easiest way is
+            <a href="https://www.ventoy.net/" target="_blank" rel="noopener">Ventoy</a>: set up
+            the stick with it once, which erases it, then copy the ISO onto it like any other
+            file.
+          </p>
+          <p>
+            On a Mac, or if Ventoy gives you trouble, write the ISO to the stick with any USB
+            writing tool, such as
+            <a href="https://etcher.balena.io/" target="_blank" rel="noopener">balenaEtcher</a>.
+          </p>
+        </div>
+        <div class="blk b">
+          <h2>Check the download</h2>
+          <p>The checksums are signed with the same key as Tileception's packages:</p>
+          <pre><code>curl -fsSLO https://tileception.space/download/SHA256SUMS
+curl -fsSLO https://tileception.space/download/SHA256SUMS.gpg
+curl -fsSL https://apt.tileception.space/tileception.gpg -o tileception.gpg
+gpgv --keyring ./tileception.gpg SHA256SUMS.gpg SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS</code></pre>
+        </div>
+        <div class="blk r">
+          <h2>Already on Ubuntu or Debian?</h2>
+          <p>
+            Keep your system and add Tileception with <a href="../#get">one command</a>.
+            For the apps and services that come with the ISO, run
+            <code>sudo apt install tileception-desktop</code> afterwards.
+          </p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
