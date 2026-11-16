@@ -141,6 +141,10 @@ Commit changes to PLAN.md (and to this file) as `chore(plan): ...` or
 `chore(agents): ...`, never `docs(...)`. Vommit puts `docs` commits in the
 changelog, and these files mean nothing to users; `chore` is left out. Keep
 `docs` for user-facing documentation such as `docs/` and the README.
+Use `feat` and `fix` only for user-facing changes: both appear in the changelog
+and can trigger version bumps. Use `chore` for release infrastructure,
+packaging, website plumbing, and other internal changes that should not appear
+there.
 
 ## Buttons
 
