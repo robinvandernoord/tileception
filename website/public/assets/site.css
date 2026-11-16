@@ -784,7 +784,8 @@ html.zoom.hud-on .hud-top {
   opacity: 1;
   transform: none;
 }
-html.zoom.hud-on .hud-top a {
+html.zoom.hud-on .hud-top a,
+html.zoom.hud-on .hud-top button {
   pointer-events: auto;
 }
 .hud-top .brand,
@@ -852,8 +853,68 @@ html.zoom .hud-levels {
     padding: 9px;
   }
 }
-html.zoom.portrait .hud-top {
+/* On phones the first level's links are hidden. A Menu button takes their place
+   in that row and opens the same links; deeper in, the top bar fades in with its
+   own Menu button. Browsers without popovers keep the plain links: the footer,
+   and the top links on wider screens. */
+html.zoom.portrait .hud-top .hud-get {
   display: none;
+}
+.nav-menu,
+.hud-menu,
+.site-menu {
+  display: none;
+}
+@supports selector(:popover-open) {
+  html.zoom.portrait .nav-menu,
+  html.zoom.portrait .hud-menu {
+    display: inline-flex;
+    align-items: center;
+    border: 3px solid var(--ink);
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-weight: 700;
+    cursor: pointer;
+  }
+  html.zoom.portrait .nav-menu {
+    padding: 0.3em 0.7em;
+    font-size: 0.8em;
+    line-height: 1;
+  }
+  html.zoom.portrait .hud-menu {
+    height: 40px;
+    padding: 0 16px;
+    font-size: 16px;
+  }
+}
+.site-menu:popover-open {
+  display: flex;
+  flex-direction: column;
+  inset: var(--menu-top, calc(58px + env(safe-area-inset-top, 0px)))
+    max(12px, env(safe-area-inset-right, 0px)) auto auto;
+  min-width: 60%;
+  margin: 0;
+  padding: 0;
+  border: 3px solid var(--ink);
+  background: var(--canvas);
+  color: var(--ink);
+}
+.site-menu::backdrop {
+  background: #12121299;
+}
+.site-menu a {
+  padding: 14px 18px;
+  font: 900 30px/1 var(--f-display);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.site-menu a + a {
+  border-top: 3px solid var(--ink);
+}
+.site-menu a:hover,
+.site-menu a:focus-visible {
+  background: var(--yellow);
 }
 
 @media print {

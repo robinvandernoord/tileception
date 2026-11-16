@@ -175,6 +175,23 @@
     return $snap;
   });
 
+  // The phone menu opens below the Menu button that was tapped, and closes once a
+  // link in it is chosen; in-page links only scroll.
+  const $menu = document.getElementById("site-menu");
+  document
+    .querySelectorAll('[popovertarget="site-menu"]')
+    .forEach(($button) =>
+      $button.addEventListener("click", () => {
+        const bottom = $button.getBoundingClientRect().bottom;
+        $menu?.style.setProperty("--menu-top", bottom + 6 + "px");
+      }),
+    );
+  $menu?.addEventListener("click", (event) => {
+    if (event.target.closest("a")) {
+      $menu.hidePopover();
+    }
+  });
+
   const $hud_top = document.querySelector(".hud-top");
   let canvas_width = 1600,
     canvas_height = 1000,
@@ -182,6 +199,7 @@
     rects = [],
     current = -1;
   let band_top = 0,
+    portrait = false,
     band_bottom = 0,
     view_width = 0,
     view_height = 0,
@@ -220,11 +238,12 @@
     }
     view_width = $stage.clientWidth;
     view_height = $stage.clientHeight;
-    const portrait = view_width / view_height < 0.85;
+    portrait = view_width / view_height < 0.85;
     $root.classList.toggle("portrait", portrait);
-    // Keep the level bar (and on wide screens the top bar) on black, outside the picture.
+    // Keep the level bar and the top bar on black, outside the picture. On phones the
+    // first level has its own Menu button, so the top bar's band opens as you zoom in.
     band_bottom = view_height - $hud.offsetTop + 8;
-    band_top = portrait ? 0 : $hud_top.offsetHeight + 8;
+    band_top = $hud_top.offsetHeight + 8;
     canvas_width = portrait ? 900 : 1600;
     // On phones the canvas takes the screen's own proportions, within what the content needs.
     canvas_height = portrait
@@ -279,8 +298,9 @@
   }
 
   function frame() {
-    const picture_height = view_height - band_top - band_bottom;
     const position = clamp((scrollY - scroller_top) / step_height, 0, steps);
+    const band = portrait ? band_top * Math.min(position, 1) : band_top;
+    const picture_height = view_height - band - band_bottom;
     const depth = Math.min(Math.floor(position), steps - 1);
     // Scrolling snaps to one level at a time, so the zoom fills the whole step between them.
     const progress = ease(position - depth);
@@ -301,7 +321,7 @@
     );
     const shift_x = (view_width - camera_width * scale) / 2 - camera_x * scale;
     const shift_y =
-      band_top +
+      band +
       (picture_height - camera_height * scale) / 2 -
       camera_y * scale;
     $world.style.transform = `translate(${shift_x}px, ${shift_y}px) scale(${scale})`;
