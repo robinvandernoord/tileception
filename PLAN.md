@@ -74,10 +74,10 @@ Report testing in the conversation, the commit or the pull request instead.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
   - Before the first ISO goes out: an R2 bucket `tileception-iso` with the
-    custom domain `iso.su6.nl` (which `/download/` redirects to), the
-    `iso` environment with the R2 secrets (`R2_ACCESS_KEY_ID`,
-    `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) and the apt server's SSH
-    secrets, and the `sign-checksums` command deployed on the apt server.
+    custom domain `iso.su6.nl` (which `/download/` redirects to), the R2
+    secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) in
+    the `apt` environment next to its SSH secrets, and the
+    `sign-checksums` command deployed on the apt server.
     `tileception-desktop` is published with the next release.
   - Packages for every supported Ubuntu release, interim releases included.
     The deb matrix in `release.yml` and `DEB_IMAGES` follows
