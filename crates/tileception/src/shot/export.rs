@@ -86,9 +86,10 @@ impl Size {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CaptureConfig {
-    /// The JPG qualities to choose from (1 to 100); the first is chosen at first.
+    /// The JPG qualities to choose from (1 to 100), each a button in the menu.
     pub jpg_qualities: Vec<u8>,
-    /// The sizes to choose from: percentages ("50%") or thumbnails ("400px").
+    /// The sizes to choose from: percentages ("50%") or thumbnails ("400px");
+    /// the first is chosen when the menu opens.
     pub sizes: Vec<String>,
 }
 

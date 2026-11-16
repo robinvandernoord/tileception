@@ -152,9 +152,10 @@ size = 1
 
 [capture]
 # Area screenshots (Shift+Print). Enter and Copy give a PNG at full size; the
-# arrows beside Copy and Save open a menu with PNG, WebP (lossless) and JPG,
-# at these JPG qualities (1 to 100; the first is picked at first) and sizes:
-# a percentage ("50%") or a thumbnail at most this many pixels across ("400px").
+# arrows beside Copy and Save open a menu with PNG, WebP (lossless) and a JPG
+# button for each of these qualities (1 to 100), and a switch between these
+# sizes: a percentage ("50%") or a thumbnail at most this many pixels on its
+# longest side ("400px"). The first size is chosen when the menu opens.
 jpg_qualities = [100, 95, 85]
 sizes = ["100%", "50%", "400px"]
 
