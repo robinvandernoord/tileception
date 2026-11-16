@@ -351,12 +351,8 @@ impl XwmHandler for Tileception {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window)
-            && let Some(area) = self.area_for_window(window_id)
-        {
-            self.activate_area(&area);
-            self.world.focus_window(window_id, self.now());
-            self.run(crate::input::Action::Maximize);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.maximize_window(window_id);
         }
     }
 

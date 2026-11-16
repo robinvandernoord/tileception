@@ -878,6 +878,15 @@ impl Tileception {
 
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
+    /// The maximize button in a program's own title bar: frames the window
+    /// on its own, like the Maximize action, and a second press goes back.
+    pub fn maximize_window(&mut self, window_id: WindowId) {
+        let Some(area) = self.area_for_window(window_id) else { return };
+        self.activate_area(&area);
+        self.world.focus_window(window_id, self.now());
+        self.run(crate::input::Action::Maximize);
+    }
+
     pub fn minimize_window(&mut self, window_id: WindowId) {
         if let Some(area) = self.area_for_window(window_id)
             && self.context_area().as_ref() != Some(&area)
