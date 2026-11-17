@@ -473,6 +473,9 @@ pub struct Launcher {
     prompt: Option<prompt::PromptView>,
     /// Counts prompt steps entered, to tell pastes for them apart.
     prompt_serial: u64,
+    /// Plugins changed while a prompt was open: the results behind it are
+    /// searched again once it is left.
+    routes_changed: bool,
 }
 
 impl Default for Launcher {
@@ -509,6 +512,7 @@ impl Default for Launcher {
             plugin_actions: None,
             prompt: None,
             prompt_serial: 0,
+            routes_changed: false,
             usage: usage
                 .into_iter()
                 .map(|(app_id, value)| {
@@ -663,8 +667,13 @@ impl Tileception {
 
     /// Plugins came, went or changed their prefixes.
     pub(crate) fn launcher_routes_changed(&mut self) {
-        if self.launcher.open {
+        // An open prompt stays: refreshing would close it, and a setup prompt
+        // opens just as the plugins it belongs to are being discovered.
+        // Leaving it searches again.
+        if self.launcher.open && self.launcher.prompt.is_none() {
             self.refresh_launcher();
+        } else if self.launcher.open {
+            self.launcher.routes_changed = true;
         }
     }
 
@@ -874,6 +883,7 @@ impl Tileception {
     fn refresh_launcher(&mut self) {
         self.launcher.plugin_actions = None;
         self.launcher.prompt = None;
+        self.launcher.routes_changed = false;
         let previous = self.launcher.plugin_query.take();
         let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim_start()));
         let retain =
@@ -1619,7 +1629,7 @@ impl Tileception {
             Manage::Configure(plugin_id) => (
                 glyph::SETTINGS,
                 format!("Configure {}", self.plugin_name(plugin_id)),
-                format!("Runs its setup in a terminal \u{b7} {}", source_of(plugin_id).unwrap_or_default()),
+                format!("Runs its setup \u{b7} {}", source_of(plugin_id).unwrap_or_default()),
             ),
             Manage::Update(None) => (
                 glyph::RESTART,

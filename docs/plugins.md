@@ -43,8 +43,9 @@ Each plugin gets its own environment, and uv fetches a Python that suits the
 package when the system has none. The plugin then sets itself up without
 asking anything (`install --non-interactive`), and plugins are reloaded. A
 notification says when it is done. If the plugin still needs answers from you,
-such as an API key or a login, Tileception opens a terminal with its
-`configure` step, and reloads plugins again once that ends.
+such as an API key or a login, Tileception asks for them: in the launcher when
+the plugin offers a setup prompt, else in a terminal running its `configure`
+step. Plugins are reloaded again once that ends.
 
 Installing runs the repository's code as you, with your files and
 credentials. Only install plugins you trust.
@@ -314,7 +315,9 @@ optional `arguments`:
 
 - `fields`: one to four inputs; Tab and Up/Down move between them. Enter on the last one,
   or the `submit` button (default "Continue"), calls the tool with `arguments`
-  plus each field's name and value. `secret` fields are masked, cannot be
+  plus each field's name and value. A field's optional `value` is what it
+  holds when the step opens, such as a default or the current setting.
+  `secret` fields always start empty: they are masked, cannot be
   copied, are never logged and are wiped once sent. A step with a single
   field and no `alternate` shows the button beside the input.
 - `wait`: calls the tool on entering the step and shows `text` meanwhile.
@@ -542,13 +545,13 @@ script takes these subcommands:
 | `serve` | Speaks MCP on stdin and stdout; the manifest runs this | yes |
 | `install --non-interactive` | Writes the manifest and anything else it needs, such as systemd units, and asks nothing | yes |
 | `configure` | Asks what it needs in the terminal, then finishes what `install` could not | when it has questions |
-| `status` | Prints JSON with at least `"configured"` (`true` or `false`) and `"detail"` | when it has `configure` |
+| `status` | Prints JSON with at least `"configured"` (`true` or `false`) and `"detail"`, and optionally a `"setup"` prompt | when it has `configure` |
 | `uninstall` | Undoes `install`: stops timers, removes units and the manifest. `--purge` also removes configuration and cache | yes |
 
 `install --non-interactive` runs after every install and update, so it must be
 safe to run again. It gets no terminal, and must not wait for input. When it
 cannot finish without answers, it does what it can and makes `status` say
-`"configured": false`; Tileception then runs `configure` in a terminal.
+`"configured": false`; Tileception then sets it up, as below.
 `configure` may use `input`, `getpass`, a full-screen picker or another
 program's login, such as `gh auth login`. Exit 0 once the plugin works.
 
@@ -574,10 +577,39 @@ needs = ["the 2fas CLI"]         # shown before installing
 `requires-python` is passed to uv, which finds or downloads a Python that
 fits.
 
-For questions that fit the launcher, a plugin can do better than a terminal:
-while it is not configured, answer every search with a "Set up" row whose
-action is a [prompt](#prompts), and save what the prompt's fields send to its
-tool. Keep `configure` as well, for `tileception msg plugins configure`.
+### Setting up in the launcher
+
+For questions that fit the launcher, a plugin can do better than a terminal.
+`status` adds a `"setup"` key holding a [prompt](#prompts), the same object a
+`prompt` action takes:
+
+```json
+{"configured": false, "detail": "No API key yet",
+ "setup": {"title": "Set up Odoo", "icon": "glyph:globe", "steps": [
+   {"id": "connect", "kind": "fields", "tool": "setup", "timeout": 30,
+    "submit": "Connect",
+    "fields": [
+      {"name": "web_url", "label": "Web URL", "value": "https://example.com"},
+      {"name": "api_key", "label": "API key", "secret": true}]}]}}
+```
+
+After installing, when `status` says `"configured": false`, Tileception opens
+that prompt in the launcher instead of a terminal; `plugins configure` (in
+the launcher or with `tileception msg plugins configure`) opens it whenever
+`status` offers one, so it can also change settings later. Fill `value` with
+the current settings for that. The prompt's tools run on the plugin's `serve`
+process, which saves what the fields send. The tool answers like any prompt
+step: an error stays on the step, `{"step": ...}` moves on, and anything else
+ends the setup, closes the launcher and reloads plugins. Escape cancels it.
+
+Start with a `fields` step rather than a `wait`: the plugin was only just
+started when the prompt opens. Ask only what fits in its fields; anything
+else, such as choosing from a long list, belongs in `configure`, which is
+still used when the screen is locked, when another program is the launcher,
+or when the prompt is invalid. Keep `configure` for that reason.
+
+While it is not configured, a plugin can also answer every search with a
+"Set up" row whose action is the same prompt.
 
 ## Lifecycle and limits
 

@@ -341,6 +341,9 @@ impl TryFrom<PromptShape> for Prompt {
                 if fields.iter().any(|field| field.name.is_empty() || !names.insert(field.name.as_str())) {
                     return Err(format!("prompt step {}: field names must be nonempty and unique", step.step_id));
                 }
+                if fields.iter().any(|field| field.secret && !field.value.is_empty()) {
+                    return Err(format!("prompt step {}: secret fields cannot have a value", step.step_id));
+                }
             }
         }
         for step in &steps {
@@ -416,6 +419,10 @@ pub struct PromptField {
     /// Masked, wiped from memory once sent, and never logged.
     #[serde(default)]
     pub secret: bool,
+    /// What the field holds when the step opens, such as a default or the
+    /// current setting. Secret fields always start empty.
+    #[serde(default)]
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2413,6 +2420,8 @@ mod tests {
             prompt(json!([{ "id": "many", "kind": "fields", "tool": "t",
                 "fields": (0..5).map(|index| json!({ "name": format!("f{index}") })).collect::<Vec<_>>() }])),
             prompt(json!([{ "id": "odd", "kind": "dance", "tool": "t" }])),
+            prompt(json!([{ "id": "leak", "kind": "fields", "tool": "t",
+                "fields": [{ "name": "key", "secret": true, "value": "hunter2" }] }])),
             prompt(json!((0..9).map(|index| json!({ "id": format!("s{index}"), "kind": "wait", "tool": "t" })).collect::<Vec<_>>())),
             { "title": "Copy code", "type": "copy", "text": "123456", "sensitive": true }
         ] }] }))
@@ -2427,6 +2436,7 @@ mod tests {
         assert_eq!(prompt.steps[1].timeout(), TIMEOUT);
         let StepKind::Fields { fields, submit } = &prompt.steps[1].kind else { panic!("fields") };
         assert!(fields[0].secret);
+        assert!(fields[0].value.is_empty());
         assert_eq!(submit.as_deref(), Some("Unlock"));
         assert_eq!(actions[1].kind, ActionKind::Copy { text: "123456".into(), sensitive: true });
         assert!(!actions[0].kind.after_prompt() && actions[1].kind.after_prompt());

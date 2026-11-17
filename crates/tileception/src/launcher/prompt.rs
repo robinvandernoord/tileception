@@ -35,6 +35,9 @@ pub(super) struct PromptView {
     /// What the plugin said when it moved to this step.
     notice: String,
     error: String,
+    /// A plugin's setup, opened by Tileception rather than from a result:
+    /// finishing it closes the launcher and reloads plugins.
+    setup: bool,
 }
 
 impl PromptView {
@@ -194,8 +197,25 @@ impl Tileception {
             started: std::time::Instant::now(),
             notice: String::new(),
             error: String::new(),
+            setup: false,
         });
         self.prompt_enter_step(0, String::new());
+    }
+
+    /// Opens a plugin's setup prompt in a launcher of its own, as after
+    /// installing it. False when the launcher cannot show it now: the screen
+    /// is locked, or another program is the launcher.
+    pub(crate) fn open_setup_prompt(&mut self, plugin: String, prompt: Prompt) -> bool {
+        if self.is_locked() || !self.shell().launcher().is_builtin() {
+            return false;
+        }
+        self.open_launcher(false);
+        self.open_prompt(plugin, prompt, None);
+        if let Some(view) = self.launcher.prompt.as_mut() {
+            view.setup = true;
+        }
+        self.schedule_render();
+        true
     }
 
     /// Goes back to the results, cancelling what is in flight. The fields
@@ -226,11 +246,13 @@ impl Tileception {
         view.inputs = match &view.current().kind {
             StepKind::Fields { fields, .. } => fields
                 .iter()
-                .map(
-                    |field| {
-                        if field.secret { Input::Secret(Box::default()) } else { Input::Text(TextInput::default()) }
-                    },
-                )
+                .map(|field| {
+                    if field.secret {
+                        Input::Secret(Box::default())
+                    } else {
+                        Input::Text(TextInput::new(field.value.clone()))
+                    }
+                })
                 .collect(),
             StepKind::Wait => Vec::new(),
         };
@@ -325,6 +347,15 @@ impl Tileception {
             }
             return;
         }
+        if view.setup {
+            let plugin = view.plugin.clone();
+            self.leave_prompt();
+            self.close_launcher();
+            let _ = self.reload_plugins();
+            let name = self.plugin_name(&plugin);
+            self.notify_locally("Plugins", &format!("{name} is set up"), tileception_notify::Urgency::Normal);
+            return;
+        }
         // Done: fresh results, which may well have changed.
         self.leave_prompt();
         self.refresh_launcher();
@@ -333,7 +364,15 @@ impl Tileception {
     pub(super) fn prompt_key(&mut self, sym: u32, mods: crate::config::Mods) {
         let enter = matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter);
         if sym == keysyms::KEY_Escape {
-            return self.leave_prompt();
+            // A setup prompt was not opened from results to go back to.
+            let setup = self.launcher.prompt.as_ref().is_some_and(|view| view.setup);
+            self.leave_prompt();
+            if setup {
+                self.close_launcher();
+            } else if self.launcher.routes_changed {
+                self.refresh_launcher();
+            }
+            return;
         }
         if enter && mods.ctrl {
             return self.prompt_alternate();

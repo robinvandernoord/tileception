@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::channel;
 
 use crate::Tileception;
+use crate::plugins::Prompt;
 
 /// How long `uv tool install` and `uv tool upgrade` may take.
 const UV_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -409,6 +410,8 @@ impl Record {
 /// Work done off the event loop.
 enum Job {
     Look(Source),
+    /// Asks an installed plugin how it is set up.
+    Configure(String),
     /// Looks up and installs without showing it first.
     Add(Source),
     Install(Source, Box<Lookup>),
@@ -427,8 +430,18 @@ pub enum Report {
     Done {
         title: String,
         result: Result<String, String>,
-        configure: Option<String>,
+        configure: Option<Configure>,
     },
+    /// How to set up a plugin asked for with `plugins configure`.
+    Configure(Result<Configure, String>),
+}
+
+/// A plugin to set up, in the launcher with its setup prompt when it has
+/// one, else with its `configure` in a terminal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Configure {
+    plugin_id: String,
+    setup: Option<Prompt>,
 }
 
 /// The launcher's view of installing.
@@ -635,7 +648,7 @@ impl Runner {
     /// Installs the package at the commit looked up, lets the plugin set
     /// itself up without asking anything, makes sure a manifest exists, and
     /// asks whether it still needs configuring.
-    fn install(&self, source: &Source, lookup: &Lookup) -> Result<(String, Option<String>), String> {
+    fn install(&self, source: &Source, lookup: &Lookup) -> Result<(String, Option<Configure>), String> {
         let package = &lookup.package;
         // Again, as something else may have been installed since the lookup.
         conflict(&Record::load(), source, package)?;
@@ -667,10 +680,13 @@ impl Runner {
         );
         record.save()?;
         self.step(format!("Asking {} whether it is configured", package.script));
-        let configure = (!self.configured(&command)).then(|| package.plugin_id.clone());
+        let status = self.status(&command);
+        let configure =
+            (!status.configured).then(|| Configure { plugin_id: package.plugin_id.clone(), setup: status.setup });
         let version = if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
         let installed = format!("Installed {}{version} at {}", package.name, short(&lookup.commit));
         let body = match &configure {
+            Some(Configure { setup: Some(_), .. }) => format!("{installed}; set it up in the launcher"),
             Some(_) => format!("{installed}; set it up in the terminal"),
             None => installed,
         };
@@ -701,11 +717,23 @@ impl Runner {
         Ok(())
     }
 
-    /// What `status` says about `configured`; a plugin without it, or one
-    /// that does not answer, counts as configured.
-    fn configured(&self, command: &Path) -> bool {
-        let Ok(output) = run(self.command(command, &["status"]), QUICK_TIMEOUT) else { return true };
-        configured(&output.stdout)
+    /// What `status` says; a plugin that does not answer counts as
+    /// configured, without a setup prompt.
+    fn status(&self, command: &Path) -> Status {
+        match run(self.command(command, &["status"]), QUICK_TIMEOUT) {
+            Ok(output) => Status::read(&output.stdout),
+            Err(_) => Status { configured: true, setup: None },
+        }
+    }
+
+    /// How to set up an installed plugin: with the setup prompt its
+    /// `status` offers, else in a terminal.
+    fn configure(&self, plugin_id: &str) -> Result<Configure, String> {
+        let record = Record::load();
+        let installed =
+            record.plugins.get(plugin_id).ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
+        let setup = self.status(&installed.command).setup;
+        Ok(Configure { plugin_id: plugin_id.to_string(), setup })
     }
 
     /// Moves one plugin to the commit its source is at now: the only step
@@ -773,12 +801,32 @@ impl Runner {
     }
 }
 
-/// Reads `status` output: `{"configured": false}` asks for `configure`.
-fn configured(stdout: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(stdout)
-        .ok()
-        .and_then(|status| status.get("configured").and_then(serde_json::Value::as_bool))
-        .unwrap_or(true)
+/// What a plugin's `status` says about its setup.
+#[derive(Debug, PartialEq)]
+struct Status {
+    /// `{"configured": false}` asks to be set up; a plugin without it
+    /// counts as configured.
+    configured: bool,
+    /// `"setup"`: a launcher prompt that sets it up, used instead of a
+    /// terminal running `configure`. An invalid one is ignored.
+    setup: Option<Prompt>,
+}
+
+impl Status {
+    fn read(stdout: &[u8]) -> Self {
+        let Ok(status) = serde_json::from_slice::<serde_json::Value>(stdout) else {
+            return Status { configured: true, setup: None };
+        };
+        let configured = status.get("configured").and_then(serde_json::Value::as_bool).unwrap_or(true);
+        let setup = status.get("setup").and_then(|setup| match Prompt::deserialize(setup) {
+            Ok(prompt) => Some(prompt),
+            Err(error) => {
+                tracing::warn!("ignoring a plugin's setup prompt: {error}");
+                None
+            }
+        });
+        Status { configured, setup }
+    }
 }
 
 /// What updating one plugin did.
@@ -853,7 +901,7 @@ impl Tileception {
             .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
             .collect();
         let runner = Runner { environment, sender: sender.clone() };
-        if !matches!(job, Job::Look(_)) {
+        if !matches!(job, Job::Look(_) | Job::Configure(_)) {
             self.installer.busy = Some(busy.clone());
         }
         std::thread::Builder::new()
@@ -864,6 +912,7 @@ impl Tileception {
                         let result = Box::new(runner.look(&source));
                         Report::Looked { source, result }
                     }
+                    Job::Configure(plugin_id) => Report::Configure(runner.configure(&plugin_id)),
                     Job::Install(source, lookup) => {
                         let (result, configure) = match runner.install(&source, &lookup) {
                             Ok((body, configure)) => (Ok(body), configure),
@@ -955,8 +1004,33 @@ impl Tileception {
         Ok(format!("{busy}; a notification follows when it is done\n"))
     }
 
-    /// Runs a plugin's `configure` in a terminal, then reloads plugins.
+    /// Sets a plugin up again: asks its `status` for a setup prompt in the
+    /// background, then shows that or runs `configure` in a terminal.
     pub(crate) fn plugin_configure(&mut self, plugin_id: &str) -> Result<String, String> {
+        if !Record::load().plugins.contains_key(plugin_id) {
+            return Err(format!("{plugin_id} was not installed from a repository"));
+        }
+        self.start_job(String::new(), Job::Configure(plugin_id.to_string()))?;
+        Ok(format!("Configuring {plugin_id}\n"))
+    }
+
+    /// Shows a plugin's setup prompt in the launcher, or runs its
+    /// `configure` in a terminal when it has none or the launcher cannot
+    /// show it now.
+    fn set_up(&mut self, configure: Configure) {
+        let Configure { plugin_id, setup } = configure;
+        if let Some(prompt) = setup
+            && self.open_setup_prompt(plugin_id.clone(), prompt)
+        {
+            return;
+        }
+        if let Err(error) = self.configure_in_terminal(&plugin_id) {
+            self.notify_locally("Plugins", &error, tileception_notify::Urgency::Normal);
+        }
+    }
+
+    /// Runs a plugin's `configure` in a terminal, then reloads plugins.
+    fn configure_in_terminal(&mut self, plugin_id: &str) -> Result<String, String> {
         let record = Record::load();
         let installed =
             record.plugins.get(plugin_id).ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
@@ -999,11 +1073,13 @@ impl Tileception {
                         self.notify_locally(&title, &error, tileception_notify::Urgency::Normal)
                     }
                 }
-                if let Some(plugin_id) = configure
-                    && let Err(error) = self.plugin_configure(&plugin_id)
-                {
-                    self.notify_locally("Plugins", &error, tileception_notify::Urgency::Normal);
+                if let Some(configure) = configure {
+                    self.set_up(configure);
                 }
+            }
+            Report::Configure(Ok(configure)) => self.set_up(configure),
+            Report::Configure(Err(error)) => {
+                self.notify_locally("Plugins", &error, tileception_notify::Urgency::Normal)
             }
         }
         self.installer_changed();
@@ -1134,11 +1210,27 @@ needs = ["the 2fas CLI"]
 
     #[test]
     fn status() {
+        let configured = |stdout: &[u8]| Status::read(stdout).configured;
         assert!(!configured(br#"{"configured": false, "detail": "no API key"}"#));
         assert!(configured(br#"{"configured": true}"#));
         // Older plugins print other status, or none.
         assert!(configured(br#"{"synced": 3}"#));
         assert!(configured(b"all fine"));
+        assert_eq!(Status::read(b"all fine").setup, None);
+        let status = Status::read(
+            br#"{"configured": false, "setup": {"title": "Set up Odoo", "steps": [{"id": "connect",
+                "kind": "fields", "tool": "setup", "timeout": 30,
+                "fields": [{"name": "web_url", "label": "Web URL", "value": "https://example.com"},
+                           {"name": "api_key", "label": "API key", "secret": true}]}]}}"#,
+        );
+        assert!(!status.configured);
+        let setup = status.setup.expect("a setup prompt");
+        assert_eq!(setup.title, "Set up Odoo");
+        let crate::plugins::StepKind::Fields { fields, .. } = &setup.steps[0].kind else { panic!("fields") };
+        assert_eq!(fields[0].value, "https://example.com");
+        // A bad prompt still asks for setup, in a terminal.
+        let status = Status::read(br#"{"configured": false, "setup": {"title": "Broken", "steps": []}}"#);
+        assert_eq!(status, Status { configured: false, setup: None });
     }
 
     #[test]

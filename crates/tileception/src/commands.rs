@@ -62,7 +62,8 @@ pub enum Command {
     /// Updates one installed plugin, or all of them.
     UpdatePlugins(Option<String>),
     RemovePlugin(String),
-    /// Runs a plugin's `configure` in a terminal.
+    /// Sets a plugin up again: its setup prompt in the launcher, else its
+    /// `configure` in a terminal.
     ConfigurePlugin(String),
     /// Lists the plugins installed from repositories.
     InstalledPlugins,
@@ -290,7 +291,7 @@ Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
   plugins add <owner/repo>  install a plugin from GitHub with uv, then set it up
   plugins list              plugins installed from repositories
-  plugins configure <id>    run a plugin's setup in a terminal
+  plugins configure <id>    run a plugin's setup, in the launcher or a terminal
   plugins update [id]       update one installed plugin, or all of them
   plugins remove <id>       run a plugin's uninstall and remove it
   plugin add [--id <id>] [--bar] <command> [args...]
