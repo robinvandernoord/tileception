@@ -1,0 +1,50 @@
+version = "0.21.0"
+date = 2026-11-17
+lede = "Shift+Print now opens an area screenshot tool that can draw on the picture and record the area as a video. Plugins can be installed from GitHub in the launcher, and the wallpaper can be a folder of pictures."
+
+[[features]]
+area = "capture"
+title = "Draw on area screenshots and record them"
+text = "Shift+Print, or \"Screenshot an area\" in the launcher, freezes the screen so you can drag an area or click a window. Draw on it with a pen, arrows, boxes, text or numbered steps, or pixelate what others should not read. Enter copies the area as a PNG, Ctrl+S saves it, and Ctrl+R records it as a video, which needs `ffmpeg`. Shift+Print bindings from older configs that run `tileception-screenshot region` or `region --ask` open the new tool too."
+
+[features.media]
+kind = "compare"
+before = "snip-before.jpg"
+after = "snip-after.jpg"
+alt = "The same desk after taking an area screenshot with Shift+Print"
+caption = "Shift+Print over the same area: in 0.20.0 a notification asks whether to copy or save it, in 0.21.0 you can redact the list and draw a box, an arrow and numbered steps first."
+
+[[features]]
+area = "capture"
+title = "Area screenshots can be saved as WebP or JPG, and smaller"
+text = "Shift+Enter copies the area and Ctrl+Shift+S saves it as WebP or JPG, at full size, half size or as a thumbnail. Each choice shows the size of its file. `jpg_qualities` and `sizes` under `[capture]` in `config.toml` set what the menu offers."
+
+[[features]]
+area = "config"
+title = "The wallpaper can be a folder of pictures"
+text = "Set `wallpaper` under `[theme]` to a folder, and Tileception picks one of its pictures at random each session, the same on every screen. `wallpaper_interval`, such as `\"30m\"` or `\"1d\"`, picks a new one that often, and `tileception msg next-wallpaper` picks one right away. In Settings, Appearance, the Wallpaper menu opens a file chooser for a picture or a folder."
+
+[features.media]
+kind = "image"
+src = "wallpaper-after.jpg"
+alt = "The Wallpaper field in Settings, Appearance, with its menu open, offering to choose a picture or a folder"
+caption = "Clicking the Wallpaper field in Settings opens a menu to choose a picture or a folder."
+
+[[features]]
+area = "plugins"
+issue = 72
+title = "Install plugins from GitHub in the launcher"
+text = "Type `plugins add owner/repo` in the launcher to see the plugin's package, version and what it needs, then press Enter again to install it with uv. Installing runs the repository's code as you, so only install plugins you trust. Typing `plugins` lists the installed plugins, with rows to configure each one and to update them all."
+
+[[features]]
+area = "config"
+title = "A mistake in `config.toml` leaves out only that setting"
+text = "If a setting, key binding or window rule in `config.toml` is wrong, Tileception leaves out that part and loads the rest. A reload says what was left out, and Settings asks you to fix the file before applying changes. If the file is not valid TOML at all, Tileception starts with the last version that loaded without problems. Before, any mistake meant starting with the default settings."
+
+[[fixes]]
+area = "doctor"
+text = "Clicking the send button in Doctor now sends the message, instead of placing the caret in the message field."
+
+[[fixes]]
+area = "config"
+text = "Key bindings that run `spawn fuzzel` or `spawn swaync-client -t` now start those programs, instead of opening Tileception's own launcher or notification panel."
