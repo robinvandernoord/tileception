@@ -1765,16 +1765,17 @@ impl Tileception {
                 row.rect.contains(point).then(|| PointerTarget::button(row.rect, PointerAction::Hit(row.hit.clone())))
             });
         }
+        // The send button lies inside the field, so it is found first.
+        if frame.send.contains(point) {
+            return Some(PointerTarget::button(frame.send, PointerAction::Send));
+        }
         if frame.field.contains(point) {
             return Some(PointerTarget::new(frame.field, PointerAction::Field, CursorIcon::Text));
         }
-        let mut buttons = vec![
-            (frame.send, PointerAction::Send),
-            (
-                frame.agent,
-                PointerAction::Hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker }),
-            ),
-        ];
+        let mut buttons = vec![(
+            frame.agent,
+            PointerAction::Hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker }),
+        )];
         if let Some((option, rect)) = self.model_button(&frame) {
             buttons.push((rect, PointerAction::Hit(Hit::OpenMenu(option.option_id.clone()))));
         }
