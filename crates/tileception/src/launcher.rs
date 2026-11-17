@@ -25,7 +25,6 @@ use smithay::wayland::selection::{
     SelectionTarget,
     data_device::{
         SelectionRequestError, current_data_device_selection_userdata, request_data_device_client_selection,
-        set_data_device_selection,
     },
     primary_selection::{
         SelectionRequestError as PrimaryRequestError, current_primary_selection_userdata,
@@ -44,38 +43,90 @@ use crate::{
 };
 
 /// Clipboard contents the compositor owns itself: launcher text, a
-/// screenshot from `tileception msg copy-image`, or what another machine
-/// offers (fetched when pasted).
+/// screenshot from `tileception msg copy-image`, what another machine
+/// offers (fetched when pasted), or what a program had copied, given back
+/// after the clipboard was lent (see `clipboard`).
 #[derive(Debug, Clone)]
 pub enum Clip {
     Text(String),
     Png(std::sync::Arc<[u8]>),
     Remote(crate::handoff::RemoteClip),
+    /// Each offered type with its data, in the order offered.
+    Saved(std::sync::Arc<[(String, Vec<u8>)]>),
 }
+
+/// What a text field pastes, in order of preference.
+const TEXT_TYPES: [&str; 4] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
 
 impl Clip {
     pub fn text(&self) -> Option<&str> {
         match self {
             Clip::Text(text) => Some(text),
+            Clip::Saved(_) => TEXT_TYPES
+                .iter()
+                .find_map(|mime_type| self.bytes(mime_type))
+                .and_then(|bytes| std::str::from_utf8(bytes).ok()),
             Clip::Png(_) | Clip::Remote(_) => None,
         }
     }
 
-    /// Serves the contents without starting a Wayland client. Another
-    /// machine's selection goes through `Tileception::handoff_fetch` instead.
+    /// What a paste as `mime_type` gets.
+    pub(crate) fn bytes(&self, mime_type: &str) -> Option<&[u8]> {
+        match self {
+            Clip::Text(text) => Some(text.as_bytes()),
+            Clip::Png(png) => Some(png),
+            Clip::Saved(saved) => saved.iter().find(|(offered, _)| offered == mime_type).map(|(_, bytes)| &bytes[..]),
+            Clip::Remote(_) => None,
+        }
+    }
+
+    /// The text, or the picture where `pictures` are welcome, that one of
+    /// Tileception's own fields pastes from this.
+    fn pasted(&self, pictures: bool) -> Option<Clip> {
+        match self {
+            Clip::Text(_) => Some(self.clone()),
+            // As before: a picture goes nowhere but the doctor's message.
+            Clip::Png(_) => Some(self.clone()),
+            Clip::Saved(_) => pictures
+                .then(|| self.bytes("image/png"))
+                .flatten()
+                .map(|png| Clip::Png(png.into()))
+                .or_else(|| self.text().map(|text| Clip::Text(text.into()))),
+            Clip::Remote(_) => None,
+        }
+    }
+
+    /// Serves the contents as `mime_type` without starting a Wayland client.
+    /// Another machine's selection goes through `Tileception::handoff_fetch`
+    /// instead.
     pub fn send(&self, mime_type: &str, pipe: std::os::fd::OwnedFd) {
+        self.send_then(mime_type, pipe, || {});
+    }
+
+    /// [`Clip::send`], calling `written` once all of it was written.
+    pub(crate) fn send_then(
+        &self,
+        mime_type: &str,
+        pipe: std::os::fd::OwnedFd,
+        written: impl FnOnce() + Send + 'static,
+    ) {
         use std::io::Write;
+        let hint = mime_type == PASSWORD_HINT && !matches!(self, Clip::Remote(_));
+        if !hint && self.bytes(mime_type).is_none() {
+            return;
+        }
         let clip = self.clone();
-        let hint = mime_type == PASSWORD_HINT;
+        let mime_type = mime_type.to_owned();
         std::thread::spawn(move || {
-            let bytes = match &clip {
+            let bytes = match clip.bytes(&mime_type) {
                 // What clipboard managers read to know they should skip it.
                 _ if hint => b"secret".as_slice(),
-                Clip::Text(text) => text.as_bytes(),
-                Clip::Png(png) => png,
-                Clip::Remote(_) => return,
+                Some(bytes) => bytes,
+                None => return,
             };
-            let _ = paste_pipe(pipe).write_all(bytes);
+            if paste_pipe(pipe).write_all(bytes).is_ok() {
+                written();
+            }
         });
     }
 }
@@ -126,6 +177,8 @@ pub enum Paste {
     Prompt(u64, usize),
     /// The network card's password field.
     Network,
+    /// Text being typed onto an area screenshot.
+    Shot,
 }
 
 /// One row of results.
@@ -215,6 +268,8 @@ enum PointerAction {
     Prompt(prompt::Target),
     /// A control on a plugin's card under the launcher.
     Card(String, crate::plugins::ActionKind),
+    /// Something on the dashboard beside the welcome screen.
+    Dashboard(crate::dashboard::Click),
 }
 
 impl crate::ui::PointerAction for PointerAction {
@@ -235,6 +290,7 @@ impl crate::ui::PointerAction for PointerAction {
             }
             Self::Prompt(target) => state.prompt_activate(*target, point),
             Self::Card(plugin, action) => state.launcher_card_action(plugin, action.clone()),
+            Self::Dashboard(click) => state.dashboard_click(click.clone()),
         }
     }
 
@@ -297,6 +353,12 @@ const COMMANDS: &[Builtin] = &[
     builtin("Notifications", "history messages", glyph::BELL, Does::Line("notifications")),
     builtin("Take a screenshot", "print screen capture", glyph::CAMERA, Does::Line("spawn tileception-screenshot")),
     builtin(
+        "Screenshot an area",
+        "print screen capture region select draw annotate record video gif",
+        glyph::CAMERA,
+        Does::Line("capture"),
+    ),
+    builtin(
         "Screenshot of a region",
         "print screen capture area select",
         glyph::CAMERA,
@@ -316,6 +378,7 @@ const COMMANDS: &[Builtin] = &[
         Does::Line("colour-scheme light"),
     ),
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
+    builtin("Next wallpaper", "background picture shuffle", glyph::NEXT, Does::Line("next-wallpaper")),
     builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
     builtin(
@@ -337,7 +400,7 @@ const COMMANDS: &[Builtin] = &[
     builtin("Step out", "zoom out", glyph::ZOOM_OUT, Does::Line("step-out")),
     builtin("Back", "previous view history", glyph::ARROW_LEFT, Does::Line("back")),
     builtin("Forward", "next view history", glyph::ARROW_RIGHT, Does::Line("forward")),
-    builtin("Show desktop", "desktop tile", glyph::OVERVIEW, Does::Line("desktop")),
+    builtin("Show desktop", "clear desk minimize all hide windows", glyph::OVERVIEW, Does::Line("desktop")),
 ];
 
 /// A command started with `>` and what it printed.
@@ -510,15 +573,13 @@ impl Tileception {
         if png.len() as u64 > MAX_IMAGE || !png.starts_with(b"\x89PNG") {
             return Err(format!("{} is not a PNG of at most 64 MB", path.display()));
         }
-        let mime_types = vec!["image/png".to_string()];
-        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Png(png.into())));
-        self.selection_offered(SelectionTarget::Clipboard, Some(mime_types.clone()));
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
-        {
-            tracing::warn!("could not offer the image to X11: {error:?}");
-        }
+        self.copy_png(png.into());
         Ok(())
+    }
+
+    /// Puts PNG data on the clipboard, owned by the compositor, for Wayland and X11.
+    pub(crate) fn copy_png(&mut self, png: std::sync::Arc<[u8]>) {
+        self.offer_clipboard(vec!["image/png".to_string()], Clip::Png(png));
     }
 
     /// Does what a key in a text field asked of the clipboard: copies what
@@ -570,15 +631,7 @@ impl Tileception {
         if sensitive {
             mime_types.push(PASSWORD_HINT.into());
         }
-        set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), Some(Clip::Text(text)));
-        // Nothing to share: linked machines drop what this one offered before.
-        let shared = if sensitive { Vec::new() } else { mime_types.clone() };
-        self.selection_offered(SelectionTarget::Clipboard, Some(shared));
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(error) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
-        {
-            tracing::warn!("could not offer the text to X11: {error:?}");
-        }
+        self.offer_clipboard(mime_types, Clip::Text(text));
     }
 
     pub fn init_launcher(&mut self) {
@@ -708,6 +761,7 @@ impl Tileception {
             }
             (Paste::Doctor, Clip::Png(png)) if self.doctor.open => self.doctor_attach(png),
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
+            (Paste::Shot, Clip::Text(text)) if self.shot_typing() => self.shot_insert_paste(&text),
             (Paste::Network, Clip::Text(text)) if self.network_typing() => self.network_insert_paste(&text),
             (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
@@ -724,6 +778,13 @@ impl Tileception {
                 self.launcher.home_dismissed = true;
             }
             self.close_launcher();
+            return;
+        }
+        // Super put the welcome screen away and the desktop is still empty
+        // (a window showing ends that): Super again brings it back as it
+        // was, with the dashboard, instead of the plain launcher.
+        if std::mem::take(&mut self.launcher.home_dismissed) {
+            self.open_launcher(true);
             return;
         }
         self.open_launcher(false);
@@ -1062,6 +1123,7 @@ impl Tileception {
         match sym {
             // The welcome screen is the desktop, not something to close:
             // Esc only clears the search there. Super still hides it.
+            keysyms::KEY_Escape if self.launcher.home && self.dashboard_close_adding() => {}
             keysyms::KEY_Escape if self.launcher.home => self.launcher.input.clear(),
             keysyms::KEY_Escape => self.close_launcher(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => self.launch_selected(mods),
@@ -1109,8 +1171,22 @@ impl Tileception {
             SelectionTarget::Primary => current_primary_selection_userdata(&self.seat),
         }
         .and_then(|data| data.clone());
+        // Pictures first where they are welcome (not in a menu's filter): a
+        // copied image often also offers its address as text.
+        let pictures = match target {
+            Paste::Doctor => !self.doctor_menu_open(),
+            Paste::Launcher(_)
+            | Paste::Settings(_)
+            | Paste::Feedback(..)
+            | Paste::Duck
+            | Paste::Prompt(..)
+            | Paste::Network
+            | Paste::Shot => false,
+        };
         if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {
-            self.insert_paste(target, clip.clone());
+            if let Some(clip) = clip.pasted(pictures) {
+                self.insert_paste(target, clip);
+            }
             return;
         }
         let Some(sender) = self.launcher.clipboard.clone() else { return };
@@ -1120,19 +1196,7 @@ impl Tileception {
             return;
         }
         let mut requested = false;
-        let text = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
-        // Pictures first where they are welcome (not in a menu's filter): a
-        // copied image often also offers its address as text.
-        let mime_types = match target {
-            Paste::Doctor if !self.doctor_menu_open() => [&["image/png"][..], &text].concat(),
-            Paste::Doctor
-            | Paste::Launcher(_)
-            | Paste::Settings(_)
-            | Paste::Feedback(..)
-            | Paste::Duck
-            | Paste::Prompt(..)
-            | Paste::Network => text.to_vec(),
-        };
+        let mime_types = if pictures { [&["image/png"][..], &TEXT_TYPES].concat() } else { TEXT_TYPES.to_vec() };
         if let Some(Clip::Remote(remote)) = owned {
             let Some(wanted) =
                 mime_types.into_iter().find(|mime_type| remote.mime_types.iter().any(|offered| offered == mime_type))
@@ -1164,17 +1228,16 @@ impl Tileception {
                     break;
                 }
                 Err(SelectionRequestError::InvalidMimetype) => continue,
-                // From X11, where offered types are not known: text only.
-                Err(SelectionRequestError::ServerSideSelection) if mime_type.starts_with("image/") => continue,
+                // From X11: a picture only when the program that copied offers one.
+                Err(SelectionRequestError::ServerSideSelection)
+                    if mime_type.starts_with("image/") && !self.selection_offers(selection, mime_type) =>
+                {
+                    continue;
+                }
                 Err(SelectionRequestError::ServerSideSelection) => {
-                    if let Some(xwm) = self.xwm.as_mut() {
-                        requested = xwm
-                            .send_selection(selection, mime_type.into(), writer.into(), self.loop_handle.clone())
-                            .is_ok();
-                    }
-                    // This writer is transferred to Xwayland or dropped here.
-                    if requested {
-                        self.launcher_read_paste(reader, sender, target, false);
+                    // This writer is transferred to the X11 paste or dropped here.
+                    if self.send_x11_selection(selection, mime_type.into(), writer.into()) {
+                        self.launcher_read_paste(reader, sender, target, mime_type.starts_with("image/"));
                     }
                     return;
                 }
@@ -1531,7 +1594,9 @@ impl Tileception {
         }
         let updates = &self.updates;
         let totals = updates.snapshot.totals();
-        let mut rows = Vec::new();
+        // The manager leads whatever is waiting, so Enter does the same
+        // thing for "updates" as it does when nothing is.
+        let mut rows = vec![UpdateRow::Choose];
         if !updates.busy() {
             if totals.count > 0 {
                 rows.push(UpdateRow::Install);
@@ -1540,7 +1605,6 @@ impl Tileception {
                 rows.push(UpdateRow::Security);
             }
         }
-        rows.push(UpdateRow::Choose);
         if updates.cleanup_summary().is_some() {
             rows.push(UpdateRow::Clean);
         }
@@ -1652,7 +1716,7 @@ impl Tileception {
                     None if totals.count == 0 => format!("Up to date \u{b7} {}", updates.checked()),
                     None => "Pick packages in the Updates window".into(),
                 };
-                (glyph::WINDOW, if totals.count == 0 { "Open Updates" } else { "Choose updates" }.into(), detail)
+                (glyph::WINDOW, "Open Updates".into(), detail)
             }
             UpdateRow::Clean => (
                 glyph::CLEAR,
@@ -1677,7 +1741,7 @@ impl Tileception {
 
     /// Does what a card under the launcher asks. A tool runs like the
     /// panel's, so the typed search and its results stay as they are.
-    fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
+    pub(crate) fn launcher_card_action(&mut self, plugin: &str, action: crate::plugins::ActionKind) {
         match action {
             crate::plugins::ActionKind::Tool { name, arguments } => {
                 if let Some(plugins) = &self.plugins {
@@ -1829,7 +1893,7 @@ impl Tileception {
 
     /// Brings a window into view: restored when minimized, else focused,
     /// with the camera moving to it when it is outside the framed space.
-    fn fly_to_window(&mut self, window_id: WindowId) {
+    pub(crate) fn fly_to_window(&mut self, window_id: WindowId) {
         if let Some(area) = self.area_for_window(window_id) {
             self.activate_area(&area);
         }
@@ -1996,7 +2060,36 @@ impl Tileception {
                 cards.push((plugin.to_string(), card.clone(), laid));
             }
         }
-        LauncherLayout { panel, field, text, caption, rows, first, output, prompt, footer, media, cards }
+        let dashboard = if self.launcher.home { self.dashboard_slots(panel) } else { Vec::new() };
+        let adding = if self.launcher.home { self.dashboard_adding(footer) } else { None };
+        LauncherLayout {
+            panel,
+            field,
+            text,
+            caption,
+            rows,
+            first,
+            output,
+            prompt,
+            footer,
+            media,
+            cards,
+            dashboard,
+            adding,
+        }
+    }
+
+    /// Where the welcome screen's panel stands, across its width, for the
+    /// dashboard beside it when the welcome screen is not open.
+    pub(crate) fn home_centre(&self) -> Rect {
+        let screen = self.output_rect();
+        let width = (screen.w - 32.0).clamp(1.0, PANEL_W);
+        Rect::new(screen.x + (screen.w - width) / 2.0, screen.y, width, screen.h)
+    }
+
+    /// The launcher's panel as laid out now.
+    pub(crate) fn launcher_panel(&self) -> Rect {
+        self.launcher_layout().panel
     }
 
     /// The welcome screen with nothing typed: apps as a grid of tiles.
@@ -2017,6 +2110,15 @@ impl Tileception {
 
     pub(crate) fn launcher_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
         let layout = self.launcher_layout();
+        // The dashboard's list of what can be added lies over the panel.
+        if let Some(adding) = &layout.adding {
+            if let Some((rect, click)) = adding.target_at(point) {
+                return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+            }
+            if adding.covers(point) {
+                return None;
+            }
+        }
         if let Some(area) = layout.prompt {
             if launcher_settings_button(layout.footer).contains(point) {
                 return Some(crate::ui::PointerTarget::button(
@@ -2048,6 +2150,15 @@ impl Tileception {
                 return Some(crate::ui::PointerTarget::button(rect, PointerAction::Card(plugin.clone(), action)));
             }
         }
+        if let Some((rect, click)) = Tileception::dashboard_remove_at(&layout.dashboard, point) {
+            return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+        }
+        if layout.dashboard.iter().any(|slot| slot.rect.contains(point)) {
+            // Only a card's controls (and the button removing an item) are buttons; the items themselves are
+            // held to drag them, and clicked when let go where they were.
+            let (rect, click) = Tileception::dashboard_control_at(&layout.dashboard, point)?;
+            return Some(crate::ui::PointerTarget::button(rect, PointerAction::Dashboard(click)));
+        }
         if self.launcher.plugin_pending {
             return None;
         }
@@ -2069,6 +2180,10 @@ impl Tileception {
 
     pub fn launcher_click(&mut self, point: Point) {
         let layout = self.launcher_layout();
+        if self.dashboard_press(&layout.dashboard, layout.adding.as_ref(), point) {
+            self.schedule_render();
+            return;
+        }
         if let Some(target) = self.launcher_pointer_target(point) {
             target.activate(self, point);
         } else if !layout.covers(point) && !self.launcher.home {
@@ -2339,7 +2454,9 @@ impl Tileception {
         } else {
             vec![("\u{2191}\u{2193}", "Choose"), ("Enter", enter), close]
         };
-        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - 52.).max(1.), footer.h), |painter| {
+        // Room for the settings button, and the dashboard's "+" beside it.
+        let buttons = if layout.adding.is_some() { 88. } else { 52. };
+        painter.clipped(Rect::new(footer.x, footer.y, (footer.w - buttons).max(1.), footer.h), |painter| {
             painter.key_hints(&hints, footer.x + 16.0, footer.y + footer.h / 2.0, false);
         });
         let settings = launcher_settings_button(footer);
@@ -2353,6 +2470,11 @@ impl Tileception {
             18,
             if hovered { theme.accent } else { theme.muted },
         );
+        // With the footer, so it slides in with the panel; its list goes
+        // over the panel's rows.
+        if let Some(adding) = &layout.adding {
+            self.draw_adding(&mut painter, adding);
+        }
 
         if let (Some(card), Some(player)) = (&layout.media, self.media.snapshot.media.active()) {
             painter.popup(card.rect);
@@ -2364,7 +2486,12 @@ impl Tileception {
             let pointer = Point::new(self.pointer.x, self.pointer.y);
             self.draw_plugin_card(&mut painter, card, laid, pointer, theme.surface);
         }
-        painter.finish()
+        painter.offset = (0.0, 0.0);
+        self.draw_dashboard(&mut painter, &layout.dashboard);
+        let mut elements = painter.finish();
+        // Plugins' own surfaces, inside the frames drawn for them.
+        elements.splice(0..0, self.dashboard_surface_elements(renderer, &layout.dashboard));
+        elements
     }
 
     /// One row of results: an icon, a title over a detail line, and on the
@@ -2989,6 +3116,10 @@ struct LauncherLayout {
     /// A plugin's prompt, instead of the rows.
     prompt: Option<Rect>,
     footer: Rect,
+    /// The dashboard beside the welcome screen.
+    dashboard: Vec<crate::dashboard::Slot>,
+    /// Its "+" button and, while open, the list of what can be added.
+    adding: Option<crate::dashboard::Adding>,
 }
 
 impl LauncherLayout {
@@ -2997,6 +3128,11 @@ impl LauncherLayout {
         self.panel.contains(point)
             || self.media.as_ref().is_some_and(|card| card.rect.contains(point))
             || self.cards.iter().any(|(_, _, laid)| laid.rect.contains(point))
+            || self
+                .dashboard
+                .iter()
+                .any(|slot| slot.rect.contains(point) || crate::dashboard::remove_button(slot.rect).contains(point))
+            || self.adding.as_ref().is_some_and(|adding| adding.covers(point))
     }
 }
 
@@ -3042,8 +3178,22 @@ fn plugin_action_glyph(kind: &crate::plugins::ActionKind) -> &'static str {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
-    use super::{RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
+    use super::{Clip, RunStatus, capture, clean_output, combo_label, completion, quality, question_in};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn saved_contents_paste_as_they_were_offered() {
+        let saved = Clip::Saved(
+            vec![("text/html".to_string(), b"<b>hi</b>".to_vec()), ("text/plain".to_string(), b"hi".to_vec())].into(),
+        );
+        assert_eq!(saved.bytes("text/html"), Some(&b"<b>hi</b>"[..]));
+        assert_eq!(saved.bytes("image/png"), None);
+        assert_eq!(saved.text(), Some("hi"));
+        assert!(matches!(saved.pasted(true), Some(Clip::Text(text)) if text == "hi"));
+        let picture = Clip::Saved(vec![("image/png".to_string(), b"png".to_vec())].into());
+        assert!(matches!(picture.pasted(true), Some(Clip::Png(png)) if &png[..] == b"png"));
+        assert!(picture.pasted(false).is_none());
+    }
 
     #[test]
     fn questions_go_to_the_doctor() {

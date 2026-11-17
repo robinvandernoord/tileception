@@ -41,9 +41,13 @@ pub struct ConfigFile {
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub updates: crate::updates::UpdatesConfig,
+    /// Events in the bar from .ics files and URLs.
+    pub calendar: crate::calendar::CalendarConfig,
     pub bluetooth: crate::bundled::bluetooth::BluetoothConfig,
     pub shell: crate::shell::ShellConfig,
     pub duck: crate::duck::DuckConfig,
+    /// Formats and sizes for area screenshots.
+    pub capture: crate::shot::CaptureConfig,
     pub doctor: crate::doctor::DoctorConfig,
     /// What this session shows on the login screen.
     pub greeter: crate::greeter::ShareConfig,
@@ -205,8 +209,46 @@ pub struct Config {
 }
 
 impl Config {
+    /// The whole file, or an error for the first thing wrong in it. Use this
+    /// to check a draft before saving it; loading uses `parse_lenient`.
     pub fn parse(text: &str) -> Result<Config, String> {
         let file: ConfigFile = toml::from_str(text).map_err(|error| error.to_string())?;
+        Config::from_file(file)
+    }
+
+    /// Everything in the file that is right, leaving out each setting, key
+    /// binding or list entry that is wrong, so one mistake costs only itself.
+    /// Only text that is not TOML at all is an error.
+    pub fn parse_lenient(text: &str) -> Result<(Config, Vec<Problem>), String> {
+        let strict = match Config::parse(text) {
+            Ok(config) => return Ok((config, Vec::new())),
+            Err(error) => error,
+        };
+        let table: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+        let mut kept = toml::Table::new();
+        let mut left_out = Vec::new();
+        for (key, value) in table {
+            recover(&mut kept, vec![Step::Key(key)], value, &mut left_out);
+        }
+        let problems: Vec<Problem> =
+            left_out.into_iter().map(|(steps, _, message)| Problem { path: describe_steps(&steps), message }).collect();
+        match Config::from_table(kept) {
+            Ok(config) => Ok((config, problems)),
+            // Not expected: every part kept was checked on the way in.
+            Err(error) => Ok((
+                Config::default_config(),
+                vec![Problem { path: String::new(), message: format!("{strict}; {error}") }],
+            )),
+        }
+    }
+
+    fn from_table(table: toml::Table) -> Result<Config, String> {
+        let file: ConfigFile =
+            toml::Value::Table(table).try_into().map_err(|error: toml::de::Error| error.message().to_string())?;
+        Config::from_file(file)
+    }
+
+    fn from_file(file: ConfigFile) -> Result<Config, String> {
         let defaults: ConfigFile = toml::from_str(DEFAULT).expect("built-in config parses");
         let mut binds: Vec<Bind> = Vec::new();
         let mut errors = Vec::new();
@@ -386,6 +428,171 @@ fn lower(sym: u32) -> u32 {
     }
 }
 
+/// Something in the config file that was left out so the rest could load.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Problem {
+    /// Where it is, such as `theme.accent` or `rules #2`; empty for the file.
+    pub path: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.path.is_empty() {
+            write!(formatter, "{}", self.message)
+        } else {
+            write!(formatter, "{}: {}", self.path, self.message)
+        }
+    }
+}
+
+/// One step down into the file: a key in a table, or an entry of a list of
+/// tables (counted in the file, from 0). An entry is always the last step.
+#[derive(Debug, Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+type LeftOut = (Vec<Step>, toml::Value, String);
+
+fn check(table: &toml::Table) -> Result<(), String> {
+    Config::from_table(table.clone()).map(|_| ())
+}
+
+/// Puts `value` at `steps` in `table`, appending it when the last step is a
+/// list entry. Every table and list on the way must already be there.
+fn insert(table: &mut toml::Table, steps: &[Step], value: toml::Value) -> bool {
+    match steps {
+        [Step::Key(key)] => {
+            table.insert(key.clone(), value);
+            true
+        }
+        [Step::Key(key), Step::Index(_)] => match table.get_mut(key) {
+            Some(toml::Value::Array(items)) => {
+                items.push(value);
+                true
+            }
+            _ => false,
+        },
+        [Step::Key(key), rest @ ..] => match table.get_mut(key) {
+            Some(toml::Value::Table(inner)) => insert(inner, rest, value),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Adds `value` to `kept` if the result still loads. Otherwise a table is
+/// added key by key and a list of tables entry by entry, so only the parts
+/// that are wrong are left out. A list entry is kept or left out whole: half
+/// a window rule would match windows it was not written for.
+fn recover(kept: &mut toml::Table, steps: Vec<Step>, value: toml::Value, left_out: &mut Vec<LeftOut>) {
+    let mut trial = kept.clone();
+    if !insert(&mut trial, &steps, value.clone()) {
+        return;
+    }
+    let error = match check(&trial) {
+        Ok(()) => {
+            *kept = trial;
+            return;
+        }
+        Err(error) => error,
+    };
+    let in_table = matches!(steps.last(), Some(Step::Key(_)));
+    let parts: Option<(toml::Value, Vec<(Step, toml::Value)>)> = match &value {
+        toml::Value::Table(entries) if in_table && !entries.is_empty() => Some((
+            toml::Value::Table(toml::Table::new()),
+            entries.iter().map(|(key, inner)| (Step::Key(key.clone()), inner.clone())).collect(),
+        )),
+        toml::Value::Array(items) if in_table && !items.is_empty() && items.iter().all(toml::Value::is_table) => {
+            Some((
+                toml::Value::Array(Vec::new()),
+                items.iter().cloned().enumerate().map(|(index, item)| (Step::Index(index), item)).collect(),
+            ))
+        }
+        _ => None,
+    };
+    if let Some((empty, parts)) = parts {
+        let mut trial = kept.clone();
+        if insert(&mut trial, &steps, empty) && check(&trial).is_ok() {
+            *kept = trial;
+            for (step, inner) in parts {
+                let mut path = steps.clone();
+                path.push(step);
+                recover(kept, path, inner, left_out);
+            }
+            return;
+        }
+    }
+    // A binding's error starts with its key, which the path already says.
+    let error = match steps.last() {
+        Some(Step::Key(key)) => error.strip_prefix(&format!("{key:?}: ")).map(str::to_string).unwrap_or(error),
+        _ => error,
+    };
+    left_out.push((steps, value, error));
+}
+
+/// `theme.accent`, `binds."Super+T"` or `rules #2`, as the file would say it.
+fn describe_steps(steps: &[Step]) -> String {
+    let mut text = String::new();
+    for step in steps {
+        match step {
+            Step::Key(key) => {
+                if !text.is_empty() {
+                    text.push('.');
+                }
+                if !key.is_empty()
+                    && key.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+                {
+                    text.push_str(key);
+                } else {
+                    text.push_str(&format!("{key:?}"));
+                }
+            }
+            Step::Index(index) => text.push_str(&format!(" #{}", index + 1)),
+        }
+    }
+    text
+}
+
+/// One line for all problems, for a log or a reply.
+pub fn describe(problems: &[Problem]) -> String {
+    problems.iter().map(Problem::to_string).collect::<Vec<_>>().join("; ")
+}
+
+/// A copy of the last config file that loaded without problems, used at
+/// startup when the file is not TOML at all.
+fn last_good_path() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
+        .join("tileception/config.last-good.toml")
+}
+
+fn remember_good(text: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = last_good_path();
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // The config can hold passphrases and tokens.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut file| file.write_all(text.as_bytes()));
+    if let Err(error) = written {
+        tracing::warn!("could not keep a copy of the config in {}: {error}", path.display());
+    }
+}
+
 pub fn path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -405,11 +612,39 @@ pub fn load(path: &Path) -> Config {
             Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
         }
     }
-    match std::fs::read_to_string(path).map_err(|error| error.to_string()).and_then(|text| Config::parse(&text)) {
-        Ok(config) => config,
-        Err(err) => {
-            tracing::error!("config {}: {err}; using defaults", path.display());
-            Config::default_config()
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            tracing::error!("config {}: {error}; using defaults", path.display());
+            return Config::default_config();
+        }
+    };
+    match Config::parse_lenient(&text) {
+        Ok((config, problems)) => {
+            if problems.is_empty() {
+                remember_good(&text);
+            }
+            for problem in &problems {
+                tracing::warn!("config {}: left out {problem}", path.display());
+            }
+            config
+        }
+        Err(error) => {
+            tracing::error!("config {}: {error}", path.display());
+            let last_good = last_good_path();
+            match std::fs::read_to_string(&last_good)
+                .map_err(|error| error.to_string())
+                .and_then(|text| Config::parse_lenient(&text))
+            {
+                Ok((config, _)) => {
+                    tracing::warn!("config: using the last one that loaded, kept in {}", last_good.display());
+                    config
+                }
+                Err(_) => {
+                    tracing::warn!("config: using defaults");
+                    Config::default_config()
+                }
+            }
         }
     }
 }
@@ -437,8 +672,16 @@ impl Tileception {
     pub fn reload_config(&mut self) -> Result<(), String> {
         let path = path();
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        let config = Config::parse(&text)?;
-        self.apply_config(config)?;
+        // Not TOML at all: the config that is running stays.
+        let (config, problems) = Config::parse_lenient(&text)?;
+        let result = self.apply_config(config);
+        // An open Settings follows the file, keeping what was edited there.
+        self.settings_config_changed(&text);
+        result?;
+        if !problems.is_empty() {
+            return Err(format!("reloaded, leaving out {}", describe(&problems)));
+        }
+        remember_good(&text);
         tracing::info!("config reloaded");
         Ok(())
     }
@@ -457,15 +700,18 @@ impl Tileception {
                 keyboard_config.repeat_delay.unwrap_or(400),
             );
         }
-        if let Some(terminal) = &config.file.general.terminal {
-            self.terminal = terminal.clone();
-        }
+        // As at startup, so removing `terminal` returns to the detected one.
+        self.terminal = std::env::var("TILECEPTION_TERMINAL")
+            .ok()
+            .or_else(|| config.file.general.terminal.clone())
+            .unwrap_or_else(|| crate::state::default_terminal(self.launcher.apps()));
         if self.theme != config.theme {
             self.theme = config.theme.clone();
             self.update_appearance();
             self.text.borrow_mut().clear();
             self.wallpaper = None;
             self.wallpaper_failed = None;
+            self.rotate_wallpaper(false);
         }
         let old = std::mem::replace(&mut self.config, config).file;
         self.apply_shell(&old.shell);
@@ -477,6 +723,9 @@ impl Tileception {
             || old.home != self.config.file.home
         {
             self.apply_plugins();
+        }
+        if old.calendar != self.config.file.calendar {
+            self.apply_calendar();
         }
         if republish {
             self.publish_greeter_card();
@@ -589,6 +838,47 @@ mod tests {
         let config = Config::parse("[general]\ngap = 4").unwrap();
         assert_eq!(config.binds.len(), defaults);
         assert_eq!(config.world_settings().gap, 4.0);
+    }
+
+    #[test]
+    fn a_mistake_leaves_out_only_itself() {
+        let paths = |problems: &[Problem]| problems.iter().map(|problem| problem.path.clone()).collect::<Vec<_>>();
+        let text =
+            "[general]\ngap = 4\nbogus = 1\n[theme]\nwallpaper = \"/pictures/sea.png\"\nwallpaper_fit = \"tile\"\n";
+        let (config, problems) = Config::parse_lenient(text).unwrap();
+        assert_eq!(config.world_settings().gap, 4.0);
+        assert_eq!(config.theme.wallpaper.as_deref(), Some(Path::new("/pictures/sea.png")));
+        assert_eq!(paths(&problems), ["general.bogus", "theme.wallpaper_fit"]);
+        assert!(problems[1].message.contains("tile"), "{}", problems[1].message);
+
+        let defaults = Config::default_config().binds.len();
+        let text = "[binds]\n\"Super+T\" = \"fly\"\n\"Super+Y\" = \"spawn foot\"\n\"Hyper+U\" = \"close\"\n";
+        let (config, problems) = Config::parse_lenient(text).unwrap();
+        assert_eq!(paths(&problems), ["binds.\"Hyper+U\"", "binds.\"Super+T\""]);
+        assert_eq!(problems[1].to_string(), "binds.\"Super+T\": unknown command \"fly\"");
+        assert_eq!(config.binds.len(), defaults + 1, "Super+Y joins, Super+T keeps its default");
+        let t_key = xkb::keysym_from_name("t", xkb::KEYSYM_NO_FLAGS).raw();
+        let logo = Mods { logo: true, ..Default::default() };
+        assert_eq!(config.lookup(logo, t_key), Some(&[Command::Action(Action::Spawn)][..]));
+
+        let text = "[[rules]]\napp_id = \"one\"\n[[rules]]\nfloat = true\n[[rules]]\napp_id = \"three\"\nsize = \"big\"\n[[rules]]\ntitle = \"four\"\n";
+        let (config, problems) = Config::parse_lenient(text).unwrap();
+        assert_eq!(paths(&problems), ["rules #2", "rules #3"]);
+        let kept: Vec<_> =
+            config.file.rules.iter().map(|rule| rule.app_id.clone().or(rule.title.clone()).unwrap()).collect();
+        assert_eq!(kept, ["one", "four"]);
+
+        let (config, problems) = Config::parse_lenient("theme = 5\n[general]\ngap = 2").unwrap();
+        assert_eq!(paths(&problems), ["theme"]);
+        assert_eq!(config.world_settings().gap, 2.0);
+    }
+
+    #[test]
+    fn text_that_is_not_toml_is_an_error() {
+        assert!(Config::parse_lenient("[general\ngap = 4").is_err());
+        let (config, problems) = Config::parse_lenient(DEFAULT).unwrap();
+        assert!(problems.is_empty());
+        assert_eq!(config.binds.len(), Config::default_config().binds.len());
     }
 
     #[test]

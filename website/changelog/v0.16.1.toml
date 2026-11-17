@@ -1,0 +1,7 @@
+version = "0.16.1"
+date = 2026-11-11
+
+[[fixes]]
+area = "session"
+issue = 68
+text = "A tmux server or systemd user service started in an earlier login still finds your SSH agent, because `SSH_AUTH_SOCK` now always points to `$XDG_RUNTIME_DIR/tileception-ssh-agent.sock`."

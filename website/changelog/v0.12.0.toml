@@ -1,0 +1,55 @@
+version = "0.12.0"
+date = 2026-11-07
+lede = "Tileception gets a Settings window, and its Displays page arranges, rotates and rescales your screens. The launcher takes plugins, and Send feedback drafts a GitHub issue for you."
+
+[[features]]
+area = "settings"
+title = "A Settings window"
+text = "Super+, opens Settings, a window you move and resize like any other. Edits stay as drafts while you switch categories with Ctrl+Page Up and Page Down. Ctrl+S or Apply changes saves them."
+
+[features.media]
+kind = "image"
+src = "settings-after.jpg"
+alt = "Settings open over four windows, on its Overview page with cards for Appearance, Layout & motion, Desktop components, Keyboard & touchpad, Power & battery, Smart home, Lock & session, Shortcuts & startup and Displays"
+caption = "Settings opens on its Overview page, with a card for each category."
+
+[[features]]
+area = "displays"
+title = "Set up screens on the Displays page"
+text = "In Settings, Displays sets each screen's position, resolution, refresh rate, rotation and scale. Apply changes tries them for 15 seconds. Choose Keep changes, or the old setup comes back."
+
+[[features]]
+area = "outputs"
+title = "Display modes, rotation and position in `config.toml`"
+text = "Under `[outputs.\"DP-2\"]`, set a screen's `mode`, `transform`, `position` and `enabled`. `tileception msg outputs` lists the connector names. A screen you switch off stays in the list, ready to switch on again."
+
+[[features]]
+area = "outputs"
+title = "Proportional crossing between screens"
+text = "When the pointer crosses to a screen of another size, it can now land at the matching point along that screen's edge."
+
+[[features]]
+area = "launcher"
+title = "Launcher plugins"
+text = "A program that speaks MCP can add results to the launcher behind its own prefix, such as `echo`. Add it under `[launcher.plugins.<id>]` or as a manifest. Type `plugins` to see what loaded."
+
+[[features]]
+area = "feedback"
+title = "Send feedback as a GitHub issue"
+text = "Send feedback in the launcher, or `tileception msg feedback`, opens a form. Review shows the exact issue text. Open in browser takes it to GitHub, where you submit it yourself."
+
+[features.media]
+kind = "image"
+src = "feedback-after.jpg"
+alt = "The Send feedback dialog on its review step, showing the issue's title, body and the line Tileception 0.12.0, with Include system details switched off"
+caption = "Review shows the issue as GitHub will get it. System details stay out unless you switch them on."
+
+[[features]]
+area = "doctor"
+title = "Doctor switches the agent's own permission mode"
+text = "Ask, Tweak and Yolo now also set the agent's own permission mode. Doctor holds your message until the agent confirms the change."
+
+[[features]]
+area = "notifications"
+title = "Clear notifications and Do not disturb from scripts"
+text = "`tileception msg notifications clear` does what Clear all does. `tileception msg do-not-disturb` toggles Do not disturb, or takes `on` or `off`. Both work as key bindings too."

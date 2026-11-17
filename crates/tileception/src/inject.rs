@@ -1,10 +1,13 @@
-//! Pretend input for scripted tests: `tileception msg pointer/click/key/keydown/type/gesture/touch`.
+//! Pretend input for scripted tests: `tileception msg pointer/click/scroll/key/keydown/type/gesture/touch`.
 //! Keys and clicks take the same path as real ones. Only headless or nested,
 //! so a script can never drive a real session.
+
+use std::time::Duration;
 
 use smithay::{
     backend::input::{ButtonState, KeyState},
     input::keyboard::{Keycode, xkb},
+    reexports::calloop::timer::{TimeoutAction, Timer},
     utils::{Logical, Point},
 };
 
@@ -25,8 +28,11 @@ pub enum Inject {
     Click { position: Option<(f64, f64)>, button: u32 },
     /// Presses or lets go of a button, as a mouse does: held, it drags.
     Button { button: u32, pressed: bool },
-    /// A key combination such as `Super+slash` or `Return`.
-    Key(String),
+    /// Turns the mouse wheel this many notches, down for more than 0.
+    Scroll(f64),
+    /// A key combination such as `Super+slash` or `Return`, let go at once
+    /// or after `hold` milliseconds, as a held key is (Super+D peeks).
+    Key { combo: String, hold: Option<u32> },
     /// Holds a key down (`Alt`, `Super`, `a`) until it is let go, so a
     /// script can Alt+drag.
     HoldKey { key: String, pressed: bool },
@@ -81,8 +87,21 @@ pub fn parse(verb: &str, rest: &str) -> Result<Inject, String> {
             };
             Ok(Inject::Click { position, button })
         }
-        "key" if !rest.trim().is_empty() => Ok(Inject::Key(rest.trim().to_string())),
-        "key" => Err("key needs a key, such as Return or Super+slash".into()),
+        "scroll" => match args[..] {
+            [notches] => Ok(Inject::Scroll(number(notches)?)),
+            _ => Err("scroll needs a number of notches, below 0 for up".into()),
+        },
+        "key" => match args[..] {
+            [combo] => Ok(Inject::Key { combo: combo.to_string(), hold: None }),
+            [combo, "hold", millis] => {
+                let millis = millis.strip_suffix("ms").unwrap_or(millis);
+                let millis =
+                    millis.parse::<u32>().map_err(|_| format!("key: hold needs milliseconds, not {millis:?}"))?;
+                Ok(Inject::Key { combo: combo.to_string(), hold: Some(millis) })
+            }
+            [] => Err("key needs a key, such as Return or Super+slash".into()),
+            _ => Err("key takes a key, such as Super+slash, and optionally hold <ms>".into()),
+        },
         "keydown" | "keyup" => match args[..] {
             [key] => Ok(Inject::HoldKey { key: key.to_string(), pressed: verb == "keydown" }),
             _ => Err(format!("{verb} needs one key, such as Alt or Shift")),
@@ -218,7 +237,7 @@ impl Tileception {
                     self.on_button(button, state, time);
                 }
             }
-            Inject::Key(combo) => {
+            Inject::Key { combo, hold } => {
                 let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
                 let mut parts: Vec<&str> = combo.split('+').map(str::trim).collect();
                 let key = parts.pop().ok_or("empty key")?;
@@ -231,7 +250,10 @@ impl Tileception {
                 if shift && held.is_empty() {
                     held.extend(keys.find(xkb::Keysym::Shift_L).map(|shift_key| shift_key.0));
                 }
-                self.tap(&held, code, time);
+                match hold {
+                    None => self.tap(&held, code, time),
+                    Some(millis) => self.hold(held, code, millis, time),
+                }
             }
             Inject::HoldKey { key, pressed } => {
                 let keys = Keys::new(&self.config.file.keyboard).ok_or("no keymap")?;
@@ -256,6 +278,15 @@ impl Tileception {
             Inject::Gesture { gesture, .. } => self.inject_touch_gesture(gesture, time),
             Inject::GestureLift => self.gesture_end(false, time),
             Inject::Touch { from, target } => self.inject_touch(from, target, time),
+            // As a wheel reports it: 120ths of a notch, and 15 pixels a notch.
+            Inject::Scroll(notches) => self.on_axis(&crate::input::AxisInput {
+                source: smithay::backend::input::AxisSource::Wheel,
+                time,
+                horizontal: None,
+                vertical: Some(notches * 15.0),
+                horizontal_v120: None,
+                vertical_v120: Some(notches * 120.0),
+            }),
         }
         Ok(())
     }
@@ -268,6 +299,27 @@ impl Tileception {
         }
         let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
         self.on_motion(pos, time);
+    }
+
+    /// Holds `held` and presses `key`, then lets go of both after `millis`
+    /// milliseconds without holding up the compositor meanwhile.
+    fn hold(&mut self, held: Vec<Keycode>, key: Keycode, millis: u32, time: u32) {
+        for modifier in &held {
+            self.handle_key(*modifier, KeyState::Pressed, time);
+        }
+        self.handle_key(key, KeyState::Pressed, time + 1);
+        let timer = Timer::from_duration(Duration::from_millis(u64::from(millis)));
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, state| {
+            let time = (state.now() * 1000.0) as u32;
+            state.handle_key(key, KeyState::Released, time);
+            for modifier in held.iter().rev() {
+                state.handle_key(*modifier, KeyState::Released, time + 1);
+            }
+            TimeoutAction::Drop
+        });
+        if let Err(error) = inserted {
+            tracing::warn!("could not time the held key: {error}");
+        }
     }
 
     /// Holds `held`, presses and lets go of `key`, then lets go of `held`.
@@ -292,7 +344,14 @@ mod tests {
         assert_eq!(parse("pointer", "10 20"), Ok(Inject::Pointer(10.0, 20.0)));
         assert_eq!(parse("click", ""), Ok(Inject::Click { position: None, button: BTN_LEFT }));
         assert_eq!(parse("click", "5 6 right"), Ok(Inject::Click { position: Some((5.0, 6.0)), button: BTN_RIGHT }));
-        assert_eq!(parse("key", "Super+slash"), Ok(Inject::Key("Super+slash".into())));
+        assert_eq!(parse("key", "Super+slash"), Ok(Inject::Key { combo: "Super+slash".into(), hold: None }));
+        assert_eq!(parse("key", "Super+d hold 600"), Ok(Inject::Key { combo: "Super+d".into(), hold: Some(600) }));
+        assert_eq!(parse("key", "Super+d hold 600ms"), Ok(Inject::Key { combo: "Super+d".into(), hold: Some(600) }));
+        assert!(parse("key", "Super+d hold").is_err());
+        assert!(parse("key", "Super+d hold soon").is_err());
+        assert!(parse("key", "Super+d Return").is_err());
+        assert_eq!(parse("scroll", "-2"), Ok(Inject::Scroll(-2.0)));
+        assert!(parse("scroll", "").is_err());
         assert_eq!(parse("type", "make gaps smaller"), Ok(Inject::Type("make gaps smaller".into())));
         assert!(parse("pointer", "1").is_err());
         assert!(parse("key", " ").is_err());

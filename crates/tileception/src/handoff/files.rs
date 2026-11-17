@@ -210,15 +210,34 @@ fn send_files(messenger: &Messenger, peer: PeerId, request: u64, mut list: UnixS
     let mut text = String::new();
     list.read_to_string(&mut text).map_err(|error| format!("the list of files: {error}"))?;
     let mut entries = 0;
+    let mut names = std::collections::HashSet::new();
     for uri in parse_uri_list(&text) {
         let Some(path) = file_path(&uri) else {
             send(messenger, peer, Message::DragLink { request, uri })?;
             continue;
         };
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).ok_or("a file without a name")?;
+        let name = unused_name(&mut names, &name);
         send_entry(messenger, peer, request, &path, &name, &mut entries)?;
     }
     Ok(())
+}
+
+/// A name no earlier file of this copy has. Files from different folders
+/// arrive side by side in one folder, where two called the same would be
+/// one file: the later ones are numbered, "report (2).txt".
+fn unused_name(taken: &mut std::collections::HashSet<String>, name: &str) -> String {
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    let mut candidate = name.to_string();
+    let mut number = 2;
+    while !taken.insert(candidate.clone()) {
+        candidate = format!("{stem} ({number}){extension}");
+        number += 1;
+    }
+    candidate
 }
 
 fn send(messenger: &Messenger, peer: PeerId, message: Message) -> Result<(), String> {
@@ -403,6 +422,20 @@ mod tests {
         assert_eq!(safe_relative("a//b"), None);
         assert_eq!(safe_relative("./a"), None);
         assert_eq!(safe_relative(""), None);
+    }
+
+    #[test]
+    fn files_with_the_same_name_arrive_side_by_side() {
+        let mut taken = std::collections::HashSet::new();
+        let mut name = |name: &str| unused_name(&mut taken, name);
+        assert_eq!(name("report.txt"), "report.txt");
+        assert_eq!(name("report.txt"), "report (2).txt");
+        assert_eq!(name("report.txt"), "report (3).txt");
+        assert_eq!(name("notes"), "notes");
+        assert_eq!(name("notes"), "notes (2)");
+        assert_eq!(name(".profile"), ".profile");
+        assert_eq!(name(".profile"), ".profile (2)");
+        assert_eq!(name("report (2).txt"), "report (2) (2).txt");
     }
 
     #[test]

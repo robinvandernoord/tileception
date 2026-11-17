@@ -98,15 +98,15 @@ locked dependencies for all platforms, and ship with both installation paths.
 
 ### Crates and resources
 
-| Crate                | Responsibility                                            |
-|----------------------|-----------------------------------------------------------|
-| `tileception-core`   | Layout tree, camera, focus, history and saved views       |
-| `tileception`        | Smithay compositor, backends and built-in desktop         |
-| `tileception-apps`   | Desktop entries, icons, application actions and autostart |
-| `tileception-auth`   | PAM authentication                                        |
-| `tileception-notify` | D-Bus notification service                                |
-| `tileception-media`  | Audio, media playback and backlight controls              |
-| `tileception-acp`    | Agent registry, installation and ACP client               |
+| Crate                 | Responsibility                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `tileception-core`    | Layout tree, camera, focus, history and saved views                                                     |
+| `tileception`         | Smithay compositor, backends and built-in desktop                                                       |
+| `tileception-apps`    | Desktop entries, icons, application actions and autostart                                               |
+| `tileception-auth`    | PAM authentication                                                                                      |
+| `tileception-notify`  | D-Bus notification service                                                                              |
+| `tileception-media`   | Audio, media playback and backlight controls                                                            |
+| `tileception-acp`     | Agent registry, installation and ACP client                                                             |
 | `tileception-updates` | Pending APT updates, kernels, release checks, apt history, and the helper that changes packages as root |
 
 The layout engine has no Smithay dependency or I/O. The compositor drives it
@@ -152,8 +152,9 @@ nested instances. `tileception msg --help` lists the commands.
 
 A nested or headless instance leaves updates to the desktop it runs in. Set
 `TILECEPTION_UPDATES=1` to start the update manager there too. It runs
-`apt-get`, `dpkg`, `dpkg-query`, `apt-cache`, `apt-mark`, `uname`,
-`do-release-upgrade`, `systemd-inhibit` and `sudo` from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
+`apt-get`, `dpkg`, `dpkg-query`, `apt-cache`, `apt-mark`, `apt-config`,
+`uname`, `do-release-upgrade`, `systemd-inhibit`, `sudo`, `flatpak`, `snap`,
+`fwupdmgr` and `curl` (for the mirror tests) from `PATH`, so stand-in scripts placed first in `PATH` give it kernels, a
 release offer or a `sudo` that asks for a password, without changing the
 system.
 

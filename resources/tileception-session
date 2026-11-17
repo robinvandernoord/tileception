@@ -41,6 +41,18 @@ case ":$PATH:" in
     *) export PATH="$(dirname "$0"):$PATH" ;;
 esac
 
+# Fastfetch shows Tileception's logo for anyone without a fastfetch config of
+# their own. Its config is installed with the session (share/tileception/xdg
+# next to this script's bin), so nothing is written to ~/.config.
+xdg="$(dirname "$0")/../share/tileception/xdg"
+if [ -d "$xdg" ]; then
+    xdg=$(cd "$xdg" && pwd)
+    case ":$XDG_CONFIG_DIRS:" in
+        *":$xdg:"*) ;;
+        *) export XDG_CONFIG_DIRS="$xdg:${XDG_CONFIG_DIRS:-/etc/xdg}" ;;
+    esac
+fi
+
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=Tileception
 export XDG_SESSION_DESKTOP=tileception

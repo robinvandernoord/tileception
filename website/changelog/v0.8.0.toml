@@ -1,0 +1,68 @@
+version = "0.8.0"
+date = 2026-10-29
+lede = "Tileception has its own login screen, and the lock screen now shares its look. The installer asks how you want the desktop set up before it changes anything."
+
+[[features]]
+area = "greeter"
+title = "Tileception has its own login screen"
+text = "An optional greetd login screen lists the people on this computer and every installed desktop session. Pick a keyboard layout from its bar. Try it in a window with `tileception --greeter --nested`."
+
+[[features]]
+area = "setup"
+title = "The installer asks how to set up the desktop"
+text = "Choose Recommended, Minimal or Customize, and whether Tileception's login screen replaces yours. Nothing changes until you confirm. Run `tileception-setup` again to change your answers."
+
+[[features]]
+area = "greeter"
+title = "Player controls and a notification count on the lock screen"
+text = "The built-in lock screen shows the player controls and a count of new notifications, without their text. Turn either off under `[lock]` in `/etc/tileception/greeter.toml`."
+
+[[features]]
+area = "shell"
+title = "The bar can sit at the bottom"
+text = "Set `bar_position = \"bottom\"` under `[shell]` in `config.toml`. The strip of minimized windows stays at the bottom, above the bar."
+
+[features.media]
+kind = "image"
+src = "bar-after.jpg"
+alt = "Two windows side by side with the bar along the bottom edge. Just above the bar, the strip of minimized windows shows one card, the Tileception website."
+caption = "The bar at the bottom, with a window just minimized to the strip above it."
+
+[[features]]
+area = "ui"
+title = "A launcher button on the bar"
+text = "A button near the left end of the bar opens the launcher, so the mouse can reach it too."
+
+[features.media]
+kind = "compare"
+before = "launcher-before.jpg"
+after = "launcher-after.jpg"
+alt = "The launcher searching for window on a small screen"
+caption = "On a small screen, 0.7.0's launcher runs past the bottom edge. In 0.8.0 the list scrolls, and a launcher button sits on the bar."
+
+[[features]]
+area = "doctor"
+title = "Doctor reads the user guides"
+text = "Doctor's agent gets the guides that match your version, so it can answer from them without a source checkout. To turn Doctor off, set `doctor = \"none\"` under `[shell]`."
+
+[[features]]
+area = "session"
+title = "Apps share one SSH agent"
+text = "The session starts `ssh-agent` unless your login already provides one, and every app uses it. It stops when you log out."
+
+[[features]]
+area = "commands"
+title = "See what the image caches hold"
+text = "`tileception msg caches` prints how many images Tileception keeps for text, icons and cover art, and how much texture memory they take."
+
+[[fixes]]
+area = "ui"
+text = "On small screens the launcher scrolls, the power menu wraps into rows and the minimized-window strip pages through its windows."
+
+[[fixes]]
+area = "screenshot"
+text = "Print and Shift+Print now ask whether to copy, save, or do both. `tileception-screenshot --no-ask` saves and copies straight away, as Print used to."
+
+[[fixes]]
+area = "render"
+text = "Pointers in X11 apps no longer freeze until something else redraws, and the screen no longer shows a frame before it is fully drawn."

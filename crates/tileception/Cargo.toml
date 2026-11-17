@@ -45,6 +45,7 @@ smithay-drm-extras = { version = "0.1", default-features = false }
 x11rb = { version = "0.13", default-features = false }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-scanner = "0.31"
 
 [dependencies.smithay]
 version = "0.7"

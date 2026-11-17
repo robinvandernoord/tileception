@@ -1,0 +1,41 @@
+version = "0.20.0"
+date = 2026-11-16
+lede = "Tileception now has an installer ISO, based on Ubuntu's, that sets up a new computer with Tileception and a set of apps. Virtual machines and remote desktop apps can now receive every key, Super shortcuts included."
+
+[[features]]
+area = "iso"
+title = "Install Tileception from an ISO"
+text = "Download an ISO from tileception.space/download to set up a computer from scratch with Tileception and apps such as Ptyxis, Nautilus, Firefox and LibreOffice. On a system you already have, `sudo apt install tileception-desktop` installs the same apps from Tileception's repository."
+
+[[features]]
+area = "compositor"
+title = "Virtual machines and remote desktops can receive every key"
+text = "When a virtual machine or remote desktop app asks for the whole keyboard, the keys you press in its window go to that app, including Super shortcuts. The keys for switching to a text console and for quitting Tileception still work. Click another window to use Tileception's shortcuts again."
+
+[[features]]
+area = "settings"
+issue = 90
+title = "Menus in Settings scroll with the mouse wheel"
+text = "Long menus in Settings, such as the list of screen resolutions, now move one row for each notch of the mouse wheel. They scroll smoothly with a touchpad too."
+
+[[features]]
+area = "compositor"
+title = "Ptyxis can be the default terminal"
+text = "If `terminal` under `[general]` in `config.toml` is not set, Super+T also looks for Ptyxis, after lxterminal and before gnome-terminal. Opening a terminal in a folder works with Ptyxis as well."
+
+[[features]]
+area = "inject"
+title = "Scripts can scroll in test instances"
+text = "`tileception msg scroll <notches>` turns the mouse wheel in a headless or nested instance. A negative number scrolls up."
+
+[[fixes]]
+area = "xwayland"
+text = "The maximize button in an app's own title bar now zooms to that window, as Super+M does. Pressing it again returns to the layout."
+
+[[fixes]]
+area = "udev"
+text = "If a connected display changes the resolutions it offers, as a virtual machine's screen does when you resize its window, Tileception switches to the new preferred resolution. A `mode` set for that display in `config.toml` is still used."
+
+[[fixes]]
+area = "media"
+text = "The volume controls now work right after logging in with PipeWire, even before another app has created a PulseAudio cookie file."

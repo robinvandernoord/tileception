@@ -1,0 +1,23 @@
+version = "0.1.0"
+date = 2026-10-16
+lede = "The first release. Windows form a tree of tiles you can nest and zoom into, and a launcher, notifications, a lock screen and a power menu are built in."
+
+[[features]]
+area = "layout"
+title = "Windows tile into a tree you can zoom through"
+text = "Windows sit side by side as they open, groups nest inside each other, and you zoom between the levels of the tree."
+
+[[features]]
+area = "compositor"
+title = "The Tide look"
+text = "Graphite surfaces with slightly rounded corners, and a teal accent that glows on the focused window."
+
+[[features]]
+area = "session"
+title = "A built-in launcher, notifications and lock screen"
+text = "A launcher that finds your installed apps by name, notifications, a lock screen that checks your password, a power menu and a wallpaper are built in."
+
+[[features]]
+area = "release"
+title = "Install with APT"
+text = "Debian packages come from Tileception's own APT archive, and an install script sets it up."

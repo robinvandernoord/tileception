@@ -78,6 +78,9 @@ pub struct PluginConfig {
     /// Chips in the bar: only with this block, unless it says
     /// `enabled = false`.
     pub bar: Option<BarOptions>,
+    /// Items on the dashboard of a cleared desk: only with this block,
+    /// unless it says `enabled = false`.
+    pub dashboard: Option<DashboardOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
 }
@@ -86,6 +89,17 @@ impl PluginConfig {
     /// Whether the plugin's chips show in the bar.
     pub fn in_bar(&self) -> bool {
         self.bar.as_ref().is_some_and(|bar| bar.enabled != Some(false))
+    }
+
+    /// Whether the plugin draws dashboard surfaces, over a connection of
+    /// its own.
+    pub fn draws_surfaces(&self) -> bool {
+        self.on_dashboard() && self.dashboard.as_ref().is_some_and(|dashboard| dashboard.surface == Some(true))
+    }
+
+    /// Whether the plugin's items show on the dashboard.
+    pub fn on_dashboard(&self) -> bool {
+        self.dashboard.as_ref().is_some_and(|dashboard| dashboard.enabled != Some(false))
     }
 
     /// Whether the plugin's cards show under the launcher.
@@ -108,6 +122,16 @@ pub struct LauncherOptions {
 #[serde(default, deny_unknown_fields)]
 pub struct BarOptions {
     pub enabled: Option<bool>,
+}
+
+/// A plugin's `[dashboard]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardOptions {
+    pub enabled: Option<bool>,
+    /// Started with `WAYLAND_SOCKET`, a connection of its own on which it
+    /// may draw its `surface` items.
+    pub surface: Option<bool>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -175,6 +199,15 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         let base = base.bar.get_or_insert_default();
         if bar.enabled.is_some() {
             base.enabled = bar.enabled;
+        }
+    }
+    if let Some(dashboard) = overlay.dashboard {
+        let base = base.dashboard.get_or_insert_default();
+        if dashboard.enabled.is_some() {
+            base.enabled = dashboard.enabled;
+        }
+        if dashboard.surface.is_some() {
+            base.surface = dashboard.surface;
         }
     }
 }
@@ -456,6 +489,8 @@ pub const PANEL: &str = "tileception://panel";
 pub const BAR: &str = "tileception://bar";
 /// The resource holding a plugin's cards under the launcher.
 pub const LAUNCHER: &str = "tileception://launcher";
+/// The resource holding a plugin's items on the dashboard.
+pub const DASHBOARD: &str = "tileception://dashboard";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -465,6 +500,10 @@ pub struct Changed {
     pub bar: bool,
     /// The cards under the launcher.
     pub cards: bool,
+    /// The dashboard's items.
+    pub dashboard: bool,
+    /// Whose dashboard items were read again; all when unset.
+    pub dashboard_plugin: Option<String>,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -495,6 +534,12 @@ pub enum Event {
         plugin: String,
         uri: String,
         result: Result<Value, String>,
+    },
+    /// A plugin that draws dashboard surfaces started: Tileception's end
+    /// of its Wayland connection.
+    DashboardClient {
+        plugin: String,
+        stream: std::os::unix::net::UnixStream,
     },
     /// A message a plugin sent on its own.
     Notification {
@@ -576,6 +621,7 @@ impl Worker {
             wake: Arc::new(ear),
             resources: Vec::new(),
             dirty: std::collections::BTreeSet::new(),
+            events: Some(events.clone()),
         };
         let thread = std::thread::Builder::new()
             .name(format!("plugin {name}"))
@@ -611,6 +657,9 @@ pub struct Host {
     epoch: u64,
     /// Enabled plugins, highest priority first.
     order: Vec<(String, PluginConfig)>,
+    /// Installed plugins with a `[dashboard]` block that is switched off,
+    /// or that are switched off themselves: whether the plugin is on.
+    dormant: Vec<(String, bool)>,
     /// The order the user chose for the panel and the bar, by plugin.
     arrangement: Vec<String>,
     infos: BTreeMap<String, Result<Described, String>>,
@@ -627,6 +676,8 @@ pub struct Host {
     bars: BTreeMap<String, crate::panel::block::Bar>,
     /// Cards under the launcher by plugin.
     cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
+    /// Dashboard items by plugin.
+    dashboards: BTreeMap<String, Vec<crate::dashboard::Item>>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
 }
@@ -640,6 +691,7 @@ impl Host {
             generations: Arc::default(),
             epoch: 0,
             order: Vec::new(),
+            dormant: Vec::new(),
             arrangement: crate::panel::order::load(),
             infos: BTreeMap::new(),
             found: Vec::new(),
@@ -650,6 +702,7 @@ impl Host {
             panels: BTreeMap::new(),
             bars: BTreeMap::new(),
             cards: BTreeMap::new(),
+            dashboards: BTreeMap::new(),
             resources: BTreeMap::new(),
         };
         host.reload();
@@ -683,6 +736,7 @@ impl Host {
         }
         self.retired.retain(|thread| !thread.is_finished());
         self.order.clear();
+        self.dormant.clear();
         self.infos.clear();
         self.found.clear();
         self.routes.clear();
@@ -690,6 +744,7 @@ impl Host {
         self.panels.clear();
         self.bars.clear();
         self.cards.clear();
+        self.dashboards.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -704,7 +759,15 @@ impl Host {
     pub fn handle(&mut self, event: Event) -> Changed {
         let reloaded = matches!(&event, Event::Discovered { epoch, .. } if *epoch == self.epoch);
         let routes = self.handle_inner(event);
-        Changed { routes, panels: reloaded, bar: reloaded, cards: reloaded, resources: Vec::new() }
+        Changed {
+            routes,
+            panels: reloaded,
+            bar: reloaded,
+            cards: reloaded,
+            dashboard: reloaded,
+            dashboard_plugin: None,
+            resources: Vec::new(),
+        }
     }
 
     /// A resource was read: panels are kept parsed, others as they are.
@@ -760,6 +823,20 @@ impl Host {
                 }
             }
             changed.cards = true;
+        } else if uri == DASHBOARD {
+            match serde_json::from_value::<crate::dashboard::Items>(value) {
+                Ok(mut items) => {
+                    items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
+                    items.seal();
+                    self.dashboards.insert(plugin.clone(), items.items);
+                }
+                Err(error) => {
+                    tracing::warn!("Plugin {plugin}: invalid dashboard items: {error}");
+                    self.dashboards.remove(&plugin);
+                }
+            }
+            changed.dashboard = true;
+            changed.dashboard_plugin = Some(plugin);
         } else {
             self.resources.insert((plugin.clone(), uri.clone()), value);
             changed.resources.push((plugin, uri));
@@ -805,6 +882,23 @@ impl Host {
             .collect()
     }
 
+    /// The dashboard items of plugins with a `[dashboard]` block, in the
+    /// user's order.
+    pub fn dashboard_items(&self) -> Vec<(&str, &crate::dashboard::Item)> {
+        self.arranged()
+            .into_iter()
+            .filter(|(_, config)| config.on_dashboard())
+            .filter_map(|(plugin_id, _)| Some((plugin_id.as_str(), self.dashboards.get(plugin_id)?)))
+            .flat_map(|(plugin_id, items)| items.iter().map(move |item| (plugin_id, item)))
+            .collect()
+    }
+
+    /// Installed plugins that could put items on the dashboard but are
+    /// switched off there, and whether each is on otherwise.
+    pub fn dashboard_dormant(&self) -> &[(String, bool)] {
+        &self.dormant
+    }
+
     /// Puts the plugins with blocks in this order, keeping the others'
     /// places, and saves it.
     pub fn arrange_panels(&mut self, shown: &[&str]) {
@@ -828,6 +922,9 @@ impl Host {
             Event::Discovered { epoch, plugins, diagnostics } if epoch == self.epoch => {
                 self.found = diagnostics;
                 for (plugin_id, config) in plugins {
+                    if config.dashboard.is_some() && (config.enabled == Some(false) || !config.on_dashboard()) {
+                        self.dormant.push((plugin_id.clone(), config.enabled != Some(false)));
+                    }
                     if config.enabled == Some(false) {
                         continue;
                     }
@@ -996,6 +1093,144 @@ fn route_for<'a>(routes: &'a [Route], text: &str) -> Option<(&'a Route, &'a str)
     })
 }
 
+/// `tileception msg plugin add [--id <id>] [--bar] <command> [args...]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Add {
+    /// Given with `--id`; otherwise made from the command.
+    pub plugin_id: Option<String>,
+    /// Writes a `[bar]` block, so the plugin's chips show.
+    pub bar: bool,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// Plugin ids that commands or the launcher use for something else.
+const RESERVED: [&str; 2] = ["add", "plugins"];
+
+/// Commands that run a script or package: its name is the plugin's.
+const RUNNERS: [&str; 12] =
+    ["python", "python3", "node", "sh", "bash", "perl", "ruby", "deno", "bun", "npx", "uv", "uvx"];
+
+/// Runners whose subcommand comes before the script or package:
+/// `deno run`, `bun x`, `uv run`, `npx exec`.
+const SUBCOMMAND_RUNNERS: [&str; 5] = ["deno", "bun", "npx", "uv", "uvx"];
+const SUBCOMMANDS: [&str; 3] = ["run", "x", "exec"];
+
+/// A name with an extension that is not a version number: `weather.py`.
+fn has_extension(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty() && !extension.is_empty() && !extension.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+/// The script or package a runner runs: the first word that looks like a
+/// path or has an extension, or else the first that is not an option or
+/// a subcommand. Options can take values (`python3 -W ignore x.py`), so
+/// the first plain word is only the fallback.
+fn runner_target<'a>(runner: &str, args: &'a [String]) -> Option<&'a str> {
+    let subcommands: &[&str] = if SUBCOMMAND_RUNNERS.contains(&runner) { &SUBCOMMANDS } else { &[] };
+    let words: Vec<&str> =
+        args.iter().map(String::as_str).filter(|word| !word.starts_with('-') && !subcommands.contains(word)).collect();
+    let base = |word: &'a str| word.rsplit('/').next().unwrap_or(word);
+    words.iter().copied().find(|word| word.contains('/') || has_extension(base(word))).or(words.first().copied())
+}
+
+impl Add {
+    /// The words after `plugin add`; option words come before the command.
+    pub fn parse(args: &[&str]) -> Result<Self, String> {
+        const USAGE: &str = "plugin add needs a command: plugin add [--id <id>] [--bar] <command> [args...]";
+        let mut add = Self { plugin_id: None, bar: false, command: String::new(), args: Vec::new() };
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match *word {
+                "--id" => add.plugin_id = Some(words.next().ok_or("--id needs a plugin id")?.to_string()),
+                "--bar" => add.bar = true,
+                command => {
+                    add.command = command.to_string();
+                    add.args = words.map(ToString::to_string).collect();
+                    return Ok(add);
+                }
+            }
+        }
+        Err(USAGE.into())
+    }
+}
+
+/// Lowercase letters, digits, `-` and `_`, as manifest filenames are.
+fn valid_id(plugin_id: &str) -> bool {
+    !plugin_id.is_empty()
+        && plugin_id
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || "-_".contains(character))
+}
+
+/// The plugin's id from its executable's name, without an extension or a
+/// `tileception-` prefix; for an interpreter or package runner, from the
+/// script or package it runs. Plugins do not report an id of their own
+/// (MCP's `serverInfo.name` is a display name), and starting one just to
+/// ask would run it before it is set up.
+fn id_for(command: &str, args: &[String]) -> Option<String> {
+    let base = |path: &str| path.rsplit('/').next().unwrap_or(path).to_string();
+    let mut name = base(command);
+    if RUNNERS.contains(&name.as_str()) {
+        name = base(runner_target(&name, args)?);
+        // A package's version: some-server@1.2.
+        if let Some((package, _)) = name.split_once('@').filter(|(package, _)| !package.is_empty()) {
+            name = package.to_string();
+        }
+    }
+    if has_extension(&name)
+        && let Some((stem, _)) = name.rsplit_once('.')
+    {
+        name = stem.to_string();
+    }
+    let name = name.strip_prefix("tileception-").unwrap_or(&name).to_ascii_lowercase();
+    let mut plugin_id = String::new();
+    for character in name.chars() {
+        let character = if character.is_ascii_alphanumeric() || character == '_' { character } else { '-' };
+        if !(character == '-' && plugin_id.ends_with('-')) {
+            plugin_id.push(character);
+        }
+    }
+    let plugin_id = plugin_id.trim_matches('-').to_string();
+    valid_id(&plugin_id).then_some(plugin_id)
+}
+
+/// A runner's script given as a relative path that does not exist from
+/// the compositor's folder, where the plugin starts: the user typed it
+/// from somewhere else. Packages, URLs and `npm:` specifiers are not
+/// files and are left alone.
+fn missing_script<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
+    let runner = command.rsplit('/').next().unwrap_or(command);
+    if !RUNNERS.contains(&runner) || ["npx", "uvx"].contains(&runner) {
+        return None;
+    }
+    // `python3 -m package.module` runs a module, not a file.
+    if runner.starts_with("python") && args.iter().any(|arg| arg == "-m") {
+        return None;
+    }
+    let file_like = |word: &str| word.contains('/') || has_extension(word.rsplit('/').next().unwrap_or(word));
+    let found = |word: &str| word.starts_with('/') || word.contains(':') || std::path::Path::new(word).exists();
+    let script = runner_target(runner, args)?;
+    // An option's value can look like a path too (`node -r dotenv/config
+    // /p/server.js`): refuse only when no such word is one that is found.
+    let any_found = args.iter().any(|arg| !arg.starts_with('-') && file_like(arg) && found(arg));
+    (file_like(script) && !found(script) && !any_found).then_some(script)
+}
+
+/// An executable file, or a command found on PATH.
+fn on_path(command: &str) -> bool {
+    let executable = |path: &std::path::Path| {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    if command.contains('/') {
+        return executable(std::path::Path::new(command));
+    }
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into());
+    std::env::split_paths(&path).any(|directory| executable(&directory.join(command)))
+}
+
 impl Drop for Host {
     fn drop(&mut self) {
         for (_, worker) in std::mem::take(&mut self.workers) {
@@ -1051,6 +1286,56 @@ impl Tileception {
         Ok(())
     }
 
+    /// `tileception msg plugin add`: writes `[plugins.<id>]` to config.toml;
+    /// the config watcher reloads it, which starts the plugin.
+    pub(crate) fn add_plugin(&mut self, add: Add) -> Result<String, String> {
+        let Add { plugin_id, bar, command, args } = add;
+        if command.contains('/') && !command.starts_with('/') {
+            return Err(format!("{command} is a relative path; give the plugin's absolute path"));
+        }
+        if !on_path(&command) {
+            return Err(format!("{command} is not an executable file or a command on PATH"));
+        }
+        if let Some(script) = missing_script(&command, &args) {
+            return Err(format!(
+                "{script} is a relative path that Tileception does not find; give the script's absolute path"
+            ));
+        }
+        let plugin_id = match plugin_id {
+            Some(plugin_id) => plugin_id,
+            None => id_for(&command, &args)
+                .ok_or_else(|| format!("cannot make a plugin id from {command}; give one with --id"))?,
+        };
+        if !valid_id(&plugin_id) {
+            return Err(format!("{plugin_id:?} is not a plugin id: use lowercase letters, digits, - and _"));
+        }
+        if crate::bundled::IDS.contains(&plugin_id.as_str()) || RESERVED.contains(&plugin_id.as_str()) {
+            return Err(format!("{plugin_id} is a built-in name; choose another id with --id"));
+        }
+        let (installed, _) = discover(self.plugin_settings());
+        for (other, config) in &installed {
+            let same_command = config.command.as_deref() == Some(command.as_str())
+                && config.args.as_deref().unwrap_or_default() == args.as_slice();
+            if same_command {
+                return Err(format!("this command is already set up as plugin {other}"));
+            }
+            if *other == plugin_id && !self.config.file.plugins.contains_key(&plugin_id) {
+                return Err(format!(
+                    "a plugin manifest already uses the id {plugin_id}; choose another id with --id, \
+                     or configure that plugin in [plugins.{plugin_id}]"
+                ));
+            }
+        }
+        let path = crate::config::path();
+        crate::config_edit::add_plugin(&path, &plugin_id, &command, &args, bar)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        Ok(format!(
+            "Added [plugins.{plugin_id}] to {}; it starts when the config reloads. \
+             Type plugins in the launcher to check it.\n",
+            path.display()
+        ))
+    }
+
     pub fn stop_plugins(&mut self) {
         self.plugins = None;
     }
@@ -1082,6 +1367,7 @@ impl Tileception {
             Event::Action { place: Place::Command, generation, result } => {
                 self.plugin_command_reply(generation, result)
             }
+            Event::DashboardClient { plugin, stream } => self.dashboard_client(plugin, stream),
             Event::Resource { epoch, plugin, uri, result } => {
                 let Some(plugins) = &mut self.plugins else { return };
                 let changed = plugins.handle_resource(epoch, plugin, uri, result);
@@ -1124,6 +1410,9 @@ impl Tileception {
         if changed.panels {
             self.panel_changed();
         }
+        if changed.dashboard {
+            self.dashboard_changed(changed.dashboard_plugin.as_deref());
+        }
         if changed.bar || (changed.cards && self.launcher.open) {
             self.schedule_render();
         }
@@ -1147,6 +1436,8 @@ struct Source {
     resources: Vec<String>,
     /// Resources the plugin said changed, not yet read again.
     dirty: std::collections::BTreeSet<String>,
+    /// Where a dashboard connection goes as soon as the plugin starts.
+    events: Option<channel::Sender<Event>>,
 }
 
 /// A worker: describe the plugin, then serve requests, read changed
@@ -1202,8 +1493,14 @@ impl Source {
                 return Err("Plugin is restarting; try again shortly".into());
             }
             let environment = self.environment.read().expect("plugin environment lock").clone();
-            self.session =
-                Some(Session::start(&self.name, &self.config, self.stopping.clone(), &environment, self.wake.clone())?);
+            self.session = Some(Session::start(
+                &self.name,
+                &self.config,
+                self.stopping.clone(),
+                &environment,
+                self.wake.clone(),
+                self.events.as_ref(),
+            )?);
         }
         self.session.as_mut().ok_or_else(|| "Plugin failed to start".into())
     }
@@ -1554,6 +1851,7 @@ impl Session {
         stopping: Arc<AtomicBool>,
         environment: &Environment,
         wake: Arc<UnixDatagram>,
+        events: Option<&channel::Sender<Event>>,
     ) -> Result<Self, PluginError> {
         let command =
             config.command.as_deref().filter(|command| !command.is_empty()).ok_or("Missing executable command")?;
@@ -1568,6 +1866,25 @@ impl Session {
                 }
             }
         }
+        // Its own Wayland connection, for drawing on the dashboard only.
+        let mut dashboard = None;
+        if config.draws_surfaces() {
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|error| error.to_string())?;
+            let descriptor = theirs.as_raw_fd();
+            process.env("WAYLAND_SOCKET", descriptor.to_string());
+            #[allow(unsafe_code, reason = "the plugin inherits its end of the dashboard connection")]
+            // SAFETY: only async-signal-safe fcntl runs between fork and exec,
+            // on a descriptor this process owns until the child has started.
+            unsafe {
+                process.pre_exec(move || {
+                    if libc::fcntl(descriptor, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            dashboard = Some((ours, theirs));
+        }
         let mut child = process
             .args(config.args.as_deref().unwrap_or_default())
             .stdin(Stdio::piped())
@@ -1579,6 +1896,14 @@ impl Session {
         let input = child.stdin.take().ok_or("Missing plugin stdin")?;
         let output = child.stdout.take().ok_or("Missing plugin stdout")?;
         let stderr = child.stderr.take().ok_or("Missing plugin stderr")?;
+        // Our end joins the dashboard's display before the plugin is asked
+        // anything, so it may connect first; closing our copy of its end
+        // leaves the plugin's the only one.
+        if let Some((ours, _theirs)) = dashboard
+            && let Some(events) = events
+        {
+            let _ = events.send(Event::DashboardClient { plugin: name.to_string(), stream: ours });
+        }
         let name = name.to_string();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
@@ -1993,6 +2318,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plugin_ids_come_from_the_command() {
+        let derive =
+            |command: &str, args: &[&str]| id_for(command, &args.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(derive("/usr/bin/weather", &[]).as_deref(), Some("weather"));
+        assert_eq!(derive("/opt/bin/tileception-launcher-example", &["--stdio"]).as_deref(), Some("launcher-example"));
+        assert_eq!(derive("python3", &["-u", "/home/me/My Block.py"]).as_deref(), Some("my-block"));
+        assert_eq!(derive("npx", &["-y", "@acme/notes-server@1.2"]).as_deref(), Some("notes-server"));
+        assert_eq!(derive("/usr/bin/Calendar_Sync.sh", &[]).as_deref(), Some("calendar_sync"));
+        assert_eq!(derive("python3", &[]), None);
+        assert_eq!(derive("deno", &["run", "-A", "/p/weather.ts"]).as_deref(), Some("weather"));
+        assert_eq!(derive("/usr/bin/bun", &["run", "/p/lamps.ts"]).as_deref(), Some("lamps"));
+        assert_eq!(derive("bun", &["x", "cowsay-server"]).as_deref(), Some("cowsay-server"));
+        assert_eq!(derive("uv", &["run", "--with", "httpx", "/p/feeds.py"]).as_deref(), Some("feeds"));
+        assert_eq!(derive("python3", &["-W", "ignore", "x.py"]).as_deref(), Some("x"));
+        assert_eq!(derive("python3", &["x"]).as_deref(), Some("x"));
+        assert_eq!(derive("/usr/bin/ü.ï", &[]), None);
+    }
+
+    #[test]
+    fn a_relative_script_must_exist_for_the_compositor() {
+        let missing = |command: &str, args: &[&str]| {
+            missing_script(command, &args.iter().map(ToString::to_string).collect::<Vec<_>>()).map(str::to_string)
+        };
+        assert_eq!(
+            missing("python3", &["weather-that-is-not-here.py"]).as_deref(),
+            Some("weather-that-is-not-here.py")
+        );
+        assert_eq!(missing("deno", &["run", "-A", "nowhere/lamps.ts"]).as_deref(), Some("nowhere/lamps.ts"));
+        assert_eq!(missing("python3", &["/abs/weather.py"]), None);
+        assert_eq!(missing("python3", &["Cargo.toml"]), None, "exists in the test's folder");
+        assert_eq!(missing("npx", &["-y", "@acme/notes-server"]), None);
+        assert_eq!(missing("deno", &["run", "jsr:@acme/notes.ts"]), None);
+        assert_eq!(missing("/usr/bin/weather", &["config.json"]), None);
+        // A module, and an option's value that looks like a path.
+        assert_eq!(missing("python3", &["-m", "weather.plugin"]), None);
+        assert_eq!(missing("node", &["-r", "dotenv/config", "/p/server.js"]), None);
+        assert_eq!(missing("node", &["-r", "dotenv/config", "server-not-here.js"]).as_deref(), Some("dotenv/config"));
+    }
+
+    #[test]
+    fn plugin_add_takes_options_before_the_command() {
+        assert_eq!(
+            Add::parse(&["--bar", "--id", "blocks", "python3", "block.py", "--id", "x"]),
+            Ok(Add {
+                plugin_id: Some("blocks".into()),
+                bar: true,
+                command: "python3".into(),
+                args: vec!["block.py".into(), "--id".into(), "x".into()],
+            })
+        );
+        assert!(Add::parse(&[]).is_err());
+        assert!(Add::parse(&["--bar"]).is_err());
+        assert!(Add::parse(&["--id"]).is_err());
+        assert!(valid_id("my-plugin_2"));
+        assert!(!valid_id("My plugin"));
+        assert!(!valid_id(""));
+    }
+
+    #[test]
     fn skips_invalid_rows_and_actions_independently() {
         let rows = parse_rows(json!({ "rows": [
             { "title": "First", "actions": [
@@ -2117,6 +2501,39 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_items_and_surfaces_are_opt_in() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.cards]
+            command = "cards"
+            [plugins.cards.dashboard]
+
+            [plugins.lamp]
+            command = "lamp"
+            [plugins.lamp.dashboard]
+            surface = true
+
+            [plugins.off.dashboard]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(!settings.plugins["plain"].on_dashboard());
+        assert!(settings.plugins["cards"].on_dashboard() && !settings.plugins["cards"].draws_surfaces());
+        assert!(settings.plugins["lamp"].draws_surfaces());
+        // Switched off in the config: no items and no connection either.
+        let dashboard = DashboardOptions { enabled: None, surface: Some(true) };
+        let mut manifest = PluginConfig { dashboard: Some(dashboard), ..PluginConfig::default() };
+        assert!(manifest.draws_surfaces());
+        overlay(&mut manifest, settings.plugins["off"].clone());
+        assert!(!manifest.on_dashboard() && !manifest.draws_surfaces());
+    }
+
+    #[test]
     fn launcher_cards_show_unless_switched_off() {
         let file: crate::config::ConfigFile = toml::from_str(
             r#"
@@ -2233,6 +2650,7 @@ for line in sys.stdin:
             wake: Arc::new(reader),
             resources: Vec::new(),
             dirty: std::collections::BTreeSet::new(),
+            events: None,
         };
         let current = Arc::new(AtomicU64::new(0));
         assert_eq!(source.invoke("fail", json!({}), &current, 0), Err("Please sign in".into()));

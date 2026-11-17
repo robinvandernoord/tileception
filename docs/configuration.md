@@ -62,6 +62,8 @@ wallpaper_fit = "fill"
 
 `gap` sets the spacing between windows and around the screen edge.
 `animation_ms` sets the duration of zoom and move animations in milliseconds.
+At `0`, the lock screen holds still too, as with the login screen's
+[`reduce_motion`](greeter.md#settings).
 
 Colours accept `#rrggbb` or `#rrggbbaa`. Buttons, switches and other
 filled controls use `accent`. Thin lines, such as the shown tab's underline, and
@@ -84,6 +86,17 @@ them. Windows stay solid. The login screen has its own `[theme]` in
 [its settings](greeter.md#settings), where `frost = true` does the same. Frost
 shows best over a colourful wallpaper. It costs a little GPU time when
 something changes behind a panel; a still screen costs nothing extra.
+
+### Fastfetch logo
+
+In a Tileception session, [fastfetch](https://github.com/fastfetch-cli/fastfetch)
+shows Tileception's tiles instead of your distribution's logo. The session adds
+a fastfetch config installed with Tileception to `XDG_CONFIG_DIRS`, so nothing
+is written to your home configuration and other desktops keep the usual logo.
+A config of your own in `~/.config/fastfetch` takes precedence; to keep the
+tiles there, copy the `logo` block from
+`/usr/share/tileception/xdg/fastfetch/config.jsonc` (or
+`~/.local/share/tileception/xdg/...` for a source installation).
 
 ## Windows larger than their tiles
 
@@ -181,7 +194,12 @@ stretch_screen_edges = true
 ```
 
 The default is `false`, which uses the screens' positions in the desktop
-arrangement. Settings calls this **Full-edge pointer crossing**. It applies
+arrangement. Settings calls this **Full-edge pointer crossing**. With handoff,
+the setting of the machine the pointer leaves also decides how its edge meets
+the other machine's: off, the two edges meet centred, pixel for pixel, and the
+pointer crosses only where they face each other; on, each edge spans the whole
+of the other. Only the part of an edge that no other screen of the same
+machine lies beyond is shared. It applies
 when you save and does not require a special build.
 
 ### Touchscreen mapping
@@ -348,6 +366,43 @@ run `tileception msg restart`) to start swaync through autostart. Super+N then o
 With `notifications = "none"`, Tileception's notification service is disabled,
 but Super+N still opens the built-in sound controls.
 
+### Calendar events
+
+The built-in bar can show events from calendars in iCalendar (.ics) format:
+files, and `https://`, `http://` or `webcal://` addresses, such as the secret
+address a calendar service gives for sharing a calendar.
+
+```toml
+[calendar]
+sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
+# refresh_minutes = 15
+```
+
+Next to the clock, a chip names the event on now and when it ends, such as
+"until 14:30 Review", or else the next event today and when it starts, such
+as "15:00 Standup". Of events on at the same time, it names the one that
+started last, such as a meeting within a longer block, and of those the one
+ending first. When it ends, the chip moves on to what is on then, or to the
+next event. All-day events, and timed ones lasting a day or more, stay out
+of the chip, which would otherwise name them all day. Clicking it, or the
+clock, opens the calendar, which lists today's events and those of the coming
+week that have not ended. A dot marks each day with events, from a year back
+to a year ahead; clicking a day lists its events instead, and clicking it
+again, or the month's name, goes back to what is coming. Sources are read again every `refresh_minutes`, and
+when the config changes. A source that cannot be read is named in the
+calendar and the session log, a URL by its host only, since a calendar's
+address is often secret; its events from the last time it could be read
+still show, and it is tried again after a minute. Without
+sources, which is the default, nothing is read and nothing shows.
+
+Recurring events repeat daily, weekly (also on several weekdays), monthly or
+yearly, with an interval, a count or an end date, skipping excluded dates and
+showing moved or changed occurrences in their place. A rule that also picks
+days in other ways, such as "the last Friday of the month", shows only its
+first occurrence. Times are UTC, local, or in a named zone (`TZID`) looked up
+in the system's time zone database; an unknown zone name, such as a Windows
+one, is taken as local time. Cancelled events are left out.
+
 ## Window rules
 
 Rules decide how newly opened windows are placed. Each `[[rules]]` entry adds
@@ -407,6 +462,21 @@ and sensitive plugin copies do) are not held. Switching
 persistence off discards the helper's retained clipboard. If the helper cannot
 start or exits, Tileception logs an error; reload the config after resolving
 the problem to retry.
+
+## Area screenshots
+
+The menus beside **Copy** and **Save** in the area screenshot offer a JPG
+button for each quality (1 to 100) and a switch between sizes:
+
+```toml
+[capture]
+jpg_qualities = [100, 95, 85]
+sizes = ["100%", "50%", "400px"]
+```
+
+A size is a percentage of the picture, or a thumbnail at most that many pixels
+on its longest side. The first size is chosen when the menu opens. WebP is
+always lossless.
 
 ## Autostart
 
@@ -618,32 +688,42 @@ Controlling a device locally needs its local key, which only Tuya's cloud hands
 out. Fetch the keys once with a free project on the
 [Tuya IoT Platform](https://iot.tuya.com): create a Smart Home cloud project in
 your app account's data center, and link your app account under **Devices**,
-**Link App Account**. Then run:
+**Link App Account**.
+
+**Settings > Smart home** walks through this in three steps, with a how-to and
+fixes for the usual problems. Enter the project's Access ID and Access Secret,
+choose its data center and import: your devices are saved with their homes,
+rooms and local keys to `~/.config/tileception/home-devices.json`, readable by
+you only, and `[home] enabled` is switched on. After that the page lists the
+devices and whether they answer. **Refresh devices** fetches the list again,
+for example after adding a light in the app; with a saved Access Secret it needs
+no typing. The **Smart home in the panel** switch turns `[home] enabled` on
+and off.
+
+Two uses of the cloud keep the Access Secret in the device file, and the import
+asks about each:
+
+- **Read cloud-only sensors**: battery sensors only report to the cloud, so
+  they are read from there every 10 minutes.
+- **Refresh devices at startup**: devices, names, homes and rooms are fetched
+  again in the background when the compositor starts. Cached devices remain
+  usable during the refresh and if a request fails.
+
+With the secret saved, the **Cloud sensors** and **Startup refresh** buttons on
+the page switch either use on or off without importing again.
+
+The same import runs in a terminal:
 
 ```sh
 tileception home import
 ```
 
-It asks for the project's Access ID, data center and Access Secret, and saves
-your devices with their homes, rooms and local keys to
-`~/.config/tileception/home-devices.json`, readable by you only. Battery sensors
-only report to the cloud; the
-import offers to read those every 10 minutes, which keeps the Access Secret in
-the same file. (`--client-id`, `--region` and `--secret-file` make the import
-unattended, and `--cloud-sensors`/`--no-cloud-sensors` choose the cloud sensors
-without asking.)
-
-The import separately asks whether to refresh devices, names, homes and rooms
-at compositor startup. This also needs the saved Access Secret, but works
-with cloud-sensor polling switched off. Use `--startup-refresh` or
-`--no-startup-refresh` to choose without asking. Startup refresh runs in the
-background while smart home is enabled; cached devices remain usable during
-refresh and if any request fails. Existing imports with saved credentials
-also refresh at startup and keep their sensor polling enabled. Re-run the
-import to change either choice, or to update devices manually when startup
-refresh is off. A manual refresh action in the settings screen is planned.
-
-Then switch it on:
+It asks for the Access ID, data center and Access Secret. `--client-id`,
+`--region` and `--secret-file` make it unattended;
+`--cloud-sensors`/`--no-cloud-sensors` and
+`--startup-refresh`/`--no-startup-refresh` choose the cloud uses without
+asking. Existing imports with saved credentials keep both uses on. Then switch
+it on:
 
 ```toml
 [home]
@@ -661,8 +741,13 @@ on the network you are on. `devices` points to a different device file; see the
 `tileception home status` lists the imported devices and whether they answer,
 and `tileception msg home why <name>` explains why one is unreachable and what
 to check. The climate widget draws a trend line of the last six hours of room
-temperature and target under itself, sampled locally and kept in
-`~/.local/state/tileception/home-history.json`.
+temperature and target under itself, and each temperature or humidity sensor
+one of its readings beside its name. The readings are sampled locally (cloud
+sensors as they are polled) and kept in
+`~/.local/state/tileception/home-history.json`. For a device that reports
+both temperature and humidity, **History** on the Smart home page in Settings
+chooses which of them the trend shows; the choice is kept with the device in
+the device file and survives imports and refreshes.
 
 ## Doctor
 

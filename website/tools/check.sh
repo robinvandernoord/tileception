@@ -6,7 +6,8 @@ fail() { echo "check: $*" >&2; exit 1; }
 
 for f in index.html 404.html .htaccess install setup robots.txt sitemap.xml site.webmanifest \
          favicon.svg favicon.ico apple-touch-icon.png icon-192.png icon-512.png og.png \
-         assets/site.css assets/zoom.js; do
+         assets/site.css assets/zoom.js assets/changelog.css assets/changelog.js \
+         assets/download.css changelog/index.html download/index.html; do
   [ -s "$f" ] || fail "missing $f"
 done
 
@@ -32,6 +33,24 @@ import json, re, sys, xml.dom.minidom
 html = open('index.html', encoding='utf-8').read()
 for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S):
     json.loads(block)
+# The changelog page uses relative paths; each must exist.
+import os
+changelog = open('changelog/index.html', encoding='utf-8').read()
+for ref in re.findall(r'(?:href|src|poster)="([^"#?]+)"', changelog):
+    if re.match(r'[a-z]+:', ref):
+        continue
+    if not os.path.exists(os.path.normpath(os.path.join('changelog', ref))):
+        sys.exit(f'check: changelog/index.html references missing {ref}')
+# Its link preview picture is one of the site's own files.
+for image in re.findall(r'property="og:image" content="https://tileception.space/([^"]+)"', changelog):
+    if not os.path.exists(image):
+        sys.exit(f'check: changelog/index.html previews missing {image}')
+# External links open in a new tab.
+for page in ('index.html', '404.html', 'changelog/index.html', 'download/index.html'):
+    for tag in re.findall(r'<a\b[^>]*>', open(page, encoding='utf-8').read()):
+        if re.search(r'\bhref="https?://', tag) and not (
+                'target="_blank"' in tag and 'rel="noopener"' in tag):
+            sys.exit(f'check: external link in {page} needs target="_blank" rel="noopener": {" ".join(tag.split())}')
 json.load(open('site.webmanifest'))
 xml.dom.minidom.parse('sitemap.xml')
 PY
@@ -42,5 +61,15 @@ sh -n install
 [ "$(readlink setup)" = ../../resources/tileception-setup ] \
   || fail "setup must be a symlink to ../../resources/tileception-setup"
 sh -n setup
-if command -v node >/dev/null 2>&1; then node --check assets/zoom.js; fi
+python3 ../tools/changelog.py --check
+# The download page is made at deploy from the ISOs' manifest; it must render.
+sample=$(mktemp)
+python3 ../tools/downloads.py --manifest ../tools/downloads-sample.json --out "$sample" >/dev/null
+grep -q 'tileception-ubuntu-26.04.1-amd64.iso' "$sample" || fail "the download page lists no ISO from the sample"
+rm -f "$sample"
+LC_ALL=C grep -n '[^ -~]' ../tools/download.html && fail "tools/download.html has characters outside plain ASCII"
+if command -v node >/dev/null 2>&1; then
+  node --check assets/zoom.js
+  node --check assets/changelog.js
+fi
 echo "check: ok"

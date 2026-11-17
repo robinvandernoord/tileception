@@ -167,6 +167,30 @@ fn protocol_replacement_close_and_shutdown() {
 }
 
 #[test]
+fn a_fixed_replaces_id_is_kept() {
+    // Volume and brightness scripts reuse one id of their own choosing
+    // (`notify-send -r 4242`), also when nothing with that id is shown.
+    let bus = Bus::new();
+    let (service, events) = bus.start(persistent());
+    let connection = bus.connect();
+    let proxy = proxy(&connection);
+    assert_eq!(notify(&proxy, 4242, "10%", &[], HashMap::new(), 0), 4242);
+    assert_eq!(shown(&events).id, 4242);
+    assert_eq!(notify(&proxy, 4242, "20%", &[], HashMap::new(), 0), 4242);
+    assert!(
+        matches!(events.recv_timeout(Duration::from_secs(3)).unwrap(), Event::Replaced(item) if item.body == "20%")
+    );
+    // Closed and sent again: the same id, shown anew, still one history entry.
+    proxy.call::<_, _, ()>("CloseNotification", &(4242u32,)).unwrap();
+    closed(&events, 4242, CloseReason::ClosedByCall);
+    assert_eq!(notify(&proxy, 4242, "30%", &[], HashMap::new(), 0), 4242);
+    assert_eq!(shown(&events).body, "30%");
+    assert_eq!(service.history().len(), 1);
+    // Ids handed out afterwards stay clear of it.
+    assert_ne!(notify(&proxy, 0, "other", &[], HashMap::new(), 0), 4242);
+}
+
+#[test]
 fn actions_tokens_resident_and_default_action() {
     let bus = Bus::new();
     let (service, events) = bus.start(persistent());

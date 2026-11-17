@@ -131,6 +131,9 @@ pub struct GreeterFile {
     pub clock_format: String,
     /// What starts an X server around an X session's command.
     pub xsession_wrapper: String,
+    /// Fades in place of movement: the field does not shake, the launcher
+    /// does not slide in, and the waiting dots hold still.
+    pub reduce_motion: bool,
     /// Where the greeter remembers the last user and their sessions.
     pub state_file: Option<PathBuf>,
     pub panels: Panels,
@@ -152,6 +155,7 @@ impl Default for GreeterFile {
             users_as: UsersAs::Tabs,
             clock_format: "%H:%M".into(),
             xsession_wrapper: "startx /usr/bin/env".into(),
+            reduce_motion: false,
             state_file: None,
             panels: Panels::default(),
             per_user: PerUser::default(),
@@ -318,6 +322,7 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         assert_eq!(file.hidden_sessions, defaults.hidden_sessions);
         assert_eq!(file.clock_format, defaults.clock_format);
         assert_eq!(file.xsession_wrapper, defaults.xsession_wrapper);
+        assert_eq!(file.reduce_motion, defaults.reduce_motion);
         assert_eq!(file.panels.columns, defaults.panels.columns);
         assert_eq!(file.panels.ratios, defaults.panels.ratios);
         assert_eq!(file.per_user.wallpaper_fallback, defaults.per_user.wallpaper_fallback);
@@ -331,6 +336,12 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         assert!(GreeterFile::parse("[panels]\ncolumns = [[\"clock\"]]").is_err());
         assert!(GreeterFile::parse("[theme]\naccent = \"green\"").is_err());
         assert!(GreeterFile::parse("unknown = 1").is_err());
+    }
+
+    #[test]
+    fn motion_can_be_reduced() {
+        assert!(!GreeterFile::default().reduce_motion);
+        assert!(GreeterFile::parse("reduce_motion = true").expect("parses").reduce_motion);
     }
 
     #[test]

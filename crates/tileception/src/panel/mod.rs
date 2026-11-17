@@ -42,6 +42,8 @@ const TEXT_BUTTON: f64 = 64.0;
 const CHOICES: f64 = 28.0;
 const FOOTER: f64 = 28.0;
 const TREND: f64 = 30.0;
+/// The width of a row's small trend line.
+const ROW_TREND: f64 = 72.0;
 /// Least time between values sent while a level bar is dragged.
 const SEND_INTERVAL: f64 = 1.0 / 8.0;
 /// Below the blocks, before Do not disturb.
@@ -114,6 +116,8 @@ struct BlockLayout {
 struct RowLayout {
     rect: Rect,
     switch: Option<Rect>,
+    /// The small trend line, for a row without a switch.
+    trend: Option<Rect>,
     selected: bool,
 }
 
@@ -521,7 +525,12 @@ impl Tileception {
                 let selected = row.enabled
                     && !row.levels.is_empty()
                     && state.and_then(|state| state.selected.as_ref()) == Some(&row.key);
-                laid.rows.push((row.clone(), RowLayout { rect, switch, selected }));
+                let trend = row
+                    .trend
+                    .as_ref()
+                    .filter(|trend| switch.is_none() && trend.lines.iter().any(|line| line.points.len() >= 2))
+                    .map(|_| Rect::new(rect.right() - ROW_TREND - 8.0, rect.y + 9.0, ROW_TREND, ROW - 18.0));
+                laid.rows.push((row.clone(), RowLayout { rect, switch, trend, selected }));
                 *cursor += ROW;
                 if selected {
                     for (index, level) in row.levels.iter().enumerate() {
@@ -806,7 +815,7 @@ impl Tileception {
         painter.fill(badge, fill, 6.0);
         painter.glyph(icon(row.icon.as_deref()), badge, 15, colour);
         let text_x = badge.right() + 10.0;
-        let text_w = laid.switch.map_or(laid.rect.right(), |switch| switch.x) - text_x - 8.0;
+        let text_w = laid.switch.or(laid.trend).map_or(laid.rect.right(), |control| control.x) - text_x - 8.0;
         let name_colour = if row.dim { theme.text.alpha(0.72) } else { theme.text };
         painter.text(
             &row.title,
@@ -821,6 +830,9 @@ impl Tileception {
         );
         if let (Some(rect), Some(switch)) = (laid.switch, &row.switch) {
             draw_switch(painter, rect, switch.checked, switch.pending, row.enabled);
+        }
+        if let (Some(rect), Some(trend)) = (laid.trend, &row.trend) {
+            draw_trend(painter, rect, trend);
         }
     }
 
@@ -1095,30 +1107,44 @@ fn collect_rows<'a>(items: &'a [Item], rows: &mut Vec<&'a Row>) {
     }
 }
 
-/// Lines over the trend's span, newest at the right: dashed ones thin and
-/// muted, solid ones in the accent. Each value holds until the next point.
-fn draw_trend(painter: &mut Painter, rect: Rect, trend: &block::Trend) {
-    let theme = painter.theme().clone();
-    let values = || trend.lines.iter().flat_map(|line| line.points.iter().map(|(_, value)| *value));
+/// The lowest and highest value of some lines, at least one apart.
+fn trend_scale<'a>(lines: impl Iterator<Item = &'a block::Line> + Clone) -> Option<(f64, f64)> {
+    let values = || lines.clone().flat_map(|line| line.points.iter().map(|(_, value)| *value));
     let mut min = values().fold(f64::INFINITY, f64::min);
     let mut max = values().fold(f64::NEG_INFINITY, f64::max);
     if !min.is_finite() || !max.is_finite() {
-        return;
+        return None;
     }
     if max - min < 1.0 {
         let middle = (min + max) / 2.0;
         min = middle - 0.5;
         max = middle + 0.5;
     }
+    Some((min, max))
+}
+
+/// Lines over the trend's span, newest at the right: dashed ones thin and
+/// muted, solid ones in the accent, secondary ones in the second accent on
+/// a scale of their own. Each value holds until the next point.
+fn draw_trend(painter: &mut Painter, rect: Rect, trend: &block::Trend) {
+    let theme = painter.theme().clone();
+    let primary = trend_scale(trend.lines.iter().filter(|line| !line.secondary));
+    let secondary = trend_scale(trend.lines.iter().filter(|line| line.secondary));
     let span = trend.span.max(1.0);
-    let place = |(age, value): (f64, f64)| {
-        let pos_x = rect.right() - age.clamp(0.0, span) / span * rect.w;
-        let pos_y = rect.bottom() - 2.0 - (value - min) / (max - min) * (rect.h - 4.0);
-        (pos_x.clamp(rect.x, rect.right()), pos_y.clamp(rect.y, rect.bottom()))
-    };
     for line in &trend.lines {
+        let Some((min, max)) = (if line.secondary { secondary } else { primary }) else { continue };
+        let place = |(age, value): (f64, f64)| {
+            let pos_x = rect.right() - age.clamp(0.0, span) / span * rect.w;
+            let pos_y = rect.bottom() - 2.0 - (value - min) / (max - min) * (rect.h - 4.0);
+            (pos_x.clamp(rect.x, rect.right()), pos_y.clamp(rect.y, rect.bottom()))
+        };
         let points: Vec<(f64, f64)> = line.points.iter().copied().map(place).collect();
-        let (colour, thickness) = if line.dashed { (theme.muted.alpha(0.9), 1.0) } else { (theme.accent, 2.0) };
+        let (colour, thickness) = match () {
+            _ if line.secondary && line.dashed => (theme.accent_end.alpha(0.9), 1.0),
+            _ if line.secondary => (theme.accent_end, 2.0),
+            _ if line.dashed => (theme.muted.alpha(0.9), 1.0),
+            _ => (theme.accent, 2.0),
+        };
         for (index, &(left, value)) in points.iter().enumerate() {
             let next = points.get(index + 1).copied();
             let right = next.map_or(rect.right(), |(next_x, _)| next_x);
@@ -1191,6 +1217,21 @@ mod tests {
 
     fn action() -> Option<ActionKind> {
         Some(ActionKind::Copy { text: "x".into(), sensitive: false })
+    }
+
+    #[test]
+    fn secondary_trend_lines_keep_their_own_scale() {
+        let line = |secondary: bool, values: &[f64]| block::Line {
+            dashed: false,
+            secondary,
+            points: values.iter().enumerate().map(|(age, value)| (age as f64, *value)).collect(),
+        };
+        let lines = [line(false, &[20.0, 22.0]), line(true, &[40.0, 60.0])];
+        assert_eq!(trend_scale(lines.iter().filter(|line| !line.secondary)), Some((20.0, 22.0)));
+        assert_eq!(trend_scale(lines.iter().filter(|line| line.secondary)), Some((40.0, 60.0)));
+        // A flat reading gets a degree of room; no points, no scale.
+        assert_eq!(trend_scale([line(false, &[21.0, 21.0])].iter()), Some((20.5, 21.5)));
+        assert_eq!(trend_scale([line(true, &[])].iter()), None);
     }
 
     fn button(icon: Option<&str>, enabled: bool) -> Button {

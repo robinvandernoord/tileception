@@ -29,7 +29,7 @@ use std::{
 
 use history::Sample;
 use model::Model;
-pub use model::{Change, Kind, State};
+pub use model::{Change, Kind, Reports, State};
 use protocol::Version;
 use serde_json::{Map, Value};
 use store::{DeviceEntry, DeviceFile};
@@ -71,8 +71,11 @@ pub struct Device {
     pub target_range: Option<(f64, f64, f64)>,
     pub modes: Vec<String>,
     pub fan_speeds: Vec<String>,
-    /// The last six hours of temperature and target, for the climate
-    /// widget's trend line. Only climate devices are sampled.
+    /// Which of temperature and humidity it reports.
+    pub reports: Reports,
+    /// The last six hours of its readings and target, for the trend lines.
+    /// Devices that report a temperature, a humidity or a target are
+    /// sampled.
     pub history: Vec<Sample>,
 }
 
@@ -159,9 +162,8 @@ impl Shared {
     }
 
     /// Takes data points into a device's state; `sent` marks them pending
-    /// until the device confirms. Climate devices are sampled for the
-    /// history here, at most every [`history::SAMPLE`] and on target
-    /// changes.
+    /// until the device confirms. Readings are sampled for the history
+    /// here, at most every [`history::SAMPLE`] and on target changes.
     pub(crate) fn apply(&self, slot: usize, model: &Model, dps: &Map<String, Value>, sent: bool) {
         let now = SystemTime::now();
         let (differs, sampled) = {
@@ -170,11 +172,16 @@ impl Shared {
             let before = device.clone();
             device.state.update(model, dps);
             device.pending = sent;
-            let sampled = if model.kind == Kind::Climate {
-                history::push(&mut device.history, device.state.temperature, device.state.target, now)
-            } else {
-                false
-            };
+            let sampled = sampled(model)
+                && history::push(
+                    &mut device.history,
+                    Sample {
+                        when: now,
+                        temperature: device.state.temperature,
+                        target: device.state.target,
+                        humidity: device.state.humidity,
+                    },
+                );
             (*device != before, sampled)
         };
         if sampled {
@@ -211,6 +218,11 @@ impl Shared {
     }
 }
 
+/// Whether a device's readings are kept in the history.
+fn sampled(model: &Model) -> bool {
+    model.reports().any() || model.target.is_some()
+}
+
 /// Owns the workers. Dropping it stops them.
 pub struct HomeService {
     shared: Shared,
@@ -226,7 +238,7 @@ pub struct Options {
     /// Listen for the devices' announcements on the LAN, to follow address
     /// changes. Off for simulated devices and tests.
     pub discovery: bool,
-    /// Where the sampled climate history is kept; `None` keeps it in memory
+    /// Where the sampled history is kept; `None` keeps it in memory
     /// only, as in tests and `tileception home status`.
     pub history: Option<PathBuf>,
 }
@@ -289,6 +301,7 @@ impl HomeService {
                         .map(|range| (range.real(range.min), range.real(range.max), range.real_step())),
                     modes: model.mode.as_ref().map(|(_, modes)| modes.clone()).unwrap_or_default(),
                     fan_speeds: model.fan.as_ref().map(|(_, speeds)| speeds.clone()).unwrap_or_default(),
+                    reports: model.reports(),
                     home: entry.home.clone(),
                     history: Vec::new(),
                 });
@@ -296,8 +309,10 @@ impl HomeService {
             // What earlier runs sampled, still inside the six-hour window.
             if let Some(path) = &options.history {
                 let loaded = history::load(path);
-                for device in inner.snapshot.devices.iter_mut().filter(|device| device.kind == Kind::Climate) {
-                    if let Some(samples) = loaded.get(&device.device_id) {
+                for (device, entry) in inner.snapshot.devices.iter_mut().zip(&file.devices) {
+                    if sampled(&Model::for_entry(entry))
+                        && let Some(samples) = loaded.get(&device.device_id)
+                    {
                         device.history = samples.clone();
                     }
                 }

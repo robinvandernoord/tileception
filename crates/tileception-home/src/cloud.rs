@@ -141,6 +141,7 @@ pub fn refresh(cached: &DeviceFile) -> Result<DeviceFile, String> {
             }
         }
     }
+    refreshed.keep_choices(cached);
     Ok(refreshed)
 }
 

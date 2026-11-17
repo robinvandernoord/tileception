@@ -6,13 +6,14 @@
 
 [general]
 # Command for the `terminal` action. Unset: the first of ghostty, foot,
-# alacritty, kitty, lxterminal, gnome-terminal that is installed.
+# alacritty, kitty, lxterminal, ptyxis, gnome-terminal that is installed.
 # terminal = "ghostty"
 
 # Pixels between windows and around the screen edge.
 gap = 12
 
-# Length of a zoom or move, in milliseconds.
+# Length of a zoom or move, in milliseconds. At 0, the lock screen holds
+# still too.
 animation_ms = 280
 
 # Smallest scale at which a resting window stays interactive. Larger windows
@@ -52,12 +53,15 @@ autostart = []
 # complete list instead.
 # default_binds = true
 # On an empty desktop (after login, or after closing the last window) show the
-# launcher with a clock: type to search, tap Super for a plain desktop.
+# launcher with a clock: type to search, tap Super for a plain desktop and
+# again to bring it back.
 # welcome = true
 # Map the whole edge proportionally when the pointer crosses to an adjacent
 # screen, including between screens of different sizes. Off: use their
 # positions in the desktop arrangement. Also called Full-edge pointer crossing
-# in Settings. Applies when saved; no special build is needed.
+# in Settings. Applies when saved; no special build is needed. With handoff,
+# it also maps this machine's shared edge onto the whole edge of the other;
+# off, the two edges meet centred, pixel for pixel.
 # stretch_screen_edges = false
 
 [clipboard]
@@ -92,6 +96,12 @@ persist = false
 # font_size = 13
 # A background image (PNG, JPEG or WebP), also shown on the lock screen.
 # wallpaper = "~/Pictures/wallpaper.jpg"
+# Or a folder of them: a picture is picked at random each session, the same
+# on every screen. The next-wallpaper command picks another.
+# wallpaper = "~/Pictures/Wallpapers"
+# With a folder, how often to pick another, such as "30m", "2h" or "1d".
+# Empty: once per session.
+# wallpaper_interval = ""
 # How it fits the screen: fill, fit, stretch or center.
 # wallpaper_fit = "fill"
 # What applications are told through the desktop portal: dark, light, or
@@ -146,6 +156,15 @@ share = true
 # How big the rubber duck is: 1 is normal, 2 twice as big (0.5 to 4).
 size = 1
 
+[capture]
+# Area screenshots (Shift+Print). Enter and Copy give a PNG at full size; the
+# arrows beside Copy and Save open a menu with PNG, WebP (lossless) and a JPG
+# button for each of these qualities (1 to 100), and a switch between these
+# sizes: a percentage ("50%") or a thumbnail at most this many pixels on its
+# longest side ("400px"). The first size is chosen when the menu opens.
+jpg_qualities = [100, 95, 85]
+sizes = ["100%", "50%", "400px"]
+
 [media]
 # Percent per volume or brightness key press. Held keys repeat.
 volume_step = 5
@@ -159,10 +178,11 @@ osd_timeout_ms = 1500
 
 [home]
 # Tuya lights, plugs and air conditioners in the notification panel (Super+N),
-# controlled on the local network. Run `tileception home import` once to fetch
-# your devices, rooms and local keys from the Tuya IoT Platform.
+# controlled on the local network. Set up in Settings > Smart home, or run
+# `tileception home import`, once to fetch your devices, rooms and local keys
+# from the Tuya IoT Platform; importing switches this on.
 enabled = false
-# Where `tileception home import` saved them (this is the default).
+# Where the import saved them (this is the default).
 # devices = "~/.config/tileception/home-devices.json"
 
 [battery]
@@ -170,8 +190,9 @@ enabled = false
 # the charge either way (hover it for the time left).
 #
 # The focus border shows the charge: this colour while charging, and at or
-# below each level while on battery. Colours are #rrggbb, or accent, warning
-# or danger from [theme]. Plugged in and not charging keeps the accent.
+# below each level while on battery. Colours are #rrggbb, or accent, warning,
+# danger, muted or text from [theme]. Plugged in and not charging keeps the
+# accent.
 # border = true
 # charging = "#8fd65a"
 # levels = [
@@ -213,6 +234,15 @@ enabled = false
 # switched off by hand beforehand are left alone. A notification says why
 # when one cannot be reconnected.
 # reconnect = true
+
+[calendar]
+# Events in the bar from .ics files (~/ is your home folder) and https or
+# webcal addresses: the one on now, or else the next one today, beside the
+# clock, and in its calendar the coming week and the days with events.
+# Nothing is read or shown without sources.
+# sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
+# Minutes between reading them again.
+# refresh_minutes = 15
 
 [shell]
 # Each part of the desktop is Tileception's own ("builtin"), switched off
@@ -328,8 +358,12 @@ tray_max_icons = 3
 # Handoff: share this mouse, keyboard and clipboard with other Tileception
 # machines on the network that know the same passphrase. When one appears,
 # drag its card to the edge of the screen where it stands; the pointer then
-# crosses there once its user has placed this machine too. Ctrl+Super+Escape
-# brings input back. Locking pauses sharing until you resume it on the card.
+# crosses there once its user has placed this machine too, where no other
+# screen of either machine lies beyond the edge, and not while a game or
+# other program locks the pointer. Ctrl+Super+Escape brings input back. Each
+# keyboard types with its own machine's layout wherever it types, and the
+# shortcuts of the machine the pointer is on apply, also in a window from
+# another machine. Locking pauses sharing until you resume it on the card.
 # Pick several random words for the passphrase: guesses are slowed down, but
 # a short phrase can still be guessed. Nothing listens until this is enabled
 # with a passphrase. `tileception msg handoff` shows what is connected.
@@ -436,7 +470,7 @@ repeat_rate = 30
 #   brightness up|down    the screen's backlight; brightness set <n>
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
-#   desktop               show or hide the Desktop tile
+#   desktop               clear the desk, or bring back what it cleared
 #   colour-scheme <s>     tell apps to use dark, light or default styles,
 #                         until this file is next loaded
 #   reload                reload this file
@@ -534,8 +568,10 @@ repeat_rate = 30
 "TouchPinch3In" = "step-out"
 "TouchPinch3Out" = "step-in pointer"
 
-# Screenshots (grim and slurp). Print captures the whole screen; Shift+Print
-# lets you drag a region. Both ask whether to copy, save, or do both.
+# Screenshots. Print captures the whole screen (with grim) and asks whether
+# to copy, save, or do both. Shift+Print picks an area over a still of the
+# screen: drag it or click a window, draw on it, then copy, save, ask the
+# Doctor or record it. Shift+Print again stops a recording.
 # Ctrl+Print picks a colour from the screen and copies it as hex.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"
@@ -558,7 +594,7 @@ repeat_rate = 30
 "Super+Ctrl+Page_Up" = "brightness up"
 "Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
-"Shift+Print" = "spawn tileception-screenshot region --ask"
+"Shift+Print" = "capture"
 "Ctrl+Print" = "pick-colour"
 
 "Super+1" = "go 1"

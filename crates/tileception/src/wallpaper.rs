@@ -2,10 +2,14 @@
 //! decoded and scaled to the output once, then drawn behind everything. The
 //! lock screen uses the same image. The file is watched, so a tool that
 //! swaps the picture by overwriting it (Variety and the like) is followed.
+//!
+//! `wallpaper` may also be a folder: a picture from it is picked at random
+//! for every screen, once per session or every `wallpaper_interval`, and
+//! `next-wallpaper` picks another. A new picture fades in over the old one.
 
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use image::{DynamicImage, GenericImageView, RgbaImage, imageops::FilterType};
@@ -60,6 +64,121 @@ pub struct Wallpaper {
     pub fit: Scaling,
     pub size: (u32, u32),
     pub buffer: MemoryRenderBuffer,
+    /// The picture this one replaced, fading out over it, and since when.
+    pub previous: Option<(MemoryRenderBuffer, Instant)>,
+}
+
+/// How long a new picture takes to fade in over the one it replaces.
+const CROSSFADE: f64 = 0.8;
+
+/// What to draw for the wallpaper: the picture, and the one it replaced
+/// over it with how much of that still shows.
+pub struct Drawn {
+    pub buffer: MemoryRenderBuffer,
+    pub previous: Option<(MemoryRenderBuffer, f32)>,
+}
+
+/// Parses `wallpaper_interval`: a whole number of seconds, minutes, hours or
+/// days (`90s`, `30m`, `2h`, `1d`), or empty for once per session.
+pub fn parse_interval(text: &str) -> Result<Option<Duration>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let error = || format!("wallpaper_interval {text:?} is not a time such as \"90s\", \"30m\", \"2h\" or \"1d\"");
+    let unit = text.chars().last().ok_or_else(error)?;
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => return Err(error()),
+    };
+    let count: u64 = text[..text.len() - 1].trim().parse().map_err(|_| error())?;
+    if count == 0 {
+        return Err(error());
+    }
+    Ok(Some(Duration::from_secs(count * seconds)))
+}
+
+/// The pictures in a wallpaper folder, by name. Hidden files and
+/// subfolders are left out.
+pub fn pictures(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+    let mut found: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let hidden = path.file_name().and_then(|name| name.to_str()).is_none_or(|name| name.starts_with('.'));
+            let picture = path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp")
+            });
+            !hidden && picture && path.is_file()
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// One of `pictures` other than `current`, by `random`; `current` only
+/// when it is the only one.
+fn pick(pictures: &[PathBuf], current: Option<&Path>, random: u64) -> Option<PathBuf> {
+    let others: Vec<&PathBuf> = pictures.iter().filter(|path| Some(path.as_path()) != current).collect();
+    if others.is_empty() {
+        return pictures.first().cloned();
+    }
+    Some(others[(random % others.len() as u64) as usize].clone())
+}
+
+fn random() -> u64 {
+    getrandom::u64().unwrap_or_else(|_| {
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|since| since.as_nanos() as u64).unwrap_or(0)
+    })
+}
+
+/// The picture shown from a wallpaper folder, the same on every screen.
+#[derive(Debug, Default)]
+pub struct Rotation {
+    /// The folder it was picked from.
+    folder: Option<PathBuf>,
+    current: Option<PathBuf>,
+    picked: Option<Instant>,
+}
+
+impl Rotation {
+    /// A first pick when `wallpaper` is a folder.
+    pub fn new(wallpaper: Option<&Path>) -> Rotation {
+        let mut rotation = Rotation::default();
+        rotation.update(wallpaper, None, false);
+        rotation
+    }
+
+    /// Picks another picture when the folder is new, the picture is gone,
+    /// `interval` has passed since the last pick, or `next` asks. Whether
+    /// the picture changed.
+    fn update(&mut self, wallpaper: Option<&Path>, interval: Option<Duration>, next: bool) -> bool {
+        let Some(folder) = wallpaper.filter(|path| path.is_dir()) else {
+            let changed = self.current.is_some();
+            *self = Rotation::default();
+            return changed;
+        };
+        let same_folder = self.folder.as_deref() == Some(folder);
+        let due = interval.zip(self.picked).is_some_and(|(interval, picked)| picked.elapsed() >= interval);
+        // An empty folder is looked at again only when asked or due.
+        let gone = self.current.as_deref().is_some_and(|path| !path.is_file());
+        if same_folder && !next && !due && !gone {
+            return false;
+        }
+        let found = pictures(folder);
+        let current = if same_folder { self.current.as_deref() } else { None };
+        let picked = pick(&found, current, random());
+        if picked.is_none() && (!same_folder || next) {
+            tracing::warn!("wallpaper: {} has no PNG, JPEG or WebP pictures", folder.display());
+        }
+        let changed = picked != self.current;
+        *self = Rotation { folder: Some(folder.to_path_buf()), current: picked, picked: Some(Instant::now()) };
+        changed
+    }
 }
 
 /// Expands a leading `~/` to the home directory.
@@ -83,7 +202,7 @@ pub fn load(path: &Path, fit: Scaling, width: u32, height: u32, background: [f32
         Transform::Normal,
         None,
     );
-    Ok(Wallpaper { path: path.to_path_buf(), fit, size: (width, height), buffer })
+    Ok(Wallpaper { path: path.to_path_buf(), fit, size: (width, height), buffer, previous: None })
 }
 
 fn compose(img: &DynamicImage, fit: Scaling, width: u32, height: u32, background: [f32; 4]) -> RgbaImage {
@@ -177,11 +296,13 @@ impl Watch {
     }
 }
 
-/// Loads the wallpaper again whenever its file changes.
+/// Loads the wallpaper again whenever its file changes, and picks the next
+/// picture from a wallpaper folder when it is time.
 pub fn watch(handle: &LoopHandle<'static, crate::state::Tileception>) {
     let mut watch = Watch::default();
     let _ = handle.insert_source(Timer::from_duration(Duration::from_secs(1)), move |_, _, state| {
-        let path = state.theme.wallpaper.clone();
+        state.rotate_wallpaper(false);
+        let path = state.wallpaper_path();
         if watch.look(path.as_deref(), path.as_deref().and_then(stamp)) {
             tracing::info!("wallpaper file changed");
             state.reload_wallpaper();
@@ -191,6 +312,38 @@ pub fn watch(handle: &LoopHandle<'static, crate::state::Tileception>) {
 }
 
 impl crate::state::Tileception {
+    /// The picture to show: the `wallpaper` file, or the one picked from the
+    /// `wallpaper` folder.
+    pub fn wallpaper_path(&self) -> Option<PathBuf> {
+        let configured = self.theme.wallpaper.as_ref()?;
+        if self.wallpaper_rotation.folder.as_ref() == Some(configured) {
+            self.wallpaper_rotation.current.clone()
+        } else {
+            Some(configured.clone())
+        }
+    }
+
+    /// The wallpaper folder, when `wallpaper` is one.
+    pub fn wallpaper_rotation_folder(&self) -> Option<&Path> {
+        self.wallpaper_rotation.folder.as_deref()
+    }
+
+    /// Picks another picture from the wallpaper folder when it is due, or
+    /// at once with `next`, and shows it on every screen.
+    pub fn rotate_wallpaper(&mut self, next: bool) {
+        let interval = self.theme.wallpaper_interval;
+        if self.wallpaper_rotation.update(self.theme.wallpaper.as_deref(), interval, next) {
+            if let Some(path) = self.wallpaper_path() {
+                tracing::info!("wallpaper {} from the folder", path.display());
+            }
+            for output in self.all_outputs() {
+                self.with_output(&output, |state| state.wallpaper_failed = None);
+            }
+            self.publish_greeter_card();
+            self.schedule_render();
+        }
+    }
+
     /// Reads the file again for every screen. A file that cannot be read
     /// (gone again, or not a picture) leaves the picture that is showing.
     fn reload_wallpaper(&mut self) {
@@ -201,7 +354,7 @@ impl crate::state::Tileception {
     }
 
     fn reload_output_wallpaper(&mut self) {
-        let Some(path) = self.theme.wallpaper.clone() else { return };
+        let Some(path) = self.wallpaper_path() else { return };
         let (width, height) = self.output_pixels();
         if width <= 0 || height <= 0 {
             return;
@@ -217,9 +370,10 @@ impl crate::state::Tileception {
     }
 
     /// The wallpaper scaled for the current output's pixels, loaded on first
-    /// use and again when the theme or the output size changes.
-    pub fn wallpaper_buffer(&mut self) -> Option<MemoryRenderBuffer> {
-        let path = self.theme.wallpaper.clone()?;
+    /// use and again when the theme, the picture or the output size changes.
+    /// Another picture at the same size fades in over the one before.
+    pub fn wallpaper_buffer(&mut self) -> Option<Drawn> {
+        let path = self.wallpaper_path()?;
         let (width, height) = self.output_pixels();
         let size = (width.max(0) as u32, height.max(0) as u32);
         let current = self.wallpaper.as_ref().is_some_and(|wallpaper| {
@@ -230,8 +384,11 @@ impl crate::state::Tileception {
                 return None;
             }
             match load(&path, self.theme.wallpaper_fit, size.0, size.1, self.theme.background.0) {
-                Ok(wallpaper) => {
+                Ok(mut wallpaper) => {
                     tracing::info!("wallpaper {} at {}x{}", path.display(), size.0, size.1);
+                    if let Some(old) = self.wallpaper.take().filter(|old| old.size == size && old.path != path) {
+                        wallpaper.previous = Some((old.buffer, Instant::now()));
+                    }
                     self.wallpaper = Some(wallpaper);
                 }
                 Err(err) => {
@@ -241,18 +398,31 @@ impl crate::state::Tileception {
                 }
             }
         }
-        self.wallpaper.as_ref().map(|wallpaper| wallpaper.buffer.clone())
+        let wallpaper = self.wallpaper.as_mut()?;
+        let previous = match &wallpaper.previous {
+            Some((buffer, since)) => {
+                let shown = crate::ui::ease_out(since.elapsed().as_secs_f64() / CROSSFADE);
+                if shown >= 1.0 {
+                    wallpaper.previous = None;
+                    None
+                } else {
+                    Some((buffer.clone(), (1.0 - shown) as f32))
+                }
+            }
+            None => None,
+        };
+        Some(Drawn { buffer: wallpaper.buffer.clone(), previous })
     }
 
     /// A lock command line with `{wallpaper}` filled in, quoted.
     pub fn expand_wallpaper(&self, line: &str) -> String {
-        let wallpaper = self.theme.wallpaper.as_ref().map(|path| path.display().to_string());
+        let wallpaper = self.wallpaper_path().map(|path| path.display().to_string());
         line.replace("{wallpaper}", &shell_quote(wallpaper.as_deref().unwrap_or("")))
     }
 
     /// The shell command that locks the screen, showing the wallpaper.
     pub fn lock_command(&self) -> String {
-        let wallpaper = self.theme.wallpaper.as_ref().map(|path| path.display().to_string());
+        let wallpaper = self.wallpaper_path().map(|path| path.display().to_string());
         if let Some(custom) = &self.config.file.general.lock_command {
             return self.expand_wallpaper(custom);
         }
@@ -275,6 +445,7 @@ fn shell_quote(text: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
 
@@ -291,6 +462,51 @@ mod tests {
         assert_eq!(canvas.get_pixel(100, 100).0, [255, 0, 0, 255]);
         assert_eq!(expand_home("/a/b"), PathBuf::from("/a/b"));
         assert!(Scaling::parse("zoom").is_err());
+    }
+
+    #[test]
+    fn intervals_read_as_times() {
+        assert_eq!(parse_interval(""), Ok(None));
+        assert_eq!(parse_interval("90s"), Ok(Some(Duration::from_secs(90))));
+        assert_eq!(parse_interval("30m"), Ok(Some(Duration::from_secs(30 * 60))));
+        assert_eq!(parse_interval(" 2h "), Ok(Some(Duration::from_secs(2 * 3600))));
+        assert_eq!(parse_interval("1d"), Ok(Some(Duration::from_secs(86_400))));
+        for wrong in ["30", "0m", "m", "1.5h", "-1m", "1w"] {
+            assert!(parse_interval(wrong).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn a_folder_gives_one_of_its_pictures() {
+        let folder = std::env::temp_dir().join(format!("tileception-wallpapers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("nested.png")).unwrap();
+        for name in ["b.JPG", "a.png", "c.webp", ".hidden.png", "notes.txt"] {
+            std::fs::write(folder.join(name), b"").unwrap();
+        }
+        let names: Vec<_> = pictures(&folder).iter().map(|path| path.file_name().unwrap().to_owned()).collect();
+        assert_eq!(names, ["a.png", "b.JPG", "c.webp"]);
+
+        let found = pictures(&folder);
+        // Never the one showing, while there is another.
+        for random in 0..6 {
+            assert_ne!(pick(&found, Some(&found[1]), random).as_ref(), Some(&found[1]));
+        }
+        assert_eq!(pick(&found[..1], Some(&found[0]), 7).as_ref(), Some(&found[0]));
+        assert_eq!(pick(&[], None, 7), None);
+
+        let mut rotation = Rotation::new(Some(&folder));
+        let first = rotation.current.clone().unwrap();
+        assert!(found.contains(&first));
+        assert!(!rotation.update(Some(&folder), None, false), "once per session");
+        assert!(rotation.update(Some(&folder), None, true), "next asks for another");
+        assert_ne!(rotation.current.as_ref(), Some(&first));
+        // Due at once: a zero interval has always passed.
+        assert!(rotation.update(Some(&folder), Some(Duration::ZERO), false));
+        // A file is not a folder; nothing is picked.
+        assert!(rotation.update(Some(&found[0]), None, false));
+        assert_eq!(rotation.current, None);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

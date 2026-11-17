@@ -1,0 +1,318 @@
+/* The changelog page, on top of site.css: each release is a block of tiles
+   between black rules, like the landing page's levels. */
+
+.cl-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-top: var(--rule);
+  background: var(--ink);
+}
+
+/* ---------- page header ---------- */
+.cl-head {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--rule);
+  padding: 0 var(--rule) var(--rule);
+}
+.cl-head h1 {
+  font-size: clamp(64px, 9vw, 140px);
+}
+.cl-short {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 17px;
+}
+.cl-short a {
+  font-weight: 700;
+}
+.cl-short .home {
+  align-self: flex-start;
+  font: 900 28px/1 var(--f-display);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.cl-short .home::before {
+  content: "\2190  ";
+}
+
+/* ---------- labels ---------- */
+.labels {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.area {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 12px/1 var(--f-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.area::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  background: var(--c, var(--canvas));
+  border: 2px solid var(--ink);
+}
+.k .area::before {
+  border-color: var(--canvas);
+}
+.issue {
+  font: 500 13px var(--f-mono);
+  opacity: 0.65;
+  text-decoration: none;
+}
+.issue:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* ---------- pictures and the before/after slider ---------- */
+.media {
+  position: relative;
+  background: #111;
+  overflow: hidden;
+  line-height: 0;
+}
+.media img,
+.media video {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.cl-page code {
+  overflow-wrap: anywhere;
+}
+.caption {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0.8;
+}
+.compare {
+  position: relative;
+  user-select: none;
+  touch-action: pan-y;
+  cursor: ew-resize;
+}
+.compare:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: -3px;
+}
+.compare .after-layer {
+  position: absolute;
+  inset: 0;
+  clip-path: inset(0 0 0 var(--split, 50%));
+}
+.compare .handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--split, 50%);
+  width: 4px;
+  margin-left: -2px;
+  background: var(--canvas);
+  box-shadow: 0 0 0 2px var(--ink);
+}
+/* The knob: two solid triangles, drawn rather than a text arrow, so they sit
+   in the middle at any size. */
+.compare .handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  background: var(--yellow)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M10 6 3 12l7 6zM14 6l7 6-7 6z' fill='%23121212'/%3E%3C/svg%3E")
+    center / 26px no-repeat;
+  border: 3px solid var(--ink);
+}
+.compare.dragging .handle::after {
+  background-color: var(--canvas);
+}
+.compare .label {
+  position: absolute;
+  bottom: 10px;
+  z-index: 2;
+  font: 700 12px/1 var(--f-mono);
+  text-transform: uppercase;
+  padding: 5px 7px;
+  background: var(--ink);
+  color: var(--canvas);
+}
+.compare .label.before {
+  left: 10px;
+}
+.compare .label.after {
+  right: 10px;
+  background: var(--yellow);
+  color: var(--ink);
+}
+
+/* ---------- a release ---------- */
+.cl-release {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--rule);
+  padding: 0 var(--rule) var(--rule);
+}
+.cl-version,
+.cl-compact {
+  grid-column: span 6;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px 48px;
+  align-items: end;
+}
+.cl-version h2 {
+  font-size: 96px;
+}
+.cl-compact h2 {
+  font-size: 56px;
+}
+.cl-release time {
+  display: block;
+  margin-top: 10px;
+  font: 500 15px var(--f-mono);
+}
+.cl-version p,
+.cl-compact p {
+  max-width: 62ch;
+  font-size: 20px;
+  line-height: 1.45;
+}
+.cl-compact ul {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 16px;
+}
+.cl-compact li {
+  padding: 4px 0;
+}
+.cl-hero {
+  grid-column: span 4;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cl-hero.wide {
+  grid-column: span 6;
+}
+.cl-hero .text {
+  padding: 20px 24px 24px;
+}
+.cl-hero h3 {
+  font-size: 44px;
+  line-height: 0.95;
+  margin: 8px 0 10px;
+}
+/* The column beside the large tile: its last tile stretches to the bottom. */
+.cl-side {
+  grid-column: span 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rule);
+  background: var(--ink);
+  padding: 0;
+}
+.cl-tile {
+  position: relative;
+  padding: 0;
+}
+.cl-side > .cl-tile:last-child {
+  flex: 1;
+}
+.cl-tile .text {
+  padding: 16px 20px 20px;
+}
+.cl-tile h3 {
+  font: 700 21px/1.2 var(--f-body);
+  text-transform: none;
+  margin: 6px 0;
+}
+.cl-tile p {
+  font-size: 16px;
+}
+.cl-grid {
+  grid-column: span 6;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--rule);
+  background: var(--ink);
+  padding: 0;
+}
+/* A row of pictures shares the width evenly. */
+.cl-pictures {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+/* A short last row of text fills the width. */
+.cl-grid:not(.cl-pictures) > .cl-tile:last-child:nth-child(3n + 2) {
+  grid-column: span 2;
+}
+.cl-grid:not(.cl-pictures) > .cl-tile:last-child:nth-child(3n + 1) {
+  grid-column: span 3;
+}
+.cl-fixes {
+  grid-column: span 6;
+}
+.cl-fixes h3 {
+  font-size: 30px;
+  margin-bottom: 12px;
+}
+.cl-fixes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  columns: 2;
+  column-gap: 40px;
+}
+.cl-fixes li {
+  break-inside: avoid;
+  padding: 6px 0;
+  border-top: 2px solid rgba(244, 243, 238, 0.15);
+  font-size: 16px;
+}
+.cl-fixes .area {
+  margin-right: 6px;
+}
+
+@media (max-width: 900px) {
+  .cl-head,
+  .cl-version,
+  .cl-compact {
+    grid-template-columns: 1fr;
+  }
+  .cl-hero,
+  .cl-side,
+  .cl-grid {
+    grid-column: span 6;
+  }
+  .cl-grid,
+  .cl-pictures {
+    grid-template-columns: 1fr;
+    grid-auto-flow: row;
+  }
+  .cl-grid > .cl-tile:last-child:nth-child(3n + 2),
+  .cl-grid > .cl-tile:last-child:nth-child(3n + 1) {
+    grid-column: auto;
+  }
+  .cl-fixes ul {
+    columns: 1;
+  }
+  .cl-version h2 {
+    font-size: 72px;
+  }
+  .cl-hero h3 {
+    font-size: 34px;
+  }
+}

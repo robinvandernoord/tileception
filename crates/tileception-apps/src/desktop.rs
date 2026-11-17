@@ -115,7 +115,8 @@ pub(crate) fn parse_groups(
     if values.get("Type").map(String::as_str) != Some("Application") && !hidden {
         return None;
     }
-    if let Some(executable) = values.get("TryExec") {
+    // An empty TryExec names nothing to look for, as GLib reads it.
+    if let Some(executable) = values.get("TryExec").filter(|executable| !executable.is_empty()) {
         let executable = unescape(executable);
         let executable = Path::new(&executable);
         let found = if executable.is_absolute() {

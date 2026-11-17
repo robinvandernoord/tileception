@@ -16,6 +16,7 @@ mod battery;
 mod builtin_lock;
 mod bundled;
 mod calc;
+mod calendar;
 mod capture;
 mod clipboard;
 mod colour_pick;
@@ -24,11 +25,15 @@ mod config;
 mod config_edit;
 mod controls;
 mod cursor;
+mod dashboard;
+mod dashboard_surface;
+mod desk;
 mod doctor;
 mod doctor_policy;
 mod drag;
 mod duck;
 mod feedback;
+mod file_chooser;
 mod focus;
 mod frost;
 mod gestures;
@@ -38,6 +43,7 @@ mod handlers;
 mod handoff;
 mod headless;
 mod home;
+mod ics;
 mod idle;
 mod inject;
 mod input;
@@ -73,6 +79,8 @@ mod selection;
 mod settings;
 mod shapes;
 mod shell;
+mod shortcuts_inhibit;
+mod shot;
 mod sleep;
 mod state;
 mod text;
@@ -89,6 +97,7 @@ mod updates;
 mod wake;
 mod wallpaper;
 mod winit;
+mod x11_paste;
 mod xwayland;
 mod zones;
 
@@ -363,6 +372,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.init_launcher();
     state.init_plugins();
     state.init_installer();
+    state.apply_calendar();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
         state.spawn(cmd, rest);
@@ -372,6 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // not with the next frame.
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
+        state.flush_dashboard_clients();
     })?;
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
@@ -442,6 +453,7 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
     state.start_greeter(file)?;
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
+        state.flush_dashboard_clients();
     })?;
     if let Some(socket) = socket {
         let _ = std::fs::remove_file(socket);
@@ -453,7 +465,7 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
 /// gnome-terminal-server) find this session.
 fn export_session_environment(state: &Tileception) {
     let mut vars = vec!["WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP"];
-    for var in ["SSH_AUTH_SOCK", "GNOME_DESKTOP_SESSION_ID"] {
+    for var in ["SSH_AUTH_SOCK", "GNOME_DESKTOP_SESSION_ID", "XDG_CONFIG_DIRS"] {
         if std::env::var_os(var).is_some() {
             vars.push(var);
         }

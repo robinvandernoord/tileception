@@ -1,0 +1,88 @@
+# What tileception-desktop installs: the Tileception desktop with its
+# defaults, as on the premade ISO. One relation per line, with what needs it;
+# `a | b` takes the first that the release has (Ptyxis, Papers and Showtime
+# are newer than Ubuntu 24.04). scripts/build-desktop-deb.sh reads this file.
+#
+# Not here: greetd, which tileception-setup installs without letting it take
+# the login screen; and Firefox, Vivaldi and Thunderbird, which the ISO
+# installs once their sources are in place (in the same apt run as the
+# sources package, `firefox` would still be Ubuntu's snap).
+
+[depends]
+tileception                     # the desktop itself
+pipewire                        # sound
+pipewire-pulse                  # the volume controls talk PulseAudio
+wireplumber                     # volume keys (wpctl)
+playerctl                       # media keys
+network-manager                 # the network card and Settings page
+bluez                           # the Bluetooth block
+upower                          # battery
+power-profiles-daemon           # power profiles on battery and mains
+fwupd                           # firmware in the updates chip
+gnome-keyring                   # saved passwords for browsers and apps
+libpam-gnome-keyring            # unlocks the keyring at login
+udisks2                         # USB sticks and phones in the file manager
+gvfs                            # the same, and trash and network places
+gvfs-backends                   # phones, cameras, network shares
+systemd-zram-generator          # compressed swap in memory
+fonts-noto-core                 # text in most scripts
+fonts-noto-cjk                  # Chinese, Japanese and Korean
+fonts-noto-color-emoji          # emoji
+adwaita-icon-theme              # icons and the default cursor
+
+[recommends]
+tileception-desktop-sources     # Mozilla's and GitHub's APT repositories
+ptyxis | gnome-terminal         # terminal
+nautilus                        # files
+gnome-text-editor               # text
+loupe | eog                     # images
+papers | evince                 # documents
+file-roller                     # archives
+unzip                           # zip for File Roller
+7zip                            # 7z for File Roller
+unrar                           # rar for File Roller
+showtime | totem                # video
+vlc                             # video, for everything else
+amberol                         # music
+gnome-software                  # installing apps
+gnome-software-plugin-flatpak   # Flathub apps in GNOME Software
+gnome-calculator
+gnome-system-monitor
+gnome-disk-utility
+baobab                          # disk usage
+simple-scan                     # scanning
+seahorse                        # passwords and keys
+gnome-characters
+gnome-calendar
+gnome-sound-recorder
+gnome-clocks
+gnome-weather
+gnome-maps
+cups                            # printing
+system-config-printer           # adding printers
+libreoffice-writer
+libreoffice-calc
+libreoffice-impress
+libreoffice-gnome               # LibreOffice with GTK dialogs
+gstreamer1.0-libav              # common video and audio formats
+gstreamer1.0-plugins-ugly
+gstreamer1.0-plugins-bad
+ffmpeg
+gh                              # GitHub CLI (newer from GitHub's repository)
+git
+wget
+htop
+btop
+ripgrep
+bat                             # as `bat`, through the link this package adds
+fd-find                         # as `fd`, through the link this package adds
+fzf
+jq
+tree
+ncdu
+duf
+tealdeer                        # tldr
+fastfetch
+tmux
+neovim
+zoxide                          # folders for the launcher's folder search

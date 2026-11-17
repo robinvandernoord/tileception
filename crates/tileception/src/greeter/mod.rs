@@ -37,6 +37,7 @@ use tileception_notify::Urgency;
 use zeroize::Zeroizing;
 
 pub use card::ShareConfig;
+pub(crate) use card::current_uid;
 pub use settings::GreeterFile;
 
 use self::{
@@ -276,8 +277,9 @@ impl Greeter {
     }
 
     /// The lock screen of a session: only `login` is shown, the theme stays
-    /// the session's, and nothing is remembered.
-    pub fn lock(login: &str, notifications: usize) -> Greeter {
+    /// the session's, and nothing is remembered. `still` reduces motion as
+    /// the session does without animations.
+    pub fn lock(login: &str, notifications: usize, still: bool) -> Greeter {
         let account = accounts::list(&[]).into_iter().find(|listed| listed.login == login).unwrap_or_else(|| Account {
             login: login.to_string(),
             name: login.to_string(),
@@ -285,9 +287,11 @@ impl Greeter {
             icon: None,
             accent: None,
         });
+        let administrator = GreeterFile::load();
         let file = GreeterFile {
             // The administrator decides what a locked screen may show.
-            lock: GreeterFile::load().lock,
+            lock: administrator.lock,
+            reduce_motion: administrator.reduce_motion || still,
             per_user: settings::PerUser { accent: false, wallpaper: false, ..Default::default() },
             ..Default::default()
         };
@@ -617,7 +621,9 @@ impl Tileception {
         }
         let screen = self.output_rect();
         let size = ((screen.w * self.scale).round() as u32, (screen.h * self.scale).round() as u32);
-        let publish = card::Publish::from_theme(&self.theme, self.config.file.greeter.share, size);
+        let mut publish = card::Publish::from_theme(&self.theme, self.config.file.greeter.share, size);
+        // From a wallpaper folder, the picture showing.
+        publish.wallpaper = self.wallpaper_path();
         let spawned = std::thread::Builder::new()
             .name("tileception-greeter-card".into())
             .spawn(move || publish.run(&card::folder()));

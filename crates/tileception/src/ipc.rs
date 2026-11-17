@@ -202,12 +202,32 @@ fn only_socket() -> std::io::Result<PathBuf> {
 
 /// `tileception msg ...`: sends a command to the running compositor.
 pub fn client(args: &[String]) -> std::io::Result<()> {
+    if let Some(error) = unsendable(args) {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
     let reply = request(args)?;
     print!("{reply}");
     if reply.starts_with("error") {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Commands go to the compositor as one line split at spaces, so an
+/// argument that is empty or holds whitespace would arrive changed. For
+/// `plugin add`, which writes the arguments to config.toml, that would
+/// set up a different command than the one typed: refuse it here, where
+/// the arguments are still whole.
+fn unsendable(args: &[String]) -> Option<String> {
+    if args.first().map(String::as_str) != Some("plugin") || args.get(1).map(String::as_str) != Some("add") {
+        return None;
+    }
+    let argument = args[2..].iter().find(|argument| argument.is_empty() || argument.contains(char::is_whitespace))?;
+    Some(format!(
+        "plugin add cannot pass the argument {argument:?}: an argument that is empty or contains spaces \
+         would be split; edit config.toml instead"
+    ))
 }
 
 /// Sends one command to the running compositor and returns its reply.
@@ -226,4 +246,22 @@ pub fn request(args: &[String]) -> std::io::Result<String> {
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
     Ok(reply)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_add_refuses_arguments_that_would_be_split() {
+        let words = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let error = unsendable(&words(&["plugin", "add", "python3", "/tmp/My Plugins/weather.py"])).unwrap();
+        assert!(error.contains("\"/tmp/My Plugins/weather.py\""), "{error}");
+        assert!(unsendable(&words(&["plugin", "add", "--id", "", "/bin/true"])).is_some());
+        assert!(unsendable(&words(&["plugin", "add", "tool", "a\tb"])).is_some());
+        assert_eq!(unsendable(&words(&["plugin", "add", "python3", "/tmp/weather.py"])), None);
+        // Other commands join their words on purpose: `msg type "two words"`.
+        assert_eq!(unsendable(&words(&["type", "two words"])), None);
+    }
 }

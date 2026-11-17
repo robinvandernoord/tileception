@@ -163,23 +163,29 @@ impl Tileception {
         self.power_page(if menu.uefi_available { Page::ConfirmUefi } else { Page::More }, MORE_UEFI);
     }
 
+    /// The actions on the main page.
+    pub(crate) fn power_actions(&self) -> Vec<PowerAction> {
+        PowerAction::ALL.to_vec()
+    }
+
     fn power_columns(&self) -> usize {
-        (((self.output_rect().w - 32.0 + GAP) / (BUTTON + GAP)).floor() as usize).clamp(1, PowerAction::ALL.len() + 1)
+        (((self.output_rect().w - 32.0 + GAP) / (BUTTON + GAP)).floor() as usize)
+            .clamp(1, self.power_actions().len() + 1)
     }
 
     /// Where each button sits, with each row centred on the output.
     fn power_buttons(&self) -> Vec<(PowerAction, Rect)> {
         let out = self.output_rect();
-        let count = PowerAction::ALL.len() + 1;
+        let actions = self.power_actions();
+        let count = actions.len() + 1;
         let columns = self.power_columns();
         let rows = count.div_ceil(columns);
         let width = BUTTON.min((out.w - 32.0).max(1.0));
         let height = BUTTON.min(((out.h - 160.0).max(1.0) - (rows - 1) as f64 * GAP) / rows as f64).max(72.0);
         let total_h = rows as f64 * height + (rows - 1) as f64 * GAP;
         let top = out.y + (out.h - total_h) / 2.0;
-        PowerAction::ALL
-            .iter()
-            .copied()
+        actions
+            .into_iter()
             .chain(std::iter::once(PowerAction::More))
             .enumerate()
             .map(|(index, action)| {
@@ -238,12 +244,13 @@ impl Tileception {
 
     fn power_item_action(&self, index: usize) -> Option<PointerItem> {
         let menu = self.power_menu?;
+        let actions = self.power_actions();
         match (menu.page, index) {
-            (Page::Main, index) if index < PowerAction::ALL.len() => Some(PointerItem::Run(PowerAction::ALL[index])),
-            (Page::Main, index) if index == PowerAction::ALL.len() => Some(PointerItem::Page(Page::More, 0)),
+            (Page::Main, index) if index < actions.len() => Some(PointerItem::Run(actions[index])),
+            (Page::Main, index) if index == actions.len() => Some(PointerItem::Page(Page::More, 0)),
             (Page::More, MORE_WAKE) if self.wake_enabled() => Some(PointerItem::Page(Page::Wake, 1)),
             (Page::More, MORE_UEFI) if menu.uefi_available => Some(PointerItem::Page(Page::ConfirmUefi, 0)),
-            (Page::More, MORE_BACK) => Some(PointerItem::Page(Page::Main, PowerAction::ALL.len())),
+            (Page::More, MORE_BACK) => Some(PointerItem::Page(Page::Main, actions.len())),
             (Page::ConfirmUefi, 0) => Some(PointerItem::Page(Page::More, MORE_UEFI)),
             (Page::ConfirmUefi, 1) => Some(PointerItem::Run(PowerAction::Uefi)),
             (Page::Wake, 1) => Some(PointerItem::SuspendUntil),
@@ -356,7 +363,8 @@ impl Tileception {
         // While packages change the computer stays on: the action waits.
         if self.updates_hold_power(action) {
             // Back to the buttons, where the menu says what waits.
-            let selected = PowerAction::ALL.iter().position(|known| *known == action).unwrap_or(PowerAction::ALL.len());
+            let actions = self.power_actions();
+            let selected = actions.iter().position(|known| *known == action).unwrap_or(actions.len());
             if self.power_menu.is_some() {
                 self.power_page(Page::Main, selected);
             }
@@ -392,16 +400,17 @@ impl Tileception {
             };
         }
         let columns = if page == Page::Main { self.power_columns() } else { 1 };
+        let actions = self.power_actions();
         let Some(menu) = self.power_menu.as_mut() else { return };
         let count = match page {
-            Page::Main => PowerAction::ALL.len() + 1,
+            Page::Main => actions.len() + 1,
             Page::More => 3,
             Page::ConfirmUefi | Page::Wake => 2,
         };
         match sym {
             keysyms::KEY_Escape => match page {
                 Page::Main => self.close_power_menu(),
-                Page::More => self.power_page(Page::Main, PowerAction::ALL.len()),
+                Page::More => self.power_page(Page::Main, actions.len()),
                 Page::ConfirmUefi | Page::Wake => self.power_page(Page::More, MORE_UEFI),
             },
             keysyms::KEY_Left | keysyms::KEY_ISO_Left_Tab => menu.selected = (menu.selected + count - 1) % count,
@@ -421,7 +430,7 @@ impl Tileception {
                 } else if page == Page::More && letter == Some('u') {
                     self.activate_power_item(MORE_UEFI);
                 } else if page == Page::Main
-                    && let Some(action) = PowerAction::ALL.iter().find(|candidate| Some(candidate.key()) == letter)
+                    && let Some(action) = actions.iter().find(|candidate| Some(candidate.key()) == letter)
                 {
                     self.run_power_action(*action);
                 }
@@ -607,7 +616,10 @@ impl Tileception {
                 28,
                 if active { theme.accent } else { foreground },
             );
-            let label = if enabled { action.label() } else { "Suspend off" };
+            let label = match action {
+                _ if !enabled => "Suspend off",
+                action => action.label(),
+            };
             let style = Style::new(theme.font_size, foreground).align(Align::Centre);
             painter.text(
                 label,
@@ -622,7 +634,7 @@ impl Tileception {
             painter.fill(chip, chip_fill, 4.0);
             painter.text(&key, chip, Style::new(theme.font_size * 0.75, chip_text).bold().align(Align::Centre));
         }
-        let arrows = if self.power_columns() < PowerAction::ALL.len() + 1 {
+        let arrows = if self.power_columns() < self.power_actions().len() + 1 {
             "\u{2190}\u{2191}\u{2193}\u{2192}"
         } else {
             "\u{2190}\u{2192}"

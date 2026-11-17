@@ -1,0 +1,145 @@
+# How the changelog shows each area: the commit scope of a change.
+# colour is red, yellow, blue or white (the canvas). Roughly: red for windows
+# and the layout, yellow for the shell's own panels and tools, blue for what
+# connects to other machines, programs and devices. A scope that is not listed
+# shows its own name in white.
+
+[desk]
+colour = "red"
+
+[windows]
+colour = "red"
+
+[layout]
+colour = "red"
+
+[floats]
+name = "Floating windows"
+colour = "red"
+
+[floating]
+name = "Floating windows"
+colour = "red"
+
+[split-screen]
+name = "Split screen"
+colour = "red"
+
+[compositor]
+colour = "red"
+
+[focus]
+colour = "red"
+
+[minimap]
+colour = "red"
+
+[gestures]
+colour = "red"
+
+[xwayland]
+name = "Xwayland"
+colour = "red"
+
+[settings]
+colour = "yellow"
+
+[launcher]
+colour = "yellow"
+
+[bar]
+colour = "yellow"
+
+[calendar]
+colour = "yellow"
+
+[notifications]
+colour = "yellow"
+
+[notify]
+name = "Notifications"
+colour = "yellow"
+
+[tray]
+colour = "yellow"
+
+[updates]
+colour = "yellow"
+
+[power]
+colour = "yellow"
+
+[battery]
+colour = "yellow"
+
+[network]
+colour = "yellow"
+
+[bluetooth]
+colour = "yellow"
+
+[panel]
+colour = "yellow"
+
+[calc]
+name = "Calculator"
+colour = "yellow"
+
+[timers]
+colour = "yellow"
+
+[media]
+colour = "yellow"
+
+[screenshot]
+colour = "yellow"
+
+[handoff]
+colour = "blue"
+
+[outputs]
+name = "Displays"
+colour = "blue"
+
+[displays]
+colour = "blue"
+
+[plugins]
+colour = "blue"
+
+[doctor]
+colour = "blue"
+
+[duck]
+name = "Rubber duck"
+colour = "blue"
+
+[remote-desktop]
+name = "Remote desktop"
+colour = "blue"
+
+[portal]
+colour = "blue"
+
+[clipboard]
+colour = "blue"
+
+[smart-home]
+name = "Smart home"
+colour = "blue"
+
+[home]
+name = "Smart home"
+colour = "blue"
+
+[ui]
+name = "UI"
+
+[acp]
+name = "ACP"
+
+[dbus]
+name = "D-Bus"
+
+[cli]
+name = "CLI"

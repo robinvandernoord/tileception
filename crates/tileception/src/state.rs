@@ -97,6 +97,7 @@ pub struct Tileception {
     /// The window list for taskbars and switchers.
     pub toplevels: crate::toplevels::Toplevels,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub keyboard_shortcuts_inhibit_state: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     pub pointer_gestures_state: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub xwayland_shell_state: XWaylandShellState,
@@ -162,6 +163,10 @@ pub struct Tileception {
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
     pub tap_fired: Vec<crate::commands::Command>,
+    /// Super+D: held to peek, tapped to clear the desk.
+    pub desk: crate::desk::Desk,
+    pub dashboard: crate::dashboard::Dashboard,
+    pub dashboard_surfaces: crate::dashboard_surface::Surfaces,
     pub key_repeat: crate::key_repeat::KeyRepeat,
     /// Set by a lock screen or greeter key to repeat while it is held.
     pub greeter_repeat: Option<crate::key_repeat::Repeat>,
@@ -192,6 +197,10 @@ pub struct Tileception {
     pub feedback: Option<crate::feedback::Feedback>,
     /// A colour pick in progress, which takes the pointer and keyboard.
     pub colour_pick: Option<crate::colour_pick::ColourPick>,
+    /// An area screenshot being picked.
+    pub shot: Option<crate::shot::Shot>,
+    /// An area being recorded.
+    pub recording: Option<crate::shot::record::Recording>,
     pub launcher: crate::launcher::Launcher,
     /// Plugins, once started.
     pub plugins: Option<crate::plugins::Host>,
@@ -239,11 +248,15 @@ pub struct Tileception {
     /// This instance may be the polkit agent at all.
     pub polkit_wanted: bool,
     pub network: crate::network::Network,
+    /// Events from `[calendar]`.
+    pub calendar: crate::calendar::Agenda,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
     pub wallpaper: Option<crate::wallpaper::Wallpaper>,
     /// A wallpaper that could not be loaded, so it is not retried every frame.
     pub wallpaper_failed: Option<std::path::PathBuf>,
+    /// The picture from a wallpaper folder, shared by every screen.
+    pub wallpaper_rotation: crate::wallpaper::Rotation,
     /// Set when running without a screen.
     pub headless: Option<Box<crate::headless::Headless>>,
 }
@@ -299,6 +312,7 @@ impl Tileception {
             .unwrap_or_else(|| default_terminal(launcher.apps()));
         let settings = config.world_settings();
         let theme = config.theme.clone();
+        let wallpaper_rotation = crate::wallpaper::Rotation::new(theme.wallpaper.as_deref());
 
         Tileception {
             start: Instant::now(),
@@ -322,6 +336,10 @@ impl Tileception {
             pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(
                 &display_handle,
             ),
+            keyboard_shortcuts_inhibit_state:
+                smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState::new::<Self>(
+                    &display_handle,
+                ),
             relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(
                 &display_handle,
             ),
@@ -365,6 +383,9 @@ impl Tileception {
             touchpads: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
+            desk: Default::default(),
+            dashboard: crate::dashboard::Dashboard::load(),
+            dashboard_surfaces: Default::default(),
             key_repeat: Default::default(),
             greeter_repeat: None,
             pending_press: None,
@@ -392,6 +413,8 @@ impl Tileception {
             power_menu: None,
             feedback: None,
             colour_pick: None,
+            shot: None,
+            recording: None,
             launcher,
             plugins: None,
             installer: Default::default(),
@@ -426,10 +449,12 @@ impl Tileception {
             polkit: Default::default(),
             polkit_wanted: false,
             network: Default::default(),
+            calendar: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
             wallpaper: None,
             wallpaper_failed: None,
+            wallpaper_rotation,
             headless: None,
         }
     }
@@ -720,8 +745,7 @@ impl Tileception {
                 if Some(placement.window) == self.fullscreen || self.world.float_needs_size(placement.window) {
                     continue;
                 }
-                let size: Size<i32, Logical> =
-                    (placement.rect.w.round().max(1.0) as i32, placement.rect.h.round().max(1.0) as i32).into();
+                let size = slot_size(&placement.rect);
                 let Some(window) = self.windows.get(&placement.window) else {
                     // Another machine's window: its owner sizes it, and keeps
                     // its menus on this screen.
@@ -739,7 +763,7 @@ impl Tileception {
                 } else if let Some(x11) = window.x11_surface() {
                     // X11 programs place their menus from this position.
                     let loc = (placement.rect.x.round() as i32, placement.rect.y.round() as i32);
-                    let _ = x11.configure(Rectangle::new(loc.into(), size));
+                    let _ = x11.configure(Rectangle::new(self.x11_origin() + Point::from(loc), size));
                 }
             }
         }
@@ -793,6 +817,7 @@ impl Tileception {
             || self.password_prompt.is_some()
             || self.power_menu.is_some()
             || self.colour_pick.is_some()
+            || self.shot.is_some()
             || self.notifications.answering.is_some()
         {
             None
@@ -808,6 +833,7 @@ impl Tileception {
             || (self.doctor.open && self.doctor.focused)
             || self.duck.typing()
             || self.network.zoom.open
+            || self.notifications_keyboard()
         {
             None
         } else {
@@ -859,7 +885,7 @@ impl Tileception {
         } else if let Some(x11) = window.x11_surface() {
             let _ = x11.set_fullscreen(enable);
             if enable {
-                let _ = x11.configure(Rectangle::new((0, 0).into(), size));
+                let _ = x11.configure(Rectangle::new(self.x11_origin(), size));
             }
         }
         self.fullscreen = enable.then_some(window_id);
@@ -871,6 +897,15 @@ impl Tileception {
 
     /// Takes a window out of the layout without closing it, leaving
     /// fullscreen first.
+    /// The maximize button in a program's own title bar: frames the window
+    /// on its own, like the Maximize action, and a second press goes back.
+    pub fn maximize_window(&mut self, window_id: WindowId) {
+        let Some(area) = self.area_for_window(window_id) else { return };
+        self.activate_area(&area);
+        self.world.focus_window(window_id, self.now());
+        self.run(crate::input::Action::Maximize);
+    }
+
     pub fn minimize_window(&mut self, window_id: WindowId) {
         if let Some(area) = self.area_for_window(window_id)
             && self.context_area().as_ref() != Some(&area)
@@ -888,6 +923,15 @@ impl Tileception {
             self.peek_minimized();
         }
         self.apply_layout();
+    }
+
+    /// Where this output's top left corner is on the X screen. Xwayland lays
+    /// the outputs out as Wayland does, and constrains the X pointer to them:
+    /// an X11 window placed in output coordinates on an output that is not
+    /// leftmost (or with a gap where an output was) hangs partly off every
+    /// output in X, and clicks there land at the nearest output's edge.
+    pub fn x11_origin(&self) -> Point<i32, Logical> {
+        self.output.as_ref().map_or_else(Default::default, Output::current_location)
     }
 
     /// The whole output in logical pixels, including what bars reserve.
@@ -924,6 +968,12 @@ impl Tileception {
 
 /// Dialogs and fixed-size windows float instead of tiling.
 pub(crate) fn wants_float(window: &Window) -> bool {
+    // The desktop portal's dialogs, such as its file chooser. Without
+    // xdg-foreign they cannot name the window they belong to, so they come
+    // without a parent, but they are always dialogs.
+    if app_id(window).starts_with("xdg-desktop-portal") {
+        return true;
+    }
     if let Some(toplevel) = window.toplevel() {
         let (min, max) = with_states(toplevel.wl_surface(), |states| {
             let mut guard = states.cached_state.get::<SurfaceCachedState>();
@@ -943,6 +993,15 @@ pub(crate) fn wants_float(window: &Window) -> bool {
         return x11.is_transient_for().is_some() || dialog || fixed;
     }
     false
+}
+
+/// The size to ask of a window laid out in `slot`: the whole pixels it holds.
+/// Rounding up would make the window half a pixel too big, so it would be
+/// drawn a hair smaller than it is, resampled and blurry.
+pub(crate) fn slot_size(slot: &Rect) -> Size<i32, Logical> {
+    // A slot a rounding error short of a whole pixel still gets that pixel.
+    let whole = |length: f64| (length + 1e-6).floor().max(1.0) as i32;
+    (whole(slot.w), whole(slot.h)).into()
 }
 
 /// The largest size a window lets itself be, either side unlimited if `None`.
@@ -1015,7 +1074,10 @@ impl Tileception {
         self.update_home();
         self.update_toplevels();
         self.update_duck();
+        self.configure_dashboard_items();
+        self.refresh_dashboard_pointer();
         let _ = self.display_handle.flush_clients();
+        self.flush_dashboard_clients();
     }
 }
 
@@ -1079,12 +1141,12 @@ fn terminal_name(terminal: &str) -> &str {
 /// not declare them.
 fn known_terminal_args(name: &str) -> tileception_apps::TerminalArgs {
     let exec = match name {
-        "gnome-terminal" => "--",
+        "gnome-terminal" | "ptyxis" => "--",
         "xfce4-terminal" => "-x",
         _ => "-e",
     };
     let dir = match name {
-        "ghostty" | "foot" | "alacritty" | "gnome-terminal" | "xfce4-terminal" | "lxterminal" => {
+        "ghostty" | "foot" | "alacritty" | "ptyxis" | "gnome-terminal" | "xfce4-terminal" | "lxterminal" => {
             Some("--working-directory=")
         }
         "kitty" => Some("--directory="),
@@ -1103,12 +1165,12 @@ pub(crate) fn shell_word(value: &str) -> String {
 /// The terminal when none is configured: the user's choice in
 /// `xdg-terminals.list`, else the first of these that is installed, else
 /// any installed terminal emulator.
-fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
+pub(crate) fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
     if let Some(chosen) = apps.preferred_terminal() {
         return chosen.exec.clone();
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
-    ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "gnome-terminal"]
+    ["ghostty", "foot", "alacritty", "kitty", "lxterminal", "ptyxis", "gnome-terminal"]
         .into_iter()
         .find(|terminal| std::env::split_paths(&path).any(|dir| dir.join(terminal).is_file()))
         .map(String::from)
@@ -1119,9 +1181,37 @@ fn default_terminal(apps: &tileception_apps::AppIndex) -> String {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set for a dashboard plugin's own connection.
+    pub dashboard: Option<crate::dashboard_surface::Owner>,
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_never_asks_for_more_than_its_slot_holds() {
+        for (length, expected) in [(312.5, 312), (312.4, 312), (312.9, 312), (313.0, 313), (312.9999999, 313), (0.3, 1)]
+        {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert_eq!((size.w, size.h), (expected, expected), "slot {length}");
+        }
+        // Drawn at its slot, such a window needs no scaling, so it stays sharp.
+        for length in [312.5, 631.0, 383.0 / 2.0, 1274.0 / 3.0] {
+            let size = slot_size(&Rect::new(0.0, 0.0, length, length));
+            assert!(f64::from(size.w) <= length + 1e-6, "slot {length}");
+        }
+    }
+
+    #[test]
+    fn ptyxis_runs_commands_after_a_double_dash_and_opens_in_a_folder() {
+        let args = known_terminal_args("ptyxis");
+        assert_eq!(args.exec.as_deref(), Some("--"));
+        assert_eq!(args.dir.as_deref(), Some("--working-directory="));
+    }
 }

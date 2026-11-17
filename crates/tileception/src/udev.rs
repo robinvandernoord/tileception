@@ -42,7 +42,7 @@ use smithay::{
         },
         drm::{
             Device as _,
-            control::{ModeTypeFlags, connector, crtc},
+            control::{Device as _, Mode as DrmMode, ModeTypeFlags, connector, crtc},
         },
         input::Libinput,
         rustix::fs::OFlags,
@@ -58,6 +58,11 @@ use smithay::{
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
+
+/// The mode a display asks for, else the first it offers.
+fn preferred_mode(modes: &[DrmMode]) -> Option<DrmMode> {
+    modes.iter().find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED)).or(modes.first()).copied()
+}
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 type OutputManager = DrmOutputManager<Allocator, Exporter, (), DrmDeviceFd>;
 type Surface = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
@@ -106,6 +111,7 @@ struct Gpu {
 }
 
 struct Lit {
+    connector: connector::Handle,
     modes: Vec<smithay::reexports::drm::control::Mode>,
     mode: WlMode,
     enabled: bool,
@@ -482,6 +488,29 @@ impl Tileception {
                 }
             }
         }
+        // A display that stays connected can change what it offers, as a
+        // virtual machine's screen does when its window is resized. Keeping
+        // its modes current lets configure_outputs follow the new preferred
+        // mode when none is configured.
+        for gpu in &mut udev.gpus {
+            for lit in &mut gpu.surfaces {
+                let Ok(info) = gpu.manager.device().get_connector(lit.connector, false) else { continue };
+                if info.state() != connector::State::Connected || info.modes() == lit.modes.as_slice() {
+                    continue;
+                }
+                let Some(preferred) = preferred_mode(info.modes()) else { continue };
+                for mode in &lit.modes {
+                    lit.output.delete_mode(WlMode::from(*mode));
+                }
+                for mode in info.modes() {
+                    lit.output.add_mode(WlMode::from(*mode));
+                }
+                lit.output.set_preferred(WlMode::from(preferred));
+                lit.modes = info.modes().to_vec();
+                let size = WlMode::from(preferred).size;
+                tracing::info!("{} now prefers {}x{}", lit.output.name(), size.w, size.h);
+            }
+        }
         self.udev = Some(udev);
         if let Err(error) = self.configure_outputs() {
             tracing::error!("output configuration rejected; retaining connected displays: {error}");
@@ -498,13 +527,7 @@ impl Tileception {
         crtc: crtc::Handle,
     ) {
         let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
-        let Some(mode) = connector
-            .modes()
-            .iter()
-            .find(|candidate| candidate.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or(connector.modes().first())
-            .copied()
-        else {
+        let Some(mode) = preferred_mode(connector.modes()) else {
             return;
         };
         let wl_mode = WlMode::from(mode);
@@ -567,6 +590,7 @@ impl Tileception {
         self.advertise_output(&output);
         self.add_output(output.clone());
         surfaces.push(Lit {
+            connector: connector.handle(),
             modes: connector.modes().to_vec(),
             mode: wl_mode,
             enabled: true,

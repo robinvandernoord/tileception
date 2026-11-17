@@ -35,10 +35,14 @@ impl Repeat {
                 | Command::UpdatesKey(sym, mods)
                 | Command::SettingsKey(sym, mods) => edits(*sym, *mods),
                 Command::PowerMenuKey(sym) => edits(*sym, Mods::default()),
-                Command::ColourPickKey(sym, mods) => edits(*sym, *mods),
+                Command::ColourPickKey(sym, mods) | Command::ShotKey(sym, mods) => edits(*sym, *mods),
                 Command::NotificationKey(sym, _) => {
                     matches!(*sym, keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Up | keysyms::KEY_Down)
                 }
+                Command::NotificationPanelKey(sym, _) => matches!(
+                    crate::text_input::plain(*sym),
+                    keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Page_Up | keysyms::KEY_Page_Down
+                ),
                 _ => false,
             });
         repeats.then(|| Repeat::Commands(commands.to_vec()))
@@ -127,7 +131,9 @@ impl Tileception {
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),
                     Command::FeedbackKey(sym, mods) => self.feedback_key_repeats(*sym, *mods),
                     Command::ColourPickKey(..) => self.colour_pick.is_some(),
+                    Command::ShotKey(..) => self.shot.is_some(),
                     Command::NotificationKey(..) => self.notifications.answering.is_some(),
+                    Command::NotificationPanelKey(..) => self.notifications_keyboard(),
                     _ => true,
                 });
                 if !still {

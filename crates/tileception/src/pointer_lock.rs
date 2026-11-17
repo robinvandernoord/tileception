@@ -38,26 +38,7 @@ impl Tileception {
     ) -> Option<Point<f64, Logical>> {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let under = self.constraint_surface_under(self.pointer);
-        let held = match (&under, self.constraints_apply()) {
-            (Some((surface, origin)), true) => {
-                let local = (self.pointer - *origin).to_i32_round();
-                with_pointer_constraint(surface, &pointer, |constraint| match constraint {
-                    Some(constraint)
-                        if constraint.is_active()
-                            && constraint.region().is_none_or(|region| region.contains(local)) =>
-                    {
-                        match &*constraint {
-                            PointerConstraint::Locked(_) => Held::Locked,
-                            PointerConstraint::Confined(confined) => {
-                                Held::Confined(surface.clone(), *origin, confined.region().cloned())
-                            }
-                        }
-                    }
-                    _ => Held::Free,
-                })
-            }
-            _ => Held::Free,
-        };
+        let held = self.held(under.as_ref());
         // Raw motion goes nowhere while the compositor's interface has the pointer.
         let focus = under.clone().filter(|_| self.constraints_apply());
         let scale = focus.as_ref().and_then(|(surface, _)| self.pointer_surface_scale(surface)).unwrap_or((1.0, 1.0));
@@ -84,6 +65,34 @@ impl Tileception {
                 }
             }
         }
+    }
+
+    /// What an active constraint of the surface under the pointer (`under`,
+    /// with its origin) does to the next movement.
+    fn held(&self, under: Option<&(WlSurface, Point<f64, Logical>)>) -> Held {
+        let Some((surface, origin)) = under.filter(|_| self.constraints_apply()) else { return Held::Free };
+        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+        let local = (self.pointer - *origin).to_i32_round();
+        with_pointer_constraint(surface, &pointer, |constraint| match constraint {
+            Some(constraint)
+                if constraint.is_active() && constraint.region().is_none_or(|region| region.contains(local)) =>
+            {
+                match &*constraint {
+                    PointerConstraint::Locked(_) => Held::Locked,
+                    PointerConstraint::Confined(confined) => {
+                        Held::Confined(surface.clone(), *origin, confined.region().cloned())
+                    }
+                }
+            }
+            _ => Held::Free,
+        })
+    }
+
+    /// Whether a program locks or confines the pointer now: it does not
+    /// cross to another machine then.
+    pub(crate) fn pointer_held(&self) -> bool {
+        let under = self.constraint_surface_under(self.pointer);
+        !matches!(self.held(under.as_ref()), Held::Free)
     }
 
     /// Activates a waiting constraint once the pointer is over its surface

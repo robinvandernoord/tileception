@@ -1,0 +1,6 @@
+# The terminal for Tileception sessions, from tileception-desktop: the first
+# installed one. Your own ~/.config/tileception-xdg-terminals.list or
+# ~/.config/xdg-terminals.list comes first, as does `terminal` in
+# Tileception's config.toml.
+org.gnome.Ptyxis.desktop
+org.gnome.Terminal.desktop

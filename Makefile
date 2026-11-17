@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release
+.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release changelog
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -28,7 +28,10 @@ help:
 	@echo "                 MUSIC=track.mp3 adds music, SCENES='2 4' re-records some)"
 	@echo "make deb         build optimised .deb packages for this system"
 	@echo "make deb-docker  build .deb packages per release in containers"
-	@echo "make release     release a new version with vommit"
+	@echo "make release     release a new version with vommit, then write its changelog entry"
+	@echo "                 (VOMMIT_ARGS='--patch' passes options to vommit, such as --noop)"
+	@echo "make changelog   write the changelog page's entry for the latest release"
+	@echo "                 with Claude Code (VERSION=0.19.0 picks one, FORCE=1 rewrites)"
 
 tools:
 	@if ! cargo plane setup codespace --help 2>/dev/null | grep -q -- '--yes'; then \
@@ -130,5 +133,20 @@ deb:
 deb-docker:
 	scripts/build-deb-docker.sh $(DEB_IMAGES)
 
-release:
-	vommit release
+# VOMMIT_ARGS passes options to vommit, such as --patch or --noop. The
+# changelog entry follows only when vommit made a new tag; if it fails, the
+# release stands and `make changelog` tries again.
+VOMMIT_ARGS ?=
+
+# The entry is written by entry.sh itself, not through $(MAKE): make runs any
+# line naming $(MAKE) even under `make -n`, which would release for real.
+release: tools
+	@before=$$(git describe --tags --abbrev=0 2>/dev/null); \
+	vommit release $(VOMMIT_ARGS) || exit $$?; \
+	after=$$(git describe --tags --abbrev=0 2>/dev/null); \
+	if [ "$$after" = "$$before" ]; then echo "No new tag, so no changelog entry."; exit 0; fi; \
+	scripts/changelog/entry.sh "$$after" || \
+		echo "$$after is released, but its changelog entry is not: run make changelog VERSION=$$after to try again." >&2
+
+changelog: tools
+	scripts/changelog/entry.sh $(VERSION)

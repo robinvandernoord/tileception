@@ -7,16 +7,16 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 
 ## Decisions
 
-| Topic | Decision |
-| --- | --- |
-| Name | Tileception (binary `tileception`); chosen for findability. |
-| Display server | Wayland compositor. X11 apps run through Xwayland. No native X11 WM. |
-| Foundation | Written from scratch on Smithay. niri and anvil are reading material only. |
-| Design | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
-| Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock. |
-| Configuration | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands. |
-| Licensing | Dropped. No trial or license code; updates use APT rather than an in-app updater. |
-| Distribution | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host. |
+| Topic            | Decision                                                                                                                                                                                                                                     |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Name             | Tileception (binary `tileception`); chosen for findability.                                                                                                                                                                                  |
+| Display server   | Wayland compositor. X11 apps run through Xwayland. No native X11 WM.                                                                                                                                                                         |
+| Foundation       | Written from scratch on Smithay. niri and anvil are reading material only.                                                                                                                                                                   |
+| Design           | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
+| Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock.                             |
+| Configuration    | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands.                                                                                                                      |
+| Licensing        | Dropped. No trial or license code; updates use APT rather than an in-app updater.                                                                                                                                                            |
+| Distribution     | Native `.deb` packages through `apt.tileception.space`, with CI publishing to a separate APT host backed by object storage and a CDN. The website and `/install` script deploy separately to the small OVH host.                             |
 
 ## Architecture
 
@@ -59,32 +59,49 @@ finished, remove its item (keep any part still to come) instead of ticking it
 off or adding notes such as "implemented", "verified" or "remains untried".
 Report testing in the conversation, the commit or the pull request instead.
 
+### Next
+
+- Dashboard surfaces, the rest. Decided:
+  - The dashboard's display also offers `linux-dmabuf` (with the same
+    feedback as the main display) and fractional scale, so GPU-drawn
+    surfaces do not go through shared memory and a fractional output scale
+    draws sharp.
+  - A cap on each dashboard client's shared memory pools, on top of the
+    4096-pixel cap on buffers.
+  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
+    network) as a manifest option. The protocol limits what it can do to the
+    desktop, not to the user's files.
+- The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
+  download page), the rest. Decided:
+  - Before the first ISO goes out: an R2 bucket `tileception-iso` with the
+    custom domain `iso.su6.nl` (which `/download/` redirects to), the R2
+    secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) in
+    the `apt` environment next to its SSH secrets, and the
+    `sign-checksums` command deployed on the apt server.
+    `tileception-desktop` is published with the next release.
+  - Packages for every supported Ubuntu release, interim releases included.
+    The deb matrix in `release.yml` and `DEB_IMAGES` follows
+    `ubuntu-distro-info --supported` (and `debian-distro-info`): a new
+    release joins at its beta, an old one leaves at its end of life, and
+    `SUITES` in `iso.yml` and on the apt server follow. The install script
+    and `docs/installation.md` describe that rule instead of naming
+    releases.
+  - On a system without GNOME, `tileception-desktop`'s recommendations
+    pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
+    `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for
+    `apt install tileception-desktop` elsewhere, find which recommendation
+    brings them and replace or drop it.
+  - The arm64 ISOs are built but not installed in CI: GitHub's arm64
+    runners have no KVM. Try one on an arm64 machine before trusting it.
+  - Before release, what someone trying the ISO in a VM meets first:
+    `tileception msg` without `TILECEPTION_SOCKET` counts
+    `tileception-ssh-agent.sock` as a second instance, and the VMware
+    absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which QEMU
+    offers through its default `vmport` on x86, and VMware itself) moves
+    nothing.
+
 ### Later
 
-- Update manager, beyond APT and kernels. Decided:
-  - Flatpak and Snap updates join the same list, each with its source; then
-    firmware through fwupd, never ticked by default.
-  - A changelog per update (`apt-get changelog`, Flatpak and Snap release
-    notes), and "skip this version" or "hold" for one package, shown as a
-    muted row.
-  - Automatic updates through `unattended-upgrades` where the distribution
-    has it: a switch that turns its periodic run on or off and says what it
-    covers. No scheduler of our own.
-  - Choosing an Ubuntu mirror, with each mirror's speed and how far behind
-    it is; a warning when the current one is unreachable or stale.
-  - One row per source package, with its description and the binary
-    packages under it.
-  - "Restart and install" as a second line under Restart in the power menu
-    while a kernel or firmware waits.
-  - A snapshot before kernel, Mesa and release upgrades where Timeshift or
-    a btrfs root is present.
-  - Doctor answers "what changed since Tuesday?" from the apt history.
-  - Updates of machines linked through handoff, in the same card.
-  - Possibly: the updates as a tile to zoom into, each source a nested tile
-    sized by its download.
-- Doctor reads `CHANGELOG.md` the way it reads the docs: compiled into the
-  binary with `include_str!` next to the `docs/` files in `doctor.rs`, so it
-  can answer what changed in a version and when something arrived.
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the
@@ -135,48 +152,54 @@ Report testing in the conversation, the commit or the pull request instead.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.
-- Feedback from inside Tileception:
-  - Optional screenshot attachment: explicit opt-in, preview the captured
-    image before including it, and allow removing it before opening the
-    issue.
-  - For people without a GitHub account: a small relay (OVH host or a
-    serverless function) holding a GitHub App's key, which files the issue
-    as the App's bot. The key never ships in Tileception. The relay needs
-    rate limiting, a length cap and a spam check, and new issues should wait
-    in triage before they show publicly.
-- Smart home in Settings: import devices, configure cloud sensors, switch
-  `[home] enabled` and refresh the device inventory by hand.
-- Smart home history: support temperature, humidity or both, including
-  standalone sensors. Let users choose which readings to show in Settings,
-  according to what each device reports.
+- Feedback from inside Tileception for people without a GitHub account: a
+  small relay (OVH host or a serverless function) holding a GitHub App's
+  key, which files the issue as the App's bot. The key never ships in
+  Tileception. The relay needs rate limiting, a length cap and a spam check,
+  and new issues should wait in triage before they show publicly.
+- Doctor in a window: a pop-out from the panel into a window of its own,
+  remembered across openings and logins (whether it is popped out, and its
+  place and size), with a way back into the panel. Decided:
+  - Doctor's window is a built-in window like Settings and Updates: a
+    `settings::client::Kind::Doctor`, so it is a real xdg-shell toplevel
+    that tiles, floats, focuses and moves like any other window. Doctor's
+    model stays in the compositor; the window only draws it and takes its
+    input.
+  - The panel and the window show the same conversation; only one of them
+    is open at a time.
+- Game mode: Tileception's own Super bindings step aside while a game has
+  the keyboard, so Super and Super combinations reach the game. Decided:
+  - Super+Caps Lock toggles it (check that the binding can see Caps Lock
+    with Super held, and that Caps Lock itself is not toggled as well).
+  - It also switches on by itself when a game starts. To find out: what
+    marks a game reliably (fullscreen plus Steam's `steam_app_*` app ids,
+    Proton and Wine, gamescope, Lutris and Heroic, or a per-app rule).
+  - A small overlay says game mode is on, and how to leave it, when it
+    switches on.
+  - Still open: what Super does while it is on (nothing at all, a long hold
+    that still reaches Tileception, or one reserved combination).
+  - Gaming on Tileception in general, to look into before building: VRR
+    and tearing (`wp_tearing_control`), direct scanout of a fullscreen
+    game's buffers, Xwayland games and their pointer grabs, gamescope
+    nested in Tileception, Steam and its overlay, controllers, Feral
+    GameMode, and the keyboard-shortcuts-inhibit protocol that Tileception
+    already honours (how it relates to game mode).
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
-- Bluetooth device icons by type: the block, nearby list, launcher rows and
-  bar chip use one Bluetooth glyph for every device. Pick a glyph from BlueZ's
-  `Icon` property (`audio-headset`, `audio-headphones`, `input-mouse`,
-  `input-keyboard`, `phone`, ...), adding the few missing glyphs to `ui.rs`,
-  and keep the Bluetooth glyph for unknown types.
 
 ### Maybe someday
 
 - Window management gestures on the touchpad.
-- Top bar calendar events from an .ics file or URL.
-- Compare contents or hashes before exporting Doctor's bundled documentation
-  and default config, writing only missing or changed files.
-- Pick a Doctor agent during `tileception-setup`.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
 - Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, Ctrl+Space layout switching, more than one screen, reduced motion,
-  an accent taken from a shared wallpaper, and the full tile-to-window morph
-  at login.
-- Handoff hardening: key rotation and revocation, keyboard-layout ownership,
-  edge mapping for unequal monitors and pointer-locked apps, shortcut routing
-  inside a streamed window, audio and owner-side portal dialogs. Each machine's
-  keyboard follows only that machine's own pointer.
+  panels, more than one screen, and the full tile-to-window morph at login.
+- Handoff hardening: key rotation and revocation, pointer locks inside a
+  streamed window (a program there gets relative motion and holds the pointer
+  where the window is shown), audio and owner-side portal dialogs.
 - Handoff video: video-heavy windows need a real video codec rather than
   compressed tiles (choose between VA-API, openh264 or ffmpeg first). Popups
   stay where they opened when the window's place there changes.
@@ -193,6 +216,11 @@ Report testing in the conversation, the commit or the pull request instead.
 - App-matched layout restoration across logins.
 - The wlr foreign-toplevel management protocol for external taskbars.
 - Window rules for saved views; views stay purely about the camera.
+- Updates of machines linked through handoff in the update manager: what
+  waits on each, and installing there from here.
+- The update manager in the Super+X power menu, such as a "Restart and
+  install" action; updates stay in the update manager.
+- Picking Doctor's agent during `tileception-setup`.
 - Bindings that repeat while held, pass through to the app or work while
   locked (beyond the media keys); click-to-kill.
 - Input methods (text-input and input-method protocols).

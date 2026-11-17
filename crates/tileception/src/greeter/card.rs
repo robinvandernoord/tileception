@@ -116,7 +116,7 @@ impl Publish {
 }
 
 #[allow(unsafe_code, reason = "the real user id comes from libc's getuid")]
-fn current_uid() -> u32 {
+pub(crate) fn current_uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
 }

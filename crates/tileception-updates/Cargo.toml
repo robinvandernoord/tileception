@@ -3,7 +3,10 @@ name = "tileception-updates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Pending APT updates, kernel clean-up and release upgrades for Tileception"
+description = "Pending APT, Flatpak, Snap and firmware updates, kernel clean-up and release upgrades for Tileception"
+
+[dependencies]
+serde_json = "1"
 
 [lints]
 workspace = true

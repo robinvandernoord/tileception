@@ -1,0 +1,17 @@
+version = "0.3.0"
+date = 2026-10-17
+
+[[features]]
+area = "launcher"
+title = "The launcher answers questions"
+text = "The launcher answers sums, conversions, the time elsewhere, dates, colours and emoji searches as you type, such as `15% of 80`, `5 km in mi` or `time in tokyo`. Everything is worked out on your computer."
+
+[[features]]
+area = "bar"
+title = "A bar along the top"
+text = "It shows where you are in the tree, your saved views, the clock and your notifications. Click the clock for a calendar. `bar = \"none\"` hides the bar, and `bar = \"waybar\"` runs another bar instead."
+
+[[features]]
+area = "outputs"
+title = "Sharp on HiDPI screens"
+text = "Each screen gets a scale that fits its size and resolution, so laptop panels and 4K monitors get 1.5 or 2. Set your own under `[outputs.\"eDP-1\"]` with `scale = 1.25`, for example."

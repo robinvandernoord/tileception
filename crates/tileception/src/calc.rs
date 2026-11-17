@@ -139,7 +139,7 @@ struct Value {
 /// product = power (("*" | "/" | "mod") power)*
 /// power   = unary ("^" power)?
 /// unary   = "-" unary | "+" unary | postfix
-/// postfix = atom "%"* ("of" unary)?
+/// postfix = atom "%"* ("of" power)?
 /// atom    = number | constant | function "(" sum ")" | "(" sum ")"
 /// ```
 struct Parser<'a> {
@@ -240,9 +240,10 @@ impl<'a> Parser<'a> {
             self.worked = true;
         }
         // "15% of 80"; "of" also reads as times without the percent sign.
+        // What follows is a whole power, so "50% of 2^3" is half of eight.
         if self.eat("of") {
             self.worked = true;
-            value *= self.unary()?;
+            value *= self.power()?;
         }
         Some(value)
     }
@@ -776,6 +777,9 @@ mod tests {
     #[test]
     fn percentages() {
         assert_eq!(shown("15% of 80"), Some("12".into()));
+        assert_eq!(shown("50% of 2^3"), Some("4".into()));
+        assert_eq!(shown("10% of 2^10"), Some("102.4".into()));
+        assert_eq!(shown("50% of -8"), Some("-4".into()));
         assert_eq!(shown("50%"), Some("0.5".into()));
         assert_eq!(shown("200 * 10%"), Some("20".into()));
     }

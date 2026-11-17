@@ -179,8 +179,19 @@ fn target_of(selection: SelectionTarget) -> Target {
 }
 
 impl Tileception {
+    /// Whether what was copied here offers `mime_type`.
+    pub(crate) fn selection_offers(&self, selection: SelectionTarget, mime_type: &str) -> bool {
+        matches!(
+            self.handoff.clipboard.owners.get(&target_of(selection)),
+            Some(Owner::Here { mime_types, .. }) if mime_types.iter().any(|offered| offered == mime_type)
+        )
+    }
+
     /// Something here copied or cleared a selection.
     pub fn selection_offered(&mut self, selection: SelectionTarget, mime_types: Option<Vec<String>>) {
+        if selection == SelectionTarget::Clipboard {
+            self.clipboard_replaced();
+        }
         let clipboard = &mut self.handoff.clipboard;
         clipboard.version += 1;
         clipboard.owners.insert(
@@ -228,6 +239,8 @@ impl Tileception {
         match selection {
             SelectionTarget::Clipboard => {
                 set_data_device_selection(&self.display_handle, &self.seat, mime_types.clone(), clip);
+                // Copied there: the clipboard is no longer lent.
+                self.clipboard_replaced();
             }
             SelectionTarget::Primary => {
                 set_primary_selection(&self.display_handle, &self.seat, mime_types.clone(), clip)
@@ -239,6 +252,17 @@ impl Tileception {
             tracing::warn!("handoff: could not offer the selection to X11: {error:?}");
         }
         self.handoff.clipboard.owners.insert(target, Owner::Remote(peer));
+    }
+
+    /// What a program or Tileception here offers on the clipboard, with the
+    /// number that changes whenever the clipboard does. None when another
+    /// machine's selection is on it.
+    pub(crate) fn clipboard_offered_here(&self) -> Option<(u64, Vec<String>)> {
+        match self.handoff.clipboard.owners.get(&Target::Clipboard) {
+            Some(Owner::Here { version, mime_types }) => Some((*version, mime_types.clone())),
+            Some(Owner::Remote(_)) => None,
+            None => Some((0, Vec::new())),
+        }
     }
 
     fn clear_remote_selection(&mut self, target: Target) {
@@ -361,7 +385,7 @@ impl Tileception {
 
     /// Asks whoever owns a selection here to write it out, returning the
     /// end to read from.
-    fn read_selection(&mut self, selection: SelectionTarget, mime_type: String) -> Option<UnixStream> {
+    pub(crate) fn read_selection(&mut self, selection: SelectionTarget, mime_type: String) -> Option<UnixStream> {
         let (reader, writer) = UnixStream::pair().ok()?;
         reader.set_read_timeout(Some(STALL)).ok()?;
         let owned = match selection {
@@ -371,7 +395,7 @@ impl Tileception {
             SelectionTarget::Primary => current_primary_selection_userdata(&self.seat).and_then(|data| data.clone()),
         };
         if let Some(clip) = owned {
-            clip.send(&mime_type, writer.into());
+            self.serve_clip(&clip, &mime_type, writer.into());
             return Some(reader);
         }
         let pipe: OwnedFd = writer.try_clone().ok()?.into();
@@ -383,8 +407,7 @@ impl Tileception {
         };
         if !requested {
             // Owned by an X11 program.
-            let xwm = self.xwm.as_mut()?;
-            xwm.send_selection(selection, mime_type, writer.into(), self.loop_handle.clone()).ok()?;
+            self.send_x11_selection(selection, mime_type, writer.into()).then_some(())?;
         }
         Some(reader)
     }

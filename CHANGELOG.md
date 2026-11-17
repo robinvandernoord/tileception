@@ -1,6 +1,81 @@
 # Changelog
 
+The release notes with screenshots are on [tileception.space/changelog](https://tileception.space/changelog/).
+
 <!-- next-version-placeholder -->
+
+## v0.20.0 (2026-11-16)
+
+### Features
+* **inject:** add scroll input command
+* **settings:** support smooth scrolling in menus
+* **compositor:** support shortcut inhibition and Ptyxis
+
+### Fixes
+* **udev:** refresh modes when display resolution changes
+* **media:** provide a valid PipeWire PulseAudio cookie
+* **xwayland:** handle client maximize requests
+
+### Documentation
+* **doctor:** bundle ISO documentation
+* **iso:** add Ubuntu installer guide
+
+## v0.19.1 (2026-11-15)
+
+### Documentation
+* **release:** generate changelog after release
+* **website:** keep zoom snap points at their intended levels
+
+## v0.19.0 (2026-11-13)
+
+### Features
+* **settings:** confirm close and follow config changes
+* **calendar:** show and browse ical events
+* **plugins:** add plugins with tileception msg
+* **handoff:** route input across mismatched screens
+* **smart-home:** add configurable reading history
+* **greeter:** support reduced motion
+* **bluetooth:** show device kinds in icons
+* **desk:** add Super+D peek and plugin dashboard
+
+### Fixes
+* **plugins:** reject unsendable plugin arguments
+* **desk:** remove tiled drag-to-float target
+
+## v0.18.0 (2026-11-13)
+
+### Features
+* **notifications:** add keyboard navigation to notification panel
+* **smart-home:** manage device imports and cloud options in settings
+* **battery:** accept more theme colours for thresholds
+* **doctor:** give the agent release history
+* **feedback:** add optional screenshot attachments
+* **updates:** show live mirror test progress
+* **updates:** support Linux Mint update management
+* **website:** refresh Tileception site icons
+* **session:** show Tileception logo in fastfetch
+* **updates:** add multi-source update management
+
+### Fixes
+* **handoff:** avoid overwriting files with duplicate names
+* **greeter:** keep sessions with an empty TryExec
+* **notify:** preserve caller-supplied replacement IDs
+* **power:** suspend when the lock is switched off
+* **apps:** ignore empty TryExec values
+* **apps:** honor default associations regardless of group order
+* **calc:** evaluate percentages of powers correctly
+* **windows:** keep requested size within layout slot
+* **xwayland:** offset window placement by output origin
+* **fastfetch:** show text logo and system modules
+* **settings:** read shared Wayland keymaps from offset zero
+* **updates:** fit update window controls to narrow areas
+* **floats:** keep floating windows inside their area
+* **ui:** center badge labels by their visible ink
+* **clipboard:** paste arbitrary X11 selection types
+
+### Documentation
+* **smart-home:** document settings-based device setup
+* **usage:** explain feedback screenshots
 
 ## v0.17.0 (2026-11-12)
 

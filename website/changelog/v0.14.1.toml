@@ -1,0 +1,11 @@
+version = "0.14.1"
+date = 2026-11-10
+
+[[fixes]]
+area = "render"
+issue = 63
+text = "A fullscreen window that limits its own size, such as picture-in-picture video, now fills the screen, centred, instead of staying small in the top-left corner."
+
+[[fixes]]
+area = "paste"
+text = "Pasting a screenshot, launcher text or another machine's clipboard over handoff into a Chromium or Electron app no longer stops at 64 KiB."

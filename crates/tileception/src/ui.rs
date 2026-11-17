@@ -134,7 +134,8 @@ impl Tileception {
         if !self.is_locked() && self.feedback.is_some() {
             return self.feedback_pointer_target(point);
         }
-        if self.is_locked() || self.overlay_under(point) {
+        // The area picker covers the shell's controls and takes the pointer itself.
+        if self.is_locked() || self.shot.is_some() || self.overlay_under(point) {
             return None;
         }
         if self.password_prompt.is_some() {
@@ -142,6 +143,9 @@ impl Tileception {
         }
         if self.power_menu.is_some() {
             return self.power_pointer_target(point);
+        }
+        if let Some(target) = self.recording_pointer_target(point) {
+            return Some(target);
         }
         if let Some(target) = self.handoff_pointer_target(point) {
             return Some(target);
@@ -205,15 +209,23 @@ impl Tileception {
     }
 
     pub(crate) fn shell_pointer_cursor(&self) -> Option<smithay::input::pointer::CursorIcon> {
+        if !self.is_locked()
+            && let Some(cursor) = self.shot_cursor()
+        {
+            return Some(cursor);
+        }
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         if self.is_locked() || (self.feedback.is_none() && self.overlay_under(point)) {
             return None;
         }
-        if self.panel_reordering() {
+        if self.panel_reordering() || self.dashboard_dragging() {
             return Some(smithay::input::pointer::CursorIcon::Grabbing);
         }
         if let Some(target) = self.shell_pointer_target(point) {
             return Some(target.cursor);
+        }
+        if self.dashboard_grabbable(point) {
+            return Some(smithay::input::pointer::CursorIcon::Grab);
         }
         (self.feedback.is_some()
             || self.password_prompt.is_some()
@@ -264,6 +276,17 @@ pub mod glyph {
     /// A wired network: three linked boxes.
     pub const ETHERNET: &str = r#"<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="3" y="16" width="6" height="6" rx="1"/><rect x="15" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M6 16v-4h12v4"/>"#;
     pub const BLUETOOTH: &str = r#"<path d="M7 7l10 10-5 5V2l5 5L7 17"/>"#;
+    /// Headphones: a band over two ear cups.
+    pub const HEADPHONES: &str = r#"<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="7" rx="1.5"/><rect x="17" y="14" width="4" height="7" rx="1.5"/>"#;
+    /// A headset: the headphones' band and cups with a microphone boom.
+    pub const HEADSET: &str = r#"<path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="12" width="4" height="6" rx="1.5"/><rect x="17" y="12" width="4" height="6" rx="1.5"/><path d="M5 18v.5A3.5 3.5 0 0 0 8.5 22H11"/>"#;
+    /// A loudspeaker box with its woofer and tweeter.
+    pub const SPEAKER: &str =
+        r#"<rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><path d="M12 6.5h.01"/>"#;
+    pub const MOUSE: &str = r#"<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>"#;
+    pub const PHONE: &str = r#"<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>"#;
+    pub const GAMEPAD: &str = r#"<path d="M7 7h10a4 4 0 0 1 4 4v3.5a2.5 2.5 0 0 1-4.5 1.5L15 14H9l-1.5 2A2.5 2.5 0 0 1 3 14.5V11a4 4 0 0 1 4-4z"/><path d="M7 9.5v3M5.5 11h3M15.5 10.5h.01M17.5 12h.01"/>"#;
+    pub const LAPTOP: &str = r#"<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/>"#;
     pub const MINUS: &str = r#"<path d="M5 12h14"/>"#;
     pub const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
     pub const LOCK: &str = r#"<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>"#;
@@ -275,6 +298,7 @@ pub mod glyph {
     pub const SEARCH: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>"#;
     pub const BELL: &str = r#"<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>"#;
     pub const CLOSE: &str = r#"<path d="M18 6L6 18M6 6l12 12"/>"#;
+    pub const DOWNLOAD: &str = r#"<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>"#;
     pub const COPY: &str = r#"<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/>"#;
     pub const CHECK: &str = r#"<path d="M5 12.5l4.5 4.5L19 7.5"/>"#;
     pub const ARROW_RIGHT: &str = r#"<path d="M5 12h14M13 6l6 6-6 6"/>"#;
@@ -319,6 +343,23 @@ pub mod glyph {
     pub const ZOOM_IN: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>"#;
     pub const ZOOM_OUT: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6"/>"#;
     pub const ARROW_LEFT: &str = r#"<path d="M19 12H5M11 6l-6 6 6 6"/>"#;
+    // The area screenshot's tools and actions.
+    pub const MOVE: &str = r#"<path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>"#;
+    pub const PEN: &str = r#"<path d="M4 20l1-4.5L16 4.5a2.1 2.1 0 0 1 3 3L8 18.5z"/><path d="M14 7l3 3"/>"#;
+    pub const ARROW_UP_RIGHT: &str = r#"<path d="M6 18L18 6M9 6h9v9"/>"#;
+    pub const SQUARE: &str = r#"<rect x="4" y="5" width="16" height="14" rx="1.5"/>"#;
+    pub const HIGHLIGHTER: &str = r#"<path d="M9 14l-3 3v2h5l2-2"/><path d="M8 13l7-9 5 4-8 9z"/><path d="M4 21h16"/>"#;
+    pub const TYPE: &str = r#"<path d="M5 7V5h14v2M12 5v14M9 19h6"/>"#;
+    pub const STEP: &str = r#"<circle cx="12" cy="12" r="9"/><path d="M10.5 9.5L12.5 8v8"/>"#;
+    pub const REDACT: &str = r#"<rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16"/><path d="M4 8h4v4M12 12h4v4M8 16v4M16 4v4h4" stroke-opacity=".5"/>"#;
+    pub const UNDO: &str = r#"<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>"#;
+    pub const REDO: &str = r#"<path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>"#;
+    pub const EYE: &str =
+        r#"<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>"#;
+    pub const RECORD: &str = r#"<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/>"#;
+    pub const WIDTH_THIN: &str = r#"<path d="M5 12h14" stroke-width="1.5"/>"#;
+    pub const WIDTH_MEDIUM: &str = r#"<path d="M5 12h14" stroke-width="3.5"/>"#;
+    pub const WIDTH_THICK: &str = r#"<path d="M5 12h14" stroke-width="6"/>"#;
     pub const DUCK: &str = r#"<circle cx="10" cy="8" r="3.5"/><path d="M13.5 8.5l3 .5-3 1.2M7 11.5C4.5 11.5 3 13 3 14.8 3 18 6.5 20 11 20s8.5-2.5 9-7c-2 1-4.5 1-6.5-.6"/>"#;
 
     /// The symbol for a plugin icon named `glyph:<name>`; the plug for an
@@ -340,6 +381,16 @@ pub mod glyph {
             "fan" => FAN,
             "wifi_off" => WIFI_OFF,
             "bluetooth" => BLUETOOTH,
+            "headphones" => HEADPHONES,
+            "headset" => HEADSET,
+            "speaker" => SPEAKER,
+            "mouse" => MOUSE,
+            "keyboard" => KEYBOARD,
+            "gamepad" => GAMEPAD,
+            "phone" => PHONE,
+            "laptop" => LAPTOP,
+            "monitor" => MONITOR,
+            "camera" => CAMERA,
             "bell" => BELL,
             "lock" => LOCK,
             "play" => PLAY,
@@ -540,7 +591,7 @@ pub struct LocalTime {
 }
 
 impl LocalTime {
-    #[allow(unsafe_code, reason = "the local time zone is applied through libc's reentrant localtime_r")]
+    #[allow(unsafe_code, reason = "time accepts a null pointer and only returns the current time")]
     pub fn now() -> Option<LocalTime> {
         // SAFETY: time accepts a null pointer and only returns the current time.
         let now = unsafe { libc::time(std::ptr::null_mut()) };
@@ -669,15 +720,44 @@ pub enum Look {
 pub struct Button<'a> {
     label: &'a str,
     glyph: Option<&'static str>,
+    /// A dot of this colour, for picking a colour.
+    swatch: Option<Colour>,
+    /// An arrow joined to its right, which opens more choices.
+    split: Option<Split>,
+    /// A second, smaller line under the label, such as a file size.
+    detail: Option<&'a str>,
     look: Look,
     enabled: bool,
     focused: bool,
     round: bool,
 }
 
+/// The arrow part of a split button: a button and, joined to its right
+/// behind a thin line, an arrow that opens more ways to do the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Split {
+    /// How wide the arrow part is, at the right of the button's rect.
+    pub width: f64,
+    /// Whether the pointer is over the arrow (the `hover` of
+    /// [`Painter::button`] is then about the main part).
+    pub hover: bool,
+    /// Whether what the arrow opens is open.
+    pub open: bool,
+}
+
 impl<'a> Button<'a> {
     pub fn new(label: &'a str, look: Look) -> Button<'a> {
-        Button { label, glyph: None, look, enabled: true, focused: false, round: false }
+        Button {
+            label,
+            glyph: None,
+            swatch: None,
+            split: None,
+            detail: None,
+            look,
+            enabled: true,
+            focused: false,
+            round: false,
+        }
     }
     pub fn primary(label: &'a str) -> Button<'a> {
         Button::new(label, Look::Primary)
@@ -691,6 +771,22 @@ impl<'a> Button<'a> {
     /// A button that shows a line icon instead of a label.
     pub fn glyph(glyph: &'static str, look: Look) -> Button<'static> {
         Button { glyph: Some(glyph), ..Button::new("", look) }
+    }
+    /// The label with a line icon before it.
+    pub fn icon(self, glyph: &'static str) -> Button<'a> {
+        Button { glyph: Some(glyph), ..self }
+    }
+    /// A smaller second line under the label.
+    pub fn detail(self, detail: &'a str) -> Button<'a> {
+        Button { detail: Some(detail), ..self }
+    }
+    /// A split button: see [`Split`].
+    pub fn split(self, split: Split) -> Button<'a> {
+        Button { split: Some(split), ..self }
+    }
+    /// A button that shows a dot of a colour, for picking that colour.
+    pub fn swatch(colour: Colour, look: Look) -> Button<'static> {
+        Button { swatch: Some(colour), ..Button::new("", look) }
     }
     /// One that cannot be pressed now is drawn faint and ignores the pointer.
     pub fn enabled(self, enabled: bool) -> Button<'a> {
@@ -823,6 +919,28 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// The whole of a buffer of this many pixels, scaled into `rect`.
+    pub fn image_scaled(&mut self, buffer: &MemoryRenderBuffer, pixels: (f64, f64), rect: Rect) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let scale = self.state.scale;
+        let position = (((rect.x + self.offset.0) * scale).round(), ((rect.y + self.offset.1) * scale).round());
+        let shown = (((rect.w * scale).round() as i32).max(1), ((rect.h * scale).round() as i32).max(1));
+        let alpha = (self.alpha < 1.0).then_some(self.alpha);
+        if let Ok(element) = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+            self.renderer,
+            position,
+            buffer,
+            alpha,
+            Some(smithay::utils::Rectangle::from_size(pixels.into())),
+            Some(shown.into()),
+            smithay::backend::renderer::element::Kind::Unspecified,
+        ) {
+            self.layers.push(OutputElement::Memory(element));
+        }
+    }
+
     /// An image rasterised at the output's scale, at its own size; or a
     /// picture of `size` pixels drawn `size` logical pixels large, so it is
     /// enlarged with the scale.
@@ -898,6 +1016,27 @@ impl<'a> Painter<'a> {
         (width, height)
     }
 
+    /// One line of text centred in `rect` by the pixels it draws instead of
+    /// its line box, for a short label in a small shape, such as a count in
+    /// a badge: digits have no descenders, so their line box leaves them off
+    /// centre. Returns its size, like [`Painter::text`].
+    pub fn text_on_ink(&mut self, label: &str, rect: Rect, style: Style) -> (f64, f64) {
+        let image = self.state.text.borrow_mut().styled(
+            label,
+            &self.state.theme.font,
+            style.size,
+            style.colour,
+            rect.w.max(1.0) as f32,
+            style.weight,
+            0,
+        );
+        let Some(image) = image else { return (0.0, 0.0) };
+        let (centre_x, centre_y) = image.ink.map(|ink| ink.centre()).unwrap_or((image.width / 2.0, image.height / 2.0));
+        let position = (rect.x + rect.w / 2.0 - centre_x, rect.y + rect.h / 2.0 - centre_y);
+        self.image(&image.buffer, position);
+        (image.width, image.height)
+    }
+
     /// The size text would take, without drawing it.
     pub fn measure(&self, label: &str, max_width: f64, style: Style) -> (f64, f64) {
         self.measure_font(label, max_width, style, &self.state.theme.font)
@@ -924,7 +1063,7 @@ impl<'a> Painter<'a> {
     /// Every button is drawn here: see the Buttons section of AGENTS.md.
     pub fn button(&mut self, rect: Rect, button: Button<'_>, hover: bool) {
         let theme = self.theme();
-        let Button { label, glyph, look, enabled, focused, round } = button;
+        let Button { label, glyph, swatch, split, detail, look, enabled, focused, round } = button;
         let hover = hover && enabled;
         let radius = if round { rect.h as f32 / 2.0 } else { theme.radius };
         let outlined = |fill: Colour| Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, radius) };
@@ -957,12 +1096,51 @@ impl<'a> Painter<'a> {
             self.shape(rect, shape);
         }
         let primary = look == Look::Primary;
-        match glyph {
-            Some(glyph) => self.glyph(glyph, rect, if primary { 14 } else { 15 }, colour),
-            None => {
-                let style = Style::new(theme.font_size * 0.88, colour).weight(if primary { 600 } else { 500 });
-                self.text(label, rect, style.align(Align::Centre));
+        match (glyph, swatch) {
+            (_, Some(fill)) => {
+                let side = (rect.w.min(rect.h) * 0.5).round();
+                let dot = Rect::new(rect.x + (rect.w - side) / 2.0, rect.y + (rect.h - side) / 2.0, side, side);
+                let ring =
+                    Shape { border_width: 1.5, border: colour.alpha(0.55), ..Shape::filled(fill, side as f32 / 2.0) };
+                self.shape(dot, ring);
             }
+            (Some(glyph), None) if !label.is_empty() => {
+                // The icon, then the label, centred together in the main part.
+                let main = Rect::new(rect.x, rect.y, rect.w - split.map_or(0.0, |split| split.width), rect.h);
+                let style = Style::new(theme.font_size * 0.88, colour).weight(if primary { 600 } else { 500 });
+                let (text_w, _) = self.measure(label, main.w, style);
+                let (icon, space) = (15.0, 6.0);
+                let left = main.x + ((main.w - icon - space - text_w) / 2.0).max(4.0);
+                self.glyph(glyph, Rect::new(left, main.y, icon, main.h), 15, colour);
+                self.text(label, Rect::new(left + icon + space, main.y, text_w + 2.0, main.h), style);
+            }
+            (Some(glyph), None) => self.glyph(glyph, rect, if primary { 14 } else { 15 }, colour),
+            (None, None) => {
+                let main = Rect::new(rect.x, rect.y, rect.w - split.map_or(0.0, |split| split.width), rect.h);
+                let style = Style::new(theme.font_size * 0.88, colour).weight(if primary { 600 } else { 500 });
+                match detail {
+                    Some(detail) => {
+                        // The label above the middle, the detail under it.
+                        let top = Rect::new(main.x, main.y + 2.0, main.w, main.h * 0.55 - 2.0);
+                        let bottom = Rect::new(main.x, top.bottom() - 1.0, main.w, main.h - top.h - 3.0);
+                        self.text(label, top, style.align(Align::Centre));
+                        let small = Style::new(theme.font_size * 0.72, colour.alpha(0.7)).align(Align::Centre);
+                        self.text(detail, bottom, small);
+                    }
+                    None => {
+                        self.text(label, main, style.align(Align::Centre));
+                    }
+                }
+            }
+        }
+        if let Some(split) = split {
+            let arrow = Rect::new(rect.right() - split.width, rect.y, split.width, rect.h);
+            if enabled && (split.hover || split.open) {
+                let inset = Rect::new(arrow.x + 1.0, arrow.y + 2.0, arrow.w - 3.0, arrow.h - 4.0);
+                self.fill(inset, theme.text.alpha(if split.hover { 0.14 } else { 0.08 }), (radius - 2.0).max(2.0));
+            }
+            self.fill(Rect::new(arrow.x, arrow.y + 7.0, 1.0, arrow.h - 14.0), colour.alpha(0.35), 0.0);
+            self.glyph(glyph::CHEVRON_DOWN, arrow, 13, colour);
         }
     }
 

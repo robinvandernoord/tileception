@@ -8,6 +8,7 @@
 //! start it refreshes the inventory from the cloud, when the file allows.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -17,7 +18,11 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use tileception_home::{Change, Device, HomeService, Kind, Options, Reach, Request, store};
+use tileception_home::{
+    Change, Device, HomeService, Kind, Options, Reach, Reports, Request,
+    history::Sample,
+    store::{self, DeviceFile, Readings},
+};
 
 use super::{Notifier, Plugin, tool};
 use crate::{
@@ -60,6 +65,11 @@ pub struct HomePlugin {
     problem: Option<Problem>,
     /// The device file's modification time when last loaded.
     loaded: Option<SystemTime>,
+    /// The devices connected to, as in the file without the readings chosen
+    /// for their history: a change of those alone needs no new connection.
+    inventory: Option<DeviceFile>,
+    /// The readings chosen in Settings for each device's history.
+    chosen: HashMap<String, Readings>,
     /// The home shown: the one whose devices answer on this network.
     place: Option<String>,
     /// The climate device the card shows, when there are several.
@@ -81,6 +91,8 @@ impl HomePlugin {
             service: None,
             problem: None,
             loaded: None,
+            inventory: None,
+            chosen: HashMap::new(),
             place: None,
             climate: None,
             notifier: None,
@@ -92,6 +104,8 @@ impl HomePlugin {
     fn connect(&mut self) {
         self.service = None;
         self.problem = None;
+        self.inventory = None;
+        self.chosen.clear();
         let Some(path) = self.path.clone() else {
             self.problem = Some(Problem::NoConfigDir);
             return;
@@ -109,6 +123,8 @@ impl HomePlugin {
                 return;
             }
         };
+        self.choose(&file);
+        self.inventory = Some(file.without_choices());
         let options =
             Options { discovery: file.source != "simulated", history: tileception_home::history::default_path() };
         let notifier = self.notifier.clone();
@@ -121,15 +137,38 @@ impl HomePlugin {
         }));
     }
 
-    /// Connects again when the device file changed since it was read.
+    /// Notes the readings chosen for each device's history.
+    fn choose(&mut self, file: &DeviceFile) {
+        self.chosen =
+            file.devices.iter().filter_map(|device| Some((device.device_id.clone(), device.readings?))).collect();
+    }
+
+    /// Connects again when the device file changed since it was read. When
+    /// only the readings chosen in Settings changed, it takes those alone.
     fn follow_file(&mut self) {
-        let Some(path) = &self.path else { return };
-        if modified(path) != self.loaded {
-            if let Some(refreshing) = self.refreshing.take() {
-                refreshing.store(true, Ordering::Relaxed);
-            }
-            self.connect();
+        let Some(path) = self.path.clone() else { return };
+        let now = modified(&path);
+        if now == self.loaded {
+            return;
         }
+        if let Some(file) = store::load(&path)
+            .ok()
+            .filter(|file| self.service.is_some() && self.inventory.as_ref() == Some(&file.without_choices()))
+        {
+            self.loaded = now;
+            self.choose(&file);
+            return;
+        }
+        if let Some(refreshing) = self.refreshing.take() {
+            refreshing.store(true, Ordering::Relaxed);
+        }
+        self.connect();
+    }
+
+    /// The readings a device's history shows: those chosen of what it
+    /// reports.
+    fn shown_readings(&self, device: &Device) -> Reports {
+        device.reports.shown(self.chosen.get(&device.device_id).copied())
     }
 
     /// Refreshes devices, homes and rooms from the cloud once, when the
@@ -155,13 +194,17 @@ impl HomePlugin {
                 if cancelled.load(Ordering::Relaxed) || refreshed == cached {
                     return Ok(false);
                 }
-                // Do not overwrite an import made during the request.
-                if store::load(&path)? != cached {
+                // Do not overwrite an import made during the request, but
+                // keep readings chosen in Settings meanwhile.
+                let current = store::load(&path)?;
+                if current.without_choices() != cached.without_choices() {
                     return Err("the device file changed during refresh".to_string());
                 }
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(false);
                 }
+                let mut refreshed = refreshed;
+                refreshed.keep_choices(&current);
                 store::save(&path, &refreshed)?;
                 Ok(true)
             })();
@@ -283,7 +326,9 @@ impl HomePlugin {
             _ => lights,
         });
 
-        let card = climate.as_ref().map(|climate| Item::Card(Box::new(climate_card(climate, &devices))));
+        let card = climate
+            .as_ref()
+            .map(|climate| Item::Card(Box::new(climate_card(climate, &devices, self.shown_readings(climate)))));
         let others: Vec<&Device> = devices.iter().filter(|device| device.kind != Kind::Climate).collect();
         let faded =
             |device: &Device| !reachable(device) && !matches!(device.reach, Reach::Connecting | Reach::Cloud { .. });
@@ -307,7 +352,10 @@ impl HomePlugin {
             by_room.push(Item::Group(Group {
                 title: room.unwrap_or_else(|| "Other".into()),
                 detail,
-                items: members.into_iter().map(|device| Item::Row(device_row(device))).collect(),
+                items: members
+                    .into_iter()
+                    .map(|device| Item::Row(device_row(device, self.shown_readings(device))))
+                    .collect(),
             }));
         }
         // All at once: what is on first, what does not answer last.
@@ -318,7 +366,7 @@ impl HomePlugin {
             _ => 0,
         });
         let mut everything: Vec<Item> = card.into_iter().collect();
-        everything.extend(all.into_iter().map(|device| Item::Row(device_row(device))));
+        everything.extend(all.into_iter().map(|device| Item::Row(device_row(device, self.shown_readings(device)))));
         block.views =
             vec![View { title: "Rooms".into(), items: by_room }, View { title: "All".into(), items: everything }];
 
@@ -368,7 +416,7 @@ impl HomePlugin {
         }
         let (icon, tint) = match climate {
             Some(climate) if lit.is_empty() => {
-                let card = climate_card(climate, &devices);
+                let card = climate_card(climate, &devices, climate.reports);
                 (card.icon, card.tint)
             }
             _ => (Some("glyph:bulb".into()), Tint::Warm),
@@ -772,8 +820,9 @@ fn device_icon(device: &Device) -> &'static str {
     }
 }
 
-/// A light, plug or sensor's row.
-fn device_row(device: &Device) -> Row {
+/// A light, plug or sensor's row; a sensor's with the trend of the
+/// readings shown.
+fn device_row(device: &Device, shown: Reports) -> Row {
     let lit = is_on(device);
     let tint = match device.kind {
         _ if !reachable(device) && !matches!(device.reach, Reach::Connecting | Reach::Cloud { .. }) => Tint::Faded,
@@ -818,12 +867,42 @@ fn device_row(device: &Device) -> Row {
             action: Some(tool_action("toggle", json!({ "device": device.device_id }))),
         }),
         levels,
+        trend: (device.kind == Kind::Sensor).then(|| trend(device, shown)).flatten(),
     }
 }
 
+/// The trend lines of a device's last hours: the temperature, with a
+/// climate device's target, and the humidity, as far as each is shown.
+/// None until there are two samples.
+fn trend(device: &Device, shown: Reports) -> Option<Trend> {
+    if device.history.len() < 2 {
+        return None;
+    }
+    let now = SystemTime::now();
+    let age = |when: SystemTime| now.duration_since(when).map_or(0.0, |age| age.as_secs_f64());
+    let line = |dashed: bool, secondary: bool, value: fn(&Sample) -> Option<f64>| Line {
+        dashed,
+        secondary,
+        points: device.history.iter().filter_map(|sample| Some((age(sample.when), value(sample)?))).collect(),
+    };
+    let mut lines = Vec::new();
+    // The target goes with the temperature, unless only humidity is shown.
+    if shown.temperature || !device.reports.temperature {
+        lines.push(line(true, false, |sample| sample.target));
+    }
+    if shown.temperature {
+        lines.push(line(false, false, |sample| sample.temperature));
+    }
+    if shown.humidity {
+        lines.push(line(false, true, |sample| sample.humidity));
+    }
+    lines.retain(|line| !line.points.is_empty());
+    (!lines.is_empty()).then(|| Trend { span: tileception_home::history::WINDOW.as_secs_f64(), lines })
+}
+
 /// The climate device's card: the room temperature, its target, mode and
-/// fan, and the last hours as a trend line.
-fn climate_card(device: &Device, devices: &[Device]) -> Card {
+/// fan, and the last hours of the readings shown as trend lines.
+fn climate_card(device: &Device, devices: &[Device], shown: Reports) -> Card {
     let lit = is_on(device);
     let (icon, tint) = match device.state.mode.as_deref() {
         _ if !lit => ("glyph:thermometer", Tint::Muted),
@@ -840,10 +919,12 @@ fn climate_card(device: &Device, devices: &[Device]) -> Card {
     } else {
         "Off".into()
     };
-    let humidity = devices
-        .iter()
-        .filter(|other| other.kind == Kind::Sensor && reachable(other))
-        .find_map(|sensor| sensor.state.humidity);
+    let humidity = device.state.humidity.filter(|_| reachable(device)).or_else(|| {
+        devices
+            .iter()
+            .filter(|other| other.kind == Kind::Sensor && reachable(other))
+            .find_map(|sensor| sensor.state.humidity)
+    });
     let climates = devices.iter().filter(|other| other.kind == Kind::Climate).count();
     let choices = |title: &str, values: &[String], chosen: Option<&str>, change: &str| Choices {
         title: title.into(),
@@ -856,25 +937,6 @@ fn climate_card(device: &Device, devices: &[Device]) -> Card {
             })
             .collect(),
     };
-    let now = SystemTime::now();
-    let age = |when: SystemTime| now.duration_since(when).map_or(0.0, |age| age.as_secs_f64());
-    let trend = (device.history.len() >= 2).then(|| Trend {
-        span: tileception_home::history::WINDOW.as_secs_f64(),
-        lines: vec![
-            Line {
-                dashed: true,
-                points: device.history.iter().filter_map(|sample| Some((age(sample.when), sample.target?))).collect(),
-            },
-            Line {
-                dashed: false,
-                points: device
-                    .history
-                    .iter()
-                    .filter_map(|sample| Some((age(sample.when), sample.temperature?)))
-                    .collect(),
-            },
-        ],
-    });
     Card {
         key: device.device_id.clone(),
         title: format!("{}, {status}", device.name),
@@ -899,7 +961,7 @@ fn climate_card(device: &Device, devices: &[Device]) -> Card {
             choices("Mode", &device.modes, device.state.mode.as_deref(), "mode"),
             choices("Fan", &device.fan_speeds, device.state.fan.as_deref(), "fan"),
         ],
-        trend,
+        trend: trend(device, shown),
         buttons: Vec::new(),
         progress: None,
     }
@@ -1088,5 +1150,96 @@ mod tests {
         }
         let left = plugin.bar().chips;
         assert!(left.iter().all(|chip| !chip.label.contains(&light.name)), "{left:?}");
+    }
+
+    /// A device read for an hour, every ten minutes.
+    fn sampled(kind: Kind, reports: Reports) -> Device {
+        let now = SystemTime::now();
+        let history = (0..6u64)
+            .map(|step| Sample {
+                when: now - Duration::from_secs(3600 - step * 600),
+                temperature: reports.temperature.then_some(20.0 + step as f64 / 2.0),
+                target: (kind == Kind::Climate).then_some(21.0),
+                humidity: reports.humidity.then_some(45.0 + step as f64),
+            })
+            .collect();
+        Device {
+            device_id: "dev".into(),
+            name: "Sensor".into(),
+            home: None,
+            room: None,
+            kind,
+            state: tileception_home::State::default(),
+            reach: Reach::Online,
+            pending: false,
+            dimmable: false,
+            tunable: false,
+            target_range: None,
+            modes: Vec::new(),
+            fan_speeds: Vec::new(),
+            reports,
+            history,
+        }
+    }
+
+    /// Which lines a trend draws: (dashed, secondary) for each.
+    fn lines(trend: Option<Trend>) -> Vec<(bool, bool)> {
+        trend.map(|trend| trend.lines.iter().map(|line| (line.dashed, line.secondary)).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn trends_follow_the_readings_shown() {
+        let both = Reports { temperature: true, humidity: true };
+        let sensor = sampled(Kind::Sensor, both);
+        // Temperature in the accent, humidity on its own scale.
+        assert_eq!(lines(trend(&sensor, both)), [(false, false), (false, true)]);
+        assert_eq!(lines(trend(&sensor, both.shown(Some(Readings::Temperature)))), [(false, false)]);
+        assert_eq!(lines(trend(&sensor, both.shown(Some(Readings::Humidity)))), [(false, true)]);
+        // A humidity sensor's row carries its trend; one sample is too few.
+        let humid = Reports { temperature: false, humidity: true };
+        let row = device_row(&sampled(Kind::Sensor, humid), humid);
+        assert_eq!(lines(row.trend), [(false, true)]);
+        let mut fresh = sampled(Kind::Sensor, humid);
+        fresh.history.truncate(1);
+        assert!(device_row(&fresh, humid).trend.is_none());
+
+        // A climate device's target goes with its temperature.
+        let thermostat = Reports { temperature: true, humidity: false };
+        let climate = sampled(Kind::Climate, thermostat);
+        assert_eq!(lines(trend(&climate, thermostat)), [(true, false), (false, false)]);
+        let airco = sampled(Kind::Climate, both);
+        assert_eq!(lines(trend(&airco, both)), [(true, false), (false, false), (false, true)]);
+        assert_eq!(lines(trend(&airco, both.shown(Some(Readings::Humidity)))), [(false, true)]);
+        // A heater that reads no temperature still shows its target.
+        let heater = sampled(Kind::Climate, Reports::default());
+        assert_eq!(lines(trend(&heater, Reports::default())), [(true, false)]);
+    }
+
+    #[test]
+    fn choosing_readings_needs_no_new_connection() {
+        let (mut plugin, household) = simulated();
+        let path = plugin.path.clone().unwrap();
+        let sensor = plugin.device("Office sensor").unwrap();
+        assert_eq!(sensor.reach, Reach::Online);
+        assert_eq!(plugin.shown_readings(&sensor), Reports { temperature: true, humidity: true });
+
+        let mut file = household.file.clone();
+        file.devices.iter_mut().find(|device| device.device_id == sensor.device_id).unwrap().readings =
+            Some(Readings::Humidity);
+        // A coarse clock may not see a quick second write.
+        std::thread::sleep(Duration::from_millis(20));
+        store::save(&path, &file).unwrap();
+        plugin.follow_file();
+        assert_eq!(plugin.shown_readings(&sensor), Reports { temperature: false, humidity: true });
+        // Still connected: nothing went back to connecting.
+        assert_eq!(plugin.device("Office sensor").unwrap().reach, Reach::Online);
+
+        // Any other change connects again, keeping the choice.
+        file.devices[0].name = "Spots".into();
+        std::thread::sleep(Duration::from_millis(20));
+        store::save(&path, &file).unwrap();
+        plugin.follow_file();
+        assert!(plugin.device("Spots").is_ok());
+        assert_eq!(plugin.shown_readings(&sensor), Reports { temperature: false, humidity: true });
     }
 }

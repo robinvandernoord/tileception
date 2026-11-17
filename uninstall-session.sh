@@ -44,12 +44,14 @@ if [ -e "$wake_unit" ]; then
 fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"
-for f in "$bindir/tileception" "$bindir/tileception-clip-persist" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt" "$portals"; do
+for f in "$bindir/tileception" "$bindir/tileception-clip-persist" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt" "$HOME/.local/share/fastfetch/logos/tileception" "$HOME/.local/share/tileception/xdg/fastfetch/config.jsonc" "$portals"; do
     if [ -e "$f" ]; then
         rm -f "$f"
         echo "Removed $f"
     fi
 done
+# The fastfetch config's directories, once empty.
+rmdir "$HOME/.local/share/tileception/xdg/fastfetch" "$HOME/.local/share/tileception/xdg" 2>/dev/null || true
 
 if [ "$1" = "--purge" ]; then
     rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/tileception" "${XDG_STATE_HOME:-$HOME/.local/state}/tileception"

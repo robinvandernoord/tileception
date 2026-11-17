@@ -81,6 +81,11 @@ read when the greeter starts.
   it is unlocked: `show_media` for the player controls and
   `show_notification_count` for the number of new notifications. Locked sessions
   read this table too.
+- **Reduced motion:** `reduce_motion = true` replaces movement with fades: a
+  wrong password no longer shakes the field, the launcher fades in without
+  sliding, and the dots hold still while the password is checked. A locked
+  Tileception session follows this setting, and also reduces motion when its
+  own `animation_ms` is `0`.
 - **Keyboard layouts:** with several layouts, such as `layout = "us,nl"` in
   `[keyboard]`, **Ctrl+Space** switches between them. Anyone can pick another
   layout from the bar on the login screen; the greeter remembers it for that

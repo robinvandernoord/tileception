@@ -1,0 +1,14 @@
+version = "0.17.0"
+date = 2026-11-12
+
+[[features]]
+area = "wallpaper"
+issue = 67
+title = "The wallpaper updates when its file changes"
+text = "When a tool such as Variety overwrites the picture named by `wallpaper` in `[theme]`, Tileception shows the new one within a few seconds. You no longer need `tileception msg reload`."
+
+[[features]]
+area = "outputs"
+issue = 33
+title = "Windows return to an external display when it reconnects"
+text = "When an external display disconnects, its windows move to the remaining screen. When the display reconnects, for example after unlocking, its windows return with their previous layout."

@@ -17,11 +17,20 @@ between views.
 
 ## Settings
 
-Settings keeps unapplied drafts while you move between categories or close and
-reopen its window. Back returns to the category and keeps the screen's draft,
-including unfinished input. Apply changes saves and applies it in one step;
-Discard screen explicitly removes that screen's edits since opening it.
-Drafts last for the current session and are not saved across a compositor restart.
+Settings keeps unapplied drafts while you move between categories. Back returns
+to the category and keeps the screen's draft, including unfinished input. Apply
+changes saves and applies it in one step; Discard screen explicitly removes that
+screen's edits since opening it.
+
+Closing Settings with unapplied changes asks first: **Apply** saves them and
+closes, **Discard** closes without them, and **Cancel** (or Escape) keeps
+Settings open. Enter chooses Apply. Closing keeps no draft, so Settings always
+opens on `config.toml` as it is then.
+
+While Settings is open it follows `config.toml`: when the file changes on disk,
+settings you have not touched show the new values. A setting or screen you have
+edited keeps your edit, and Settings says so when the file changed it too;
+applying then saves your version over the file's.
 
 In Settings, use **Ctrl+Page Up/Down** to switch categories and **Alt+Up** to
 go Back. **Tab** and **Shift+Tab** move between controls, **Page Up/Down**
@@ -39,7 +48,8 @@ Wayland's counterclockwise convention; mirroring happens before rotation.
 **Apply changes** previews display changes for 15 seconds without saving the
 configuration. Choose **Keep changes** to save, or **Revert** to restore the
 previous setup. Escape, Alt+Up, closing Settings and the countdown ending also
-restore it. Your draft stays available to retry. A display change or config
+restore it. Your draft stays available to retry, unless you close Settings and
+discard it. A display change or config
 reload cancels an active preview. If saving fails, the preview reverts and the
 error appears in Settings.
 
@@ -102,7 +112,9 @@ scroll and show hover effects without taking the keyboard.
 
 - Drag the gap between two areas to change their widths. Resizing a window on
   the side where its area meets the next one moves that gap too.
-- Alt-drag a window into another area to move it there.
+- Alt-drag a window into another area to move it there. A floating window
+  dropped there lands wholly inside it; floating windows also shrink and move
+  to stay inside their area when it narrows.
 - **Super+M** zooms to the focused window within its area. **Super+F** covers
   the whole monitor.
 - The overview and the minimized-window strip belong to the active area.
@@ -134,7 +146,7 @@ group where the first selected window was. Use **Super+U** to zoom back out, or
 | Super+G                     | Combine selected windows into tabs                             |
 | Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
 | Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
-| Super+D                     | Show or hide the Desktop tile                                  |
+| Super+D                     | Clear the desk, or bring back what it cleared                  |
 | Super+H                     | Minimize windows                                               |
 | Super+Shift+H               | Restore the most recently minimized window                     |
 | Super+C                     | Close windows                                                  |
@@ -163,14 +175,55 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
-### The Desktop tile
+### Clearing the desk
 
-**Super+D** shows or hides the Desktop tile, a space in the layout for floating
-windows. Drag a tiled window onto it to make that window floating, or drag a
-floating window to another tile's edge to make it tiled again.
+**Super+D** clears the desk of the screen: every window there, tiled and
+floating, goes to the minimized-window strip. On a split screen this clears
+every area, each into its own strip, so the welcome screen and its dashboard
+show. Press it again to bring them back exactly where they were. Windows you had minimized before stay
+minimized, and windows closed in the meantime are left out.
 
-The Desktop tile is also visible when there are no tiled windows. Floating
-windows remain available when the tile is hidden.
+While the desk is clear you can still open windows, or restore single ones
+from the strip. While any window is on the desk, **Super+D** clears it, and
+these windows join the ones waiting; once the desk is empty, **Super+D**
+brings them all back together. Windows you minimize yourself with **Super+H**
+stay minimized.
+
+Hold **Super+D** instead of tapping it to peek: windows fade to outlines over
+the dashboard for as long as you hold it, and come back when you let go. The desk is not
+cleared. A hold lasts past the keyboard's repeat delay.
+
+### The dashboard
+
+When the desk is clear or empty, the welcome screen shows a dashboard beside
+it: how many notifications there are (click to open them) and what
+[plugins](plugins.md#dashboard) put there, such as cards, pictures and
+animations. Holding **Super+D** fades the windows to outlines and shows the
+dashboard behind them. The dashboard needs room beside the welcome screen; on a narrow screen it does not
+show. Tap **Super** to put the welcome screen and dashboard away for a plain
+desktop, and tap it again to bring them back.
+
+Drag an item on the welcome screen's dashboard to put it anywhere beside the
+welcome screen. It snaps to an 8-pixel grid, and an item dropped on another
+moves to the nearest free place; the others stay where they are. Drag a
+picture or plugin surface by its title, anything else from anywhere but its
+buttons. Where the items are is saved in
+`~/.local/state/tileception/dashboard-layout.toml`, from the nearest corner of
+the screen so they keep their place on a screen of another size; delete it to
+go back to the first-come layout.
+
+To remove an item, point at it and click the round **x** on its corner. It
+stays away, also after a restart, until you bring it back with the **+** beside
+the settings button in the welcome screen's footer. The **+** shows while there
+is something to add: it lists the items you removed, and installed plugins with
+dashboard items that are switched off. Choosing a plugin there switches its
+dashboard items on in `config.toml`, and the plugin too when it was off.
+
+`tileception msg dashboard` lists the items by name (`notifications`, or a
+plugin's id and the item's, such as `timers/tea`) and says which are removed;
+`tileception msg dashboard hide <item>` removes one, and
+`tileception msg dashboard show <item>` (or `show all`) brings them back.
+Removed items are kept in the same file, so deleting it brings them back too.
 
 ### Minimized windows
 
@@ -193,6 +246,7 @@ window.
 | Super+E       | Open your home folder                 |
 | Super+N       | Open notifications and sound controls |
 | Super+Enter   | Answer a popup's buttons by keyboard  |
+| Shift+Print   | Take or record an area of the screen  |
 | Ctrl+Print    | Pick a colour from the screen         |
 | Super+/       | Open Doctor                           |
 | Super+L       | Lock the screen                       |
@@ -268,11 +322,27 @@ word navigation and clipboard shortcuts work. Choose **Review** to see the
 exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
+"Include a screenshot of the screen" starts unchecked too. Checking it takes a
+screenshot of the screen under the dialog, without the dialog, and shows a
+preview of it with its size; unchecking it removes the screenshot again. A
+GitHub link cannot carry a picture, so **Open in browser** saves the
+screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
+folder (usually `/tmp`, readable only by you, replacing the last one) and puts
+it on the clipboard, and the issue body gets a hidden note where it belongs:
+press **Ctrl+V** there to attach it, or drag the file into the issue. What you
+had copied (up to 32 MB) comes back to the clipboard once the screenshot is
+pasted, or after two minutes (only the latter with clipboard persistence on,
+whose helper serves the paste), unless you copy something else first; another
+machine's clipboard shared through handoff stays replaced. Nothing is copied
+or saved before you open the issue.
 Doctor's `/report` opens the same dialog over Doctor. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
 "Include the last Doctor question and answer", also unchecked. Checking it
-adds your last question and the agent's answer, shortened if long.
+adds your last question and the agent's answer, shortened if long. The
+screenshot leaves the Doctor panel out unless this option is checked, since the
+panel shows more than the last exchange; changing the option takes the
+screenshot again.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the
@@ -281,7 +351,7 @@ account. Tileception does not submit the issue. Anonymous feedback remains
 deferred.
 
 Popups never take the keyboard by themselves. To answer one with buttons, such
-as the screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
+as the full-screen screenshot's Copy, Save and Save and copy, press **Super+Enter** (the
 popup shows the hint): its buttons get numbers. Press a number, or choose with
 the arrow keys or **Tab** and press **Enter**. **Escape**, or **Super+Enter**
 again, gives the keyboard back without answering.
@@ -289,6 +359,26 @@ again, gives the keyboard back without answering.
 **Super+N** opens notification history and sound controls, and your smart home
 devices once [set up](#smart-home). Use the panel's **Do not disturb** control
 to silence ordinary notification popups.
+
+The panel takes the keyboard when it opens, and again when you click in it; a
+click elsewhere gives the keyboard back to your windows. While it has the
+keyboard:
+
+| Key                         | Does                                           |
+| --------------------------- | ---------------------------------------------- |
+| **Delete** or **C**         | Clear all                                      |
+| **Up** / **Down**           | Scroll the history by one                      |
+| **Page Up** / **Page Down** | Scroll by five                                 |
+| **Home** / **End**          | Jump to the newest or the oldest               |
+| **Tab** / **Shift+Tab**     | Choose the next or previous notification       |
+| **Enter**                   | Open the chosen notification, as a click would |
+| **Backspace**               | Dismiss the chosen notification                |
+| **D**                       | Switch Do not disturb                          |
+| **M**                       | Mute or unmute the sound                       |
+| **Escape**                  | Close the panel                                |
+
+Super shortcuts, and keys that do not type such as volume and media keys, keep
+working while the panel has the keyboard.
 
 The panel's actions work from scripts and key bindings too:
 `tileception msg notifications clear` does what **Clear all** does, and
@@ -314,12 +404,50 @@ the limit in the [tray settings](configuration.md#system-tray).
 
 ### Screenshots
 
-**Print** captures the whole screen; **Shift+Print** lets you select a region.
-Both then ask whether to copy the image, save it, or do both. Dismiss the prompt
-to discard the capture, or press **Escape** during region selection to cancel.
+**Print** captures the whole screen and asks whether to copy the image, save
+it, or do both. Dismiss the prompt to discard the capture.
+
+**Shift+Print**, or "Screenshot an area" in the launcher, freezes the screen
+for picking an area. Drag one, or click a window to take all of it. A
+magnifier shows the pixels under the pointer while you pick. **F** switches
+between the frozen screen and the live one; over the live screen, the picture
+is taken when you copy or save. **Escape** cancels.
+
+Once picked, the area has handles to resize it; drag inside it to move it.
+The arrow keys move it a pixel at a time (ten with **Ctrl**), and with
+**Shift** they resize it.
+
+The tools beside the area draw on it: pen, arrow, rectangle, highlighter,
+text, numbered steps, and redact, which pixelates part of the picture so it
+cannot be read. Each has a letter key, shown when you point at it. The colour
+button holds the colours and line widths (also **1** to **6**, **[** and
+**]**); **Ctrl+Z** and **Ctrl+Y** undo and redo.
+
+The row under the area finishes:
+
+| Key               | Action                                           |
+|-------------------|--------------------------------------------------|
+| Enter or Ctrl+C   | Copy the area as a PNG                           |
+| Ctrl+S            | Save it as a PNG                                 |
+| Shift+Enter       | Copy it as another format or size                |
+| Ctrl+Shift+S      | Save it as another format or size                |
+| D                 | Send it to Doctor                                |
+| Ctrl+R            | Record the area                                  |
+
+The arrows beside **Copy** and **Save** open the same menus as Shift+Enter
+and Ctrl+Shift+S: choose a size (full, half or a thumbnail) at the top, then
+click PNG, WebP or one of the JPG qualities, each with the size of its file.
+Copying a WebP or JPG also offers a PNG, for programs that paste only PNG.
+The [capture settings](configuration.md#area-screenshots) set the qualities
+and sizes.
+
+While recording, a red line marks the area and a small bar shows the time.
+Click **Stop**, or press **Shift+Print** again, then copy the recording as an
+MP4 or GIF, or save it. Recording needs `ffmpeg`.
 
 Saved images go into `Screenshots` inside your configured Pictures folder,
-usually `~/Pictures/Screenshots`.
+usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
+your Videos folder.
 
 ### Colour picker
 
@@ -372,7 +500,11 @@ With [smart home devices](configuration.md#smart-home) set up, the notification
 panel has a **Home** block. An air conditioner shows its room temperature, a
 target you change with **-** and **+**, its mode and fan speed, and a trend
 line of the last six hours of temperature and target underneath. Below it are
-the lights and plugs by room, each with a switch. Click a light to show its
+the lights, plugs and sensors by room, each light and plug with a switch, and
+each sensor with a small trend line of its last six hours. Temperature is drawn
+in the accent colour and humidity in the second accent colour, each on its own
+scale. For a device that reports both, **Settings**, **Smart home**,
+**History** chooses temperature, humidity or both. Click a light to show its
 brightness and colour sliders. **All** lists everything in one list instead,
 with what is on first, and **All off** switches off every light and plug.
 
@@ -395,7 +527,9 @@ all.
 ### Bluetooth
 
 The notification panel's **Bluetooth** block lists paired devices with a switch
-to connect each. **Pair device** searches for 30 seconds; flip a nearby
+to connect each, each with a symbol for its kind (headphones, headset, speaker,
+mouse, keyboard, game controller, phone, computer, display or camera) when the
+device says what it is. **Pair device** searches for 30 seconds; flip a nearby
 device's switch to pair it, and confirm the code when asked. Type `bt` in the
 launcher to connect, disconnect or (`bt forget`) unpair devices.
 
@@ -409,7 +543,7 @@ for where it is kept.
 ### Updates
 
 On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
-while updates wait. It counts security updates first: `3 +9` means three
+while updates wait: APT packages, Flatpaks, snaps and firmware from fwupd. It counts security updates first: `3 +9` means three
 security updates and nine others. While updates install it shows progress,
 and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
@@ -424,16 +558,36 @@ needs no password. It leaves that on a metered connection and below 30% on
 battery; **Check** still works then.
 
 **Review** opens the Updates window, which also opens with
-`tileception msg updates open` or "Updates" in the launcher. It has four pages;
+`tileception msg updates open` or "Updates" in the launcher. It has five pages;
 **Tab** and **Shift+Tab** switch between them, the arrow keys move through the
 list, **Space** ticks a row and **Enter** runs the page's main button.
 
-| Page | What it does |
-| --- | --- |
-| Available | Lists every update with its versions and download size. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked ones. **Check** refreshes the package lists. |
-| Kernels | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below. |
-| Release | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. |
-| History | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed. |
+| Page      | What it does                                                                                                                                                                                                                                                                                                                                 |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
+| Kernels   | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below.                                                                                                                                                                                                                                                            |
+| Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions.                                                                              |
+| History   | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
+| Settings  | Automatic updates, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                         |
+
+Flatpaks of the system and of your own installation, and snaps, are listed
+under **Apps**. Asking for them uses the network, so they are listed when the
+package lists are refreshed and when the window opens, not on a metered
+connection or low battery; in between the last list stays. Firmware from
+fwupd is listed under **Firmware** and is never ticked by itself: a firmware
+update is installed only when you tick it, and some devices finish it while
+the computer restarts. One **Install** installs the APT updates first, then
+the Flatpaks, the snaps and the firmware, each with its own tool.
+
+The strip under the list acts on the highlighted row. **Notes** shows what
+changed: the changelog entries since the installed version for APT
+(`apt-get changelog`, which asks the archive), the commit messages of a
+Flatpak's remote, what `snap info` says, or the release notes of firmware.
+Press **N** for the same. **Skip version** leaves that version out: the row
+moves to **Skipped and held**, muted, and comes back when a newer version
+arrives. **Hold** keeps an APT package at its version with `apt-mark hold`
+until **Release** lets it update again. Skipping is remembered by Tileception
+alone; a hold is apt's own and also applies in a terminal.
 
 Below the updates, the Available page says what else installing everything
 does: packages it removes, updates apt keeps back, and updates the archive
@@ -476,43 +630,84 @@ when no fallback is installed, and when the queue would leave none.
 Leftover headers, and leftover modules and tools, of kernels that are gone are
 listed apart and queued per kind. Nothing on this page runs `autoremove`.
 
-| Key | Action on the Kernels page |
-| --- | --- |
-| A | Switch between the recommended view and all variants |
-| Q, or Space | Queue the highlighted kernel, or take it off the queue |
-| I / D | Queue the highlighted kernel to install / to remove |
-| U | Tick or untick the leftovers |
-| P | Preview the queue, and go back |
-| C | Clear the queue |
-| R | Refresh the package lists |
-| Enter | Apply the queue |
+While a kernel or firmware update waits, the power menu shows **Restart and
+install** (key **N**) beside **Restart**: it installs everything that waits,
+firmware included, and restarts once that has succeeded.
 
-Type `up` in the launcher for the same actions as rows: install everything,
-install the security updates, choose updates, clean up old kernels, upgrade to
-the next release and check now.
+The Settings page turns automatic updates on and off. Tileception does not
+schedule anything itself: the switch turns the periodic run of
+`unattended-upgrades` on or off in `/etc/apt/apt.conf.d/20auto-upgrades`, and
+the row says what it covers, such as security updates or Ubuntu Pro. On
+Linux Mint it switches Update Manager's automatic upgrades timer instead,
+preserving its system blacklist, and covers what Update Manager installs: every update
+but its blacklist, or fewer when `/etc/mintupdate-automatic-upgrades.conf`
+narrows it. Where neither is installed, the row says so.
+
+Below that, the page shows the Ubuntu mirror in use. **Test**, in the row
+below the mirror, asks the mirror in use, the main archive and the mirrors Ubuntu lists for your country
+for a small file and part of a larger one, and lists them fastest first with
+their speed, how long they took to answer and how far behind the main archive
+they are. **Use** switches to one: it rewrites the Ubuntu entries of the
+package sources, leaving the security pocket alone, and refreshes the lists.
+On Linux Mint these are in `official-package-repositories.list`, beside Mint's
+own mirror, which stays as it is;
+when that refresh fails, the old sources are put back. Once a day the mirror
+in use is tested by itself, and the page and the window's sidebar warn when it
+cannot be reached or is a day or more behind.
+
+| Key         | Action on the Kernels page                             |
+| ----------- | ------------------------------------------------------ |
+| A           | Switch between the recommended view and all variants   |
+| Q, or Space | Queue the highlighted kernel, or take it off the queue |
+| I / D       | Queue the highlighted kernel to install / to remove    |
+| U           | Tick or untick the leftovers                           |
+| P           | Preview the queue, and go back                         |
+| C           | Clear the queue                                        |
+| R           | Refresh the package lists                              |
+| Enter       | Apply the queue                                        |
+
+Type `up` in the launcher for the same actions as rows. The first row always
+opens Updates; below it are install everything, install the security updates,
+clean up old kernels, upgrade to the next release and check now.
 
 From scripts and key bindings:
 
-| Command | Action |
-| --- | --- |
-| `tileception msg updates` | List what is waiting |
-| `tileception msg updates check` | Refresh the package lists |
-| `tileception msg updates install` | Install every update |
-| `tileception msg updates install security` | Install the security updates |
-| `tileception msg updates install <package>...` | Install the named updates |
-| `tileception msg updates kernels` | List kernels: running, fallback, old, available |
-| `tileception msg updates clean` | Remove old kernels and leftover kernel packages |
-| `tileception msg updates autoremove` | Remove packages that are no longer needed |
-| `tileception msg updates repair` | Repair the package system, when apt asks for it |
-| `tileception msg updates log` | Print what the last task printed |
-| `tileception msg updates upgrade` | Start the release upgrade in a terminal |
+| Command                                              | Action                                                         |
+| ---------------------------------------------------- | -------------------------------------------------------------- |
+| `tileception msg updates`                            | List what is waiting                                           |
+| `tileception msg updates check`                      | Refresh the package lists                                      |
+| `tileception msg updates install`                    | Install every update                                           |
+| `tileception msg updates install security`           | Install the security updates                                   |
+| `tileception msg updates install <package>...`       | Install the named updates                                      |
+| `tileception msg updates kernels`                    | List kernels: running, fallback, old, available                |
+| `tileception msg updates clean`                      | Remove old kernels and leftover kernel packages                |
+| `tileception msg updates autoremove`                 | Remove packages that are no longer needed                      |
+| `tileception msg updates repair`                     | Repair the package system, when apt asks for it                |
+| `tileception msg updates log`                        | Print what the last task printed                               |
+| `tileception msg updates upgrade`                    | Start the release upgrade in a terminal                        |
+| `tileception msg updates changelog <name>`           | Show what changed in an update                                 |
+| `tileception msg updates hold <package>...`          | Hold APT packages at their version; `unhold` releases them     |
+| `tileception msg updates skip <name>`                | Skip the waiting version of an update; `unskip` brings it back |
+| `tileception msg updates automatic [on\|off]`        | Say how automatic updates are set up, or switch them           |
+| `tileception msg updates mirrors`                    | Test the mirrors; ask again for the results                    |
+| `tileception msg updates mirror <url>`               | Use this mirror                                                |
+| `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first                  |
+
+Where two sources have an update by the same name, such as a Flatpak in both
+the system and your own installation, or a package and a snap, name it with
+its source in front: `apt:`, `flatpak:`, `flatpak-user:`, `snap:` or
+`firmware:`, as in `tileception msg updates skip snap:firefox`. A name alone
+then says which to choose from.
+
+Doctor reads the history the same way, so it can answer "what changed since
+Tuesday?".
 
 #### Administrator rights
 
 Changes to packages are made by a small helper,
 `/usr/libexec/tileception-updates-helper`, that polkit starts as root. It
 takes a task such as "install these updates", never a command line, and
-checks every package name. Its policy has two actions: refreshing the package
+checks every package, Flatpak, snap, device and mirror address. Its policy has two actions: refreshing the package
 lists is allowed without a password for the person at the computer, and
 everything else asks for an administrator. To change who may do what, add a
 polkit rule for `org.tileception.updates.refresh` or
@@ -526,8 +721,8 @@ goes to polkit's own checker and nowhere else. To use another agent, set
 Where polkit or an agent is missing, the helper runs through `sudo` instead,
 and Tileception's prompt passes what you type to `sudo` for that one task.
 
-Flatpak, Snap and firmware updates are not listed yet. See
-[Configuration](configuration.md#updates) to switch the chip or its
+Flatpaks of your own installation are updated as you, without the helper.
+See [Configuration](configuration.md#updates) to switch the chip or its
 notification off, or to choose when the notification comes.
 
 ### Network

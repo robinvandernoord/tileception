@@ -1,0 +1,8 @@
+# Opt-in example of a dashboard plugin that draws its own surface. Install
+# pywayland, then copy this manifest to
+# ~/.local/share/tileception/plugins/lava-lamp.toml and point `command` at
+# lava-lamp.py (it needs pywayland).
+command = "/absolute/path/to/lava-lamp.py"
+
+[dashboard]
+surface = true

@@ -117,6 +117,9 @@ impl CompositorHandler for Tileception {
             return;
         }
         on_commit_buffer_handler::<Self>(surface);
+        if self.dashboard_commit(surface) {
+            return;
+        }
         // Shown in the next frame, not whenever the screen is next polled.
         self.schedule_render();
         // Not before the surface has drawn: foot crashes on an enter before
@@ -161,7 +164,10 @@ impl CompositorHandler for Tileception {
                     let resizing = self.resize_drag.is_some_and(|drag| drag.window == window_id);
                     // Fullscreen is the screen's size, not the window's own.
                     let fullscreen = self.fullscreen == Some(window_id);
-                    if !resizing && !fullscreen && (width > rect.w + 0.5 || height > rect.h + 0.5) {
+                    // Settings draws at the size it is given; a frame drawn
+                    // before a refit must not undo it.
+                    let settings = self.is_settings_window(window_id);
+                    if !resizing && !fullscreen && !settings && (width > rect.w + 0.5 || height > rect.h + 0.5) {
                         self.world.grow_float(window_id, width, height);
                         self.apply_layout();
                     }
@@ -206,7 +212,11 @@ impl SeatHandler for Tileception {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        // Dashboard plugins draw inside their frames, not the pointer.
+        if self.is_dashboard_seat(seat) {
+            return;
+        }
         self.cursor_status = image;
     }
 
@@ -252,14 +262,10 @@ impl SelectionHandler for Tileception {
             return;
         }
         if let Some(clip) = clip {
-            clip.send(&mime_type, fd);
+            self.serve_clip(clip, &mime_type, fd);
             return;
         }
-        if let Some(xwm) = self.xwm.as_mut()
-            && let Err(err) = xwm.send_selection(ty, mime_type, fd, self.loop_handle.clone())
-        {
-            tracing::warn!("could not paste from X11: {err:?}");
-        }
+        self.send_x11_selection(ty, mime_type, fd);
     }
 }
 
@@ -418,13 +424,20 @@ impl XdgShellHandler for Tileception {
         }
     }
 
-    /// Tiles already fill their space, so maximizing changes nothing. Not
-    /// before the first commit: smithay's default configures right away, and
-    /// a window configured early is never placed (KeePassXC asks this way).
+    /// The maximize button frames the window on its own; pressing it again
+    /// goes back. The window is never told it is maximized, so the button
+    /// keeps asking to maximize and works as a toggle. Not before the first
+    /// commit: smithay's default configures right away, and a window
+    /// configured early is never placed (KeePassXC asks this way).
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        if surface.is_initial_configure_sent() {
-            surface.send_configure();
+        if !surface.is_initial_configure_sent() {
+            return;
         }
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.maximize_window(window_id);
+        }
+        // The protocol wants an answer even when the size stays the same.
+        surface.send_configure();
     }
 
     /// A menu takes the keyboard and pointer until it is dismissed, so a click

@@ -4,7 +4,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::store::{DataPoint, DeviceEntry};
+use crate::store::{DataPoint, DeviceEntry, Readings};
 
 /// What kind of device, as far as the panel cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,6 +104,11 @@ fn choices(point_id: String, point: &DataPoint) -> (String, Vec<String>) {
 }
 
 impl Model {
+    /// The readings it reports, from its data points.
+    pub fn reports(&self) -> Reports {
+        Reports { temperature: self.temperature.is_some(), humidity: self.humidity.is_some() }
+    }
+
     pub fn for_entry(entry: &DeviceEntry) -> Model {
         let mapping = if entry.mapping.is_empty() { fallback_mapping(&entry.category) } else { entry.mapping.clone() };
         let find = |codes: &[&str]| {
@@ -139,6 +144,39 @@ impl Model {
             _ => Kind::Other,
         };
         model
+    }
+}
+
+/// Which of temperature and humidity a device reports, or which of them its
+/// history shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reports {
+    pub temperature: bool,
+    pub humidity: bool,
+}
+
+impl Reports {
+    pub fn any(self) -> bool {
+        self.temperature || self.humidity
+    }
+
+    /// What the history shows: the readings chosen, but never one the
+    /// device does not report. Without a choice, or with one it cannot
+    /// follow (its data points changed), everything it reports.
+    pub fn shown(self, chosen: Option<Readings>) -> Reports {
+        let wanted = match chosen {
+            Some(Readings::Temperature) => Reports { temperature: true, humidity: false },
+            Some(Readings::Humidity) => Reports { temperature: false, humidity: true },
+            Some(Readings::Both) | None => return self,
+        };
+        let kept =
+            Reports { temperature: self.temperature && wanted.temperature, humidity: self.humidity && wanted.humidity };
+        if kept.any() { kept } else { self }
+    }
+
+    /// The choices Settings offers: only a device that reports both has any.
+    pub fn choices(self) -> &'static [Readings] {
+        if self.temperature && self.humidity { &Readings::ALL } else { &[] }
     }
 }
 
@@ -404,6 +442,69 @@ mod tests {
         assert_eq!(state.shown_brightness(), Some(50));
         let sent = data_points(&model, &state, &Change::Brightness(20)).expect("dimmable");
         assert_eq!(Value::Object(sent), serde_json::json!({"24": "00f003e800c8"}));
+    }
+
+    #[test]
+    fn sensors_read_temperature_humidity_or_both() {
+        let both = Model::for_entry(&entry(
+            "wsdcg",
+            &[
+                ("1", "va_temperature", "Integer", serde_json::json!({"min": -200, "max": 600, "scale": 1})),
+                ("2", "va_humidity", "Integer", serde_json::json!({"min": 0, "max": 100, "scale": 0})),
+            ],
+        ));
+        assert_eq!(both.kind, Kind::Sensor);
+        assert_eq!(both.reports(), Reports { temperature: true, humidity: true });
+        let mut state = State::default();
+        state.update(&both, serde_json::json!({"1": 214, "2": 48}).as_object().expect("object"));
+        assert_eq!((state.temperature, state.humidity), (Some(21.4), Some(48.0)));
+        // A report of one reading keeps the other.
+        state.update(&both, serde_json::json!({"2": 51}).as_object().expect("object"));
+        assert_eq!((state.temperature, state.humidity), (Some(21.4), Some(51.0)));
+
+        // A humidity sensor of no known category, with a scaled reading.
+        let humid = Model::for_entry(&entry(
+            "xyz",
+            &[("7", "humidity_value", "Integer", serde_json::json!({"min": 0, "max": 1000, "scale": 1}))],
+        ));
+        assert_eq!(humid.kind, Kind::Sensor);
+        assert_eq!(humid.reports(), Reports { temperature: false, humidity: true });
+        let mut state = State::default();
+        state.update(&humid, serde_json::json!({"7": 455}).as_object().expect("object"));
+        assert_eq!((state.temperature, state.humidity), (None, Some(45.5)));
+
+        // A thermometer only.
+        let thermometer = Model::for_entry(&entry(
+            "wsdcg",
+            &[("1", "temp_current", "Integer", serde_json::json!({"min": -400, "max": 1000, "scale": 1}))],
+        ));
+        assert_eq!(thermometer.reports(), Reports { temperature: true, humidity: false });
+        // Lights report neither.
+        let light = Model::for_entry(&DeviceEntry { category: "dj".into(), ..Default::default() });
+        assert!(!light.reports().any());
+    }
+
+    #[test]
+    fn the_history_shows_what_was_chosen_of_what_is_reported() {
+        let both = Reports { temperature: true, humidity: true };
+        let temperature = Reports { temperature: true, humidity: false };
+        let humidity = Reports { temperature: false, humidity: true };
+        // Without a choice, everything reported.
+        assert_eq!(both.shown(None), both);
+        assert_eq!(humidity.shown(None), humidity);
+        assert_eq!(both.shown(Some(Readings::Temperature)), temperature);
+        assert_eq!(both.shown(Some(Readings::Humidity)), humidity);
+        assert_eq!(both.shown(Some(Readings::Both)), both);
+        // Never a reading the device does not report; a choice it cannot
+        // follow shows what it does report.
+        assert_eq!(temperature.shown(Some(Readings::Both)), temperature);
+        assert_eq!(temperature.shown(Some(Readings::Humidity)), temperature);
+        assert_eq!(humidity.shown(Some(Readings::Temperature)), humidity);
+        assert!(!Reports::default().shown(Some(Readings::Both)).any());
+        // Only a device reporting both offers a choice.
+        assert_eq!(both.choices(), Readings::ALL);
+        assert!(temperature.choices().is_empty());
+        assert!(humidity.choices().is_empty());
     }
 
     #[test]

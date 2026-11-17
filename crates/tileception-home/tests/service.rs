@@ -98,7 +98,7 @@ fn controls_simulated_devices_on_all_versions() {
 }
 
 #[test]
-fn samples_the_climate_history() {
+fn samples_the_history() {
     let household = sim::household().expect("simulated devices");
     let dir = std::env::temp_dir().join(format!("tileception-home-history-test-{}", std::process::id()));
     let history_path = dir.join("home-history.json");
@@ -123,6 +123,17 @@ fn samples_the_climate_history() {
             .get(&airco.device_id)
             .is_some_and(|samples| samples.len() == 2 && samples.last().and_then(|sample| sample.target) == Some(22.0))
     });
+
+    // A standalone sensor's temperature and humidity are sampled too.
+    let snapshot = wait_for(&service, "the sensor to be sampled", |snapshot| {
+        !device(snapshot, "Office sensor").history.is_empty()
+    });
+    let sensor = device(&snapshot, "Office sensor");
+    assert!(sensor.reports.temperature && sensor.reports.humidity);
+    let sample = &sensor.history[0];
+    assert_eq!((sample.temperature, sample.humidity, sample.target), (Some(21.4), Some(48.0), None));
+    // Lights read nothing to sample.
+    assert!(device(&snapshot, "Desk lamp").history.is_empty());
     drop(service);
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -48,7 +48,7 @@ pub enum Action {
     Back,
     Forward,
     Maximize,
-    ToggleDesktop,
+    ToggleDesk,
     ToggleFloat,
     NextTab,
     PrevTab,
@@ -256,9 +256,15 @@ impl Tileception {
     /// A key, from a keyboard or from `tileception msg key` in tests.
     pub(crate) fn handle_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
         self.ui_pressed = None;
+        // This machine's own keys are typed with its own layout.
+        self.type_with(Source::Local);
         let visible =
             self.handoff.held.key(Source::Local, code.raw().saturating_sub(8), key_state == KeyState::Pressed);
         if let Some(peer) = self.handoff.forwarding {
+            // A desk key held as the keyboard moved away ends here.
+            if key_state == KeyState::Released {
+                self.desk_key_lost(code.raw());
+            }
             self.forward_key(peer, code, key_state, time);
         } else if visible {
             self.deliver_key(code, key_state, time);
@@ -267,11 +273,17 @@ impl Tileception {
 
     /// A key for this machine, from here or from another machine.
     pub(crate) fn deliver_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        // The owner of another machine's window with the keyboard here learns
+        // what the keys it may get are typed with, before this one changes it.
+        if let Some(owner) = self.remote_keyboard_owner() {
+            self.tell_keymap(owner);
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let pressed = key_state == KeyState::Pressed;
         let keycode = code.raw();
         let mut modifier = false;
+        let inhibited = self.shortcuts_inhibited();
         let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
             let sym = handle.modified_sym().raw();
             let raw_sym = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
@@ -323,6 +335,18 @@ impl Tileception {
                 state.shortcut_keys_pressed(trigger, types(sym), taken);
                 return FilterResult::Intercept(Vec::new());
             }
+            if inhibited {
+                // The focused window takes every key (a virtual machine or a
+                // remote desktop), except switching consoles and quitting.
+                state.tap_armed = None;
+                if let Some(command @ Command::Action(Action::Vt(_) | Action::Quit)) =
+                    builtin(Mods::from_state(mods), sym, raw_sym, false)
+                    && pressed
+                {
+                    return FilterResult::Intercept(vec![command]);
+                }
+                return FilterResult::Forward;
+            }
             if state.portal_shortcut_key(keycode, trigger, pressed) {
                 return FilterResult::Intercept(Vec::new());
             }
@@ -354,6 +378,9 @@ impl Tileception {
             }
             if state.colour_pick.is_some() {
                 return FilterResult::Intercept(vec![Command::ColourPickKey(sym, held)]);
+            }
+            if state.shot.is_some() {
+                return FilterResult::Intercept(vec![Command::ShotKey(sym, held)]);
             }
             // A popup given the keyboard with Super+Enter keeps it until a
             // button is chosen or Esc; other Super shortcuts give it back first.
@@ -405,11 +432,32 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
             }
+            if panels
+                && state.notifications_keyboard()
+                && (!state.launcher.open || state.launcher.home)
+                && !(state.doctor.open && state.doctor.focused)
+            {
+                // The open panel has the keyboard; Super shortcuts and keys
+                // that do not type still work.
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw).or_else(|| state.config.lookup(bound, sym));
+                if bound.logo {
+                    return FilterResult::Intercept(commands.map(<[Command]>::to_vec).unwrap_or_default());
+                }
+                if let Some(commands) = commands.filter(|matched| !matched.is_empty() && !types(sym)) {
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                return FilterResult::Intercept(vec![Command::NotificationPanelKey(sym, Mods::from_state(mods))]);
+            }
             if panels && state.launcher.open && state.launcher.home {
                 // The welcome screen is the desktop: shortcuts still work,
                 // and Esc closes the notification panel first.
                 if sym == keysyms::KEY_Escape && held == Mods::default() && state.notifications.open {
-                    state.notifications.open = false;
+                    state.close_notifications();
                     return FilterResult::Intercept(Vec::new());
                 }
                 let mut bound = held;
@@ -459,7 +507,7 @@ impl Tileception {
                 && held == Mods::default()
                 && (state.notifications.open || !state.selection.windows.is_empty())
             {
-                state.notifications.open = false;
+                state.close_notifications();
                 state.selection.windows.clear();
                 return FilterResult::Intercept(Vec::new());
             }
@@ -477,10 +525,16 @@ impl Tileception {
             self.key_to_owner(code, key_state);
         }
         let tapped = std::mem::take(&mut self.tap_fired);
-        let commands = commands.unwrap_or_default();
+        let mut commands = commands.unwrap_or_default();
+        if pressed && matches!(commands.as_slice(), [Command::Action(Action::ToggleDesk)]) {
+            // A tap acts when let go; a hold peeks.
+            self.desk_key_pressed(keycode);
+            commands.clear();
+        }
         let greeter_repeat = self.greeter_repeat.take();
         if !pressed {
             self.key_released(keycode, modifier);
+            self.desk_key_released(keycode);
         } else if let Some(repeat) = greeter_repeat.or_else(|| Repeat::for_commands(&commands)) {
             self.start_key_repeat(keycode, repeat);
         } else {
@@ -588,7 +642,7 @@ impl Tileception {
             Action::Back => self.world.back(now),
             Action::Forward => self.world.forward(now),
             Action::Maximize => self.world.maximize(now),
-            Action::ToggleDesktop => self.world.toggle_desktop(now),
+            Action::ToggleDesk => self.toggle_desk(),
             Action::ToggleFloat => {
                 if let Some(focused) = self.world.focus() {
                     self.world.toggle_float(focused, now);
@@ -642,7 +696,7 @@ impl Tileception {
                 | Action::RecallView(_)
                 | Action::NextTab
                 | Action::PrevTab
-                | Action::ToggleDesktop
+                | Action::ToggleDesk
                 | Action::Minimize
                 | Action::Restore(_)
         ) {
@@ -662,6 +716,14 @@ impl Tileception {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
+            return;
+        }
+        // The area picker takes the pointer while it is open.
+        if self.shot.is_some() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            self.shot_motion();
             return;
         }
         // The colour picker's magnifier follows the pointer; nothing else sees it.
@@ -686,6 +748,16 @@ impl Tileception {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open && self.bar_motion(pos, time) {
+            return;
+        }
+        // A held dashboard item follows the pointer; the plugins' surfaces
+        // are left out until it is let go.
+        if !self.is_locked() && self.dashboard_drag_motion(point) {
+            self.dashboard_pointer_motion(point, time);
+            return;
+        }
+        // A plugin's own surface on the dashboard takes the pointer there.
+        if !self.is_locked() && self.dashboard_pointer_motion(point, time) {
             return;
         }
         if !self.is_locked() && self.launcher.open && self.launcher_takes(point) {
@@ -868,6 +940,11 @@ impl Tileception {
 
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        // Before the shell's buttons capture the press, so a click on one in
+        // the panel gives the panel the keyboard too.
+        if state == ButtonState::Pressed && button == BTN_LEFT {
+            self.notifications_press(tileception_core::Point::new(self.pointer.x, self.pointer.y));
+        }
         if !self.is_locked() && button == BTN_MIDDLE && self.shell_middle_button(state == ButtonState::Pressed) {
             return;
         }
@@ -910,6 +987,10 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        if self.shot.is_some() {
+            self.shot_button(button, state == ButtonState::Pressed);
+            return;
+        }
         if self.colour_pick.is_some() {
             // A left click picks; any other button cancels.
             if state == ButtonState::Pressed {
@@ -934,8 +1015,27 @@ impl Tileception {
         {
             return;
         }
+        if state == ButtonState::Released && button == BTN_LEFT && self.dashboard_release() {
+            return;
+        }
+        if !self.is_locked()
+            && self.dashboard_has_pointer()
+            && self.dashboard_pointer_button(button, state == ButtonState::Pressed, time)
+        {
+            return;
+        }
         if self.launcher.open && state == ButtonState::Released && button == BTN_LEFT {
             self.launcher_release();
+        }
+        // A press beside the welcome screen closes the dashboard's list of
+        // what can be added, and does nothing more.
+        if self.launcher.open
+            && self.launcher.home
+            && state == ButtonState::Pressed
+            && !self.launcher_takes(pointer_at)
+            && self.dashboard_close_adding()
+        {
+            return;
         }
         if self.launcher.open && self.launcher_takes(pointer_at) {
             if state == ButtonState::Pressed && button == BTN_LEFT {
@@ -1035,6 +1135,11 @@ impl Tileception {
             if let Some(drag) = self.move_drag.take() {
                 if let Some(target) = drag.target {
                     self.world.apply_drop(drag.window, target, now);
+                }
+                // On a split screen, what hangs over a neighbouring area is cut
+                // off, so a floating window lands wholly in its own.
+                if self.area_clip().is_some() {
+                    self.world.fit_float(drag.window);
                 }
                 self.apply_layout();
                 self.persist_layout();
@@ -1173,7 +1278,8 @@ impl Tileception {
             }
             return;
         }
-        if !self.is_locked() && self.password_prompt.is_some() {
+        // The password prompt and the area picker take the wheel from what is under them.
+        if !self.is_locked() && (self.password_prompt.is_some() || self.shot.is_some()) {
             return;
         }
         if !self.is_locked() && self.power_menu.is_none() && self.tray.open {
@@ -1200,6 +1306,7 @@ impl Tileception {
         }
         if self.launcher.open
             && !self.is_locked()
+            && !self.dashboard_has_pointer()
             && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
         {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
@@ -1283,6 +1390,10 @@ impl Tileception {
             if event.amount(Axis::Vertical) == Some(0.0) {
                 frame = frame.stop(Axis::Vertical);
             }
+        }
+        if !self.is_locked() && self.dashboard_has_pointer() {
+            self.dashboard_pointer_axis(frame);
+            return;
         }
         pointer.axis(self, frame);
         pointer.frame(self);

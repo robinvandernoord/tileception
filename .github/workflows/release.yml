@@ -115,6 +115,14 @@ jobs:
         run: |
           DEB_OUT=dist scripts/build-keyring-deb.sh $(ls dist)
           find dist -type f | sort
+      - name: Build the desktop packages
+        # tileception-desktop and its sources, for the premade ISO and for
+        # turning a minimal install into the same desktop. Releases only,
+        # like the keyring.
+        if: needs.version.outputs.component == 'main'
+        run: |
+          DEB_OUT=dist scripts/build-desktop-deb.sh $(ls dist)
+          find dist -name 'tileception-desktop*' | sort
       - name: Upload to the apt repository
         env:
           APT_SSH_HOST: ${{ secrets.APT_SSH_HOST }}

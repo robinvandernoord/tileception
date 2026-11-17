@@ -1,0 +1,78 @@
+version = "0.16.0"
+date = 2026-11-11
+lede = "The update manager shows what a transaction removes before it runs and asks for the password through polkit. Switches and buttons get a solid accent, and the gradient moves to the focused window's border."
+
+[[features]]
+area = "ui"
+issue = 65
+title = "Solid accent controls and a gradient window border"
+text = "Switches, slider fills and badges use one solid accent colour. The gradient moves to the focused window's border. The chosen power menu action looks like a focused window."
+
+[features.media]
+kind = "compare"
+before = "accent-before.jpg"
+after = "accent-after.jpg"
+alt = "Settings on the Layout & motion page with one switch flipped and Apply changes lit"
+caption = "Settings with a change waiting. In 0.15.0 the switches and Apply changes are filled with the gradient. In 0.16.0 the switches are solid and Apply changes glows."
+
+[[features]]
+area = "theme"
+title = "Choose how main buttons look"
+text = "Button style in Settings, or `buttons` in `[theme]`, draws a panel's main button as a glowing halo (the default), a gradient from `accent` to `accent_end`, or a flat accent fill."
+
+[[features]]
+area = "updates"
+issue = 66
+title = "Updates show what they remove before installing"
+text = "The Available page lists the packages an update would remove, and the updates APT keeps back or is still phasing in. If anything would be removed, Install shows a preview first."
+
+[[features]]
+area = "updates"
+issue = 66
+title = "Repair packages and clear out unused ones"
+text = "When APT reports broken packages, use Repair in the Updates window to fix them. Housekeeping removes unused dependencies. You can read the last task's output under Show log and on the History page."
+
+[[features]]
+area = "updates"
+issue = 66
+title = "The computer stays on while packages change"
+text = "If you choose Restart, Power off, Suspend or Log out during an update, Tileception waits for the update to finish before carrying out the action. Choose the same action again to cancel it."
+
+[[features]]
+area = "updates"
+issue = 66
+title = "Updates ask for the password through polkit"
+text = 'Tileception asks for your password through polkit, for updates and for `pkexec` too. Set `polkit = "none"` under `[shell]` to use another polkit agent.'
+
+[[features]]
+area = "updates"
+issue = 66
+title = "Package lists refresh by themselves"
+text = "Tileception refreshes the package lists without a password at the interval set by `check_hours`. Refreshes are skipped on a metered connection or when the battery is below 30%."
+
+[[features]]
+area = "updates"
+issue = 66
+title = "Choose when update notifications come"
+text = "Set `remind_after_days` in `[updates]` to notify only after updates have been available for that many days. `remind_security_only` limits notifications to security updates. Notifications are hidden during Do not disturb and while a window is fullscreen."
+
+[[features]]
+area = "text-input"
+title = "Every text field edits the same way"
+text = "The launcher, Doctor, the rubber duck and Settings share one set of editing keys, with Ctrl+Z to undo. Double-click selects a word, triple-click the line, and a middle click pastes the selection."
+
+[[fixes]]
+area = "updates"
+text = "Installing selected updates no longer marks those packages as manually installed, so `apt-get autoremove` can still remove any that are unused dependencies."
+
+[[fixes]]
+area = "updates"
+text = "The list of updates catches up within seconds when `apt` runs in a terminal."
+
+[[fixes]]
+area = "updates"
+text = "When an update replaces Tileception itself, the chip in the bar asks for a restart."
+
+[[fixes]]
+area = "launcher"
+text = "A plugin prompt with a single field shows its button beside the field."

@@ -190,7 +190,8 @@ you started them from. Check logs for personal information before sharing them.
   dependencies, tests and linting.
 - [Roadmap and architecture](PLAN.md): current direction and how the crates fit
   together.
-- [Changelog](CHANGELOG.md): changes between releases.
+- [What's new](https://tileception.space/changelog/): what changed in each
+  release, with screenshots. [CHANGELOG.md](CHANGELOG.md) is the plain list.
 
 Tileception is MIT licensed. Its nested tiling model is inspired by TrellisWM
 for macOS.

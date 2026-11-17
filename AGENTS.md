@@ -79,14 +79,14 @@ compute and storage allowances; choose an idle timeout longer than a full build.
 
 Prefer the Make targets, which use the selected cargo-plane builder:
 
-| Task | Make target | Cargo equivalent |
-| --- | --- | --- |
-| Release compositor | `make build` | `cargo plane build --release -p tileception` |
-| All tests, including independent crates | `make test` | `cargo plane test --workspace`, plus independent crate tests |
-| Formatting and Clippy, including independent crates | `make lint` | `cargo plane fmt --all --check` and `cargo plane clippy --workspace --all-targets -- -D warnings`, plus independent crate checks |
-| Nested compositor | `make nested` | `cargo plane run --profile dev-install -p tileception -- --nested` |
-| Quick check | | `cargo plane check --workspace` |
-| One crate's tests | | `cargo plane test -p tileception-core` |
+| Task                                                | Make target   | Cargo equivalent                                                                                                                 |
+| --------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Release compositor                                  | `make build`  | `cargo plane build --release -p tileception`                                                                                     |
+| All tests, including independent crates             | `make test`   | `cargo plane test --workspace`, plus independent crate tests                                                                     |
+| Formatting and Clippy, including independent crates | `make lint`   | `cargo plane fmt --all --check` and `cargo plane clippy --workspace --all-targets -- -D warnings`, plus independent crate checks |
+| Nested compositor                                   | `make nested` | `cargo plane run --profile dev-install -p tileception -- --nested`                                                               |
+| Quick check                                         |               | `cargo plane check --workspace`                                                                                                  |
+| One crate's tests                                   |               | `cargo plane test -p tileception-core`                                                                                           |
 
 Replace `cargo build`, `check`, `test`, `clippy`, `run` and `fmt` with
 `cargo plane build`, `check`, `test`, `clippy`, `run` and `fmt` respectively,
@@ -141,6 +141,10 @@ Commit changes to PLAN.md (and to this file) as `chore(plan): ...` or
 `chore(agents): ...`, never `docs(...)`. Vommit puts `docs` commits in the
 changelog, and these files mean nothing to users; `chore` is left out. Keep
 `docs` for user-facing documentation such as `docs/` and the README.
+Use `feat` and `fix` only for user-facing changes: both appear in the changelog
+and can trigger version bumps. Use `chore` for release infrastructure,
+packaging, website plumbing, and other internal changes that should not appear
+there.
 
 ## Buttons
 

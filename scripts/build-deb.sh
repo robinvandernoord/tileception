@@ -106,6 +106,11 @@ chmod 644 "$root/usr/share/wayland-sessions/tileception.desktop"
 mkdir -p "$root/usr/share/slick-greeter/badges"
 scripts/session-badge.sh > "$root/usr/share/slick-greeter/badges/tileception.svg"
 chmod 644 "$root/usr/share/slick-greeter/badges/tileception.svg"
+# Fastfetch's logo, and its config for Tileception sessions (tileception-session
+# adds that directory to XDG_CONFIG_DIRS).
+install -D -m 644 resources/fastfetch/logo "$root/usr/share/fastfetch/logos/tileception"
+install -D -m 644 resources/fastfetch/config.jsonc \
+    "$root/usr/share/tileception/xdg/fastfetch/config.jsonc"
 install -D -m 644 resources/tileception-portals.conf \
     "$root/usr/share/xdg-desktop-portal/tileception-portals.conf"
 install -D -m 644 resources/tileception.portal \
@@ -123,6 +128,8 @@ install -D -m 755 "$built_updates_helper" "$root/usr/libexec/tileception-updates
 install -D -m 644 resources/org.tileception.updates.policy \
     "$root/usr/share/polkit-1/actions/org.tileception.updates.policy"
 install -D -m 644 resources/org.tileception.Greeter.xml "$root/usr/share/dbus-1/interfaces/org.tileception.Greeter.xml"
+install -D -m 644 resources/protocols/tileception-dashboard-v1.xml \
+    "$root/usr/share/tileception/protocols/tileception-dashboard-v1.xml"
 mkdir -p "$root/usr/share/accountsservice/interfaces"
 ln -s ../../dbus-1/interfaces/org.tileception.Greeter.xml \
     "$root/usr/share/accountsservice/interfaces/org.tileception.Greeter.xml"

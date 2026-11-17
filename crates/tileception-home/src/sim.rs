@@ -263,10 +263,12 @@ pub fn household() -> std::io::Result<Household> {
         ("4", "mode", "Enum", json!({"range": ["auto", "cold", "hot", "wet", "wind"]})),
         ("5", "fan_speed_enum", "Enum", json!({"range": ["strong", "auto", "low", "middle", "high", "mute"]})),
     ]);
-    let sensor = mapping(&[
-        ("1", "va_temperature", "Integer", json!({"min": -200, "max": 600, "scale": 1, "step": 1})),
-        ("2", "va_humidity", "Integer", json!({"min": 0, "max": 100, "scale": 0, "step": 1})),
-    ]);
+    let sensor = || {
+        mapping(&[
+            ("1", "va_temperature", "Integer", json!({"min": -200, "max": 600, "scale": 1, "step": 1})),
+            ("2", "va_humidity", "Integer", json!({"min": 0, "max": 100, "scale": 0, "step": 1})),
+        ])
+    };
     let plug = || {
         mapping(&[
             ("1", "switch", "Boolean", Value::Null),
@@ -290,6 +292,7 @@ pub fn household() -> std::io::Result<Household> {
         ("Desk lamp", "Office", "dj", Version::V33, lit(true, 400, 500), light()),
         ("Bedside lamp", "Bedroom", "dj", Version::V33, lit(false, 300, 0), light()),
         ("Heater plug", "Office", "cz", Version::V34, object(json!({"1": true, "20": 1250})), plug()),
+        ("Office sensor", "Office", "wsdcg", Version::V33, object(json!({"1": 214, "2": 48})), sensor()),
     ];
     let mut devices = Vec::new();
     let mut file = DeviceFile { source: "simulated".into(), devices: Vec::new(), cloud: None };
@@ -334,7 +337,7 @@ pub fn household() -> std::io::Result<Household> {
         room: Some("Bedroom".into()),
         category: "wsdcg".into(),
         key: "simulatedkey0091".into(),
-        mapping: sensor,
+        mapping: sensor(),
         ..Default::default()
     });
     Ok(Household { devices, file })

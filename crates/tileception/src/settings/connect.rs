@@ -380,10 +380,7 @@ impl Tileception {
                 );
             }
             let draft = self.settings_document()?;
-            let patches = [
-                ("home.enabled", Some(toml::Value::Boolean(true))),
-                ("home.devices", form.devices.clone().map(toml::Value::String)),
-            ];
+            let patches = import_patches(form.devices.clone());
             // Prepare the rebase before writing: preserve other pending panel changes.
             let new_before = crate::config_edit::draft_text(&self.settings.document_before, &patches)?;
             let new_draft = crate::config_edit::draft_text(&draft, &patches)?;
@@ -719,5 +716,38 @@ impl Tileception {
                 );
             }
         }
+    }
+}
+
+/// What an import writes to the config: `[home]` switched on, and the
+/// device file it imported into (none for the standard path).
+fn import_patches(devices: Option<String>) -> [(&'static str, Option<toml::Value>); 2] {
+    [("home.enabled", Some(toml::Value::Boolean(true))), ("home.devices", devices.map(toml::Value::String))]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn home(text: &str) -> crate::home::HomeConfig {
+        crate::config::Config::parse(text).expect("parses").file.home
+    }
+
+    #[test]
+    fn an_import_switches_the_smart_home_on() {
+        let text = crate::config_edit::draft_text("", &import_patches(None)).expect("drafts");
+        assert_eq!(home(&text), crate::home::HomeConfig { enabled: true, devices: None });
+
+        let base = "# My setup\n[home]\n# off for now\nenabled = false\n";
+        let text = crate::config_edit::draft_text(base, &import_patches(Some("~/home.json".into()))).expect("drafts");
+        assert!(text.contains("# My setup") && text.contains("# off for now"), "{text}");
+        assert_eq!(home(&text), crate::home::HomeConfig { enabled: true, devices: Some("~/home.json".into()) });
+    }
+
+    #[test]
+    fn an_import_into_the_standard_file_drops_a_stale_path() {
+        let base = "[home]\nenabled = true\ndevices = \"/old/devices.json\"\n";
+        let text = crate::config_edit::draft_text(base, &import_patches(None)).expect("drafts");
+        assert_eq!(home(&text), crate::home::HomeConfig { enabled: true, devices: None });
     }
 }

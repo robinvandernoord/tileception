@@ -1,0 +1,45 @@
+version = "0.14.0"
+date = 2026-11-10
+lede = "Doctor opens the feedback dialog with `/report` and runs the agents you already installed. Plugins reload without a restart."
+
+[[features]]
+area = "doctor"
+issue = 27
+title = "Report a problem from Doctor with `/report`"
+text = "Type `/report` in Doctor to open the feedback dialog. `/report Wi-Fi drops` fills in the title. You can include your last Doctor question and answer by ticking a checkbox that starts unchecked."
+
+[[features]]
+area = "doctor"
+issue = 30
+title = "Doctor uses agents you already installed"
+text = "Doctor runs an agent that is already on your computer instead of downloading it. To choose the program yourself, set it under `[doctor.agents]` in `config.toml`."
+
+[[features]]
+area = "plugins"
+title = "Reload plugins without restarting"
+text = "After installing or changing a plugin, run `tileception msg plugins reload`. A new plugin used to need a restart of Tileception. In Tweak mode, Doctor can run the command for you."
+
+[[features]]
+area = "plugins"
+title = "Plugins can add launcher results as they find them"
+text = "A launcher plugin can show its quick results first and append slower ones afterwards. The rows already shown and your selection stay where they are."
+
+[[features]]
+area = "clipboard"
+title = "Keeping the clipboard needs no extra package"
+text = "Session installs and Debian packages include their own copy of `wl-clip-persist`, named `tileception-clip-persist`. `persist = true` under `[clipboard]` works without installing anything else."
+
+[[fixes]]
+area = "launcher"
+issue = 46
+text = "Typing `~` in the launcher lists your home folder, and Tab completes it to `~/`."
+
+[[fixes]]
+area = "doctor"
+issue = 29
+text = "When an agent ignores the stop button or Ctrl+C, Doctor restarts it after 8 seconds, or at once if you press stop again."
+
+[[fixes]]
+area = "settings"
+issue = 28
+text = "On a scaled screen, Settings is no longer scaled twice and looks the same as at scale 1."

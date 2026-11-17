@@ -48,6 +48,10 @@ install -m 755 resources/tileception-session "$bindir/tileception-session"
 install -m 755 resources/tileception-power "$bindir/tileception-power"
 install -m 755 resources/tileception-screenshot "$bindir/tileception-screenshot"
 install -m 755 resources/tileception-setup "$bindir/tileception-setup"
+# Fastfetch's logo, and the config tileception-session points it to: both in
+# ~/.local/share, next to the bin directory, never in ~/.config.
+install -D -m 644 resources/fastfetch/logo "$HOME/.local/share/fastfetch/logos/tileception"
+install -D -m 644 resources/fastfetch/config.jsonc "$HOME/.local/share/tileception/xdg/fastfetch/config.jsonc"
 echo "Installed tileception and its helpers in $bindir"
 
 pam_service=/etc/pam.d/tileception

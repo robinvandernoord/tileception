@@ -131,7 +131,7 @@ impl Tileception {
                     drawn.scale,
                 ))
             }
-            None => Some((geometry.loc.to_f64(), (1.0, 1.0))),
+            None => Some(((geometry.loc - self.x11_origin()).to_f64(), (1.0, 1.0))),
         }
     }
 
@@ -351,12 +351,8 @@ impl XwmHandler for Tileception {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(window_id) = self.x11_window_id(&window)
-            && let Some(area) = self.area_for_window(window_id)
-        {
-            self.activate_area(&area);
-            self.world.focus_window(window_id, self.now());
-            self.run(crate::input::Action::Maximize);
+        if let Some(window_id) = self.x11_window_id(&window) {
+            self.maximize_window(window_id);
         }
     }
 
@@ -418,7 +414,7 @@ impl XwmHandler for Tileception {
                     return;
                 }
                 if let Some(clip) = clip {
-                    clip.send(&mime_type, fd);
+                    self.serve_clip(&clip, &mime_type, fd);
                     return;
                 }
                 request_data_device_client_selection(&self.seat, mime_type, fd).map_err(|err| format!("{err:?}"))

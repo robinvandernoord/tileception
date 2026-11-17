@@ -147,7 +147,7 @@ impl Tileception {
         ]
         .into_iter()
         .filter(|(side, distance)| {
-            *distance < REACH && self.outer_edge(&output, *side) && !self.handoff.edge_taken(&output, *side)
+            *distance < REACH && self.edge_span(&output, *side).is_some() && !self.handoff.edge_taken(&output, *side)
         })
         .min_by(|(_, first), (_, second)| first.total_cmp(second))
         .map(|(side, _)| side)
@@ -202,14 +202,17 @@ impl Tileception {
         let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
         let mut painter = Painter::new(self, renderer);
 
-        if let Some(side) = self.handoff.prompt.target.filter(|_| self.handoff.prompt.drag.is_some()) {
+        if let Some(side) = self.handoff.prompt.target.filter(|_| self.handoff.prompt.drag.is_some())
+            && let Some(span) = self.output.as_ref().and_then(|output| self.edge_span(&output.name(), side))
+        {
+            // Only the part of the edge the pointer will cross at.
             let screen = self.output_rect();
             let thickness = 6.0;
             let bar = match side {
-                Side::Left => Rect::new(screen.x, screen.y, thickness, screen.h),
-                Side::Right => Rect::new(screen.right() - thickness, screen.y, thickness, screen.h),
-                Side::Top => Rect::new(screen.x, screen.y, screen.w, thickness),
-                Side::Bottom => Rect::new(screen.x, screen.bottom() - thickness, screen.w, thickness),
+                Side::Left => Rect::new(screen.x, screen.y + span.start, thickness, span.length),
+                Side::Right => Rect::new(screen.right() - thickness, screen.y + span.start, thickness, span.length),
+                Side::Top => Rect::new(screen.x + span.start, screen.y, span.length, thickness),
+                Side::Bottom => Rect::new(screen.x + span.start, screen.bottom() - thickness, span.length, thickness),
             };
             painter.shape(
                 bar,

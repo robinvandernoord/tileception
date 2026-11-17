@@ -340,7 +340,9 @@ impl Interface {
     ) -> u32 {
         let mut state = self.0.lock().expect("notification state mutex must not be poisoned");
         let replaced = replaces_id != 0 && state.active.contains_key(&replaces_id);
-        let id = if replaced {
+        // The id asked for is kept, also when nothing with it is shown now,
+        // as the specification says; senders reuse one id of their own.
+        let id = if replaces_id != 0 {
             replaces_id
         } else {
             while state.active.contains_key(&state.next_id) || state.history.iter().any(|item| item.id == state.next_id)

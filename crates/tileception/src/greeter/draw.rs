@@ -523,10 +523,8 @@ impl Tileception {
 
         // The field, shaking briefly after a wrong answer.
         let failed_for = greeter.failed_at.map(|failed_at| failed_at.elapsed().as_secs_f64());
-        let shake = failed_for
-            .filter(|elapsed| *elapsed < SHAKE)
-            .map(|elapsed| (elapsed * 46.0).sin() * 10.0 * (1.0 - elapsed / SHAKE))
-            .unwrap_or(0.0);
+        let still = greeter.file.reduce_motion;
+        let shake = failed_for.map_or(0.0, |elapsed| shake_offset(elapsed, still));
         let failed = failed_for.is_some_and(|elapsed| elapsed < 3.0);
         let field = Rect::new(layout.field.x + shake, layout.field.y, layout.field.w, layout.field.h);
         let focused = greeter.focus == Panel::Login && greeter.palette.is_none();
@@ -609,8 +607,7 @@ impl Tileception {
                     painter.fill(Rect::new(inner.x, field.y + 12.0, width, field.h - 24.0), selection, 4.0);
                 }
                 for index in 0..shown {
-                    let alpha =
-                        if busy { 0.3 + 0.7 * (0.5 + 0.5 * (since * 7.0 - index as f64 * 0.7).sin()) } else { 1.0 };
+                    let alpha = if busy { waiting_dot_alpha(since, index, still) } else { 1.0 };
                     let dot = Rect::new(inner.x + index as f64 * pitch + 3.5, field.y + field.h / 2.0 - 4.0, 8.0, 8.0);
                     painter.fill(dot, theme.text.alpha(alpha as f32), 4.0);
                 }
@@ -967,7 +964,8 @@ impl Tileception {
         let opened = state.opened.map_or(1.0, |opened_at| ease_out(opened_at.elapsed().as_secs_f64() / 0.16));
         painter.alpha = opened as f32;
         painter.fill(self.output_rect(), Colour([0.0, 0.0, 0.0, 0.32]), 0.0);
-        painter.offset = (0.0, (opened - 1.0) * 12.0);
+        // Sliding down into place, or with reduced motion only fading in.
+        painter.offset = (0.0, if greeter.file.reduce_motion { 0.0 } else { (opened - 1.0) * 12.0 });
         painter.popup(palette.panel);
         painter.shape(
             palette.field,
@@ -1138,6 +1136,26 @@ fn tab_window(count: usize, selected: usize, fits: usize) -> std::ops::Range<usi
 fn local_tm() -> Option<libc::tm> {
     // SAFETY: time accepts a null pointer and only returns the current time.
     local_tm_at(unsafe { libc::time(std::ptr::null_mut()) })
+}
+
+/// How far the password field is moved sideways `elapsed` seconds after a
+/// wrong answer: a shake that dies down, or with reduced motion none (the
+/// red edge says it alone).
+fn shake_offset(elapsed: f64, still: bool) -> f64 {
+    if still || elapsed >= SHAKE {
+        return 0.0;
+    }
+    (elapsed * 46.0).sin() * 10.0 * (1.0 - elapsed / SHAKE)
+}
+
+/// How bright the `index`th dot is while the password is checked, `since`
+/// seconds into the greeter: a wave along the dots, or with reduced motion a
+/// steady dimmed row.
+fn waiting_dot_alpha(since: f64, index: usize, still: bool) -> f64 {
+    if still {
+        return 0.5;
+    }
+    0.3 + 0.7 * (0.5 + 0.5 * (since * 7.0 - index as f64 * 0.7).sin())
 }
 
 /// `timestamp` (seconds since 1970), broken down in the local time zone.
@@ -1354,5 +1372,18 @@ mod tests {
         assert_eq!(days_in_month(2026, 1), 28);
         assert_eq!(days_in_month(1900, 1), 28);
         assert_eq!(days_in_month(2000, 1), 29);
+    }
+
+    #[test]
+    fn reduced_motion_holds_the_field_and_dots_still() {
+        let moved = (1..20).map(|step| shake_offset(f64::from(step) * 0.02, false));
+        assert!(moved.into_iter().any(|offset| offset.abs() > 1.0));
+        assert!((1..20).all(|step| shake_offset(f64::from(step) * 0.02, true) == 0.0));
+        assert_eq!(shake_offset(SHAKE, false), 0.0);
+
+        let wave: Vec<f64> = (0..6).map(|index| waiting_dot_alpha(0.4, index, false)).collect();
+        assert!(wave.iter().any(|alpha| (alpha - wave[0]).abs() > 0.1));
+        let held = waiting_dot_alpha(0.4, 3, true);
+        assert!((0..10u8).all(|step| waiting_dot_alpha(f64::from(step) * 0.1, usize::from(step), true) == held));
     }
 }

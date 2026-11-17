@@ -45,7 +45,16 @@ pub enum Command {
     NotificationKey(u32, crate::config::Mods),
     /// A key pressed while picking a colour (not available as text).
     ColourPickKey(u32, crate::config::Mods),
+    /// Picks an area of the screen to copy, save, draw on or record; stops
+    /// a recording.
+    Capture,
+    /// A key pressed while picking an area (not available as text).
+    ShotKey(u32, crate::config::Mods),
+    /// Saves or copies a finished recording (from its notification).
+    KeepRecording(crate::shot::record::Keep),
     ReloadConfig,
+    /// Shows another picture from the wallpaper folder.
+    NextWallpaper,
     /// Rescans plugin manifests and restarts their workers without editing config.
     ReloadPlugins,
     /// Installs a plugin from a GitHub repository (`owner/repo[@rev]`).
@@ -80,6 +89,8 @@ pub enum Command {
         tool: String,
         arguments: serde_json::Value,
     },
+    /// Writes `[plugins.<id>]` for a command to config.toml.
+    PluginAdd(crate::plugins::Add),
     /// Prints the battery's charge and the border colour it gives.
     Battery,
     /// For the bundled Bluetooth plugin: status, on, off, reconnect,
@@ -89,6 +100,8 @@ pub enum Command {
     Tray,
     /// Prints how much the image caches hold.
     Caches,
+    /// Lists the dashboard's items, removes one or brings removed ones back.
+    Dashboard(Vec<String>),
     TrayDebug(Option<usize>),
     /// Slides out the strip of minimized windows for a moment.
     ShowMinimized,
@@ -112,6 +125,8 @@ pub enum Command {
     Network(NetworkCommand),
     /// A key pressed while the network card is open (not available as text).
     NetworkKey(u32, crate::config::Mods),
+    /// A key pressed while the notification panel has the keyboard (not available as text).
+    NotificationPanelKey(u32, crate::config::Mods),
     /// Tells applications to use their dark or light style, until the
     /// config is next loaded.
     ColourScheme(crate::theme::ColourScheme),
@@ -147,6 +162,9 @@ Inspecting:
   network status            print the wired connection and the Wi-Fi networks
   tray                      list visible tray entries and the configured limit
   caches                    print the image caches' sizes and texture memory
+  dashboard                 list the welcome screen's dashboard items
+  dashboard hide <item>     remove an item from the dashboard
+  dashboard show <item>|all bring removed items back
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
@@ -182,7 +200,7 @@ Views:
   forward                   the next space you framed
   save <1-9>                save the current view in a slot
   go <1-9>                  go to a saved view
-  desktop                   show or hide the Desktop tile
+  desktop                   clear the desk, or bring back what it cleared
   minimap                   open or close the map of the whole tree in the bar
   network                   open or close the network card in the bar
   network wifi [on|off]     switch Wi-Fi on or off (toggles without on or off)
@@ -190,7 +208,7 @@ Views:
 
 Shell:
   launcher                  open the launcher
-  settings                  open or close Settings (drafts are kept)
+  settings                  open or close Settings (asks about unapplied changes)
   notifications             open the notification list
   notifications clear       clear the history and dismiss every popup
   answer-notification       give the newest popup with buttons the keyboard:
@@ -203,7 +221,10 @@ Shell:
   copy-text <text>          put text on the clipboard
   pick-colour               pick a colour from the screen and copy it as hex
                             (also: pick-color)
+  capture                   pick an area to copy, save, draw on or record;
+                            while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
+  next-wallpaper            another picture from the wallpaper folder
                             (also: color-scheme)
   doctor                    open or close the doctor panel
   doctor ask <question>     ask the doctor about your setup
@@ -272,6 +293,11 @@ Plugins:
   plugins configure <id>    run a plugin's setup in a terminal
   plugins update [id]       update one installed plugin, or all of them
   plugins remove <id>       run a plugin's uninstall and remove it
+  plugin add [--id <id>] [--bar] <command> [args...]
+                            set a plugin up: write [plugins.<id>] to
+                            config.toml, which starts it; the id comes from
+                            the command's name unless given, and --bar shows
+                            its chips in the bar
   plugin <id> <tool> [json] call a plugin's tool with a JSON object of
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
@@ -283,7 +309,9 @@ Pretend input (headless or nested only):
   click [x y] [left|right|middle]
   press [left|right|middle] hold a button down (drags), and let go with
   release [left|right|middle]
-  key <combo>               press a key, such as Return or Super+slash
+  scroll <notches>          turn the mouse wheel, below 0 for up
+  key <combo> [hold <ms>]   press a key, such as Return or Super+slash; with
+                            hold, let go after that many milliseconds
   keydown <key>             hold a key down (keydown Alt, then press and
                             motion: an Alt+drag)
   keyup <key>               let a held key go
@@ -330,6 +358,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "show-minimized" => return Ok(Command::ShowMinimized),
         "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
+        "next-wallpaper" => return Ok(Command::NextWallpaper),
         "plugins" => {
             return match args.as_slice() {
                 ["reload"] => Ok(Command::ReloadPlugins),
@@ -361,6 +390,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
             };
         }
         "caches" => return Ok(Command::Caches),
+        "dashboard" => return Ok(Command::Dashboard(args.iter().map(|arg| arg.to_string()).collect())),
         "tray" => {
             return match args.as_slice() {
                 [] => Ok(Command::Tray),
@@ -388,6 +418,9 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "volume" | "mic" | "brightness" | "media" => return crate::media::parse(verb, &args).map(Command::Media),
         "home" => return crate::home::parse(rest).map(|command| Command::Home(command, rest.trim().to_string())),
+        "plugin" if args.first() == Some(&"add") => {
+            return crate::plugins::Add::parse(&args[1..]).map(Command::PluginAdd);
+        }
         "plugin" => {
             let mut parts = rest.trim().splitn(3, char::is_whitespace);
             let plugin =
@@ -419,8 +452,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
             };
         }
-        "pointer" | "motion" | "click" | "press" | "release" | "key" | "keydown" | "keyup" | "type" | "gesture"
-        | "touch" => {
+        "pointer" | "motion" | "click" | "press" | "release" | "scroll" | "key" | "keydown" | "keyup" | "type"
+        | "gesture" | "touch" => {
             return crate::inject::parse(verb, rest).map(Command::Inject);
         }
         "colour-scheme" | "color-scheme" => {
@@ -459,6 +492,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "answer-notification" => return Err(format!("answer-notification takes nothing, not {rest:?}")),
         "pick-colour" | "pick-color" if rest.is_empty() => return Ok(Command::PickColour),
         "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
+        "capture" if rest.is_empty() => return Ok(Command::Capture),
+        "capture" => return Err(format!("capture takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "feedback" => return Ok(Command::Feedback(rest.to_string())),
@@ -499,7 +534,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "back" => Action::Back,
         "forward" => Action::Forward,
         "maximize" => Action::Maximize,
-        "desktop" => Action::ToggleDesktop,
+        "desktop" => Action::ToggleDesk,
         "float" => Action::ToggleFloat,
         "fullscreen" => Action::Fullscreen,
         "lock" => Action::Lock,
@@ -592,7 +627,16 @@ impl Tileception {
             Command::AnswerNotification => self.answer_notification(),
             Command::NotificationKey(sym, mods) => self.notification_key(sym, mods),
             Command::ColourPickKey(sym, mods) => self.colour_pick_key(sym, mods),
+            Command::Capture => self.capture(),
+            Command::ShotKey(sym, mods) => self.shot_key(sym, mods),
+            Command::KeepRecording(keep) => self.keep_recording(keep),
             Command::ReloadConfig => self.reload_config()?,
+            Command::NextWallpaper => {
+                if self.wallpaper_rotation_folder().is_none() {
+                    return Err("the wallpaper is not a folder".into());
+                }
+                self.rotate_wallpaper(true);
+            }
             Command::ReloadPlugins => {
                 self.reload_plugins()?;
                 return Ok("Plugin rediscovery started\n".into());
@@ -606,12 +650,14 @@ impl Tileception {
             Command::Media(control) => return self.media_command(control),
             Command::Home(command, text) => return self.home_command(command, &text),
             Command::Plugin { plugin, tool, arguments } => return self.plugin_command(&plugin, &tool, arguments),
+            Command::PluginAdd(add) => return self.add_plugin(add),
             Command::Battery => return Ok(self.battery_status()),
             Command::Bluetooth(text) => {
                 return self.plugin_command("bluetooth", "command", serde_json::json!({ "text": text }));
             }
             Command::Tray => return Ok(self.tray_status()),
             Command::Caches => return Ok(self.cache_status()),
+            Command::Dashboard(args) => return self.dashboard_command(&args),
             Command::TrayDebug(count) => return Ok(self.tray_debug(count)),
             Command::Doctor(None) => self.toggle_doctor(),
             Command::Doctor(Some(question)) => self.ask_doctor(&question),
@@ -625,6 +671,7 @@ impl Tileception {
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
             Command::Network(command) => return self.network_command(command),
             Command::NetworkKey(sym, mods) => self.network_key(sym, mods),
+            Command::NotificationPanelKey(sym, mods) => self.notification_panel_key(sym, mods),
             Command::PowerMenuKey(sym) => self.power_menu_key(sym),
             Command::LauncherKey(sym, mods) => self.launcher_key(sym, mods),
             Command::Settings => self.toggle_settings(),
@@ -737,5 +784,16 @@ mod tests {
         assert_eq!(parse("colour-scheme light"), Ok(Command::ColourScheme(crate::theme::ColourScheme::Light)));
         assert!(parse("colour-scheme blue").is_err());
         assert!(parse("").is_err());
+        assert_eq!(
+            parse("plugin add --bar /usr/bin/weather --units metric"),
+            Ok(Command::PluginAdd(crate::plugins::Add {
+                plugin_id: None,
+                bar: true,
+                command: "/usr/bin/weather".into(),
+                args: vec!["--units".into(), "metric".into()],
+            }))
+        );
+        assert!(parse("plugin add").is_err());
+        assert!(matches!(parse("plugin home toggle"), Ok(Command::Plugin { .. })));
     }
 }

@@ -201,9 +201,9 @@ impl Tileception {
         self.frost.borrow_mut().begin();
         let others = self.other_area_elements(renderer, now);
         let (mut elements, scene) = self.render_elements(renderer, now, others);
-        if let Some(buffer) = wallpaper {
+        if let Some(drawn) = wallpaper {
             let output_rect = self.output_rect();
-            push_image(&mut elements, renderer, &buffer, (output_rect.x, output_rect.y), self.scale);
+            push_wallpaper(&mut elements, renderer, &drawn, (output_rect.x, output_rect.y), self.scale);
         }
         self.add_frost(renderer, &mut elements, scene);
         if self.fade_in == FadeIn::Waiting {
@@ -259,9 +259,13 @@ impl Tileception {
         let view = self.world.view(now);
         let active = self.is_active_output();
         let mut elements: Vec<OutputElement> = Vec::new();
+        // The area picker covers everything, on its own screen.
+        elements.extend(self.shot_elements(renderer));
+        elements.extend(self.recording_elements(renderer));
         elements.extend(self.settings_identify_elements(renderer));
         if active {
-            if self.feedback.is_some() {
+            // Hover highlights belong to the dialog, so its screenshot leaves them out too.
+            if self.feedback_visible() {
                 elements.extend(self.shell_pointer_feedback(renderer));
             }
             elements.extend(self.feedback_elements(renderer));
@@ -286,7 +290,9 @@ impl Tileception {
         }
         // These stay on the screen they appeared on, whichever is active.
         elements.extend(self.notification_elements(renderer));
-        elements.extend(self.doctor_elements(renderer));
+        if !self.feedback_hides_doctor() {
+            elements.extend(self.doctor_elements(renderer));
+        }
         // Over the strip, which it can stand on.
         elements.extend(self.duck_elements(renderer));
         if active {
@@ -371,6 +377,39 @@ impl Tileception {
         // reach over a neighbour or past their own window's border (within
         // the area, on a split screen).
         let mut elements: Vec<OutputElement> = Vec::new();
+        let fade = self.peek_fade();
+        if fade > 0.0 {
+            // Holding Super+D: windows fade to outlines over the dashboard.
+            let outline = Shape {
+                radius: theme.radius,
+                border_width: 1.5,
+                border: theme.text.alpha(0.55 * fade),
+                ..Default::default()
+            };
+            for drawn in &drawn_windows {
+                push_shape(&mut elements, shapes.as_ref(), &drawn.content, outline);
+            }
+            // Plugins' own surfaces go over the frames drawn for them.
+            let slots = self.dashboard_slots(self.home_centre());
+            elements.extend(self.dashboard_surface_elements(renderer, &slots));
+            let mut painter = crate::ui::Painter::new(self, renderer);
+            painter.alpha = fade;
+            self.draw_dashboard(&mut painter, &slots);
+            elements.extend(painter.finish());
+            if fade < 1.0 {
+                for drawn in &drawn_windows {
+                    let faded = match self.windows.get(&drawn.window_id) {
+                        Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade),
+                        _ => self.picture_faded(renderer, drawn.window_id, &drawn.content, 1.0 - fade),
+                    };
+                    elements.extend(faded);
+                }
+            }
+            return match self.area_clip() {
+                Some(clip) => clip_elements(elements, &clip, self.scale),
+                None => elements,
+            };
+        }
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
             if self.handoff.windows.is_remote(drawn.window_id) {
@@ -751,12 +790,23 @@ fn live(
     drawn: &Drawn,
     scale: f64,
 ) -> Vec<OutputElement> {
+    live_faded(renderer, window, drawn, scale, 1.0)
+}
+
+/// A live window at some opacity.
+fn live_faded(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    drawn: &Drawn,
+    scale: f64,
+    alpha: f32,
+) -> Vec<OutputElement> {
     let origin = physical_point((drawn.origin.x, drawn.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
         Some(toplevel) => {
-            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, 1.0, Kind::Unspecified)
+            render_elements_from_surface_tree(renderer, toplevel.wl_surface(), origin, 1.0, alpha, Kind::Unspecified)
         }
-        None => window.render_elements(renderer, origin, Scale::from(1.0), 1.0),
+        None => window.render_elements(renderer, origin, Scale::from(1.0), alpha),
     };
     enlarged(surfaces, origin, scale * drawn.scale.0).collect()
 }
@@ -794,6 +844,31 @@ pub fn push_image(
         MemoryRenderBufferRenderElement::from_buffer(renderer, position, buffer, None, None, None, Kind::Unspecified)
     {
         out.push(OutputElement::Memory(element));
+    }
+}
+
+/// The wallpaper, under the one it replaces while that fades out.
+pub fn push_wallpaper(
+    out: &mut Vec<OutputElement>,
+    renderer: &mut GlesRenderer,
+    drawn: &crate::wallpaper::Drawn,
+    position: (f64, f64),
+    scale: f64,
+) {
+    let position = ((position.0 * scale).round(), (position.1 * scale).round());
+    let layers = drawn.previous.iter().map(|(buffer, alpha)| (buffer, Some(*alpha))).chain([(&drawn.buffer, None)]);
+    for (buffer, alpha) in layers {
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            position,
+            buffer,
+            alpha,
+            None,
+            None,
+            Kind::Unspecified,
+        ) {
+            out.push(OutputElement::Memory(element));
+        }
     }
 }
 

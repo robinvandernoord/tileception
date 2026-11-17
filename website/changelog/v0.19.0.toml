@@ -1,0 +1,82 @@
+version = "0.19.0"
+date = 2026-11-13
+lede = "Super+D now clears the desk, and holding it lets you peek at a new dashboard with plugin content. The bar can show your calendar, and Settings asks before discarding your changes."
+
+[[features]]
+area = "desk"
+issue = 87
+title = "Super+D clears the desk"
+text = "Tap Super+D to move every window to the minimized strip, and tap again to bring them back where they were. Hold it, and the windows fade to outlines until you let go."
+
+[features.media]
+kind = "compare"
+before = "desk-before.jpg"
+after = "desk-after.jpg"
+alt = "Super+D on a desk with four windows"
+caption = "Super+D in 0.18.0 opens the Desktop tile beside the windows. Held in 0.19.0, it shows the windows as outlines over the dashboard."
+
+[[features]]
+area = "desk"
+issue = 87
+title = "The welcome screen has a dashboard"
+text = "An empty desk, or one cleared with Super+D, shows a dashboard beside the welcome screen: your notification count, and cards, pictures and animations from plugins. Drag items to move them, or click the round x to remove one."
+
+[features.media]
+kind = "image"
+src = "dashboard-after.jpg"
+alt = "The welcome screen on a cleared desk, with the notification count and two plugin cards beside it"
+caption = "A desk cleared with Super+D: the welcome screen, and the dashboard beside it."
+
+[[features]]
+area = "calendar"
+issue = 42
+title = "The bar shows your calendar"
+text = "List `.ics` files or calendar addresses under `[calendar]` in `config.toml`. A chip beside the clock names the current event, or the next one today. The calendar marks every day that has events."
+
+[features.media]
+kind = "image"
+src = "calendar-after.jpg"
+alt = "The bar's calendar chip reading until 18:18 Design review, with the calendar open below it"
+caption = "The chip shows the current meeting. The calendar lists upcoming events and marks the days they fall on."
+
+[[features]]
+area = "settings"
+issue = 43
+title = "Settings asks before closing"
+text = "If you close Settings with unapplied changes, it asks whether to apply or discard them. Settings also picks up edits to `config.toml` while open, preserving any fields you have changed in the window."
+
+[features.media]
+kind = "image"
+src = "settings-after.jpg"
+alt = "Settings asking Apply your changes? with Discard, Cancel and Apply buttons"
+caption = "Closing Settings after changing a switch asks you to apply or discard the change, or cancel."
+
+[[features]]
+area = "plugins"
+issue = 41
+title = "Add a plugin with one command"
+text = "`tileception msg plugin add <command>` writes the plugin to `config.toml` and starts it. Add `--bar` to show its chips in the bar. Doctor can use it to set a plugin up for you."
+
+[[features]]
+area = "handoff"
+issue = 84
+title = "Handoff handles screens of different sizes"
+text = "The pointer crosses to another machine only where the two screen edges face each other, as between screens of one machine. `stretch_screen_edges` brings back crossing along the whole edge. Each keyboard types with its own layout on either machine."
+
+[[features]]
+area = "smart-home"
+issue = 79
+title = "Smart home history includes humidity"
+text = "Temperature and humidity sensors show a trend line for the last six hours. If a device reports both, use History on the Smart home page in Settings to choose which measurement to show."
+
+[[features]]
+area = "greeter"
+issue = 86
+title = "The login screen can reduce motion"
+text = "Set `reduce_motion = true` in `/etc/tileception/greeter.toml` and the login and lock screens fade instead of moving. A wrong password no longer shakes the field, and the waiting dots hold still."
+
+[[features]]
+area = "bluetooth"
+issue = 75
+title = "Bluetooth icons show the kind of device"
+text = "Bluetooth devices now have icons for their type, such as headphones, a mouse or a game controller. Devices with an unknown type keep the Bluetooth icon."

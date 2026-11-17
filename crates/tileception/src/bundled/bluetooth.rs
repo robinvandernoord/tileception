@@ -36,6 +36,24 @@ const BATTERY: &str = "org.bluez.Battery1";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const ICON: &str = "glyph:bluetooth";
+
+/// The glyph for a device of BlueZ's icon name `kind`, the Bluetooth glyph
+/// for kinds without one of their own.
+fn device_icon(kind: &str) -> &'static str {
+    match kind {
+        "audio-headphones" => "glyph:headphones",
+        "audio-headset" => "glyph:headset",
+        "audio-card" => "glyph:speaker",
+        "input-mouse" | "input-tablet" => "glyph:mouse",
+        "input-keyboard" => "glyph:keyboard",
+        "input-gaming" => "glyph:gamepad",
+        "phone" => "glyph:phone",
+        "computer" => "glyph:laptop",
+        "video-display" => "glyph:monitor",
+        "camera-photo" | "camera-video" => "glyph:camera",
+        _ => ICON,
+    }
+}
 /// After waking or switching the adapter on, devices that come back by
 /// themselves get this long first.
 const SETTLE: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(3) };
@@ -83,6 +101,8 @@ struct Device {
     named: bool,
     /// Signal strength in dBm while searching.
     rssi: Option<i16>,
+    /// BlueZ's icon name for its kind, such as `audio-headset`.
+    icon: String,
 }
 
 /// What BlueZ has, as one value so changes compare easily.
@@ -540,7 +560,7 @@ impl BluetoothPlugin {
                     rows.push(json!({
                         "title": format!("Forget {}", device.name),
                         "detail": "Unpair it; pair it again to use it",
-                        "icon": ICON,
+                        "icon": device_icon(&device.icon),
                         "actions": [{ "title": "Forget", "type": "tool", "name": "forget",
                                       "arguments": { "device": device.path } }],
                     }));
@@ -552,7 +572,7 @@ impl BluetoothPlugin {
                     rows.push(json!({
                         "title": format!("{verb} {}", device.name),
                         "detail": detail(device, shared.connecting.contains(&device.path)),
-                        "icon": ICON,
+                        "icon": device_icon(&device.icon),
                         "actions": [{ "title": verb, "type": "tool", "name": "toggle",
                                       "arguments": { "device": device.path } }],
                     }));
@@ -793,12 +813,13 @@ fn tool_action(name: &str, arguments: Value) -> ActionKind {
 
 /// The code to confirm or type, above the devices.
 fn prompt_card(prompt: &Prompt, state: &State) -> Card {
-    let name = state.device(&prompt.device).map_or("the device", |device| device.name.as_str());
+    let device = state.device(&prompt.device);
+    let name = device.map_or("the device", |device| device.name.as_str());
     let mut card = Card {
         key: "pairing".into(),
         title: format!("Pairing {name}"),
         value: prompt.code.clone(),
-        icon: Some(ICON.into()),
+        icon: Some(device.map_or(ICON, |device| device_icon(&device.icon)).into()),
         tint: Tint::Accent,
         lit: true,
         enabled: true,
@@ -840,7 +861,7 @@ fn nearby_row(device: &Device, pairing: bool) -> Row {
         key: device.path.clone(),
         title: device.name.clone(),
         detail: nearby_detail(device, pairing).into(),
-        icon: Some(ICON.into()),
+        icon: Some(device_icon(&device.icon).into()),
         tint: Tint::Muted,
         enabled: true,
         switch: Some(Switch {
@@ -1048,25 +1069,28 @@ fn detail(device: &Device, connecting: bool) -> String {
     }
 }
 
-/// The bar chip while something is connected: its name and charge, or how
-/// many; clicking it opens the block.
+/// The bar chip while something is connected: its name, charge and kind, or
+/// how many; clicking it opens the block.
 fn chips(state: &State) -> Bar {
     let connected: Vec<&Device> = state.paired().into_iter().filter(|device| device.connected).collect();
     let low = connected.iter().filter_map(|device| device.battery).min();
-    let label = match connected.as_slice() {
+    let (label, icon) = match connected.as_slice() {
         [] => return Bar::default(),
-        [device] => match device.battery {
-            Some(percent) => format!("{} {percent}%", device.name),
-            None => device.name.clone(),
-        },
-        several => format!("{} devices", several.len()),
+        [device] => (
+            match device.battery {
+                Some(percent) => format!("{} {percent}%", device.name),
+                None => device.name.clone(),
+            },
+            device_icon(&device.icon),
+        ),
+        several => (format!("{} devices", several.len()), ICON),
     };
     let tint = match low {
         Some(percent) if percent <= 15 => Tint::Danger,
         Some(percent) if percent <= 30 => Tint::Warm,
         _ => Tint::Accent,
     };
-    Bar { chips: vec![BarChip { label, icon: Some(ICON.into()), tint, action: None }] }
+    Bar { chips: vec![BarChip { label, icon: Some(icon.into()), tint, action: None }] }
 }
 
 /// A paired device's row: the switch connects it.
@@ -1075,7 +1099,7 @@ fn row(device: &Device, connecting: bool) -> Row {
         key: device.path.clone(),
         title: device.name.clone(),
         detail: detail(device, connecting),
-        icon: Some(ICON.into()),
+        icon: Some(device_icon(&device.icon).into()),
         tint: if device.connected { Tint::Accent } else { Tint::Muted },
         dim: !device.connected,
         enabled: true,
@@ -1666,6 +1690,7 @@ fn state(objects: &Objects, available: bool) -> State {
                 connected: flag(properties, "Connected"),
                 named: properties.contains_key("Name"),
                 rssi: properties.get("RSSI").and_then(|value| i16::try_from(value).ok()),
+                icon: text(properties, "Icon"),
                 battery: interfaces
                     .get(BATTERY)
                     .and_then(|battery| battery.get("Percentage"))
@@ -1825,9 +1850,42 @@ mod tests {
         assert!(chips(&world(true, &[])).chips.is_empty());
         let mut one = world(true, &[PHONES]);
         one.devices[0].battery = Some(12);
+        one.devices[0].icon = "audio-headphones".into();
         let chip = &chips(&one).chips[0];
         assert_eq!((chip.label.as_str(), chip.tint), ("Headphones 12%", Tint::Danger));
-        assert_eq!(chips(&world(true, &[PHONES, MOUSE])).chips[0].label, "2 devices");
+        assert_eq!(chip.icon.as_deref(), Some("glyph:headphones"));
+        let several = &chips(&world(true, &[PHONES, MOUSE])).chips[0];
+        assert_eq!((several.label.as_str(), several.icon.as_deref()), ("2 devices", Some(ICON)));
+    }
+
+    #[test]
+    fn devices_show_their_kind() {
+        for (kind, glyph) in [
+            ("audio-headphones", "glyph:headphones"),
+            ("audio-headset", "glyph:headset"),
+            ("audio-card", "glyph:speaker"),
+            ("input-mouse", "glyph:mouse"),
+            ("input-tablet", "glyph:mouse"),
+            ("input-keyboard", "glyph:keyboard"),
+            ("input-gaming", "glyph:gamepad"),
+            ("phone", "glyph:phone"),
+            ("computer", "glyph:laptop"),
+            ("video-display", "glyph:monitor"),
+            ("camera-photo", "glyph:camera"),
+            ("camera-video", "glyph:camera"),
+            ("printer", ICON),
+            ("modem", ICON),
+            ("", ICON),
+        ] {
+            assert_eq!(device_icon(kind), glyph, "{kind}");
+            assert_ne!(crate::ui::glyph::named(glyph), Some(crate::ui::glyph::PLUG), "{glyph} is drawn");
+        }
+        let mut state = world(true, &[]);
+        state.devices[1].icon = "input-mouse".into();
+        let mouse = state.device(MOUSE).unwrap();
+        assert_eq!(row(mouse, false).icon.as_deref(), Some("glyph:mouse"));
+        assert_eq!(nearby_row(mouse, false).icon.as_deref(), Some("glyph:mouse"));
+        assert_eq!(row(state.device(PHONES).unwrap(), false).icon.as_deref(), Some(ICON), "kind unknown");
     }
 
     #[test]
@@ -2371,6 +2429,7 @@ mod tests {
                         ("Alias".into(), value("Headphones".into())),
                         ("Paired".into(), value(true.into())),
                         ("Connected".into(), value(true.into())),
+                        ("Icon".into(), value("audio-headphones".into())),
                     ]),
                 ),
                 (BATTERY.into(), HashMap::from([("Percentage".into(), value(80u8.into()))])),
@@ -2381,6 +2440,7 @@ mod tests {
         let phones = &state.devices[0];
         assert_eq!((phones.adapter.as_str(), phones.name.as_str(), phones.battery), (HCI, "Headphones", Some(80)));
         assert!(phones.connected && phones.paired);
+        assert_eq!(phones.icon, "audio-headphones");
         assert_eq!(detail(phones, false), "Connected, battery 80%");
     }
 }

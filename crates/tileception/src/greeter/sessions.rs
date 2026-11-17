@@ -90,7 +90,8 @@ fn parse_entry(text: &str) -> Option<Entry> {
         match key.trim() {
             "Name" => name = Some(value),
             "Exec" => exec = Some(value),
-            "TryExec" => try_exec = Some(value),
+            // An empty TryExec names nothing to look for, as GLib reads it.
+            "TryExec" if !value.is_empty() => try_exec = Some(value),
             "DesktopNames" => names = Some(value),
             "Icon" if !value.is_empty() => icon = Some(value),
             "Hidden" | "NoDisplay" if value == "true" => return None,
@@ -243,13 +244,19 @@ mod tests {
         std::fs::write(xorg.join("i3.desktop"), entry("i3")).expect("write");
         std::fs::write(xorg.join("missing.desktop"), "[Desktop Entry]\nName=M\nExec=m\nTryExec=/no/such/file\n")
             .expect("write");
+        // An empty TryExec names nothing to look for; the session stays.
+        std::fs::write(xorg.join("plain.desktop"), "[Desktop Entry]\nName=Plain\nExec=plain\nTryExec=\n")
+            .expect("write");
         let found = scan(&[(wayland, Kind::Wayland), (xorg, Kind::X11)], &["tileception-nested".into()]);
         let names: Vec<(&str, Kind)> = found.iter().map(|session| (session.name.as_str(), session.kind)).collect();
-        assert_eq!(names, [("GNOME", Kind::Wayland), ("Tileception", Kind::Wayland), ("i3", Kind::X11)]);
+        assert_eq!(
+            names,
+            [("GNOME", Kind::Wayland), ("Tileception", Kind::Wayland), ("i3", Kind::X11), ("Plain", Kind::X11)]
+        );
         let mut sorted = found.clone();
         sort_default_first(&mut sorted, "tileception");
         let ids: Vec<&str> = sorted.iter().map(|session| session.session_id.as_str()).collect();
-        assert_eq!(ids, ["tileception", "gnome", "i3"]);
+        assert_eq!(ids, ["tileception", "gnome", "i3", "plain"]);
         let _ = std::fs::remove_dir_all(root);
     }
 }

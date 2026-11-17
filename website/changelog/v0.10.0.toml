@@ -1,0 +1,29 @@
+version = "0.10.0"
+date = 2026-11-02
+lede = "A wide screen can now be split into side-by-side areas, each with a layout of its own. A minimap in the bar shows the whole layout and takes you anywhere in it."
+
+[[features]]
+area = "outputs"
+title = "Split a wide screen into areas"
+text = 'Add `split = 2` to a monitor under `[outputs."DP-2"]` and it becomes two side-by-side areas. Each has its own windows, zoom, overview and minimized windows, as if it were a screen of its own.'
+
+[[features]]
+area = "minimap"
+title = "A minimap of the whole layout in the bar"
+text = "The bar shows a small outline of your layout, with the part on screen marked. Hover it for a larger map, then click a window to zoom to it or drag to pan."
+
+[features.media]
+kind = "image"
+src = "minimap-after.jpg"
+alt = "The bar's map open over a zoomed-in website, outlining four windows with the one on screen highlighted in teal"
+caption = "The map shows all four windows. The teal one is the window on screen."
+
+[[features]]
+area = "outputs"
+title = "Resize areas and move windows between them"
+text = "Drag the gap between two areas to change their widths. Alt-drag a window into another area to move it there. Super+M zooms within the area, and Super+F covers the whole monitor."
+
+[[features]]
+area = "split-screen"
+title = "Saved views cover every area"
+text = "On a split screen, Super+Shift+1 saves the view of every area in slot 1. Super+1 brings them all back. The minimap draws the areas side by side."
