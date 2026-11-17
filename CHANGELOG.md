@@ -4,6 +4,20 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.21.0 (2026-11-17)
+
+### Features
+* **plugins:** install and manage plugins from GitHub
+* **config:** support resilient config loading and rotating wallpapers
+* **capture:** add area screenshots, annotations, and recording
+
+### Fixes
+* **config:** preserve external spawn commands in legacy binds
+* **doctor:** prioritize send button pointer target
+
+### Documentation
+* **screenshots:** document area capture controls
+
 ## v0.20.0 (2026-11-16)
 
 ### Features
