@@ -230,6 +230,11 @@ enum Manage {
     /// One installed plugin, or all of them.
     Update(Option<String>),
     Remove(String),
+    /// A plugin under `plugins list`: where it came from, and Enter
+    /// configures it.
+    Installed(String),
+    /// Why there is nothing to act on: a title and what to do instead.
+    Note(String, String),
 }
 
 /// The update manager's rows.
@@ -929,11 +934,19 @@ impl Tileception {
                 return Vec::new();
             };
             let installed = &self.installer.record.plugins;
+            // What the installer does now, so a long install is not a mystery.
+            let busy = self.installer.busy.as_ref().map(|busy| {
+                Entry::Manage(Manage::Note(
+                    format!("{busy}\u{2026}"),
+                    "Wait for it to finish; a notification says when".into(),
+                ))
+            });
             let manage = std::iter::once(Manage::Add)
                 .chain(installed.keys().map(|plugin_id| Manage::Configure(plugin_id.clone())))
                 .chain((!installed.is_empty()).then_some(Manage::Update(None)));
-            return manage
-                .map(Entry::Manage)
+            return busy
+                .into_iter()
+                .chain(manage.map(Entry::Manage))
                 .chain(
                     plugins
                         .routes
@@ -1436,9 +1449,10 @@ impl Tileception {
                 .map(|plugin_id| Entry::Manage(make(plugin_id.clone())))
                 .collect()
         };
-        Some(match verb {
+        let rows = match verb {
             "add" if argument.is_empty() => vec![Entry::Manage(Manage::Add)],
             "add" => vec![Entry::Manage(Manage::Source(argument.to_string()))],
+            "list" => self.installed_rows(),
             "configure" => installed(Manage::Configure),
             "update" => {
                 let all = (argument.is_empty() && !self.installer.record.plugins.is_empty())
@@ -1447,7 +1461,44 @@ impl Tileception {
             }
             "remove" => installed(Manage::Remove),
             _ => return None,
-        })
+        };
+        if !rows.is_empty() {
+            return Some(rows);
+        }
+        // Only configure, update and remove come here: they act on installed
+        // plugins, and say so rather than show nothing.
+        Some(vec![if self.installer.record.plugins.is_empty() {
+            self.nothing_installed()
+        } else {
+            let ids: Vec<&str> = self.installer.record.plugins.keys().map(String::as_str).collect();
+            Entry::Manage(Manage::Note(
+                format!("No installed plugin starts with {argument}"),
+                format!("Installed: {}", ids.join(", ")),
+            ))
+        }])
+    }
+
+    /// `plugins list`: a row for each plugin installed from a repository.
+    fn installed_rows(&self) -> Vec<Entry> {
+        let installed = &self.installer.record.plugins;
+        if installed.is_empty() {
+            return vec![self.nothing_installed()];
+        }
+        installed.keys().map(|plugin_id| Entry::Manage(Manage::Installed(plugin_id.clone()))).collect()
+    }
+
+    /// Why there is nothing to configure, update or remove.
+    fn nothing_installed(&self) -> Entry {
+        let (title, detail) = match &self.installer.busy {
+            Some(busy) => {
+                ("No plugin is installed yet".into(), format!("{busy}\u{2026} A notification says when it is done"))
+            }
+            None => (
+                "No plugins were installed from a repository".into(),
+                "Type plugins add owner/repo to install one".into(),
+            ),
+        };
+        Entry::Manage(Manage::Note(title, detail))
     }
 
     /// Enter on a row of [`Self::manage_rows`].
@@ -1473,7 +1524,11 @@ impl Tileception {
                     }
                 }
             }
-            Manage::Configure(plugin_id) => {
+            Manage::Note(..) => {
+                self.close_launcher();
+                return;
+            }
+            Manage::Configure(plugin_id) | Manage::Installed(plugin_id) => {
                 self.close_launcher();
                 self.plugin_configure(&plugin_id).map(drop)
             }
@@ -1576,6 +1631,19 @@ impl Tileception {
                 format!("Update {}", self.plugin_name(plugin_id)),
                 format!("From {}", source_of(plugin_id).unwrap_or_default()),
             ),
+            Manage::Installed(plugin_id) => {
+                let installed = installer.record.plugins.get(plugin_id);
+                let commit = installed
+                    .and_then(|installed| installed.commit.as_deref())
+                    .map_or_else(String::new, |commit| format!(" at {}", crate::plugin_install::short(commit)));
+                let name = self.plugin_name(plugin_id);
+                (
+                    glyph::PLUG,
+                    if name == *plugin_id { name } else { format!("{name} ({plugin_id})") },
+                    format!("{}{commit} \u{b7} Enter configures it", source_of(plugin_id).unwrap_or_default()),
+                )
+            }
+            Manage::Note(title, detail) => (glyph::PLUG, title.clone(), detail.clone()),
             Manage::Remove(plugin_id) => (
                 glyph::CLOSE,
                 format!("Remove {}", self.plugin_name(plugin_id)),
@@ -1671,7 +1739,8 @@ impl Tileception {
                     _ => "Look up",
                 }
             }
-            Manage::Configure(_) => "Configure",
+            Manage::Configure(_) | Manage::Installed(_) => "Configure",
+            Manage::Note(..) => "Close",
             Manage::Update(_) => "Update",
             Manage::Remove(_) => "Remove",
         }

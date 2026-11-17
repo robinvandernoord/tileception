@@ -418,8 +418,17 @@ enum Job {
 
 /// What a job reports back.
 pub enum Report {
-    Looked { source: Source, result: Box<Result<Lookup, String>> },
-    Done { title: String, result: Result<String, String>, configure: Option<String> },
+    Looked {
+        source: Source,
+        result: Box<Result<Lookup, String>>,
+    },
+    /// The running job moved on to another step, in words.
+    Step(String),
+    Done {
+        title: String,
+        result: Result<String, String>,
+        configure: Option<String>,
+    },
 }
 
 /// The launcher's view of installing.
@@ -533,9 +542,15 @@ fn tail(output: &Output) -> String {
 /// Runs a job's programs with the session's environment.
 struct Runner {
     environment: Vec<(OsString, Option<OsString>)>,
+    /// Where steps are reported, so the launcher can say what runs now.
+    sender: channel::Sender<Report>,
 }
 
 impl Runner {
+    fn step(&self, step: String) {
+        let _ = self.sender.send(Report::Step(step));
+    }
+
     fn command(&self, program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Command {
         let mut command = Command::new(program);
         command.args(args);
@@ -625,6 +640,7 @@ impl Runner {
         // Again, as something else may have been installed since the lookup.
         conflict(&Record::load(), source, package)?;
         let uv_path = self.find_uv()?;
+        self.step(format!("Installing {} at {} with uv", package.name, short(&lookup.commit)));
         let args = install_args(source, lookup);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         self.check("uv tool install", self.command(&uv_path, &args), UV_TIMEOUT)?;
@@ -635,6 +651,7 @@ impl Runner {
         }
         let manifest = manifest_path(&package.plugin_id);
         let had_manifest = manifest.exists();
+        self.step(format!("Running {} install, which may take a while", package.script));
         self.setup(&package.plugin_id, &command)?;
         let mut record = Record::load();
         let wrote_before = record.plugins.get(&package.plugin_id).is_some_and(|installed| installed.wrote_manifest);
@@ -649,6 +666,7 @@ impl Runner {
             },
         );
         record.save()?;
+        self.step(format!("Asking {} whether it is configured", package.script));
         let configure = (!self.configured(&command)).then(|| package.plugin_id.clone());
         let version = if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
         let installed = format!("Installed {}{version} at {}", package.name, short(&lookup.commit));
@@ -697,6 +715,7 @@ impl Runner {
         let installed =
             record.plugins.get(plugin_id).ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
         let source = Source::parse(&installed.source)?;
+        self.step(format!("Checking {plugin_id} for updates"));
         let lookup = self.read(&source)?;
         if lookup.package.plugin_id != plugin_id {
             return Err(format!(
@@ -727,6 +746,7 @@ impl Runner {
             .cloned()
             .ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
         let mut notes = Vec::new();
+        self.step(format!("Running {plugin_id} uninstall"));
         match run(self.command(&installed.command, &["uninstall"]), QUICK_TIMEOUT) {
             Ok(output) if output.status.success() => {}
             // argparse ends with 2 on an unknown subcommand: a plugin from
@@ -832,7 +852,7 @@ impl Tileception {
             .get_envs()
             .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
             .collect();
-        let runner = Runner { environment };
+        let runner = Runner { environment, sender: sender.clone() };
         if !matches!(job, Job::Look(_)) {
             self.installer.busy = Some(busy.clone());
         }
@@ -960,6 +980,12 @@ impl Tileception {
                     self.installer.looking = None;
                 }
                 self.installer.looked = Some((source, *result));
+            }
+            // A step of a job that already ended is old news.
+            Report::Step(step) => {
+                if self.installer.busy.is_some() {
+                    self.installer.busy = Some(step);
+                }
             }
             Report::Done { title, result, configure } => {
                 self.installer.busy = None;

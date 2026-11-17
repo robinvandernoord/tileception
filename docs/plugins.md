@@ -57,7 +57,9 @@ again is fine.
 `plugins` in the launcher lists what is installed this way, with a row to
 configure each, and one to update them all. `plugins configure`,
 `plugins update` and `plugins remove`, each optionally followed by the start
-of a plugin ID, list the installed plugins to do that to.
+of a plugin ID, list the installed plugins to do that to, and
+`plugins list` shows where each came from and at which commit. While an
+install runs, `plugins` shows which step it is at.
 
 Updating is the only step that moves a plugin to a newer commit: it finds the
 commit the repository's default branch (or the tag or branch you installed)
@@ -549,6 +551,11 @@ cannot finish without answers, it does what it can and makes `status` say
 `"configured": false`; Tileception then runs `configure` in a terminal.
 `configure` may use `input`, `getpass`, a full-screen picker or another
 program's login, such as `gh auth login`. Exit 0 once the plugin works.
+
+Keep `install --non-interactive` quick. Until it ends, the install counts as
+running and nothing else can be installed, updated or removed. Start long
+work, such as a first sync, in the background and don't wait for it: for
+example `systemctl --user start --no-block` on a `Type=oneshot` service.
 
 When `install` writes no manifest, Tileception writes
 `~/.local/share/tileception/plugins/<id>.toml` itself, with the script's
