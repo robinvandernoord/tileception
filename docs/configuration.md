@@ -306,30 +306,25 @@ commands under `[binds]`.
 
 ### Plugins
 
-Plugins are executable MCP servers over stdio that add launcher sources and
-cards under the launcher, panel blocks and bar chips. The smart home, Bluetooth,
-`z` folders and timers are bundled plugins: `[plugins.bluetooth] enabled = false`
-switches one off, `[plugins.home.bar] enabled = false` hides its bar chip, and
-`[plugins.<id>.launcher] cards = false` hides a plugin's cards under the
-launcher. Build the example with
-`cargo plane build -p tileception --bin tileception-launcher-example`, then
-enable it using the executable's absolute path:
+Plugins add launcher sources, cards under the launcher, panel blocks, bar chips
+and dashboard items. The smart home, Bluetooth, `z` folders and timers are
+bundled plugins. Each plugin has a `[plugins.<id>]` table:
 
 ```toml
-[plugins.example]
-command = "/absolute/path/to/tileception-launcher-example"
-[plugins.example.launcher]
-# prefixes = ["echo"]
+[plugins.bluetooth]
+enabled = false        # switch a plugin off
+
+[plugins.home.bar]
+enabled = false        # hide its bar chips
+
+[plugins.timers.launcher]
+cards = false          # hide its cards under the launcher
 ```
 
-Type `echo hello` in the launcher to try it; a prefix needs the space after it. Omit `prefixes` to use those
-reported by the plugin; set `enabled = false` to disable a source. Plugins
-installed through manifests are also discovered in
-`~/.local/share/tileception/plugins/` and `/usr/share/tileception/plugins/`.
-Configuration overrides user manifests, which override system manifests.
-Only install plugins you trust, as with autostart commands. See
-[Plugins](plugins.md) for installation, actions, diagnostics and the
-protocol.
+Type `plugins add owner/repo` in the launcher to install a plugin from GitHub.
+[Plugins](plugins.md) covers installing, manifests, every `[plugins.<id>]`
+field and writing your own. Only install plugins you trust, as with autostart
+commands.
 
 ### System tray
 

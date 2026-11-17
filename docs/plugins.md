@@ -1,78 +1,79 @@
 # Plugins
 
-Plugins are executable commands speaking MCP over stdio. They can add launcher
-sources, cards under the launcher, a block in the notification panel, chips in
-the bar, items on the [dashboard](#dashboard), and tools for `tileception msg plugin`. They run as the session user, with the session's
-environment and permissions. Installing a manifest enables its executable. Only
-install plugins you trust.
+Plugins are programs that speak MCP over stdio. A plugin can add:
+
+- a source in the launcher, reached by a prefix such as `timer`;
+- cards under the launcher;
+- a block in the notification panel;
+- chips in the bar;
+- items on the [dashboard](#dashboard), including surfaces it draws itself;
+- tools that scripts call with `tileception msg plugin`.
+
+Plugins run as the session user, with the session's environment and
+permissions. Installing or enabling one lets it run, so only install plugins
+you trust.
 
 ## Bundled plugins
 
-Some plugins ship inside the `tileception` binary and need no installation:
+These plugins ship inside the `tileception` binary and need no installation:
 
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
   launcher and its bar chip. It runs while `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
-- `timers`: `timer` in the launcher for timers and alarms, with a [card
-  under the launcher](#launcher-cards) for each. The launcher also reads
-  plain sentences such as "set a timer for 10 minutes" and hands them to
-  this plugin; plugins themselves only ever get what follows their prefix. [Using
-  Tileception](usage.md#launcher-and-notifications) describes it.
+- `timers`: `timer` in the launcher, with a card under the launcher for each
+  timer. The launcher also hands sentences such as "set a timer for 10
+  minutes" to it. [Using Tileception](usage.md#launcher-and-notifications)
+  describes it.
 - `bluetooth`: the Bluetooth block and its bar chip.
 
-Tileception starts them as `tileception plugin <id>`. Change or disable them in
-`[plugins.<id>]` like any other plugin; a manifest with the same ID replaces
-one.
+Tileception starts them as `tileception plugin <id>`. Configure or disable
+them in `[plugins.<id>]` like any other plugin. A manifest with the same ID
+replaces the bundled plugin.
 
 ## Installing from GitHub
 
 Type `plugins add owner/repo` in the launcher, for example
 `plugins add robinvandernoord/tileception-2fas`. A full GitHub URL works too,
-and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. Enter finds
-the commit that is (the default branch, unless you named one), reads the
-repository's `pyproject.toml` at that commit and shows what it is: its
-package, version, description, what it needs on your machine and the commit.
-Nothing is installed yet. Enter again installs exactly that commit with
-[uv](https://docs.astral.sh/uv/), even if the repository has changed since:
+and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. The
+repository must be public, and `git` and [uv](https://docs.astral.sh/uv/) must
+be installed.
+
+The first Enter finds the commit to install (the default branch's, unless you
+named another), reads `pyproject.toml` at that commit and shows the package,
+version, description, what it needs on your machine and the commit. Nothing
+is installed yet. The second Enter installs exactly that commit, even if the
+repository has changed since:
 
 ```sh
 uv tool install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d'
 ```
 
-Each plugin gets its own environment, and uv fetches a Python that suits the
-package when the system has none. The plugin then sets itself up without
-asking anything (`install --non-interactive`), and plugins are reloaded. A
-notification says when it is done. If the plugin still needs answers from you,
-such as an API key or a login, Tileception asks for them: in the launcher when
-the plugin offers a setup prompt, else in a terminal running its `configure`
-step. Plugins are reloaded again once that ends.
+Each plugin gets its own environment, and uv downloads a suitable Python when
+the system has none. The plugin then sets itself up without asking anything
+(`install --non-interactive`) and plugins are reloaded. A notification says
+when it is done; while it runs, `plugins` in the launcher shows the current
+step. If the plugin still needs something from you, such as an API key or a
+login, Tileception asks for it: in the launcher when the plugin offers a setup
+prompt, otherwise in a terminal that runs its `configure` step. Plugins are
+reloaded again when setup ends.
 
-Installing runs the repository's code as you, with your files and
-credentials. Only install plugins you trust.
+Only one install, update or removal runs at a time. A plugin ID belongs to one
+repository: installing a different repository with the same plugin ID or
+Python package is refused until you remove the installed one. Installing the
+same repository again is allowed.
 
-A plugin ID can only be installed from one repository. Installing another
-repository whose plugin has the same ID, or the same Python package, is
-refused until the installed one is removed; installing the same repository
-again is fine.
+### Managing installed plugins
 
-`plugins` in the launcher lists what is installed this way, with a row to
-configure each, and one to update them all. `plugins configure`,
-`plugins update` and `plugins remove`, each optionally followed by the start
-of a plugin ID, list the installed plugins to do that to, and
-`plugins list` shows where each came from and at which commit. While an
-install runs, `plugins` shows which step it is at.
+| Launcher                  | Does                                                                   |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `plugins`                 | Lists rows to add, configure and update plugins, then loaded sources and discovery errors |
+| `plugins list`            | Shows where each installed plugin came from and at which commit        |
+| `plugins configure [id]`  | Runs a plugin's setup again                                            |
+| `plugins update [id]`     | Updates one plugin, or all of them                                     |
+| `plugins remove [id]`     | Removes a plugin                                                       |
 
-Updating is the only step that moves a plugin to a newer commit: it finds the
-commit the repository's default branch (or the tag or branch you installed)
-is at now, and installs that. A notification lists each plugin, updated, up
-to date or failed; one failure does not stop the others.
-
-Removing runs the plugin's own `uninstall` first, so it can stop its timers,
-then removes the package, and its manifest if installing made it. A manifest
-you wrote yourself before installing stays. A plugin's configuration and
-cache stay unless its `uninstall` removes them.
-
-The same from a shell or a key binding:
+`[id]` can be the start of a plugin ID; the launcher lists the installed
+plugins that match. The same works from a shell or a key binding:
 
 ```sh
 tileception msg plugins add robinvandernoord/tileception-odoo
@@ -82,61 +83,36 @@ tileception msg plugins update        # every installed plugin, or name one
 tileception msg plugins remove odoo
 ```
 
-`add` installs without showing the package first: asking for it on the command
-line is the confirmation. These commands return once the work has started.
-What was installed, at which commit, is kept in
-`$XDG_DATA_HOME/tileception/installed-plugins.toml`. Plugins installed by hand
-work as before, but `update` and `remove` only know the ones in this file.
+`tileception msg plugins add` installs without showing the package first. These
+commands return as soon as the work has started; a notification reports the
+result.
 
-## Try the example
+Updating is the only step that moves a plugin to a newer commit. It looks up
+where the default branch, or the tag or branch you installed, is now, and
+installs that commit. A notification lists each plugin as updated, up to date
+or failed; one failure does not stop the others.
 
-The Rust example needs no credentials, services or script interpreter:
+Removing runs the plugin's own `uninstall` first, so it can stop its timers,
+then removes the package. It deletes the manifest only if installing created
+it; a manifest you wrote before installing stays. The plugin's configuration
+and cache stay unless its `uninstall` removes them.
 
-```sh
-cargo plane build -p tileception --bin tileception-launcher-example
-mkdir -p ~/.local/bin ~/.local/share/tileception/plugins
-install -m755 target/debug/tileception-launcher-example ~/.local/bin/
-cp resources/plugins/example.toml ~/.local/share/tileception/plugins/
-```
+Installed plugins are recorded in
+`$XDG_DATA_HOME/tileception/installed-plugins.toml`. Plugins set up by hand
+keep working, but `update`, `remove` and `configure` only know the ones in
+this file.
 
-Ensure `~/.local/bin` is on the compositor's PATH, or put the executable's
-absolute path in the manifest. Run `tileception msg plugins reload` after
-installing a manifest.
-Open the launcher and type `echo hello`. Enter shows the row's actions. Choose
-one with Up/Down and Enter. Escape returns to search results. Copy actions
-leave the launcher open and show its usual Copied feedback. "Call remember
-tool" keeps the text on a [card under the launcher](#launcher-cards), with
-buttons to copy and to forget it. "Try a prompt" opens a [prompt](#prompts)
-that pretends to wait for a security key, then asks for a name and a secret
-and copies them as a sensitive copy.
+## Adding a plugin by hand
 
-Alternatively, enable the example directly in `config.toml`:
+### Manifests and configuration
 
-```toml
-[plugins.example]
-command = "/absolute/path/to/tileception-launcher-example"
-[plugins.example.launcher]
-prefixes = ["echo"]
-```
+Tileception reads one TOML manifest per plugin from
+`/usr/share/tileception/plugins/` and `$XDG_DATA_HOME/tileception/plugins/`
+(normally `~/.local/share/tileception/plugins/`). The file name without
+`.toml` is the plugin ID. A user manifest replaces a system manifest with the
+same ID.
 
-Changes to this config take effect when the config reloads. After installing,
-changing or removing a manifest, run `tileception msg plugins reload` to rescan
-manifests and restart plugins without restarting Tileception or editing its
-configuration. Discovery runs asynchronously; the command returns when it has
-started. Manifests are also read on compositor startup or when plugin
-configuration changes. Type `plugins` in the launcher to see loaded sources,
-their prefixes and discovery errors. Errors are also written to the session log.
-You can ask Doctor to rediscover plugins; it can run this command directly.
-
-## Discovery and configuration
-
-One TOML manifest per plugin is read from `/usr/share/tileception/plugins/`
-and `$XDG_DATA_HOME/tileception/plugins/` (normally
-`~/.local/share/tileception/plugins/`). The filename stem is the plugin ID.
-A user manifest replaces the system manifest with the same ID.
-
-Manifest fields and `[plugins.<id>]` config fields are identical (the older
-`[launcher.plugins.<id>]` and top-level `prefixes` still work, with a warning):
+A manifest and a `[plugins.<id>]` table in `config.toml` take the same fields:
 
 ```toml
 command = "/path/to/executable"
@@ -152,118 +128,194 @@ args = ["--stdio"]
 # surface = true
 ```
 
-`command` names one executable, not a shell command line. Arguments are separate
-strings. Config fields overlay the matching manifest, so disabling an installed
-plugin only needs `enabled = false`, and hiding its bar chips only
-`[plugins.<id>.bar] enabled = false`. Chips show only for plugins with a `[bar]`
-block, and dashboard items only for plugins with a `[dashboard]` block. A panel block shows whenever the plugin offers one, and so do its cards
-under the launcher unless `[launcher]` says `cards = false`.
+`command` is one executable, not a shell command line: put each argument in
+`args`. It must be on the compositor's `PATH` or an absolute path. Plugins do
+not start in any particular folder, so give scripts by absolute path.
 
-Omitted prefixes come from `launcher_info`. An explicit empty prefix list
-disables routing. Prefixes are nonempty words, matched case-sensitively at the
-start of the query and followed by a space: `echo` alone still searches apps,
-`echo ` asks the plugin. Plugins never receive unrelated queries.
+Config fields overlay the manifest with the same ID. To disable an installed
+plugin, set `[plugins.<id>] enabled = false`; to hide only its bar chips, set
+`[plugins.<id>.bar] enabled = false`. The older `[launcher.plugins.<id>]` table
+and a top-level `prefixes` still work, with a warning.
+
+Each block switches on a place:
+
+- The panel block shows whenever the plugin offers one.
+- Cards under the launcher show unless `[launcher]` says `cards = false`.
+- Bar chips show only with a `[bar]` block.
+- Dashboard items show only with a `[dashboard]` block.
+  `surface = true` lets the plugin [draw its own items](#dashboard-surfaces).
+
+Without `prefixes`, the plugin's own from `launcher_info` apply. An empty list
+switches its launcher source off. A prefix is a nonempty word other than
+`plugins`, matched case-sensitively at the start of the query and followed by
+whitespace: `echo` alone still searches apps, while `echo hello` asks the
+plugin. Plugins never see queries without their prefix.
 
 Config overrides win over user manifests, which win over system manifests,
-which win over bundled plugins. Within the same priority, plugin IDs sort
-alphabetically. This order settles conflicting prefixes and orders the panel's
-blocks, the bar's chips and the cards under the launcher until you choose
-another (see [Panel block](#panel-block)). Every rejected prefix is logged and
-shown by `plugins`; a source can retain its other prefixes. A plugin overriding a
-built-in prefix takes precedence for that prefix. Reserve `plugins` for
-discovery diagnostics.
+which win over bundled plugins. Within one level, plugin IDs sort
+alphabetically. This order decides which plugin gets a prefix that two of them
+claim, and orders panel blocks, bar chips, launcher cards and dashboard items
+until the user [drags the blocks](#panel-block) into another order. A plugin
+prefix takes precedence over a built-in one such as `timer`. Rejected prefixes
+are logged; the plugin keeps its other prefixes.
 
-### Adding a plugin from the command line
+### Reloading and diagnostics
+
+Changes to `config.toml` apply when the config reloads. After installing,
+changing or removing a manifest, run:
+
+```sh
+tileception msg plugins reload
+```
+
+This rescans manifests and restarts plugins without restarting Tileception.
+It returns once discovery has started. Manifests are also read at startup and
+whenever plugin configuration changes. Doctor can run it for you.
+
+Type `plugins` in the launcher to see the loaded sources with their prefixes,
+and discovery errors such as a broken manifest, a rejected prefix or a plugin
+that failed to start. The same errors go to the session log, along with
+anything a plugin writes to stderr.
+
+### Adding from the command line
 
 `tileception msg plugin add <command> [args...]` writes a `[plugins.<id>]`
-entry with that command and its arguments to `config.toml`, keeping the rest
-of the file as it is. The config reload that follows starts the plugin. For
-example:
+entry for that command to `config.toml`, keeping the rest of the file as it
+is. The config reload that follows starts the plugin:
 
 ```sh
 tileception msg plugin add python3 ~/plugins/weather.py
 tileception msg plugin add --bar --id lamps /opt/lamps/bin/lamps-mcp --stdio
 ```
 
-The id comes from the executable's name, without its extension or a
-`tileception-` prefix, or from the script or package when the command is an
-interpreter or runner such as `python3`, `node`, `bash`, `deno`, `npx` or
-`uvx` (`python3 ~/plugins/weather.py` and `deno run -A ~/plugins/weather.ts`
-both become `weather`). Give another with
-`--id <id>`: lowercase letters, digits, `-` and `_`. Tileception does not start
-the plugin to ask for an id: MCP's server name is a display name, and the
-plugin should not run before it is set up. `--bar` adds the `[bar]` block, so
-the plugin's chips show. Options go before the command; everything after it is
-the plugin's arguments. An argument that is empty or contains spaces is
-refused, since it would reach the compositor split in two; edit `config.toml`
-for one. Plugins do not start in the folder you ran the command from, so name
-scripts by absolute path (the shell expands `~/`): a relative script path that
-Tileception cannot find is refused.
-Ask Doctor to set up a plugin and it can run this command once you approve it.
+The ID comes from the executable's name, without its extension or a
+`tileception-` prefix. For an interpreter or runner such as `python3`, `node`,
+`bash`, `deno`, `npx` or `uvx`, it comes from the script or package instead:
+`python3 ~/plugins/weather.py` and `deno run -A ~/plugins/weather.ts` both
+become `weather`. Tileception does not start the plugin to ask for a name.
 
-The command must be an executable on the compositor's `PATH` or an absolute
-path. Adding is refused when the id is already in `config.toml`, used by an
-installed manifest or a bundled plugin, or reserved (`add`, `plugins`), and
-when the same command and arguments are already set up under another id. The
-id `add` cannot be called with `tileception msg plugin <id> <tool>`.
+Options go before the command:
 
-## MCP convention
+- `--id <id>` sets another ID: lowercase letters, digits, `-` and `_`.
+- `--bar` adds a `[bar]` block, so the plugin's chips show.
 
-Tileception implements the [MCP 2025-06-18 lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
-and [stdio transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
-Messages are newline-delimited UTF-8 JSON-RPC 2.0. Send diagnostics to stderr,
-never stdout. The client initializes with an empty capability set, requires the
-server's `tools` capability, and sends `notifications/initialized` before
-calling tools. Client-side requests other than `ping` are unsupported. After
-starting, Tileception calls `tools/list` and, with the `resources` capability
-and `subscribe`, `resources/list`. It subscribes to every listed
-`tileception://` resource and reads it again after
-`notifications/resources/updated`.
+Adding is refused when:
 
-Return tool results as `structuredContent` in a normal MCP tool result. For
-compatibility, a JSON object encoded in a text content block is also accepted.
-Set `isError: true` for tool failures. Resources are JSON text in
-`contents[0].text`.
+- the ID is already in `config.toml`, used by a manifest or a bundled plugin,
+  or reserved (`add`, `plugins`);
+- the same command and arguments are already set up under another ID;
+- the command is not on the compositor's `PATH` and not an absolute path;
+- a relative script path does not exist (the shell expands `~/`, so use that
+  or an absolute path);
+- an argument is empty or contains whitespace. Edit `config.toml` for such an
+  argument.
+
+Doctor can run this command for you once you approve it.
+
+### Try the example
+
+The Rust example plugin needs no credentials, services or interpreter:
+
+```sh
+cargo plane build -p tileception --bin tileception-launcher-example
+mkdir -p ~/.local/bin ~/.local/share/tileception/plugins
+install -m755 target/debug/tileception-launcher-example ~/.local/bin/
+cp resources/plugins/example.toml ~/.local/share/tileception/plugins/
+tileception msg plugins reload
+```
+
+If `~/.local/bin` is not on the compositor's `PATH`, put the executable's
+absolute path in the manifest's `command`.
+
+Open the launcher and type `echo hello`. Enter shows the row's actions; choose
+one with Up/Down and Enter, or go back to the results with Escape. "Call
+remember tool" keeps the text on a [card under the launcher](#launcher-cards),
+with buttons to copy and forget it. "Try a prompt" opens a [prompt](#prompts)
+that pretends to wait for a security key, then asks for a name and a secret
+and copies them as a sensitive copy.
+
+Its source,
+[`tileception-launcher-example.rs`](../crates/tileception/src/bin/tileception-launcher-example.rs),
+is a complete server in one file.
+
+## Writing a plugin
+
+### MCP basics
+
+Tileception follows the [MCP 2025-06-18 lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
+and [stdio transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports):
+newline-delimited UTF-8 JSON-RPC 2.0 on stdin and stdout. Write diagnostics
+to stderr, never stdout.
+
+1. Tileception sends `initialize` with an empty capability set. Answer with
+   `protocolVersion` `"2025-06-18"` and a `tools` capability; anything else is
+   refused.
+2. Tileception sends `notifications/initialized`, then calls `tools/list`.
+   A plugin with a `launcher_info` tool is a launcher source.
+3. If the plugin declares the `resources` capability with `subscribe: true`,
+   Tileception calls `resources/list`, subscribes to every `tileception://`
+   resource listed, reads each one, and reads it again after each
+   `notifications/resources/updated`.
+
+| Resource                 | Shows                                  |
+| ------------------------ | -------------------------------------- |
+| `tileception://panel`    | [Panel block](#panel-block)            |
+| `tileception://bar`      | [Bar chips](#bar-chips)                |
+| `tileception://launcher` | [Launcher cards](#launcher-cards)      |
+| `tileception://dashboard`| [Dashboard items](#dashboard)          |
+
+A plugin that offers neither a launcher source nor a resource is stopped.
+
+Return tool results as `structuredContent`. A JSON object in a text content
+block is also accepted. Set `isError: true` for failures; the text content is
+shown as the error. Resources are JSON text in `contents[0].text`. A resource
+that does not parse is logged and hides that place until a valid version
+arrives. Of requests from the plugin to Tileception, only `ping` is answered;
+others, such as sampling, get a "method not found" error.
 
 ### Icons
 
-`icon` fields take an icon name from the desktop icon theme, an absolute path to
-a local image such as PNG or SVG, or `glyph:<name>` for Tileception's own
-symbols, drawn in its style: `folder`, `file`, `globe`, `terminal`, `copy`,
-`home`, `search`, `bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`,
-`wifi_off`, `bluetooth`, `headphones`, `headset`, `speaker`, `mouse`,
-`keyboard`, `gamepad`, `phone`, `laptop`, `monitor`, `camera`, `bell`, `lock`,
-`clock`, `play`, `pause`, `stop`, `next`, `previous`, `plus`, `minus`, `check`
-and `close`. Panel blocks, launcher
-cards and bar chips only draw `glyph:` icons.
+An `icon` is an icon name from the desktop icon theme, an absolute path to a
+local image such as PNG or SVG, or `glyph:<name>` for one of Tileception's own
+symbols: `folder`, `file`, `globe`, `terminal`, `copy`, `home`, `search`,
+`bulb`, `drop`, `thermometer`, `snowflake`, `flame`, `fan`, `wifi_off`,
+`bluetooth`, `headphones`, `headset`, `speaker`, `mouse`, `keyboard`,
+`gamepad`, `phone`, `laptop`, `monitor`, `camera`, `bell`, `lock`, `clock`,
+`play`, `pause`, `stop`, `next`, `previous`, `plus`, `minus`, `check` and
+`close`. Panel blocks, cards and bar chips only draw `glyph:` icons.
 
 ### Launcher
 
-Implement these [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools):
+Implement two [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools):
 
-* `launcher_info({})` returns metadata:
+* `launcher_info({})` returns the source's `name`, `description` and
+  `prefixes`, all required, and an optional default `icon`:
 
   ```json
   {"name":"Echo","description":"Echo text","icon":"edit-copy","prefixes":["echo"]}
   ```
 
-* `launcher_search({"prefix":"echo","query":"hello"})` receives the matched
-  prefix separately from the rest of the query. It returns:
+* `launcher_search({"prefix":"echo","query":"hello"})` gets the matched prefix
+  and the rest of the query separately, and returns rows:
 
   ```json
   {"rows":[{"title":"hello","detail":"Copy this text","icon":"edit-copy","actions":[{"title":"Copy","type":"copy","text":"hello"}]}]}
   ```
 
-`launcher_info.icon` sets the source's default; each row can override it with
-its own `icon`. A row falls back to the plugin icon, then a generic icon.
-`detail` and `actions` may be omitted. A row without actions is informational.
-`completion` is what Tab puts in the field, and `alternate` is an action for
-Ctrl+Enter; the footer shows both keys when a row has them.
-Up to 64 rows and 16 actions per row are retained.
-Invalid rows and actions, including unknown action types, are skipped. Other
-results still appear.
+A row needs a `title`. Its optional fields:
 
-Every action has a `title` and one of these shapes:
+- `detail`: a second line.
+- `icon`: overrides the source's icon; without either, a generic icon shows.
+- `actions`: what Enter does. One action runs directly; several open a list
+  to choose from. A row without actions is informational.
+- `completion`: what Tab puts in the search field.
+- `alternate`: an action for Ctrl+Enter.
+
+The footer shows Tab and Ctrl+Enter when a row has them. Tileception keeps up
+to 64 rows and 16 actions per row, and skips invalid rows and actions,
+including unknown action types, while showing the rest.
+
+Every action has a `title` and a `type`:
 
 ```json
 {"title":"Copy","type":"copy","text":"hello"}
@@ -275,26 +327,30 @@ Every action has a `title` and one of these shapes:
 {"title":"Unlock","type":"prompt","prompt":{"title":"Unlock vault","steps":[]}}
 ```
 
-Copy uses the compositor clipboard. With `"sensitive": true`, for passwords
-and one-time codes, the copy also offers `x-kde-passwordManagerHint` with the
-value `secret`, which clipboard managers that follow KDE's convention skip.
-[Clipboard persistence](configuration.md#clipboard) does not hold it, and
-handoff does not offer it to linked machines, which then hold nothing from
-this machine's clipboard until the next copy. Pasting on this machine works as
-usual. Open invokes `xdg-open` with the path or
-URL. Run starts an executable with literal arguments and closes the launcher.
-Terminal opens the user's terminal in a folder. Settings opens the Settings
-page with that title. Tool invokes a tool on the same plugin, keeps the
-launcher open and displays completion or failure. Its result cannot request
-further compositor actions. Prompt asks for input in the launcher; see
-[Prompts](#prompts). One action runs directly on Enter; several actions open a
-keyboard and pointer accessible list in the existing launcher.
+| Type       | Does                                                                                      |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `copy`     | Copies `text` to the clipboard and leaves the launcher open                               |
+| `open`     | Opens a path or URL with `xdg-open`                                                       |
+| `run`      | Starts an executable with literal arguments and closes the launcher                       |
+| `tool`     | Calls a tool on the same plugin, keeps the launcher open and shows success or the error  |
+| `terminal` | Opens the user's terminal in a folder                                                     |
+| `settings` | Opens the Settings page with that title                                                   |
+| `prompt`   | Asks for input in the launcher; see [Prompts](#prompts)                                   |
+
+A `tool` action's result cannot trigger further actions.
+
+Add `"sensitive": true` to a copy of a password or one-time code. The copy
+then carries `x-kde-passwordManagerHint: secret`, which clipboard managers
+following KDE's convention skip. [Clipboard
+persistence](configuration.md#clipboard) does not keep it, and handoff does
+not offer it to linked machines, which then hold nothing from this machine's
+clipboard until the next copy. Pasting on this machine works as usual.
 
 #### Prompts
 
-A `prompt` action shows a small dialog in place of the plugin's results, for
+A `prompt` action replaces the plugin's results with a small dialog, for
 example to unlock a vault. It works in rows, action lists and `alternate`, not
-in panel blocks, bar chips or launcher cards.
+in panel blocks, bar chips or cards.
 
 ```json
 {"title":"Unlock","type":"prompt","prompt":{
@@ -309,66 +365,62 @@ in panel blocks, bar chips or launcher cards.
   ]}}
 ```
 
-The prompt opens on its first step; Escape returns to the results. Each step
-has a unique `id`, optional `text`, and a `tool` on the same plugin with
-optional `arguments`:
+The prompt opens on its first step; Escape returns to the results. A prompt
+has at most eight steps. Each step has a unique `id`, optional `text`, and a
+`tool` on the same plugin with optional `arguments`. There are two kinds:
 
-- `fields`: one to four inputs; Tab and Up/Down move between them. Enter on the last one,
-  or the `submit` button (default "Continue"), calls the tool with `arguments`
-  plus each field's name and value. A field's optional `value` is what it
-  holds when the step opens, such as a default or the current setting.
-  `secret` fields always start empty: they are masked, cannot be
-  copied, are never logged and are wiped once sent. A step with a single
-  field and no `alternate` shows the button beside the input.
-- `wait`: calls the tool on entering the step and shows `text` meanwhile.
+- `fields`: one to four inputs. Tab and Up/Down move between them. Enter on
+  the last one, or the `submit` button (default "Continue"), calls the tool
+  with `arguments` plus each field's `name` and value. A field's optional
+  `value` fills it when the step opens, such as a default or the current
+  setting. `secret` fields always start empty, are masked, cannot be copied,
+  are never logged and are wiped once sent. A step with one field and no
+  `alternate` shows the button beside the input.
+- `wait`: calls the tool as soon as the step opens and shows `text` meanwhile.
 
-`timeout` is 3 to 60 seconds: 30 for a wait, 3 for fields by default.
-`alternate` switches to another step, by button or Ctrl+Enter. Leaving a step
-mid-call sends `notifications/cancelled`; the plugin may skip the answer and
-keeps running. A plugin missing `timeout` is ended like any other, so answer
-with an error shortly before it.
+`timeout` is 3 to 60 seconds; the default is 30 for a wait and 3 for fields.
+A plugin that misses its timeout is ended like any other, so answer with an
+error shortly before it. `alternate` switches to another step, by its button
+or Ctrl+Enter. Leaving a step during a call sends `notifications/cancelled`;
+the plugin keeps running and may skip the answer.
 
-The tool's answer decides what follows:
+The tool's answer decides what happens next:
 
-- `isError: true`: the step shows the error and empties its secret fields;
+- `isError: true`: the step shows the error and empties its secret fields.
   Enter retries a wait.
-- `{"step":"<id>","text":"..."}`: switches to that step with the message.
+- `{"step":"<id>","text":"..."}`: switches to that step and shows the text.
 - `{"action":{...}}`: closes the prompt and runs a `copy`, `open`, `run`,
   `terminal` or `settings` action, as if chosen from the row.
 - Anything else: closes the prompt and searches again.
 
-At most eight steps; text and messages are cut to two lines. Invalid prompts
-are skipped like other invalid actions.
+Text and messages are cut to two lines. Invalid prompts are skipped like
+other invalid actions.
 
-#### Progressive launcher results
+#### Progressive results
 
-The host includes `_meta: {"tileception/generation": 123}` in the arguments of
-each `launcher_search` call. A plugin can return inexpensive rows immediately,
-then send additional rows after completing local background work:
+Each `launcher_search` call carries `_meta: {"tileception/generation": 123}`
+in its arguments. A plugin can answer at once with what it has, then append
+rows as background work finishes:
 
 ```json
 {"jsonrpc":"2.0","method":"notifications/tileception/launcher_append","params":{"generation":123,"rows":[{"title":"Later result","actions":[{"title":"Open","type":"open","target":"https://example.org"}]}]}}
 ```
 
-Echo the generation unchanged. Rows append in notification order, up to 64
-total, using the same validation as the original response. Existing rows and
-the selected index and scroll position remain unchanged. Identical rows are
-ignored. Notifications for another query, a closed launcher, an outstanding
-initial response or an open action list are ignored. Return the initial result
-before sending additions. A new query invalidates earlier additions even when
-the query text is the same. Do not put private query text in diagnostics.
+Echo the generation unchanged, and send additions only after the initial
+answer. Appended rows go below the others, in the order they arrive, up to 64
+in total, and are validated like the initial rows. The selection and scroll
+position stay where they are, and duplicate rows are ignored. Tileception
+ignores additions for an older query, even one with the same text, and while
+the launcher is closed or an action list is open.
 
-This optional Tileception extension is separate from MCP request progress.
-Older hosts do not supply the generation token and ignore the notification;
-plugins should still return usable initial results. Cancellation of the initial
-request follows the normal MCP lifecycle. Once it has answered, a plugin should
-discard pending background work when a new search arrives. Background work
-does not extend the initial request's three-second deadline.
+The initial answer still has the three-second deadline; background work does
+not extend it. Drop pending work when a new search arrives, and do not put
+private query text in diagnostics.
 
 ### Panel block
 
-A `tileception://panel` resource is the plugin's block in the notification
-panel. The plugin describes it; Tileception lays it out and draws it, and keeps
+The `tileception://panel` resource is the plugin's block in the notification
+panel. The plugin describes it; Tileception lays it out, draws it, and keeps
 folding, the chosen view and the selected row across updates.
 
 ```json
@@ -385,63 +437,78 @@ folding, the chosen view and the selected row across updates.
            "actions":[{"title":"All off","enabled":true,"action":{"type":"tool","name":"all_off"}}]}}
 ```
 
-- The header shows `title` and `summary`, or `summary_open` while unfolded. The
-  block starts folded while `active` is 0 and unfolds when it changes; folding
-  by hand holds until it does.
-- `notice` (`{"text","action"}`) replaces the items, such as a setup hint;
-  clicking the block runs its action.
-- Several `views` get a switch in the header.
-- Items are `group` (a heading that folds its items when clicked), `row` and
-  `card`. A row has an `id`, `title`, `detail`, `icon`, `tint`, `dim` (dimmer
-  title), `alert` (detail in the danger colour), `enabled`, an optional
-  `switch` (`on`, `pending`, `action`), `levels` and a `trend` like a card's,
+`enabled` defaults to `false` on rows, cards, buttons and footer actions, and
+a disabled one is drawn faded and ignores clicks. Set `"enabled": true` on
+everything the user should be able to use.
+
+- The header shows `title` and `summary`, or `summary_open` while the block is
+  unfolded. The block starts folded while `active` is 0 and unfolds when
+  `active` changes; folding by hand holds until it changes again.
+- `notice` (`{"text","action"}`) replaces the items, for example with a setup
+  hint. Clicking the block runs its action.
+- With more than one entry in `views`, the header gets a switch between them.
+- `footer` has a `text`, `good` (lights the dot before the text) and
+  `actions`, each with a `title`, `enabled` and `action`.
+- Items are `group`, `row` and `card`. A group is a heading that folds its
+  `items` when clicked, with an optional `detail`.
+- A row has an `id` (unique in the block, so the selection survives updates),
+  `title`, `detail`, `icon`, `tint`, `dim` (dimmer title, for something
+  switched off), `alert` (detail in the danger colour), `enabled`, an optional
+  `switch` (`on`, `pending`, `action`), `levels`, and a `trend` like a card's,
   drawn small at the right of a row without a switch. Clicking a row with
   levels selects it and shows them.
-- A level is a bar from 0 to 100 with `title`, `value`, `unit` or `steps`
-  (words spread over the range) and `look` (`plain` or `warmth`). Dragging
-  sends its tool action with `value` added to the arguments, up to eight times
-  a second and once more on release.
-- A card is a larger tile: `value` (a big reading), `title`, `detail`, `icon`,
-  `tint`, `lit`, `enabled`, `title_action`, `buttons`, a `stepper` (`value`,
-  `minus`, `plus`), a `switch`, rows of `choices` (`title` and `options` with
-  `title`, `selected`, `action`), a `trend` (`span` in seconds and `lines` of
-  `[seconds ago, value]` points, `dashed` for a target, `secondary` for a
-  second kind of reading, such as humidity beside temperature, drawn in the
-  second accent colour on a scale of its own) and a `progress` bar
-  along the bottom (`value` from 0 to 100). Without a `value`, the title starts
-  where the reading would.
-- A button has a `title`, `icon`, `primary` (filled with the accent, for the
-  card's main button), `enabled` and `action`. It shows its `glyph:` icon, or
-  its title when it has none. Buttons sit right of the title, before the
-  stepper and the switch.
-- Tints are `accent`, `cool`, `warm`, `danger`, `muted` and `faded`.
-- Actions are the launcher's. Panel tool calls never cancel each other.
+- A level is a bar from 0 to 100 with `title`, `value`, and `unit` or `steps`
+  (words spread over the range, such as Warm, Neutral and Cool), and `look`
+  (`plain` or `warmth`). Dragging sends its tool action with `value` added to
+  the arguments, up to eight times a second and once more on release.
+- A card is a larger tile with:
+  - `id`, `title`, `detail`, `icon`, `tint` and `enabled`;
+  - `value`, a big reading such as a temperature. Without it, the title takes
+    its place;
+  - `lit`, which makes the stepper's value and chosen options stand out while
+    the thing is on;
+  - `title_action`, run when the title is clicked;
+  - `buttons`, right of the title. Each has a `title`, `icon`, `primary`
+    (filled with the accent, for the main button), `enabled` and `action`,
+    and shows its `glyph:` icon, or its title without one;
+  - `stepper` (`value`, `minus`, `plus` actions) and `switch`, after the
+    buttons;
+  - `choices`: rows with a `title` and `options`, each with `title`,
+    `selected` and `action`;
+  - `trend`: `span` in seconds and `lines`, each with `points` as
+    `[seconds ago, value]` pairs. `dashed` draws a target; `secondary` draws a
+    second kind of reading, such as humidity beside temperature, in the
+    second accent colour on its own scale;
+  - `progress`: a bar along the bottom, `{"value": 0 to 100}`.
+- Tints are `accent`, `cool`, `warm`, `danger`, `muted` (the default) and
+  `faded`.
+- Actions take the launcher's action shapes, except `prompt`. Panel tool calls
+  never cancel each other.
 
-Drag a block by its header to put it elsewhere in the panel: once the pointer
-has moved a few pixels, the header follows it and a line shows where the block
-will go. Letting go there moves it; a click without moving still folds the
-block. The order is saved in `$XDG_STATE_HOME/tileception/plugin-order.toml`
-(normally `~/.local/state/tileception/plugin-order.toml`) and also orders the
-bar's chips. Plugins it does not name, such as newly installed ones, follow
-in priority order. Delete the file to return to the priority order.
+Users can drag blocks into another order (see [Using
+Tileception](usage.md#arranging-the-panels-blocks)). The order is saved in
+`$XDG_STATE_HOME/tileception/plugin-order.toml` (normally
+`~/.local/state/tileception/plugin-order.toml`) and also orders bar chips,
+launcher cards and dashboard items. Plugins missing from the file, such as new
+ones, follow in priority order. Delete the file to go back to the priority
+order.
 
 ### Bar chips
 
-A `tileception://bar` resource holds the plugin's chips, shown left of the
-clock while it has any, for plugins with a `[bar]` block, in the panel's order:
+The `tileception://bar` resource holds the plugin's chips. They show left of
+the clock, in the panel's order, for plugins with a `[bar]` block:
 
 ```json
 {"chips":[{"label":"Floor lamp","icon":"glyph:bulb","tint":"warm"}]}
 ```
 
-A chip with an `action` runs it when clicked. Without one, clicking opens the
-notification panel with the plugin's block unfolded. Return no chips to show
-nothing.
+Clicking a chip runs its `action`. A chip without one opens the notification
+panel with the plugin's block unfolded. Return an empty list to show nothing.
 
 ### Launcher cards
 
-A `tileception://launcher` resource holds cards shown under the launcher while
-it is open, such as the bundled timers plugin's card per timer:
+The `tileception://launcher` resource holds cards shown under the launcher
+while it is open, such as the timers plugin's card for each timer:
 
 ```json
 {"cards":[{"id":"tea","title":"Tea","detail":"Timer running","value":"2:41",
@@ -454,24 +521,25 @@ it is open, such as the bundled timers plugin's card per timer:
   "progress":{"value":35}}]}
 ```
 
-The cards are the panel block's `card` items, drawn the same way. They stack
-under what is playing, which keeps its place: first the built-in media card,
-then the plugins' cards in plugin order, up to four per plugin. Cards that do
-not fit above the bottom of the screen are left out, the last ones first, so a
-long list of results can hide them all. Return no cards to show nothing.
+These are the panel block's cards, drawn the same way, up to four per plugin.
+They stack under the built-in media card, in plugin order. Cards that do not
+fit above the bottom of the screen are left out, last ones first, so a long
+list of results can hide them all.
 
-Cards take the pointer only. A tool action runs like the panel's: the launcher
-stays open and what is typed and found stays as it is. Copy also leaves the
-launcher open; open, run, terminal and settings actions close it. Send
-`notifications/resources/updated` when a card changes, for instance each second
-for a countdown; Tileception reads the resource again and redraws.
+Cards respond to the pointer only. Tool and copy actions leave the launcher
+open with the query and results as they were; `open`, `run`, `terminal` and
+`settings` close it. To animate a card, such as a countdown, send
+`notifications/resources/updated` each time it changes.
 
 ### Dashboard
 
 The dashboard shows beside the welcome screen when the desk is clear or empty,
-and behind the windows while Super+D is held (see [Using
-Tileception](usage.md#the-dashboard)). Plugins with a `[dashboard]` block put
-items on it from a `tileception://dashboard` resource, up to six each:
+and behind the windows while Super+D is held. [Using
+Tileception](usage.md#the-dashboard) describes how users arrange, remove and
+add items.
+
+Plugins with a `[dashboard]` block put up to six items each on it from the
+`tileception://dashboard` resource:
 
 ```json
 {"items":[
@@ -481,107 +549,127 @@ items on it from a `tileception://dashboard` resource, up to six each:
   {"type":"surface","id":"lamp","title":"Lava lamp","size":"large"}]}
 ```
 
-- `card` is the panel block's card, drawn the same way.
-- `image` is a PNG, JPEG, WebP or SVG: an absolute path to a regular file of at
-  most 8 MiB, or a `data:image/...;base64,` URI. It is read when shown and read
-  again after `notifications/resources/updated`, so any program in any language
-  that writes an image can draw on the dashboard. Clicking it runs its
-  `action`, if it has one.
-- `surface` is drawn by the plugin itself, over Wayland (below).
+- `card` is the panel block's card, drawn the same way and as tall as its
+  content.
+- `image` is a PNG, JPEG, WebP or SVG: an absolute path to a regular file of
+  at most 8 MiB, or a `data:image/...;base64,` URI. Files are read again after
+  each `notifications/resources/updated`, so any program that can write an
+  image file can draw on the dashboard. Clicking the image runs its optional
+  `action`.
+- `surface` is drawn by the plugin itself; see [Dashboard
+  surfaces](#dashboard-surfaces).
 
-`size` is `small`, `medium` or `large`; every item is as wide as its column.
-Tileception puts the items beside the welcome screen, down the left of it and
-then the right, in the panel's plugin order and each plugin's own order, and
-leaves out what does not fit. Users can drag them anywhere beside it, and
-remove single items, which stay away by their `id` until brought back. An
-installed plugin with a `[dashboard]` block that is switched off, or whose
-dashboard is, is offered under the **+** in the welcome screen's footer. Pictures and surfaces get a
-frame with their `title` and the plugin's name, drawn by Tileception.
+`size` sets the height of an image or surface: `small`, `medium` or `large`.
+Every item is as wide as a dashboard column. Tileception frames images and
+surfaces with their `title` and the plugin's name.
+
+Give each item a stable, unique `id`. Tileception remembers where the user
+put an item, and whether they removed it, by `<plugin id>/<item id>`, which is
+also the name `tileception msg dashboard` uses. New items fill the first free
+places, down the left of the welcome screen and then the right, in plugin
+order; items that do not fit are left out.
+
+An installed plugin whose `[dashboard]` block is switched off, or which is
+itself switched off, is offered under the **+** in the welcome screen's
+footer. Choosing it switches it on in `config.toml`.
 
 #### Dashboard surfaces
 
-A plugin whose `[dashboard]` block sets `surface = true` is started with
+With `surface = true` in its `[dashboard]` block, a plugin is started with
 `WAYLAND_SOCKET`, one end of a Wayland connection made for it alone. Wayland
 client libraries (libwayland in C, pywayland, wayland-rs and others) use it in
-place of `WAYLAND_DISPLAY` without further code. The connection offers
+place of `WAYLAND_DISPLAY` without extra code. The connection offers
 `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wp_viewporter`, a `wl_seat`
 with a pointer and no keyboard, and
 [`tileception_dashboard_v1`](../resources/protocols/tileception-dashboard-v1.xml),
 installed as `/usr/share/tileception/protocols/tileception-dashboard-v1.xml`.
-Nothing else exists there: no windows, outputs, clipboard or screen capture.
+It has no windows, outputs, clipboard or screen capture.
 
-Create a `wl_surface` for each `surface` item and pass it to
-`tileception_dashboard_v1.get_item` with the item's `id`. The `configure`
-event gives the size to draw at and the buffer scale; 0 by 0 means the item is
-not on screen now. Tileception clips what is drawn to that size. Frame
-callbacks arrive only while the item is on screen, so a plugin that draws on
-each callback uses no time while the dashboard is hidden. The surface receives
-pointer motion, buttons and scroll while the pointer is over it. Buffers are
-at most 4096 pixels a side.
+To draw an item:
 
-The protocol limits what a plugin can do to the desktop, not what its process
-can do: it runs as the session user like any other plugin.
+1. List it as a `surface` item in the dashboard resource.
+2. Create a `wl_surface` and pass it to `tileception_dashboard_v1.get_item`
+   with the item's `id`.
+3. Draw at the size and buffer scale from the item's `configure` event, in
+   buffers of at most 4096 pixels a side. A size of 0 by 0 means the item is
+   not on screen; keep the last buffer.
+
+Tileception clips what is drawn to the item's size. Frame callbacks arrive
+only while the item is on screen, so a plugin that draws on each callback
+uses no CPU while the dashboard is hidden. The surface gets pointer motion,
+buttons and scroll while the pointer is over it.
+
+The protocol limits what the plugin can do to the desktop, not what its
+process can do: it still runs as the session user.
 
 [`resources/plugins/lava-lamp`](../resources/plugins/lava-lamp) is a complete
-example in Python with pywayland: a lava lamp that changes colour when clicked,
-and a card whose Shake button calls the plugin's tool. Point the manifest's
-`command` at `lava-lamp.py` and copy it to
-`~/.local/share/tileception/plugins/`.
+example in Python with pywayland: a lava lamp that changes colour when
+clicked, and a card whose Shake button calls the plugin's tool. Install
+pywayland, copy `lava-lamp.toml` to `~/.local/share/tileception/plugins/` and
+set its `command` to the absolute path of `lava-lamp.py`.
 
 ### Commands
 
 `tileception msg plugin <id> <tool> [json]` calls a plugin's tool with a JSON
-object of arguments, for scripts and key bindings, and prints the answer: its
-`text` field, else the JSON. The command waits up to five seconds.
+object of arguments, for scripts and key bindings. It prints the result's
+`text` field, or the whole JSON without one, and waits up to five seconds. A
+plugin with the ID `add` cannot be called this way.
 
 ## Making a plugin installable
 
-`plugins add` installs Python packages: a repository with a `pyproject.toml`
-whose `[project]` has one console script, such as `tileception-odoo`. That
-script takes these subcommands:
+`plugins add` installs Python packages. The repository needs a
+`pyproject.toml` with a `[project]` table and one console script, such as
+`tileception-odoo`. With several scripts, Tileception uses the one named like
+the package, or the one `[tool.tileception] script` names. The script takes
+these subcommands:
 
-| Subcommand | Does | Required |
-| --- | --- | --- |
-| `serve` | Speaks MCP on stdin and stdout; the manifest runs this | yes |
-| `install --non-interactive` | Writes the manifest and anything else it needs, such as systemd units, and asks nothing | yes |
-| `configure` | Asks what it needs in the terminal, then finishes what `install` could not | when it has questions |
-| `status` | Prints JSON with at least `"configured"` (`true` or `false`) and `"detail"`, and optionally a `"setup"` prompt | when it has `configure` |
-| `uninstall` | Undoes `install`: stops timers, removes units and the manifest. `--purge` also removes configuration and cache | yes |
+| Subcommand                  | Does                                                                                  | Required              |
+| --------------------------- | ------------------------------------------------------------------------------------- | --------------------- |
+| `serve`                     | Speaks MCP on stdin and stdout; the manifest runs this                                | yes                   |
+| `install --non-interactive` | Writes the manifest and anything else it needs, such as systemd units, and asks nothing | yes                 |
+| `configure`                 | Asks what it needs in the terminal, then finishes what `install` could not            | when it has questions |
+| `status`                    | Prints JSON with `"configured"` (`true` or `false`), `"detail"` and an optional `"setup"` prompt | when it has `configure` |
+| `uninstall`                 | Undoes `install`: stops timers, removes units and the manifest. `--purge` also removes configuration and cache | yes |
 
 `install --non-interactive` runs after every install and update, so it must be
-safe to run again. It gets no terminal, and must not wait for input. When it
-cannot finish without answers, it does what it can and makes `status` say
-`"configured": false`; Tileception then sets it up, as below.
-`configure` may use `input`, `getpass`, a full-screen picker or another
-program's login, such as `gh auth login`. Exit 0 once the plugin works.
+safe to run again. It has no terminal and must not wait for input. When it
+cannot finish without answers, it does what it can and makes `status` report
+`"configured": false`; Tileception then starts setup as described below. Keep
+it quick: no other install, update or removal can run until it ends, and it is
+stopped after 30 minutes. Start long work, such as a first sync, in the
+background without waiting for it, for example with
+`systemctl --user start --no-block` on a `Type=oneshot` service.
 
-Keep `install --non-interactive` quick. Until it ends, the install counts as
-running and nothing else can be installed, updated or removed. Start long
-work, such as a first sync, in the background and don't wait for it: for
-example `systemctl --user start --no-block` on a `Type=oneshot` service.
+`status` must answer within a minute. Output that is not JSON, or a missing
+`"configured"`, counts as configured.
+
+`configure` may use `input`, `getpass`, a full-screen picker or another
+program's login, such as `gh auth login`. Exit with 0 once the plugin works.
 
 When `install` writes no manifest, Tileception writes
-`~/.local/share/tileception/plugins/<id>.toml` itself, with the script's
-absolute path and `args = ["serve"]`. Prefixes then come from `launcher_info`.
+`~/.local/share/tileception/plugins/<id>.toml` with the script's absolute path
+and `args = ["serve"]`. Prefixes then come from `launcher_info`. Write your
+own manifest to add `[bar]` or `[dashboard]` blocks.
 
-An optional `[tool.tileception]` table in `pyproject.toml` says more:
+An optional `[tool.tileception]` table in `pyproject.toml` adds details:
 
 ```toml
 [tool.tileception]
-id = "2fas"                      # the manifest's name; default: the package name without tileception-
-script = "tileception-2fas"      # when [project.scripts] has more than one
+id = "2fas"                      # plugin ID; default: the package name without tileception-
+script = "tileception-2fas"      # needed when [project.scripts] has several scripts
 extras = ["security-key"]        # installed with the package
 needs = ["the 2fas CLI"]         # shown before installing
 ```
 
-`requires-python` is passed to uv, which finds or downloads a Python that
-fits.
+A plugin ID may contain letters, digits, `-` and `_`, and cannot be
+`plugins`. `requires-python` is passed to uv, which finds or downloads a
+Python that fits.
 
 ### Setting up in the launcher
 
-For questions that fit the launcher, a plugin can do better than a terminal.
-`status` adds a `"setup"` key holding a [prompt](#prompts), the same object a
-`prompt` action takes:
+A plugin whose questions fit in a few fields can ask them in the launcher
+instead of a terminal. Add a `"setup"` key to the `status` output, holding a
+[prompt](#prompts) in the same shape a `prompt` action takes:
 
 ```json
 {"configured": false, "detail": "No API key yet",
@@ -593,48 +681,46 @@ For questions that fit the launcher, a plugin can do better than a terminal.
       {"name": "api_key", "label": "API key", "secret": true}]}]}}
 ```
 
-After installing, when `status` says `"configured": false`, Tileception opens
-that prompt in the launcher instead of a terminal; `plugins configure` (in
-the launcher or with `tileception msg plugins configure`) opens it whenever
-`status` offers one, so it can also change settings later. Fill `value` with
-the current settings for that. The prompt's tools run on the plugin's `serve`
-process, which saves what the fields send. The tool answers like any prompt
-step: an error stays on the step, `{"step": ...}` moves on, and anything else
-ends the setup, closes the launcher and reloads plugins. Escape cancels it.
+After an install or update with `"configured": false`, Tileception opens this
+prompt in the launcher. `plugins configure` opens it whenever `status` offers
+one, so it also works for changing settings later: fill each field's `value`
+with the current setting. The prompt's tools run in the plugin's `serve`
+process, which saves what the fields send.
 
-Start with a `fields` step rather than a `wait`: the plugin was only just
-started when the prompt opens. Ask only what fits in its fields; anything
-else, such as choosing from a long list, belongs in `configure`, which is
-still used when the screen is locked, when another program is the launcher,
-or when the prompt is invalid. Keep `configure` for that reason.
+The tool answers like any prompt step: an error stays on the step and
+`{"step": ...}` moves to another. Any other answer finishes setup: the
+launcher closes, plugins reload and a notification says the plugin is set
+up. Escape cancels setup.
+
+Start with a `fields` step rather than a `wait`, since the plugin has only
+just started when the prompt opens. Ask only what fits in fields, and keep
+`configure` for everything else, such as choosing from a long list.
+Tileception also runs `configure` when the screen is locked, when another
+program is the launcher, when another prompt is open, or when the setup
+prompt is invalid.
 
 While it is not configured, a plugin can also answer every search with a
 "Set up" row whose action is the same prompt.
 
 ## Lifecycle and limits
 
-Discovery, process I/O and tool calls run outside the compositor event loop,
-on a worker per plugin, so a slow plugin delays only itself. Each request has
-a three-second deadline, unless a prompt step sets another, and a 1 MiB
-message limit. An idle worker keeps
-reading, so notifications arrive at once and a crash shows without a request.
+Each plugin runs on its own worker thread, outside the compositor's event
+loop, so a slow plugin only delays itself. Every request has a three-second
+deadline, unless a prompt step sets another, and messages are limited to
+1 MiB. An idle worker keeps reading, so notifications arrive at once and a
+crash shows up without a request.
 
-Editing or closing the launcher cancels its current generation. Queued stale
-searches are skipped and stale results never replace newer rows. An in-flight
-cancelled request receives `notifications/cancelled`. The process stays running,
-and late responses are ignored by request id. If a request has not finished by
-its deadline, the plugin's isolated process group is terminated. Broken pipes
-and protocol errors also terminate that group. The next request restarts the
-source after a one-second cooldown; a plugin with resources restarts after the
-cooldown by itself, subscribes again and is read anew. A failed startup or
-metadata call is reported in diagnostics and retried on configuration change or
-the next compositor startup. Plugins that offer neither launcher prefixes nor
-resources are stopped. Processes are cleaned up during configuration
-replacement and normal compositor shutdown.
+Editing or closing the launcher cancels its pending search: queued searches
+are skipped, an in-flight request gets `notifications/cancelled`, and late
+answers are ignored. The plugin keeps running.
 
-Tool errors are displayed without restarting the plugin. Messages written to
-stderr appear in the compositor log with the plugin name. Plugins receive
-DISPLAY once Xwayland is ready; those already running start again then.
+A plugin that misses a deadline, closes its pipes or breaks the protocol is
+stopped, along with its process group. The next request starts it again after
+a one-second pause; a plugin with resources restarts by itself after that
+pause, subscribes again and is read anew. A tool error does not restart the
+plugin. A failed start or `launcher_info` call shows under `plugins` and is
+retried after the next configuration change or reload.
 
-The source for the complete runnable server is
-[`tileception-launcher-example.rs`](../crates/tileception/src/bin/tileception-launcher-example.rs).
+Plugins get `DISPLAY` once Xwayland is ready; plugins already running are
+restarted then. All plugin processes are stopped when the configuration
+replaces them and when Tileception exits.

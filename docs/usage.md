@@ -220,7 +220,7 @@ dashboard items that are switched off. Choosing a plugin there switches its
 dashboard items on in `config.toml`, and the plugin too when it was off.
 
 `tileception msg dashboard` lists the items by name (`notifications`, or a
-plugin's id and the item's, such as `timers/tea`) and says which are removed;
+plugin's ID and the item's, such as `lava-lamp/lamp`) and says which are removed;
 `tileception msg dashboard hide <item>` removes one, and
 `tileception msg dashboard show <item>` (or `show all`) brings them back.
 Removed items are kept in the same file, so deleting it brings them back too.
