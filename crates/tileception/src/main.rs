@@ -65,6 +65,7 @@ mod outputs;
 mod panel;
 mod password;
 mod persistence;
+mod plugin_install;
 mod plugins;
 mod pointer_lock;
 mod polkit;
@@ -370,6 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.start_xwayland();
     state.init_launcher();
     state.init_plugins();
+    state.init_installer();
     state.apply_calendar();
     let args: Vec<String> = std::env::args().skip_while(|argument| argument != "--").skip(1).collect();
     if let Some((cmd, rest)) = args.split_first() {
