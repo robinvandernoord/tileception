@@ -594,7 +594,7 @@ repeat_rate = 30
 "Super+Ctrl+Page_Up" = "brightness up"
 "Super+Ctrl+Page_Down" = "brightness down"
 "Print" = "spawn tileception-screenshot"
-"Shift+Print" = "capture"
+"Shift+Print" = "snip"
 "Ctrl+Print" = "pick-colour"
 
 "Super+1" = "go 1"

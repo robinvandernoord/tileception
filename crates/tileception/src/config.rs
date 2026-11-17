@@ -275,10 +275,12 @@ impl Config {
                 .lines()
                 .into_iter()
                 .map(|line| {
+                    // Old and renamed Tileception commands only, so older
+                    // configs keep working. Never list an external program
+                    // here: someone may really want to run it.
                     let line = match line.trim() {
-                        "spawn fuzzel" => "launcher",
                         "spawn tileception-power" => "power-menu",
-                        "spawn swaync-client -t" => "notifications",
+                        "spawn tileception-screenshot region --ask" | "spawn tileception-screenshot region" => "snip",
                         other => other,
                     };
                     commands::parse(line)
@@ -802,10 +804,24 @@ mod tests {
 
     #[test]
     fn modifier_taps() {
-        let config = Config::parse("[binds]\n\"Super\" = \"spawn fuzzel\"").unwrap();
+        let config = Config::parse("[binds]\n\"Super\" = \"launcher\"").unwrap();
         let logo = Mods { logo: true, ..Default::default() };
         assert_eq!(config.lookup(logo, TAP), Some(&[Command::Action(crate::input::Action::Launcher)][..]));
         assert_eq!(modifier_of(0xffeb), Some(logo));
+    }
+
+    #[test]
+    fn old_area_screenshot_binds_snip() {
+        let print = xkb::keysym_from_name("Print", xkb::KEYSYM_NO_FLAGS).raw();
+        let shift = Mods { shift: true, ..Default::default() };
+        for line in ["spawn tileception-screenshot region --ask", "spawn tileception-screenshot region"] {
+            let config = Config::parse(&format!("[binds]\n\"Shift+Print\" = \"{line}\"")).unwrap();
+            assert_eq!(config.lookup(shift, print), Some(&[Command::Capture][..]));
+        }
+        // A deliberate choice of the old flow without the prompt is kept.
+        let config =
+            Config::parse("[binds]\n\"Shift+Print\" = \"spawn tileception-screenshot region --no-ask\"").unwrap();
+        assert!(matches!(config.lookup(shift, print), Some([Command::Spawn(_)])));
     }
 
     #[test]

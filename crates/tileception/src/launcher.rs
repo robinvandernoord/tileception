@@ -361,7 +361,7 @@ const COMMANDS: &[Builtin] = &[
         "Screenshot an area",
         "print screen capture region select draw annotate record video gif",
         glyph::CAMERA,
-        Does::Line("capture"),
+        Does::Line("snip"),
     ),
     builtin(
         "Screenshot of a region",

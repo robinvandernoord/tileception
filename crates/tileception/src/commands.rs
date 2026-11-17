@@ -222,7 +222,7 @@ Shell:
   copy-text <text>          put text on the clipboard
   pick-colour               pick a colour from the screen and copy it as hex
                             (also: pick-color)
-  capture                   pick an area to copy, save, draw on or record;
+  snip                      pick an area to copy, save, draw on or record;
                             while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
   next-wallpaper            another picture from the wallpaper folder
@@ -493,8 +493,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "answer-notification" => return Err(format!("answer-notification takes nothing, not {rest:?}")),
         "pick-colour" | "pick-color" if rest.is_empty() => return Ok(Command::PickColour),
         "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
-        "capture" if rest.is_empty() => return Ok(Command::Capture),
-        "capture" => return Err(format!("capture takes nothing, not {rest:?}")),
+        "snip" if rest.is_empty() => return Ok(Command::Capture),
+        "snip" => return Err(format!("snip takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "feedback" => return Ok(Command::Feedback(rest.to_string())),
