@@ -4,6 +4,20 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.22.0 (2026-11-18)
+
+### Features
+* **snip:** annotate feedback screenshots and record audio
+* **panels:** add keyboard focus to card actions
+* **updates:** make firmware discovery opt-in
+* **wizard:** rename Doctor and add a pop-out window
+
+### Fix
+* **auth:** clarify how password prompts handle secrets
+
+### Documentation
+* **guides:** update Wizard, Snip and plugin instructions
+
 ## v0.21.1 (2026-11-18)
 
 ### Packaging
