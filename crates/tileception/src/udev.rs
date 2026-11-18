@@ -311,8 +311,12 @@ pub fn init(
             InputEvent::DeviceAdded { device } => {
                 tracing::info!("input device: {}", device.name());
                 state.touchpad_added(device.clone());
+                state.keyboard_added(device.clone());
             }
-            InputEvent::DeviceRemoved { device } => state.touchpad_removed(device),
+            InputEvent::DeviceRemoved { device } => {
+                state.touchpad_removed(device);
+                state.keyboards.retain(|candidate| candidate != device);
+            }
             _ => {}
         }
         state.process_input_event(event);
@@ -779,8 +783,10 @@ impl Tileception {
                 let output = lit.output.clone();
                 self.with_output(&output, |state| {
                     state.update_bar();
-                    state.process_captures(&mut udev.renderer);
+                    state.process_special_captures(&mut udev.renderer);
                     let clear = state.clear_colour();
+                    let scene = state.frame_elements(&mut udev.renderer, now);
+                    state.process_captures(&mut udev.renderer, Some(&scene));
                     let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
                     let mut elements = if state.is_active_output() {
                         state.cursor_elements(renderer, &mut udev.cursor)
@@ -788,7 +794,6 @@ impl Tileception {
                         Vec::new()
                     };
                     let elements = if let Some(secondary) = gpu.renderer.as_mut() {
-                        let scene = state.frame_elements(&mut udev.renderer, now);
                         let size = state.output_pixels();
                         // The pointer is drawn by the secondary GPU itself, so
                         // moving it needs nothing new from the primary.
@@ -797,7 +802,7 @@ impl Tileception {
                             elements
                         })
                     } else {
-                        elements.extend(state.frame_elements(&mut udev.renderer, now));
+                        elements.extend(scene);
                         Ok(elements)
                     };
                     let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);

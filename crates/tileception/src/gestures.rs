@@ -280,6 +280,16 @@ const SETTLE: f64 = 0.25;
 /// move the view all the way. Letting go after `swipe_distance` still counts.
 const SWIPE_FULL: f64 = 3.0;
 
+/// The libinput lights for a seat's lock state.
+fn lock_lights(leds: smithay::input::keyboard::LedState) -> smithay::reexports::input::Led {
+    use smithay::reexports::input::Led;
+    let mut lights = Led::empty();
+    lights.set(Led::NUMLOCK, leds.num == Some(true));
+    lights.set(Led::CAPSLOCK, leds.caps == Some(true));
+    lights.set(Led::SCROLLLOCK, leds.scroll == Some(true));
+    lights
+}
+
 impl Tileception {
     /// A touchpad turned up: remembered, so a reload can set it again.
     pub fn touchpad_added(&mut self, mut device: Device) {
@@ -288,6 +298,23 @@ impl Tileception {
         }
         self.config.file.touchpad.apply(&mut device);
         self.touchpads.push(device);
+    }
+
+    /// A keyboard turned up: remembered, and its lock lights set to match.
+    pub fn keyboard_added(&mut self, mut device: Device) {
+        if !device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+            return;
+        }
+        let leds = self.seat.get_keyboard().expect("seat has a keyboard").led_state();
+        device.led_update(lock_lights(leds));
+        self.keyboards.push(device);
+    }
+
+    /// The seat's lock state changed: every keyboard shows it.
+    pub(crate) fn update_lock_lights(&mut self, leds: smithay::input::keyboard::LedState) {
+        for device in &mut self.keyboards {
+            device.led_update(lock_lights(leds));
+        }
     }
 
     pub fn touchpad_removed(&mut self, device: &Device) {

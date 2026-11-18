@@ -159,6 +159,8 @@ pub struct Tileception {
     pub touch: crate::touch::Touch,
     /// Touchpads, set up again from `[touchpad]` when the config reloads.
     pub touchpads: Vec<smithay::reexports::input::Device>,
+    /// Keyboards, whose Caps, Num and Scroll Lock lights follow the seat.
+    pub keyboards: Vec<smithay::reexports::input::Device>,
     /// A modifier pressed on its own, which fires its tap binding if it is
     /// let go before anything else happens.
     pub tap_armed: Option<crate::config::Mods>,
@@ -191,8 +193,12 @@ pub struct Tileception {
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
+    /// The rounded corner shader for tiled windows; `None` if it did not compile.
+    pub rounded: std::cell::OnceCell<Option<smithay::backend::renderer::gles::GlesTexProgram>>,
     /// Blurred backdrops for frosted panels.
     pub frost: std::cell::RefCell<crate::frost::Frost>,
+    /// The apps listening for whether blur behind windows is drawn.
+    pub blur_managers: crate::blur::Managers,
     pub power_menu: Option<crate::power::PowerMenu>,
     pub feedback: Option<crate::feedback::Feedback>,
     /// A colour pick in progress, which takes the pointer and keyboard.
@@ -272,6 +278,7 @@ impl Tileception {
 
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         crate::capture::init_screencopy(&display_handle);
+        crate::blur::init_blur(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
@@ -381,6 +388,7 @@ impl Tileception {
             gesture: None,
             touch: Default::default(),
             touchpads: Vec::new(),
+            keyboards: Vec::new(),
             tap_armed: None,
             tap_fired: Vec::new(),
             desk: Default::default(),
@@ -409,7 +417,9 @@ impl Tileception {
             theme,
             text: Default::default(),
             shapes: Default::default(),
+            rounded: Default::default(),
             frost: Default::default(),
+            blur_managers: Default::default(),
             power_menu: None,
             feedback: None,
             colour_pick: None,

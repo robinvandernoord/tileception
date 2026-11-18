@@ -3,24 +3,27 @@
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection,
-    delegate_seat, delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection, delegate_seat,
+    delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
         calloop::Interest,
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
         wayland_server::{
-            Client, Resource,
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+            Client, Resource, delegate_dispatch, delegate_global_dispatch,
+            protocol::{
+                wl_buffer, wl_callback, wl_compositor, wl_seat, wl_subcompositor, wl_subsurface, wl_surface::WlSurface,
+            },
         },
     },
     utils::{Rectangle, Serial},
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SubsurfaceUserData,
+            SurfaceAttributes, SurfaceUserData, add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface,
+            with_states,
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier, get_dmabuf},
         drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
@@ -195,7 +198,14 @@ impl ShmHandler for Tileception {
     }
 }
 
-delegate_compositor!(Tileception);
+// Blur tracks the number of wl_region operations before Smithay copies a region.
+delegate_global_dispatch!(Tileception: [wl_compositor::WlCompositor: ()] => CompositorState);
+delegate_global_dispatch!(Tileception: [wl_subcompositor::WlSubcompositor: ()] => CompositorState);
+delegate_dispatch!(Tileception: [wl_compositor::WlCompositor: ()] => CompositorState);
+delegate_dispatch!(Tileception: [WlSurface: SurfaceUserData] => CompositorState);
+delegate_dispatch!(Tileception: [wl_callback::WlCallback: ()] => CompositorState);
+delegate_dispatch!(Tileception: [wl_subcompositor::WlSubcompositor: ()] => CompositorState);
+delegate_dispatch!(Tileception: [wl_subsurface::WlSubsurface: SubsurfaceUserData] => CompositorState);
 delegate_shm!(Tileception);
 
 /// Programs name a pointer shape (cursor-shape-v1) and Tileception draws it
@@ -228,6 +238,12 @@ impl SeatHandler for Tileception {
             .and_then(|surface| display_handle.get_client(surface.id()).ok());
         set_data_device_focus(display_handle, seat, client.clone());
         set_primary_focus(display_handle, seat, client);
+    }
+
+    fn led_state_changed(&mut self, seat: &Seat<Self>, led_state: smithay::input::keyboard::LedState) {
+        if *seat == self.seat {
+            self.update_lock_lights(led_state);
+        }
     }
 }
 
