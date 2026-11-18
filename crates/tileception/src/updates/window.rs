@@ -70,6 +70,9 @@ pub(crate) struct Window {
     scroll: f64,
     /// The highlighted row of the page's list.
     selected: usize,
+    /// The footer button the keyboard is on, by its slot (rightmost
+    /// first), once Left or Right moved there. Enter and Space press it.
+    footer_focus: Option<usize>,
     /// Updates left out of the next install, by source and name.
     skipped: BTreeSet<apt::Key>,
     /// Firmware chosen for the next install: firmware is never ticked by
@@ -141,6 +144,7 @@ impl Default for Window {
             page: Page::Available,
             scroll: 0.0,
             selected: 0,
+            footer_focus: None,
             skipped: BTreeSet::new(),
             firmware: BTreeSet::new(),
             queue: BTreeMap::new(),
@@ -243,8 +247,12 @@ enum Row {
     /// An update that waits until it is let through: a skipped version,
     /// then the held packages.
     Muted(usize),
+    /// The notification about new updates, with the switch.
+    Notify,
     /// Automatic updates, with the switch.
     Automatic,
+    /// Firmware from fwupd, listed or not, with the switch.
+    Firmware,
     /// A tested mirror.
     Mirror(usize),
     /// Tests the mirrors, with its button.
@@ -275,7 +283,7 @@ impl Row {
             | Row::Mirror(_)
             | Row::TestMirrors
             | Row::Waiting(_) => 34.0,
-            Row::Check(_) | Row::Automatic => 48.0,
+            Row::Check(_) | Row::Notify | Row::Automatic | Row::Firmware => 48.0,
             Row::Text(_) => 18.0,
         }
     }
@@ -290,7 +298,9 @@ impl Row {
                 | Row::Entry(_)
                 | Row::Leftovers(_)
                 | Row::Unneeded
+                | Row::Notify
                 | Row::Automatic
+                | Row::Firmware
                 | Row::Mirror(_)
                 | Row::TestMirrors
         )
@@ -335,6 +345,10 @@ enum Hit {
     Hold(bool),
     /// Turns automatic updates on or off.
     Automatic(bool),
+    /// Lists firmware updates or stops listing them (`[updates] firmware`).
+    Firmware(bool),
+    /// Notifies about new updates or stops (`[updates] notify`).
+    Notify(bool),
     TestMirrors,
     UseMirror(usize),
 }
@@ -392,6 +406,20 @@ fn footer_button(footer: Rect, slot: usize, count: usize, widest: f64) -> Rect {
 /// What is left of a footer for text beside its buttons.
 fn footer_text_room(footer: Rect, count: usize, widest: f64) -> f64 {
     footer.w - 36.0 - count as f64 * (footer_button_width(footer, count, widest) + 8.0)
+}
+
+/// A setting that is on or off: its name and what it does, with the
+/// switch at the right, as Settings draws one.
+fn switch_row(
+    painter: &mut Painter,
+    rect: Rect,
+    (title, detail): (&str, &str),
+    (body, muted): (Style, Style),
+    enabled: bool,
+) {
+    painter.text(title, Rect::new(rect.x + 10.0, rect.y + 5.0, rect.w - 80.0, 20.0), body);
+    painter.text(detail, Rect::new(rect.x + 10.0, rect.y + 24.0, rect.w - 80.0, 18.0), muted);
+    painter.switch(Rect::new(rect.x, rect.y, rect.w - 10.0, rect.h), enabled);
 }
 
 fn row_button(row: Rect) -> Rect {
@@ -577,7 +605,8 @@ impl Tileception {
         };
         let window = &self.updates.window;
         let Some(client) = &window.client else { return };
-        if !client.needs_frame(self.scale) {
+        let physical = ((window.size.0 * self.scale).round() as i32, (window.size.1 * self.scale).round() as i32);
+        if !client.needs_frame(self.scale, physical) {
             return;
         }
         let logical = (window.size.0 as i32, window.size.1 as i32);
@@ -671,6 +700,8 @@ impl Tileception {
                 }
             }
             Page::Settings => {
+                rows.push(Row::Heading("Notifications".into(), String::new()));
+                rows.push(Row::Notify);
                 let tool = updates.automatic.tool.name();
                 rows.push(Row::Heading("Automatic updates".into(), format!("through {tool}")));
                 if updates.automatic.available {
@@ -678,6 +709,8 @@ impl Tileception {
                 } else {
                     rows.push(Row::Text(format!("{tool} is not installed, so nothing updates by itself.")));
                 }
+                rows.push(Row::Heading("Firmware".into(), String::new()));
+                rows.push(Row::Firmware);
                 let mirrors = &updates.mirrors;
                 let note = mirrors.current.clone().unwrap_or_else(|| "none found in the package sources".into());
                 rows.push(Row::Heading("Mirror".into(), note));
@@ -957,6 +990,10 @@ impl Tileception {
     }
 
     fn updates_window_activate(&mut self, hit: Hit) {
+        // Whatever was pressed changes what the footer offers.
+        if !matches!(hit, Hit::Move) {
+            self.updates.window.footer_focus = None;
+        }
         let result = match hit {
             Hit::Move => {
                 if let Some(client) = &self.updates.window.client {
@@ -1012,6 +1049,14 @@ impl Tileception {
                 if names.is_empty() { Ok(()) } else { self.updates_hold(names, hold) }
             }
             Hit::Automatic(enable) => self.updates_start(Task::Automatic(enable)),
+            // The config file holds it; the running Tileception reloads it
+            // from there and lists or drops firmware.
+            Hit::Firmware(enable) => {
+                crate::config_edit::set_value(&crate::config::path(), "updates.firmware", &enable.to_string())
+            }
+            Hit::Notify(enable) => {
+                crate::config_edit::set_value(&crate::config::path(), "updates.notify", &enable.to_string())
+            }
             Hit::TestMirrors => {
                 self.updates_test_mirrors();
                 Ok(())
@@ -1302,7 +1347,34 @@ impl Tileception {
             return self.updates_changed();
         }
         let selected = self.updates.window.selected;
+        // Left and Right move a focus ring over the footer's buttons, where
+        // Enter and Space press it; Tab keeps switching pages.
+        let buttons = self.updates_footer_buttons();
+        let focus = self.updates.window.footer_focus.filter(|slot| *slot < buttons.len());
+        self.updates.window.footer_focus = focus;
+        if !matches!(
+            sym,
+            keysyms::KEY_Left | keysyms::KEY_Right | keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space
+        ) && crate::config::modifier_of(sym).is_none()
+        {
+            self.updates.window.footer_focus = None;
+        }
         match sym {
+            keysyms::KEY_Left | keysyms::KEY_Right if plain && !buttons.is_empty() => {
+                // Slots count from the right: Left goes up, Right goes down.
+                let count = buttons.len();
+                let main = buttons.iter().position(|(_, _, primary)| *primary).unwrap_or(0);
+                self.updates.window.footer_focus = Some(match focus {
+                    None => main,
+                    Some(slot) if sym == keysyms::KEY_Left => (slot + 1) % count,
+                    Some(slot) => (slot + count - 1) % count,
+                });
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space if focus.is_some() => {
+                if let Some((_, hit, _)) = focus.and_then(|slot| buttons.get(slot)) {
+                    self.updates_window_activate(*hit);
+                }
+            }
             keysyms::KEY_Escape if self.updates.window.preview.is_some() => self.updates.window.preview = None,
             keysyms::KEY_Escape => return self.close_updates(),
             keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => {
@@ -1322,6 +1394,14 @@ impl Tileception {
                 Some(Row::Automatic) if !self.updates.busy() => {
                     let enabled = self.updates.automatic.enabled;
                     self.updates_window_activate(Hit::Automatic(!enabled));
+                }
+                Some(Row::Firmware) => {
+                    let enabled = self.config.file.updates.firmware;
+                    self.updates_window_activate(Hit::Firmware(!enabled));
+                }
+                Some(Row::Notify) => {
+                    let enabled = self.config.file.updates.notify;
+                    self.updates_window_activate(Hit::Notify(!enabled));
                 }
                 Some(Row::Kernel(index)) => self.updates_window_activate(Hit::Kernel(index)),
                 Some(Row::Leftovers(kind)) => self.updates_window_activate(Hit::Leftovers(kind)),
@@ -1357,6 +1437,14 @@ impl Tileception {
                     Some(Row::Automatic) => {
                         let enabled = self.updates.automatic.enabled;
                         self.updates_window_activate(Hit::Automatic(!enabled));
+                    }
+                    Some(Row::Firmware) => {
+                        let enabled = self.config.file.updates.firmware;
+                        self.updates_window_activate(Hit::Firmware(!enabled));
+                    }
+                    Some(Row::Notify) => {
+                        let enabled = self.config.file.updates.notify;
+                        self.updates_window_activate(Hit::Notify(!enabled));
                     }
                     _ => {}
                 },
@@ -1479,7 +1567,7 @@ impl Tileception {
         }
         let mut buttons = Vec::new();
         if self.shell().doctor() {
-            buttons.push(("Ask Doctor", Hit::Doctor));
+            buttons.push(("Ask the Wizard", Hit::Doctor));
         }
         buttons.push(("Copy list", Hit::Copy));
         buttons
@@ -1529,8 +1617,15 @@ impl Tileception {
                 Row::Group(..) if !updates.busy() => {
                     controls.push((Rect::new(rect.x, visible.y, 32.0, visible.h), Hit::Tick(index)));
                 }
+                // A switch's whole row flips it, as in Settings.
                 Row::Automatic if !updates.busy() => {
-                    controls.push((row_button(*rect), Hit::Automatic(!updates.automatic.enabled)));
+                    controls.push((visible, Hit::Automatic(!updates.automatic.enabled)));
+                }
+                Row::Notify => {
+                    controls.push((visible, Hit::Notify(!self.config.file.updates.notify)));
+                }
+                Row::Firmware => {
+                    controls.push((visible, Hit::Firmware(!self.config.file.updates.firmware)));
                 }
                 Row::Mirror(mirror) if !updates.busy() && !updates.mirrors.testing => {
                     let usable = updates.mirrors.candidates.get(*mirror).is_some_and(|mirror| {
@@ -1917,31 +2012,39 @@ impl Tileception {
                             "monospace",
                         );
                     }
+                    Row::Notify => switch_row(
+                        painter,
+                        rect,
+                        ("Notify about new updates", "One notification when new updates arrive."),
+                        (body, muted),
+                        self.config.file.updates.notify,
+                    ),
                     Row::Automatic => {
                         let automatic = &updates.automatic;
-                        let state = if automatic.enabled { "On" } else { "Off" };
-                        painter.glyph(
-                            if automatic.enabled { glyph::CHECK } else { glyph::MINUS },
-                            Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, 20.0),
-                            15,
-                            if automatic.enabled { theme.accent } else { theme.muted },
-                        );
-                        painter.text(
-                            &format!("{state}: installs updates by itself, once a day"),
-                            Rect::new(rect.x + 34.0, rect.y + 5.0, rect.w - 130.0, 20.0),
-                            body,
-                        );
                         let covers = if automatic.covers.is_empty() {
                             "It is set to install nothing.".to_string()
                         } else {
                             format!("Covers {}", automatic.covers.join(", "))
                         };
-                        painter.text(&covers, Rect::new(rect.x + 34.0, rect.y + 24.0, rect.w - 130.0, 18.0), muted);
-                        if !updates.busy() {
-                            let label = if automatic.enabled { "Turn off" } else { "Turn on" };
-                            draw_button(painter, row_button(rect), label, Look::Plain, pointer);
-                        }
+                        switch_row(
+                            painter,
+                            rect,
+                            ("Install updates by themselves, once a day", &covers),
+                            (body, muted),
+                            automatic.enabled,
+                        );
                     }
+                    Row::Firmware => switch_row(
+                        painter,
+                        rect,
+                        (
+                            "Firmware updates",
+                            "List firmware from fwupd beside the other updates. A failed flash can leave a device \
+                             unusable.",
+                        ),
+                        (body, muted),
+                        self.config.file.updates.firmware,
+                    ),
                     Row::Mirror(index) => {
                         let mirrors = &updates.mirrors;
                         let Some(mirror) = mirrors.candidates.get(*index) else { continue };
@@ -2394,7 +2497,8 @@ impl Tileception {
             };
             let rect = footer_button(footer, slot, count, 124.0);
             let enabled = ready || hit != Hit::Upgrade || !primary;
-            painter.button(rect, Button::new(&label, look).enabled(enabled), rect.contains(pointer));
+            let focused = self.updates.window.footer_focus == Some(slot);
+            painter.button(rect, Button::new(&label, look).enabled(enabled).focused(focused), rect.contains(pointer));
         }
         painter.finish()
     }

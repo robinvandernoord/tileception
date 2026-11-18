@@ -122,6 +122,8 @@ pub struct Snapshot {
     pub history: Vec<history::Entry>,
     /// Why the updates could not be listed.
     pub error: Option<String>,
+    /// Firmware was asked for: `[updates] firmware` is on.
+    pub firmware: bool,
     /// Why firmware could not be listed, independently of APT.
     pub firmware_error: Option<String>,
 }
@@ -138,18 +140,19 @@ impl Snapshot {
 }
 
 /// Reads the system. Nothing here needs root; only `network` lets Flatpak
-/// and Snap ask their servers.
-pub fn scan(runner: &dyn Runner, files: &Files, network: bool) -> Snapshot {
+/// and Snap ask their servers. fwupd is asked only with `firmware`.
+pub fn scan(runner: &dyn Runner, files: &Files, network: bool, firmware: bool) -> Snapshot {
     let (mut listing, error) = match apt::list(runner) {
         Ok(listing) => (listing, None),
         Err(error) => (apt::Listing::default(), Some(error)),
     };
-    let firmware_error = match firmware::list(runner) {
-        Ok(updates) => {
+    let firmware_error = match firmware.then(|| firmware::list(runner)) {
+        Some(Ok(updates)) => {
             listing.updates.extend(updates.unwrap_or_default());
             None
         }
-        Err(error) => Some(error),
+        Some(Err(error)) => Some(error),
+        None => None,
     };
     let apps = network.then(|| apps::list(runner));
     let running = runner.run("uname", &["-r"]).map(|text| text.trim().to_string()).unwrap_or_default();
@@ -168,6 +171,7 @@ pub fn scan(runner: &dyn Runner, files: &Files, network: bool) -> Snapshot {
         checked: apt::last_refresh(files),
         history: history::read(files),
         error,
+        firmware,
         firmware_error,
     }
 }
@@ -198,6 +202,31 @@ mod tests {
         assert_eq!(human_size(96_000_000), "96 MB");
         assert_eq!(human_size(1_400_000_000), "1.4 GB");
         assert_eq!(human_size(999_900), "1.0 MB");
+    }
+
+    /// Answers every program with nothing, and notes what was run.
+    #[derive(Default)]
+    struct Quiet {
+        ran: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Runner for Quiet {
+        fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+            self.ran.borrow_mut().push(program.to_string());
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn firmware_is_left_alone_unless_asked() {
+        let runner = Quiet::default();
+        let files = Files::below("/nonexistent");
+        let snapshot = scan(&runner, &files, false, false);
+        assert!(!snapshot.firmware);
+        assert_eq!(snapshot.firmware_error, None);
+        assert!(!runner.ran.borrow().iter().any(|program| program == "fwupdmgr"));
+        assert!(snapshot.updates.iter().all(|update| update.source != apt::Source::Firmware));
+        assert!(scan(&runner, &files, false, true).firmware);
     }
 
     #[test]

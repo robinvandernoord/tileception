@@ -57,11 +57,20 @@ pub struct UpdatesConfig {
     pub remind_after_days: u32,
     /// Only security updates bring a notification.
     pub remind_security_only: bool,
+    /// List firmware from fwupd beside the other updates.
+    pub firmware: bool,
 }
 
 impl Default for UpdatesConfig {
     fn default() -> Self {
-        UpdatesConfig { enabled: true, notify: true, check_hours: 4, remind_after_days: 0, remind_security_only: false }
+        UpdatesConfig {
+            enabled: true,
+            notify: true,
+            check_hours: 4,
+            remind_after_days: 0,
+            remind_security_only: false,
+            firmware: false,
+        }
     }
 }
 
@@ -218,6 +227,9 @@ pub struct Updates {
     refreshed: Option<Instant>,
     /// Told to the worker: nothing may use the network by itself now.
     saving: Arc<AtomicBool>,
+    /// Told to the worker: fwupd is asked for firmware, as `[updates]
+    /// firmware` says.
+    firmware: Arc<AtomicBool>,
     /// This instance may run the update manager at all.
     allowed: bool,
     pub(crate) popover: popover::Popover,
@@ -488,7 +500,7 @@ impl Updates {
     fn listed(&self, source: apt::Source) -> bool {
         match source {
             apt::Source::Apt => self.snapshot.error.is_none(),
-            apt::Source::Firmware => self.snapshot.firmware_error.is_none(),
+            apt::Source::Firmware => self.snapshot.firmware && self.snapshot.firmware_error.is_none(),
             apt::Source::Flatpak | apt::Source::FlatpakUser | apt::Source::Snap => {
                 self.apps_scanned && !self.apps_failed.contains(&source)
             }
@@ -517,6 +529,13 @@ impl Updates {
             if !listed {
                 all.push(update);
             }
+        }
+        // Firmware shows only while `[updates] firmware` is on, even from a
+        // look that started before it was switched off.
+        if !self.firmware.load(Ordering::Relaxed) {
+            all.retain(|update| update.source != apt::Source::Firmware);
+            self.snapshot.firmware = false;
+            self.snapshot.firmware_error = None;
         }
         // A skip ends when a different update than the one skipped arrives.
         // A source that failed, or was left out, proves nothing.
@@ -575,10 +594,12 @@ impl Tileception {
         let interval = Duration::from_secs(u64::from(self.config.file.updates.check_hours.clamp(1, 168)) * 3600);
         let (requests, incoming) = mpsc::channel();
         self.updates.saving.store(self.updates_saving(), Ordering::Relaxed);
+        self.updates.firmware.store(self.config.file.updates.firmware, Ordering::Relaxed);
         let saving = self.updates.saving.clone();
+        let firmware = self.updates.firmware.clone();
         let thread = thread::Builder::new()
             .name("tileception-updates".into())
-            .spawn(move || run(&sender, &incoming, interval, &saving))
+            .spawn(move || run(&sender, &incoming, interval, &saving, &firmware))
             .map_err(|error| tracing::error!("could not start the updates worker: {error}"))
             .ok();
         self.updates.source = Some(token);
@@ -605,6 +626,18 @@ impl Tileception {
             return;
         }
         if self.config.file.updates.enabled {
+            let firmware = self.config.file.updates.firmware;
+            let switched = self.updates.firmware.swap(firmware, Ordering::Relaxed) != firmware;
+            if self.updates.requests.is_some() && switched {
+                if firmware {
+                    // The next look lists it; this one asks fwupd at once.
+                    self.updates_request(Request::Scan { offer: false, apps: false });
+                } else {
+                    self.updates.merge();
+                    self.updates_refresh_kernels();
+                    self.updates_changed();
+                }
+            }
             self.start_updates();
         } else {
             self.close_updates_popover();
@@ -680,6 +713,7 @@ impl Tileception {
 
     /// Something the chip, the popover or the window shows has changed.
     pub(crate) fn updates_changed(&mut self) {
+        self.settle_updates_popover_focus();
         self.updates.window.invalidate();
         if self.launcher.open {
             self.refresh_updates_rows();
@@ -1471,10 +1505,10 @@ const OFFER_EVERY: Duration = Duration::from_secs(24 * 3600);
 
 /// One look at the system. `network` lets it ask servers: Flatpak, Snap,
 /// the next release and the mirror in use.
-fn scan(with_offer: bool, network: bool) -> Scan {
+fn scan(with_offer: bool, network: bool, firmware: bool) -> Scan {
     let files = Files::default();
     let runner = backend::System;
-    let mut snapshot = backend::scan(&runner, &files, network);
+    let mut snapshot = backend::scan(&runner, &files, network, firmware);
     // Restarting is easier to explain than logging out and in again.
     snapshot.restart |= replaced();
     let codename = snapshot.system.archive.clone();
@@ -1527,22 +1561,22 @@ fn stamp() -> [Option<SystemTime>; 3] {
 }
 
 /// What the last scan saw of apt's files, and when it looked.
-struct Watch {
+struct Watch<'a> {
     seen: [Option<SystemTime>; 3],
     looked: Instant,
+    /// `[updates] firmware`, as the compositor last said.
+    firmware: &'a AtomicBool,
 }
 
-impl Default for Watch {
-    fn default() -> Self {
-        Watch { seen: stamp(), looked: Instant::now() }
+impl<'a> Watch<'a> {
+    fn new(firmware: &'a AtomicBool) -> Self {
+        Watch { seen: stamp(), looked: Instant::now(), firmware }
     }
-}
 
-impl Watch {
     fn scan(&mut self, with_offer: bool, network: bool) -> Event {
         // Stamped first: a change during the scan brings another one.
-        *self = Watch::default();
-        Event::Scanned(Box::new(scan(with_offer, network)))
+        *self = Watch::new(self.firmware);
+        Event::Scanned(Box::new(scan(with_offer, network, self.firmware.load(Ordering::Relaxed))))
     }
 }
 
@@ -1551,10 +1585,11 @@ fn run(
     incoming: &mpsc::Receiver<Option<Request>>,
     interval: Duration,
     saving: &AtomicBool,
+    firmware: &AtomicBool,
 ) {
     let mut asked = Instant::now();
     let mut ticked = Instant::now();
-    let mut watch = Watch::default();
+    let mut watch = Watch::new(firmware);
     let online = || !saving.load(Ordering::Relaxed) && !metered();
     let first = online();
     if events.send(watch.scan(first, first)).is_err() {
@@ -2077,6 +2112,32 @@ mod tests {
         updates.merge();
         assert_eq!(updates.snapshot.updates.len(), 2);
         assert!(updates.skipped.is_empty() && updates.skip.is_empty());
+    }
+
+    #[test]
+    fn firmware_shows_only_while_switched_on() {
+        let mut device = update("362301da643102b9f38477387e2193e57abaa590", false);
+        device.source = apt::Source::Firmware;
+        let mut skipped = update("0123456789abcdef0123456789abcdef01234567", false);
+        skipped.source = apt::Source::Firmware;
+        let mut updates = Updates::default();
+        updates.firmware.store(true, Ordering::Relaxed);
+        updates.snapshot.firmware = true;
+        updates.snapshot.updates = vec![update("apt", false), device, skipped.clone()];
+        updates.skip.insert(skipped.key(), skipped.skip_identity().to_string());
+        updates.merge();
+        assert_eq!(updates.snapshot.updates.len(), 2);
+        assert_eq!(updates.skipped.len(), 1);
+        // Switched off: no firmware is counted or shown, and its skips stay
+        // for when it is switched on again.
+        updates.firmware.store(false, Ordering::Relaxed);
+        updates.snapshot.firmware_error = Some("fwupdmgr: failed".into());
+        updates.merge();
+        assert_eq!(updates.snapshot.updates.len(), 1);
+        assert!(updates.skipped.is_empty());
+        assert_eq!(updates.snapshot.firmware_error, None);
+        assert_eq!(updates.snapshot.totals().count, 1);
+        assert!(updates.skip.contains_key(&skipped.key()));
     }
 
     #[test]

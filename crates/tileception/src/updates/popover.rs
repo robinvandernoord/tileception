@@ -1,6 +1,7 @@
 //! The card under the bar's updates chip: what is waiting by kind, the
 //! housekeeping offers, and the buttons that install.
 
+use smithay::input::keyboard::keysyms;
 use tileception_core::{Point, Rect};
 use tileception_updates::{self as backend, apt};
 
@@ -8,6 +9,7 @@ use super::{Page, Task};
 use crate::{
     Tileception,
     bar::Zoom,
+    config::Mods,
     shapes::Shape,
     ui::{Align, Button, Look, Painter, PointerTarget, Style, glyph},
 };
@@ -15,11 +17,22 @@ use crate::{
 #[derive(Default)]
 pub(crate) struct Popover {
     pub(crate) zoom: Zoom,
+    focus: Focus,
+}
+
+#[derive(Default)]
+enum Focus {
+    #[default]
+    Default,
+    Action(Hit),
+    /// The previous control disappeared. Wait for keyboard navigation.
+    Unselected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Hit {
     Check,
+    CheckNow,
     Install,
     Security,
     Review,
@@ -88,7 +101,80 @@ impl Tileception {
         self.close_network();
         let duration = self.world.settings.animation;
         self.updates.popover.zoom.set(true, duration);
+        self.updates.popover.focus = Focus::Default;
         self.schedule_render();
+    }
+
+    /// Keys while the card is open: Enter runs the focused button, or the
+    /// main one before any navigation; Tab, Shift+Tab and arrows move
+    /// between the buttons; Space presses the focused one; Escape closes.
+    /// Returns whether the key was the card's.
+    pub(crate) fn updates_popover_key(&mut self, sym: u32, mods: Mods) -> bool {
+        if !self.updates.popover.zoom.open || mods.ctrl || mods.alt || mods.logo {
+            return false;
+        }
+        let controls = self.updates_popover_controls();
+        let focus = match self.updates.popover.focus {
+            Focus::Action(action) => controls.iter().position(|(_, hit)| *hit == action),
+            _ => None,
+        };
+        let primary = self.updates_popover_primary(&controls);
+        let backward = matches!(sym, keysyms::KEY_ISO_Left_Tab | keysyms::KEY_Left | keysyms::KEY_Up)
+            || sym == keysyms::KEY_Tab && mods.shift;
+        match sym {
+            keysyms::KEY_Escape if !mods.shift => {
+                self.close_updates_popover();
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
+                let index = if matches!(self.updates.popover.focus, Focus::Default) { primary } else { focus };
+                if let Some((_, hit)) = index.and_then(|index| controls.get(index)) {
+                    self.updates_popover_activate(*hit);
+                }
+            }
+            keysyms::KEY_space => {
+                if let Some(hit) = focus.and_then(|index| controls.get(index)).map(|(_, hit)| *hit) {
+                    self.updates_popover_activate(hit);
+                }
+            }
+            keysyms::KEY_Tab
+            | keysyms::KEY_ISO_Left_Tab
+            | keysyms::KEY_Left
+            | keysyms::KEY_Right
+            | keysyms::KEY_Up
+            | keysyms::KEY_Down => {
+                if controls.is_empty() {
+                    return true;
+                }
+                // The first move shows where Enter goes; the next ones step.
+                let count = controls.len();
+                let index = match focus {
+                    None => primary.unwrap_or(0),
+                    Some(index) if backward => (index + count - 1) % count,
+                    Some(index) => (index + 1) % count,
+                };
+                self.updates.popover.focus = Focus::Action(controls[index].1);
+                self.schedule_render();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub(super) fn settle_updates_popover_focus(&mut self) {
+        if self.updates.popover.zoom.open
+            && let Focus::Action(action) = self.updates.popover.focus
+            && !self.updates_popover_controls().iter().any(|(_, hit)| *hit == action)
+        {
+            self.updates.popover.focus = Focus::Unselected;
+        }
+    }
+
+    /// The main button's place among the controls: the first of the row of
+    /// buttons at the bottom, which is Install all while updates wait.
+    fn updates_popover_primary(&self, controls: &[(Rect, Hit)]) -> Option<usize> {
+        let (_, parts) = self.updates_popover_layout();
+        let row = parts.iter().find_map(|(rect, part)| matches!(part, Part::Buttons(_)).then_some(*rect))?;
+        controls.iter().position(|(rect, _)| row.contains(rect.center()))
     }
 
     /// Zooms the card back into its chip. Returns whether it was open.
@@ -103,7 +189,7 @@ impl Tileception {
 
     fn updates_popover_activate(&mut self, hit: Hit) {
         let result = match hit {
-            Hit::Check => self.updates_start(Task::Refresh),
+            Hit::Check | Hit::CheckNow => self.updates_start(Task::Refresh),
             Hit::Install => self.updates_install_reviewed(),
             Hit::Security => self.updates_install(true),
             Hit::Review => {
@@ -207,7 +293,7 @@ impl Tileception {
         if updates.busy() {
             parts.push(Part::Buttons(vec![("Open Updates", Hit::Review)]));
         } else if pending.is_empty() {
-            parts.push(Part::Buttons(vec![("Check now", Hit::Check), ("Open Updates", Hit::Review)]));
+            parts.push(Part::Buttons(vec![("Check now", Hit::CheckNow), ("Open Updates", Hit::Review)]));
         } else {
             let totals = updates.snapshot.totals();
             let mut buttons = vec![("Install all", Hit::Install)];
@@ -298,13 +384,19 @@ impl Tileception {
         let pointer = Point::new(self.pointer.x, self.pointer.y);
         let small = Style::new(theme.font_size * 0.84, theme.muted);
         let body = Style::new(theme.font_size * 0.92, theme.text);
+        let focused = match updates.popover.focus {
+            Focus::Action(action) => {
+                self.updates_popover_controls().into_iter().find_map(|(rect, hit)| (hit == action).then_some(rect))
+            }
+            _ => None,
+        };
         let button = |painter: &mut Painter, rect: Rect, label: &str, primary: bool, warning: bool| {
             let look = match (primary, warning) {
                 (true, _) => Look::Primary,
                 (false, true) => Look::Warning,
                 (false, false) => Look::Plain,
             };
-            painter.button(rect, Button::new(label, look), rect.contains(pointer));
+            painter.button(rect, Button::new(label, look).focused(focused == Some(rect)), rect.contains(pointer));
         };
         for (rect, part) in &parts {
             let rect = *rect;
@@ -328,10 +420,11 @@ impl Tileception {
                     );
                     if !updates.busy() {
                         let refresh = Rect::new(rect.right() - 28.0, rect.y + 8.0, 28.0, 28.0);
-                        if refresh.contains(pointer) {
-                            painter.fill(refresh, theme.surface_raised, theme.radius);
-                        }
-                        painter.glyph(glyph::RESTART, refresh, 15, theme.text.alpha(0.86));
+                        painter.button(
+                            refresh,
+                            Button::glyph(glyph::RESTART, Look::Quiet).focused(focused == Some(refresh)),
+                            refresh.contains(pointer),
+                        );
                     }
                 }
                 Part::Group { label, warning, names, count } => {
