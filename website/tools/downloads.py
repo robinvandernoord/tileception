@@ -16,6 +16,7 @@ import argparse
 import html
 import json
 import sys
+import urllib.error
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -31,7 +32,9 @@ COLOURS = ["", "y", "b"]
 
 def load(source):
     if source.startswith(("https://", "http://")):
-        with urllib.request.urlopen(source, timeout=30) as response:
+        # Cloudflare refuses Python's own user agent.
+        request = urllib.request.Request(source, headers={"User-Agent": "tileception-website"})
+        with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
     return json.loads(Path(source).read_text(encoding="utf-8"))
 
@@ -100,9 +103,12 @@ def main():
     args = parser.parse_args()
     try:
         manifest = load(args.manifest)
-    except (OSError, ValueError) as error:
-        print(f"downloads: no manifest from {args.manifest} ({error}); the page says no ISO is ready",
-              file=sys.stderr)
+    except urllib.error.HTTPError as error:
+        # Only a missing manifest means none is published yet; anything else
+        # would drop the published ISOs from the page.
+        if error.code != 404:
+            sys.exit(f"downloads: could not fetch {args.manifest}: {error}")
+        print(f"downloads: no manifest at {args.manifest}; the page says no ISO is ready", file=sys.stderr)
         manifest = {"isos": []}
     template = TEMPLATE.read_text(encoding="utf-8")
     if MARKER not in template:

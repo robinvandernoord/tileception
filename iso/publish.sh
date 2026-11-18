@@ -30,7 +30,17 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 old='{"isos": []}'
-[ -z "$source" ] || old=$(curl -fsSL "$source" 2>/dev/null || echo "$old")
+if [ -n "$source" ]; then
+    # Only a missing manifest means nothing is published yet: any other
+    # failure would drop the published ISOs from the new one.
+    status=$(curl -sSL --retry 5 --retry-all-errors --connect-timeout 30 -o "$work/old.json" -w '%{http_code}' "$source") \
+        || { echo "publish: could not fetch $source" >&2; exit 1; }
+    case $status in
+        200) old=$(cat "$work/old.json") ;;
+        404) ;;
+        *) echo "publish: $source answered $status" >&2; exit 1 ;;
+    esac
+fi
 supported=$(ubuntu-distro-info --supported | jq -R . | jq -sc .)
 
 # New entries replace old ones of the same release and architecture.

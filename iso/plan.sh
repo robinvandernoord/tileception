@@ -26,16 +26,38 @@ elif [ -n "$source" ]; then
     manifest=$(curl -fsSL "$source" 2>/dev/null || echo '{"isos": []}')
 fi
 
+# A file rather than a pipe into jq, so that an exit in the loop ends the plan.
+work=$(mktemp -d)
+trap 'rm -f "$work/list" "$work/packages"; rmdir "$work"' EXIT
 for codename in $suites; do
     case " $supported " in *" $codename "*) ;; *) continue ;; esac
     # A new Ubuntu release gets packages at Tileception's next release.
-    if ! curl -fsSL "$apt_url/dists/$codename/main/binary-amd64/Packages" 2>/dev/null \
-        | grep -qx 'Package: tileception-desktop'; then
+    # An unreachable repository stops the plan instead of skipping the release.
+    status=$(curl -sSL --retry 5 --retry-all-errors --connect-timeout 30 \
+        -o "$work/packages" -w '%{http_code}' "$apt_url/dists/$codename/main/binary-amd64/Packages") \
+        || { echo "plan: could not fetch $codename's packages from $apt_url" >&2; exit 1; }
+    case $status in
+        200|404) ;;
+        *) echo "plan: could not fetch $codename's packages from $apt_url (HTTP $status)" >&2; exit 1 ;;
+    esac
+    if [ "$status" = 404 ] || ! grep -qx 'Package: tileception-desktop' "$work/packages"; then
         echo "plan: skipping $codename, which $apt_url has no tileception-desktop for yet" >&2
         continue
     fi
     for arch in $arches; do
-        latest=$(iso/latest.sh "$codename" "$arch" 2>/dev/null) || continue
+        # Only an ISO Ubuntu does not publish is skipped. When the lookup
+        # fails otherwise, the ISO is built anyway: its build looks it up
+        # again, and fails visibly if that fails too.
+        status=0
+        latest=$(iso/latest.sh "$codename" "$arch") || status=$?
+        case $status in
+            0) ;;
+            3) continue ;;
+            *)
+                jq -nc --arg c "$codename" --arg a "$arch" '{codename: $c, arch: $a}'
+                continue
+                ;;
+        esac
         sum=${latest#* }
         current=$(echo "$manifest" | jq -r --arg c "$codename" --arg a "$arch" \
             '.isos[] | select(.codename == $c and .arch == $a) | "\(.from_sha256) \(.recipe)"')
@@ -43,4 +65,5 @@ for codename in $suites; do
             jq -nc --arg c "$codename" --arg a "$arch" '{codename: $c, arch: $a}'
         fi
     done
-done | jq -sc .
+done > "$work/list"
+jq -sc . "$work/list"

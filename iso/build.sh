@@ -55,7 +55,7 @@ version=$(echo "$name" | sed -E 's/^ubuntu-([0-9.]+)-desktop-.*/\1/')
 ubuntu_iso="$cache/$name"
 if [ ! -e "$ubuntu_iso" ] || ! echo "$sum  $ubuntu_iso" | sha256sum -c --status; then
     echo "Downloading $name"
-    curl -fL --retry 3 -o "$ubuntu_iso.part" "$url"
+    curl -fL --retry 5 --retry-all-errors --connect-timeout 30 -o "$ubuntu_iso.part" "$url"
     mv "$ubuntu_iso.part" "$ubuntu_iso"
     echo "$sum  $ubuntu_iso" | sha256sum -c --status || fail "$name does not match Ubuntu's checksum"
 fi
@@ -67,10 +67,10 @@ cp "${AUTOINSTALL:-iso/autoinstall.yaml}" "$stage/autoinstall.yaml"
 cp iso/tileception/setup.sh iso/tileception/tileception-iso-setup.service "$stage/tileception/"
 cp packaging/tileception-archive-keyring.gpg "$stage/tileception/"
 
-curl -fsSL https://repo.vivaldi.com/stable/linux_signing_key.pub -o "$work/vivaldi.asc"
+curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 https://repo.vivaldi.com/stable/linux_signing_key.pub -o "$work/vivaldi.asc"
 gpg --batch --dearmor < "$work/vivaldi.asc" > "$stage/tileception/vivaldi-16BD9233.gpg"
-curl -fsSL https://repo.vivaldi.com/stable/deb/dists/stable/Release -o "$work/Release"
-curl -fsSL https://repo.vivaldi.com/stable/deb/dists/stable/Release.gpg -o "$work/Release.gpg"
+curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 https://repo.vivaldi.com/stable/deb/dists/stable/Release -o "$work/Release"
+curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 https://repo.vivaldi.com/stable/deb/dists/stable/Release.gpg -o "$work/Release.gpg"
 gpgv --status-fd 1 --keyring "$stage/tileception/vivaldi-16BD9233.gpg" "$work/Release.gpg" "$work/Release" 2>/dev/null \
     | grep -q "VALIDSIG $vivaldi_fingerprint" \
     || fail "Vivaldi's repository is not signed with key $vivaldi_fingerprint"
