@@ -56,13 +56,15 @@ pub fn init(
             let size = backend.window_size();
             let damage = Rectangle::from_size(size);
             let now = state.now();
-            state.process_captures(backend.renderer());
+            state.process_special_captures(backend.renderer());
             state.process_streams(backend.renderer());
+            let renderer = backend.renderer();
+            let mut elements = state.drag_elements(renderer);
+            let scene = state.frame_elements(renderer, now);
+            state.process_captures(renderer, Some(&scene));
+            elements.extend(scene);
             {
                 let Ok((renderer, mut framebuffer)) = backend.bind() else { return };
-                // The host draws the pointer; what it drags is drawn here.
-                let mut elements = state.drag_elements(renderer);
-                elements.extend(state.frame_elements(renderer, now));
                 let clear = state.clear_colour();
                 if let Err(err) = damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, clear) {
                     tracing::warn!("render failed: {err:?}");

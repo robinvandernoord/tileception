@@ -28,8 +28,9 @@ const PALETTE_ROWS: usize = 8;
 const SHAKE: f64 = 0.45;
 /// How long a change of person takes to crossfade, in seconds.
 const CROSSFADE: f64 = 0.3;
-/// Tileception's logo, made by `scripts/session-badge.sh`; shown for its
-/// sessions when no other login screen's badge is installed.
+/// Tileception's logo, the website's favicon at twice the size with rounded
+/// corners; shown for its sessions when no other login screen's badge is
+/// installed.
 const TILECEPTION_BADGE: &[u8] = include_bytes!("../../../../resources/session-badge.svg");
 
 /// What a click on a rectangle does.
@@ -1326,11 +1327,28 @@ mod tests {
         datetime
     }
 
+    /// The filled rectangles of an SVG made of plain `<rect>`s, scaled by
+    /// `scale`, ignoring the clip path's rectangle.
+    fn svg_tiles(svg: &str, scale: f64) -> Vec<(String, [f64; 4])> {
+        let attr = |tag: &str, name: &str| {
+            let start = tag.find(&format!(" {name}=\"")).map(|found| found + name.len() + 3)?;
+            tag[start..].split('"').next().map(str::to_owned)
+        };
+        svg.split("<rect")
+            .skip(1)
+            .filter_map(|tag| {
+                let fill = attr(tag, "fill")?;
+                let num = |name| attr(tag, name).map_or(0.0, |value| value.parse::<f64>().expect("a number") * scale);
+                Some((fill, [num("x"), num("y"), num("width"), num("height")]))
+            })
+            .collect()
+    }
+
     #[test]
-    fn the_built_in_badge_is_the_generated_one() {
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/session-badge.sh");
-        let output = std::process::Command::new("sh").arg(script).output().expect("runs the badge script");
-        assert_eq!(output.stdout, TILECEPTION_BADGE, "regenerate resources/session-badge.svg with the script");
+    fn the_built_in_badge_is_the_favicon() {
+        let favicon = include_str!("../../../../website/public/favicon.svg");
+        let badge = std::str::from_utf8(TILECEPTION_BADGE).expect("the badge is text");
+        assert_eq!(svg_tiles(badge, 1.0), svg_tiles(favicon, 2.0), "the badge has the favicon's tiles");
     }
 
     #[test]

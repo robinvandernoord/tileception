@@ -112,7 +112,8 @@ persist = false
 # accent to accent_end) or flat (filled with accent alone).
 # buttons = "halo"
 # Frost: the bar, launcher, notifications, menus and cards turn translucent
-# and blur what is behind them. Windows stay solid.
+# and blur what is behind them, as do windows that ask for it (such as a
+# terminal with a translucent background).
 # frost = false
 
 [idle]

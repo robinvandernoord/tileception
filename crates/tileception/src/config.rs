@@ -710,7 +710,11 @@ impl Tileception {
             .or_else(|| config.file.general.terminal.clone())
             .unwrap_or_else(|| crate::state::default_terminal(self.launcher.apps()));
         if self.theme != config.theme {
+            let frost = self.theme.frost;
             self.theme = config.theme.clone();
+            if frost != self.theme.frost {
+                self.announce_blur();
+            }
             self.update_appearance();
             self.text.borrow_mut().clear();
             self.wallpaper = None;

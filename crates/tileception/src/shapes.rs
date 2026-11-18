@@ -10,6 +10,7 @@ use smithay::{
         element::Kind,
         gles::{GlesPixelProgram, GlesRenderer, Uniform, UniformName, UniformType, element::PixelShaderElement},
     },
+    output::{Output, WeakOutput},
     utils::{Logical, Rectangle},
 };
 use tileception_core::Rect;
@@ -142,6 +143,7 @@ pub struct Shapes {
     program: GlesPixelProgram,
     scale: f64,
     reused: Rc<RefCell<Reused>>,
+    outputs: Rc<RefCell<HashMap<WeakOutput, Rc<RefCell<Reused>>>>>,
 }
 
 /// Where a shape is and how it looks, as exact bits: the same key draws the
@@ -176,17 +178,29 @@ impl Shapes {
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
         let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|err| err.to_string())?;
-        Ok(Shapes { program, scale: 1.0, reused: Default::default() })
+        Ok(Shapes { program, scale: 1.0, reused: Default::default(), outputs: Default::default() })
     }
 
     /// Starts a frame: shapes drawn in the last one can be drawn again as they were.
-    pub fn next_frame(&self) {
-        let mut reused = self.reused.borrow_mut();
+    pub fn next_frame(&self, output: Option<&Output>) {
+        let cache = self.for_output(output);
+        let mut reused = cache.borrow_mut();
         reused.previous = std::mem::take(&mut reused.current);
     }
 
-    pub fn at_scale(self, scale: f64) -> Shapes {
-        Shapes { scale, ..self }
+    pub fn remove_output(&self, output: &Output) {
+        self.outputs.borrow_mut().remove(&output.downgrade());
+    }
+
+    pub fn on_output(&self, output: Option<&Output>, scale: f64) -> Shapes {
+        Shapes { scale, reused: self.for_output(output), ..self.clone() }
+    }
+
+    fn for_output(&self, output: Option<&Output>) -> Rc<RefCell<Reused>> {
+        match output {
+            Some(output) => self.outputs.borrow_mut().entry(output.downgrade()).or_default().clone(),
+            None => self.reused.clone(),
+        }
     }
 
     /// A render element drawing `shape` over `rect` (logical pixels). The

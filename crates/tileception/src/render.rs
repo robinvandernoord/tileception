@@ -15,7 +15,7 @@
 use smithay::{
     backend::renderer::{
         element::{
-            AsRenderElements, Id, Kind,
+            AsRenderElements, Element, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             solid::SolidColorRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
@@ -46,6 +46,8 @@ smithay::backend::renderer::element::render_elements! {
     Texture = TextureRenderElement<GlesTexture>,
     Clipped = CropRenderElement<AreaElement>,
     Backdrop = crate::frost::Backdrop,
+    Rounded = crate::rounded::Rounded<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    RoundedCropped = crate::rounded::CroppedRounded,
 }
 
 smithay::backend::renderer::element::render_elements! {
@@ -57,6 +59,8 @@ smithay::backend::renderer::element::render_elements! {
     Memory = MemoryRenderBufferRenderElement<GlesRenderer>,
     Shape = PixelShaderElement,
     Texture = TextureRenderElement<GlesTexture>,
+    Rounded = crate::rounded::Rounded<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+    RoundedCropped = crate::rounded::CroppedRounded,
 }
 
 /// How long a session takes to fade in from black, in seconds: it follows the
@@ -193,13 +197,13 @@ impl Tileception {
         self.update_updates_client(renderer);
         self.update_doctor_client(renderer);
         if let Some(shapes) = self.shapes.get() {
-            shapes.next_frame();
+            shapes.next_frame(self.output.as_ref());
         }
         if self.draws_lock_screen() {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
-        self.frost.borrow_mut().begin();
+        self.begin_frost(renderer);
         let others = self.other_area_elements(renderer, now, None);
         let (mut elements, scene) = self.render_elements(renderer, now, others, None);
         if let Some(drawn) = wallpaper {
@@ -341,7 +345,9 @@ impl Tileception {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                         window.render_elements(renderer, origin, Scale::from(1.0), 1.0);
-                    elements.extend(enlarged(surfaces, origin, self.scale * drawn.scale.0));
+                    let surfaces: Vec<_> = enlarged(surfaces, origin, self.scale * drawn.scale.0).collect();
+                    self.blur_window(window, drawn, None, &surfaces);
+                    elements.extend(surfaces);
                 }
             }
             return (elements, scene);
@@ -433,7 +439,7 @@ impl Tileception {
                         continue;
                     }
                     let faded = match self.windows.get(&drawn.window_id) {
-                        Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade),
+                        Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade, None),
                         _ => self.picture_faded(renderer, drawn.window_id, &drawn.content, 1.0 - fade),
                     };
                     elements.extend(faded);
@@ -445,6 +451,7 @@ impl Tileception {
             };
         }
         let mut popups = Vec::new();
+        let area = self.area_clip();
         for drawn in &drawn_windows {
             if !self.draw_capture_window(drawn.window_id, feedback) {
                 continue;
@@ -463,19 +470,30 @@ impl Tileception {
             let Some(window) = self.windows.get(&drawn.window_id) else { continue };
             let focused = Some(drawn.window_id) == focus && self.windows.len() > 1;
             let floating = drawn.role == WindowRole::Floating;
+            // Tiles are drawn with rounded corners; floating windows keep
+            // their own corners and shadows.
+            let round = if floating { None } else { self.round_corners(renderer, &drawn.content) };
             // A tabbed tile's frame takes in its strip of tabs.
             let mut frame_rect = drawn.content;
             if let Some(strip) = strips.iter().find(|strip| strip.tile == drawn.leaf) {
                 frame_rect =
                     Rect::new(drawn.content.x, strip.rect.y, drawn.content.w, drawn.content.bottom() - strip.rect.y);
             }
-            push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, !floating));
-            if drawn.live {
+            let surfaces = if drawn.live {
                 popups.extend(popup_elements(renderer, window, drawn, self.scale));
-                elements.extend(live(renderer, window, drawn, self.scale));
+                live_faded(renderer, window, drawn, self.scale, 1.0, round.as_ref())
             } else {
-                elements.extend(self.picture(renderer, drawn.window_id, &drawn.content));
-            }
+                self.picture_rounded(renderer, drawn.window_id, &drawn.content, 1.0, round.as_ref())
+            };
+            let mask_corners = !floating
+                && (round.is_none() || plain_touches_corners(&surfaces, &frame_rect, area, theme.radius, self.scale));
+            push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, mask_corners));
+            let surfaces = match &area {
+                Some(clip) => clip_elements(surfaces, clip, self.scale),
+                None => surfaces,
+            };
+            self.blur_window(window, drawn, area, &surfaces);
+            elements.extend(surfaces);
             if floating {
                 // Floating windows cast a soft shadow onto the layout.
                 let shadow = Shape {
@@ -494,7 +512,9 @@ impl Tileception {
             elements.extend(self.tab_strip_elements(renderer, shapes.as_ref(), strip, focus));
         }
 
-        // Tile backgrounds, so slots read as places even before a window draws.
+        // Tile backgrounds, so slots read as places before a window draws
+        // and around one that does not fill its tile. Not under the window
+        // itself: one with a translucent background shows what is behind.
         let half_gap = self.world.settings.gap / 2.0;
         let tree = self.world.tree();
         for leaf in tree.leaves(tree.root()) {
@@ -506,10 +526,26 @@ impl Tileception {
             if !rect.intersects(&self.world.screen()) {
                 continue;
             }
-            push_shape(&mut elements, shapes.as_ref(), &rect, Shape::filled(theme.surface, theme.radius));
+            let fill = Shape::filled(theme.surface, theme.radius);
+            let window = drawn_windows.iter().find(|drawn| drawn.leaf == leaf && drawn.role != WindowRole::Floating);
+            match window {
+                None => push_shape(&mut elements, shapes.as_ref(), &rect, fill),
+                Some(drawn) => {
+                    for band in around(&rect, &drawn.content) {
+                        let band = match &area {
+                            Some(area) => intersection(&band, area),
+                            None => Some(band),
+                        };
+                        let Some(band) = band else { continue };
+                        let mut piece = Vec::new();
+                        push_shape(&mut piece, shapes.as_ref(), &rect, fill);
+                        elements.extend(crop_elements(piece, &band, self.scale));
+                    }
+                }
+            }
         }
 
-        match self.area_clip() {
+        match area {
             Some(clip) => clip_elements(elements, &clip, self.scale),
             None => elements,
         }
@@ -538,11 +574,13 @@ impl Tileception {
                 }
             }
         }
-        self.shapes.get().cloned().map(|shapes| shapes.at_scale(self.scale))
+        self.shapes.get().map(|shapes| shapes.on_output(self.output.as_ref(), self.scale))
     }
 
-    /// A window's frame: rounded corners masked in the background colour (for
-    /// tiles), a hairline border, and the accent with a glow when focused.
+    /// A window's frame: a hairline border, and the accent with a glow when
+    /// focused. With `mask_corners`, the corners outside its rounded rectangle
+    /// are painted in the background colour, for a tile whose surfaces could
+    /// not be cut to it (`rounded.rs`) or another machine's window.
     /// On a laptop the accent follows the battery: green while charging,
     /// yellow to red as it runs low.
     fn frame(&self, focused: bool, mask_corners: bool) -> Shape {
@@ -758,6 +796,18 @@ impl Tileception {
         content: &Rect,
         alpha: f32,
     ) -> Vec<OutputElement> {
+        self.picture_rounded(renderer, window_id, content, alpha, None)
+    }
+
+    /// A window picture, its surfaces cut to `round` when given.
+    fn picture_rounded(
+        &self,
+        renderer: &mut GlesRenderer,
+        window_id: WindowId,
+        content: &Rect,
+        alpha: f32,
+        round: Option<&Round>,
+    ) -> Vec<OutputElement> {
         if let Some(geo) = self.window_geometry(window_id).filter(|_| self.handoff.windows.is_remote(window_id)) {
             let shown = (f64::from(geo.size.w), f64::from(geo.size.h));
             return self.remote_elements(renderer, window_id, content, shown, alpha);
@@ -783,9 +833,21 @@ impl Tileception {
             window.render_elements(renderer, origin, Scale::from(1.0), alpha);
         surfaces
             .into_iter()
-            .filter_map(|surface| {
-                let scaled = RescaleRenderElement::from_element(surface, origin, scale);
-                CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
+            .filter_map(|surface| match round {
+                Some(round) => {
+                    match crate::rounded::round(&round.program, surface, origin, scale, round.outline, round.radius) {
+                        crate::rounded::Cut::Rounded(rounded) => {
+                            CropRenderElement::from_element(rounded, 1.0, crop).map(OutputElement::RoundedCropped)
+                        }
+                        crate::rounded::Cut::Plain(scaled) => {
+                            CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
+                        }
+                    }
+                }
+                None => {
+                    let scaled = RescaleRenderElement::from_element(surface, origin, scale);
+                    CropRenderElement::from_element(scaled, 1.0, crop).map(OutputElement::Scaled)
+                }
             })
             .collect()
     }
@@ -830,22 +892,38 @@ fn popup_elements(
 }
 
 /// A live window without its popups, uniformly fitted into its slot.
-fn live(
-    renderer: &mut GlesRenderer,
-    window: &smithay::desktop::Window,
-    drawn: &Drawn,
-    scale: f64,
-) -> Vec<OutputElement> {
-    live_faded(renderer, window, drawn, scale, 1.0)
+/// How a tiled window's surfaces are cut to its rounded rectangle.
+#[derive(Debug, Clone)]
+pub(crate) struct Round {
+    program: smithay::backend::renderer::gles::GlesTexProgram,
+    /// Physical pixels.
+    outline: Rectangle<i32, Physical>,
+    radius: f32,
 }
 
-/// A live window at some opacity.
+impl Tileception {
+    /// The rounding for a window drawn at `content`, if the shader compiled.
+    fn round_corners(&self, renderer: &mut GlesRenderer, content: &Rect) -> Option<Round> {
+        let program = self
+            .rounded
+            .get_or_init(|| {
+                crate::rounded::compile(renderer)
+                    .map_err(|error| tracing::error!("rounded corner shader: {error}"))
+                    .ok()
+            })
+            .clone()?;
+        Some(Round { program, outline: physical(content, self.scale), radius: self.theme.radius * self.scale as f32 })
+    }
+}
+
+/// A live window at some opacity, its surfaces cut to `round` when given.
 fn live_faded(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
     drawn: &Drawn,
     scale: f64,
     alpha: f32,
+    round: Option<&Round>,
 ) -> Vec<OutputElement> {
     let origin = physical_point((drawn.origin.x, drawn.origin.y), scale);
     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match window.toplevel() {
@@ -854,7 +932,26 @@ fn live_faded(
         }
         None => window.render_elements(renderer, origin, Scale::from(1.0), alpha),
     };
-    enlarged(surfaces, origin, scale * drawn.scale.0).collect()
+    let enlarge = scale * drawn.scale.0;
+    match round {
+        Some(round) => surfaces
+            .into_iter()
+            .map(|surface| {
+                match crate::rounded::round(
+                    &round.program,
+                    surface,
+                    origin,
+                    enlarge.into(),
+                    round.outline,
+                    round.radius,
+                ) {
+                    crate::rounded::Cut::Rounded(rounded) => OutputElement::Rounded(rounded),
+                    crate::rounded::Cut::Plain(plain) => OutputElement::Live(plain),
+                }
+            })
+            .collect(),
+        None => enlarged(surfaces, origin, enlarge).collect(),
+    }
 }
 
 /// Client surfaces made at `origin` with their offsets in logical pixels,
@@ -932,6 +1029,8 @@ pub(crate) fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f6
             let inner = match element {
                 OutputElement::Live(element) => AreaElement::Live(element),
                 OutputElement::Scaled(element) => AreaElement::Scaled(element),
+                OutputElement::Rounded(element) => AreaElement::Rounded(element),
+                OutputElement::RoundedCropped(element) => AreaElement::RoundedCropped(element),
                 OutputElement::Solid(element) => AreaElement::Solid(element),
                 OutputElement::Memory(element) => AreaElement::Memory(element),
                 OutputElement::Shape(element) => AreaElement::Shape(element),
@@ -941,6 +1040,65 @@ pub(crate) fn clip_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f6
             CropRenderElement::from_element(inner, 1.0, crop).map(OutputElement::Clipped)
         })
         .collect()
+}
+
+/// Whether the frame must cover a corner of a surface the shader could not cut.
+fn plain_touches_corners(
+    surfaces: &[OutputElement],
+    frame: &Rect,
+    area: Option<Rect>,
+    radius: f32,
+    scale: f64,
+) -> bool {
+    let corners = crate::rounded::corners(physical(frame, scale), radius * scale as f32);
+    let clip = area.map(|area| physical(&area, scale));
+    surfaces.iter().any(|surface| {
+        if !matches!(surface, OutputElement::Live(_) | OutputElement::Scaled(_)) {
+            return false;
+        }
+        let geometry = surface.geometry(1.0.into());
+        corners.iter().any(|corner| {
+            corner.intersection(geometry).is_some_and(|overlap| {
+                !overlap.is_empty() && clip.is_none_or(|clip| overlap.intersection(clip).is_some())
+            })
+        })
+    })
+}
+
+/// Cuts elements to `rect`, as `clip_elements` does, but also those an area
+/// would not cut: the pieces of a tile's background each need their own cut.
+fn crop_elements(elements: Vec<OutputElement>, rect: &Rect, scale: f64) -> Vec<OutputElement> {
+    let crop = physical(rect, scale);
+    elements
+        .into_iter()
+        .filter_map(|element| match element {
+            OutputElement::Shape(element) => {
+                CropRenderElement::from_element(AreaElement::Shape(element), 1.0, crop).map(OutputElement::Clipped)
+            }
+            other => Some(other),
+        })
+        .collect()
+}
+
+/// Where two rectangles overlap, if they do.
+pub(crate) fn intersection(one: &Rect, other: &Rect) -> Option<Rect> {
+    let (left, top) = (one.x.max(other.x), one.y.max(other.y));
+    let (right, bottom) = (one.right().min(other.right()), one.bottom().min(other.bottom()));
+    (right > left && bottom > top).then(|| Rect::new(left, top, right - left, bottom - top))
+}
+
+/// The parts of `outer` that `hole` leaves uncovered: up to four bands, the
+/// top and bottom ones full width. Slivers under half a pixel are left out.
+fn around(outer: &Rect, hole: &Rect) -> Vec<Rect> {
+    const SLIVER: f64 = 0.5;
+    let Some(hole) = intersection(outer, hole) else { return vec![*outer] };
+    let bands = [
+        Rect::new(outer.x, outer.y, outer.w, hole.y - outer.y),
+        Rect::new(outer.x, hole.bottom(), outer.w, outer.bottom() - hole.bottom()),
+        Rect::new(outer.x, hole.y, hole.x - outer.x, hole.h),
+        Rect::new(hole.right(), hole.y, outer.right() - hole.right(), hole.h),
+    ];
+    bands.into_iter().filter(|band| band.w >= SLIVER && band.h >= SLIVER).collect()
 }
 
 /// A rectangle in logical pixels, in whole physical ones.
@@ -960,4 +1118,44 @@ pub fn solid(rect: &Rect, colour: [f32; 4], scale: f64) -> OutputElement {
         colour,
         Kind::Unspecified,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tuple(rect: &Rect) -> (f64, f64, f64, f64) {
+        (rect.x, rect.y, rect.w, rect.h)
+    }
+
+    #[test]
+    fn a_window_that_fills_its_tile_leaves_no_background() {
+        let tile = Rect::new(10.0, 10.0, 400.0, 300.0);
+        assert!(around(&tile, &tile).is_empty());
+        // Rounding of a scaled window leaves no sliver either.
+        assert!(around(&tile, &Rect::new(10.2, 10.0, 399.8, 300.0)).is_empty());
+    }
+
+    #[test]
+    fn a_smaller_window_leaves_the_background_around_it() {
+        let tile = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let window = Rect::new(100.0, 50.0, 200.0, 100.0);
+        let bands: Vec<_> = around(&tile, &window).iter().map(tuple).collect();
+        assert_eq!(
+            bands,
+            vec![
+                (0.0, 0.0, 400.0, 50.0),
+                (0.0, 150.0, 400.0, 150.0),
+                (0.0, 50.0, 100.0, 100.0),
+                (300.0, 50.0, 100.0, 100.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_elsewhere_leaves_the_whole_background() {
+        let tile = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let bands: Vec<_> = around(&tile, &Rect::new(500.0, 0.0, 100.0, 100.0)).iter().map(tuple).collect();
+        assert_eq!(bands, vec![tuple(&tile)]);
+    }
 }

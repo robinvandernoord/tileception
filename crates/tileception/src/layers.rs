@@ -136,9 +136,12 @@ impl Tileception {
             for layer in map.layers_on(*kind).rev() {
                 let Some(geo) = map.layer_geometry(layer) else { continue };
                 let origin = crate::render::physical_point((geo.loc.x as f64, geo.loc.y as f64), self.scale);
+                let scale = Scale::from(self.scale);
                 let elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     layer.render_elements(renderer, origin, Scale::from(1.0), 1.0);
+                let first = out.len();
                 out.extend(crate::render::enlarged(elements, origin, self.scale));
+                self.blur_surface(layer.wl_surface(), origin, scale, None, None, &out[first..]);
             }
         }
         out

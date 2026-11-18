@@ -1525,6 +1525,10 @@ impl Tileception {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
+        self.frost.get_mut().remove_output(&output.name());
+        if let Some(shapes) = self.shapes.get() {
+            shapes.remove_output(output);
+        }
         self.with_output(output, |state| {
             state.touch_cancel((state.now() * 1000.0) as u32);
             state.fail_captures();
