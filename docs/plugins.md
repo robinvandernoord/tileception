@@ -35,11 +35,17 @@ replaces the bundled plugin.
 
 Type `plugins add owner/repo` in the launcher, for example
 `plugins add robinvandernoord/tileception-2fas`. A full GitHub URL works too,
-and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. The
-repository must be public, and `git` and
+and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. `git` and
 [uvenv](https://github.com/robinvandernoord/uvenv) must be installed. The
 installers put uvenv and [uv](https://docs.astral.sh/uv/) in `~/.local/bin`;
 when they are missing, `tileception setup` installs them.
+
+A private repository is reached over ssh, as
+`ssh://git@github.com/owner/repo.git`, when GitHub does not let it be read
+without signing in. That needs a key GitHub accepts that ssh can use without
+asking anything, such as one in your ssh agent: check with
+`ssh -T git@github.com`. Your own ssh settings apply; git config is not
+changed, and nothing waits for a passphrase or a host key question.
 
 The first Enter finds the commit to install (the default branch's, unless you
 named another), reads `pyproject.toml` at that commit and shows the package,

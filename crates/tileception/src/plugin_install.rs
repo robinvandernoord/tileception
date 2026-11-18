@@ -34,6 +34,15 @@ const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 /// The largest `pyproject.toml` read.
 const MAX_PYPROJECT: &str = "1000000";
 
+/// How git reaches a repository: anonymously over https, or over ssh with
+/// the user's own keys, which is how a private repository is reached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Transport {
+    #[default]
+    Https,
+    Ssh,
+}
+
 /// A GitHub repository, optionally at a tag, branch or commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
@@ -87,13 +96,16 @@ impl Source {
     }
 
     /// The repository as git takes it.
-    fn clone_url(&self) -> String {
-        format!("https://github.com/{}/{}", self.owner, self.repo)
+    fn clone_url(&self, transport: Transport) -> String {
+        match transport {
+            Transport::Https => format!("https://github.com/{}/{}", self.owner, self.repo),
+            Transport::Ssh => format!("ssh://git@github.com/{}/{}.git", self.owner, self.repo),
+        }
     }
 
     /// The repository at a commit, as pip and uv take it.
-    fn git_url(&self, commit: &str) -> String {
-        format!("git+{}@{commit}", self.clone_url())
+    fn git_url(&self, commit: &str, transport: Transport) -> String {
+        format!("git+{}@{commit}", self.clone_url(transport))
     }
 
     /// `owner/repo`, without the revision.
@@ -272,13 +284,15 @@ pub struct Lookup {
     pub package: Package,
     /// The full commit hash.
     pub commit: String,
+    /// How the repository was reached, and is installed from.
+    pub transport: Transport,
 }
 
 /// The requirement `uvenv install` gets, extras and all.
 fn requirement(source: &Source, lookup: &Lookup) -> String {
     let package = &lookup.package;
     let extras = if package.extras.is_empty() { String::new() } else { format!("[{}]", package.extras.join(",")) };
-    format!("{}{extras} @ {}", package.name, source.git_url(&lookup.commit))
+    format!("{}{extras} @ {}", package.name, source.git_url(&lookup.commit, lookup.transport))
 }
 
 fn install_args(source: &Source, lookup: &Lookup) -> Vec<String> {
@@ -796,35 +810,120 @@ impl Runner {
 
     /// The commit `source` is at now: its default branch, or the tag,
     /// branch or full commit it names.
-    fn resolve(&self, source: &Source) -> Result<String, String> {
-        if let Some(rev) = source.rev.as_deref().filter(|rev| is_commit(rev)) {
-            return Ok(rev.to_ascii_lowercase());
+    fn resolve(&self, source: &Source) -> Result<(String, Transport), String> {
+        let given = source.rev.as_deref().filter(|rev| is_commit(rev)).map(str::to_ascii_lowercase);
+        // A commit named in full is not looked up, but which way the
+        // repository can be reached still is.
+        let patterns =
+            if given.is_some() { vec!["HEAD".to_string()] } else { ls_remote_patterns(source.rev.as_deref()) };
+        let (listing, transport) = match self.ls_remote(source, Transport::Https, &patterns)? {
+            Ok(listing) => (listing, Transport::Https),
+            // GitHub asks for a login rather than say a repository is
+            // missing: a private one can still be reached over ssh.
+            Err(error) if error.contains("could not read Username") => {
+                match self.ls_remote(source, Transport::Ssh, &patterns)? {
+                    Ok(listing) => (listing, Transport::Ssh),
+                    Err(_) => {
+                        return Err(format!(
+                            "{} is private or does not exist: a private repository is reached over ssh, \
+                             with a key that `ssh -T git@github.com` uses without asking (in your ssh agent)",
+                            source.repository()
+                        ));
+                    }
+                }
+            }
+            Err(error) => return Err(format!("Could not ask GitHub about {}: {error}", source.repository())),
+        };
+        if let Some(commit) = given {
+            return Ok((commit, transport));
         }
-        let patterns = ls_remote_patterns(source.rev.as_deref());
-        let url = source.clone_url();
-        let mut args = vec!["ls-remote", "--", url.as_str()];
-        args.extend(patterns.iter().map(String::as_str));
-        let mut command = self.command("git", &args);
-        // A repository that does not exist, or is private, asks for a login.
-        command.env("GIT_TERMINAL_PROMPT", "0");
-        let output = run(command, QUICK_TIMEOUT)
-            .map_err(|error| format!("Could not ask GitHub about {} ({error})", source.repository()))?;
-        if !output.status.success() {
-            // GitHub asks for a login rather than say a repository is missing.
-            let error = tail(&output);
-            return Err(if error.contains("could not read Username") {
-                format!("{} is not a public GitHub repository", source.repository())
-            } else {
-                format!("Could not ask GitHub about {}: {error}", source.repository())
-            });
-        }
-        pick_commit(&String::from_utf8_lossy(&output.stdout), source.rev.as_deref()).ok_or_else(|| match &source.rev {
+        let commit = pick_commit(&listing, source.rev.as_deref()).ok_or_else(|| match &source.rev {
             Some(rev) => format!(
                 "{} has no tag or branch {rev}; name a tag, a branch or a full commit hash",
                 source.repository()
             ),
             None => format!("{} has no default branch", source.repository()),
+        })?;
+        Ok((commit, transport))
+    }
+
+    /// `git ls-remote`: what it listed, or what it said when it failed.
+    /// Only a program that could not run at all is an error.
+    fn ls_remote(
+        &self,
+        source: &Source,
+        transport: Transport,
+        patterns: &[String],
+    ) -> Result<Result<String, String>, String> {
+        let url = source.clone_url(transport);
+        let mut args = vec!["ls-remote", "--", url.as_str()];
+        args.extend(patterns.iter().map(String::as_str));
+        let output = run(self.git(&args, transport), QUICK_TIMEOUT)
+            .map_err(|error| format!("Could not ask GitHub about {} ({error})", source.repository()))?;
+        Ok(if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(tail(&output))
         })
+    }
+
+    /// Git that never waits for an answer: no login prompt for https, and for
+    /// ssh no passphrase or host key question, unless the user chose their
+    /// own ssh command.
+    fn git(&self, args: &[&str], transport: Transport) -> Command {
+        let mut command = self.command("git", args);
+        self.quiet_git(&mut command, transport);
+        command
+    }
+
+    fn quiet_git(&self, command: &mut Command, transport: Transport) {
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        if transport == Transport::Ssh && !self.own_ssh_command() {
+            command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
+    }
+
+    /// Whether the user chose how git runs ssh, which `GIT_SSH_COMMAND`
+    /// would override: in the environment or in git's config.
+    fn own_ssh_command(&self) -> bool {
+        let set = |name: &str| {
+            self.environment
+                .iter()
+                .find(|(key, _)| key == name)
+                .map_or_else(|| std::env::var_os(name).is_some(), |(_, value)| value.is_some())
+        };
+        set("GIT_SSH_COMMAND")
+            || set("GIT_SSH")
+            || run(self.command("git", &["config", "--get", "core.sshCommand"]), QUICK_TIMEOUT)
+                .is_ok_and(|output| output.status.success())
+    }
+
+    /// `pyproject.toml` at a commit, fetched with git: the only way to read
+    /// a private repository's files with nothing but ssh.
+    fn git_pyproject(&self, source: &Source, commit: &str, transport: Transport, dir: &Path) -> Result<String, String> {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+        let dir_text = dir.display().to_string();
+        let url = source.clone_url(transport);
+        let result = (|| {
+            self.check("git init", self.git(&["init", "--quiet", "--bare", &dir_text], transport), QUICK_TIMEOUT)?;
+            self.check(
+                "git fetch",
+                self.git(&["-C", &dir_text, "fetch", "--quiet", "--depth", "1", "--", &url, commit], transport),
+                PACKAGE_TIMEOUT,
+            )?;
+            let shown = self.check(
+                "git show",
+                self.git(&["-C", &dir_text, "show", "FETCH_HEAD:pyproject.toml"], transport),
+                QUICK_TIMEOUT,
+            )?;
+            if shown.stdout.len() > MAX_PYPROJECT.parse::<usize>().unwrap_or(usize::MAX) {
+                return Err("pyproject.toml is too large".to_string());
+            }
+            String::from_utf8(shown.stdout).map_err(|error| error.to_string())
+        })();
+        let _ = std::fs::remove_dir_all(dir);
+        result
     }
 
     /// Finds the commit to install and reads its `pyproject.toml`, refusing
@@ -837,19 +936,27 @@ impl Runner {
 
     /// Finds the commit to install and reads its `pyproject.toml`.
     fn read(&self, source: &Source) -> Result<Lookup, String> {
-        let commit = self.resolve(source)?;
+        let (commit, transport) = self.resolve(source)?;
         let cache = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache"))
             .join("tileception");
         std::fs::create_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
         let path = cache.join(lookup_file());
-        tileception_acp::curl(&source.raw_url(&commit, "pyproject.toml"), &path, MAX_PYPROJECT).map_err(|error| {
+        let missing = |error: String| {
             format!("{} has no pyproject.toml to read at {} ({error})", source.repository(), short(&commit))
-        })?;
-        let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
-        let _ = std::fs::remove_file(&path);
-        Ok(Lookup { package: package(&text?)?, commit })
+        };
+        let text = match transport {
+            Transport::Https => {
+                tileception_acp::curl(&source.raw_url(&commit, "pyproject.toml"), &path, MAX_PYPROJECT)
+                    .map_err(missing)?;
+                let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
+                let _ = std::fs::remove_file(&path);
+                text?
+            }
+            Transport::Ssh => self.git_pyproject(source, &commit, transport, &path).map_err(missing)?,
+        };
+        Ok(Lookup { package: package(&text)?, commit, transport })
     }
 
     /// An installed plugin's environment and the links into it.
@@ -951,7 +1058,10 @@ impl Runner {
             },
         );
         record.save()?;
-        let placed = self.check("uvenv install", self.command(&uvenv, &args), PACKAGE_TIMEOUT).and_then(|_| {
+        let mut install = self.command(&uvenv, &args);
+        // uv fetches the repository with git, the same way it was looked up.
+        self.quiet_git(&mut install, lookup.transport);
+        let placed = self.check("uvenv install", install, PACKAGE_TIMEOUT).and_then(|_| {
             let listing = list("uvenv list")?;
             let linked = uvenv_entry(&listing.stdout, &package.name).map(|entry| uvenv_linked_scripts(&entry));
             if linked.is_some_and(|scripts| scripts.contains(&package.script)) {
@@ -1467,7 +1577,7 @@ mod tests {
         assert_eq!(tagged.to_string(), "robinvandernoord/tileception-2fas@v0.2.0");
         let commit = "fb54a60c53c20be83553d78bedd8093f44332e0d";
         assert_eq!(
-            tagged.git_url(commit),
+            tagged.git_url(commit, Transport::Https),
             "git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d"
         );
         assert_eq!(
@@ -1512,7 +1622,7 @@ tileception-odoo = "tileception_odoo.cli:main"
         assert_eq!(plain.python.as_deref(), Some(">=3.14"));
         let source = Source::parse("robinvandernoord/tileception-odoo").expect("a plain source");
         let commit = "0123456789abcdef0123456789abcdef01234567".to_string();
-        let lookup = Lookup { package: plain, commit: commit.clone() };
+        let lookup = Lookup { package: plain, commit: commit.clone(), transport: Transport::Https };
         // What installs is the commit that was looked up, not whatever the
         // default branch is at by then.
         assert_eq!(
@@ -1542,7 +1652,7 @@ needs = ["the 2fas CLI"]
         .expect("a declared pyproject");
         assert_eq!((declared.plugin_id.as_str(), declared.needs.len()), ("totp", 1));
         assert_eq!(
-            requirement(&source, &Lookup { package: declared, commit }),
+            requirement(&source, &Lookup { package: declared, commit: commit.clone(), transport: Transport::Https }),
             "tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-odoo@0123456789abcdef0123456789abcdef01234567"
         );
 
@@ -1655,6 +1765,20 @@ needs = ["the 2fas CLI"]
         // It was installed with uv, so uv removes it.
         assert_eq!(old.plugins["odoo"].tool, Tool::UvTool);
         assert!(text.contains("tool = \"uvenv\""));
+    }
+
+    #[test]
+    fn a_private_repository_is_installed_over_ssh() {
+        let source = Source::parse("robinvandernoord/t3-update").expect("a source");
+        assert_eq!(source.clone_url(Transport::Https), "https://github.com/robinvandernoord/t3-update");
+        assert_eq!(source.clone_url(Transport::Ssh), "ssh://git@github.com/robinvandernoord/t3-update.git");
+        let package = package("[project]\nname = \"tileception-t3-update\"\n[project.scripts]\nt3 = \"t3:main\"\n")
+            .expect("a pyproject");
+        let commit = "e4aea3ab10cb380899a9343d2650580dbda72c04".to_string();
+        assert_eq!(
+            requirement(&source, &Lookup { package, commit, transport: Transport::Ssh }),
+            "tileception-t3-update @ git+ssh://git@github.com/robinvandernoord/t3-update.git@e4aea3ab10cb380899a9343d2650580dbda72c04"
+        );
     }
 
     #[test]
