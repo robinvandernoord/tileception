@@ -7,9 +7,7 @@
 #                        until everything is done
 #
 # The desktop needs the network. When the installer had none, or a step
-# failed, the service does it at the next boot. What cannot happen inside the
-# installer (removing snaps, which needs snapd running) waits for that boot
-# too. Every step can run again.
+# failed, the service does it at the next boot. Every step can run again.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -81,11 +79,32 @@ desktop() {
     # Ubuntu's snap package (the pin allows going "down" from its version).
     apt_get update --error-on=any || return 1
     apt_get install --allow-downgrades firefox vivaldi-stable gh || return 1
+    # Only now: Ubuntu's firefox package, which needs snapd, is replaced.
+    remove_snapd || return 1
     remove_gnome_shell
     tileception-setup --non-interactive --preset recommended --greeter tileception --user "$user" || return 1
     add_zoxide_hook
     touch "$state/desktop"
     say "the Tileception desktop is installed"
+}
+
+# Looks where tileception-setup's has_tool does, so a copy it accepts is
+# accepted here too.
+has_tool() {
+    for dir in "$home/.local/bin" "$home/.cargo/bin" /usr/local/bin /usr/bin; do
+        [ -x "$dir/$1" ] && return 0
+    done
+    return 1
+}
+
+# uv and uvenv for plugins, which tileception-setup installs in the person's
+# ~/.local/bin when the desktop is set up. Run again, keeping every setting,
+# when they could not be downloaded then.
+plugin_tools() {
+    has_tool uv && has_tool uvenv && return 0
+    [ -e "$state/desktop" ] || return 1
+    tileception-setup --non-interactive --preset keep --greeter keep --user "$user" || true
+    has_tool uv && has_tool uvenv
 }
 
 # No asterisk per character while typing a sudo password, which sudo-rs
@@ -108,22 +127,14 @@ thunderbird() {
     touch "$state/thunderbird"
 }
 
-# The snaps Ubuntu's desktop seeds: Firefox (now a deb), the App Center
-# (GNOME Software instead), the firmware updater (the updates chip has
-# fwupd) and GNOME's helpers for them. snapd stays for anyone who wants snaps.
-remove_snaps() {
-    [ -e "$state/snaps" ] && return 0
-    command -v snap >/dev/null 2>&1 || { touch "$state/snaps"; return 0; }
-    # Seeding can take long on a slow machine: give up for this boot after
-    # a quarter of an hour, so the rest is not held up.
-    timeout 900 snap wait system seed.loaded || { say "snaps are still being seeded"; return 1; }
-    for name in firefox snap-store firmware-updater desktop-security-center prompting-client \
-        snapd-desktop-integration; do
-        if snap list "$name" >/dev/null 2>&1; then
-            snap remove --purge "$name" || return 1
-        fi
-    done
-    touch "$state/snaps"
+# snapd and the snaps Ubuntu's desktop seeds (Firefox, now a deb, the App
+# Center, the firmware updater and their helpers). They expect GNOME's
+# sessions: outside them seeding fails for good, which leaves snapd broken.
+# Purged before the first boot, nothing is seeded; `apt install snapd` brings
+# snaps back for anyone who wants them.
+remove_snapd() {
+    dpkg-query -W -f '${Status}' snapd 2>/dev/null | grep -q 'ok installed' || return 0
+    apt_get purge snapd || return 1
 }
 
 mkdir -p "$state"
@@ -141,13 +152,14 @@ case "${1:-}" in
         systemctl enable tileception-iso-setup.service
         quiet_sudo
         desktop || true
+        plugin_tools || say "uv and uvenv are installed at the next boot"
         thunderbird || say "Thunderbird is installed at the next boot"
         ;;
     firstboot)
         failed=0
         desktop || failed=1
+        plugin_tools || failed=1
         thunderbird || failed=1
-        remove_snaps || failed=1
         if [ "$failed" = 0 ]; then
             systemctl disable tileception-iso-setup.service
             say "done"

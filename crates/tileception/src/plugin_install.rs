@@ -1,5 +1,6 @@
-//! Installs plugins from GitHub repositories with `uv tool`, and configures,
-//! updates and removes them again.
+//! Installs plugins from GitHub repositories with uvenv, and configures,
+//! updates and removes them again. Plugins installed before uvenv were
+//! installed with `uv tool`, and are removed with it.
 //!
 //! A plugin repository is a Python package with one console script that
 //! takes the standard subcommands (`serve`, `install --non-interactive`,
@@ -21,8 +22,8 @@ use smithay::reexports::calloop::channel;
 use crate::Tileception;
 use crate::plugins::Prompt;
 
-/// How long `uv tool install` and `uv tool upgrade` may take.
-const UV_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long installing or removing a package with uvenv or uv may take.
+const PACKAGE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// How long a plugin's own `install` may take: some download a model.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// How long `status` and `uninstall` may take.
@@ -273,7 +274,7 @@ pub struct Lookup {
     pub commit: String,
 }
 
-/// The requirement `uv tool install` gets, extras and all.
+/// The requirement `uvenv install` gets, extras and all.
 fn requirement(source: &Source, lookup: &Lookup) -> String {
     let package = &lookup.package;
     let extras = if package.extras.is_empty() { String::new() } else { format!("[{}]", package.extras.join(",")) };
@@ -281,7 +282,7 @@ fn requirement(source: &Source, lookup: &Lookup) -> String {
 }
 
 fn install_args(source: &Source, lookup: &Lookup) -> Vec<String> {
-    let mut args = vec!["tool".to_string(), "install".to_string()];
+    let mut args = vec!["install".to_string()];
     if let Some(python) = &lookup.package.python {
         args.extend(["--python".to_string(), python.trim().to_string()]);
     }
@@ -298,8 +299,11 @@ pub struct Installed {
     /// The commit installed. Only `update` moves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The Python package, for `uv tool uninstall`.
+    /// The Python package, for uninstalling.
     pub package: String,
+    /// What installed it. Records from before uvenv say nothing: uv.
+    #[serde(default)]
+    pub tool: Tool,
     /// The script's absolute path.
     pub command: PathBuf,
     /// Whether the manifest was made by installing (by Tileception or the
@@ -309,6 +313,33 @@ pub struct Installed {
     pub wrote_manifest: bool,
 }
 
+/// The program that installed a plugin's package.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tool {
+    /// `uv tool install`, which installed plugins before uvenv did.
+    #[default]
+    #[serde(rename = "uv")]
+    UvTool,
+    Uvenv,
+}
+
+impl Tool {
+    fn program(self) -> &'static str {
+        match self {
+            Tool::UvTool => "uv",
+            Tool::Uvenv => "uvenv",
+        }
+    }
+
+    fn uninstall_args(self, package: &str) -> Vec<&str> {
+        match self {
+            Tool::UvTool => vec!["tool", "uninstall", package],
+            Tool::Uvenv => vec!["uninstall", package],
+        }
+    }
+}
+
 /// Every installed plugin, by ID.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
@@ -316,15 +347,159 @@ pub struct Record {
     pub plugins: BTreeMap<String, Installed>,
 }
 
-/// Package names as Python compares them.
+/// A package name as Python compares it, and as uvenv names its
+/// environments: lowercase, with every run of `-`, `_` and `.` one `-`.
+fn normal_package(name: &str) -> String {
+    let mut normal = String::with_capacity(name.len());
+    for letter in name.chars() {
+        if matches!(letter, '-' | '_' | '.') {
+            if !normal.ends_with('-') {
+                normal.push('-');
+            }
+        } else {
+            normal.extend(letter.to_lowercase());
+        }
+    }
+    normal
+}
+
 fn same_package(one: &str, other: &str) -> bool {
-    let normal = |name: &str| name.to_lowercase().replace(['_', '.'], "-");
-    normal(one) == normal(other)
+    normal_package(one) == normal_package(other)
+}
+
+/// Where uvenv links the scripts it installs.
+fn uvenv_bin_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin")
+}
+
+/// Where uvenv keeps an environment for each package.
+fn uvenv_venv_dir(package: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/uvenv/venvs").join(normal_package(package))
+}
+
+/// Where `uv tool install` kept a package, as uv finds it by default.
+fn uv_tool_dir(package: &str) -> PathBuf {
+    let tools = std::env::var_os("UV_TOOL_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), PathBuf::from).join("uv/tools")
+    });
+    tools.join(normal_package(package))
+}
+
+/// What `uvenv list --json` says about `package`, if uvenv has it.
+fn uvenv_entry(listing: &[u8], package: &str) -> Option<serde_json::Value> {
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_slice(listing) else {
+        return None;
+    };
+    entries.into_iter().find(|entry| {
+        entry.get("name").and_then(serde_json::Value::as_str).is_some_and(|name| same_package(name, package))
+    })
+}
+
+/// The scripts uvenv linked into its bin folder for an entry. It skips a
+/// script whose name another program has there, and still succeeds.
+fn uvenv_linked_scripts(entry: &serde_json::Value) -> Vec<String> {
+    entry
+        .get("scripts")
+        .and_then(serde_json::Value::as_object)
+        .map(|scripts| {
+            scripts.iter().filter(|(_, linked)| linked.as_bool() == Some(true)).map(|(name, _)| name.clone()).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The links `uv tool install` made, from the receipt in its tool folder.
+fn uv_tool_links(receipt: &str) -> Vec<PathBuf> {
+    let Ok(receipt) = toml::from_str::<toml::Value>(receipt) else {
+        return Vec::new();
+    };
+    receipt
+        .get("tool")
+        .and_then(|tool| tool.get("entrypoints"))
+        .and_then(toml::Value::as_array)
+        .map(|entrypoints| {
+            entrypoints
+                .iter()
+                .filter_map(|entrypoint| entrypoint.get("install-path")?.as_str())
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A link that points into `dir`, so it is the environment's own and not
+/// another program's.
+fn links_into(link: &Path, dir: &Path) -> bool {
+    std::fs::read_link(link).is_ok_and(|target| target.starts_with(dir))
+}
+
+/// An installed plugin's environment and links, moved out of the way while
+/// its replacement installs, so a failed update can put them back.
+struct Aside {
+    /// Each original path, and where it is now.
+    moved: Vec<(PathBuf, PathBuf)>,
+    folder: PathBuf,
+}
+
+impl Aside {
+    /// Moves `paths` into `folder`, or moves nothing.
+    fn take(folder: PathBuf, paths: Vec<PathBuf>) -> Result<Self, String> {
+        // Left by an update that ended without finishing: what it moved was
+        // replaced since, or the update starts over now.
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+        let mut aside = Aside { moved: Vec::new(), folder };
+        for (index, path) in paths.into_iter().enumerate() {
+            if std::fs::symlink_metadata(&path).is_err() {
+                continue;
+            }
+            let stored = aside.folder.join(index.to_string());
+            if let Err(error) = std::fs::rename(&path, &stored) {
+                let error = format!("Could not set {} aside: {error}", path.display());
+                aside.restore()?;
+                return Err(error);
+            }
+            aside.moved.push((path, stored));
+        }
+        Ok(aside)
+    }
+
+    /// Puts everything back where it was.
+    fn restore(self) -> Result<(), String> {
+        let mut failed = Vec::new();
+        for (path, stored) in self.moved.iter().rev() {
+            if let Err(error) = std::fs::rename(stored, path) {
+                failed.push(format!("{} is still at {} ({error})", path.display(), stored.display()));
+            }
+        }
+        if failed.is_empty() {
+            let _ = std::fs::remove_dir_all(&self.folder);
+            self.remove_parent();
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
+    /// Deletes what was moved: the replacement is in place.
+    fn discard(self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.folder) {
+            tracing::warn!("{}: {error}", self.folder.display());
+        }
+        self.remove_parent();
+    }
+
+    /// The folder for every plugin's, once it holds none.
+    fn remove_parent(&self) {
+        if let Some(parent) = self.folder.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
 }
 
 /// Refuses an install that would take over another plugin: one with the same
 /// ID from another repository, whose record it would overwrite, or one with
-/// the same package under another ID, whose uv tool it would replace.
+/// the same package under another ID, whose environment it would replace.
 /// Installing the same repository again, at any revision, is fine.
 fn conflict(record: &Record, source: &Source, package: &Package) -> Result<(), String> {
     if let Some(installed) = record.plugins.get(&package.plugin_id) {
@@ -541,15 +716,42 @@ fn run(mut command: Command, timeout: Duration) -> Result<Output, String> {
     Ok(Output { status, stdout: take(stdout), stderr: take(stderr) })
 }
 
-/// The last lines a failed program wrote, for a notification.
+/// The last lines a failed program wrote, for a notification, without the
+/// colours and progress lines uvenv writes even when it has no terminal.
 fn tail(output: &Output) -> String {
     let text = if output.stderr.iter().any(|byte| !byte.is_ascii_whitespace()) {
         String::from_utf8_lossy(&output.stderr)
     } else {
         String::from_utf8_lossy(&output.stdout)
     };
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let text = without_escapes(&text);
+    // A progress line is rewritten in place: only what came last shows.
+    let lines: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.rsplit('\r').next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
     lines[lines.len().saturating_sub(3)..].join("\n")
+}
+
+/// Text without terminal escape sequences (`ESC [ ... letter`).
+fn without_escapes(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut letters = text.chars();
+    while let Some(letter) = letters.next() {
+        if letter != '\u{1b}' {
+            plain.push(letter);
+        } else if letters.next() == Some('[') {
+            // Parameters and intermediates, up to the final byte.
+            for letter in letters.by_ref() {
+                if ('@'..='~').contains(&letter) {
+                    break;
+                }
+            }
+        }
+    }
+    plain
 }
 
 /// Runs a job's programs with the session's environment.
@@ -582,9 +784,14 @@ impl Runner {
         if output.status.success() { Ok(output) } else { Err(format!("{what} failed: {}", tail(&output))) }
     }
 
-    fn find_uv(&self) -> Result<PathBuf, String> {
-        tileception_acp::local::find("uv")
-            .ok_or_else(|| "Plugins install with uv, which is not installed: see https://docs.astral.sh/uv/".into())
+    /// The program a plugin's package is installed and removed with.
+    fn find(&self, tool: Tool) -> Result<PathBuf, String> {
+        tileception_acp::local::find(tool.program()).ok_or_else(|| match tool {
+            Tool::Uvenv => "Plugins are installed and removed with uvenv, which is not installed: run tileception setup to install it, \
+                            or see https://github.com/robinvandernoord/uvenv"
+                .into(),
+            Tool::UvTool => "This plugin was installed with uv, which is not installed anymore".into(),
+        })
     }
 
     /// The commit `source` is at now: its default branch, or the tag,
@@ -645,6 +852,33 @@ impl Runner {
         Ok(Lookup { package: package(&text?)?, commit })
     }
 
+    /// An installed plugin's environment and the links into it.
+    fn old_paths(&self, uvenv: &Path, installed: &Installed) -> Vec<PathBuf> {
+        match installed.tool {
+            Tool::Uvenv => {
+                let venv = uvenv_venv_dir(&installed.package);
+                let normal = normal_package(&installed.package);
+                let listing = run(self.command(uvenv, &["list", "--json", "--skip-updates", &normal]), QUICK_TIMEOUT)
+                    .map(|output| output.stdout)
+                    .unwrap_or_default();
+                let scripts = uvenv_entry(&listing, &installed.package)
+                    .map(|entry| uvenv_linked_scripts(&entry))
+                    .unwrap_or_default();
+                let links = scripts.iter().map(|script| uvenv_bin_dir().join(script));
+                links.filter(|link| links_into(link, &venv)).chain([venv.clone()]).collect()
+            }
+            Tool::UvTool => {
+                let tool = uv_tool_dir(&installed.package);
+                let receipt = std::fs::read_to_string(tool.join("uv-receipt.toml")).unwrap_or_default();
+                let links = uv_tool_links(&receipt).into_iter().chain([installed.command.clone()]);
+                let mut paths: Vec<PathBuf> = links.filter(|link| links_into(link, &tool)).collect();
+                paths.dedup();
+                paths.push(tool);
+                paths
+            }
+        }
+    }
+
     /// Installs the package at the commit looked up, lets the plugin set
     /// itself up without asking anything, makes sure a manifest exists, and
     /// asks whether it still needs configuring.
@@ -652,30 +886,117 @@ impl Runner {
         let package = &lookup.package;
         // Again, as something else may have been installed since the lookup.
         conflict(&Record::load(), source, package)?;
-        let uv_path = self.find_uv()?;
-        self.step(format!("Installing {} at {} with uv", package.name, short(&lookup.commit)));
+        let uvenv = self.find(Tool::Uvenv)?;
+        let mut record = Record::load();
+        let before = record.plugins.get(&package.plugin_id).cloned();
+        let normal = normal_package(&package.name);
+        let list = |what: &str| {
+            self.check(what, self.command(&uvenv, &["list", "--json", "--skip-updates", &normal]), QUICK_TIMEOUT)
+        };
+        // An environment uvenv has for the package is the user's own unless
+        // the record says Tileception made it.
+        let ours = before
+            .as_ref()
+            .is_some_and(|installed| installed.tool == Tool::Uvenv && same_package(&installed.package, &package.name));
+        if !ours && uvenv_entry(&list("uvenv list")?.stdout, &package.name).is_some() {
+            return Err(format!(
+                "{} is already installed with uvenv, outside Tileception; remove it with uvenv uninstall {} first",
+                package.name, package.name
+            ));
+        }
+        // The installed version keeps working until its replacement is in
+        // place: uvenv installs nothing over it, so it moves aside, and comes
+        // back if installing fails.
+        let aside = match &before {
+            Some(installed) => {
+                self.step(format!("Setting {} aside until its replacement is installed", installed.package));
+                let folder = data_dir().join("set-aside").join(&package.plugin_id);
+                Some(Aside::take(folder, self.old_paths(&uvenv, installed))?)
+            }
+            None => None,
+        };
+        // Whatever is in uvenv's folder for the package after a failed
+        // install is from that install, so nothing may be there now: uvenv
+        // leaves a broken environment there when making it fails.
+        let venv = uvenv_venv_dir(&package.name);
+        if std::fs::symlink_metadata(&venv).is_ok() {
+            let error = format!(
+                "uvenv already has {}, outside Tileception; remove it with uvenv uninstall {} first",
+                venv.display(),
+                package.name
+            );
+            return Err(match aside.map_or(Ok(()), Aside::restore) {
+                Ok(()) => error,
+                Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
+            });
+        }
+        self.step(format!("Installing {} at {} with uvenv", package.name, short(&lookup.commit)));
         let args = install_args(source, lookup);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let bin = self.check("uv tool dir", self.command(&uv_path, &["tool", "dir", "--bin"]), QUICK_TIMEOUT)?;
-        let command = PathBuf::from(String::from_utf8_lossy(&bin.stdout).trim()).join(&package.script);
+        let command = uvenv_bin_dir().join(&package.script);
         let manifest = manifest_path(&package.plugin_id);
         let had_manifest = manifest.exists();
-        let mut record = Record::load();
-        let wrote_before = record.plugins.get(&package.plugin_id).is_some_and(|installed| installed.wrote_manifest);
-        // Reserve recovery state before uv or setup can leave artifacts behind.
-        // An incomplete install has no commit, so an update will retry it.
+        let wrote_before = before.as_ref().is_some_and(|installed| installed.wrote_manifest);
+        // Reserve recovery state before setup can leave artifacts behind. An
+        // incomplete install has no commit, so an update will retry it.
         record.plugins.insert(
             package.plugin_id.clone(),
             Installed {
                 source: source.to_string(),
                 commit: None,
                 package: package.name.clone(),
+                tool: Tool::Uvenv,
                 command: command.clone(),
                 wrote_manifest: wrote_before || !had_manifest,
             },
         );
         record.save()?;
-        self.check("uv tool install", self.command(&uv_path, &args), UV_TIMEOUT)?;
+        let placed = self.check("uvenv install", self.command(&uvenv, &args), PACKAGE_TIMEOUT).and_then(|_| {
+            let listing = list("uvenv list")?;
+            let linked = uvenv_entry(&listing.stdout, &package.name).map(|entry| uvenv_linked_scripts(&entry));
+            if linked.is_some_and(|scripts| scripts.contains(&package.script)) {
+                return Ok(());
+            }
+            // Removing the plugin would run the other program's `uninstall`.
+            let _ = run(self.command(&uvenv, &Tool::Uvenv.uninstall_args(&package.name)), PACKAGE_TIMEOUT);
+            Err(format!(
+                "Did not install {}: another program is called {} in {}; remove or rename that one first",
+                package.name,
+                package.script,
+                uvenv_bin_dir().display()
+            ))
+        });
+        if let Err(error) = placed {
+            if std::fs::symlink_metadata(&venv).is_ok() {
+                let _ = run(self.command(&uvenv, &Tool::Uvenv.uninstall_args(&package.name)), PACKAGE_TIMEOUT);
+                if let Err(error) = std::fs::remove_dir_all(&venv)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!("{}: {error}", venv.display());
+                }
+            }
+            let restored = aside.map_or(Ok(()), Aside::restore);
+            match before {
+                Some(installed) => record.plugins.insert(package.plugin_id.clone(), installed),
+                None => record.plugins.remove(&package.plugin_id),
+            };
+            record.save()?;
+            return Err(match restored {
+                Ok(()) => error,
+                Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
+            });
+        }
+        if let Some(aside) = aside {
+            aside.discard();
+        }
+        // A manifest Tileception wrote for where the plugin was before.
+        if let Some(installed) = &before
+            && installed.command != command
+            && std::fs::read_to_string(&manifest).is_ok_and(|text| text == minimal_manifest(&installed.command))
+        {
+            std::fs::write(&manifest, minimal_manifest(&command))
+                .map_err(|error| format!("{}: {error}", manifest.display()))?;
+        }
         if !command.is_file() {
             return Err(format!("{} did not install {}", package.name, command.display()));
         }
@@ -782,13 +1103,13 @@ impl Runner {
     }
 
     fn remove(&self, plugin_id: &str) -> Result<String, String> {
-        let uv_path = self.find_uv()?;
         let mut record = Record::load();
         let installed = record
             .plugins
             .get(plugin_id)
             .cloned()
             .ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
+        let program = self.find(installed.tool)?;
         let mut notes = Vec::new();
         let manifest = manifest_path(plugin_id);
         // A plugin may remove its manifest itself. Keep unowned contents before
@@ -819,9 +1140,9 @@ impl Runner {
             std::fs::write(&manifest, contents).map_err(|error| format!("{}: {error}", manifest.display()))?;
         }
         self.check(
-            &format!("uv tool uninstall {}", installed.package),
-            self.command(&uv_path, &["tool", "uninstall", &installed.package]),
-            UV_TIMEOUT,
+            &format!("{} uninstall {}", installed.tool.program(), installed.package),
+            self.command(&program, &installed.tool.uninstall_args(&installed.package)),
+            PACKAGE_TIMEOUT,
         )?;
         if let Some(note) = remove_manifest(&installed, &manifest)? {
             notes.push(note);
@@ -1197,7 +1518,6 @@ tileception-odoo = "tileception_odoo.cli:main"
         assert_eq!(
             install_args(&source, &lookup),
             [
-                "tool",
                 "install",
                 "--python",
                 ">=3.14",
@@ -1280,6 +1600,14 @@ needs = ["the 2fas CLI"]
         .expect("sh runs");
         assert_eq!(output.status.code(), Some(3));
         assert_eq!(tail(&output), "err");
+        // uvenv colours its errors and rewrites a progress line in place,
+        // even without a terminal.
+        let mut command = Command::new("printf");
+        command.arg(
+            "\\r\\342\\243\\267 installing x \\r\\033[2KScript x already exists in \\033[32m~/.local/bin\\033[39m.\\n",
+        );
+        let output = run(command, QUICK_TIMEOUT).expect("printf runs");
+        assert_eq!(tail(&output), "Script x already exists in ~/.local/bin.");
         let mut sleep = Command::new("sleep");
         sleep.arg("5");
         assert!(run(sleep, Duration::from_millis(200)).is_err());
@@ -1308,6 +1636,7 @@ needs = ["the 2fas CLI"]
             source: source.into(),
             commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
             package: package.into(),
+            tool: Tool::Uvenv,
             command: format!("/home/me/.local/bin/{package}").into(),
             wrote_manifest: true,
         }
@@ -1323,6 +1652,61 @@ needs = ["the 2fas CLI"]
         let old = toml::from_str::<Record>("[plugins.odoo]\nsource = \"a/b\"\npackage = \"b\"\ncommand = \"/bin/b\"\n")
             .expect("an older record reads");
         assert_eq!((old.plugins["odoo"].commit.as_deref(), old.plugins["odoo"].wrote_manifest), (None, false));
+        // It was installed with uv, so uv removes it.
+        assert_eq!(old.plugins["odoo"].tool, Tool::UvTool);
+        assert!(text.contains("tool = \"uvenv\""));
+    }
+
+    #[test]
+    fn links_from_a_uv_receipt() {
+        let receipt = r#"
+[tool]
+requirements = [{ name = "tileception-odoo" }]
+entrypoints = [
+    { name = "tileception-odoo", install-path = "/home/me/.local/bin/tileception-odoo", from = "tileception-odoo" },
+]
+"#;
+        assert_eq!(uv_tool_links(receipt), [PathBuf::from("/home/me/.local/bin/tileception-odoo")]);
+        assert!(uv_tool_links("not toml [").is_empty());
+    }
+
+    #[test]
+    fn an_installed_version_set_aside_comes_back() {
+        let root = scratch("aside");
+        let venv = root.join("venvs/x");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(venv.join("bin")).expect("venv");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::write(venv.join("bin/x"), "#!/bin/sh\n").expect("script");
+        std::os::unix::fs::symlink(venv.join("bin/x"), bin.join("x")).expect("link");
+        std::fs::write(bin.join("other"), "not ours").expect("other");
+        assert!(links_into(&bin.join("x"), &venv));
+        assert!(!links_into(&bin.join("other"), &venv));
+
+        let paths = vec![bin.join("x"), root.join("missing"), venv.clone()];
+        let aside = Aside::take(root.join("aside"), paths.clone()).expect("set aside");
+        assert!(!venv.exists() && std::fs::symlink_metadata(bin.join("x")).is_err());
+        aside.restore().expect("put back");
+        assert_eq!(std::fs::read_to_string(bin.join("x")).expect("works again"), "#!/bin/sh\n");
+        assert!(!root.join("aside").exists());
+
+        Aside::take(root.join("aside"), paths).expect("set aside").discard();
+        assert!(!venv.exists() && !root.join("aside").exists());
+        assert!(bin.join("other").exists());
+    }
+
+    #[test]
+    fn package_names_as_uvenv_has_them() {
+        assert_eq!(normal_package("Tileception__Odoo.plugin"), "tileception-odoo-plugin");
+        assert!(same_package("tileception_2fas", "Tileception-2FAS"));
+        let listing = br#"[{"name": "tileception-odoo", "scripts": {"tileception-odoo": true, "other": false}}]"#;
+        let entry = uvenv_entry(listing, "Tileception_Odoo").expect("uvenv has it");
+        // uvenv installs it but does not link a script whose name another
+        // program has.
+        assert_eq!(uvenv_linked_scripts(&entry), ["tileception-odoo"]);
+        assert!(uvenv_entry(listing, "tileception-2fas").is_none());
+        assert!(uvenv_entry(b"[]", "tileception-odoo").is_none());
+        assert!(uvenv_entry(b"not json", "tileception-odoo").is_none());
     }
 
     #[test]
@@ -1370,7 +1754,7 @@ needs = ["the 2fas CLI"]
             conflict(&record, &fork, &same),
             Err("plugin ID 2fas is taken by robinvandernoord/tileception-2fas; remove it first".into())
         );
-        // The same package under another ID would replace its uv tool.
+        // The same package under another ID would replace its environment.
         let renamed = package(
             "[project]\nname = \"tileception_2fas\"\n[project.scripts]\nx = \"m:main\"\n[tool.tileception]\nid = \"totp\"\n",
         )
@@ -1423,7 +1807,7 @@ needs = ["the 2fas CLI"]
         let commit = |digit: char| std::iter::repeat_n(digit, 40).collect::<String>();
         let results = vec![
             ("2fas".to_string(), Ok(Updated::Moved { from: Some(commit('0')), onto: commit('f') })),
-            ("github".to_string(), Err("uv tool install failed: no network".to_string())),
+            ("github".to_string(), Err("uvenv install failed: no network".to_string())),
             ("odoo".to_string(), Ok(Updated::Current)),
             ("weather".to_string(), Err("weather was not installed from a repository".to_string())),
         ];
@@ -1435,7 +1819,7 @@ needs = ["the 2fas CLI"]
                  Updated: 2fas\n\
                  Up to date: odoo\n\
                  2fas: 0000000 \u{2192} fffffff\n\
-                 github: uv tool install failed: no network\n\
+                 github: uvenv install failed: no network\n\
                  weather: weather was not installed from a repository"
                 .into())
         );

@@ -1,11 +1,9 @@
 # Finishes the premade ISO's setup at boot: what the installer could not do
-# (removing snaps, or everything when it had no network). Disables itself
-# once done.
+# (everything, when it had no network, or Thunderbird). Disables itself once
+# done.
 [Unit]
 Description=Finish setting up the Tileception desktop
 Wants=network-online.target
-# Not after snapd.seeded.service: seeding can take long, and only removing
-# the snaps needs it (setup.sh waits for it there).
 After=network-online.target
 
 [Service]

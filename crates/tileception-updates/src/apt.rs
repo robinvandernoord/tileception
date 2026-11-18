@@ -31,6 +31,8 @@ pub enum Source {
     Snap,
     /// A device's firmware, through fwupd.
     Firmware,
+    /// A Python tool installed with uvenv, or uvenv itself: the user's own.
+    Uvenv,
 }
 
 impl Source {
@@ -40,11 +42,12 @@ impl Source {
             Source::Flatpak | Source::FlatpakUser => "Flatpak",
             Source::Snap => "Snap",
             Source::Firmware => "Firmware",
+            Source::Uvenv => "uvenv",
         }
     }
 
     /// How commands and saved state write it: `apt`, `flatpak`,
-    /// `flatpak-user`, `snap` or `firmware`.
+    /// `flatpak-user`, `snap`, `firmware` or `uvenv`.
     pub fn ident(self) -> &'static str {
         match self {
             Source::Apt => "apt",
@@ -52,11 +55,12 @@ impl Source {
             Source::FlatpakUser => "flatpak-user",
             Source::Snap => "snap",
             Source::Firmware => "firmware",
+            Source::Uvenv => "uvenv",
         }
     }
 
     pub fn from_ident(ident: &str) -> Option<Source> {
-        [Source::Apt, Source::Flatpak, Source::FlatpakUser, Source::Snap, Source::Firmware]
+        [Source::Apt, Source::Flatpak, Source::FlatpakUser, Source::Snap, Source::Firmware, Source::Uvenv]
             .into_iter()
             .find(|source| source.ident() == ident)
     }
@@ -70,7 +74,8 @@ pub type Key = (Source, String);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Update {
     /// What the source installs it by: a package, a Flatpak ref
-    /// (`org.mozilla.firefox//stable`), a snap or a device ID.
+    /// (`org.mozilla.firefox//stable`), a snap, a device ID or a
+    /// Python package installed with uvenv.
     pub name: String,
     pub source: Source,
     /// A name for people where `name` is not one: the app or the device.

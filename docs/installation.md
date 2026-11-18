@@ -32,7 +32,11 @@ The [installer](../website/public/install) adds the signed APT repository at
 `https://apt.tileception.space` and installs `tileception` and
 `tileception-archive-keyring`. The keyring package manages the repository's
 signing key and APT source. The installer asks for your sudo password if needed;
-package installation then runs without further questions.
+package installation then runs without further questions. When they are
+missing, it also installs [uv](https://docs.astral.sh/uv/) and
+[uvenv](https://github.com/robinvandernoord/uvenv) in `~/.local/bin`, with
+their own installers: plugins install with uvenv, and some Wizard agents
+start with uv's `uvx`.
 
 Try Tileception in a window inside your current Wayland or X11 desktop:
 

@@ -40,6 +40,8 @@ pub enum Task {
     Snap(Vec<String>),
     /// Flash the newest firmware for these devices.
     Firmware(Vec<String>),
+    /// Upgrade these uvenv tools, and uvenv itself when it is named.
+    Uvenv(Vec<String>),
     /// Hold these packages at their version, or let them update again.
     Hold { names: Vec<String>, hold: bool },
     /// Turn automatic updates on or off, retiring unattended-upgrades on Mint.
@@ -60,6 +62,7 @@ impl Task {
             Task::Flatpak { .. } => "Updating Flatpaks",
             Task::Snap(_) => "Refreshing snaps",
             Task::Firmware(_) => "Updating firmware",
+            Task::Uvenv(_) => "Updating uvenv tools",
             Task::Hold { hold: true, .. } => "Holding packages",
             Task::Hold { hold: false, .. } => "Releasing held packages",
             Task::Automatic(true) => "Turning on automatic updates",
@@ -69,7 +72,7 @@ impl Task {
     }
 
     /// Every title a task can have, to read a kept log back.
-    pub const TITLES: [&'static str; 14] = [
+    pub const TITLES: [&'static str; 15] = [
         "Checking for updates",
         "Installing updates",
         "Changing kernels",
@@ -79,6 +82,7 @@ impl Task {
         "Updating Flatpaks",
         "Refreshing snaps",
         "Updating firmware",
+        "Updating uvenv tools",
         "Holding packages",
         "Releasing held packages",
         "Turning on automatic updates",
@@ -86,15 +90,20 @@ impl Task {
         "Changing the mirror",
     ];
 
-    /// Whether the task needs root. A user's own Flatpaks are theirs to update.
+    /// Whether the task needs root. A user's own Flatpaks and uvenv tools
+    /// are theirs to update.
     pub fn needs_root(&self) -> bool {
-        !matches!(self, Task::Flatpak { user: true, .. })
+        !matches!(self, Task::Flatpak { user: true, .. } | Task::Uvenv(_))
     }
 
     /// How many things it changes, for a progress count; 0 when unknown.
     pub fn count(&self) -> usize {
         match self {
-            Task::Install(names) | Task::Remove(names) | Task::Snap(names) | Task::Firmware(names) => names.len(),
+            Task::Install(names)
+            | Task::Remove(names)
+            | Task::Snap(names)
+            | Task::Firmware(names)
+            | Task::Uvenv(names) => names.len(),
             Task::InstallKeeping { names, .. } => names.len(),
             Task::Hold { names, .. } => names.len(),
             Task::Flatpak { refs, .. } => refs.len(),
@@ -161,6 +170,22 @@ impl Task {
                     })
                     .collect()
             }
+            Task::Uvenv(names) => {
+                checked(names, apps::valid_python_package, "a Python package")?;
+                let program = apps::uvenv_program().unwrap_or_else(|| "uvenv".into());
+                let tools: Vec<String> = names.iter().filter(|name| *name != "uvenv").cloned().collect();
+                let mut commands = Vec::new();
+                if !tools.is_empty() {
+                    let mut command = vec![program.clone(), "upgrade".into()];
+                    command.extend(tools);
+                    commands.push(command);
+                }
+                // Last: it replaces the program that ran the others.
+                if names.iter().any(|name| name == "uvenv") {
+                    commands.push(vec![program, "self".into(), "update".into()]);
+                }
+                commands
+            }
             Task::Hold { names, hold } => {
                 checked(names, apt::valid_name, "a package")?;
                 let mut command = vec!["apt-mark".to_string(), if *hold { "hold" } else { "unhold" }.to_string()];
@@ -220,6 +245,7 @@ impl Task {
             }
             Task::Snap(names) => change("snap", names.clone()),
             Task::Firmware(ids) => change("firmware", ids.clone()),
+            Task::Uvenv(names) => change("uvenv", names.clone()),
             Task::Hold { names, hold } => change(if *hold { "hold" } else { "unhold" }, names.clone()),
             Task::Automatic(enable) => change("automatic", vec![if *enable { "on" } else { "off" }.to_string()]),
             Task::Mirror(url) => change("mirror", vec![url.clone()]),
@@ -246,6 +272,7 @@ impl Task {
             }
             ["change", "snap", names @ ..] if !names.is_empty() => Task::Snap(owned(names)),
             ["change", "firmware", ids @ ..] if !ids.is_empty() => Task::Firmware(owned(ids)),
+            ["change", "uvenv", names @ ..] if !names.is_empty() => Task::Uvenv(owned(names)),
             ["change", which @ ("hold" | "unhold"), names @ ..] if !names.is_empty() => {
                 Task::Hold { names: owned(names), hold: *which == "hold" }
             }
@@ -293,6 +320,26 @@ pub fn is_root() -> bool {
 
 /// A program as root runs it: without questions, in the C locale so its
 /// output parses.
+/// Text without terminal escape sequences (`ESC [ ... letter`), which
+/// uvenv writes even when no terminal reads it.
+fn plain(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut characters = text.chars();
+    while let Some(character) = characters.next() {
+        if character != '\u{1b}' {
+            plain.push(character);
+        } else if characters.next() == Some('[') {
+            // Parameters and intermediates, up to the final byte.
+            for character in characters.by_ref() {
+                if ('@'..='~').contains(&character) {
+                    break;
+                }
+            }
+        }
+    }
+    plain
+}
+
 fn program(arguments: &[String]) -> Option<Command> {
     let (name, rest) = arguments.split_first()?;
     let mut command = Command::new(name);
@@ -467,11 +514,11 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                 // Read to the end whatever happens: closing the pipe would stop
                 // apt halfway.
                 for printed in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    line(&printed);
+                    line(&plain(&printed));
                 }
             }
             let status = child.wait().map_err(|error| error.to_string())?;
-            let errors = errors.and_then(|reader| reader.join().ok()).unwrap_or_default();
+            let errors = plain(&errors.and_then(|reader| reader.join().ok()).unwrap_or_default());
             for printed in errors.lines() {
                 line(printed);
             }
@@ -551,6 +598,7 @@ mod tests {
             Task::Flatpak { refs: strings(&["org.mozilla.firefox//stable"]), user: true },
             Task::Flatpak { refs: strings(&["org.gnome.Platform//47"]), user: false },
             Task::Snap(strings(&["firefox", "core22"])),
+            Task::Uvenv(strings(&["ruff", "uvenv"])),
             Task::Firmware(strings(&["362301da643102b9f38477387e2193e57abaa590"])),
             Task::Hold { names: strings(&["docker-ce"]), hold: true },
             Task::Hold { names: strings(&["docker-ce"]), hold: false },
@@ -619,12 +667,31 @@ mod tests {
         assert!(!Task::Flatpak { refs: strings(&["org.x"]), user: true }.needs_root());
         assert!(Task::Flatpak { refs: strings(&["org.x"]), user: false }.needs_root());
         assert!(Task::Snap(strings(&["firefox"])).needs_root());
+        assert!(!Task::Uvenv(strings(&["ruff"])).needs_root());
         let firmware = Task::Firmware(strings(&[
             "362301da643102b9f38477387e2193e57abaa590",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ]));
         assert_eq!(firmware.commands().map(|commands| commands.len()), Ok(2));
         assert!(Task::TITLES.contains(&Task::Mirror(String::new()).title()));
+    }
+
+    #[test]
+    fn colours_are_left_out_of_the_log() {
+        assert_eq!(plain("\u{1b}[32mcowsay\u{1b}[39m is at \u{1b}[1;36m6.1\u{1b}[0m!"), "cowsay is at 6.1!");
+        assert_eq!(plain("no colour"), "no colour");
+    }
+
+    #[test]
+    fn uvenv_updates_itself_last() {
+        let commands = Task::Uvenv(strings(&["uvenv", "ruff", "b2"])).commands().expect("valid names");
+        let words: Vec<Vec<&str>> =
+            commands.iter().map(|command| command[1..].iter().map(String::as_str).collect()).collect();
+        assert_eq!(words, [vec!["upgrade", "ruff", "b2"], vec!["self", "update"]]);
+        assert!(commands.iter().all(|command| command[0].ends_with("uvenv")));
+        assert_eq!(Task::Uvenv(strings(&["uvenv"])).commands().map(|commands| commands.len()), Ok(1));
+        assert!(Task::Uvenv(strings(&["--force"])).commands().is_err());
+        assert!(Task::TITLES.contains(&Task::Uvenv(Vec::new()).title()));
     }
 
     #[test]

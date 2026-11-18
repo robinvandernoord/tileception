@@ -41,10 +41,8 @@ Ubuntu's part it spends a few more minutes downloading Tileception and the
 apps; the progress bar can stand still meanwhile. When it asks you to remove
 the installation medium, take out the stick and press **Enter**.
 
-The installed system starts at Tileception's login screen. In its first minute
-or two it finishes in the background: it removes the snaps Ubuntu installs
-(the Firefox snap, the App Center and the firmware updater) and installs
-Thunderbird. Installed without a network, the system starts with Ubuntu's
+The installed system starts at Tileception's login screen. Installed without
+a network, the system starts with Ubuntu's
 desktop instead and sets up Tileception at the first start with a network.
 
 ## What you get
@@ -61,7 +59,9 @@ desktop instead and sets up Tileception at the first start with a network.
 - Command-line tools: git, gh, htop, btop, ripgrep, bat, fd, fzf, jq, tree,
   ncdu, duf, tldr, fastfetch, tmux, neovim and zoxide.
 
-GNOME Shell and Ubuntu's GNOME session are removed. The apps are
+GNOME Shell, Ubuntu's GNOME session, and snapd with Ubuntu's snaps (the
+Firefox snap, the App Center and the firmware updater) are removed; `sudo apt
+install snapd` brings snaps back. The apps are
 recommendations of the `tileception-desktop` package, so you can remove any of
 them. On a system you already have, `sudo apt install tileception-desktop`
 installs the same set once [Tileception's repository](installation.md#install)

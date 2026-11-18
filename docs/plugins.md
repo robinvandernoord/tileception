@@ -36,8 +36,10 @@ replaces the bundled plugin.
 Type `plugins add owner/repo` in the launcher, for example
 `plugins add robinvandernoord/tileception-2fas`. A full GitHub URL works too,
 and `owner/repo@v0.2.0` picks a tag, branch or full commit hash. The
-repository must be public, and `git` and [uv](https://docs.astral.sh/uv/) must
-be installed.
+repository must be public, and `git` and
+[uvenv](https://github.com/robinvandernoord/uvenv) must be installed. The
+installers put uvenv and [uv](https://docs.astral.sh/uv/) in `~/.local/bin`;
+when they are missing, `tileception setup` installs them.
 
 The first Enter finds the commit to install (the default branch's, unless you
 named another), reads `pyproject.toml` at that commit and shows the package,
@@ -46,11 +48,14 @@ is installed yet. The second Enter installs exactly that commit, even if the
 repository has changed since:
 
 ```sh
-uv tool install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d'
+uvenv install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-2fas@fb54a60c53c20be83553d78bedd8093f44332e0d'
 ```
 
-Each plugin gets its own environment, and uv downloads a suitable Python when
-the system has none. The plugin then sets itself up without asking anything
+Each plugin gets its own environment in `~/.local/uvenv/venvs`, with its
+script linked into `~/.local/bin`, and uv downloads a suitable Python when the
+system has none. If another program already has the script's name there,
+installing stops and says so. Plugins installed before Tileception used
+uvenv move to it at their next update. The plugin then sets itself up without asking anything
 (`install --non-interactive`) and plugins are reloaded. A notification says
 when it is done; while it runs, `plugins` in the launcher shows the current
 step. If the plugin still needs something from you, such as an API key or a
@@ -663,7 +668,7 @@ needs = ["the 2fas CLI"]         # shown before installing
 ```
 
 A plugin ID may contain letters, digits, `-` and `_`, and cannot be
-`plugins`. `requires-python` is passed to uv, which finds or downloads a
+`plugins`. `requires-python` is passed to uvenv, whose uv finds or downloads a
 Python that fits.
 
 ### Setting up in the launcher

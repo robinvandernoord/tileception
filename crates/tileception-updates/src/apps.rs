@@ -1,7 +1,9 @@
-//! Updates for apps from Flatpak and Snap, read from their own tools.
-//! Both ask a server, so they are listed only when the network may be used.
+//! Updates for apps from Flatpak and Snap, and for the Python tools the
+//! user installed with uvenv, read from their own tools. Each asks a server,
+//! so they are listed only when the network may be used.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::Runner;
 use crate::apt::{Kind, Source, Update};
@@ -184,12 +186,98 @@ pub fn snap(runner: &dyn Runner, found: &mut Found) {
     }
 }
 
-/// Every app update, from Flatpak and Snap.
+/// uvenv, on `PATH` or where its installer puts it: the session's `PATH`
+/// may not have `~/.local/bin`.
+pub fn uvenv_program() -> Option<String> {
+    let home = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(home)
+        .map(|dir| dir.join("uvenv"))
+        .find(|program| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(program).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+        .map(|program| program.display().to_string())
+}
+
+/// Where uvenv's updates come from.
+const PACKAGE_INDEX: &str = "PyPI";
+
+/// `uvenv outdated --json`: the tools with a newer version, and uvenv
+/// itself when a newer one is out. Also whether looking any up failed.
+pub fn parse_uvenv(text: &str) -> Result<(Vec<Update>, bool), String> {
+    let report: serde_json::Value = serde_json::from_str(text).map_err(|error| format!("uvenv: {error}"))?;
+    let text_of = |value: &serde_json::Value, key: &str| {
+        value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
+    };
+    let update = |name: String, old: String, new: String| Update {
+        name,
+        source: Source::Uvenv,
+        old: (!old.is_empty()).then_some(old),
+        new,
+        origin: PACKAGE_INDEX.into(),
+        kind: Kind::App,
+        ..Update::default()
+    };
+    let mut updates = Vec::new();
+    let mut failed = false;
+    if let Some(uvenv) = report.get("self").filter(|uvenv| !uvenv.is_null()) {
+        failed |= uvenv.get("error").is_some_and(|error| !error.is_null());
+        if uvenv.get("outdated").and_then(serde_json::Value::as_bool) == Some(true) {
+            updates.push(update(
+                "uvenv".into(),
+                text_of(uvenv, "installed_version"),
+                text_of(uvenv, "available_version"),
+            ));
+        }
+    }
+    for package in report.get("outdated").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let name = text_of(package, "name");
+        let new = text_of(package, "available_version");
+        if valid_python_package(&name) && !new.is_empty() {
+            updates.push(update(name, text_of(package, "installed_version"), new));
+        }
+    }
+    failed |= report.get("failed").and_then(serde_json::Value::as_array).is_some_and(|failed| !failed.is_empty());
+    Ok((updates, failed))
+}
+
+/// The pending updates of the user's uvenv tools. Nothing where uvenv is
+/// not installed, or is too old to have `uvenv outdated`.
+pub fn uvenv(runner: &dyn Runner, program: Option<&str>, found: &mut Found) {
+    let Some(program) = program else { return };
+    match runner.run(program, &["outdated", "--json"]).and_then(|text| parse_uvenv(&text)) {
+        // What could be looked up is shown. With nothing to show and lookups
+        // that failed, as without a network, what was listed before stands.
+        Ok((updates, failed)) => {
+            if failed && updates.is_empty() {
+                found.failed.push(Source::Uvenv);
+            }
+            found.updates.extend(updates);
+        }
+        Err(_) => {
+            let supported = runner.run(program, &["--help"]).is_ok_and(|help| help.contains("outdated"));
+            if supported {
+                found.failed.push(Source::Uvenv);
+            }
+        }
+    }
+}
+
+/// Every app update, from Flatpak, Snap and uvenv.
 pub fn list(runner: &dyn Runner) -> Found {
     let mut found = Found::default();
     flatpak(runner, &mut found);
     snap(runner, &mut found);
+    uvenv(runner, uvenv_program().as_deref(), &mut found);
     found
+}
+
+/// Whether this is a Python package name as uvenv names its environments.
+pub fn valid_python_package(name: &str) -> bool {
+    name.chars().next().is_some_and(|first| first.is_ascii_alphanumeric())
+        && name.chars().all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
 }
 
 /// Whether this is a Flatpak ref the update command takes as one:
@@ -222,6 +310,42 @@ pub fn flatpak_notes(runner: &dyn Runner, update: &Update) -> Result<String, Str
     }
     let flag = if update.source == Source::FlatpakUser { "--user" } else { "--system" };
     runner.run("flatpak", &["remote-info", flag, "--log", &update.origin, &update.name])
+}
+
+/// What a uvenv tool is, from the package index, with where its changes are
+/// written down. uvenv's own notes are its changelog.
+pub fn uvenv_notes(runner: &dyn Runner, update: &Update) -> Result<String, String> {
+    if !valid_python_package(&update.name) {
+        return Err("not a Python package".into());
+    }
+    if update.name == "uvenv"
+        && let Some(program) = uvenv_program()
+    {
+        return runner.run(&program, &["self", "changelog"]);
+    }
+    let url = format!("https://pypi.org/pypi/{}/json", update.name);
+    let text = runner.run("curl", &["-fsSL", "--max-time", "20", &url])?;
+    Ok(describe_pypi(&text, &update.name, &update.new))
+}
+
+/// The summary and links PyPI has for a package.
+pub fn describe_pypi(text: &str, name: &str, version: &str) -> String {
+    let project: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    let info = project.get("info").cloned().unwrap_or_default();
+    let mut lines = Vec::new();
+    if let Some(summary) = info.get("summary").and_then(serde_json::Value::as_str).filter(|text| !text.is_empty()) {
+        lines.push(summary.to_string());
+        lines.push(String::new());
+    }
+    if let Some(urls) = info.get("project_urls").and_then(serde_json::Value::as_object) {
+        for (label, url) in urls {
+            if let Some(url) = url.as_str() {
+                lines.push(format!("{label}: {url}"));
+            }
+        }
+    }
+    lines.push(format!("PyPI: https://pypi.org/project/{name}/{version}/"));
+    lines.join("\n")
 }
 
 /// What a snap is and which versions its channels offer.
@@ -329,7 +453,87 @@ my-tool  2.0       12    4kB    Jane Doe      -
     }
 
     #[test]
+    fn uvenv_reports_what_it_could_look_up() {
+        let report = r#"{
+            "self": {"installed_version": "3.12.0", "available_version": "3.13.0", "outdated": true},
+            "outdated": [
+                {"name": "ruff", "installed_version": "0.16.10", "available_version": "0.17.5", "install_spec": "ruff"},
+                {"name": "--bad", "installed_version": "1", "available_version": "2", "install_spec": "x"}
+            ],
+            "failed": [],
+            "skipped": [{"name": "tileception-odoo", "reason": "installed from git"}]
+        }"#;
+        let (updates, failed) = parse_uvenv(report).expect("a report");
+        assert!(!failed);
+        let names: Vec<&str> = updates.iter().map(|update| update.name.as_str()).collect();
+        assert_eq!(names, ["uvenv", "ruff"]);
+        assert_eq!((updates[1].old.as_deref(), updates[1].new.as_str()), (Some("0.16.10"), "0.17.5"));
+        assert!(updates.iter().all(|update| update.source == Source::Uvenv && update.kind == Kind::App));
+
+        let offline = r#"{"self": {"installed_version": "3.12.0", "available_version": "", "outdated": false,
+            "error": "offline"}, "outdated": [], "failed": [{"name": "ruff", "error": "offline"}], "skipped": []}"#;
+        assert_eq!(parse_uvenv(offline), Ok((Vec::new(), true)));
+        // A snap of uvenv updates itself: no `self`.
+        assert_eq!(
+            parse_uvenv(r#"{"self": null, "outdated": [], "failed": [], "skipped": []}"#),
+            Ok((Vec::new(), false))
+        );
+        assert!(parse_uvenv("error: unrecognized subcommand").is_err());
+    }
+
+    /// uvenv as it answers: `outdated` only when `new`, else too old for it.
+    struct Uvenv {
+        new: bool,
+        report: Result<&'static str, &'static str>,
+    }
+
+    impl Runner for Uvenv {
+        fn run(&self, _program: &str, args: &[&str]) -> Result<String, String> {
+            match args {
+                ["outdated", "--json"] if self.new => self.report.map(String::from).map_err(String::from),
+                ["outdated", ..] => Err("uvenv: unrecognized subcommand 'outdated'".into()),
+                ["--help"] => {
+                    Ok(if self.new { "Commands:\n  outdated  List packages" } else { "Commands:\n  list" }.into())
+                }
+                _ => Err("unexpected".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn uvenv_without_outdated_is_left_out() {
+        let lookup = |runner: &Uvenv, program: Option<&str>| {
+            let mut found = Found::default();
+            uvenv(runner, program, &mut found);
+            found
+        };
+        let report = r#"{"self": null, "outdated": [{"name": "ruff", "installed_version": "1", "available_version": "2"}], "failed": [], "skipped": []}"#;
+        let found = lookup(&Uvenv { new: true, report: Ok(report) }, Some("uvenv"));
+        assert_eq!((found.updates.len(), found.failed.len()), (1, 0));
+        // Too old, or not installed: nothing, and nothing failed.
+        assert_eq!(lookup(&Uvenv { new: false, report: Ok(report) }, Some("uvenv")), Found::default());
+        assert_eq!(lookup(&Uvenv { new: true, report: Ok(report) }, None), Found::default());
+        // A uvenv that has `outdated` but could not run it failed.
+        let found = lookup(&Uvenv { new: true, report: Err("uvenv: broken") }, Some("uvenv"));
+        assert_eq!(found.failed, [Source::Uvenv]);
+    }
+
+    #[test]
+    fn pypi_describes_a_package() {
+        let json = r#"{"info": {"summary": "A linter", "project_urls": {"Changelog": "https://example.com/changes"}}}"#;
+        assert_eq!(
+            describe_pypi(json, "ruff", "0.17.5"),
+            "A linter\n\nChangelog: https://example.com/changes\nPyPI: https://pypi.org/project/ruff/0.17.5/"
+        );
+        assert_eq!(describe_pypi("", "ruff", "1"), "PyPI: https://pypi.org/project/ruff/1/");
+    }
+
+    #[test]
     fn names_are_checked() {
+        assert!(valid_python_package("mistral-vibe"));
+        assert!(valid_python_package("zope.interface"));
+        assert!(!valid_python_package("-x"));
+        assert!(!valid_python_package("x; rm"));
         assert!(valid_flatpak("org.mozilla.firefox//stable"));
         assert!(!valid_flatpak("--system"));
         assert!(!valid_flatpak("org.x; reboot"));

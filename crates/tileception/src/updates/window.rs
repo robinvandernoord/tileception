@@ -662,6 +662,7 @@ impl Tileception {
                         _ if update.security => ("Security", ""),
                         apt::Source::Apt => ("Software", "by source package"),
                         apt::Source::Firmware => ("Firmware", "installed only when you tick it"),
+                        apt::Source::Uvenv => ("Tools", "Python tools installed with uvenv"),
                         _ => ("Apps", "Flatpak and Snap"),
                     };
                     if title != heading {
@@ -1970,7 +1971,12 @@ impl Tileception {
                             "monospace",
                         );
                         let total: u64 = members.iter().map(|update| update.size).sum();
-                        let bytes = if total > 0 { backend::human_size(total) } else { "cached".into() };
+                        // uvenv cannot say how much an update downloads.
+                        let bytes = match update.source {
+                            _ if total > 0 => backend::human_size(total),
+                            apt::Source::Uvenv => String::new(),
+                            _ => "cached".into(),
+                        };
                         text_right(painter, &bytes, Rect::new(rect.right() - 80.0, rect.y, 72.0, 30.0), muted);
                         // What it is, and the packages it brings.
                         let mut about = Vec::new();

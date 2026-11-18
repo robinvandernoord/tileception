@@ -85,18 +85,16 @@ report() {
     remote "echo tileception | sudo -S -p '' sh -c '
         set -x
         ls -l /var/lib/tileception-iso
-        systemctl status --no-pager tileception-iso-setup.service snapd.seeded.service
+        systemctl status --no-pager tileception-iso-setup.service
         systemctl list-jobs --no-pager
         journalctl -b --no-pager -u tileception-iso-setup.service
         grep -a tileception-iso /var/log/installer/curtin-install.log | tail -40
-        snap changes
-        snap debug seeding
-        journalctl -b --no-pager -u snapd.service | tail -40
     '" > "$work/firstboot.log" 2>&1 || true
     cat "$work/firstboot.log"
 }
 
-# The first boot finishes what the installer could not (removing snaps).
+# The first boot finishes what the installer could not (Thunderbird, when
+# Flathub did not answer).
 tries=0
 while remote systemctl is-enabled --quiet tileception-iso-setup.service 2>/dev/null; do
     tries=$((tries + 1))
@@ -120,7 +118,7 @@ check "GNOME Shell is gone" "! dpkg-query -W -f='\${Status}' gnome-shell 2>/dev/
 check "greetd is the login screen" "test \"\$(basename \"\$(readlink -f /etc/systemd/system/display-manager.service)\")\" = greetd.service"
 check "the Tileception greeter is running" "pgrep -f '[t]ileception --greeter'"
 check "Firefox is Mozilla's deb" "apt-cache policy firefox | grep -A1 '^ \*\*\*' | grep -q packages.mozilla.org"
-check "no Firefox snap" "! snap list firefox"
+check "snapd and its snaps are gone" "! dpkg-query -W -f='\${Status}' snapd 2>/dev/null | grep -q 'ok installed' && test ! -e /var/lib/snapd"
 check "Vivaldi has its own source only" "test \"\$(grep -rl repo.vivaldi.com /etc/apt/sources.list.d | wc -l)\" = 1"
 check "apt has no source problems" "! apt-cache policy 2>&1 >/dev/null | grep -q -E '^(E|W):'"
 check "Thunderbird is installed" "flatpak info --system org.mozilla.thunderbird"

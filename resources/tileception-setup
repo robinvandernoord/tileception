@@ -422,6 +422,22 @@ for candidate in "${TILECEPTION_BIN:-}" "$(command -v tileception 2>/dev/null ||
     fi
 done
 
+# uv, which Wizard agents started with uvx need, and uvenv, which installs
+# plugins: whichever the user has neither on their PATH nor where Tileception
+# also looks.
+has_tool() {
+    for dir in "$home/.local/bin" "$home/.cargo/bin" /usr/local/bin /usr/bin; do
+        [ -x "$dir/$1" ] && return 0
+    done
+    [ "$(id -un)" = "$user" ] && command -v "$1" >/dev/null 2>&1
+}
+missing_tools=""
+if [ -n "$user" ]; then
+    for tool in uv uvenv; do
+        has_tool "$tool" || missing_tools="${missing_tools:+$missing_tools and }$tool"
+    done
+fi
+
 has_config=0
 if [ -n "$config" ] && [ -e "$config" ]; then
     has_config=1
@@ -792,6 +808,9 @@ summary() {
     else
         say "  Desktop settings: skipped (no user)."
     fi
+    if [ -n "$missing_tools" ]; then
+        say "  Installed in $home/.local/bin for plugins and Wizard agents: $missing_tools"
+    fi
     case $greeter in
         keep) say "  Login screen: unchanged" ;;
         tileception) say "  Login screen: Tileception's, from the next boot (installs greetd)" ;;
@@ -884,6 +903,34 @@ if [ -n "$config" ]; then
     elif [ "$now_handoff" = on ]; then
         as_user "$tileception_bin" config --file "$config" set handoff.enabled false
         say "Turned handoff off"
+    fi
+fi
+
+# Downloads an installer script and runs it as the user, in their home and
+# with ~/.local/bin on the PATH, which keeps uvenv's from asking to add it.
+run_installer() { # <name> <url> [<variable>=<value>...]
+    name=$1
+    url=$2
+    shift 2
+    # shellcheck disable=SC2016 # expanded by the user's shell
+    as_user env -u XDG_BIN_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME -u XDG_CONFIG_HOME \
+        HOME="$home" PATH="$home/.local/bin:$PATH" "$@" sh -c '
+            set -e
+            cd
+            script=$(mktemp)
+            trap "rm -f \"\$script\"" EXIT
+            curl -fsSL "$1" -o "$script"
+            sh "$script"
+        ' sh "$url" </dev/null >&2 || { say "Could not install $name: plugins need it (run tileception setup again)"; return 0; }
+    say "Installed $name"
+}
+
+if [ -n "$missing_tools" ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+        say "curl is missing, so $missing_tools could not be installed: plugins need them"
+    else
+        has_tool uv || run_installer uv https://astral.sh/uv/install.sh UV_NO_MODIFY_PATH=1
+        has_tool uvenv || run_installer uvenv https://raw.githubusercontent.com/robinvandernoord/uvenv/uvenv/install.sh
     fi
 fi
 

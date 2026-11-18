@@ -1,8 +1,8 @@
-//! The update manager: pending APT, Flatpak, Snap and firmware updates as a
-//! bar chip with a popover, an Updates window (updates, kernels, the next
-//! Ubuntu release, the apt history, and the mirror and automatic updates)
-//! and launcher rows. Flatpak and Snap ask their servers, so they are listed
-//! when the network may be used and kept in between.
+//! The update manager: pending APT, Flatpak, Snap, firmware and uvenv
+//! updates as a bar chip with a popover, an Updates window (updates, kernels,
+//! the next Ubuntu release, the apt history, and the mirror and automatic
+//! updates) and launcher rows. Flatpak, Snap and uvenv ask their servers, so
+//! they are listed when the network may be used and kept in between.
 //!
 //! A worker thread reads the system and runs `apt-get`; what to show and do
 //! about it is decided here, on the compositor thread. Changes run as root
@@ -111,7 +111,7 @@ pub struct Scan {
 enum Request {
     Scan {
         offer: bool,
-        /// Flatpak and Snap may ask their servers.
+        /// Flatpak, Snap and uvenv may ask their servers.
         apps: bool,
     },
     /// What changed in an update, for the sheet that asked.
@@ -185,9 +185,9 @@ pub struct Updates {
     third_party: Vec<String>,
     free: Option<u64>,
     track: release::Track,
-    /// The Flatpak and Snap updates last listed.
+    /// The Flatpak, Snap and uvenv updates last listed.
     apps: Vec<apt::Update>,
-    /// Flatpak and Snap were asked at least once, so `apps` says what
+    /// Flatpak, Snap and uvenv were asked at least once, so `apps` says what
     /// they have. Until then a skipped app is not missing, only unasked.
     apps_scanned: bool,
     /// The app sources the last look could not ask: `apps` keeps what
@@ -202,7 +202,7 @@ pub struct Updates {
     pub(crate) mirrors: Mirrors,
     job: Option<Job>,
     /// Tasks that follow the running one when it succeeds: one Install
-    /// covers APT, Flatpak, Snap and firmware, each its own task.
+    /// covers APT, Flatpak, Snap, firmware and uvenv, each its own task.
     next: VecDeque<Task>,
     /// What the earlier tasks of the chain printed.
     chain_log: String,
@@ -501,7 +501,7 @@ impl Updates {
         match source {
             apt::Source::Apt => self.snapshot.error.is_none(),
             apt::Source::Firmware => self.snapshot.firmware && self.snapshot.firmware_error.is_none(),
-            apt::Source::Flatpak | apt::Source::FlatpakUser | apt::Source::Snap => {
+            apt::Source::Flatpak | apt::Source::FlatpakUser | apt::Source::Snap | apt::Source::Uvenv => {
                 self.apps_scanned && !self.apps_failed.contains(&source)
             }
         }
@@ -519,7 +519,10 @@ impl Updates {
     fn merge(&mut self) {
         let mut all: Vec<apt::Update> = std::mem::take(&mut self.snapshot.updates);
         all.retain(|update| {
-            !matches!(update.source, apt::Source::Flatpak | apt::Source::FlatpakUser | apt::Source::Snap)
+            !matches!(
+                update.source,
+                apt::Source::Flatpak | apt::Source::FlatpakUser | apt::Source::Snap | apt::Source::Uvenv
+            )
         });
         all.extend(self.apps.iter().cloned());
         // A skipped app is among the apps listed already.
@@ -925,7 +928,7 @@ impl Tileception {
                     Task::Remove(names) => format!("Removed {} packages.", names.len()),
                     Task::Autoremove => "Unneeded packages removed.".to_string(),
                     Task::Repair => "Packages repaired.".to_string(),
-                    Task::Flatpak { .. } | Task::Snap(_) => "Updates installed.".to_string(),
+                    Task::Flatpak { .. } | Task::Snap(_) | Task::Uvenv(_) => "Updates installed.".to_string(),
                     Task::Firmware(_) => {
                         "Firmware updated. Some devices finish when the computer restarts.".to_string()
                     }
@@ -1481,6 +1484,10 @@ pub(crate) fn install_tasks(chosen: &[&apt::Update], all_apt: bool) -> Vec<Task>
     if !devices.is_empty() {
         tasks.push(Task::Firmware(devices));
     }
+    let tools = names(apt::Source::Uvenv);
+    if !tools.is_empty() {
+        tasks.push(Task::Uvenv(tools));
+    }
     tasks
 }
 
@@ -1536,6 +1543,7 @@ fn notes(update: &apt::Update) -> String {
         apt::Source::Flatpak | apt::Source::FlatpakUser => apps::flatpak_notes(&runner, update),
         apt::Source::Snap => apps::snap_notes(&runner, &update.name),
         apt::Source::Firmware => firmware::notes(&runner, &update.name),
+        apt::Source::Uvenv => apps::uvenv_notes(&runner, update),
     };
     match result {
         Ok(text) if text.trim().is_empty() => "No release notes were found.".into(),
@@ -1610,7 +1618,7 @@ fn run(
                     continue;
                 }
                 // Asking for the next release uses the network; so do
-                // Flatpak and Snap, which follow the timed look.
+                // Flatpak, Snap and uvenv, which follow the timed look.
                 let timed = watch.looked.elapsed() >= interval;
                 let offer = asked.elapsed() >= OFFER_EVERY && online();
                 if offer {
@@ -1654,7 +1662,8 @@ fn run(
                 let refreshed = matches!(task, Task::Refresh) && result.is_ok();
                 // After a refresh the apps are asked for too; after an
                 // install of apps, they are listed again.
-                let apps = (refreshed || matches!(task, Task::Flatpak { .. } | Task::Snap(_))) && online();
+                let apps =
+                    (refreshed || matches!(task, Task::Flatpak { .. } | Task::Snap(_) | Task::Uvenv(_))) && online();
                 let ran = !matches!(result, Err(Failure::Declined | Failure::Password));
                 if events.send(Event::Finished { task, result, log, quiet }).is_err() {
                     return;

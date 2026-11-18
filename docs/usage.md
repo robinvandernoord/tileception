@@ -558,7 +558,8 @@ for where it is kept.
 ### Updates
 
 On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
-while updates wait: APT packages, Flatpaks, snaps and, once switched on, firmware from fwupd. It counts security updates first: `3 +9` means three
+while updates wait: APT packages, Flatpaks, snaps, Python tools installed with
+uvenv and, once switched on, firmware from fwupd. It counts security updates first: `3 +9` means three
 security updates and nine others. While updates install it shows progress,
 and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
@@ -597,13 +598,19 @@ connection or low battery; in between the last list stays. With
 on in the window's Settings page), firmware from
 fwupd is listed under **Firmware** and is never ticked by itself: a firmware
 update is installed only when you tick it, and some devices finish it while
-the computer restarts. One **Install** installs the APT updates first, then
-the Flatpaks, the snaps and the firmware, each with its own tool.
+the computer restarts. Python tools you installed with
+[uvenv](https://github.com/robinvandernoord/uvenv) are listed under **Tools**
+when a newer version is on PyPI, and uvenv itself when a newer uvenv is out.
+This needs uvenv 3.13 or newer, for `uvenv outdated`; tools installed from
+git or a local folder, such as plugins, are left out. One **Install**
+installs the APT updates first, then the Flatpaks, the snaps, the firmware
+and the uvenv tools, each with its own tool.
 
 The strip under the list acts on the highlighted row. **Notes** shows what
 changed: the changelog entries since the installed version for APT
 (`apt-get changelog`, which asks the archive), the commit messages of a
-Flatpak's remote, what `snap info` says, or the release notes of firmware.
+Flatpak's remote, what `snap info` says, the release notes of firmware, or a
+uvenv tool's summary and links from PyPI (uvenv's own changelog for uvenv).
 Press **N** for the same. **Skip version** leaves that version out: the row
 moves to **Skipped and held**, muted, and comes back when a newer version
 arrives. **Hold** keeps an APT package at its version with `apt-mark hold`
@@ -716,8 +723,8 @@ From scripts and key bindings:
 
 Where two sources have an update by the same name, such as a Flatpak in both
 the system and your own installation, or a package and a snap, name it with
-its source in front: `apt:`, `flatpak:`, `flatpak-user:`, `snap:` or
-`firmware:`, as in `tileception msg updates skip snap:firefox`. A name alone
+its source in front: `apt:`, `flatpak:`, `flatpak-user:`, `snap:`,
+`firmware:` or `uvenv:`, as in `tileception msg updates skip snap:firefox`. A name alone
 then says which to choose from.
 
 Wizard reads the history the same way, so it can answer "what changed since
@@ -742,7 +749,8 @@ goes to polkit's own checker and nowhere else. To use another agent, set
 Where polkit or an agent is missing, the helper runs through `sudo` instead,
 and Tileception's prompt passes what you type to `sudo` for that one task.
 
-Flatpaks of your own installation are updated as you, without the helper.
+Flatpaks of your own installation and uvenv tools are updated as you,
+without the helper.
 See [Configuration](configuration.md#updates) to switch the chip or its
 notification off, or to choose when the notification comes.
 
