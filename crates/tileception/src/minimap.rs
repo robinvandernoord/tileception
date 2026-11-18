@@ -178,7 +178,7 @@ impl Tileception {
     }
 
     /// The card at its full size, below the chip (above it for a bottom bar).
-    fn minimap_card(&self) -> Rect {
+    pub(crate) fn minimap_card(&self) -> Rect {
         self.minimap_card_for(self.bar_layout().and_then(|layout| layout.minimap))
     }
 

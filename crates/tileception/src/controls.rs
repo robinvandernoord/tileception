@@ -112,6 +112,15 @@ impl crate::ui::PointerAction for PointerControl {
     }
 }
 
+/// Whether the player takes `command` now, which enables its button.
+pub(crate) fn media_can(player: &Player, command: PlayerCommand) -> bool {
+    match command {
+        PlayerCommand::Previous => player.can_previous,
+        PlayerCommand::Next => player.can_next,
+        _ => player.can_pause || player.can_play,
+    }
+}
+
 fn slider_value(track: Rect, max: u32, pointer_x: f64) -> u32 {
     let value = ((pointer_x - track.x) / track.w).clamp(0., 1.) * max as f64;
     if max > 100 && (value - 100.).abs() < SNAP { 100 } else { value.round() as u32 }
@@ -472,11 +481,27 @@ impl Tileception {
             );
         }
         if let (Some(card), Some(player)) = (&controls.media, snapshot.media.active()) {
-            self.draw_media_card(painter, card, player, pointer);
+            let focused = match self.chosen_panel_button() {
+                Some(crate::panel::PanelButton::Media(command)) => Some(*command),
+                _ => None,
+            };
+            self.draw_media_card_focused(painter, card, player, pointer, focused);
         }
     }
 
     pub fn draw_media_card(&self, painter: &mut Painter, card: &MediaCard, player: &Player, pointer: Point) {
+        self.draw_media_card_focused(painter, card, player, pointer, None);
+    }
+
+    /// The media card, with a focus ring on the button for `focused`.
+    fn draw_media_card_focused(
+        &self,
+        painter: &mut Painter,
+        card: &MediaCard,
+        player: &Player,
+        pointer: Point,
+        focused: Option<PlayerCommand>,
+    ) {
         let theme = &self.theme;
         painter.shape(
             card.rect,
@@ -488,15 +513,22 @@ impl Tileception {
         if !player.artist.is_empty() {
             painter.text(&player.artist, card.artist, Style::new(theme.font_size * 0.9, theme.muted));
         }
-        let button = |painter: &mut Painter, rect: Rect, icon: &'static str, enabled: bool, primary: bool| {
-            let look = if primary { Look::Primary } else { Look::Quiet };
-            painter.button(rect, Button::glyph(icon, look).round().enabled(enabled), rect.contains(pointer));
-        };
-        button(painter, card.previous, glyph::PREVIOUS, player.can_previous, false);
-        let playing = player.status == Status::Playing;
-        let play_glyph = if playing { glyph::PAUSE } else { glyph::PLAY };
-        button(painter, card.play, play_glyph, player.can_pause || player.can_play, true);
-        button(painter, card.next, glyph::NEXT, player.can_next, false);
+        for (command, rect) in [
+            (PlayerCommand::Previous, card.previous),
+            (PlayerCommand::PlayPause, card.play),
+            (PlayerCommand::Next, card.next),
+        ] {
+            let look = if command == PlayerCommand::PlayPause { Look::Primary } else { Look::Quiet };
+            let icon = match command {
+                PlayerCommand::Previous => glyph::PREVIOUS,
+                PlayerCommand::Next => glyph::NEXT,
+                _ if player.status == Status::Playing => glyph::PAUSE,
+                _ => glyph::PLAY,
+            };
+            let drawn =
+                Button::glyph(icon, look).round().enabled(media_can(player, command)).focused(focused == Some(command));
+            painter.button(rect, drawn, rect.contains(pointer));
+        }
 
         let now = Instant::now();
         let position = player.position(now);

@@ -37,8 +37,9 @@ pub struct Notifications {
     /// Whether the open panel has the keyboard: from opening it or a click
     /// in it until a click elsewhere.
     pub focused: bool,
-    /// The notification chosen in the panel with the keyboard, by id.
-    selected: Option<u32>,
+    /// What Tab chose in the panel: a button above the history or a
+    /// notification.
+    selected: Option<Chosen>,
     /// The screen the panel or the popups showing appeared on; the active
     /// one when unset.
     pub home: Option<Output>,
@@ -54,6 +55,15 @@ pub struct Notifications {
     /// The popup whose buttons have the keyboard (Super+Enter), and the
     /// highlighted button. Only ever on request: popups never take it.
     pub answering: Option<(u32, usize)>,
+}
+
+/// What Tab and Shift+Tab move between in the panel: the buttons above the
+/// history first, top to bottom, then the notifications.
+#[derive(Debug, Clone, PartialEq)]
+enum Chosen {
+    Button(crate::panel::PanelButton),
+    /// A notification in the history, by id.
+    Notification(u32),
 }
 
 /// The category of [`Tileception::notify_locally`]'s notifications: the only
@@ -222,6 +232,7 @@ impl Tileception {
             || self.colour_pick.is_some()
             || self.shot.is_some()
             || self.tray.open
+            || self.bar_card_at(point)
         {
             return;
         }
@@ -242,17 +253,29 @@ impl Tileception {
 
     /// Keys while the panel has the keyboard. Delete or C clears the history;
     /// the arrows, the page keys, Home and End scroll it. Tab and Shift+Tab
-    /// choose a notification, Enter opens it and Backspace dismisses it. D
-    /// switches Do not disturb, M mutes the sound and Esc closes the panel.
+    /// choose a button on the media or plugin cards, or a notification;
+    /// Enter or Space presses the button or opens the notification, and
+    /// Backspace dismisses it. D switches Do not disturb, M mutes the sound
+    /// and Esc closes the panel.
     pub fn notification_panel_key(&mut self, sym: u32, mods: crate::config::Mods) {
         use smithay::input::keyboard::keysyms;
         if mods.ctrl || mods.alt || mods.logo {
             return;
         }
         let selected = self.selected_notification();
+        let buttons = self.panel_buttons();
+        let chosen_button = self.chosen_panel_button().cloned();
+        // One place per stop: the buttons, then the history.
+        let count = buttons.len() as isize;
         let last = self.notifications.history.len() as isize - 1;
-        let place = selected.as_ref().map(|(index, _)| *index as isize);
+        let place = match &chosen_button {
+            Some(chosen) => buttons.iter().position(|button| button == chosen).map(|index| index as isize),
+            None => selected.as_ref().map(|(index, _)| *index as isize + count),
+        };
         let top = self.notifications.offset as isize;
+        // From nothing chosen, Tab starts at the first button, or else at
+        // the top card in view.
+        let first = if count > 0 { 0 } else { top };
         match crate::text_input::plain(sym) {
             keysyms::KEY_Escape => self.close_notifications(),
             keysyms::KEY_Delete | keysyms::KEY_c | keysyms::KEY_C => self.clear_notifications(),
@@ -264,10 +287,13 @@ impl Tileception {
                     tracing::info!("{error}");
                 }
             }
-            keysyms::KEY_Tab if mods.shift => self.select_notification(place.map_or(last, |place| place - 1)),
-            keysyms::KEY_ISO_Left_Tab => self.select_notification(place.map_or(last, |place| place - 1)),
-            // From nothing chosen, Tab starts at the top card in view.
-            keysyms::KEY_Tab => self.select_notification(place.map_or(top, |place| place + 1)),
+            keysyms::KEY_Tab if mods.shift => {
+                self.choose_panel_stop(&buttons, place.map_or(count + last, |place| place - 1))
+            }
+            keysyms::KEY_ISO_Left_Tab => {
+                self.choose_panel_stop(&buttons, place.map_or(count + last, |place| place - 1))
+            }
+            keysyms::KEY_Tab => self.choose_panel_stop(&buttons, place.map_or(first, |place| place + 1)),
             keysyms::KEY_Up => self.notification_scroll(-1),
             keysyms::KEY_Down => self.notification_scroll(1),
             keysyms::KEY_Page_Up => self.notification_scroll(-PAGE),
@@ -275,7 +301,9 @@ impl Tileception {
             keysyms::KEY_Home => self.notifications.offset = 0,
             keysyms::KEY_End => self.notification_scroll(last.max(0)),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space => {
-                if let Some((_, notification)) = &selected {
+                if let Some(button) = &chosen_button {
+                    self.press_panel_button(button);
+                } else if let Some((_, notification)) = &selected {
                     self.open_notification(notification);
                 }
             }
@@ -289,7 +317,7 @@ impl Tileception {
                         .or_else(|| index.checked_sub(1).and_then(|above| self.history_newest_first().nth(above)))
                         .map(|next| next.id);
                     self.dismiss_from_history(notification);
-                    self.notifications.selected = next;
+                    self.notifications.selected = next.map(Chosen::Notification);
                     self.reveal_selected();
                 }
             }
@@ -305,7 +333,7 @@ impl Tileception {
 
     /// The chosen notification and its place in the list, while it is there.
     fn selected_notification(&self) -> Option<(usize, Arc<Notification>)> {
-        let selected = self.notifications.selected?;
+        let Some(Chosen::Notification(selected)) = self.notifications.selected else { return None };
         self.history_newest_first()
             .enumerate()
             .find(|(_, notification)| notification.id == selected)
@@ -321,8 +349,62 @@ impl Tileception {
         }
         let index = index.clamp(0, len as isize - 1) as usize;
         let selected = self.history_newest_first().nth(index).map(|notification| notification.id);
-        self.notifications.selected = selected;
+        self.notifications.selected = selected.map(Chosen::Notification);
         self.reveal_selected();
+    }
+
+    /// The buttons above the history Tab reaches, in order: the media
+    /// card's that work now, then the plugin cards'.
+    fn panel_buttons(&self) -> Vec<crate::panel::PanelButton> {
+        use crate::panel::PanelButton;
+        use tileception_media::PlayerCommand;
+        let controls = self.panel_controls();
+        let mut buttons = Vec::new();
+        if controls.controls.media.is_some()
+            && let Some(player) = self.media.snapshot.media.active()
+        {
+            for command in [PlayerCommand::Previous, PlayerCommand::PlayPause, PlayerCommand::Next] {
+                if crate::controls::media_can(player, command) {
+                    buttons.push(PanelButton::Media(command));
+                }
+            }
+        }
+        buttons.extend(self.panel_card_buttons(&controls.plugins));
+        buttons
+    }
+
+    /// The button chosen with Tab, while the panel has the keyboard.
+    pub(crate) fn chosen_panel_button(&self) -> Option<&crate::panel::PanelButton> {
+        match &self.notifications.selected {
+            Some(Chosen::Button(button)) if self.notifications_keyboard() => Some(button),
+            _ => None,
+        }
+    }
+
+    /// Chooses the stop at `index`, kept within them: a button, or past
+    /// the buttons, a notification.
+    fn choose_panel_stop(&mut self, buttons: &[crate::panel::PanelButton], index: isize) {
+        let total = buttons.len() + self.notifications.history.len();
+        if total == 0 {
+            return;
+        }
+        let index = index.clamp(0, total as isize - 1) as usize;
+        match buttons.get(index) {
+            Some(button) => self.notifications.selected = Some(Chosen::Button(button.clone())),
+            None => self.select_notification((index - buttons.len()) as isize),
+        }
+    }
+
+    /// What a click on the button does.
+    fn press_panel_button(&mut self, button: &crate::panel::PanelButton) {
+        use crate::panel::PanelButton;
+        match button {
+            PanelButton::Media(command) => self.media_request(tileception_media::Request::Player(*command)),
+            PanelButton::Card { plugin, card, button } => {
+                let layout = self.panel_controls().plugins;
+                self.panel_press_card_button(&layout, plugin, card, *button);
+            }
+        }
     }
 
     /// Scrolls the panel so the chosen notification shows in full.
@@ -1009,10 +1091,19 @@ impl Tileception {
             let builtin = self.builtin_notifications();
             let mut hints: Vec<(&str, &str)> = if !self.notifications_keyboard() {
                 if builtin { vec![("Esc", "Close"), ("Scroll", "Older")] } else { vec![("Esc", "Close")] }
-            } else if self.notifications.selected.is_some() && self.selected_notification().is_some() {
+            } else if self.chosen_panel_button().is_some() {
+                vec![("Enter", "Press"), ("Tab", "Next"), ("Esc", "Close")]
+            } else if self.selected_notification().is_some() {
                 vec![("Enter", "Open"), ("Backspace", "Dismiss"), ("Del", "Clear all"), ("Esc", "Close")]
             } else if builtin && count > 0 {
                 vec![("Del", "Clear all"), ("Tab", "Choose"), ("D", "Do not disturb"), ("M", "Mute")]
+            } else if !self.panel_buttons().is_empty() {
+                let mut hints = vec![("Tab", "Choose")];
+                if builtin {
+                    hints.extend([("D", "Do not disturb"), ("M", "Mute")]);
+                }
+                hints.push(("Esc", "Close"));
+                hints
             } else if builtin {
                 vec![("D", "Do not disturb"), ("M", "Mute"), ("Esc", "Close")]
             } else {
@@ -1050,7 +1141,8 @@ impl Tileception {
             painter.popup(rect);
         } else {
             // The card chosen with the keyboard has the focus ring.
-            let chosen = self.notifications_keyboard() && self.notifications.selected == Some(notification.id);
+            let chosen = self.notifications_keyboard()
+                && self.notifications.selected == Some(Chosen::Notification(notification.id));
             let (border_width, border) = if chosen { (2.0, theme.accent) } else { (1.0, theme.border) };
             painter.shape(rect, Shape { border_width, border, ..Shape::filled(theme.surface, theme.popup_radius) });
         }

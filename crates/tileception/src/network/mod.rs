@@ -46,6 +46,8 @@ pub struct Network {
     source: Option<RegistrationToken>,
     /// The keyboard's network, by its place in the list.
     selected: usize,
+    /// The button Tab moved the keyboard to, away from the list.
+    focus: Option<Focus>,
     /// The first network shown.
     first: usize,
     /// Scrolling not yet turned into rows.
@@ -89,6 +91,14 @@ impl Drop for Network {
             let _ = inputs.send(Input::Stop);
         }
     }
+}
+
+/// A button on the card that Tab reaches after the list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Focus {
+    /// The connected network's.
+    Disconnect,
+    Settings,
 }
 
 /// What a click on the card does.
@@ -259,6 +269,12 @@ impl Tileception {
                 let count = network.snapshot.networks.len();
                 network.selected = network.selected.min(count.saturating_sub(1));
                 network.first = network.first.min(count.saturating_sub(ROWS));
+                // Without a connected network there is no Disconnect to be on.
+                if network.focus == Some(Focus::Disconnect)
+                    && network.snapshot.networks.iter().all(|candidate| candidate.link == Link::Idle)
+                {
+                    network.focus = None;
+                }
                 if !network.snapshot.running {
                     self.close_network();
                 }
@@ -364,6 +380,7 @@ impl Tileception {
         let duration = self.world.settings.animation;
         self.network.zoom.set(true, duration);
         self.network.selected = 0;
+        self.network.focus = None;
         self.network.first = 0;
         self.network.prompt = None;
         self.network_request(Request::Scan);
@@ -474,11 +491,39 @@ impl Tileception {
             return;
         }
         let count = self.network.snapshot.networks.len();
+        if let Some(focus) = self.network.focus {
+            match sym {
+                keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space => {
+                    let hit = match focus {
+                        Focus::Disconnect => Hit::Disconnect,
+                        Focus::Settings => Hit::Settings,
+                    };
+                    crate::ui::PointerAction::activate(&hit, self, Rect::default(), Point::new(0.0, 0.0));
+                    return;
+                }
+                keysyms::KEY_Up
+                | keysyms::KEY_Down
+                | keysyms::KEY_Page_Up
+                | keysyms::KEY_Page_Down
+                | keysyms::KEY_Home
+                | keysyms::KEY_End => {
+                    // Back to the list, which they move in.
+                    self.network.focus = None;
+                }
+                _ => {}
+            }
+        }
+        if matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) {
+            let back = sym == keysyms::KEY_ISO_Left_Tab || mods.shift;
+            self.network_tab(back);
+        }
         let network = &mut self.network;
+        let listing = network.focus.is_none();
         match sym {
             keysyms::KEY_Escape => {
                 self.close_network();
             }
+            _ if !listing => {}
             keysyms::KEY_Up => network.selected = network.selected.saturating_sub(1),
             keysyms::KEY_Down => network.selected = (network.selected + 1).min(count.saturating_sub(1)),
             keysyms::KEY_Page_Up => network.selected = network.selected.saturating_sub(ROWS),
@@ -491,14 +536,44 @@ impl Tileception {
             }
             _ => {}
         }
-        // Keep the keyboard's network in view.
+        // Keep the keyboard's network in view, unless it is on a button.
         let network = &mut self.network;
-        if network.selected < network.first {
-            network.first = network.selected;
-        } else if network.selected >= network.first + ROWS {
-            network.first = network.selected + 1 - ROWS;
+        if network.focus.is_none() {
+            if network.selected < network.first {
+                network.first = network.selected;
+            } else if network.selected >= network.first + ROWS {
+                network.first = network.selected + 1 - ROWS;
+            }
         }
         self.schedule_render();
+    }
+
+    /// Moves the keyboard between the list and the buttons after it, round
+    /// and round: forwards with Tab, backwards with Shift+Tab.
+    fn network_tab(&mut self, back: bool) {
+        let snapshot = &self.network.snapshot;
+        let connected = self
+            .network_listing()
+            .then(|| snapshot.networks.iter().position(|network| network.link != Link::Idle))
+            .flatten();
+        // None stands for the list.
+        let mut stops = vec![None];
+        if connected.is_some() {
+            stops.push(Some(Focus::Disconnect));
+        }
+        stops.push(Some(Focus::Settings));
+        let place = stops.iter().position(|stop| *stop == self.network.focus).unwrap_or(0);
+        let next = if back { (place + stops.len() - 1) % stops.len() } else { (place + 1) % stops.len() };
+        self.network.focus = stops[next];
+        // The connected network's row shows, so its button does.
+        if let (Some(Focus::Disconnect), Some(index)) = (self.network.focus, connected) {
+            let network = &mut self.network;
+            if index < network.first {
+                network.first = index;
+            } else if index >= network.first + ROWS {
+                network.first = index + 1 - ROWS;
+            }
+        }
     }
 
     /// A key for the password field: it edits like every other field.
@@ -596,7 +671,7 @@ impl Tileception {
         Rect::new(left, self.bar_popup_y(Rect::new(out.x, edge, out.w, crate::bar::BAR_H), height), width, height)
     }
 
-    fn network_card(&self) -> Rect {
+    pub(crate) fn network_card(&self) -> Rect {
         self.network_card_for(self.network_anchor())
     }
 
@@ -763,7 +838,8 @@ impl Tileception {
                     painter.glyph(glyph::LOCK, lock, 13, theme.muted.alpha(0.8));
                 }
                 if let Some(button) = disconnect {
-                    self.draw_network_button(painter, *button, "Disconnect", false, hover(*button));
+                    let focused = self.network.focus == Some(Focus::Disconnect);
+                    self.draw_network_button(painter, *button, "Disconnect", false, hover(*button), focused);
                 }
             }
             if snapshot.networks.is_empty() {
@@ -813,7 +889,8 @@ impl Tileception {
             Style::new(theme.font_size * 0.8, colour),
         );
         if let Some(settings) = layout.settings {
-            self.draw_network_button(painter, settings, "Network settings", false, hover(settings));
+            let focused = self.network.focus == Some(Focus::Settings);
+            self.draw_network_button(painter, settings, "Network settings", false, hover(settings), focused);
         }
     }
 
@@ -858,9 +935,17 @@ impl Tileception {
         );
     }
 
-    fn draw_network_button(&self, painter: &mut Painter, rect: Rect, label: &str, primary: bool, hovered: bool) {
+    fn draw_network_button(
+        &self,
+        painter: &mut Painter,
+        rect: Rect,
+        label: &str,
+        primary: bool,
+        hovered: bool,
+        focused: bool,
+    ) {
         let look = if primary { Look::Primary } else { Look::Plain };
-        painter.button(rect, Button::new(label, look), hovered);
+        painter.button(rect, Button::new(label, look).focused(focused), hovered);
     }
 
     fn draw_network_prompt(&self, painter: &mut Painter, layout: &Card, prompt: &Prompt, pointer: Point) {
@@ -905,10 +990,10 @@ impl Tileception {
             painter.text(label, reveal, Style::new(theme.font_size * 0.8, colour).align(Align::Centre));
         }
         if let Some(cancel) = layout.cancel {
-            self.draw_network_button(painter, cancel, "Cancel", false, cancel.contains(pointer));
+            self.draw_network_button(painter, cancel, "Cancel", false, cancel.contains(pointer), false);
         }
         if let Some(join) = layout.join {
-            self.draw_network_button(painter, join, "Join", true, join.contains(pointer));
+            self.draw_network_button(painter, join, "Join", true, join.contains(pointer), false);
         }
     }
 }

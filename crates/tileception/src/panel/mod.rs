@@ -49,6 +49,20 @@ const SEND_INTERVAL: f64 = 1.0 / 8.0;
 /// Below the blocks, before Do not disturb.
 const GAP: f64 = 10.0;
 
+/// A button above the notification history that Tab can reach: one of the
+/// media card's, or one on a plugin's card.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PanelButton {
+    Media(tileception_media::PlayerCommand),
+    Card {
+        plugin: String,
+        /// The card's `id`.
+        card: String,
+        /// Which of its buttons, left to right.
+        button: usize,
+    },
+}
+
 /// What the panel keeps about each block between updates.
 #[derive(Default)]
 pub struct Panel {
@@ -561,6 +575,46 @@ impl Tileception {
         }
     }
 
+    /// The usable buttons on the open blocks' cards, top to bottom and left
+    /// to right, in the order Tab reaches them.
+    pub(crate) fn panel_card_buttons(&self, layout: &PanelLayout) -> Vec<PanelButton> {
+        let mut found = Vec::new();
+        for laid in &layout.blocks {
+            if laid.notice.is_some() {
+                continue;
+            }
+            for (card, _) in &laid.cards {
+                for (index, button) in card.buttons.iter().enumerate() {
+                    if card.enabled && button.enabled && button.action.is_some() {
+                        found.push(PanelButton::Card {
+                            plugin: laid.plugin.clone(),
+                            card: card.key.clone(),
+                            button: index,
+                        });
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// Does what a click on a plugin card's button does.
+    pub(crate) fn panel_press_card_button(&mut self, layout: &PanelLayout, plugin: &str, key: &str, index: usize) {
+        let action = layout
+            .blocks
+            .iter()
+            .filter(|laid| laid.plugin == plugin)
+            .flat_map(|laid| &laid.cards)
+            .find(|(card, _)| card.key == key && card.enabled)
+            .and_then(|(card, _)| card.buttons.get(index))
+            .filter(|button| button.enabled)
+            .and_then(|button| button.action.clone());
+        if let Some(action) = action {
+            self.panel_action(plugin, action);
+            self.schedule_render();
+        }
+    }
+
     pub(crate) fn panel_pointer_target(&self, layout: &PanelLayout, point: Point) -> Option<crate::ui::PointerTarget> {
         use crate::ui::PointerTarget;
         let laid = layout.blocks.iter().find(|block| block.rect.contains(point))?;
@@ -753,8 +807,16 @@ impl Tileception {
             painter.text(&notice.text, rect, Style::new(theme.font_size * 0.9, theme.muted));
             return;
         }
+        let chosen = self.chosen_panel_button();
         for (card, card_layout) in &laid.cards {
-            self.panel_draw_card(painter, card, card_layout, pointer);
+            // The button chosen with Tab has the focus ring.
+            let focused = match chosen {
+                Some(PanelButton::Card { plugin, card: key, button }) if *plugin == laid.plugin && *key == card.key => {
+                    Some(*button)
+                }
+                _ => None,
+            };
+            self.panel_draw_card(painter, card, card_layout, pointer, focused);
         }
         for (rect, title, detail, folded) in &laid.headings {
             let style = Style::new(theme.font_size * 0.78, theme.muted).bold();
@@ -878,8 +940,15 @@ impl Tileception {
         );
     }
 
-    fn panel_draw_card(&self, painter: &mut Painter, card: &Card, laid: &CardLayout, pointer: Point) {
-        self.draw_plugin_card(painter, card, laid, pointer, self.theme.surface_raised.alpha(0.5));
+    fn panel_draw_card(
+        &self,
+        painter: &mut Painter,
+        card: &Card,
+        laid: &CardLayout,
+        pointer: Point,
+        focused: Option<usize>,
+    ) {
+        self.draw_plugin_card_focused(painter, card, laid, pointer, self.theme.surface_raised.alpha(0.5), focused);
     }
 
     /// A card on a surface of its own colour: the panel's lie on their
@@ -891,6 +960,19 @@ impl Tileception {
         laid: &CardLayout,
         pointer: Point,
         fill: Colour,
+    ) {
+        self.draw_plugin_card_focused(painter, card, laid, pointer, fill, None);
+    }
+
+    /// A card, with a focus ring on the button at `focused`.
+    fn draw_plugin_card_focused(
+        &self,
+        painter: &mut Painter,
+        card: &Card,
+        laid: &CardLayout,
+        pointer: Point,
+        fill: Colour,
+        focused: Option<usize>,
     ) {
         let theme = &self.theme;
         painter
@@ -919,14 +1001,15 @@ impl Tileception {
                 Style::new(theme.font_size * 0.8, theme.muted),
             );
         }
-        for (button, rect) in card.buttons.iter().zip(&laid.buttons) {
+        for (index, (button, rect)) in card.buttons.iter().zip(&laid.buttons).enumerate() {
             let usable = card.enabled && button.enabled && button.action.is_some();
             let look = if button.primary { Look::Primary } else { Look::Quiet };
             let drawn = match button.icon.as_deref().and_then(glyph::named) {
                 Some(glyph) => Button::glyph(glyph, look).round(),
                 None => Button::new(&button.title, look),
             };
-            painter.button(*rect, drawn.enabled(usable), rect.contains(pointer));
+            let drawn = drawn.enabled(usable).focused(focused == Some(index));
+            painter.button(*rect, drawn, rect.contains(pointer));
         }
         if let Some(stepper) = &card.stepper {
             for (rect, sign, action) in
