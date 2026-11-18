@@ -4,6 +4,12 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.21.1 (2026-11-18)
+
+### Packaging
+* **deb:** build packages for supported Debian and Ubuntu releases (including non-LTS)
+* **iso:** let desktop setup proceed while snaps seed
+
 ## v0.21.0 (2026-11-17)
 
 ### Features
