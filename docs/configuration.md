@@ -306,8 +306,8 @@ commands under `[binds]`.
 
 ### Plugins
 
-Plugins add launcher sources, cards under the launcher, panel blocks, bar chips
-and dashboard items. The smart home, Bluetooth, `z` folders and timers are
+Plugins are executables that speak MCP over stdio. They add launcher sources,
+cards under the launcher, panel blocks, bar chips and dashboard items. The smart home, Bluetooth, `z` folders and timers are
 bundled plugins. Each plugin has a `[plugins.<id>]` table:
 
 ```toml

@@ -26,7 +26,8 @@ These plugins ship inside the `tileception` binary and need no installation:
   describes it.
 - `bluetooth`: the Bluetooth block and its bar chip.
 
-Tileception starts them as `tileception plugin <id>`. Configure or disable
+They are ordinary plugins: Tileception starts each as `tileception plugin <id>`,
+which speaks MCP over stdio like any other plugin. Configure or disable
 them in `[plugins.<id>]` like any other plugin. A manifest with the same ID
 replaces the bundled plugin.
 
