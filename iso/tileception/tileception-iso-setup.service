@@ -4,7 +4,9 @@
 [Unit]
 Description=Finish setting up the Tileception desktop
 Wants=network-online.target
-After=network-online.target snapd.seeded.service
+# Not after snapd.seeded.service: seeding can take long, and only removing
+# the snaps needs it (setup.sh waits for it there).
+After=network-online.target
 
 [Service]
 Type=oneshot

@@ -79,12 +79,28 @@ until remote true 2>/dev/null; do
     sleep 5
 done
 
+# What the first boot's setup did and what it waits for, as root (tester's
+# password is tileception), into firstboot.log next to the serial logs.
+report() {
+    remote "echo tileception | sudo -S -p '' sh -c '
+        set -x
+        ls -l /var/lib/tileception-iso
+        systemctl status --no-pager tileception-iso-setup.service snapd.seeded.service
+        systemctl list-jobs --no-pager
+        journalctl -b --no-pager -u tileception-iso-setup.service
+        grep -a tileception-iso /var/log/installer/curtin-install.log | tail -40
+        snap changes
+        snap debug seeding
+        journalctl -b --no-pager -u snapd.service | tail -40
+    '" > "$work/firstboot.log" 2>&1 || true
+    cat "$work/firstboot.log"
+}
+
 # The first boot finishes what the installer could not (removing snaps).
 tries=0
 while remote systemctl is-enabled --quiet tileception-iso-setup.service 2>/dev/null; do
     tries=$((tries + 1))
-    [ "$tries" -lt 180 ] || { remote journalctl -b -u tileception-iso-setup.service --no-pager | tail -20;
-        fail "the first boot's setup did not finish in 30 minutes"; }
+    [ "$tries" -lt 180 ] || { report; fail "the first boot's setup did not finish in 30 minutes"; }
     sleep 10
 done
 
@@ -111,5 +127,5 @@ check "Thunderbird is installed" "flatpak info --system org.mozilla.thunderbird"
 check "Ptyxis is the session's terminal" "grep -q Ptyxis /etc/xdg/tileception-xdg-terminals.list && test -e /usr/share/applications/org.gnome.Ptyxis.desktop"
 check "zoxide's hook is in .bashrc" "grep -q 'zoxide init bash' ~/.bashrc"
 check "bat and fd work" "bat --version && fd --version"
-[ "$failed" = 0 ] || fail "some checks failed; boot the disk with: sh iso/smoke-test.sh --boot $codename"
+[ "$failed" = 0 ] || { report; fail "some checks failed; boot the disk with: sh iso/smoke-test.sh --boot $codename"; }
 echo "All checks passed"

@@ -114,7 +114,9 @@ thunderbird() {
 remove_snaps() {
     [ -e "$state/snaps" ] && return 0
     command -v snap >/dev/null 2>&1 || { touch "$state/snaps"; return 0; }
-    snap wait system seed.loaded || return 1
+    # Seeding can take long on a slow machine: give up for this boot after
+    # a quarter of an hour, so the rest is not held up.
+    timeout 900 snap wait system seed.loaded || { say "snaps are still being seeded"; return 1; }
     for name in firefox snap-store firmware-updater desktop-security-center prompting-client \
         snapd-desktop-integration; do
         if snap list "$name" >/dev/null 2>&1; then
