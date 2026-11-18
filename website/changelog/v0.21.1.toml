@@ -8,4 +8,4 @@ text = "Tileception now has packages for every supported Debian release from 13 
 
 [[fixes]]
 area = "iso"
-text = "After installing from the ISO, the setup that runs at the first start no longer waits for Ubuntu to finish setting up its snaps, which can take long on a slow computer. Thunderbird is installed without that delay. If the snaps are not ready within 15 minutes, the Firefox snap and the others are removed at a later start."
+text = "On first boot after an ISO install, desktop setup now continues while Ubuntu sets up its snaps. Thunderbird installs without waiting for them. If the snaps are not ready within 15 minutes, the Firefox snap and the others are removed at a later start."

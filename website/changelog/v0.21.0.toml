@@ -16,7 +16,7 @@ caption = "Shift+Print over the same area: in 0.20.0 a notification asks whether
 
 [[features]]
 area = "capture"
-title = "Area screenshots can be saved as WebP or JPG, and smaller"
+title = "Save area screenshots as WebP or JPG at full size, half size or as thumbnails"
 text = "Shift+Enter copies the area and Ctrl+Shift+S saves it as WebP or JPG, at full size, half size or as a thumbnail. Each choice shows the size of its file. `jpg_qualities` and `sizes` under `[capture]` in `config.toml` set what the menu offers."
 
 [[features]]

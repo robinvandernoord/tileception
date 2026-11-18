@@ -1,0 +1,52 @@
+version = "0.22.0"
+date = 2026-11-18
+lede = "You can now record sound from your speakers and microphone, and draw on feedback screenshots before sending them. Doctor is now called Wizard."
+
+[[features]]
+area = "snip"
+title = "Screen recordings can include sound"
+text = "In the area screenshot tool (Shift+Print), two new buttons in the row under the area add sound to a recording: what your speakers play, and your microphone. O and M switch them too. With both on, the sound is mixed. Your choice is kept for the next recording. GIFs have no sound."
+
+[features.media]
+kind = "compare"
+before = "snip-before.jpg"
+after = "snip-after.jpg"
+alt = "The area screenshot tool with an area picked over two windows"
+caption = "The row under the area in 0.21.1, and in 0.22.0 with the speaker and microphone buttons switched on."
+
+[[features]]
+area = "snip"
+title = "Draw on screenshots you attach to feedback"
+text = "In the feedback dialog, the Add screenshot... button opens the area screenshot tool, where you pick an area or a window, draw on it and redact what is private, then choose Attach to feedback. Edit opens the tool again with the same area and drawings."
+
+[features.media]
+kind = "compare"
+before = "feedback-before.jpg"
+after = "feedback-after.jpg"
+alt = "The Send feedback dialog with a title and a short description filled in"
+caption = "The feedback dialog in 0.21.1, with a switch for a screenshot of the whole screen, and in 0.22.0, with Add screenshot..."
+
+[[features]]
+area = "wizard"
+title = "Doctor is now called Wizard"
+text = "Super+/ still opens Wizard, and the old names keep working: `tileception msg doctor`, `[doctor.agents]` in `config.toml` and `doctor` in key bindings. The panel can also pop out into a window of its own."
+
+[[features]]
+area = "wizard"
+title = "Wizard tells you when an agent has a new version"
+text = "When the agent registry has a newer version, Wizard says so in the conversation. Update now restarts the agent on that version and starts a new conversation. Agents you installed yourself are not updated, but Wizard still tells you."
+
+[[features]]
+area = "updates"
+title = "Firmware is listed only when you switch it on"
+text = "Firmware updates are off by default. To list them in the Updates chip and window, turn on Firmware in the window's Settings page or set `firmware = true` under `[updates]` in `config.toml`. A failed firmware update can leave a device unusable. That page also has a switch for update notifications."
+
+[[features]]
+area = "updates"
+title = "The Updates card and window work from the keyboard"
+text = "In the card under the Updates chip, Enter installs everything, Tab and the arrow keys move between the buttons, and Escape closes the card. In the Updates window, Left and Right move between the buttons at the bottom."
+
+[[features]]
+area = "panels"
+title = "Tab reaches the buttons on media, plugin and network cards"
+text = "In the notification list, Tab now moves through the media card's and plugin cards' buttons before the notifications, and Enter or Space presses the one with the ring. In the network card, Tab moves to Disconnect and Network settings."
