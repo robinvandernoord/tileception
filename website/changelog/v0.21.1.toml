@@ -1,0 +1,11 @@
+version = "0.21.1"
+date = 2026-11-18
+
+[[features]]
+area = "packaging"
+title = "Packages for every supported Debian and Ubuntu release"
+text = "Tileception now has packages for every supported Debian release from 13 on and every Ubuntu release from 24.04 on, interim releases included, as well as Debian unstable. A new release gets packages with the first Tileception release after it comes out."
+
+[[fixes]]
+area = "iso"
+text = "After installing from the ISO, the setup that runs at the first start no longer waits for Ubuntu to finish setting up its snaps, which can take long on a slow computer. Thunderbird is installed without that delay. If the snaps are not ready within 15 minutes, the Firefox snap and the others are removed at a later start."

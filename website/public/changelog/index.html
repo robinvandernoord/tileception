@@ -16,13 +16,13 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Tileception" />
     <meta property="og:url" content="https://tileception.space/changelog/" />
-    <meta property="og:title" content="What&#x27;s new in Tileception 0.21.0" />
-    <meta property="og:description" content="Shift+Print now opens an area screenshot tool that can draw on the picture and record the area as a video. Plugins can be installed from GitHub in the launcher, and the wallpaper can be a folder of pictures." />
-    <meta property="og:image" content="https://tileception.space/changelog/v0.21.0/snip-after.jpg" />
+    <meta property="og:title" content="What&#x27;s new in Tileception 0.21.1" />
+    <meta property="og:description" content="What changed in each Tileception release, with screenshots of the changes." />
+    <meta property="og:image" content="https://tileception.space/og.png" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="What&#x27;s new in Tileception 0.21.0" />
-    <meta name="twitter:description" content="Shift+Print now opens an area screenshot tool that can draw on the picture and record the area as a video. Plugins can be installed from GitHub in the launcher, and the wallpaper can be a folder of pictures." />
-    <meta name="twitter:image" content="https://tileception.space/changelog/v0.21.0/snip-after.jpg" />
+    <meta name="twitter:title" content="What&#x27;s new in Tileception 0.21.1" />
+    <meta name="twitter:description" content="What changed in each Tileception release, with screenshots of the changes." />
+    <meta name="twitter:image" content="https://tileception.space/og.png" />
     <meta name="theme-color" content="#121212" />
     <meta name="color-scheme" content="light" />
     <link rel="icon" href="../favicon.ico" sizes="32x32" />
@@ -40,6 +40,7 @@
           <span>Want the short version? <a href="https://github.com/robinvandernoord/tileception/blob/master/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a></span>
         </div>
       </header>
+<section class="cl-release" id="v0.21.1"><div class="blk cl-compact"><div><h2 class="display">0.21.1</h2><time datetime="2026-11-18">2026-11-18</time></div><div><ul><li><span class="area" style="--c: var(--canvas)">Packaging</span> <b>Packages for every supported Debian and Ubuntu release.</b> Tileception now has packages for every supported Debian release from 13 on and every Ubuntu release from 24.04 on, interim releases included, as well as Debian unstable. A new release gets packages with the first Tileception release after it comes out.</li><li><span class="area" style="--c: var(--canvas)">Iso</span> <b>Fixed:</b> After installing from the ISO, the setup that runs at the first start no longer waits for Ubuntu to finish setting up its snaps, which can take long on a slow computer. Thunderbird is installed without that delay. If the snaps are not ready within 15 minutes, the Firefox snap and the others are removed at a later start.</li></ul></div></div></section>
 <section class="cl-release" id="v0.21.0">
 <div class="blk cl-version"><div><h2 class="display">0.21.0</h2><time datetime="2026-11-17">2026-11-17</time></div><p>Shift+Print now opens an area screenshot tool that can draw on the picture and record the area as a video. Plugins can be installed from GitHub in the launcher, and the wallpaper can be a folder of pictures.</p></div>
 <article class="blk cl-hero"><div class="media"><div class="compare" style="--split: 50%" tabindex="0" role="slider" aria-label="Before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><img src="v0.21.0/snip-before.jpg" alt="Before: The same desk after taking an area screenshot with Shift+Print" loading="lazy" /><div class="after-layer"><img src="v0.21.0/snip-after.jpg" alt="After: The same desk after taking an area screenshot with Shift+Print" loading="lazy" /></div><div class="handle" aria-hidden="true"></div><span class="label before">Before</span><span class="label after">After</span></div></div><div class="text"><div class="labels"><span class="area" style="--c: var(--canvas)">Capture</span></div><h3 class="display">Draw on area screenshots and record them</h3><p>Shift+Print, or "Screenshot an area" in the launcher, freezes the screen so you can drag an area or click a window. Draw on it with a pen, arrows, boxes, text or numbered steps, or pixelate what others should not read. Enter copies the area as a PNG, Ctrl+S saves it, and Ctrl+R records it as a video, which needs <code>ffmpeg</code>. Shift+Print bindings from older configs that run <code>tileception-screenshot region</code> or <code>region --ask</code> open the new tool too.</p><p class="caption">Shift+Print over the same area: in 0.20.0 a notification asks whether to copy or save it, in 0.21.0 you can redact the list and draw a box, an arrow and numbered steps first.</p></div></article>
