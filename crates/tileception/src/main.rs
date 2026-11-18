@@ -13,6 +13,7 @@ mod answers;
 mod appearance;
 mod bar;
 mod battery;
+mod blur;
 mod builtin_lock;
 mod bundled;
 mod calc;
@@ -72,6 +73,7 @@ mod polkit;
 mod power;
 mod remote_desktop;
 mod render;
+mod rounded;
 mod rules;
 mod scale;
 mod screensaver;
@@ -316,6 +318,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.start_sleep_watch();
         state.start_screensaver();
         export_session_environment(&state);
+        if argv.iter().any(|argument| argument == RESTARTED) {
+            restart_portals();
+        }
     }
     // TILECEPTION_POLKIT makes a nested or headless instance the polkit
     // agent of what it starts, for tests.
@@ -461,6 +466,31 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
         let _ = std::fs::remove_file(socket);
     }
     Ok(())
+}
+
+/// The portal backends that are Wayland clients, started again after a
+/// restart in place. They exit with the old compositor, and the portal
+/// frontend at once asks D-Bus to start them again, before this one listens;
+/// that start fails, and dbus-daemon waits its whole start timeout (two
+/// minutes) before trying again. Meanwhile every app that asks the portal
+/// for settings as it starts (GTK 4 ones, such as Ghostty) opens no window.
+/// A backend that comes up and takes its name ends the wait.
+const RESTARTED_PORTALS: [&str; 2] = ["xdg-desktop-portal-gtk.service", "xdg-desktop-portal-wlr.service"];
+
+fn restart_portals() {
+    // Queued, not waited for: the compositor keeps starting meanwhile.
+    let spawned = std::process::Command::new("systemctl")
+        .args(["--user", "--no-block", "restart"])
+        .args(RESTARTED_PORTALS)
+        .spawn();
+    match spawned {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(error) => tracing::warn!("could not restart the portal backends: {error}"),
+    }
 }
 
 /// Lets D-Bus and systemd started programs (portals, notification daemons,
