@@ -256,13 +256,7 @@ h3 {
   width: 0.8em;
   height: 0.8em;
   flex: none;
-  background: linear-gradient(
-    90deg,
-    var(--red) 0 44%,
-    var(--ink) 44% 56%,
-    var(--blue) 56%
-  );
-  outline: 0.08em solid var(--ink);
+  background: url("../favicon.svg") center / contain no-repeat;
 }
 
 .hint strong {

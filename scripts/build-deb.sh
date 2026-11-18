@@ -103,9 +103,7 @@ sed "s|@BINDIR@|/usr/bin|g" resources/tileception.desktop.in \
     > "$root/usr/share/wayland-sessions/tileception.desktop"
 chmod 644 "$root/usr/share/wayland-sessions/tileception.desktop"
 # The badge slick-greeter (Mint's login screen) shows for the session.
-mkdir -p "$root/usr/share/slick-greeter/badges"
-scripts/session-badge.sh > "$root/usr/share/slick-greeter/badges/tileception.svg"
-chmod 644 "$root/usr/share/slick-greeter/badges/tileception.svg"
+install -D -m 644 resources/session-badge.svg "$root/usr/share/slick-greeter/badges/tileception.svg"
 # Fastfetch's logo, and its config for Tileception sessions (tileception-session
 # adds that directory to XDG_CONFIG_DIRS).
 install -D -m 644 resources/fastfetch/logo "$root/usr/share/fastfetch/logos/tileception"
