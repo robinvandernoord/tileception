@@ -49,7 +49,7 @@ answer up front, pass options after `sh -s --`:
 # No questions, recommended setup
 curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset recommended
 
-# Minimal: no bar, notifications or Doctor
+# Minimal: no bar, notifications or Wizard
 curl -fsSL https://tileception.space/install | sh -s -- --non-interactive --preset minimal
 
 # Recommended, but your own programs in place of Tileception's launcher and bar
@@ -61,7 +61,7 @@ curl -fsSL https://tileception.space/install | sh -s -- --greeter tileception
 
 Presets are `recommended`, `minimal`, `customize` and `keep`. `--bar`,
 `--launcher`, `--notifications`, `--power-menu` and `--lock` take `builtin`,
-`none` or a command; `--media` and `--doctor` take `builtin` or `none`. Run `tileception-setup --help`
+`none` or a command; `--media` and `--wizard` take `builtin` or `none`. Run `tileception-setup --help`
 after installing for every option, or run `tileception-setup` again at any time
 to change your choices.
 
@@ -99,7 +99,7 @@ screen, power menu, and volume and brightness controls. You can disable built-in
 components or use external tools such as Waybar, fuzzel and swaylock through the
 [configuration](#configuration).
 
-Doctor, an optional panel opened with **Super+/**, lets a coding agent of your
+Wizard, an optional panel opened with **Super+/**, lets a coding agent of your
 choice answer questions about your setup and change it for you.
 
 Touchpad gestures, touchscreen input and fractional display scaling are supported
@@ -126,7 +126,7 @@ place so your current desktop can keep its Super shortcuts.
 | Super+C           | Close the focused window                             |
 | Super+L           | Lock the screen                                      |
 | Super+X           | Open the power menu                                  |
-| Super+/           | Open Doctor                                          |
+| Super+/           | Open Wizard                                          |
 
 Hold **Super** and scroll to zoom in towards the pointer or back out. Hold
 **Alt** and drag with the left mouse button to move a window, or with the right
@@ -182,7 +182,7 @@ Session logs are in `~/.local/state/tileception/tileception.log`, or under
 `$XDG_STATE_HOME/tileception/` if set. Nested sessions print logs to the terminal
 you started them from. Check logs for personal information before sharing them.
 
-- [Documentation](docs/index.md): all user guides, including Doctor and the
+- [Documentation](docs/index.md): all user guides, including Wizard and the
   login screen.
 - [Troubleshooting](docs/troubleshooting.md): startup problems, config errors
   and logs.

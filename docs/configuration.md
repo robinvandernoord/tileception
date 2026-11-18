@@ -306,30 +306,25 @@ commands under `[binds]`.
 
 ### Plugins
 
-Plugins are executable MCP servers over stdio that add launcher sources and
-cards under the launcher, panel blocks and bar chips. The smart home, Bluetooth,
-`z` folders and timers are bundled plugins: `[plugins.bluetooth] enabled = false`
-switches one off, `[plugins.home.bar] enabled = false` hides its bar chip, and
-`[plugins.<id>.launcher] cards = false` hides a plugin's cards under the
-launcher. Build the example with
-`cargo plane build -p tileception --bin tileception-launcher-example`, then
-enable it using the executable's absolute path:
+Plugins are executables that speak MCP over stdio. They add launcher sources,
+cards under the launcher, panel blocks, bar chips and dashboard items. The smart home, Bluetooth, `z` folders and timers are
+bundled plugins. Each plugin has a `[plugins.<id>]` table:
 
 ```toml
-[plugins.example]
-command = "/absolute/path/to/tileception-launcher-example"
-[plugins.example.launcher]
-# prefixes = ["echo"]
+[plugins.bluetooth]
+enabled = false        # switch a plugin off
+
+[plugins.home.bar]
+enabled = false        # hide its bar chips
+
+[plugins.timers.launcher]
+cards = false          # hide its cards under the launcher
 ```
 
-Type `echo hello` in the launcher to try it; a prefix needs the space after it. Omit `prefixes` to use those
-reported by the plugin; set `enabled = false` to disable a source. Plugins
-installed through manifests are also discovered in
-`~/.local/share/tileception/plugins/` and `/usr/share/tileception/plugins/`.
-Configuration overrides user manifests, which override system manifests.
-Only install plugins you trust, as with autostart commands. See
-[Plugins](plugins.md) for installation, actions, diagnostics and the
-protocol.
+Type `plugins add owner/repo` in the launcher to install a plugin from GitHub.
+[Plugins](plugins.md) covers installing, manifests, every `[plugins.<id>]`
+field and writing your own. Only install plugins you trust, as with autostart
+commands.
 
 ### System tray
 
@@ -620,6 +615,7 @@ notify = true
 check_hours = 4
 remind_after_days = 0
 remind_security_only = false
+firmware = false
 ```
 
 `enabled = false` switches the update manager off: no chip, no launcher rows
@@ -634,6 +630,12 @@ that many days; `0` says so at once. `remind_security_only = true` notifies
 for security updates only. The chip in the bar shows every update either way.
 The notification never comes over a fullscreen window or during Do not
 disturb: it follows within a minute of leaving those.
+
+`firmware = true` also lists firmware from fwupd beside the other updates,
+where `fwupdmgr` is installed. It is off by default because a failed flash can
+leave a device unusable. When on, firmware counts in the chip, but it is never
+ticked for an install by itself: each device is chosen on purpose. The same
+switch is under **Firmware** on the Settings page of the Updates window.
 
 ### Battery
 
@@ -749,19 +751,19 @@ both temperature and humidity, **History** on the Smart home page in Settings
 chooses which of them the trend shows; the choice is kept with the device in
 the device file and survives imports and refreshes.
 
-## Doctor
+## Wizard
 
-Doctor's agent, model and permission mode are managed in its panel, separately
-from `config.toml`. See the [Doctor guide](doctor.md) for setup and permissions.
+Wizard's agent, model and permission mode are managed in its panel, separately
+from `config.toml`. See the [Wizard guide](wizard.md) for setup and permissions.
 
-Doctor uses an agent already installed on your computer when it finds one. To
+Wizard uses an agent already installed on your computer when it finds one. To
 run a particular program for an agent, give its command under
-`[doctor.agents]`, by registry id: the program, then its arguments. It is run
+`[wizard.agents]`, by registry id: the program, then its arguments. It is run
 directly, not through a shell; `~/` at the start of the program is your home
 folder.
 
 ```toml
-[doctor.agents]
+[wizard.agents]
 opencode = ["~/.opencode/bin/opencode", "acp"]
 gemini = ["/usr/local/bin/gemini", "--acp"]
 ```

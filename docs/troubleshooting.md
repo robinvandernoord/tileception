@@ -141,7 +141,7 @@ export TILECEPTION_SOCKET="$XDG_RUNTIME_DIR/tileception-wayland-1.sock"
 tileception msg tree
 ```
 
-If Doctor does not connect, see [its own checklist](doctor.md#if-it-does-not-connect).
+If Wizard does not connect, see [its own checklist](wizard.md#if-it-does-not-connect).
 
 If the graphical login screen itself is broken, follow the
 [greeter restoration instructions](greeter.md#restore-the-previous-login-screen)

@@ -364,7 +364,7 @@ version.
 
 When adding a Markdown guide, link it from [the documentation index](index.md)
 and add it to `export_doctor_docs` in `crates/tileception/src/doctor.rs`.
-Doctor bundles these guides into the binary for installations without source.
+Wizard bundles these guides into the binary for installations without source.
 Links to other repository files do not resolve in that copy, except the default
 config: write it exactly as `../crates/tileception/src/default-config.toml`,
 which the export rewrites.

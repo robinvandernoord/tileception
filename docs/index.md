@@ -1,8 +1,8 @@
 # Tileception documentation
 
 - [Overview](../README.md): what Tileception does and the essential controls.
-- [Plugins](plugins.md): launcher sources, panel blocks, bar chips,
-  bundled plugins, installation and the MCP convention.
+- [Plugins](plugins.md): bundled plugins, installing from GitHub, and writing
+  launcher sources, panel blocks, bar chips and dashboard items.
 - [Usage](usage.md): navigation, selections, window management, desktop controls
   and gestures.
 - [Configuration](configuration.md): shortcuts, appearance, scaling, desktop
@@ -12,7 +12,7 @@
   stick.
 - [Login screen](greeter.md): the experimental greetd greeter and restoring your
   previous login screen.
-- [Doctor](doctor.md): agents, sign-in, permissions, images and commands.
+- [Wizard](wizard.md): agents, sign-in, permissions, images and commands.
 - [Troubleshooting](troubleshooting.md): startup problems, config errors,
   recovery, logs and bug reports.
 - [Development](development.md): repository structure, builds, checks, debugging

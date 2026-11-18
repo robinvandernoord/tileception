@@ -220,7 +220,7 @@ dashboard items that are switched off. Choosing a plugin there switches its
 dashboard items on in `config.toml`, and the plugin too when it was off.
 
 `tileception msg dashboard` lists the items by name (`notifications`, or a
-plugin's id and the item's, such as `timers/tea`) and says which are removed;
+plugin's ID and the item's, such as `lava-lamp/lamp`) and says which are removed;
 `tileception msg dashboard hide <item>` removes one, and
 `tileception msg dashboard show <item>` (or `show all`) brings them back.
 Removed items are kept in the same file, so deleting it brings them back too.
@@ -248,7 +248,7 @@ window.
 | Super+Enter   | Answer a popup's buttons by keyboard  |
 | Shift+Print   | Take or record an area of the screen  |
 | Ctrl+Print    | Pick a colour from the screen         |
-| Super+/       | Open Doctor                           |
+| Super+/       | Open Wizard                           |
 | Super+L       | Lock the screen                       |
 | Super+X       | Open the power menu                   |
 | Super+Shift+E | End the Tileception session           |
@@ -322,9 +322,13 @@ word navigation and clipboard shortcuts work. Choose **Review** to see the
 exact title and issue body, including Tileception's version.
 "Include system details" starts unchecked. Checking it adds OS/version,
 architecture, backend and output pixel sizes/scales to the preview.
-"Include a screenshot of the screen" starts unchecked too. Checking it takes a
-screenshot of the screen under the dialog, without the dialog, and shows a
-preview of it with its size; unchecking it removes the screenshot again. A
+The **Screenshot** row adds a picture: **Add screenshot...** puts the dialog
+away and opens the [area screenshot](#screenshots) tool, where you pick an
+area or a window, draw on it and redact what is private. Its row of actions
+then holds only **Cancel**, which returns to the dialog unchanged, and
+**Attach to feedback** (or Enter). The attached picture shows as a thumbnail
+with its size; **Edit** opens the tool again on the same frozen screen, area
+and drawings, and **Remove** drops it. A
 GitHub link cannot carry a picture, so **Open in browser** saves the
 screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
 folder (usually `/tmp`, readable only by you, replacing the last one) and puts
@@ -335,14 +339,14 @@ pasted, or after two minutes (only the latter with clipboard persistence on,
 whose helper serves the paste), unless you copy something else first; another
 machine's clipboard shared through handoff stays replaced. Nothing is copied
 or saved before you open the issue.
-Doctor's `/report` opens the same dialog over Doctor. The title is optional:
+Wizard's `/report` opens the same dialog over Wizard. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
 it in and starts in the feedback field. The dialog has one more option,
-"Include the last Doctor question and answer", also unchecked. Checking it
-adds your last question and the agent's answer, shortened if long. The
-screenshot leaves the Doctor panel out unless this option is checked, since the
-panel shows more than the last exchange; changing the option takes the
-screenshot again.
+"Include the last Wizard question and answer", also unchecked. Checking it
+adds your last question and the agent's answer, shortened if long. While you
+pick a screenshot, the Wizard panel is left out unless this option is checked,
+since the panel shows more than the last exchange; unchecking the option
+afterwards removes a screenshot that shows the panel.
 **Tab** and **Shift+Tab** move between controls; arrow and page keys scroll.
 **Edit** or **Escape** returns from the preview to your draft; **Cancel** or
 Escape while editing closes the dialog. **Open in browser** opens the
@@ -370,8 +374,8 @@ keyboard:
 | **Up** / **Down**           | Scroll the history by one                      |
 | **Page Up** / **Page Down** | Scroll by five                                 |
 | **Home** / **End**          | Jump to the newest or the oldest               |
-| **Tab** / **Shift+Tab**     | Choose the next or previous notification       |
-| **Enter**                   | Open the chosen notification, as a click would |
+| **Tab** / **Shift+Tab**     | Choose the next or previous button or notification: the media card's and the plugin cards' buttons come first |
+| **Enter** or **Space**      | Press the chosen button, or open the chosen notification, as a click would |
 | **Backspace**               | Dismiss the chosen notification                |
 | **D**                       | Switch Do not disturb                          |
 | **M**                       | Mute or unmute the sound                       |
@@ -431,8 +435,10 @@ The row under the area finishes:
 | Ctrl+S            | Save it as a PNG                                 |
 | Shift+Enter       | Copy it as another format or size                |
 | Ctrl+Shift+S      | Save it as another format or size                |
-| D                 | Send it to Doctor                                |
+| D                 | Send it to Wizard                                |
 | Ctrl+R            | Record the area                                  |
+| O                 | Record with system sound, or without             |
+| M                 | Record with the microphone, or without           |
 
 The arrows beside **Copy** and **Save** open the same menus as Shift+Enter
 and Ctrl+Shift+S: choose a size (full, half or a thumbnail) at the top, then
@@ -441,9 +447,18 @@ Copying a WebP or JPG also offers a PNG, for programs that paste only PNG.
 The [capture settings](configuration.md#area-screenshots) set the qualities
 and sizes.
 
-While recording, a red line marks the area and a small bar shows the time.
-Click **Stop**, or press **Shift+Print** again, then copy the recording as an
-MP4 or GIF, or save it. Recording needs `ffmpeg`.
+The two buttons beside Record choose the sound that goes with a recording:
+what the speakers play and the microphone. Both start off, and your choice is
+kept for the next recording, also after a restart. With both, they are mixed.
+Sound is taken from the default output and input through PulseAudio (PipeWire
+provides it with `pipewire-pulse`); when it cannot be recorded, the recording
+goes on without it and a notification says so.
+
+While recording, a red line marks the area and a small bar shows the time,
+the sounds being recorded, and **Stop**. The microphone's button there mutes
+it in the recording and back. Click **Stop**, or press **Shift+Print** again,
+then copy the recording as an MP4 or GIF, or save it. A GIF has no sound.
+Recording needs `ffmpeg`.
 
 Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
@@ -543,13 +558,15 @@ for where it is kept.
 ### Updates
 
 On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
-while updates wait: APT packages, Flatpaks, snaps and firmware from fwupd. It counts security updates first: `3 +9` means three
+while updates wait: APT packages, Flatpaks, snaps and, once switched on, firmware from fwupd. It counts security updates first: `3 +9` means three
 security updates and nine others. While updates install it shows progress,
 and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
 
 Click the chip for a card with the updates by kind and three buttons:
-**Install all**, **Security only** and **Review**. Installing needs an
+**Install all**, **Security only** and **Review**. **Enter** installs all;
+**Tab**, **Shift+Tab** and the arrow keys move between the buttons, and
+**Escape** closes the card. Installing needs an
 administrator: polkit asks for the password in Tileception's prompt and
 remembers it for a few minutes. See [Administrator rights](#administrator-rights).
 
@@ -561,19 +578,23 @@ battery; **Check** still works then.
 `tileception msg updates open` or "Updates" in the launcher. It has five pages;
 **Tab** and **Shift+Tab** switch between them, the arrow keys move through the
 list, **Space** ticks a row and **Enter** runs the page's main button.
+**Left** and **Right** move between the buttons at the bottom; **Enter** or
+**Space** then presses the one with the ring.
 
 | Page      | What it does                                                                                                                                                                                                                                                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
 | Kernels   | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below.                                                                                                                                                                                                                                                            |
 | Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions.                                                                              |
-| History   | What apt did before, from its log. **Ask Doctor** sends the packages of one entry to Doctor; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
-| Settings  | Automatic updates, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                         |
+| History   | What apt did before, from its log. **Ask the Wizard** sends the packages of one entry to the Wizard; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
+| Settings  | Notifications, automatic updates, firmware updates, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                    |
 
 Flatpaks of the system and of your own installation, and snaps, are listed
 under **Apps**. Asking for them uses the network, so they are listed when the
 package lists are refreshed and when the window opens, not on a metered
-connection or low battery; in between the last list stays. Firmware from
+connection or low battery; in between the last list stays. With
+[`[updates] firmware`](configuration.md#updates) on (or **Firmware** switched
+on in the window's Settings page), firmware from
 fwupd is listed under **Firmware** and is never ticked by itself: a firmware
 update is installed only when you tick it, and some devices finish it while
 the computer restarts. One **Install** installs the APT updates first, then
@@ -699,7 +720,7 @@ its source in front: `apt:`, `flatpak:`, `flatpak-user:`, `snap:` or
 `firmware:`, as in `tileception msg updates skip snap:firefox`. A name alone
 then says which to choose from.
 
-Doctor reads the history the same way, so it can answer "what changed since
+Wizard reads the history the same way, so it can answer "what changed since
 Tuesday?".
 
 #### Administrator rights
@@ -739,7 +760,9 @@ Click it, or type **Network** in the launcher, to open the network card:
 
 While the card is open it has the keyboard: **Up** and **Down** choose a
 network, **Enter** joins it (or leaves the one you are on), and **Escape** goes
-back from the password or closes the card. If a password turns out wrong, the
+back from the password or closes the card. **Tab** and **Shift+Tab** move to
+**Disconnect** and **Network settings** and back to the list; **Enter** presses
+the chosen button. If a password turns out wrong, the
 card asks for it again. **Network settings** at the bottom of the card opens
 the Network page in Settings.
 
@@ -791,8 +814,8 @@ the overview. Ordinary touches on application windows are passed to the app.
 The [default configuration](../crates/tileception/src/default-config.toml) lists
 all gesture bindings and touchpad options.
 
-## Doctor
+## Wizard
 
 **Super+/** opens an optional coding-agent panel for questions and changes to
-your desktop setup. See the [Doctor guide](doctor.md) for agent setup, sign-in,
+your desktop setup. See the [Wizard guide](wizard.md) for agent setup, sign-in,
 permissions and image attachments.
