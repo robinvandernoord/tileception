@@ -256,8 +256,8 @@ impl Tileception {
         let note = match (&prompt.error, prompt.checking, &prompt.purpose) {
             (Some(error), ..) => error.as_str(),
             (None, true, _) => "Checking...",
-            (None, false, Purpose::Sudo(_)) => "Passed to sudo for this task only; it is not kept.",
-            (None, false, Purpose::Polkit(_)) => "Checked by polkit; Tileception does not keep it.",
+            (None, false, Purpose::Sudo(_)) => "Used by sudo for this task only, never stored.",
+            (None, false, Purpose::Polkit(_)) => "Checked by polkit. Tileception never stores it.",
         };
         painter.text(
             note,
