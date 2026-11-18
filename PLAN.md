@@ -12,7 +12,7 @@ reimplementation: it copies behaviour, not code or assets (icons, copy text).
 | Name             | Tileception (binary `tileception`); chosen for findability.                                                                                                                                                                                  |
 | Display server   | Wayland compositor. X11 apps run through Xwayland. No native X11 WM.                                                                                                                                                                         |
 | Foundation       | Written from scratch on Smithay. niri and anvil are reading material only.                                                                                                                                                                   |
-| Design           | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels). Reference in `docs/design.html`. |
+| Design           | **Tide**: flat graphite surfaces, small radii (6px tiles, 10px popups), a teal to blue accent with a soft glow on focus, no blur by default (`[theme] frost = true` blurs behind Tileception's own panels and behind windows that ask for it). Reference in `docs/design.html`. |
 | Shell components | Tide defaults for the launcher, top bar, notifications, power menu and lock screen. Each stays optional and swappable through `[shell]` for external tools such as fuzzel, waybar, swaync, wlogout and swaylock.                             |
 | Configuration    | One TOML file, `~/.config/tileception/config.toml`, reloaded on save; bindings are key combinations mapped to commands.                                                                                                                      |
 | Licensing        | Dropped. No trial or license code; updates use APT rather than an in-app updater.                                                                                                                                                            |
@@ -171,6 +171,34 @@ Report testing in the conversation, the commit or the pull request instead.
     nested in Tileception, Steam and its overlay, controllers, Feral
     GameMode, and the keyboard-shortcuts-inhibit protocol that Tileception
     already honours (how it relates to game mode).
+  - Smoother frames for games and video: `wp_presentation` (when a frame
+    reached the screen), `wp_fifo_v1` (Mesa's Vulkan FIFO present mode uses
+    it) and `wp_commit_timing_v1` (a commit shown no earlier than a set
+    time). Smithay has all three.
+  - `wp_content_type_v1`: a window that says it is a game or video skips
+    frost (no blur redone behind it every frame) and keeps the screen
+    awake. A game's content type is also a hint for game mode switching on
+    by itself.
+- Sharing a single window. xdg-desktop-portal-wlr 0.7 (Ubuntu 24.04) only
+  captures whole outputs through `wlr-screencopy`, so a browser's "Window"
+  choice shares the entire screen. Window capture came in
+  xdg-desktop-portal-wlr 0.8.0 through `ext_image_copy_capture_v1`, with
+  sources from `ext_image_capture_source_v1` (implied by its release notes,
+  to confirm in its source) and windows listed through
+  `ext_foreign_toplevel_list_v1`, which Tileception already has. Use 0.8.4
+  or later: 0.8.3 sometimes stalls recordings. Smithay 0.7 has neither
+  capture protocol, so they are written next to `capture.rs`'s screencopy;
+  a window's capture renders only its own surfaces, so a covered window or
+  one on another workspace still shares. Before building: try the portal on
+  Ubuntu 26.04 to see how it behaves by default (which chooser it uses, and
+  whether it needs a Tileception chooser at all).
+- Dialogs over their parent: `xdg_dialog_v1` and `zxdg_foreign_v2`. Portal
+  dialogs such as the file chooser already float (by their app id), but
+  without xdg-foreign they cannot name the window they belong to, so they
+  open where any float does instead of centred over their parent, and do
+  not follow it to its area on a split screen as other child windows do.
+  `xdg_dialog_v1` marks a dialog as modal, which could dim or block its
+  parent until it closes. Smithay has both.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
@@ -217,9 +245,9 @@ Report testing in the conversation, the commit or the pull request instead.
 - Cutting off part of a window, for sharper text or any other reason. A
   window too big for its tile is scaled down; slightly soft text is far more
   usable than a hidden edge.
-- Glass: translucent, blurred windows. Blur behind every window is redone
-  most frames while the camera moves; Frost covers what matters
-  (decided 2026-11-02).
+- Glass: blur behind every window. Blur is redone most frames while the
+  camera moves, so only windows that ask for it get it (decided 2026-11-02,
+  narrowed 2026-11-18).
 
 ## Testing approach
 
