@@ -133,6 +133,8 @@ tap = true
 natural_scroll = false
 # Ignore the touchpad for a moment after typing.
 disable_while_typing = true
+# Turn the touchpad off while an external mouse is plugged in.
+disable_on_external_mouse = false
 # Pointer speed, from -1 (slow) to 1 (fast).
 speed = 0
 # What pressing the pad down clicks: "areas" (the bottom right corner is the

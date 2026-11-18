@@ -314,6 +314,13 @@ const FIELDS: &[Field] = &[
         "Avoid accidental input while using the keyboard.",
         Control::Toggle,
     ),
+    field(
+        3,
+        "touchpad.disable_on_external_mouse",
+        "Ignore touchpad with a mouse",
+        "Turn the touchpad off while an external mouse is plugged in.",
+        Control::Toggle,
+    ),
     field(3, "touchpad.speed", "Pointer speed", "From slower to faster.", Control::Number(-1., 1., 0.1, "")),
     field(
         3,

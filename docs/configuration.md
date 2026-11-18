@@ -533,6 +533,7 @@ These are the defaults:
 tap = true
 natural_scroll = false
 disable_while_typing = true
+disable_on_external_mouse = false
 speed = 0
 swipe_distance = 60
 follow_fingers = true
@@ -541,6 +542,8 @@ follow_fingers = true
 With tap-to-click enabled, one finger clicks left, two click right and three
 click middle. Set `natural_scroll = true` to move content in the direction your
 fingers move. `disable_while_typing` suppresses touchpad input while typing.
+Set `disable_on_external_mouse = true` to turn the touchpad off while an
+external mouse is plugged in; it comes back when the mouse is unplugged.
 
 `speed` accepts values from -1 to 1; positive values make the pointer faster.
 `swipe_distance` is the distance in pixels before a swipe binding runs and must

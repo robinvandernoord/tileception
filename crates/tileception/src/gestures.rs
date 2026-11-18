@@ -10,7 +10,7 @@ use smithay::{
         GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
         GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
     },
-    reexports::input::{ClickMethod, Device},
+    reexports::input::{ClickMethod, Device, SendEventsMode},
     utils::{Logical, Point, SERIAL_COUNTER},
 };
 
@@ -23,6 +23,8 @@ pub struct TouchpadConfig {
     pub tap: bool,
     pub natural_scroll: bool,
     pub disable_while_typing: bool,
+    /// Ignore the touchpad while an external mouse is plugged in.
+    pub disable_on_external_mouse: bool,
     /// Pointer speed, -1 to 1.
     pub speed: f64,
     /// "areas" or "clickfinger"; unset keeps the touchpad's own default.
@@ -40,6 +42,7 @@ impl Default for TouchpadConfig {
             tap: true,
             natural_scroll: false,
             disable_while_typing: true,
+            disable_on_external_mouse: false,
             speed: 0.0,
             click_method: None,
             swipe_distance: 60.0,
@@ -72,6 +75,15 @@ impl TouchpadConfig {
         let _ = device.config_tap_set_enabled(self.tap);
         let _ = device.config_scroll_set_natural_scroll_enabled(self.natural_scroll);
         let _ = device.config_dwt_set_enabled(self.disable_while_typing);
+        // libinput itself follows mice being plugged in and out.
+        let mode = if self.disable_on_external_mouse
+            && device.config_send_events_modes().contains(SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE)
+        {
+            SendEventsMode::DISABLED_ON_EXTERNAL_MOUSE
+        } else {
+            SendEventsMode::ENABLED
+        };
+        let _ = device.config_send_events_set_mode(mode);
         let _ = device.config_accel_set_speed(self.speed);
         let method = self.click_method().ok().flatten().or_else(|| device.config_click_default_method());
         if let Some(method) = method.filter(|method| device.config_click_methods().contains(method)) {
