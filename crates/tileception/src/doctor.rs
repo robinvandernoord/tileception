@@ -1,6 +1,8 @@
 //! The doctor: a panel along the left edge for asking a coding agent about
 //! your setup in plain language. It stays beside the desktop (it does not
-//! block it), so changes can be watched as they land.
+//! block it), so changes can be watched as they land. It can also pop out
+//! into a window of its own, drawn like Settings through a real xdg client;
+//! both are laid out and drawn by the same code, in the area given to it.
 //!
 //! Agents come from the ACP Registry and speak the Agent Client Protocol
 //! (`tileception-acp`). The panel picks one, starts it, logs in when the agent
@@ -22,7 +24,7 @@ use smithay::{
     utils::Transform,
 };
 use tileception_acp::{Agent, AgentCommand, Choice, Event, Login, LoginHow, Request, Session, SessionOption, Status};
-use tileception_core::{Point, Rect};
+use tileception_core::{Point, Rect, WindowId};
 
 use crate::{
     Tileception,
@@ -31,6 +33,7 @@ use crate::{
     launcher::Paste,
     markdown::{self, Kind, Piece, Span},
     render::OutputElement,
+    settings::client::{self, Client},
     shapes::Shape,
     text::{RichImage, RichStyle, TextImage},
     text_input::TextInput,
@@ -76,6 +79,9 @@ const CODE_BAR: f64 = 28.0;
 const CODE_BUTTON: f64 = 24.0;
 /// How long a copied code block shows a check.
 const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How often opening the panel reads the registry again. It is downloaded
+/// again only when its cached copy is a day old.
+const REGISTRY_AGAIN: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 /// How long a stopped agent may take to end its turn before it is restarted.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
@@ -142,6 +148,15 @@ pub enum Message {
         diff: Vec<DiffLine>,
         answer: Option<String>,
     },
+    /// A newer version of the running agent is in the registry. When it
+    /// comes from `outside` Tileception, updating it is left to the user.
+    Update {
+        name: String,
+        running: String,
+        latest: String,
+        outside: Option<Outside>,
+        done: bool,
+    },
     /// A file the agent changed, with the copy from before for undoing.
     Changed {
         path: PathBuf,
@@ -150,6 +165,24 @@ pub enum Message {
         removed: usize,
         undone: bool,
     },
+}
+
+/// The agent now running, as far as updates go.
+#[derive(Debug, Clone, Default)]
+struct Running {
+    version: Option<String>,
+    /// Where it comes from when Tileception did not install it, and so
+    /// cannot update it.
+    outside: Option<Outside>,
+}
+
+/// An agent program that Tileception did not install.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outside {
+    /// A copy already on this computer.
+    Installed(PathBuf),
+    /// The command under `[wizard.agents]`.
+    Configured,
 }
 
 /// Where the answer to a question goes.
@@ -161,6 +194,48 @@ pub enum AskReply {
     Read { request_id: serde_json::Value, path: PathBuf, line: Option<u64>, limit: Option<u64> },
     /// A file the agent wants to write.
     Write { request_id: serde_json::Value, path: PathBuf, content: String },
+    /// One question of the form the agent asked for ([`Doctor::form`]), by
+    /// its place among the form's fields.
+    Form { request_id: serde_json::Value, field: usize },
+}
+
+/// A form the agent asked to have filled in, asked one question at a time.
+struct Form {
+    request_id: serde_json::Value,
+    fields: Vec<tileception_acp::FormField>,
+    /// What was answered so far, by field id.
+    answers: Vec<(String, serde_json::Value)>,
+    error: Option<&'static str>,
+}
+
+fn form_value(kind: &tileception_acp::FieldKind, value: &str) -> Result<serde_json::Value, &'static str> {
+    use serde_json::Value;
+    use tileception_acp::FieldKind;
+    let trimmed = value.trim();
+    match kind {
+        FieldKind::Choice(options) => options
+            .iter()
+            .find(|option| option.value == value)
+            .map(|option| Value::String(option.value.clone()))
+            .ok_or("Choose one of the listed answers."),
+        FieldKind::Bool => match trimmed.to_ascii_lowercase().as_str() {
+            "true" | "yes" => Ok(Value::Bool(true)),
+            "false" | "no" => Ok(Value::Bool(false)),
+            _ => Err("Enter Yes or No."),
+        },
+        FieldKind::Number(true) => trimmed
+            .parse::<i64>()
+            .map(Value::from)
+            .or_else(|_| trimmed.parse::<u64>().map(Value::from))
+            .map_err(|_| "Enter a whole number."),
+        FieldKind::Number(false) => trimmed
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .ok_or("Enter a number."),
+        _ => Ok(Value::String(value.to_owned())),
+    }
 }
 
 /// What the panel shows in place of the conversation.
@@ -185,6 +260,17 @@ struct Saved {
     /// Programs found only by name that the user chose not to use.
     #[serde(default)]
     skip_installed: std::collections::BTreeMap<String, PathBuf>,
+    /// The version agents not kept by Tileception last reported, by the
+    /// program's path, for those whose version cannot be read from disk.
+    #[serde(default)]
+    versions: std::collections::BTreeMap<String, String>,
+    /// Last shown in a window of its own rather than along the edge.
+    #[serde(default)]
+    window: bool,
+    /// Where that window floated when it was closed (x, y, width, height);
+    /// none when it was tiled.
+    #[serde(default)]
+    float: Option<[f64; 4]>,
 }
 
 /// The `[doctor]` section of the config.
@@ -199,7 +285,7 @@ pub struct DoctorConfig {
 impl DoctorConfig {
     pub fn validate(&self) -> Result<(), String> {
         match self.agents.iter().find(|(_, command)| command.first().is_none_or(|program| program.trim().is_empty())) {
-            Some((agent_id, _)) => Err(format!("doctor.agents.{agent_id} needs a program to run")),
+            Some((agent_id, _)) => Err(format!("wizard.agents.{agent_id} needs a program to run")),
             None => Ok(()),
         }
     }
@@ -264,9 +350,9 @@ fn last_exchange(messages: &[Message]) -> Option<String> {
         Some((end, _)) => format!("{}\n[shortened]", &text[..end]),
         None => text.to_string(),
     };
-    let mut text = format!("Last Doctor question:\n{}\n", shorten(question.trim(), REPORT_QUESTION));
+    let mut text = format!("Last Wizard question:\n{}\n", shorten(question.trim(), REPORT_QUESTION));
     if !answer.is_empty() {
-        text += &format!("\nDoctor's answer:\n{}\n", shorten(&answer, REPORT_ANSWER));
+        text += &format!("\nWizard's answer:\n{}\n", shorten(&answer, REPORT_ANSWER));
     }
     Some(text)
 }
@@ -300,15 +386,25 @@ pub struct Doctor {
     /// rather than searching PATH on every frame.
     missing: std::collections::HashMap<String, String>,
     loading: bool,
+    /// When the registry last arrived, to look again for new versions.
+    loaded: Option<Instant>,
     /// The chosen agent's registry id.
     agent: Option<String>,
     use_installed: std::collections::BTreeMap<String, PathBuf>,
     skip_installed: std::collections::BTreeMap<String, PathBuf>,
+    versions: std::collections::BTreeMap<String, String>,
     /// Asking whether to use a program found by name before starting it.
     unconfirmed: Option<Unconfirmed>,
     session: Option<Session>,
+    /// The running agent: its version, once it says, and the program when
+    /// Tileception did not install it (an installed copy or the config's).
+    running: Running,
+    /// Agents and versions already offered as an update, so each is
+    /// offered once.
+    offered: std::collections::BTreeSet<(String, String)>,
+    session_generation: u64,
     status: Status,
-    events: Option<(channel::Sender<Event>, RegistrationToken)>,
+    events: Option<(channel::Sender<DoctorEvent>, RegistrationToken)>,
     /// How much the agent may do without asking.
     pub mode: Mode,
     /// Files the user allowed the agent to change during this answer.
@@ -355,6 +451,29 @@ pub struct Doctor {
     copied: Option<(String, Instant)>,
     /// Text selected in the conversation with the pointer.
     selected: Option<Selected>,
+    /// The button or row the keyboard is on instead of the message field:
+    /// one of [`Tileception::doctor_focusables`].
+    focus: Option<Hit>,
+    /// A message typed while a question was open, sent once the turn the
+    /// question was in has ended: its prompt and pictures.
+    follow_up: Option<(String, Vec<Attachment>)>,
+    /// Where that message is shown in `messages`: text the stopped turn
+    /// still sends goes in before it, not into the next answer.
+    follow_up_at: usize,
+    /// Shown in a window of its own rather than along the left edge; the
+    /// toggle opens it the way it was last used.
+    pub windowed: bool,
+    /// The agent's form being answered, if any.
+    form: Option<Form>,
+    /// Where its window floated when last closed; `None` when it was tiled.
+    /// A new window takes the same place.
+    pub float: Option<Rect>,
+    /// The window's client while it is open, and its window once mapped.
+    client: Option<Client>,
+    window: Option<WindowId>,
+    /// The window's size, and the pointer in it.
+    pub size: (f64, f64),
+    pointer: (f64, f64),
 }
 
 /// A place in the conversation's text: a block, by its place in
@@ -394,11 +513,16 @@ impl Default for Doctor {
             registry: None,
             missing: Default::default(),
             loading: false,
+            loaded: None,
             agent: saved.agent,
             use_installed: saved.use_installed,
             skip_installed: saved.skip_installed,
+            versions: saved.versions,
             unconfirmed: None,
             session: None,
+            running: Running::default(),
+            offered: Default::default(),
+            session_generation: 0,
             status: Status::Starting(String::new()),
             events: None,
             mode: saved.mode,
@@ -426,7 +550,44 @@ impl Default for Doctor {
             loads: None,
             copied: None,
             selected: None,
+            focus: None,
+            follow_up: None,
+            follow_up_at: 0,
+            form: None,
+            windowed: saved.window,
+            float: saved.float.map(|[left, top, width, height]| Rect::new(left, top, width, height)),
+            client: None,
+            window: None,
+            size: (PANEL_W + 160.0, 720.0),
+            pointer: (-1.0, -1.0),
         }
+    }
+}
+
+/// Session events carry their owner; registry events have no owner.
+type DoctorEvent = (Option<u64>, Event);
+
+impl Doctor {
+    fn retire_questions(&mut self) {
+        if self.form.take().is_some() {
+            self.input.clear();
+        }
+        for message in &mut self.messages {
+            if let Message::Ask { answer: answer @ None, .. } = message {
+                *answer = Some("Cancelled".into());
+            }
+        }
+        if matches!(self.focus, Some(Hit::Answer(..))) {
+            self.focus = None;
+        }
+    }
+
+    fn discard_session(&mut self) {
+        self.session_generation += 1;
+        self.session = None;
+        self.retire_questions();
+        self.follow_up = None;
+        self.stopping = None;
     }
 }
 
@@ -467,6 +628,10 @@ enum Hit {
     Copy(String),
     /// A code block's command, run in a terminal.
     Run(String),
+    /// Into a window of its own (true), or back to the left edge.
+    PopOut(bool),
+    /// Restart the agent on the registry's newer version, by its message.
+    Update(usize),
 }
 
 /// A row of a menu over the conversation.
@@ -480,24 +645,32 @@ enum PointerAction {
     Field,
     /// The filter of a setting's open menu.
     Filter,
+    /// The header of the window, which moves it.
+    Move,
 }
 
 impl crate::ui::PointerAction for PointerAction {
     fn activate(&self, state: &mut Tileception, _rect: Rect, point: Point) {
-        if !state.doctor.focused {
-            state.doctor.focused = true;
-            state.force_keyboard_focus_sync();
-        }
+        state.doctor_take_keys();
         match self {
             Self::Hit(hit) => {
                 state.doctor.selected = None;
+                // Moving the doctor keeps the keyboard where it was.
+                if !matches!(hit, Hit::PopOut(_)) {
+                    state.doctor.focus = None;
+                }
                 state.doctor_hit(hit.clone());
             }
-            Self::Send if state.doctor.busy => state.doctor_hit(Hit::Stop),
+            Self::Send if state.doctor.busy && !state.doctor_redirects() => state.doctor_hit(Hit::Stop),
             Self::Send => state.doctor_key(keysyms::KEY_Return, Mods::default()),
             Self::Text => state.doctor_select_from(point),
             Self::Field => state.doctor_field_press(point, false),
             Self::Filter => state.doctor_field_press(point, true),
+            Self::Move => {
+                if let Some(client) = &state.doctor.client {
+                    client.start_move();
+                }
+            }
         }
     }
 
@@ -507,8 +680,8 @@ impl crate::ui::PointerAction for PointerAction {
             Self::Filter => true,
             _ => return false,
         };
-        state.doctor.focused = true;
-        state.force_keyboard_focus_sync();
+        state.doctor_take_keys();
+        state.doctor.focus = None;
         state.doctor.selected = None;
         state.doctor_field_caret(point, filter, false);
         state.paste_primary(Paste::Doctor);
@@ -565,10 +738,11 @@ enum Block {
         hit: Option<Hit>,
         current: bool,
     },
+    /// A button; greyed out without a `hit`.
     Button {
         rect: Rect,
         label: String,
-        hit: Hit,
+        hit: Option<Hit>,
         primary: bool,
     },
     Diff {
@@ -651,9 +825,12 @@ impl Block {
 
 /// Where the panel's fixed parts go.
 struct Frame {
+    /// The whole area drawn in: the panel at the left edge, or the window.
     panel: Rect,
     title: Rect,
     agent: Rect,
+    /// Pops out into a window, or docks back at the edge.
+    pop: Rect,
     messages: Rect,
     field: Rect,
     text: Rect,
@@ -698,15 +875,111 @@ fn code_buttons(rect: Rect, run: bool) -> (Rect, Option<Rect>) {
     (copy, run)
 }
 
+/// What a key does while the keyboard is on a button or row
+/// ([`Doctor::focus`]) rather than in the message field.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FocusKey {
+    /// To the button or row at this place among them.
+    Move(usize),
+    /// Press the one at this place.
+    Choose(usize),
+    /// Back to the message field, doing nothing else.
+    Leave,
+    Scroll(f64),
+    /// Nothing to do, and the focus stays (a modifier on its own).
+    Keep,
+    /// Back to the message field, which takes the key: typing goes on there.
+    Pass,
+}
+
+/// `sym` with `mods` on the `current` of `count` buttons or rows. With
+/// `question`, they are a question's answers, which digits pick directly.
+fn focus_key(sym: u32, mods: Mods, current: usize, count: usize, question: bool) -> FocusKey {
+    let count = count.max(1);
+    let (next, previous) = ((current + 1) % count, (current + count - 1) % count);
+    if crate::config::modifier_of(sym).is_some() {
+        return FocusKey::Keep;
+    }
+    if mods.ctrl || mods.alt || mods.logo {
+        return FocusKey::Pass;
+    }
+    match sym {
+        keysyms::KEY_Escape => FocusKey::Leave,
+        keysyms::KEY_ISO_Left_Tab => FocusKey::Move(previous),
+        keysyms::KEY_Tab if mods.shift => FocusKey::Move(previous),
+        keysyms::KEY_Tab | keysyms::KEY_Right | keysyms::KEY_Down => FocusKey::Move(next),
+        keysyms::KEY_Left | keysyms::KEY_Up => FocusKey::Move(previous),
+        keysyms::KEY_Home => FocusKey::Move(0),
+        keysyms::KEY_End => FocusKey::Move(count - 1),
+        keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space | keysyms::KEY_KP_Space => {
+            FocusKey::Choose(current)
+        }
+        keysyms::KEY_Page_Up => FocusKey::Scroll(-4.0),
+        keysyms::KEY_Page_Down => FocusKey::Scroll(4.0),
+        keysyms::KEY_1..=keysyms::KEY_9 | keysyms::KEY_KP_1..=keysyms::KEY_KP_9 if question => {
+            let first = if sym >= keysyms::KEY_KP_1 { keysyms::KEY_KP_1 } else { keysyms::KEY_1 };
+            let picked = (sym - first) as usize;
+            if picked < count { FocusKey::Choose(picked) } else { FocusKey::Keep }
+        }
+        _ => FocusKey::Pass,
+    }
+}
+
+/// From the message field, the key that goes over to the `count` buttons
+/// or rows above it, and to which: Shift+Tab, or Tab, Up or Down while
+/// nothing is typed. A question's answers start at the first (the main
+/// one); a list from its end nearest the field going up, else its top.
+fn focus_entry(sym: u32, mods: Mods, field_empty: bool, count: usize, question: bool) -> Option<usize> {
+    if count == 0 || mods.ctrl || mods.alt || mods.logo {
+        return None;
+    }
+    let upwards = if question { 0 } else { count - 1 };
+    match sym {
+        keysyms::KEY_ISO_Left_Tab => Some(upwards),
+        keysyms::KEY_Tab if mods.shift => Some(upwards),
+        keysyms::KEY_Up if field_empty => Some(upwards),
+        keysyms::KEY_Tab if field_empty => Some(0),
+        keysyms::KEY_Down if field_empty && !question => Some(0),
+        _ => None,
+    }
+}
+
+/// The line under an open question's buttons: its keys while it has the
+/// keyboard, or how to get to it from the message field.
+fn ask_hint(buttons: usize, focused: bool) -> String {
+    if !focused {
+        return "Shift+Tab or Up to answer here, or send a message to decline it".into();
+    }
+    let pick = match buttons.min(9) {
+        0 | 1 => "1 picks".to_string(),
+        last => format!("1-{last} pick"),
+    };
+    format!("Enter chooses, arrows move, {pick}, Esc to the message field")
+}
+
+/// The one-time rejection when redirecting a turn, or cancellation.
+fn reject_choice(choices: &[Choice]) -> Option<String> {
+    choices.iter().find(|choice| choice.kind == "reject_once").map(|choice| choice.choice_id.clone())
+}
+
 /// Questions offered on an empty conversation; a click asks them.
 const EXAMPLES: [&str; 3] =
     ["Make the gaps between windows smaller", "Use Ghostty as my terminal", "Why is my wallpaper not showing?"];
 
 impl Tileception {
     /// The `doctor` command: opens the panel (taking the keyboard), or
-    /// closes it when it already has the keyboard.
+    /// closes it when it already has the keyboard. Popped out, it focuses
+    /// the window, or closes it when it is focused already.
     pub fn toggle_doctor(&mut self) {
         if self.is_locked() {
+            return;
+        }
+        if self.doctor.windowed {
+            if self.doctor_window_focused() {
+                self.close_doctor();
+            } else {
+                self.open_doctor();
+            }
             return;
         }
         // Open is enough: after a click elsewhere took the keyboard, the same
@@ -719,35 +992,290 @@ impl Tileception {
         }
     }
 
-    /// Does nothing when the doctor is switched off in `[shell]`.
+    /// Opens the doctor the way it was last used: along the edge, or as its
+    /// window, which is focused when it is open already. Does nothing when
+    /// the doctor is switched off in `[shell]`.
     pub fn open_doctor(&mut self) {
         if !self.shell().doctor() {
             tracing::info!("the doctor is switched off in [shell]");
             return;
         }
+        if self.launcher.open {
+            self.close_launcher();
+        }
+        self.notifications.focused = false;
+        self.doctor.edited = Instant::now();
+        // Loaded again now and then, so new versions of agents show.
+        let stale = self.doctor.loaded.is_none_or(|loaded| loaded.elapsed() > REGISTRY_AGAIN);
+        if (self.doctor.registry.is_none() || stale) && !self.doctor.loading {
+            self.load_registry(false);
+        }
+        if self.doctor.windowed {
+            self.open_doctor_window();
+            return self.doctor_changed();
+        }
         if !self.doctor_here() {
             self.doctor.opened = Instant::now();
         }
         self.doctor.home = self.outputs.active.clone();
-        if self.launcher.open {
-            self.close_launcher();
-        }
         self.doctor.open = true;
         self.doctor.focused = true;
-        self.notifications.focused = false;
-        self.doctor.edited = Instant::now();
-        if self.doctor.registry.is_none() && !self.doctor.loading {
-            self.load_registry(false);
+        self.force_keyboard_focus_sync();
+        self.doctor_changed();
+    }
+
+    /// Starts the doctor's window, or brings it forward when it is open.
+    fn open_doctor_window(&mut self) {
+        if let Some(window) = self.doctor.window {
+            self.fly_to_window(window);
+            return;
+        }
+        if self.doctor.client.is_some() {
+            // Started; its window is on its way.
+            return;
+        }
+        self.doctor.open = true;
+        self.doctor.focused = false;
+        self.doctor.pointer = (-1.0, -1.0);
+        match Client::start(self, client::Kind::Doctor) {
+            Ok(started) => self.doctor.client = Some(started),
+            Err(error) => {
+                self.doctor.open = false;
+                tracing::warn!("could not open the doctor's window: {error}");
+            }
         }
         self.force_keyboard_focus_sync();
+    }
+
+    /// Puts the doctor away, panel or window. The conversation stays.
+    pub fn close_doctor(&mut self) {
+        // Floating or tiled, the next window comes back the same way.
+        if let Some(window) = self.doctor.window {
+            let float = match self.area_for_window(window) {
+                Some(area) if self.context_area().as_ref() != Some(&area) => {
+                    self.with_area(&area, |state| state.world.float_rect(window)).flatten()
+                }
+                _ => self.world.float_rect(window),
+            };
+            if float != self.doctor.float {
+                self.doctor.float = float;
+                self.save_doctor();
+            }
+        }
+        self.doctor.open = false;
+        self.doctor.focused = false;
+        self.doctor.field_drag = None;
+        self.doctor.window = None;
+        if let Some(started) = self.doctor.client.take() {
+            self.loop_handle.remove(started.source);
+        }
+        self.force_keyboard_focus_sync();
+        self.doctor_changed();
+    }
+
+    /// Pops the doctor out into its own window, or docks it at the left
+    /// edge again, and remembers which for next time.
+    fn set_doctor_windowed(&mut self, windowed: bool) {
+        if self.doctor.windowed == windowed {
+            return;
+        }
+        let open = self.doctor.open;
+        self.close_doctor();
+        self.doctor.windowed = windowed;
+        self.save_doctor();
+        if open {
+            self.open_doctor();
+        }
+    }
+
+    /// The doctor has changed: draw it again, in its window too.
+    fn doctor_changed(&mut self) {
+        if let Some(started) = &self.doctor.client {
+            started.invalidate();
+        }
         self.schedule_render();
     }
 
-    pub fn close_doctor(&mut self) {
-        self.doctor.open = false;
-        self.doctor.focused = false;
-        self.force_keyboard_focus_sync();
-        self.schedule_render();
+    pub(crate) fn is_doctor_window(&self, window: WindowId) -> bool {
+        self.doctor.window == Some(window)
+    }
+
+    /// Whether the doctor's window is open and has the keyboard.
+    fn doctor_window_focused(&self) -> bool {
+        self.doctor.window.is_some()
+            && self.world.focus() == self.doctor.window
+            && self.is_active_output()
+            && !self.world.in_overview()
+    }
+
+    /// Whether typing goes to the doctor now, in either form.
+    pub(crate) fn doctor_has_keys(&self) -> bool {
+        if self.doctor.windowed { self.doctor_window_focused() } else { self.doctor.open && self.doctor.focused }
+    }
+
+    /// A click in the doctor gives it the keyboard. Its window has it
+    /// already: windows take the keyboard when clicked.
+    fn doctor_take_keys(&mut self) {
+        if !self.doctor.windowed && !self.doctor.focused {
+            self.doctor.focused = true;
+            self.force_keyboard_focus_sync();
+        }
+    }
+
+    /// Where the pointer is, in the coordinates the doctor is laid out in.
+    fn doctor_pointer(&self) -> Point {
+        if self.doctor.windowed {
+            Point::new(self.doctor.pointer.0, self.doctor.pointer.1)
+        } else {
+            Point::new(self.pointer.x, self.pointer.y)
+        }
+    }
+
+    /// A new toplevel: the doctor's own window, when it is from its client.
+    pub(crate) fn doctor_client_window(
+        &mut self,
+        surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+        window: WindowId,
+    ) {
+        use smithay::reexports::wayland_server::Resource;
+        let ours =
+            self.doctor.client.as_ref().is_some_and(|started| {
+                surface.wl_surface().client().is_some_and(|owner| owner.id() == started.client_id)
+            });
+        if ours {
+            self.doctor.window = Some(window);
+        }
+    }
+
+    pub(crate) fn doctor_client_event(
+        &mut self,
+        client_id: &smithay::reexports::wayland_server::backend::ClientId,
+        event: client::Event,
+    ) {
+        if self.doctor.client.as_ref().is_none_or(|started| started.client_id != *client_id) {
+            return;
+        }
+        // Moving over the window redraws it only when what is under the
+        // pointer changes (a hover) or something is being dragged: each
+        // frame of it costs the compositor a full draw.
+        let hover = |state: &Self| state.doctor_pointer_target(state.doctor_pointer()).map(|target| target.rect);
+        let before = matches!(event, client::Event::Motion(_)).then(|| hover(self));
+        if before.is_none() {
+            self.doctor_changed();
+        }
+        if let Some(area) = self.doctor.window.and_then(|window| self.area_for_window(window))
+            && self.context_area().as_ref() != Some(&area)
+        {
+            let client_id = client_id.clone();
+            self.with_area(&area, move |state| state.doctor_client_event(&client_id, event));
+            return;
+        }
+        match event {
+            client::Event::Resize(width, height) => {
+                self.doctor.size = (f64::from(width), f64::from(height));
+                if self.doctor.menu.is_some() {
+                    self.reveal_menu_selected();
+                }
+            }
+            client::Event::Motion(point) => {
+                self.doctor.pointer = (point.x, point.y);
+                let dragged = self.doctor_drag_at(point);
+                if dragged || before != Some(hover(self)) {
+                    self.doctor_changed();
+                }
+            }
+            client::Event::Leave => self.doctor.pointer = (-1.0, -1.0),
+            client::Event::Button(true) => {
+                let point = self.doctor_pointer();
+                self.doctor_press_at(point);
+            }
+            client::Event::Button(false) => {
+                self.doctor_release_at();
+            }
+            client::Event::MiddleClick => {
+                let point = self.doctor_pointer();
+                if let Some(target) = self.doctor_pointer_target(point) {
+                    target.middle_click(self, point);
+                }
+            }
+            client::Event::Scroll(amount) if amount != 0.0 => {
+                self.doctor_scroll(if amount > 0.0 { 1.0 } else { -1.0 });
+            }
+            client::Event::Scroll(_) => {}
+            client::Event::Key { sym, mods, pressed, code } => {
+                if pressed {
+                    self.doctor_key(sym, mods);
+                    if crate::key_repeat::edits(sym, mods) {
+                        self.start_key_repeat(
+                            code,
+                            crate::key_repeat::Repeat::Commands(vec![crate::commands::Command::DoctorKey(sym, mods)]),
+                        );
+                    }
+                } else {
+                    self.key_released(code, crate::config::modifier_of(sym).is_some());
+                }
+            }
+            client::Event::Unfocus => {
+                self.stop_key_repeat();
+                self.doctor.field_drag = None;
+            }
+            // Like the panel, the window keeps its conversation when closed.
+            client::Event::Closed | client::Event::CloseRequested => return self.close_doctor(),
+        }
+        let cursor = self
+            .doctor_pointer_target(self.doctor_pointer())
+            .map_or(smithay::input::pointer::CursorIcon::Default, |target| target.cursor);
+        if let Some(started) = &self.doctor.client {
+            started.cursor(cursor);
+        }
+    }
+
+    /// Draws the doctor's window when it changed, in the context of the
+    /// screen that shows it.
+    pub(crate) fn update_doctor_client(&mut self, renderer: &mut GlesRenderer) {
+        if self.doctor.client.is_none() {
+            return;
+        }
+        if let Some(area) = self.doctor.window.and_then(|window| self.area_for_window(window))
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, |state| state.render_doctor_client(renderer));
+        } else {
+            self.render_doctor_client(renderer);
+        }
+    }
+
+    fn render_doctor_client(&self, renderer: &mut GlesRenderer) {
+        use smithay::{
+            backend::renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
+            utils::Rectangle,
+        };
+        let Some(started) = &self.doctor.client else { return };
+        let physical =
+            ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
+        if !started.needs_frame(self.scale, physical) {
+            return;
+        }
+        let logical = (self.doctor.size.0 as i32, self.doctor.size.1 as i32);
+        let size = ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
+        let result = (|| -> Result<Vec<u8>, String> {
+            let elements = self.doctor_view_elements(renderer);
+            let mut texture: GlesTexture =
+                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
+            {
+                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
+                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+                let result = damage
+                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
+                    .map_err(|error| format!("{error:?}"))?;
+                result.sync.wait().map_err(|error| format!("{error:?}"))?;
+            }
+            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
+        })();
+        match result {
+            Ok(pixels) => started.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
+            Err(error) => tracing::warn!("could not draw the doctor's window: {error}"),
+        }
     }
 
     /// Opens the panel and asks `question` straight away.
@@ -763,13 +1291,15 @@ impl Tileception {
     }
 
     /// Where agent events come in, on the compositor thread.
-    fn doctor_emitter(&mut self) -> Option<tileception_acp::Emit> {
+    fn doctor_emitter(&mut self, generation: Option<u64>) -> Option<tileception_acp::Emit> {
         if self.doctor.events.is_none() {
-            let (sender, receiver) = channel::channel::<Event>();
+            let (sender, receiver) = channel::channel::<DoctorEvent>();
             let token = self
                 .loop_handle
                 .insert_source(receiver, |event, _, state| {
-                    if let channel::Event::Msg(event) = event {
+                    if let channel::Event::Msg((generation, event)) = event
+                        && generation.is_none_or(|generation| generation == state.doctor.session_generation)
+                    {
                         state.doctor_event(event);
                     }
                 })
@@ -779,15 +1309,57 @@ impl Tileception {
         }
         let sender = Mutex::new(self.doctor.events.as_ref()?.0.clone());
         Some(Arc::new(move |event| {
-            let _ = sender.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send(event);
+            let _ = sender.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).send((generation, event));
         }))
     }
 
     fn load_registry(&mut self, refresh: bool) {
-        if let Some(emit) = self.doctor_emitter() {
+        if let Some(emit) = self.doctor_emitter(None) {
             self.doctor.loading = true;
             tileception_acp::fetch_registry(refresh, emit);
         }
+    }
+
+    /// Tells the user once when the registry has a newer version of the
+    /// running agent than it reports, with a button to update it when
+    /// Tileception installed it.
+    fn offer_update(&mut self) {
+        let (Some(running), Some(agent)) = (self.doctor.running.version.clone(), self.chosen_agent()) else { return };
+        if self.doctor.session.is_none() || !tileception_acp::local::older(&running, &agent.version) {
+            return;
+        }
+        if !self.doctor.offered.insert((agent.agent_id.clone(), agent.version.clone())) {
+            return;
+        }
+        self.doctor.messages.push(Message::Update {
+            name: agent.name,
+            running,
+            latest: agent.version,
+            outside: self.doctor.running.outside.clone(),
+            done: false,
+        });
+        self.doctor_changed();
+    }
+
+    /// Starts the agent again on the registry's version, which Tileception
+    /// downloads or fetches as it would for a first start.
+    fn update_agent(&mut self, index: usize) {
+        let Some(Message::Update { name, latest, outside: None, done, .. }) = self.doctor.messages.get_mut(index)
+        else {
+            return;
+        };
+        if *done {
+            return;
+        }
+        *done = true;
+        let note =
+            format!("Updating {name} to {latest}. It starts a new conversation and no longer remembers this one.");
+        self.doctor.messages.push(Message::Note(note));
+        self.doctor.discard_session();
+        self.doctor.busy = false;
+        self.ensure_session();
+        self.doctor.scroll = 0.0;
+        self.doctor_changed();
     }
 
     /// Where the agent comes from, for the picker, when not the registry.
@@ -797,7 +1369,8 @@ impl Tileception {
         }
         let installed = agent.installed.as_ref()?;
         let path = tilde(&installed.command);
-        Some(match &installed.version {
+        let reported = self.doctor.versions.get(installed.command.to_string_lossy().as_ref());
+        Some(match installed.version.as_ref().or(reported) {
             Some(version) if tileception_acp::local::older(version, &agent.version) => {
                 format!("Installed {version} (the registry has {}): {path}", agent.version)
             }
@@ -848,7 +1421,7 @@ impl Tileception {
             }
         }
         self.doctor.unconfirmed = None;
-        let Some(emit) = self.doctor_emitter() else { return };
+        let Some(emit) = self.doctor_emitter(Some(self.doctor.session_generation)) else { return };
         // The documented defaults, for the agent to read.
         let defaults = state_dir().join("default-config.toml");
         if let Err(error) =
@@ -885,6 +1458,14 @@ impl Tileception {
                 Err(error) => self.doctor.mode_env_warning = Some(error),
             }
         }
+        if is_codex(self.doctor.agent.as_deref()) {
+            match codex_config(std::env::var("CODEX_CONFIG").ok().as_deref()) {
+                Ok(config) => {
+                    env.insert("CODEX_CONFIG".into(), config);
+                }
+                Err(error) => tracing::warn!("Codex keeps its config as it is: {error}"),
+            }
+        }
         self.doctor.session = Some(match (test_agent, agent) {
             (Some(line), _) => {
                 let mut words = line.split_whitespace().map(str::to_string);
@@ -896,6 +1477,11 @@ impl Tileception {
             }
             (None, Some(agent)) => {
                 self.doctor.status = Status::Starting(format!("Starting {}\u{2026}", agent.name));
+                self.doctor.running.outside = if configured.is_some() {
+                    Some(Outside::Configured)
+                } else {
+                    agent.installed.as_ref().map(|installed| Outside::Installed(installed.command.clone()))
+                };
                 match configured {
                     Some(program) => Session::start_program(agent.name, program, cwd, context, env, emit),
                     None => Session::start(agent, cwd, context, env, emit),
@@ -916,7 +1502,7 @@ impl Tileception {
 
     fn pick_agent(&mut self, agent_id: String) {
         if self.doctor.agent.as_ref() != Some(&agent_id) {
-            self.doctor.session = None;
+            self.doctor.discard_session();
             self.doctor.unconfirmed = None;
             self.doctor.busy = false;
             self.doctor.agent = Some(agent_id);
@@ -945,10 +1531,10 @@ impl Tileception {
         (rgba, width, height): (Vec<u8>, u32, u32),
     ) -> Result<usize, &'static str> {
         if self.doctor.busy {
-            return Err("I'm still thinking about the last one. It's in the doctor.");
+            return Err("I'm still thinking about the last one. It's with the Wizard.");
         }
         if self.doctor.agent.is_none() && test_agent().is_none() {
-            return Err("Pick an agent in the doctor first, then ask me again.");
+            return Err("Pick an agent in the Wizard first, then ask me again.");
         }
         // The agent list loads when the panel first opens; the duck may come first.
         if self.doctor.registry.is_none() && !self.doctor.loading {
@@ -958,7 +1544,7 @@ impl Tileception {
         let mark = self.doctor.messages.len();
         if !self.submit_to_doctor(question, prompt) {
             self.doctor.attachments.pop();
-            return Err("The doctor's agent is not available yet. Have a look in the doctor.");
+            return Err("The Wizard's agent is not available yet. Have a look in the Wizard.");
         }
         Ok(mark)
     }
@@ -982,6 +1568,14 @@ impl Tileception {
             self.doctor.messages.push(Message::Note("The agent is not available yet.".into()));
             return false;
         }
+        let attachments = self.show_sent(shown);
+        self.start_turn(prompt, attachments);
+        true
+    }
+
+    /// Puts a message and the pictures waiting to go with it into the
+    /// conversation; returns the pictures.
+    fn show_sent(&mut self, shown: String) -> Vec<Attachment> {
         let attachments = std::mem::take(&mut self.doctor.attachments);
         if !attachments.is_empty() {
             self.doctor
@@ -993,6 +1587,14 @@ impl Tileception {
         }
         self.doctor.view = View::Conversation;
         self.doctor.scroll = 0.0;
+        attachments
+    }
+
+    /// Prompts the agent, now or once it is ready for it.
+    fn start_turn(&mut self, prompt: String, attachments: Vec<Attachment>) {
+        // Right after login the agent list may still be loading: keep the
+        // question until the agent has started.
+        let starting = self.doctor.session.is_none() && (self.doctor.loading || self.doctor.unconfirmed.is_some());
         self.doctor.busy = true;
         self.doctor.stopping = None;
         self.doctor.approved.clear();
@@ -1002,7 +1604,6 @@ impl Tileception {
         } else {
             self.prompt_doctor(prompt, attachments);
         }
-        true
     }
 
     fn prompt_doctor(&mut self, text: String, attachments: Vec<Attachment>) {
@@ -1069,7 +1670,7 @@ impl Tileception {
             }
             Loaded::Attachment(Err(error)) => self.doctor.messages.push(Message::Note(error)),
         }
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// Starts loading the pictures in the newest answer that are not loaded yet.
@@ -1117,12 +1718,17 @@ impl Tileception {
         let event = match event {
             Event::Permission { id: request_id, title, choices, action } => {
                 self.doctor_permission(request_id, title, choices, action);
-                self.schedule_render();
+                self.doctor_changed();
                 return;
             }
             Event::File { id: request_id, op: file_op } => {
                 self.doctor_file(request_id, file_op);
-                self.schedule_render();
+                self.doctor_changed();
+                return;
+            }
+            Event::Form { id: request_id, message, fields } => {
+                self.doctor_form(request_id, message, fields);
+                self.doctor_changed();
                 return;
             }
             other => other,
@@ -1131,6 +1737,7 @@ impl Tileception {
         match event {
             Event::Registry(result) => {
                 doctor.loading = false;
+                doctor.loaded = Some(Instant::now());
                 // A saved agent that left the registry: choose again.
                 if let (Ok(agents), Some(agent_id), None) = (&result, &doctor.agent, &doctor.session)
                     && !agents.iter().any(|agent| &agent.agent_id == agent_id)
@@ -1147,6 +1754,7 @@ impl Tileception {
                 if doctor.view == View::Conversation && (doctor.open || doctor.waiting.is_some()) {
                     self.ensure_session();
                 }
+                self.offer_update();
                 // A question asked while the list loaded, for an agent that did not start.
                 let doctor = &mut self.doctor;
                 if doctor.session.is_none() && doctor.waiting.take().is_some() {
@@ -1157,6 +1765,8 @@ impl Tileception {
             Event::Status(status) => {
                 match &status {
                     Status::Starting(_) => {
+                        doctor.running.version = None;
+                        doctor.retire_questions();
                         doctor.options_ready = false;
                         doctor.agent_mode = None;
                         doctor.restate_mode = true;
@@ -1164,18 +1774,32 @@ impl Tileception {
                     Status::Failed(error) => {
                         doctor.messages.push(Message::Note(error.clone()));
                         doctor.waiting = None;
-                        doctor.session = None;
+                        doctor.discard_session();
                         doctor.busy = false;
                         doctor.options.clear();
                         doctor.menu = None;
                     }
                     Status::NeedsLogin(logins) => {
+                        doctor.retire_questions();
                         doctor.busy = false;
                         doctor.logins.clone_from(logins);
                     }
                     _ => {}
                 }
                 doctor.status = status;
+            }
+            // Late text from a turn stopped for a typed message belongs
+            // before that message.
+            Event::Text(text) if doctor.follow_up.is_some() && doctor.follow_up_at <= doctor.messages.len() => {
+                let place = doctor.follow_up_at;
+                match place.checked_sub(1).and_then(|before| doctor.messages.get_mut(before)) {
+                    Some(Message::Agent(last)) => last.push_str(&text),
+                    _ => {
+                        doctor.messages.insert(place, Message::Agent(text));
+                        doctor.follow_up_at += 1;
+                    }
+                }
+                self.load_pictures();
             }
             Event::Text(text) => {
                 match doctor.messages.last_mut() {
@@ -1208,20 +1832,26 @@ impl Tileception {
                     }),
                 }
             }
-            Event::Permission { .. } | Event::File { .. } => {}
+            Event::Permission { .. } | Event::File { .. } | Event::Form { .. } => {}
             Event::TurnEnded(reason) => {
                 doctor.busy = false;
                 doctor.stopping = None;
                 doctor.approved.clear();
+                // Stopped for a message typed instead of an answer, which
+                // goes now; that says enough.
+                let redirected = doctor.follow_up.is_some();
                 let note = match reason.as_str() {
                     "refusal" => Some("The agent declined to answer."),
                     "max_tokens" | "max_turn_requests" => Some("The agent stopped: its answer got too long."),
-                    "cancelled" => Some("Stopped."),
+                    "cancelled" if !redirected => Some("Stopped."),
                     _ => None,
                 };
                 // Not after /clear: the conversation it ended is gone.
                 if let Some(note) = note.filter(|_| !doctor.messages.is_empty()) {
                     doctor.messages.push(Message::Note(note.into()));
+                }
+                if let Some((prompt, attachments)) = self.doctor.follow_up.take() {
+                    self.start_turn(prompt, attachments);
                 }
             }
             Event::Note(text) => doctor.messages.push(Message::Note(text)),
@@ -1256,6 +1886,19 @@ impl Tileception {
                 }
             }
             Event::Commands(commands) => doctor.commands = commands,
+            Event::Version(version) => {
+                // Remembered for the agent list, where an installed
+                // program's version cannot be read without running it.
+                if let Some(Outside::Installed(path)) = &doctor.running.outside {
+                    let path = path.to_string_lossy().into_owned();
+                    if doctor.versions.get(&path) != Some(&version) {
+                        doctor.versions.insert(path, version.clone());
+                        self.save_doctor();
+                    }
+                }
+                self.doctor.running.version = Some(version);
+                self.offer_update();
+            }
             Event::Images(takes) => {
                 doctor.takes_images = Some(takes);
                 if doctor.options_ready
@@ -1265,7 +1908,7 @@ impl Tileception {
                 }
             }
         }
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     fn doctor_reply(&self, request_id: serde_json::Value, result: Result<serde_json::Value, String>) {
@@ -1305,6 +1948,7 @@ impl Tileception {
             answer: None,
         });
         self.doctor.scroll = 0.0;
+        self.focus_new_question();
     }
 
     /// A file the agent reads or writes through Tileception.
@@ -1327,6 +1971,7 @@ impl Tileception {
                     let choices = yes_no("Allow", "Deny");
                     self.doctor.messages.push(Message::Ask { reply, title, choices, diff: Vec::new(), answer: None });
                     self.doctor.scroll = 0.0;
+                    self.focus_new_question();
                 }
             }
             tileception_acp::FileOp::Write { path, content } => {
@@ -1350,8 +1995,141 @@ impl Tileception {
                     let choices = yes_no("Apply", "Reject");
                     self.doctor.messages.push(Message::Ask { reply, title, choices, diff, answer: None });
                     self.doctor.scroll = 0.0;
+                    self.focus_new_question();
                 }
             }
+        }
+    }
+
+    /// The agent asks the user to fill in a form: its questions come one by
+    /// one, as questions with buttons, or answered by typing.
+    fn doctor_form(&mut self, request_id: serde_json::Value, message: String, fields: Vec<tileception_acp::FormField>) {
+        use tileception_acp::FieldKind;
+        if self.doctor.form.is_some() || fields.iter().any(|field| field.required && field.kind == FieldKind::Other) {
+            if let Some(session) = &self.doctor.session {
+                session.send(Request::Form { id: request_id, answers: None });
+            }
+            self.doctor.messages.push(Message::Note("The agent asked something the Wizard cannot show yet.".into()));
+            return;
+        }
+        if !message.trim().is_empty() {
+            self.doctor.messages.push(Message::Info(message));
+        }
+        self.doctor.form = Some(Form { request_id, fields, answers: Vec::new(), error: None });
+        self.ask_form_field(None);
+    }
+
+    /// Asks the form's next question: `note`'s field when given, else the
+    /// first one not answered yet. With none left, the answers go back.
+    fn ask_form_field(&mut self, note: Option<usize>) {
+        use tileception_acp::FieldKind;
+        let Some(form) = &self.doctor.form else { return };
+        let answered = |key: &str| form.answers.iter().any(|(answered, _)| answered == key);
+        let next = note.or_else(|| {
+            form.fields
+                .iter()
+                .position(|field| field.note_for.is_none() && field.kind != FieldKind::Other && !answered(&field.key))
+        });
+        let Some(index) = next else {
+            let form = self.doctor.form.take();
+            if let (Some(form), Some(session)) = (form, &self.doctor.session) {
+                session.send(Request::Form { id: form.request_id, answers: Some(form.answers) });
+            }
+            return;
+        };
+        let field = &form.fields[index];
+        let choice =
+            |value: &str, name: &str| Choice { choice_id: value.into(), name: name.into(), kind: "allow_once".into() };
+        let choices = match &field.kind {
+            FieldKind::Choice(options) => options.iter().map(|option| choice(&option.value, &option.label)).collect(),
+            FieldKind::Bool => vec![choice("true", "Yes"), choice("false", "No")],
+            _ => Vec::new(),
+        };
+        let mut title = if field.note_for.is_some() { "Your answer".to_string() } else { field.title.clone() };
+        if let Some(description) = field.description.as_deref().map(str::trim)
+            && !description.is_empty()
+            && description != title
+        {
+            title.push('\n');
+            title.push_str(description);
+        }
+        let reply = AskReply::Form { request_id: form.request_id.clone(), field: index };
+        self.doctor.messages.push(Message::Ask { reply, title, choices, diff: Vec::new(), answer: None });
+        self.doctor.scroll = 0.0;
+        self.focus_new_question();
+    }
+
+    /// Validates and answers the form's question, or declines it with `None`.
+    fn answer_form(&mut self, index: usize, value: Option<String>, typed: bool) {
+        use tileception_acp::FieldKind;
+        let Some(form) = self.doctor.form.as_mut() else { return };
+        let Some(Message::Ask { reply: AskReply::Form { request_id, field }, choices, answer: answer @ None, .. }) =
+            self.doctor.messages.get_mut(index)
+        else {
+            return;
+        };
+        if *request_id != form.request_id {
+            return;
+        }
+        let Some(asked) = form.fields.get(*field) else { return };
+        let Some(value) = value else {
+            *answer = Some("Declined".into());
+            self.doctor.form = None;
+            if let Some(session) = &self.doctor.session {
+                session.send(Request::Form { id: request_id.clone(), answers: None });
+            }
+            return self.focus_pending_question();
+        };
+        let key = asked.key.clone();
+        let other = match &asked.kind {
+            FieldKind::Choice(options) => options.iter().find(|option| option.label.eq_ignore_ascii_case("other")),
+            _ => None,
+        };
+        let note = other
+            .and_then(|_| form.fields.iter().position(|candidate| candidate.note_for.as_deref() == Some(key.as_str())));
+        let parsed = form_value(&asked.kind, &value).map(|parsed| (parsed, None)).or_else(|error| {
+            let Some((other, note)) = other.zip(note).filter(|_| typed) else { return Err(error) };
+            let field = &form.fields[note];
+            if field.kind != FieldKind::Text {
+                return Err(error);
+            }
+            Ok((
+                serde_json::Value::String(other.value.clone()),
+                Some((field.key.clone(), serde_json::Value::String(value.clone()))),
+            ))
+        });
+        let (parsed, note_answer) = match parsed {
+            Ok(answer) => answer,
+            Err(error) => {
+                form.error = Some(error);
+                self.doctor.focus = None;
+                self.doctor.scroll = 0.0;
+                return;
+            }
+        };
+        let label = if typed {
+            self.doctor.input.clear();
+            value.clone()
+        } else {
+            choices
+                .iter()
+                .find(|choice| choice.choice_id == value)
+                .map_or_else(|| value.clone(), |choice| choice.name.clone())
+        };
+        *answer = Some(label);
+        form.error = None;
+        // Choosing "Other" asks for the words that go with it, unless they were typed already.
+        let next = if let Some(answer) = note_answer {
+            form.answers.push(answer);
+            None
+        } else {
+            note.filter(|_| other.is_some_and(|option| option.value == value))
+        };
+        form.answers.retain(|(answered, _)| *answered != key);
+        form.answers.push((key, parsed));
+        self.ask_form_field(next);
+        if self.doctor.form.is_none() {
+            self.focus_pending_question();
         }
     }
 
@@ -1402,7 +2180,7 @@ impl Tileception {
             // Selecting the same mode retries an agent's rejected setting.
             self.doctor.agent_mode = None;
             self.sync_agent_mode();
-            self.schedule_render();
+            self.doctor_changed();
             return;
         }
         self.doctor.mode = mode;
@@ -1437,7 +2215,7 @@ impl Tileception {
         } else {
             self.sync_agent_mode();
         }
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// Select a verified agent mode for every Tileception permission mode.
@@ -1459,6 +2237,9 @@ impl Tileception {
             models: self.doctor.models.clone(),
             use_installed: self.doctor.use_installed.clone(),
             skip_installed: self.doctor.skip_installed.clone(),
+            versions: self.doctor.versions.clone(),
+            window: self.doctor.windowed,
+            float: self.doctor.float.map(|rect| [rect.x, rect.y, rect.w, rect.h]),
         };
         let path = saved_path();
         let written = path
@@ -1500,7 +2281,7 @@ impl Tileception {
         for arg in &program.args {
             line += &format!(" {}", quote(arg));
         }
-        line += "; echo; echo 'Done: go back to the doctor panel.'; read -r _";
+        line += "; echo; echo 'Done: go back to the Wizard.'; read -r _";
         self.open_terminal(&line);
         self.doctor
             .messages
@@ -1517,6 +2298,35 @@ impl Tileception {
         }
         // A key being entered is masked, and so not copied or cut.
         self.doctor.input.hidden = self.doctor.secret.is_some();
+        // On a button or row, the keys move between them and press them;
+        // anything else goes back to the field.
+        let focusables = self.doctor_focusables();
+        let focused = self.doctor.focus.as_ref().and_then(|hit| focusables.iter().position(|place| place == hit));
+        if let Some(current) = focused {
+            let question = matches!(focusables[current], Hit::Answer(..));
+            match focus_key(sym, mods, current, focusables.len(), question) {
+                FocusKey::Move(place) => {
+                    self.doctor.focus = Some(focusables[place].clone());
+                    self.reveal_doctor_focus();
+                    return self.doctor_changed();
+                }
+                FocusKey::Choose(place) => {
+                    self.doctor.focus = None;
+                    self.doctor.selected = None;
+                    self.doctor_hit(focusables[place].clone());
+                    return self.doctor_changed();
+                }
+                FocusKey::Leave => {
+                    self.doctor.focus = None;
+                    return self.doctor_changed();
+                }
+                FocusKey::Scroll(notches) => return self.doctor_scroll(notches),
+                FocusKey::Keep => return,
+                FocusKey::Pass => self.doctor.focus = None,
+            }
+        } else {
+            self.doctor.focus = None;
+        }
         // With nothing to copy in the field, Ctrl+C copies what is selected
         // in the conversation.
         if mods.ctrl
@@ -1545,6 +2355,14 @@ impl Tileception {
                 _ => {}
             }
         }
+        // Over to the question's buttons, or a view's rows, above the field.
+        let question = focusables.iter().any(|hit| matches!(hit, Hit::Answer(..)));
+        if let Some(place) = focus_entry(sym, mods, self.doctor.input.text.is_empty(), focusables.len(), question) {
+            self.doctor.focus = Some(focusables[place].clone());
+            self.reveal_doctor_focus();
+            return self.doctor_changed();
+        }
+        let redirects = self.doctor_redirects();
         let input = &mut self.doctor.input;
         match sym {
             keysyms::KEY_Escape if self.doctor.secret.is_some() => {
@@ -1572,8 +2390,12 @@ impl Tileception {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
                 let text = input.text.trim().to_string();
                 let attached = !self.doctor.attachments.is_empty();
-                // Commands also work while an answer comes in (/clear, /mode).
-                if (!text.is_empty() || attached) && (!self.doctor.busy || text.starts_with('/')) {
+                if redirects {
+                    // A message instead of an answer turns the question
+                    // down and goes to the agent after it.
+                    self.doctor_redirect(text);
+                } else if (!text.is_empty() || attached) && (!self.doctor.busy || text.starts_with('/')) {
+                    // Commands also work while an answer comes in (/clear, /mode).
                     input.clear();
                     self.send_to_doctor(text);
                 }
@@ -1587,6 +2409,149 @@ impl Tileception {
             }
         }
         self.doctor.menu_selected = 0;
+        self.doctor_changed();
+    }
+
+    /// Whether the open question is one of the agent's form's.
+    fn pending_form_question(&self) -> bool {
+        self.pending_ask().is_some_and(|index| {
+            matches!(self.doctor.messages.get(index), Some(Message::Ask { reply: AskReply::Form { .. }, .. }))
+        })
+    }
+
+    /// The newest question still waiting for an answer, by its place in
+    /// the conversation.
+    fn pending_ask(&self) -> Option<usize> {
+        self.doctor.messages.iter().rposition(|message| matches!(message, Message::Ask { answer: None, .. }))
+    }
+
+    /// What the keyboard can move across instead of typing, in order: the
+    /// open question's answers, or else the rows and buttons of what is
+    /// shown (agents, logins, the installed agent, example questions).
+    fn doctor_focusables(&self) -> Vec<Hit> {
+        let pending = self.pending_ask();
+        self.doctor_content(self.doctor_frame().messages)
+            .into_iter()
+            .filter_map(|block| match block {
+                Block::Row { hit: Some(hit), .. } | Block::Button { hit: Some(hit), .. } => Some(hit),
+                _ => None,
+            })
+            .filter(|hit| match hit {
+                Hit::Answer(index, _) => Some(*index) == pending,
+                // Changes are undone with the pointer.
+                Hit::Undo(_) => false,
+                _ => pending.is_none(),
+            })
+            .collect()
+    }
+
+    /// The button or row the keyboard is on, while it is still shown.
+    fn doctor_focus(&self) -> Option<Hit> {
+        let focus = self.doctor.focus.as_ref()?;
+        self.doctor_focusables().into_iter().find(|hit| hit == focus)
+    }
+
+    /// A question just came in: the keyboard goes to its first answer,
+    /// unless a message is being typed, where a space or Enter meant for
+    /// the message would answer it.
+    fn focus_new_question(&mut self) {
+        let typing =
+            !self.doctor.input.text.is_empty() && self.doctor.edited.elapsed() < std::time::Duration::from_millis(1500);
+        if !typing {
+            self.focus_pending_question();
+        }
+    }
+
+    fn focus_pending_question(&mut self) {
+        let typed = self.pending_ask().is_some_and(|index| {
+            matches!(&self.doctor.messages[index],
+                Message::Ask { reply: AskReply::Form { .. }, choices, .. } if choices.is_empty())
+        });
+        self.doctor.focus =
+            if typed { None } else { self.doctor_focusables().into_iter().find(|hit| matches!(hit, Hit::Answer(..))) };
+    }
+
+    /// Scrolls so the focused button or row shows whole.
+    fn reveal_doctor_focus(&mut self) {
+        let Some(focus) = self.doctor.focus.clone() else { return };
+        let area = self.doctor_frame().messages;
+        let blocks = self.doctor_content(area);
+        let Some(rect) = blocks.iter().find_map(|block| match block {
+            Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit: Some(hit), .. } if *hit == focus => {
+                Some(*rect)
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        let height = blocks.iter().map(|block| block.rect().bottom()).fold(area.y, f64::max) - area.y;
+        let most = (height - area.h).max(0.0);
+        // A little of what is around it shows too.
+        let (top, bottom) = (rect.y - GAP, rect.bottom() + GAP);
+        self.doctor.scroll = match self.doctor.view {
+            // Scrolled down from the top.
+            View::Picker => {
+                let scroll = self.doctor.scroll;
+                let scroll = if top - scroll < area.y { top - area.y } else { scroll };
+                let scroll = if bottom - scroll > area.bottom() { bottom - area.bottom() } else { scroll };
+                scroll.clamp(0.0, most)
+            }
+            View::Conversation if self.doctor.messages.is_empty() => 0.0,
+            // Scrolled up from the newest message at the bottom.
+            View::Conversation => {
+                let shift = (area.h - height).min(0.0);
+                let scroll = self.doctor.scroll;
+                let scroll =
+                    if bottom + shift + scroll > area.bottom() { area.bottom() - bottom - shift } else { scroll };
+                let scroll = if top + shift + scroll < area.y { area.y - top - shift } else { scroll };
+                scroll.clamp(0.0, most)
+            }
+        };
+    }
+
+    /// A message typed while a question is open goes instead of an answer.
+    fn doctor_redirects(&self) -> bool {
+        let text = self.doctor.input.text.trim();
+        if self.doctor.secret.is_some() {
+            return false;
+        }
+        if self.pending_form_question() {
+            let command = text.trim_start_matches('/').split_whitespace().next();
+            return !text.is_empty()
+                && !(text.starts_with('/') && COMMANDS.iter().any(|(name, ..)| Some(*name) == command));
+        }
+        self.pending_ask().is_some()
+            && !text.starts_with('/')
+            && (!text.is_empty() || !self.doctor.attachments.is_empty())
+    }
+
+    /// Sends `text` instead of answering the open questions, as Claude Code
+    /// does: each is turned down first, then the turn they were in is
+    /// stopped, and the message goes as the next prompt once it has ended.
+    /// The answers go before the prompt, which the agent would not take
+    /// while a turn is still running.
+    fn doctor_redirect(&mut self, text: String) {
+        // Typed words answer the agent's form question instead.
+        if let Some(index) = self.pending_ask()
+            && matches!(&self.doctor.messages[index], Message::Ask { reply: AskReply::Form { .. }, .. })
+        {
+            return self.answer_form(index, Some(text), true);
+        }
+        self.doctor.input.clear();
+        while let Some(index) = self.pending_ask() {
+            let Some(Message::Ask { choices, .. }) = self.doctor.messages.get(index) else { break };
+            let choice = reject_choice(choices);
+            self.doctor_hit(Hit::Answer(index, choice));
+        }
+        self.doctor.focus = None;
+        self.doctor.follow_up_at = self.doctor.messages.len();
+        let attachments = self.show_sent(text.clone());
+        if self.doctor.busy {
+            self.doctor.follow_up = Some((text, attachments));
+            self.doctor_hit(Hit::Stop);
+        } else {
+            self.start_turn(text, attachments);
+        }
     }
 
     /// Keys while a setting's menu is open: arrows and pages choose, typing
@@ -1606,7 +2571,7 @@ impl Tileception {
             keysyms::KEY_Escape if !filter.text.is_empty() => filter.clear(),
             keysyms::KEY_Escape => {
                 self.doctor.menu = None;
-                return self.schedule_render();
+                return self.doctor_changed();
             }
             // The filter edits like every other field.
             _ => {
@@ -1619,7 +2584,7 @@ impl Tileception {
             self.menu_filter_changed();
         }
         self.reveal_menu_selected();
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// Whether a setting's menu (with its filter field) is open.
@@ -1654,11 +2619,12 @@ impl Tileception {
             self.doctor.menu_filter.paste(text.trim());
             self.doctor.edited = Instant::now();
             self.menu_filter_changed();
-            return self.schedule_render();
+            return self.doctor_changed();
         }
         // A key being entered comes without the space around it.
         self.doctor.input.paste(if self.doctor.secret.is_some() { text.trim() } else { text });
         self.doctor.edited = Instant::now();
+        self.doctor_changed();
     }
 
     /// Scrolls; positive goes towards newer messages (or down the picker).
@@ -1667,12 +2633,12 @@ impl Tileception {
         // Over an open setting's menu, the wheel scrolls its values.
         if self.doctor.menu.is_some()
             && let Some((outline, rows)) = self.menu_layout(&frame)
-            && outline.contains(Point::new(self.pointer.x, self.pointer.y))
+            && outline.contains(self.doctor_pointer())
         {
             let most = self.menu_values().len().saturating_sub(rows.len());
             let first = self.doctor.menu_first.min(most) as f64 + notches;
             self.doctor.menu_first = first.clamp(0.0, most as f64) as usize;
-            return self.schedule_render();
+            return self.doctor_changed();
         }
         let content = self.doctor_content_height(frame.messages);
         let max = (content - frame.messages.h).max(0.0);
@@ -1702,9 +2668,11 @@ impl Tileception {
         };
     }
 
-    /// The panel is open on the output being drawn or handled.
+    /// The panel is open on the output being drawn or handled (never when
+    /// the doctor is in its own window).
     pub fn doctor_here(&self) -> bool {
         self.doctor.open
+            && !self.doctor.windowed
             && match &self.doctor.home {
                 Some(home) => self.output.as_ref() == Some(home),
                 None => self.is_active_output(),
@@ -1718,37 +2686,39 @@ impl Tileception {
     /// A press anywhere: inside, the panel takes the keyboard and acts on
     /// what was clicked; outside, the desktop gets the keyboard back.
     pub fn doctor_press(&mut self, point: Point) -> bool {
-        if !self.doctor.open || self.overlay_under(point) {
+        if !self.doctor.open || self.doctor.windowed || self.overlay_under(point) {
             return false;
         }
-        let frame = self.doctor_frame();
-        if !self.doctor_here() || !frame.panel.contains(point) {
+        if !self.doctor_here() || !self.doctor_frame().panel.contains(point) {
             if self.doctor.focused {
                 self.doctor.focused = false;
                 self.force_keyboard_focus_sync();
             }
             return false;
         }
-        if !self.doctor.focused {
-            self.doctor.focused = true;
-            self.force_keyboard_focus_sync();
-        }
+        self.doctor_take_keys();
+        self.doctor_press_at(point);
+        true
+    }
+
+    /// A press at `point` in the panel or the window, which has the keyboard.
+    fn doctor_press_at(&mut self, point: Point) {
+        let frame = self.doctor_frame();
         let target = self.doctor_pointer_target(point);
         if self.doctor.menu.is_some() && target.is_none() {
             // Clicking the menu's edges keeps it open.
             if self.menu_layout(&frame).is_some_and(|(outline, _)| outline.contains(point)) {
-                return true;
+                return;
             }
             self.doctor.menu = None;
-            self.schedule_render();
-            return true;
+            return self.doctor_changed();
         }
         if let Some(target) = target {
             target.activate(self, point);
         } else {
             self.doctor_select_from(point);
         }
-        true
+        self.doctor_changed();
     }
 
     pub(crate) fn doctor_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
@@ -1772,10 +2742,13 @@ impl Tileception {
         if frame.field.contains(point) {
             return Some(PointerTarget::new(frame.field, PointerAction::Field, CursorIcon::Text));
         }
-        let mut buttons = vec![(
-            frame.agent,
-            PointerAction::Hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker }),
-        )];
+        let mut buttons = vec![
+            (
+                self.agent_button(&frame),
+                PointerAction::Hit(if self.doctor.view == View::Picker { Hit::ClosePicker } else { Hit::OpenPicker }),
+            ),
+            (frame.pop, PointerAction::Hit(Hit::PopOut(!self.doctor.windowed))),
+        ];
         if let Some((option, rect)) = self.model_button(&frame) {
             buttons.push((rect, PointerAction::Hit(Hit::OpenMenu(option.option_id.clone()))));
         }
@@ -1790,9 +2763,16 @@ impl Tileception {
                 return Some(PointerTarget::button(rect, action));
             }
         }
+        // The rest of a window's header picks it up, as a title bar would.
+        let header = Rect::new(frame.panel.x, frame.panel.y, frame.panel.w, HEADER_H);
+        if self.doctor.windowed && header.contains(point) {
+            return Some(PointerTarget::new(header, PointerAction::Move, CursorIcon::Grab));
+        }
         for block in self.doctor_blocks(frame.messages) {
             match block {
-                Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit, .. } if rect.contains(point) => {
+                Block::Row { rect, hit: Some(hit), .. } | Block::Button { rect, hit: Some(hit), .. }
+                    if rect.contains(point) =>
+                {
                     return Some(PointerTarget::button(rect, PointerAction::Hit(hit)));
                 }
                 Block::Picture { rect, open, .. } if rect.contains(point) => {
@@ -1893,13 +2873,14 @@ impl Tileception {
             let text = self.content_text(place.block)?;
             Some(Selected { anchor: place, head: place, dragging: true, ends: (text.clone(), text) })
         });
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// The pointer pressed in the message field, or with `filter` in the
     /// open menu's: it places the caret there, and a drag on from it selects.
     fn doctor_field_press(&mut self, point: Point, filter: bool) {
         self.doctor.selected = None;
+        self.doctor.focus = None;
         self.doctor.field_drag = Some(filter);
         let extend = self.seat.get_keyboard().is_some_and(|keyboard| keyboard.modifier_state().shift);
         self.doctor_field_caret(point, filter, extend);
@@ -1927,16 +2908,22 @@ impl Tileception {
         }
         drop(text);
         self.doctor.edited = Instant::now();
-        self.schedule_render();
+        self.doctor_changed();
     }
 
-    /// Pointer motion while selecting text. True when it took it.
+    /// Pointer motion over the desktop while selecting text in the panel.
+    /// True when it took it.
     pub fn doctor_drag(&mut self, point: Point) -> bool {
+        !self.doctor.windowed && self.doctor_drag_at(point)
+    }
+
+    /// Pointer motion in the panel's or the window's coordinates.
+    fn doctor_drag_at(&mut self, point: Point) -> bool {
         if let Some(filter) = self.doctor.field_drag {
             self.doctor_field_caret(point, filter, true);
             return true;
         }
-        if !self.doctor_here() || !self.doctor.selected.as_ref().is_some_and(|selected| selected.dragging) {
+        if !self.doctor.open || !self.doctor.selected.as_ref().is_some_and(|selected| selected.dragging) {
             return false;
         }
         if let Some(head) = self.doctor_text_at(point)
@@ -1946,12 +2933,17 @@ impl Tileception {
             selected.head = head;
             selected.ends.1 = text;
         }
-        self.schedule_render();
+        self.doctor_changed();
         true
     }
 
-    /// The button coming up after selecting text. True when it was selecting.
+    /// The button coming up over the desktop after selecting text in the
+    /// panel. True when it was selecting.
     pub fn doctor_release(&mut self) -> bool {
+        !self.doctor.windowed && self.doctor_release_at()
+    }
+
+    fn doctor_release_at(&mut self) -> bool {
         if let Some(filter) = self.doctor.field_drag.take() {
             let input = if filter { &self.doctor.menu_filter } else { &self.doctor.input };
             self.offer_primary(input.selected_text());
@@ -2066,6 +3058,7 @@ impl Tileception {
             Hit::ClosePicker if self.doctor.agent.is_some() => self.doctor.view = View::Conversation,
             Hit::ClosePicker => {}
             Hit::ReloadRegistry => self.load_registry(true),
+            Hit::Update(index) => self.update_agent(index),
             Hit::Login(method) => {
                 let asks = self
                     .doctor
@@ -2081,8 +3074,9 @@ impl Tileception {
                 } else {
                     self.doctor.input.clear();
                     self.doctor.secret = Some(SecretEntry { method, labels: asks, values: Vec::new() });
-                    self.doctor.focused = true;
-                    self.force_keyboard_focus_sync();
+                    // The key is typed into the message field.
+                    self.doctor.focus = None;
+                    self.doctor_take_keys();
                 }
             }
             Hit::LoggedIn => {
@@ -2095,6 +3089,10 @@ impl Tileception {
                 self.doctor.status = Status::NeedsLogin(self.doctor.logins.clone());
             }
             Hit::Answer(index, choice) => {
+                if matches!(self.doctor.messages.get(index), Some(Message::Ask { reply: AskReply::Form { .. }, .. })) {
+                    self.answer_form(index, choice, false);
+                    return self.doctor_changed();
+                }
                 let Some(Message::Ask { reply, answer: answer @ None, choices, .. }) =
                     self.doctor.messages.get_mut(index)
                 else {
@@ -2129,7 +3127,10 @@ impl Tileception {
                             );
                         }
                     }
+                    AskReply::Form { .. } => unreachable!(),
                 }
+                // On to the next question still open, if any.
+                self.focus_pending_question();
             }
             Hit::Undo(index) => self.undo_change(index),
             Hit::SetMode(mode) => self.set_doctor_mode(mode),
@@ -2168,11 +3169,12 @@ impl Tileception {
                 // Back from the check to the copy button.
                 let timer = smithay::reexports::calloop::timer::Timer::from_duration(COPIED_FOR);
                 let _ = self.loop_handle.insert_source(timer, |_, _, state| {
-                    state.schedule_render();
+                    state.doctor_changed();
                     smithay::reexports::calloop::timer::TimeoutAction::Drop
                 });
             }
             Hit::Run(command) => self.run_code(&command),
+            Hit::PopOut(windowed) => self.set_doctor_windowed(windowed),
             Hit::Example(index) => self.send_to_doctor(EXAMPLES[index].to_string()),
             Hit::Stop if self.doctor.busy && self.doctor.stopping.is_some() => self.restart_stuck_agent(),
             Hit::Stop => {
@@ -2196,8 +3198,10 @@ impl Tileception {
                         });
                     }
                 }
-                // The agent's own questions are cancelled with the turn; its
-                // file requests still need an answer, or it waits for ever.
+                // The agent's own questions and forms are cancelled with the
+                // turn; its file requests still need an answer, or it waits
+                // for ever.
+                self.doctor.form = None;
                 let mut unanswered = Vec::new();
                 for message in &mut self.doctor.messages {
                     if let Message::Ask { answer: answer @ None, reply, .. } = message {
@@ -2212,14 +3216,22 @@ impl Tileception {
                 }
             }
         }
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// Ends a turn the agent did not stop when asked, by restarting it.
     fn restart_stuck_agent(&mut self) {
+        self.doctor.retire_questions();
         self.doctor.stopping = None;
         self.doctor.busy = false;
         self.doctor.approved.clear();
+        // A message waiting for the stopped turn goes to the restarted agent
+        // once it is ready.
+        if let Some(follow_up) = self.doctor.follow_up.take() {
+            self.doctor.waiting = Some(follow_up);
+            self.doctor.options_ready = false;
+            self.doctor.busy = true;
+        }
         self.doctor.messages.push(Message::Note(
             "The agent did not stop, so it was restarted. It no longer remembers this conversation.".into(),
         ));
@@ -2227,7 +3239,7 @@ impl Tileception {
             session.send(Request::Retry);
         }
         self.doctor.scroll = 0.0;
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// Runs one of the panel's slash commands. False for the agent's own,
@@ -2302,15 +3314,18 @@ impl Tileception {
                 let conversation = last_exchange(&self.doctor.messages);
                 self.open_feedback(arg, conversation);
             }
-            "restart" => match &self.doctor.session {
-                Some(session) => session.send(Request::Retry),
-                None => self.ensure_session(),
-            },
+            "restart" => {
+                self.doctor.retire_questions();
+                match &self.doctor.session {
+                    Some(session) => session.send(Request::Retry),
+                    None => self.ensure_session(),
+                }
+            }
             _ if self.doctor.commands.iter().any(|command| command.name == name) => return false,
             _ => note(self, format!("There is no command /{name}. /help lists them.")),
         }
         self.doctor.scroll = 0.0;
-        self.schedule_render();
+        self.doctor_changed();
         true
     }
 
@@ -2322,6 +3337,9 @@ impl Tileception {
         self.doctor.messages.clear();
         self.doctor.approved.clear();
         self.doctor.waiting = None;
+        self.doctor.follow_up = None;
+        self.doctor.form = None;
+        self.doctor.focus = None;
         self.doctor.busy = false;
         if let Some(session) = &self.doctor.session {
             session.send(Request::NewSession);
@@ -2422,7 +3440,11 @@ impl Tileception {
     /// Slash commands starting with what is typed: the panel's, then the agent's.
     fn suggestions(&self) -> Vec<Suggestion> {
         let text = &self.doctor.input.text;
-        if self.doctor.secret.is_some() || !text.starts_with('/') || text.contains(char::is_whitespace) {
+        if self.doctor.secret.is_some()
+            || self.pending_form_question()
+            || !text.starts_with('/')
+            || text.contains(char::is_whitespace)
+        {
             return Vec::new();
         }
         let typed = text[1..].to_lowercase();
@@ -2454,7 +3476,7 @@ impl Tileception {
         } else {
             self.doctor.input.insert(&format!("{line} "));
         }
-        self.schedule_render();
+        self.doctor_changed();
     }
 
     /// The open menu (a setting's values, or slash commands while typing
@@ -2533,10 +3555,18 @@ impl Tileception {
             || matches!(self.doctor.status, Status::NeedsLogin(_) | Status::LoggingIn { .. })
     }
 
-    fn doctor_frame(&self) -> Frame {
+    /// Where the doctor is drawn: the panel along the screen's left edge,
+    /// or its whole window, in the window's own coordinates.
+    fn doctor_area(&self) -> Rect {
+        if self.doctor.windowed {
+            return Rect::new(0.0, 0.0, self.doctor.size.0.max(1.0), self.doctor.size.1.max(1.0));
+        }
         let screen = self.output_rect();
-        let width = screen.w.clamp(1.0, PANEL_W);
-        let panel = Rect::new(screen.x, screen.y, width, screen.h.max(1.0));
+        Rect::new(screen.x, screen.y, screen.w.clamp(1.0, PANEL_W), screen.h.max(1.0))
+    }
+
+    fn doctor_frame(&self) -> Frame {
+        let panel = self.doctor_area();
         let hints = Rect::new(panel.x, panel.bottom() - HINTS_H, panel.w, HINTS_H);
         let toolbar = Rect::new(panel.x + PAD, hints.y - TOOLBAR_H, panel.w - 2.0 * PAD, TOOLBAR_H);
         let field = Rect::new(panel.x + PAD, toolbar.y - INPUT_H, panel.w - 2.0 * PAD, INPUT_H);
@@ -2561,7 +3591,8 @@ impl Tileception {
         Frame {
             panel,
             title: Rect::new(panel.x + 18.0, panel.y + 12.0, 90.0, 32.0),
-            agent: Rect::new(panel.x + 110.0, panel.y + 10.0, panel.w - 122.0, 36.0),
+            agent: Rect::new(panel.x + 110.0, panel.y + 10.0, panel.w - 162.0, 36.0),
+            pop: Rect::new(panel.right() - 48.0, panel.y + 10.0, 36.0, 36.0),
             messages: Rect::new(panel.x + PAD, top, panel.w - 2.0 * PAD, bottom - 12.0 - top),
             field,
             text,
@@ -2573,12 +3604,19 @@ impl Tileception {
         }
     }
 
+    /// The agent's button in the header, as wide as its label: only it opens
+    /// the picker, so the rest of the header is free (a window moves by it).
+    fn agent_button(&self, frame: &Frame) -> Rect {
+        let style = Style::new(self.theme.font_size, self.theme.text);
+        let (label_width, _) = self.measure_text(&self.status_line().0, style, frame.agent.w - 48.0);
+        Rect::new(frame.agent.right() - label_width - 46.0, frame.agent.y, label_width + 46.0, frame.agent.h)
+    }
+
     pub(crate) fn measure_text(&self, text: &str, style: Style, width: f64) -> (f64, f64) {
         let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &theme.font, style.size, style.colour, width.max(1.0) as f32, style.weight, style.lines)
-            .map(|layout| (layout.width, layout.height))
+            .styled_size(text, &theme.font, style.size, style.colour, width.max(1.0) as f32, style.weight, style.lines)
             .unwrap_or((0.0, 0.0))
     }
 
@@ -2629,7 +3667,7 @@ impl Tileception {
                     blocks.push(Block::Button {
                         rect: Rect::new(left + width / 2.0 - 60.0, top, 120.0, BUTTON_H),
                         label: "Try again".into(),
-                        hit: Hit::ReloadRegistry,
+                        hit: Some(Hit::ReloadRegistry),
                         primary: true,
                     });
                 }
@@ -2665,7 +3703,7 @@ impl Tileception {
                 blocks.push(Block::Button {
                     rect: Rect::new(button_x, *top, 160.0, BUTTON_H),
                     label: "I've logged in".into(),
-                    hit: Hit::LoggedIn,
+                    hit: Some(Hit::LoggedIn),
                     primary: true,
                 });
                 button_x += 168.0;
@@ -2673,7 +3711,7 @@ impl Tileception {
             blocks.push(Block::Button {
                 rect: Rect::new(button_x, *top, 112.0, BUTTON_H),
                 label: "Back".into(),
-                hit: Hit::BackToLogins,
+                hit: Some(Hit::BackToLogins),
                 primary: false,
             });
             *top += BUTTON_H + 2.0 * GAP;
@@ -2746,7 +3784,7 @@ impl Tileception {
                 blocks.push(Block::Button {
                     rect: Rect::new(left + width / 2.0 - 80.0, top + 4.0, 160.0, BUTTON_H),
                     label: "I've logged in".into(),
-                    hit: Hit::LoggedIn,
+                    hit: Some(Hit::LoggedIn),
                     primary: false,
                 });
                 top += BUTTON_H + 4.0 + GAP;
@@ -2793,6 +3831,34 @@ impl Tileception {
                     top = self.layout_answer(&mut blocks, text, Rect::new(left, top, width, 0.0)) + GAP
                 }
                 Message::Note(text) => push_note(&mut blocks, &mut top, text),
+                Message::Update { name, running, latest, outside, done } => {
+                    let text = match outside {
+                        None if *done => format!("{name} {latest} is available; this was {running}."),
+                        None => format!(
+                            "{name} {latest} is available; this is {running}. Wizard updates it when the agent next \
+                             starts, or now with the button."
+                        ),
+                        Some(Outside::Installed(path)) => format!(
+                            "{name} {latest} is available; this is {running}, from {}. You installed that copy \
+                             yourself, so update it the way you installed it.",
+                            tilde(path)
+                        ),
+                        Some(Outside::Configured) => format!(
+                            "{name} {latest} is available; this is {running}, started by the command in your \
+                             config. Update it the way you installed it."
+                        ),
+                    };
+                    push_note(&mut blocks, &mut top, &text);
+                    if !*done {
+                        blocks.push(Block::Button {
+                            rect: Rect::new(left + width / 2.0 - 70.0, top, 140.0, BUTTON_H),
+                            label: "Update now".into(),
+                            hit: outside.is_none().then_some(Hit::Update(index)),
+                            primary: outside.is_none(),
+                        });
+                        top += BUTTON_H + GAP;
+                    }
+                }
                 Message::Info(text) => {
                     let (_, text_height) = self.measure_text(text, self.body_style(), width - 28.0);
                     blocks.push(Block::Bubble {
@@ -2829,13 +3895,13 @@ impl Tileception {
                         blocks.push(Block::Button {
                             rect: Rect::new(left + width - 78.0, top, 78.0, 30.0),
                             label: "Undo".into(),
-                            hit: Hit::Undo(index),
+                            hit: Some(Hit::Undo(index)),
                             primary: false,
                         });
                     }
                     top += 30.0 + 4.0;
                 }
-                Message::Ask { title, choices, diff, answer, .. } => {
+                Message::Ask { reply, title, choices, diff, answer } => {
                     let style = self.body_style();
                     let (_, text_height) = self.measure_text(title, style, width - 28.0);
                     blocks.push(Block::Bubble {
@@ -2866,7 +3932,7 @@ impl Tileception {
                                         BUTTON_H,
                                     ),
                                     label: choice.name.clone(),
-                                    hit: Hit::Answer(index, Some(choice.choice_id.clone())),
+                                    hit: Some(Hit::Answer(index, Some(choice.choice_id.clone()))),
                                     primary: choice.kind.starts_with("allow") && choice_index == 0,
                                 });
                             }
@@ -2874,11 +3940,29 @@ impl Tileception {
                                 blocks.push(Block::Button {
                                     rect: Rect::new(left, top, width, BUTTON_H),
                                     label: "Decline".into(),
-                                    hit: Hit::Answer(index, None),
+                                    hit: Some(Hit::Answer(index, None)),
                                     primary: false,
                                 });
                             }
                             top += BUTTON_H + GAP;
+                            // How to answer it from the keyboard.
+                            if self.pending_ask() == Some(index) {
+                                let focused =
+                                    matches!(&self.doctor.focus, Some(Hit::Answer(asked, _)) if *asked == index);
+                                let form = matches!(reply, AskReply::Form { .. });
+                                if form && !focused {
+                                    push_note(
+                                        &mut blocks,
+                                        &mut top,
+                                        "Enter submits your answer, Shift+Tab or Up moves to the buttons",
+                                    );
+                                } else {
+                                    push_note(&mut blocks, &mut top, &ask_hint(choices.len().max(1), focused));
+                                }
+                                if form && let Some(error) = self.doctor.form.as_ref().and_then(|form| form.error) {
+                                    push_note(&mut blocks, &mut top, error);
+                                }
+                            }
                         }
                     }
                 }
@@ -2908,6 +3992,12 @@ impl Tileception {
 
     fn rich_image(&self, spans: &[Span], style: RichStyle, width: f64) -> Option<RichImage> {
         self.text.borrow_mut().rich(spans, &self.theme.font, style, width as f32)
+    }
+
+    /// The size `rich_image` would have, without drawing it: laying out the
+    /// whole conversation measures every answer, but draws only those shown.
+    fn rich_size(&self, spans: &[Span], style: RichStyle, width: f64) -> Option<(f64, f64)> {
+        self.text.borrow_mut().rich_size(spans, &self.theme.font, style, width as f32)
     }
 
     /// An answer's markdown, laid out from the top of `area` across its
@@ -2945,8 +4035,7 @@ impl Tileception {
                     };
                     let gutter = if marker.is_some() { 20.0 } else { 0.0 };
                     let rect = Rect::new(left + 2.0 + indent + gutter, top, width - 2.0 - indent - gutter, 0.0);
-                    let Some(image) = self.rich_image(spans, style, rect.w) else { continue };
-                    let height = image.image.height;
+                    let Some((_, height)) = self.rich_size(spans, style, rect.w) else { continue };
                     let line = f64::from((style.size * 1.4).ceil());
                     let marker = marker
                         .filter(|bullet| !bullet.is_empty())
@@ -2963,8 +4052,8 @@ impl Tileception {
                 Piece::Code { lang, text } => {
                     let style = RichStyle { size: body.size * 0.9, mono: true, ..body };
                     let spans = vec![Span::plain(text.clone())];
-                    let Some(image) = self.rich_image(&spans, style, width - 24.0) else { continue };
-                    let height = CODE_BAR + image.image.height + 18.0;
+                    let Some((_, text_height)) = self.rich_size(&spans, style, width - 24.0) else { continue };
+                    let height = CODE_BAR + text_height + 18.0;
                     let run = markdown::shell_command(lang, text);
                     let copy = run.clone().unwrap_or_else(|| text.clone());
                     let rect = Rect::new(left, top, width, height);
@@ -2977,8 +4066,7 @@ impl Tileception {
                         Some(Picture::Failed) => {
                             let name = if alt.trim().is_empty() { url.clone() } else { alt.clone() };
                             let spans = vec![Span::plain("Picture: "), Span { link: Some(open), ..Span::plain(name) }];
-                            let Some(image) = self.rich_image(&spans, body, width - 2.0) else { continue };
-                            let height = image.image.height;
+                            let Some((_, height)) = self.rich_size(&spans, body, width - 2.0) else { continue };
                             let rect = Rect::new(left + 2.0, top, width - 2.0, height);
                             blocks.push(Block::Rich { rect, spans, style: body, marker: None, quote: false });
                             top += height + PIECE_GAP;
@@ -3057,27 +4145,40 @@ impl Tileception {
         }
     }
 
+    /// The panel along the left edge, on the screen it is open on.
     pub fn doctor_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         if !self.doctor_here() {
             return Vec::new();
         }
+        self.doctor_view_elements(renderer)
+    }
+
+    /// The doctor as the panel or as its window: the same drawing in the
+    /// area of either.
+    fn doctor_view_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         let theme = &self.theme;
         let frame = self.doctor_frame();
-        let pointer = Point::new(self.pointer.x, self.pointer.y);
+        let pointer = self.doctor_pointer();
         let mut painter = Painter::new(self, renderer);
-        // Slides in from the left edge.
-        let shown = ease_out(self.doctor.opened.elapsed().as_secs_f64() / 0.2);
-        painter.alpha = shown as f32;
-        painter.offset = ((shown - 1.0) * 24.0, 0.0);
-        painter.edge_panel(frame.panel, true);
+        if self.doctor.windowed {
+            painter.fill(frame.panel, theme.popup(), 0.0);
+        } else {
+            // Slides in from the left edge.
+            let shown = ease_out(self.doctor.opened.elapsed().as_secs_f64() / 0.2);
+            painter.alpha = shown as f32;
+            painter.offset = ((shown - 1.0) * 24.0, 0.0);
+            painter.edge_panel(frame.panel, true);
+        }
+        // Into a window of its own, or back to the edge.
+        let pop = if self.doctor.windowed { glyph::ARROW_LEFT } else { glyph::ARROW_UP_RIGHT };
+        painter.button(frame.pop, Button::glyph(pop, Look::Quiet).round(), frame.pop.contains(pointer));
 
-        painter.text("Doctor", frame.title, Style::new(theme.font_size * 1.3, theme.text).bold());
+        painter.text("Wizard", frame.title, Style::new(theme.font_size * 1.3, theme.text).bold());
         // The agent, as a button that opens the picker.
         let (label, dot) = self.status_line();
         let style = Style::new(theme.font_size, theme.text);
-        let (label_width, _) = painter.measure(&label, frame.agent.w - 48.0, style);
-        let button =
-            Rect::new(frame.agent.right() - label_width - 46.0, frame.agent.y, label_width + 46.0, frame.agent.h);
+        let button = self.agent_button(&frame);
+        let label_width = button.w - 46.0;
         if button.contains(pointer) {
             painter.fill(button, theme.surface_raised, theme.radius);
         }
@@ -3104,9 +4205,11 @@ impl Tileception {
             );
         }
         let selection = self.doctor_selection();
+        // The keyboard's place, shown while the doctor has the keyboard.
+        let focus = self.doctor_focus().filter(|_| self.doctor_has_keys());
         for (index, block) in self.doctor_blocks_indexed(area) {
             let selected = |len| Self::selected_in(selection, index, len);
-            self.draw_block(&mut painter, &block, pointer, selected);
+            self.draw_block(&mut painter, &block, pointer, selected, focus.as_ref());
         }
         self.draw_toolbar(&mut painter, &frame, pointer);
         // Pictures waiting to go with the next message; a click takes one off.
@@ -3122,8 +4225,9 @@ impl Tileception {
             }
         }
 
-        // Where typing goes, glowing while it has the keyboard.
-        let focused = self.doctor.focused;
+        // Where typing goes, glowing while it has the keyboard (not while
+        // the keyboard is on a button or row).
+        let focused = self.doctor_has_keys() && focus.is_none();
         painter.shape(
             frame.field,
             Shape {
@@ -3140,6 +4244,8 @@ impl Tileception {
         if input.text.is_empty() {
             let hint = match secret {
                 Some(label) => format!("Paste the {label}"),
+                None if self.pending_form_question() => "Or type your answer".into(),
+                None if self.pending_ask().is_some() => "Or say what to do instead".into(),
                 None if self.doctor.busy => "Answering...".into(),
                 None => "Ask about your setup, or / for commands".into(),
             };
@@ -3156,14 +4262,15 @@ impl Tileception {
             crate::text::Field {
                 cursor: input.cursor,
                 anchor: input.anchor,
-                visible: focused && self.doctor.edited.elapsed().as_millis() % 1000 < 600,
+                // The window is drawn when it changes rather than to blink.
+                visible: focused && (self.doctor.windowed || self.doctor.edited.elapsed().as_millis() % 1000 < 600),
                 accent: theme.accent.straight_rgba8(),
             },
         );
         if let Some(image) = field {
             painter.image(&image.buffer, (frame.text.x, frame.text.y + (frame.text.h - image.height) / 2.0));
         }
-        if self.doctor.busy {
+        if self.doctor.busy && !self.doctor_redirects() {
             // While answering, the button stops it.
             // Once asked, pressing it again restarts the agent.
             let look = if self.doctor.stopping.is_some() { Look::Warning } else { Look::Plain };
@@ -3189,6 +4296,12 @@ impl Tileception {
         } else {
             let keys: &[(&str, &str)] = if self.doctor.menu.is_some() {
                 &[("Type", "Filter"), ("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Close")]
+            } else if focus.as_ref().is_some_and(|hit| matches!(hit, Hit::Answer(..))) {
+                &[("Enter", "Choose"), ("\u{2190}\u{2192}", "Move"), ("Type", "Instead"), ("Esc", "Message")]
+            } else if focus.is_some() {
+                &[("Enter", "Choose"), ("\u{2191}\u{2193}", "Move"), ("Esc", "Message")]
+            } else if self.doctor_redirects() {
+                &[("Enter", "Decline and send"), ("Shift+Tab", "Answer"), ("Esc", "Close")]
             } else if !self.suggestions().is_empty() {
                 &[("\u{2191}\u{2193}", "Choose"), ("Tab", "Fill in"), ("Enter", "Run")]
             } else if self.doctor.secret.is_some() {
@@ -3363,6 +4476,7 @@ impl Tileception {
         block: &Block,
         pointer: Point,
         selected: impl Fn(usize) -> Option<(usize, usize)>,
+        focus: Option<&Hit>,
     ) {
         let theme = &self.theme;
         // Over a block's fill, under its text.
@@ -3417,6 +4531,7 @@ impl Tileception {
             }
             Block::Row { rect, title, detail, note, hit, current } => {
                 let hover = hit.is_some() && rect.contains(pointer);
+                let focused = hit.is_some() && hit.as_ref() == focus;
                 let fill = if *current {
                     theme.accent.alpha(0.14)
                 } else if hover {
@@ -3424,21 +4539,22 @@ impl Tileception {
                 } else {
                     theme.surface
                 };
-                painter.shape(
-                    *rect,
-                    Shape {
-                        border_width: 1.0,
-                        border: if *current { theme.accent.alpha(0.4) } else { theme.border },
-                        ..Shape::filled(fill, theme.radius)
-                    },
-                );
+                // The keyboard's ring, as on a focused button.
+                let (border_width, border) = if focused {
+                    (2.0, theme.accent)
+                } else if *current {
+                    (1.0, theme.accent.alpha(0.4))
+                } else {
+                    (1.0, theme.border)
+                };
+                painter.shape(*rect, Shape { border_width, border, ..Shape::filled(fill, theme.radius) });
                 let enabled = hit.is_some();
                 let colour = if enabled { theme.text } else { theme.muted };
                 if detail.is_empty() {
                     painter.text(
                         title,
                         Rect::new(rect.x + 12.0, rect.y, rect.w - 24.0, rect.h),
-                        Style::new(theme.font_size, if hover { theme.text } else { theme.text.alpha(0.7) }),
+                        Style::new(theme.font_size, if hover || focused { theme.text } else { theme.text.alpha(0.7) }),
                     );
                     return;
                 }
@@ -3460,9 +4576,11 @@ impl Tileception {
                     painter.text(note, Rect::new(rect.right() - note_w - 2.0, rect.y + 8.0, note_w, 22.0), style);
                 }
             }
-            Block::Button { rect, label, primary, .. } => {
+            Block::Button { rect, label, primary, hit } => {
                 let look = if *primary { Look::Primary } else { Look::Plain };
-                painter.button(*rect, Button::new(label, look), rect.contains(pointer));
+                let focused = hit.is_some() && focus == hit.as_ref();
+                let button = Button::new(label, look).focused(focused).enabled(hit.is_some());
+                painter.button(*rect, button, hit.is_some() && rect.contains(pointer));
             }
             Block::Diff { rect, lines } => {
                 painter.shape(
@@ -3676,7 +4794,7 @@ fn export_docs_to(root: &std::path::Path) -> std::io::Result<()> {
         ("installation.md", include_str!("../../../docs/installation.md")),
         ("iso.md", include_str!("../../../docs/iso.md")),
         ("greeter.md", include_str!("../../../docs/greeter.md")),
-        ("doctor.md", include_str!("../../../docs/doctor.md")),
+        ("wizard.md", include_str!("../../../docs/wizard.md")),
         ("troubleshooting.md", include_str!("../../../docs/troubleshooting.md")),
         ("development.md", include_str!("../../../docs/development.md")),
         ("index.md", include_str!("../../../docs/index.md")),
@@ -3684,7 +4802,11 @@ fn export_docs_to(root: &std::path::Path) -> std::io::Result<()> {
         let content = content.replace("(../crates/tileception/src/default-config.toml)", "(../default-config.toml)");
         write_if_changed(&docs.join(name), &content)?;
     }
-    Ok(())
+    // The old bundled guide was renamed to wizard.md.
+    match std::fs::remove_file(docs.join("doctor.md")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 /// Keep exported guides' timestamps stable when the bundled contents match.
@@ -3733,6 +4855,28 @@ fn opencode_permission(mode: Mode) -> &'static str {
 
 /// V1 reads OPENCODE_PERMISSION; V2 migrates the same keys from inline config.
 /// Merge only this child process's rules without changing the user's files.
+/// Codex through codex-acp, by any registry id.
+fn is_codex(agent: Option<&str>) -> bool {
+    agent.is_some_and(|agent_id| agent_id == "codex" || agent_id.starts_with("codex-"))
+}
+
+/// The config codex-acp hands Codex (`CODEX_CONFIG`, JSON), from `inherited`
+/// with Codex's ask tool switched on outside its Plan mode too, so the agent
+/// can ask questions with choices. A setting of the user's own is kept.
+fn codex_config(inherited: Option<&str>) -> Result<String, String> {
+    let mut config: serde_json::Value =
+        serde_json::from_str(inherited.unwrap_or("{}")).map_err(|_| "CODEX_CONFIG is not valid JSON".to_string())?;
+    let features = config
+        .as_object_mut()
+        .ok_or("CODEX_CONFIG is not an object")?
+        .entry("features")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or("CODEX_CONFIG's features are not an object")?;
+    features.entry("default_mode_request_user_input").or_insert(serde_json::Value::Bool(true));
+    Ok(config.to_string())
+}
+
 fn opencode_env(mode: Mode) -> Result<tileception_acp::Env, String> {
     let inherited = std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|_| "{}".into());
     let mut content: serde_json::Value = serde_json::from_str(&inherited)
@@ -3806,7 +4950,7 @@ fn doctor_context(mode: &str) -> String {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
     format!(
-        "You are the doctor inside Tileception, a zoomable, nesting tiling Wayland compositor. You help the user \
+        "You are the Wizard inside Tileception, a zoomable, nesting tiling Wayland compositor. You help the user \
          with Tileception's settings, shortcuts and default apps, in plain language.\n\
          - The configuration is {config} (TOML). Tileception reloads it as soon as it is saved. Its comments \
          document every option; `tileception msg reload` reports errors.\n\
@@ -3966,6 +5110,95 @@ fn with_saved_pictures(text: String, attachments: &[Attachment]) -> String {
 mod tests {
     use super::*;
 
+    const PLAIN: Mods = Mods { logo: false, alt: false, ctrl: false, shift: false };
+    const SHIFT: Mods = Mods { logo: false, alt: false, ctrl: false, shift: true };
+    const CTRL: Mods = Mods { logo: false, alt: false, ctrl: true, shift: false };
+
+    #[test]
+    fn keys_move_between_and_press_a_questions_answers() {
+        let key = |sym, mods, current| focus_key(sym, mods, current, 3, true);
+        // Around the three answers, both ways, wrapping at the ends.
+        assert_eq!(key(keysyms::KEY_Right, PLAIN, 0), FocusKey::Move(1));
+        assert_eq!(key(keysyms::KEY_Tab, PLAIN, 2), FocusKey::Move(0));
+        assert_eq!(key(keysyms::KEY_Left, PLAIN, 0), FocusKey::Move(2));
+        assert_eq!(key(keysyms::KEY_Tab, SHIFT, 1), FocusKey::Move(0));
+        assert_eq!(key(keysyms::KEY_ISO_Left_Tab, SHIFT, 1), FocusKey::Move(0));
+        assert_eq!(key(keysyms::KEY_Down, PLAIN, 1), FocusKey::Move(2));
+        // Enter and Space press the focused one; digits pick by number.
+        assert_eq!(key(keysyms::KEY_Return, PLAIN, 1), FocusKey::Choose(1));
+        assert_eq!(key(keysyms::KEY_KP_Enter, PLAIN, 2), FocusKey::Choose(2));
+        assert_eq!(key(keysyms::KEY_space, PLAIN, 0), FocusKey::Choose(0));
+        assert_eq!(key(keysyms::KEY_2, PLAIN, 0), FocusKey::Choose(1));
+        assert_eq!(key(keysyms::KEY_KP_3, PLAIN, 0), FocusKey::Choose(2));
+        assert_eq!(key(keysyms::KEY_4, PLAIN, 0), FocusKey::Keep);
+        // Esc goes back to the message field without answering.
+        assert_eq!(key(keysyms::KEY_Escape, PLAIN, 1), FocusKey::Leave);
+        // Typing goes on in the field; the shift held for it changes nothing.
+        assert_eq!(key(keysyms::KEY_a, PLAIN, 0), FocusKey::Pass);
+        assert_eq!(key(keysyms::KEY_Shift_L, PLAIN, 0), FocusKey::Keep);
+        assert_eq!(key(keysyms::KEY_c, CTRL, 0), FocusKey::Pass);
+        assert_eq!(key(keysyms::KEY_Page_Up, PLAIN, 0), FocusKey::Scroll(-4.0));
+    }
+
+    #[test]
+    fn digits_are_typed_on_a_list_but_pick_a_questions_answer() {
+        assert_eq!(focus_key(keysyms::KEY_1, PLAIN, 2, 5, false), FocusKey::Pass);
+        assert_eq!(focus_key(keysyms::KEY_1, PLAIN, 2, 5, true), FocusKey::Choose(0));
+        assert_eq!(focus_key(keysyms::KEY_Up, PLAIN, 0, 5, false), FocusKey::Move(4));
+        assert_eq!(focus_key(keysyms::KEY_End, PLAIN, 0, 5, false), FocusKey::Move(4));
+    }
+
+    #[test]
+    fn the_field_hands_the_keyboard_to_what_is_above_it() {
+        // A question: to its first, main answer.
+        assert_eq!(focus_entry(keysyms::KEY_ISO_Left_Tab, SHIFT, false, 2, true), Some(0));
+        assert_eq!(focus_entry(keysyms::KEY_Up, PLAIN, true, 2, true), Some(0));
+        // Up only while nothing is typed, so the caret still moves in text.
+        assert_eq!(focus_entry(keysyms::KEY_Up, PLAIN, false, 2, true), None);
+        assert_eq!(focus_entry(keysyms::KEY_Down, PLAIN, true, 2, true), None);
+        // A list: up to its end nearest the field, or down from its top.
+        assert_eq!(focus_entry(keysyms::KEY_Up, PLAIN, true, 4, false), Some(3));
+        assert_eq!(focus_entry(keysyms::KEY_Tab, PLAIN, true, 4, false), Some(0));
+        assert_eq!(focus_entry(keysyms::KEY_Down, PLAIN, true, 4, false), Some(0));
+        assert_eq!(focus_entry(keysyms::KEY_Tab, PLAIN, false, 4, false), None);
+        // Nothing to go to, or a key the field keeps.
+        assert_eq!(focus_entry(keysyms::KEY_Up, PLAIN, true, 0, false), None);
+        assert_eq!(focus_entry(keysyms::KEY_a, PLAIN, true, 3, false), None);
+        assert_eq!(focus_entry(keysyms::KEY_Up, CTRL, true, 3, false), None);
+    }
+
+    #[test]
+    fn a_message_instead_of_an_answer_rejects_once() {
+        let choice = |choice_id: &str, kind: &str| Choice {
+            choice_id: choice_id.into(),
+            name: choice_id.into(),
+            kind: kind.into(),
+        };
+        let choices = [
+            choice("yes", "allow_once"),
+            choice("always", "allow_always"),
+            choice("never", "reject_always"),
+            choice("no", "reject_once"),
+        ];
+        assert_eq!(reject_choice(&choices), Some("no".into()));
+        assert_eq!(reject_choice(&choices[..3]), None);
+        // No way to say no: declined.
+        assert_eq!(reject_choice(&choices[..2]), None);
+        assert_eq!(reject_choice(&[]), None);
+    }
+
+    #[test]
+    fn the_question_says_how_to_answer_it() {
+        for (buttons, focused) in [(1, true), (2, true), (12, true), (2, false)] {
+            let hint = ask_hint(buttons, focused);
+            assert!(hint.is_ascii(), "{hint}");
+        }
+        assert!(ask_hint(3, true).contains("1-3 pick"));
+        assert!(ask_hint(12, true).contains("1-9 pick"));
+        assert!(ask_hint(1, true).contains("1 picks"));
+        assert!(ask_hint(2, false).contains("Shift+Tab"));
+    }
+
     #[test]
     fn reports_the_last_question_and_answer() {
         assert_eq!(last_exchange(&[Message::Note("Connected".into())]), None);
@@ -3979,7 +5212,7 @@ mod tests {
         ];
         assert_eq!(
             last_exchange(&messages).expect("a question was asked"),
-            "Last Doctor question:\nWhy is Wi-Fi off?\n\nDoctor's answer:\nChecking.\n\nAirplane mode is on.\n"
+            "Last Wizard question:\nWhy is Wi-Fi off?\n\nWizard's answer:\nChecking.\n\nAirplane mode is on.\n"
         );
         let long = [Message::User("é".repeat(REPORT_QUESTION + 5))];
         let text = last_exchange(&long).expect("a question was asked");
@@ -4031,6 +5264,13 @@ mod tests {
         assert_eq!(std::fs::metadata(&kept).unwrap().modified().unwrap(), old, "an unchanged file was rewritten");
         assert_eq!(std::fs::read_to_string(&edited).unwrap(), bundled);
         assert_eq!(std::fs::read_to_string(&removed).unwrap(), include_str!("../../../CHANGELOG.md"));
+        // A guide no longer shipped goes; other files are left alone.
+        let (stale, other) = (root.join("docs/doctor.md"), root.join("docs/notes.txt"));
+        std::fs::write(&stale, "the old name").unwrap();
+        std::fs::write(&other, "mine").unwrap();
+        export_docs_to(&root).unwrap();
+        assert!(!stale.exists());
+        assert!(other.exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4055,6 +5295,13 @@ mod tests {
         assert!(is_opencode(Some("opencode")));
         assert!(is_opencode(Some("opencode-v2")));
         assert!(!is_opencode(Some("opencoder")));
+        assert!(is_codex(Some("codex-acp")));
+        assert!(!is_codex(Some("codexy")));
+        assert_eq!(codex_config(None).unwrap(), r#"{"features":{"default_mode_request_user_input":true}}"#);
+        // The user's own choice and other settings stay.
+        let own = r#"{"features":{"default_mode_request_user_input":false},"model":"x"}"#;
+        assert_eq!(codex_config(Some(own)).unwrap(), own);
+        assert!(codex_config(Some("[]")).is_err());
         assert!(!is_opencode(Some("claude-acp")));
         assert!(!is_opencode(None));
     }

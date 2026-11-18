@@ -384,7 +384,7 @@ const COMMANDS: &[Builtin] = &[
     ),
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Next wallpaper", "background picture shuffle", glyph::NEXT, Does::Line("next-wallpaper")),
-    builtin("Ask Tileception", "doctor help settings", glyph::CHAT, Does::Line("doctor")),
+    builtin("Ask Tileception", "wizard doctor help settings", glyph::CHAT, Does::Line("wizard")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
     builtin(
         "Send feedback",
@@ -1043,7 +1043,7 @@ impl Tileception {
                 .filter(|(_, command)| {
                     !matches!(command.does, Does::Suspend) || self.config.file.general.suspend_enabled
                 })
-                .filter(|(_, command)| !matches!(command.does, Does::Line("doctor")) || self.shell().doctor())
+                .filter(|(_, command)| !matches!(command.does, Does::Line("wizard")) || self.shell().doctor())
                 .filter(|(_, command)| !matches!(command.does, Does::Line("updates open")) || self.updates_available())
                 .filter_map(|(index, command)| {
                     let by_name = quality(&query, &command.name.to_lowercase());

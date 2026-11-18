@@ -626,6 +626,7 @@ impl Tileception {
         let window_id = self.next_id();
         self.settings_client_window(&toplevel, window_id);
         self.updates_client_window(&toplevel, window_id);
+        self.doctor_client_window(&toplevel, window_id);
         self.windows.insert(window_id, Window::new_wayland_window(toplevel));
     }
 
@@ -658,7 +659,10 @@ impl Tileception {
         let Some(window) = self.windows.get(&window_id) else { return };
         let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
         let float = rule.float.unwrap_or_else(|| {
-            self.is_settings_window(window_id) || self.is_updates_window(window_id) || wants_float(window)
+            self.is_settings_window(window_id)
+                || self.is_updates_window(window_id)
+                || (self.is_doctor_window(window_id) && self.doctor.float.is_some())
+                || wants_float(window)
         });
         let placement = if float { Placement::Float } else { Placement::Dock };
         tracing::info!(window = window_id.0, app = app_id(window), ?placement, "new window");
@@ -672,6 +676,11 @@ impl Tileception {
         self.restore_window_layout(window_id);
         if let Some([width, height]) = rule.size.filter(|_| float) {
             self.world.size_float(window_id, f64::from(width), f64::from(height));
+        }
+        // The Wizard's window floats where it did when it was closed.
+        if let Some(rect) = self.doctor.float.filter(|_| float && self.is_doctor_window(window_id)) {
+            self.world.set_float_rect(window_id, rect);
+            self.world.fit_float(window_id);
         }
         if let Some(x11) = self.windows.get(&window_id).and_then(|placed| placed.x11_surface()) {
             let geometry = x11.geometry();

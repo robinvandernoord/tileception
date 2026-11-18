@@ -15,6 +15,8 @@ use crate::{markdown::Span, theme::Colour};
 
 /// Cached images beyond this count are all dropped and redrawn on demand.
 const CACHE_LIMIT: usize = 512;
+/// Sizes measured without drawing are small: many more are kept.
+const SIZES_LIMIT: usize = 8192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Field {
@@ -184,6 +186,9 @@ pub struct Text {
     rich: HashMap<RichKey, RichImage>,
     /// Wrapped rows of multi-line fields, see [`Text::rows`].
     rows: HashMap<RowsKey, Vec<Range<usize>>>,
+    /// Sizes measured without drawing, see [`Text::styled_size`].
+    sizes: HashMap<Key, (f64, f64)>,
+    rich_sizes: HashMap<RichKey, (f64, f64)>,
     /// Physical pixels per logical pixel: text is laid out in logical
     /// pixels and rasterised this much larger, so it stays sharp.
     scale: f32,
@@ -197,9 +202,174 @@ impl Default for Text {
             cache: HashMap::new(),
             rich: HashMap::new(),
             rows: HashMap::new(),
+            sizes: HashMap::new(),
+            rich_sizes: HashMap::new(),
             scale: 1.0,
         }
     }
+}
+
+/// Plain text laid out for drawing, cut short with "..." where it must be.
+struct PlainShaped {
+    buffer: Buffer,
+    metrics: Metrics,
+    /// The widest it may be, in physical pixels.
+    max_width: i32,
+    /// Wrapped to lines rather than kept on one.
+    wrapped: bool,
+    /// Its widest line, in physical pixels.
+    width: f32,
+}
+
+/// Lays out plain text as [`Text::styled`] draws it, without drawing it.
+fn shape_plain(fonts: &mut FontSystem, key: &Key, scale: f32) -> PlainShaped {
+    let size = key.size_tenths as f32 / 10.0 * scale;
+    let max_width = (key.max_width as f32 * scale).floor() as i32;
+    let metrics = Metrics::new(size, (size * 1.3).ceil());
+    let attrs = Attrs::new()
+        .family(if key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) })
+        .weight(Weight(key.weight));
+
+    // Measure; if too wide (or too many lines), drop characters until it fits with "...".
+    let mut buffer = Buffer::new(fonts, metrics);
+    let wrapped = key.lines > 0 && key.field.is_none();
+    if wrapped {
+        buffer.set_wrap(Wrap::WordOrGlyph);
+        buffer.set_size(Some(max_width as f32), None);
+    } else {
+        buffer.set_wrap(Wrap::None);
+    }
+    let max_lines = key.lines as usize;
+    let width_of = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
+        buffer.set_text(sample, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max)
+    };
+    // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
+    let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
+        let width = width_of(buffer, fonts, sample);
+        if wrapped { buffer.layout_runs().count() > max_lines } else { width > max_width as f32 }
+    };
+    let mut width = width_of(&mut buffer, fonts, &key.text);
+    if key.field.is_none() && too_long(&mut buffer, fonts, &key.text) {
+        let chars: Vec<char> = key.text.chars().collect();
+        let (mut low, mut high) = (0usize, chars.len());
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "...";
+            if !too_long(&mut buffer, fonts, &candidate) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        let shown = chars[..low].iter().collect::<String>().trim_end().to_string() + "...";
+        width = width_of(&mut buffer, fonts, &shown);
+    }
+    PlainShaped { buffer, metrics, max_width, wrapped, width }
+}
+
+/// The size of plain text in physical pixels, as [`Text::styled`] draws it.
+fn plain_pixels(shaped: &PlainShaped, field: bool) -> (i32, i32) {
+    let pixel_width = if field { shaped.max_width.max(1) } else { shaped.width.ceil().max(1.0) as i32 };
+    let rows = if shaped.wrapped { shaped.buffer.layout_runs().count().max(1) } else { 1 };
+    (pixel_width, (shaped.metrics.line_height * rows as f32).ceil() as i32)
+}
+
+/// Rich text laid out for drawing: the buffer at its final size, the spans
+/// shown (cut short with "..." past its lines) and its size in pixels.
+struct RichShaped {
+    buffer: Buffer,
+    spans: Vec<Span>,
+    pixel_width: i32,
+    pixel_height: i32,
+}
+
+/// The cache key for rich text, or `None` for nothing to show.
+fn rich_key(spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<RichKey> {
+    if spans.iter().all(|span| span.text.is_empty()) || max_width < 4.0 {
+        return None;
+    }
+    Some(RichKey {
+        spans: spans.to_vec(),
+        font: font.to_string(),
+        size_tenths: (style.size * 10.0).round() as u32,
+        colour: style.colour.straight_rgba8(),
+        accent: style.accent.straight_rgba8(),
+        max_width: max_width.floor() as i32,
+        weight: style.weight,
+        lines: style.lines.max(1),
+        mono: style.mono,
+    })
+}
+
+/// Lays out rich text as [`Text::rich`] draws it, without drawing it.
+fn shape_rich(fonts: &mut FontSystem, key: &RichKey, scale: f32) -> RichShaped {
+    let size = key.size_tenths as f32 / 10.0 * scale;
+    let max_width = key.max_width as f32 * scale;
+    let metrics = Metrics::new(size, (size * 1.4).ceil());
+    let family = if key.mono || key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) };
+    let base = Attrs::new().family(family).weight(Weight(key.weight));
+    let [accent_red, accent_green, accent_blue, accent_alpha] = key.accent;
+    let accent = Color::rgba(accent_red, accent_green, accent_blue, accent_alpha);
+    let [red, green, blue, alpha] = key.colour;
+    // Links and code by their place in the spans, counted from 1 (0 is
+    // neither), to find them in the layout.
+    let attrs = |span: &Span, index: usize| {
+        let mut attrs = base.clone();
+        if span.marks.bold {
+            attrs = attrs.weight(Weight(key.weight.max(Weight::SEMIBOLD.0) + 100));
+        }
+        if span.marks.italic {
+            attrs = attrs.style(cosmic_text::Style::Italic);
+        }
+        if span.marks.code {
+            attrs =
+                attrs.family(Family::Monospace).color(Color::rgba(red, green, blue, (alpha as u32 * 85 / 100) as u8));
+        }
+        if span.marks.strike {
+            attrs = attrs.strikethrough();
+        }
+        if span.link.is_some() {
+            attrs = attrs.color(accent).underline(UnderlineStyle::Single);
+        }
+        if span.link.is_some() || span.marks.code {
+            attrs = attrs.metadata(index + 1);
+        }
+        attrs
+    };
+    let mut buffer = Buffer::new(fonts, metrics);
+    buffer.set_wrap(Wrap::WordOrGlyph);
+    buffer.set_size(Some(max_width), None);
+    let layout = |buffer: &mut Buffer, fonts: &mut FontSystem, spans: &[Span]| {
+        let list: Vec<(&str, Attrs)> =
+            spans.iter().enumerate().map(|(index, span)| (span.text.as_str(), attrs(span, index))).collect();
+        buffer.set_rich_text(list, &base, Shaping::Advanced, None);
+        buffer.shape_until_scroll(fonts, false);
+        buffer.layout_runs().count()
+    };
+    let mut spans = key.spans.clone();
+    if layout(&mut buffer, fonts, &spans) > key.lines as usize {
+        let total: usize = key.spans.iter().map(|span| span.text.chars().count()).sum();
+        let (mut low, mut high) = (0usize, total);
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            if layout(&mut buffer, fonts, &cut_spans(&key.spans, mid)) <= key.lines as usize {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        spans = cut_spans(&key.spans, low);
+        layout(&mut buffer, fonts, &spans);
+    }
+    let width = buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max);
+    let rows = buffer.layout_runs().count().max(1);
+    // Room for the shading behind code at the end of a line.
+    let pixel_width = width.ceil().max(1.0) as i32 + (3.0 * scale).ceil() as i32;
+    let pixel_height = (metrics.line_height * rows as f32).ceil() as i32;
+    buffer.set_size(Some(max_width), Some(pixel_height as f32));
+    RichShaped { buffer, spans, pixel_width, pixel_height }
 }
 
 /// Paints a glyph's coverage at (`x_pos`, `y_pos`), premultiplied "over" what
@@ -251,6 +421,8 @@ impl Text {
         self.cache.clear();
         self.rich.clear();
         self.rows.clear();
+        self.sizes.clear();
+        self.rich_sizes.clear();
     }
 
     /// Rasterises at a new output scale from now on.
@@ -263,21 +435,30 @@ impl Text {
 
     /// Spans of bold, italic, code and links, wrapped at word boundaries
     /// to `max_width`.
-    pub fn rich(&mut self, spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<RichImage> {
-        if spans.iter().all(|span| span.text.is_empty()) || max_width < 4.0 {
-            return None;
+    /// The size [`Text::rich`] gives these spans, in logical pixels, laid out
+    /// but not drawn: for measuring many texts of which few are shown.
+    pub fn rich_size(&mut self, spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<(f64, f64)> {
+        let key = rich_key(spans, font, style, max_width)?;
+        if let Some(hit) = self.rich.get(&key) {
+            return Some((hit.image.width, hit.image.height));
         }
-        let key = RichKey {
-            spans: spans.to_vec(),
-            font: font.to_string(),
-            size_tenths: (style.size * 10.0).round() as u32,
-            colour: style.colour.straight_rgba8(),
-            accent: style.accent.straight_rgba8(),
-            max_width: max_width.floor() as i32,
-            weight: style.weight,
-            lines: style.lines.max(1),
-            mono: style.mono,
-        };
+        if let Some(size) = self.rich_sizes.get(&key) {
+            return Some(*size);
+        }
+        let scale = self.scale;
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        let shaped = shape_rich(fonts, &key, scale);
+        let size =
+            (f64::from(shaped.pixel_width) / f64::from(scale), f64::from(shaped.pixel_height) / f64::from(scale));
+        if self.rich_sizes.len() >= SIZES_LIMIT {
+            self.rich_sizes.clear();
+        }
+        self.rich_sizes.insert(key, size);
+        Some(size)
+    }
+
+    pub fn rich(&mut self, spans: &[Span], font: &str, style: RichStyle, max_width: f32) -> Option<RichImage> {
+        let key = rich_key(spans, font, style, max_width)?;
         if let Some(hit) = self.rich.get(&key) {
             return Some(hit.clone());
         }
@@ -290,76 +471,11 @@ impl Text {
     }
 
     fn render_rich(&mut self, key: &RichKey) -> Option<RichImage> {
-        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
         let scale = self.scale;
-        let size = key.size_tenths as f32 / 10.0 * scale;
-        let max_width = key.max_width as f32 * scale;
-        let metrics = Metrics::new(size, (size * 1.4).ceil());
-        let family = if key.mono || key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) };
-        let base = Attrs::new().family(family).weight(Weight(key.weight));
-        let [accent_red, accent_green, accent_blue, accent_alpha] = key.accent;
-        let accent = Color::rgba(accent_red, accent_green, accent_blue, accent_alpha);
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        let RichShaped { buffer, spans, pixel_width, pixel_height } = shape_rich(fonts, key, scale);
         let [red, green, blue, alpha] = key.colour;
-        // Links and code by their place in the spans, counted from 1 (0 is
-        // neither), to find them in the layout.
-        let attrs = |span: &Span, index: usize| {
-            let mut attrs = base.clone();
-            if span.marks.bold {
-                attrs = attrs.weight(Weight(key.weight.max(Weight::SEMIBOLD.0) + 100));
-            }
-            if span.marks.italic {
-                attrs = attrs.style(cosmic_text::Style::Italic);
-            }
-            if span.marks.code {
-                attrs = attrs.family(Family::Monospace).color(Color::rgba(
-                    red,
-                    green,
-                    blue,
-                    (alpha as u32 * 85 / 100) as u8,
-                ));
-            }
-            if span.marks.strike {
-                attrs = attrs.strikethrough();
-            }
-            if span.link.is_some() {
-                attrs = attrs.color(accent).underline(UnderlineStyle::Single);
-            }
-            if span.link.is_some() || span.marks.code {
-                attrs = attrs.metadata(index + 1);
-            }
-            attrs
-        };
-        let mut buffer = Buffer::new(fonts, metrics);
-        buffer.set_wrap(Wrap::WordOrGlyph);
-        buffer.set_size(Some(max_width), None);
-        let layout = |buffer: &mut Buffer, fonts: &mut FontSystem, spans: &[Span]| {
-            let list: Vec<(&str, Attrs)> =
-                spans.iter().enumerate().map(|(index, span)| (span.text.as_str(), attrs(span, index))).collect();
-            buffer.set_rich_text(list, &base, Shaping::Advanced, None);
-            buffer.shape_until_scroll(fonts, false);
-            buffer.layout_runs().count()
-        };
-        let mut spans = key.spans.clone();
-        if layout(&mut buffer, fonts, &spans) > key.lines as usize {
-            let total: usize = key.spans.iter().map(|span| span.text.chars().count()).sum();
-            let (mut low, mut high) = (0usize, total);
-            while low < high {
-                let mid = (low + high).div_ceil(2);
-                if layout(&mut buffer, fonts, &cut_spans(&key.spans, mid)) <= key.lines as usize {
-                    low = mid;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            spans = cut_spans(&key.spans, low);
-            layout(&mut buffer, fonts, &spans);
-        }
-        let width = buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max);
-        let rows = buffer.layout_runs().count().max(1);
-        // Room for the shading behind code at the end of a line.
-        let pixel_width = width.ceil().max(1.0) as i32 + (3.0 * scale).ceil() as i32;
-        let pixel_height = (metrics.line_height * rows as f32).ceil() as i32;
-        buffer.set_size(Some(max_width), Some(pixel_height as f32));
+        let mut buffer = buffer;
 
         // Where the links and code are: their glyphs, a rectangle per line.
         let mut marked: Vec<([f32; 4], &Span)> = Vec::new();
@@ -489,6 +605,49 @@ impl Text {
         Some(image)
     }
 
+    /// The size [`Text::styled`] gives this text, in logical pixels, laid
+    /// out but not drawn: for measuring many texts of which few are shown.
+    #[allow(clippy::too_many_arguments, reason = "the same parameters as `styled`, all in the cache key")]
+    pub fn styled_size(
+        &mut self,
+        text: &str,
+        font: &str,
+        size: f32,
+        colour: Colour,
+        max_width: f32,
+        weight: u16,
+        lines: u8,
+    ) -> Option<(f64, f64)> {
+        if text.is_empty() || max_width < 4.0 {
+            return None;
+        }
+        let key = Key {
+            text: text.to_string(),
+            font: font.to_string(),
+            size_tenths: (size * 10.0).round() as u32,
+            colour: colour.straight_rgba8(),
+            max_width: max_width.ceil() as i32,
+            weight,
+            lines,
+            field: None,
+        };
+        if let Some(hit) = self.cache.get(&key) {
+            return Some((hit.width, hit.height));
+        }
+        if let Some(size) = self.sizes.get(&key) {
+            return Some(*size);
+        }
+        let scale = self.scale;
+        let fonts = self.fonts.get_or_insert_with(FontSystem::new);
+        let (pixel_width, pixel_height) = plain_pixels(&shape_plain(fonts, &key, scale), false);
+        let size = (f64::from(pixel_width) / f64::from(scale), f64::from(pixel_height) / f64::from(scale));
+        if self.sizes.len() >= SIZES_LIMIT {
+            self.sizes.clear();
+        }
+        self.sizes.insert(key, size);
+        Some(size)
+    }
+
     pub fn field(
         &mut self,
         text: &str,
@@ -589,54 +748,12 @@ impl Text {
     }
 
     fn render(&mut self, key: &Key) -> Option<TextImage> {
+        let scale = self.scale;
         // Loading the system fonts takes a moment, so it waits for the first text.
         let fonts = self.fonts.get_or_insert_with(FontSystem::new);
-        let scale = self.scale;
-        let size = key.size_tenths as f32 / 10.0 * scale;
-        // The widest the image may be, in physical pixels.
-        let max_width = (key.max_width as f32 * scale).floor() as i32;
-        let metrics = Metrics::new(size, (size * 1.3).ceil());
-        let attrs = Attrs::new()
-            .family(if key.font == "monospace" { Family::Monospace } else { Family::Name(&key.font) })
-            .weight(Weight(key.weight));
-
-        // Measure; if too wide (or too many lines), drop characters until it fits with "...".
-        let mut shown = key.text.clone();
-        let mut buffer = Buffer::new(fonts, metrics);
-        let wrapped = key.lines > 0 && key.field.is_none();
-        if wrapped {
-            buffer.set_wrap(Wrap::WordOrGlyph);
-            buffer.set_size(Some(max_width as f32), None);
-        } else {
-            buffer.set_wrap(Wrap::None);
-        }
-        let max_lines = key.lines as usize;
-        let width_of = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
-            buffer.set_text(sample, &attrs, Shaping::Advanced, None);
-            buffer.shape_until_scroll(fonts, false);
-            buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max)
-        };
-        // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
-        let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
-            let width = width_of(buffer, fonts, sample);
-            if wrapped { buffer.layout_runs().count() > max_lines } else { width > max_width as f32 }
-        };
-        let mut width = width_of(&mut buffer, fonts, &shown);
-        if key.field.is_none() && too_long(&mut buffer, fonts, &shown) {
-            let chars: Vec<char> = key.text.chars().collect();
-            let (mut low, mut high) = (0usize, chars.len());
-            while low < high {
-                let mid = (low + high).div_ceil(2);
-                let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "...";
-                if !too_long(&mut buffer, fonts, &candidate) {
-                    low = mid;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            shown = chars[..low].iter().collect::<String>().trim_end().to_string() + "...";
-            width = width_of(&mut buffer, fonts, &shown);
-        }
+        let shaped = shape_plain(fonts, key, scale);
+        let (pixel_width, pixel_height) = plain_pixels(&shaped, key.field.is_some());
+        let PlainShaped { mut buffer, max_width, wrapped, .. } = shaped;
         let cursor_x = |index| {
             buffer.cursor_position(&cosmic_text::Cursor::new(0, index)).map(|position| position.0).unwrap_or(0.0)
         };
@@ -645,9 +762,6 @@ impl Text {
             .field
             .and_then(|field| field.anchor.map(|anchor| (cursor_x(anchor).min(caret), cursor_x(anchor).max(caret))));
         let scroll = if key.field.is_some() { (caret - max_width as f32 + 8.0 * scale).max(0.0).ceil() } else { 0.0 };
-        let pixel_width = if key.field.is_some() { max_width.max(1) } else { width.ceil().max(1.0) as i32 };
-        let rows = if wrapped { buffer.layout_runs().count().max(1) } else { 1 };
-        let pixel_height = (metrics.line_height * rows as f32).ceil() as i32;
         if wrapped {
             buffer.set_size(Some(max_width as f32), Some(pixel_height as f32));
         } else {

@@ -278,8 +278,8 @@ const FIELDS: &[Field] = &[
     ),
     field(
         2,
-        "shell.doctor",
-        "Doctor",
+        "shell.wizard",
+        "Wizard",
         "The assistant panel opened with Super+/.",
         Control::Choice(&["builtin", "none"]),
     ),
@@ -715,7 +715,7 @@ fn group(key: &str) -> &'static str {
         }
         "shell.launcher"
         | "shell.notifications"
-        | "shell.doctor"
+        | "shell.wizard"
         | "shell.polkit"
         | "shell.power_menu"
         | "duck.size" => "Panels",
@@ -1442,7 +1442,9 @@ impl Tileception {
             utils::{Rectangle, Transform},
         };
         let Some(client) = &self.settings.client else { return };
-        if !client.needs_frame(self.scale) {
+        let physical =
+            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
+        if !client.needs_frame(self.scale, physical) {
             return;
         }
         let logical = (self.settings.size.0 as i32, self.settings.size.1 as i32);
@@ -2299,6 +2301,8 @@ impl Tileception {
     }
 
     pub fn settings_key(&mut self, sym: u32, mods: Mods) {
+        // The keypad's Enter is Enter everywhere in Settings.
+        let sym = if sym == keysyms::KEY_KP_Enter { keysyms::KEY_Return } else { sym };
         self.settings.pressed = None;
         self.invalidate_settings_client();
         if self.settings_close_key(sym, mods) || self.settings_display_preview_key(sym, mods) {
@@ -3129,22 +3133,7 @@ impl Tileception {
                     Rect::new(control.x + 12., control.y, control.w - 60., control.h),
                     Style::new(12., theme.text),
                 );
-                let switch = Rect::new(control.right() - 38., control.y + (control.h - 20.) / 2., 34., 20.);
-                painter.shape(
-                    switch,
-                    Shape {
-                        radius: 10.,
-                        fill: if enabled { theme.accent_fill() } else { (theme.surface_raised, theme.surface_raised) },
-                        border_width: if enabled { 0. } else { 1. },
-                        border: theme.border,
-                        ..Default::default()
-                    },
-                );
-                painter.fill(
-                    Rect::new(switch.x + if enabled { 17. } else { 3. }, switch.y + 3., 14., 14.),
-                    if enabled { theme.on_accent } else { theme.muted },
-                    7.,
-                );
+                painter.switch(control, enabled);
             }
             Control::Number(min, max, _, unit) => {
                 let number = state.number(field.key, min);

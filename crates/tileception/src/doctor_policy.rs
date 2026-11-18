@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(auto_choice(Mode::Config, &chained, &choices(), &places), None);
         for risky in [
             "tileception msg spawn rm -rf ~",
-            "tileception msg doctor mode yolo",
+            "tileception msg wizard mode yolo",
             "tileception msg type hi",
             "tileception msg updates install",
             "tileception msg updates mirror http://evil",

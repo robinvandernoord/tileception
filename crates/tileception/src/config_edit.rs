@@ -240,9 +240,9 @@ pub fn panel_text() -> Result<String, String> {
 
 /// Extract source items, preserving their comments and explicit values.
 pub fn section_text(base: &str, key: &str) -> Result<String, String> {
-    let doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
+    let doc = parse(base)?;
     let mut excerpt = DocumentMut::new();
-    if let Some((section, name)) = key.split_once('.') {
+    if let Some((section, name)) = key.split_once('.').map(|(section, name)| current_name(section, name)) {
         if let Some(item) = doc.get(section).and_then(|item| item.get(name)) {
             table(&mut excerpt, section)?[name] = item.clone();
         } else {
@@ -271,10 +271,10 @@ pub fn section_text(base: &str, key: &str) -> Result<String, String> {
 
 /// Splice the edited source item back, without rebuilding it from defaults.
 pub fn splice_section(base: &str, key: &str, text: &str) -> Result<String, String> {
-    let mut doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
-    let mut edited: DocumentMut = text.parse().map_err(|error| format!("{error}"))?;
+    let mut doc = parse(base)?;
+    let mut edited = parse(text)?;
     let trailing = edited.trailing().as_str().unwrap_or("").to_string();
-    if let Some((section, name)) = key.split_once('.') {
+    if let Some((section, name)) = key.split_once('.').map(|(section, name)| current_name(section, name)) {
         let item = edited.get_mut(section).and_then(Item::as_table_mut).and_then(|table| table.remove(name));
         if edited.get(section).and_then(Item::as_table).is_some_and(toml_edit::Table::is_empty) {
             edited.remove(section);
@@ -362,9 +362,9 @@ fn replace_root(doc: &mut DocumentMut, key: &str, value: Option<&toml::Value>) -
 
 /// Overlay controls on an editor draft, without writing to disk.
 pub fn draft_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result<String, String> {
-    let mut doc: DocumentMut = base.parse().map_err(|error| format!("{error}"))?;
+    let mut doc = parse(base)?;
     for (key, value) in changes {
-        if let Some((section, name)) = key.split_once('.') {
+        if let Some((section, name)) = key.split_once('.').map(|(section, name)| current_name(section, name)) {
             if let Some(value) = value {
                 let mut replacement: DocumentMut =
                     toml::to_string(&toml::Table::from_iter([(name.to_string(), value.clone())]))
@@ -399,7 +399,7 @@ pub fn apply_document(before: &str, after: &str) -> Result<(), String> {
     if current != before && current != after {
         return Err("config.toml changed outside Settings. Discard to reload it.".into());
     }
-    let doc = after.parse().map_err(|error| format!("{error}"))?;
+    let doc = parse(after)?;
     write(&path, &doc)
 }
 
@@ -410,7 +410,43 @@ fn read(path: &Path) -> Result<DocumentMut, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => crate::config::DEFAULT.to_string(),
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    text.parse().map_err(|error| format!("{}: {error}", path.display()))
+    let mut doc: DocumentMut = text.parse().map_err(|error| format!("{}: {error}", path.display()))?;
+    use_current_names(&mut doc);
+    Ok(doc)
+}
+
+/// A setting's section and name under its current name: `shell.doctor` is
+/// `shell.wizard`, and `doctor.*` is `wizard.*`.
+fn current_name<'a>(section: &'a str, name: &'a str) -> (&'a str, &'a str) {
+    match (section, name) {
+        ("shell", "doctor") => ("shell", "wizard"),
+        ("doctor", name) => ("wizard", name),
+        other => other,
+    }
+}
+
+/// A config text as a document, with old names given their current ones.
+fn parse(text: &str) -> Result<DocumentMut, String> {
+    let mut doc: DocumentMut = text.parse().map_err(|error| format!("{error}"))?;
+    use_current_names(&mut doc);
+    Ok(doc)
+}
+
+/// Settings that were renamed are read under their old names too; anything
+/// written uses the new ones, so a file never ends up with both. `[doctor]`
+/// is now `[wizard]`, and `[shell] doctor` is `[shell] wizard`.
+fn use_current_names(doc: &mut DocumentMut) {
+    if !doc.contains_key("wizard")
+        && let Some(item) = doc.remove("doctor")
+    {
+        doc.insert("wizard", item);
+    }
+    if let Some(shell) = doc.get_mut("shell").and_then(Item::as_table_like_mut)
+        && !shell.contains_key("wizard")
+        && let Some(item) = shell.remove("doctor")
+    {
+        shell.insert("wizard", item);
+    }
 }
 
 /// Writes through a temporary file, so a crash never leaves half a config;
@@ -429,7 +465,9 @@ fn write(path: &Path, doc: &DocumentMut) -> Result<(), String> {
 
 fn split(key: &str) -> Result<(&str, &str), String> {
     match key.split_once('.') {
-        Some((section, name)) if !section.is_empty() && !name.is_empty() && !name.contains('.') => Ok((section, name)),
+        Some((section, name)) if !section.is_empty() && !name.is_empty() && !name.contains('.') => {
+            Ok(current_name(section, name))
+        }
         _ => Err(format!("{key:?} is not section.key, such as shell.bar")),
     }
 }
@@ -606,9 +644,9 @@ mod tests {
     #[test]
     fn set_adds_missing_keys_and_sections() {
         let mut file = doc("[shell]\nbar = \"none\"\n");
-        set(&mut file, "shell.doctor", "none").unwrap();
+        set(&mut file, "shell.wizard", "none").unwrap();
         set(&mut file, "general.welcome", "false").unwrap();
-        assert_eq!(get(&file, "shell.doctor").unwrap(), "none");
+        assert_eq!(get(&file, "shell.wizard").unwrap(), "none");
         assert_eq!(get(&file, "general.welcome").unwrap(), "false");
         crate::config::Config::parse(&file.to_string()).unwrap();
     }
@@ -723,5 +761,24 @@ mod tests {
         let text = file.to_string();
         assert_eq!(text.lines().count(), crate::config::DEFAULT.lines().count());
         crate::config::Config::parse(&text).unwrap();
+    }
+
+    #[test]
+    fn old_names_are_read_and_written_anew() {
+        let base = "[shell]\ndoctor = \"none\"\n\n[doctor.agents]\nmine = [\"my-agent\"]\n";
+        let config = crate::config::Config::parse(base).unwrap();
+        assert_eq!(config.file.shell.doctor, "none");
+        assert_eq!(config.file.doctor.agents["mine"], vec!["my-agent".to_string()]);
+        // A change through Settings writes the new names only.
+        let text = draft_text(base, &[("shell.wizard", Some(toml::Value::String("builtin".into())))]).unwrap();
+        assert!(!text.contains("doctor"), "{text}");
+        assert!(text.contains("wizard = \"builtin\""), "{text}");
+        assert!(text.contains("[wizard.agents]"), "{text}");
+        assert_eq!(crate::config::Config::parse(&text).unwrap().file.doctor.agents.len(), 1);
+        // The old key still sets it, without adding a second one.
+        let mut file = parse(base).unwrap();
+        set(&mut file, "shell.doctor", "builtin").unwrap();
+        assert_eq!(get(&file, "shell.wizard").unwrap(), "builtin");
+        assert!(!file.to_string().contains("doctor"));
     }
 }

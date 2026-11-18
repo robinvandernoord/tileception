@@ -146,7 +146,8 @@ fn logs_in_streams_and_asks_permission() {
         emit,
     );
 
-    // It wants a login first, then works.
+    // It says its version, for updates; it wants a login first, then works.
+    assert_eq!(next(&events, |event| matches!(event, Event::Version(_))), Event::Version("1.2.3".into()));
     let Event::Status(Status::NeedsLogin(logins)) =
         next(&events, |event| matches!(event, Event::Status(Status::NeedsLogin(_))))
     else {

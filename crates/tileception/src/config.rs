@@ -48,6 +48,8 @@ pub struct ConfigFile {
     pub duck: crate::duck::DuckConfig,
     /// Formats and sizes for area screenshots.
     pub capture: crate::shot::CaptureConfig,
+    /// `[wizard]`, once called `[doctor]`, which still works.
+    #[serde(rename = "wizard", alias = "doctor")]
     pub doctor: crate::doctor::DoctorConfig,
     /// What this session shows on the login screen.
     pub greeter: crate::greeter::ShareConfig,

@@ -127,7 +127,7 @@ impl Tileception {
                     Command::UpdatesKey(..) => self.password_prompt.is_some() || self.updates_window_focused(),
                     Command::DuckKey(..) => self.duck.typing(),
                     Command::NetworkKey(..) => self.network.zoom.open,
-                    Command::DoctorKey(..) => self.doctor.open && self.doctor.focused,
+                    Command::DoctorKey(..) => self.doctor_has_keys(),
                     Command::PowerMenuKey(_) => self.power_menu.is_some(),
                     Command::FeedbackKey(sym, mods) => self.feedback_key_repeats(*sym, *mods),
                     Command::ColourPickKey(..) => self.colour_pick.is_some(),

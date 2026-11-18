@@ -159,6 +159,14 @@ pub enum Event {
         choices: Vec<Choice>,
         action: Action,
     },
+    /// The agent asks the user to fill in a form (ACP `elicitation/create`,
+    /// such as Codex's questions); answer with [`Request::Form`].
+    Form {
+        id: serde_json::Value,
+        /// What the form is for.
+        message: String,
+        fields: Vec<FormField>,
+    },
     /// The agent reads or writes a file through Tileception.
     File {
         id: serde_json::Value,
@@ -176,6 +184,46 @@ pub enum Event {
     Commands(Vec<AgentCommand>),
     /// Whether the agent takes pictures in a prompt, once it has said.
     Images(bool),
+    /// The version the running agent reports of itself, when it does.
+    Version(String),
+}
+
+/// One question in an agent's form.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormField {
+    /// Its key in the answers.
+    pub key: String,
+    /// The question.
+    pub title: String,
+    pub description: Option<String>,
+    pub kind: FieldKind,
+    pub required: bool,
+    /// A note that goes with another field's answer (Codex's "Other"), by
+    /// that field's id.
+    pub note_for: Option<String>,
+}
+
+/// What a form field takes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldKind {
+    /// Words, typed.
+    Text,
+    /// One of these, by value; any typed words are taken too.
+    Choice(Vec<FormChoice>),
+    /// Yes or no.
+    Bool,
+    /// A number, an integer when `true`.
+    Number(bool),
+    /// Something Tileception cannot ask, such as several choices at once.
+    Other,
+}
+
+/// A choice in a form field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormChoice {
+    pub value: String,
+    pub label: String,
+    pub description: Option<String>,
 }
 
 /// A picture sent along with a prompt.
@@ -201,6 +249,11 @@ pub enum Request {
     Permission {
         id: serde_json::Value,
         choice: Option<String>,
+    },
+    /// The answers to an [`Event::Form`], by field id; `None` declines it.
+    Form {
+        id: serde_json::Value,
+        answers: Option<Vec<(String, serde_json::Value)>>,
     },
     /// Logs in with one of the agent's methods, with the secrets it asks for
     /// ([`LoginHow::asks`]), in order.
@@ -258,7 +311,7 @@ pub fn data_dir() -> PathBuf {
 
 /// Downloads `url` to `destination` over http(s), bounded in size and time.
 pub fn curl(url: &str, destination: &Path, max_bytes: &str) -> Result<(), String> {
-    let agent = concat!("Tileception/", env!("CARGO_PKG_VERSION"), " (doctor; +https://tileception.space)");
+    let agent = concat!("Tileception/", env!("CARGO_PKG_VERSION"), " (wizard; +https://tileception.space)");
     let out = std::process::Command::new("curl")
         .args(["--fail", "--silent", "--show-error", "--location", "--max-redirs", "5"])
         .args(["--proto", "=https", "--proto-redir", "=https", "--user-agent", agent])

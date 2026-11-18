@@ -12,8 +12,8 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::{
-    Action, Agent, AgentCommand, Choice, Emit, Env, EnvVar, Event, FileOp, Image, Login, LoginHow, OptionValue,
-    Request, SessionOption, Status, install,
+    Action, Agent, AgentCommand, Choice, Emit, Env, EnvVar, Event, FieldKind, FileOp, FormChoice, FormField, Image,
+    Login, LoginHow, OptionValue, Request, SessionOption, Status, install,
 };
 
 /// The protocol version spoken here.
@@ -163,6 +163,11 @@ struct Worker {
     queued: Option<(String, Vec<Image>)>,
     /// Permission requests not yet answered, to cancel on Cancel.
     asking: Vec<Value>,
+    /// Forms not yet answered, to cancel on Cancel.
+    forms: Vec<Value>,
+    /// The agent's message being written now, when it names them: the next
+    /// one starts a new paragraph instead of running on.
+    message_id: Option<String>,
     /// The last lines the agent wrote to stderr, for errors.
     stderr: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Set while the program is downloaded or installed.
@@ -205,6 +210,8 @@ impl Worker {
             session: None,
             queued: None,
             asking: Vec::new(),
+            forms: Vec::new(),
+            message_id: None,
             stderr: Default::default(),
         }
     }
@@ -248,6 +255,8 @@ impl Worker {
                     // Files go through Tileception: it shows diffs, keeps
                     // backups and applies the doctor's permission mode.
                     "fs": { "readTextFile": true, "writeTextFile": true },
+                    // The agent's questions show as choices in the panel.
+                    "elicitation": { "form": {} },
                     "terminal": false,
                     "auth": { "terminal": true },
                 },
@@ -266,6 +275,7 @@ impl Worker {
         self.generation += 1;
         self.pending.clear();
         self.asking.clear();
+        self.forms.clear();
         self.failed_settings.clear();
         self.required_mode = None;
         self.queued = None;
@@ -391,6 +401,7 @@ impl Worker {
     }
 
     fn prompt(&mut self, text: String, images: Vec<Image>) -> Result<(), String> {
+        self.message_id = None;
         // A prompt must use the acknowledged settings, especially permissions.
         if self.pending.values().any(|pending| matches!(pending, Pending::SetOption { .. })) {
             self.queued = Some((text, images));
@@ -449,6 +460,9 @@ impl Worker {
                 for request_id in std::mem::take(&mut self.asking) {
                     self.respond(request_id, json!({ "outcome": { "outcome": "cancelled" } }))?;
                 }
+                for request_id in std::mem::take(&mut self.forms) {
+                    self.respond(request_id, json!({ "action": "cancel" }))?;
+                }
             }
             Request::Permission { id: request_id, choice } => {
                 self.asking.retain(|asked_id| *asked_id != request_id);
@@ -457,6 +471,17 @@ impl Worker {
                     None => json!({ "outcome": "cancelled" }),
                 };
                 self.respond(request_id, json!({ "outcome": outcome }))?;
+            }
+            Request::Form { id: request_id, answers } => {
+                self.forms.retain(|asked_id| *asked_id != request_id);
+                let result = match answers {
+                    Some(answers) => json!({
+                        "action": "accept",
+                        "content": answers.into_iter().collect::<serde_json::Map<String, Value>>(),
+                    }),
+                    None => json!({ "action": "decline" }),
+                };
+                self.respond(request_id, result)?;
             }
             Request::Login { method, secrets } => {
                 match self.logins.iter().find(|login| login.method_id == method).cloned() {
@@ -492,6 +517,9 @@ impl Worker {
                 }
                 for request_id in std::mem::take(&mut self.asking) {
                     self.respond(request_id, json!({ "outcome": { "outcome": "cancelled" } }))?;
+                }
+                for request_id in std::mem::take(&mut self.forms) {
+                    self.respond(request_id, json!({ "action": "cancel" }))?;
                 }
                 self.queued = None;
                 self.new_session()?;
@@ -567,6 +595,9 @@ impl Worker {
                 self.logins = logins(&result, self.program.as_ref());
                 let images = result.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool);
                 (self.emit)(Event::Images(images.unwrap_or(false)));
+                if let Some(version) = result.pointer("/agentInfo/version").and_then(Value::as_str) {
+                    (self.emit)(Event::Version(version.to_string()));
+                }
                 self.new_session()
             }
             Pending::NewSession => {
@@ -714,6 +745,16 @@ impl Worker {
                 return Ok(());
             }
             "session/request_permission" => {}
+            "elicitation/create" => {
+                if params.get("mode").and_then(Value::as_str) != Some("form") {
+                    return self.respond(request_id, json!({ "action": "decline" }));
+                }
+                let message = params.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+                let fields = form_fields(params.get("requestedSchema").unwrap_or(&Value::Null));
+                self.forms.push(request_id.clone());
+                (self.emit)(Event::Form { id: request_id, message, fields });
+                return Ok(());
+            }
             // Terminals stay with the agent's own tools.
             _ => return self.respond_error(request_id, METHOD_NOT_FOUND, "not offered by Tileception"),
         }
@@ -792,7 +833,15 @@ impl Worker {
         };
         let field = |name: &str| update.get(name).and_then(Value::as_str).map(str::to_string);
         let event = match kind {
-            "agent_message_chunk" => text().map(Event::Text),
+            "agent_message_chunk" => text().map(|text| {
+                // A new message from the agent is a new paragraph.
+                let message_id = field("messageId");
+                let next = message_id.is_some() && self.message_id.is_some() && message_id != self.message_id;
+                if message_id.is_some() {
+                    self.message_id = message_id;
+                }
+                Event::Text(if next { format!("\n\n{text}") } else { text })
+            }),
             "agent_thought_chunk" => text().map(Event::Thought),
             "tool_call" | "tool_call_update" => field("toolCallId").map(|call_id| Event::Tool {
                 id: call_id,
@@ -809,6 +858,68 @@ impl Worker {
 }
 
 /// What a tool call is about: its kind, files, command and edits.
+/// The questions of a form's JSON schema, in the order the schema requires
+/// them (JSON objects have none of their own here), then the rest by name.
+fn form_fields(schema: &Value) -> Vec<FormField> {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else { return Vec::new() };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut names: Vec<&String> = properties.keys().collect();
+    names.sort_by_key(|name| required.iter().position(|wanted| wanted == name).unwrap_or(usize::MAX));
+    names
+        .into_iter()
+        .map(|name| {
+            let property = &properties[name];
+            let text = |key: &str| property.get(key).and_then(Value::as_str).map(str::to_string);
+            let codex = property.get("_meta").and_then(|meta| meta.get("codex"));
+            let note_for = codex
+                .filter(|codex| codex.get("role").and_then(Value::as_str) == Some("user_note"))
+                .and_then(|codex| codex.get("questionId").and_then(Value::as_str))
+                .map(str::to_string);
+            let choice = |option: &Value| {
+                let value = option.get("const").and_then(Value::as_str)?.to_string();
+                Some(FormChoice {
+                    label: option.get("title").and_then(Value::as_str).map_or_else(|| value.clone(), str::to_string),
+                    description: option.get("description").and_then(Value::as_str).map(str::to_string),
+                    value,
+                })
+            };
+            let listed = property
+                .get("oneOf")
+                .and_then(Value::as_array)
+                .map(|options| options.iter().filter_map(choice).collect::<Vec<_>>())
+                .or_else(|| {
+                    property.get("enum").and_then(Value::as_array).map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(|value| FormChoice { value: value.into(), label: value.into(), description: None })
+                            .collect()
+                    })
+                });
+            let kind = match (property.get("type").and_then(Value::as_str), listed) {
+                (Some("string") | None, Some(choices)) if !choices.is_empty() => FieldKind::Choice(choices),
+                (Some("string"), _) => FieldKind::Text,
+                (Some("boolean"), _) => FieldKind::Bool,
+                (Some("number"), _) => FieldKind::Number(false),
+                (Some("integer"), _) => FieldKind::Number(true),
+                _ => FieldKind::Other,
+            };
+            FormField {
+                key: name.clone(),
+                title: text("title").unwrap_or_else(|| name.clone()),
+                description: text("description"),
+                kind,
+                required: required.contains(&name.as_str()),
+                note_for,
+            }
+        })
+        .collect()
+}
+
 fn action_of(call: &Value) -> Action {
     let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
     let paths = call
@@ -1062,6 +1173,47 @@ fn suggested_command(description: &str, program: Option<&install::Program>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_codex_questions_as_form_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "zz_drink": {
+                    "title": "Which do you usually pick?",
+                    "description": "Quick preference",
+                    "type": "string",
+                    "oneOf": [
+                        { "const": "Tea", "title": "Tea" },
+                        { "const": "Coffee", "title": "Coffee", "description": "Strong" },
+                        { "const": "Other", "title": "Other" },
+                    ],
+                },
+                "zz_drink_note": {
+                    "title": "Additional answer or note",
+                    "type": "string",
+                    "_meta": { "codex": { "questionId": "zz_drink", "role": "user_note" } },
+                },
+                "aa_name": { "title": "Your name?", "type": "string" },
+                "count": { "type": "integer" },
+                "tags": { "type": "array", "items": { "type": "string" } },
+            },
+            "required": ["zz_drink", "aa_name"],
+        });
+        let fields = form_fields(&schema);
+        let keys: Vec<&str> = fields.iter().map(|field| field.key.as_str()).collect();
+        assert_eq!(keys, ["zz_drink", "aa_name", "count", "tags", "zz_drink_note"]);
+        let FieldKind::Choice(choices) = &fields[0].kind else { panic!("{:?}", fields[0].kind) };
+        assert_eq!(choices[1].label, "Coffee");
+        assert_eq!(choices[1].description.as_deref(), Some("Strong"));
+        assert!(fields[0].required && fields[1].required && !fields[2].required);
+        assert_eq!(fields[0].description.as_deref(), Some("Quick preference"));
+        assert_eq!(fields[1].kind, FieldKind::Text);
+        assert_eq!(fields[2].kind, FieldKind::Number(true));
+        assert_eq!(fields[2].title, "count");
+        assert_eq!(fields[3].kind, FieldKind::Other);
+        assert_eq!(fields[4].note_for.as_deref(), Some("zz_drink"));
+    }
 
     #[test]
     fn reads_login_methods() {

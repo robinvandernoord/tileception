@@ -227,10 +227,10 @@ Shell:
   colour-scheme <s>         dark, light or default, until the config is reloaded
   next-wallpaper            another picture from the wallpaper folder
                             (also: color-scheme)
-  doctor                    open or close the doctor panel
-  doctor ask <question>     ask the doctor about your setup
-  doctor use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
-  doctor mode <mode>        what it may do unasked: ask, config or yolo
+  wizard                    open or close the Wizard (also: doctor)
+  wizard ask <question>     ask the Wizard about your setup
+  wizard use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
+  wizard mode <mode>        what it may do unasked: ask, config or yolo
   duck                      let the rubber duck out, or put it away
   feedback [title]          preview and confirm a new GitHub feedback issue
                             then edit in the browser (needs a GitHub account)
@@ -437,20 +437,23 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return Ok(Command::Plugin { plugin: plugin.into(), tool: tool.into(), arguments });
         }
         "settings" if rest.is_empty() => return Ok(Command::Settings),
-        "doctor" => {
-            // Whole words only: "doctor user" is not "doctor use r".
+        // The Wizard was called the Doctor; its old name still works.
+        "wizard" | "doctor" => {
+            // Whole words only: "wizard user" is not "wizard use r".
             let (sub, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
             let tail = tail.trim();
             return match sub {
                 "mode" => crate::doctor_policy::Mode::parse(tail)
                     .map(Command::DoctorMode)
-                    .ok_or_else(|| format!("doctor mode takes ask, tweak or yolo, not {tail:?}")),
-                "use" if tail.is_empty() => Err("doctor use needs an agent id from the ACP Registry".into()),
+                    .ok_or_else(|| format!("wizard mode takes ask, config or yolo, not {tail:?}")),
+                "use" if tail.is_empty() => Err("wizard use needs an agent id from the ACP Registry".into()),
                 "use" => Ok(Command::DoctorUse(tail.to_string())),
-                "ask" if tail.is_empty() => Err("doctor ask needs a question".into()),
+                "ask" if tail.is_empty() => Err("wizard ask needs a question".into()),
                 "ask" => Ok(Command::Doctor(Some(tail.to_string()))),
                 "" => Ok(Command::Doctor(None)),
-                _ => Err(format!("doctor takes nothing or \"ask <question>\", not {rest:?}")),
+                _ => Err(format!(
+                    "wizard takes nothing, \"ask <question>\", \"use <agent>\" or \"mode <mode>\", not {rest:?}"
+                )),
             };
         }
         "pointer" | "motion" | "click" | "press" | "release" | "scroll" | "key" | "keydown" | "keyup" | "type"
@@ -745,7 +748,7 @@ mod tests {
         // Errors speak of ids in words, not of variable names.
         assert_eq!(parse("plugin"), Err("plugin needs a plugin id and a tool".into()));
         assert_eq!(parse("plugin home"), Err("plugin needs a tool after the plugin id".into()));
-        assert_eq!(parse("doctor use"), Err("doctor use needs an agent id from the ACP Registry".into()));
+        assert_eq!(parse("wizard use"), Err("wizard use needs an agent id from the ACP Registry".into()));
         assert_eq!(parse("restore x"), Err("restore takes nothing or a window id".into()));
     }
 
@@ -762,7 +765,9 @@ mod tests {
         assert_eq!(parse("cycle prev"), Ok(Command::Action(Action::Cycle(false))));
         assert!(parse("go 0").is_err());
         assert!(parse("bogus").is_err());
+        assert_eq!(parse("wizard"), Ok(Command::Doctor(None)));
         assert_eq!(parse("doctor"), Ok(Command::Doctor(None)));
+        assert_eq!(parse("wizard ask why?"), Ok(Command::Doctor(Some("why?".into()))));
         assert_eq!(parse("doctor ask why so slow?"), Ok(Command::Doctor(Some("why so slow?".into()))));
         assert!(parse("doctor ask").is_err());
         assert!(parse("doctor now").is_err());

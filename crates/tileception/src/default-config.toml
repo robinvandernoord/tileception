@@ -227,6 +227,9 @@ enabled = false
 # remind_after_days = 0
 # Only security updates bring the notification.
 # remind_security_only = false
+# Firmware from fwupd beside the other updates, never ticked by itself: a
+# failed flash can leave a device unusable.
+# firmware = false
 
 [bluetooth]
 # Reconnect paired devices that were connected before the computer slept or
@@ -264,9 +267,9 @@ lock = "builtin"
 # Volume, media keys and brightness: "builtin" or "none". To use your own
 # commands instead, bind the keys to them in [binds].
 media = "builtin"
-# Doctor, the panel for asking an agent about your setup (Super+/):
-# "builtin" or "none".
-doctor = "builtin"
+# The Wizard, the panel for asking an agent about your setup (Super+/):
+# "builtin" or "none". Once called doctor, which still works.
+wizard = "builtin"
 # Asking for the administrator's password when polkit wants one, as for
 # installing updates: "builtin" or "none". With "none", start another
 # polkit agent yourself.
@@ -393,12 +396,12 @@ tray_max_icons = 3
 # "com.spotify.Client" = ["--ozone-platform=wayland"]
 # firefox = ["-P", "work"]
 
-# Doctor's agents start from a copy already installed on this computer when
+# The Wizard's agents start from a copy already installed on this computer when
 # it finds one, else from the ACP Registry. To run a particular program
-# instead, give its command by registry id (as `doctor use` takes it): the
+# instead, give its command by registry id (as `wizard use` takes it): the
 # program, then its arguments, never through a shell. ~/ is your home folder.
 #
-# [doctor.agents]
+# [wizard.agents]
 # opencode = ["~/.opencode/bin/opencode", "acp"]
 # gemini = ["/usr/local/bin/gemini", "--acp"]
 
@@ -460,9 +463,9 @@ repeat_rate = 30
 #   fullscreen            cover the whole screen with the focused window
 #   lock                  lock the screen (see lock_command)
 #   power-menu            lock, log out, suspend, restart or power off
-#   doctor [ask <text>]   the panel for asking about your setup
-#   doctor use <agent>    pick its agent by ACP Registry id (e.g. claude-acp)
-#   doctor mode <mode>    what it may do unasked: ask, config (Tileception's
+#   wizard [ask <text>]   the panel for asking about your setup (or doctor)
+#   wizard use <agent>    pick its agent by ACP Registry id (e.g. claude-acp)
+#   wizard mode <mode>    what it may do unasked: ask, config (Tileception's
 #                         own files and commands) or yolo; backups either way
 #   volume up|down [n]    change the output volume by n percent (or the step)
 #   volume set <n>        set it; volume mute [on|off|toggle]
@@ -488,7 +491,7 @@ repeat_rate = 30
 "Super+X" = "power-menu"
 "Super+N" = "notifications"
 "Super+Return" = "answer-notification"
-"Super+slash" = "doctor"
+"Super+slash" = "wizard"
 "Super+comma" = "settings"
 "Super+G" = "group"
 "Super+Shift+E" = "quit"
@@ -560,7 +563,7 @@ repeat_rate = 30
 "TouchEdgeTop" = "overview"
 "TouchEdgeBottom" = "show-minimized"
 "TouchEdgeRight" = "notifications"
-"TouchEdgeLeft" = "doctor"
+"TouchEdgeLeft" = "wizard"
 "TouchSwipe3Left" = "focus right"
 "TouchSwipe3Right" = "focus left"
 "TouchSwipe3Up" = "focus down"
@@ -571,7 +574,7 @@ repeat_rate = 30
 # Screenshots. Print captures the whole screen (with grim) and asks whether
 # to copy, save, or do both. Shift+Print picks an area over a still of the
 # screen: drag it or click a window, draw on it, then copy, save, ask the
-# Doctor or record it. Shift+Print again stops a recording.
+# Wizard or record it. Shift+Print again stops a recording.
 # Ctrl+Print picks a colour from the screen and copies it as hex.
 "XF86AudioRaiseVolume" = "volume up"
 "XF86AudioLowerVolume" = "volume down"

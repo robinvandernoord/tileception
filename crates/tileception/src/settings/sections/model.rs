@@ -1244,7 +1244,7 @@ fn describe_command(command: &str) -> String {
         ("lock", _) => "Lock the screen",
         ("power-menu", _) => "Power menu",
         ("screenshot", _) => "Screenshot",
-        ("doctor", _) => "Doctor",
+        ("wizard" | "doctor", _) => "Wizard",
         ("duck", _) => "Rubber duck",
         ("handoff", "home") => "Bring input back",
         ("handoff", _) => "Sharing",

@@ -3,7 +3,7 @@
 //! Click it and it takes a look at the screen and asks what you want to know.
 //!
 //! Questions go to the doctor's agent with a screenshot (taken without the
-//! duck in it), so the duck answers in a speech bubble and "Open in doctor"
+//! duck in it), so the duck answers in a speech bubble and "Open in the Wizard"
 //! carries on with the same conversation in the panel.
 
 use std::{
@@ -164,6 +164,9 @@ struct Prepared {
 /// A prepared screenshot, with the click it was taken for.
 type ShotReady = (u64, Option<Prepared>);
 
+/// A sprite by pose, wizard hat, facing left and width in pixels.
+type SpriteKey = (Pose, bool, bool, u32);
+
 /// Under or over, fill, border and width in pixels.
 type TailKey = (bool, [u8; 4], [u8; 4], u32);
 
@@ -253,7 +256,7 @@ pub struct Duck {
     /// When the answer last grew, for flapping the beak.
     grew: (usize, Instant),
     seed: u64,
-    sprites: RefCell<HashMap<(Pose, bool, u32), Option<MemoryRenderBuffer>>>,
+    sprites: RefCell<HashMap<SpriteKey, Option<MemoryRenderBuffer>>>,
     tails: RefCell<HashMap<TailKey, Option<MemoryRenderBuffer>>>,
     /// How the duck was last drawn, to tell its own steps from other changes.
     drawn: Cell<Option<Look>>,
@@ -261,9 +264,9 @@ pub struct Duck {
     changed: Cell<bool>,
 }
 
-/// What the duck looks like on screen: pose, place in pixels, facing, and
-/// the step of its sleeping Zs.
-type Look = (Pose, i64, i64, bool, u64);
+/// What the duck looks like on screen: pose, wizard hat, place in pixels,
+/// facing, and the step of its sleeping Zs.
+type Look = (Pose, bool, i64, i64, bool, u64);
 
 /// When the duck next changes on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,7 +440,34 @@ impl Tileception {
     fn duck_rect(&self) -> Rect {
         let (duck_x, duck_y) = self.duck.pos;
         let scale = self.duck_scale();
-        Rect::new(duck_x - 26.0 * scale, duck_y - 50.0 * scale, 52.0 * scale, 50.0 * scale)
+        // The hat can be grabbed too.
+        let hat = if self.duck_hat(self.duck_pose()) { SIZE * scale * HAT_RISE as f64 / GRID as f64 } else { 0.0 };
+        Rect::new(duck_x - 26.0 * scale, duck_y - 50.0 * scale - hat, 52.0 * scale, 50.0 * scale + hat)
+    }
+
+    /// How tall the sprite stands above the duck's feet, with the hat when
+    /// it wears one.
+    fn duck_height(&self, hat: bool) -> f64 {
+        if !hat {
+            return SIZE * self.duck_scale();
+        }
+        // As tall as the sprite is drawn, so the feet stay on the ground.
+        let pixels = (SIZE * self.duck_scale() * self.scale).round().max(1.0) as usize;
+        let height = (pixels * (GRID + HAT_RISE)).div_ceil(GRID);
+        height as f64 / self.scale
+    }
+
+    /// The duck wears its wizard hat while its question is with the agent:
+    /// sent, thought about and answered, and while it points at the answer.
+    fn duck_hat(&self, pose: Pose) -> bool {
+        match &self.duck.chat {
+            Chat::Sending { .. } => true,
+            Chat::Asked { mark, .. } => match self.duck_reply(*mark) {
+                Some(Reply::Thinking | Reply::NeedsOk | Reply::Text { done: false, .. }) => true,
+                _ => pose == Pose::Point,
+            },
+            _ => false,
+        }
     }
 
     /// Moves the duck on by the time since the last frame, on its own
@@ -1007,7 +1037,7 @@ impl Tileception {
                     (76.0, 40.0)
                 }
                 Reply::NeedsOk => {
-                    link = Some("Open the doctor \u{2192}");
+                    link = Some("Open the Wizard \u{2192}");
                     text = Some("I need your OK for that.".to_string());
                     (0.0, 0.0)
                 }
@@ -1017,13 +1047,13 @@ impl Tileception {
                     let (_, full_h) = self.duck_measure(&shown, BUBBLE_W - PAD * 2.0, style.lines(60));
                     let (_, cut_h) = self.duck_measure(&shown, BUBBLE_W - PAD * 2.0, style);
                     let more = full_h > cut_h + 1.0 || answer.contains("```");
-                    link = Some(if more { "More in the doctor \u{2192}" } else { "Open in doctor \u{2192}" });
+                    link = Some(if more { "More in the Wizard \u{2192}" } else { "Open in the Wizard \u{2192}" });
                     text = Some(shown);
                     (0.0, 0.0)
                 }
             },
             Chat::Note(note) => {
-                link = Some("Open the doctor \u{2192}");
+                link = Some("Open the Wizard \u{2192}");
                 text = Some(note.clone());
                 (0.0, 0.0)
             }
@@ -1041,7 +1071,8 @@ impl Tileception {
         let head = duck_x + if self.duck.left { -8.0 } else { 8.0 };
         let gap = if thinking { 30.0 } else { 12.0 };
         let mut below = false;
-        let mut top = duck_y - SIZE * self.duck_scale() - gap - height;
+        // Over the hat when it wears one.
+        let mut top = duck_y - self.duck_height(self.duck_hat(self.duck_pose())) - gap - height;
         if top < screen.y + 8.0 {
             below = true;
             top = duck_y + gap;
@@ -1166,11 +1197,13 @@ impl Tileception {
             );
         }
 
-        if let Some(sprite) = self.duck_sprite(pose) {
-            painter.image(&sprite, (duck_x - size / 2.0, duck_y - size));
+        let hat = self.duck_hat(pose);
+        if let Some(sprite) = self.duck_sprite(pose, hat) {
+            // Feet on the ground; a hat makes it taller upwards.
+            painter.image(&sprite, (duck_x - size / 2.0, duck_y - self.duck_height(hat)));
         }
         let z_step = if pose == Pose::Sleep { (stepped(self.duck.since.elapsed()) * STEPS_PER_SEC) as u64 } else { 0 };
-        let look = Some((pose, duck_x.round() as i64, duck_y.round() as i64, self.duck.left, z_step));
+        let look = Some((pose, hat, duck_x.round() as i64, duck_y.round() as i64, self.duck.left, z_step));
         if self.duck.drawn.replace(look) != look {
             self.duck.changed.set(true);
         }
@@ -1204,7 +1237,13 @@ impl Tileception {
         if bubble.thinking {
             // Little thought circles up to the bubble.
             let scale = self.duck_scale();
-            let head = (duck_x + (if self.duck.left { -10.0 } else { 10.0 }) * scale, duck_y - (SIZE - 6.0) * scale);
+            let side = if self.duck.left { -1.0 } else { 1.0 };
+            // From the side of its head, or with the hat from its tip.
+            let head = if self.duck_hat(self.duck_pose()) {
+                (duck_x + side * SIZE * scale * HAT_TIP / GRID as f64, duck_y - self.duck_height(true))
+            } else {
+                (duck_x + side * 10.0 * scale, duck_y - (SIZE - 6.0) * scale)
+            };
             let target = (bubble.tail_x, if bubble.below { bubble.rect.y } else { bubble.rect.bottom() });
             for (along, radius) in [(0.35, 3.5), (0.7, 5.5)] {
                 let circle_x = head.0 + (target.0 - head.0) * along;
@@ -1315,15 +1354,16 @@ impl Tileception {
         }
     }
 
-    /// The duck's sprite for a pose, facing its way, at the output's scale.
-    fn duck_sprite(&self, pose: Pose) -> Option<MemoryRenderBuffer> {
+    /// The duck's sprite for a pose, with or without its hat, facing its
+    /// way, at the output's scale.
+    fn duck_sprite(&self, pose: Pose, hat: bool) -> Option<MemoryRenderBuffer> {
         let pixels = (SIZE * self.duck_scale() * self.scale).round().max(1.0) as u32;
-        let key = (pose, self.duck.left, pixels);
+        let key = (pose, hat, self.duck.left, pixels);
         if let Some(sprite) = self.duck.sprites.borrow().get(&key) {
             return sprite.clone();
         }
-        let rgba = duck_pixels(pose, self.duck.left, pixels);
-        let size = (pixels as i32, pixels as i32);
+        let (rgba, height) = duck_pixels(pose, hat, self.duck.left, pixels);
+        let size = (pixels as i32, height as i32);
         let sprite = Some(MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, size, 1, Transform::Normal, None));
         let mut sprites = self.duck.sprites.borrow_mut();
         if sprites.len() > 64 {
@@ -1415,6 +1455,23 @@ const BASE: [&str; GRID] = [
 ];
 const GRID: usize = 16;
 
+/// The wizard hat the duck wears while its question is with the agent. Its
+/// last row, the brim, takes the place of the head's top outline.
+const HAT: [&str; 8] = [
+    "..........DD....",
+    ".........DPD....",
+    ".........DPPD...",
+    "........DPWPD...",
+    "........DPPPD...",
+    ".......DPPPPPD..",
+    ".......DPPPPPD..",
+    "....DDDPPPPPPDDD",
+];
+/// Rows the hat adds above the duck.
+const HAT_RISE: usize = HAT.len() - 1;
+/// The hat's tip, in grid columns right of the middle when facing right.
+const HAT_TIP: f64 = 2.5;
+
 /// Each pose is its own drawing: pixel art can't be turned or nudged by
 /// fractions of a pixel without smearing, so poses swap rows instead.
 fn frame(pose: Pose) -> [[u8; GRID]; GRID] {
@@ -1480,6 +1537,21 @@ fn frame(pose: Pose) -> [[u8; GRID]; GRID] {
     grid
 }
 
+/// The pose with the wizard hat on its head, `HAT_RISE` rows taller. The
+/// hat sits on the head's top outline wherever the pose put it (lifted,
+/// squashed), so it moves with the head.
+fn hat_frame(pose: Pose) -> [[u8; GRID]; GRID + HAT_RISE] {
+    let grid = frame(pose);
+    let mut tall = [[b'.'; GRID]; GRID + HAT_RISE];
+    tall[HAT_RISE..].copy_from_slice(&grid);
+    // The topmost drawn row is always the head's outline.
+    let top = grid.iter().position(|row| row.iter().any(|&letter| letter != b'.')).unwrap_or(0);
+    for (index, row) in HAT.iter().enumerate() {
+        tall[top + index].copy_from_slice(row.as_bytes());
+    }
+    tall
+}
+
 /// A pixel's colour, as RGBA.
 fn paint(letter: u8) -> Option<[u8; 4]> {
     Some(match letter {
@@ -1490,27 +1562,31 @@ fn paint(letter: u8) -> Option<[u8; 4]> {
         b'O' => [0xff, 0x8a, 0x1f, 0xff], // beak
         b'E' => [0x1a, 0x1a, 0x1a, 0xff], // eye
         b'B' => [0xff, 0x8f, 0xa3, 0xff], // blush
+        b'P' => [0x6b, 0x4f, 0xd8, 0xff], // hat
+        b'W' => [0xff, 0xe0, 0x66, 0xff], // star on the hat
         _ => return None,
     })
 }
 
-/// The pose blown up to `pixels` square with hard edges, facing right (or left).
-/// RGBA; every pixel is fully opaque or fully clear, so it is also premultiplied.
-fn duck_pixels(pose: Pose, left: bool, pixels: u32) -> Vec<u8> {
-    let grid = frame(pose);
-    let pixels = pixels as usize;
-    let mut rgba = vec![0; pixels * pixels * 4];
-    for y_pos in 0..pixels {
-        let row = &grid[y_pos * GRID / pixels];
-        for x_pos in 0..pixels {
-            let source_x = if left { pixels - 1 - x_pos } else { x_pos };
-            let col = source_x * GRID / pixels;
+/// The pose, with or without the hat, blown up to `pixels` wide with hard
+/// edges, facing right (or left), and how many pixels high that is. RGBA;
+/// every pixel is fully opaque or fully clear, so it is also premultiplied.
+fn duck_pixels(pose: Pose, hat: bool, left: bool, pixels: u32) -> (Vec<u8>, u32) {
+    let grid: Vec<[u8; GRID]> = if hat { hat_frame(pose).to_vec() } else { frame(pose).to_vec() };
+    let width = pixels as usize;
+    let height = (width * grid.len()).div_ceil(GRID);
+    let mut rgba = vec![0; width * height * 4];
+    for y_pos in 0..height {
+        let row = &grid[y_pos * grid.len() / height];
+        for x_pos in 0..width {
+            let source_x = if left { width - 1 - x_pos } else { x_pos };
+            let col = source_x * GRID / width;
             if let Some(colour) = paint(row[col]) {
-                rgba[(y_pos * pixels + x_pos) * 4..][..4].copy_from_slice(&colour);
+                rgba[(y_pos * width + x_pos) * 4..][..4].copy_from_slice(&colour);
             }
         }
     }
-    rgba
+    (rgba, height as u32)
 }
 
 /// An answer's Markdown as plain lines for the bubble, without the
@@ -1641,12 +1717,60 @@ mod tests {
                 grid.iter().flatten().any(|&letter| letter == b'E') || matches!(pose, Pose::Blink | Pose::Sleep),
                 "{pose:?} has eyes"
             );
-            let right = duck_pixels(pose, false, 56);
-            let left = duck_pixels(pose, true, 56);
-            assert_eq!(right.len(), 56 * 56 * 4);
+            let (right, height) = duck_pixels(pose, false, false, 56);
+            let (left, _) = duck_pixels(pose, false, true, 56);
+            assert_eq!((right.len(), height), (56 * 56 * 4, 56));
             // Facing left is the mirror image.
             let pixel = |rgba: &[u8], x_pos: usize, y_pos: usize| rgba[(y_pos * 56 + x_pos) * 4..][..4].to_vec();
             assert_eq!(pixel(&right, 10, 40), pixel(&left, 45, 40), "{pose:?}");
+        }
+    }
+
+    #[test]
+    fn the_wizard_hat_sits_on_the_head_in_every_pose() {
+        for row in HAT {
+            assert_eq!(row.len(), GRID, "{row}");
+            assert!(row.bytes().all(|letter| letter == b'.' || paint(letter).is_some()), "{row}");
+        }
+        // The poses it can wear the hat in: thinking, answering, pointing,
+        // and whatever happens meanwhile (walking, landing, being held).
+        let poses = [
+            Pose::Stand,
+            Pose::Blink,
+            Pose::Step(0),
+            Pose::Step(1),
+            Pose::Step(2),
+            Pose::Step(3),
+            Pose::Held(true),
+            Pose::Held(false),
+            Pose::Fall,
+            Pose::Squash,
+            Pose::Think,
+            Pose::Talk(true),
+            Pose::Talk(false),
+            Pose::Point,
+        ];
+        for pose in poses {
+            let plain = frame(pose);
+            let tall = hat_frame(pose);
+            assert_eq!(tall.len(), GRID + HAT_RISE);
+            // Below the hat, the duck is unchanged and its feet stay put.
+            let top = plain.iter().position(|row| row.iter().any(|&letter| letter != b'.')).expect("drawn");
+            assert_eq!(&tall[top + HAT_RISE + 1..], &plain[top + 1..], "{pose:?}");
+            // The brim replaces the head's top outline; the tip is above it.
+            assert_eq!(&tall[top + HAT_RISE], HAT[HAT_RISE].as_bytes(), "{pose:?}");
+            assert_eq!(&tall[top], HAT[0].as_bytes(), "{pose:?}");
+            assert!(tall[..top].iter().flatten().all(|&letter| letter == b'.'), "{pose:?}");
+            assert!(tall.iter().flatten().any(|&letter| letter == b'W'), "{pose:?} has its star");
+            let (right, height) = duck_pixels(pose, true, false, 56);
+            let (left, _) = duck_pixels(pose, true, true, 56);
+            assert_eq!(height as usize, (56 * (GRID + HAT_RISE)).div_ceil(GRID));
+            assert_eq!(right.len(), 56 * height as usize * 4);
+            // Facing left mirrors the hat too.
+            let pixel = |rgba: &[u8], x_pos: usize, y_pos: usize| rgba[(y_pos * 56 + x_pos) * 4..][..4].to_vec();
+            for (x_pos, y_pos) in [(37, 4), (30, 14), (50, 30), (10, 70)] {
+                assert_eq!(pixel(&right, x_pos, y_pos), pixel(&left, 55 - x_pos, y_pos), "{pose:?}");
+            }
         }
     }
 

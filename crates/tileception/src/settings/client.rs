@@ -1,4 +1,4 @@
-//! A real xdg-shell client for Settings and Updates. Only the UI model lives in the
+//! A real xdg-shell client for Settings, Updates and the popped-out Doctor. Only the UI model lives in the
 //! compositor; buffers and input travel through the regular Wayland protocols.
 
 use std::{
@@ -67,6 +67,7 @@ pub(crate) enum Event {
 pub(crate) enum Kind {
     Settings,
     Updates,
+    Doctor,
 }
 
 impl Kind {
@@ -74,6 +75,7 @@ impl Kind {
         match self {
             Kind::Settings => ("Settings", "tileception-settings"),
             Kind::Updates => ("Updates", "tileception-updates"),
+            Kind::Doctor => ("Wizard", "tileception-wizard"),
         }
     }
 }
@@ -98,6 +100,8 @@ pub(crate) struct Client {
     last_frame: Cell<Option<u64>>,
     dirty: Cell<bool>,
     last_draw: Cell<Option<(Instant, f64)>>,
+    /// The size of the frame drawn last, in physical pixels.
+    last_size: Cell<Option<(i32, i32)>>,
     last_cursor: Cell<Option<smithay::input::pointer::CursorIcon>>,
     pub source: RegistrationToken,
 }
@@ -122,6 +126,7 @@ impl Client {
                         }
                     }
                     Kind::Updates => state.updates_client_event(&client_id, event),
+                    Kind::Doctor => state.doctor_client_event(&client_id, event),
                 }
             })
             .map_err(|error| error.to_string())?;
@@ -131,6 +136,7 @@ impl Client {
         let size = match kind {
             Kind::Settings => state.settings.size,
             Kind::Updates => state.updates.window.size,
+            Kind::Doctor => state.doctor.size,
         };
         std::thread::spawn(move || {
             if let Err(error) = run(socket, reader, receiver, send.clone(), size, kind) {
@@ -145,6 +151,7 @@ impl Client {
             last_frame: Cell::new(None),
             dirty: Cell::new(true),
             last_draw: Cell::new(None),
+            last_size: Cell::new(None),
             last_cursor: Cell::new(None),
             source,
         })
@@ -154,7 +161,19 @@ impl Client {
         self.dirty.set(true);
     }
 
-    pub fn needs_frame(&self, scale: f64) -> bool {
+    /// Whether to draw a frame of `size` physical pixels now. While the size
+    /// keeps changing, at most every [`RESIZE_FRAME_EVERY`]: the window
+    /// stretches the last one meanwhile and asks again once it settles.
+    pub fn needs_frame(&self, scale: f64, size: (i32, i32)) -> bool {
+        let resizing = self.last_size.get().is_some_and(|last| last != size);
+        if resizing
+            && self
+                .last_draw
+                .get()
+                .is_some_and(|(time, previous_scale)| previous_scale == scale && time.elapsed() < RESIZE_FRAME_EVERY)
+        {
+            return false;
+        }
         let dirty = self.dirty.replace(false);
         if dirty
             || self.last_draw.get().is_none_or(|(time, previous_scale)| {
@@ -162,6 +181,7 @@ impl Client {
             })
         {
             self.last_draw.set(Some((Instant::now(), scale)));
+            self.last_size.set(Some(size));
             return true;
         }
         false
@@ -224,7 +244,18 @@ struct App {
     serial: u32,
     size: (i32, i32),
     configured: bool,
+    /// The size the window last showed, and when it changed to another:
+    /// once it has held still for [`SETTLED`], the compositor is asked for
+    /// a sharp frame at that size.
+    shown_size: (i32, i32),
+    resized: Option<Instant>,
 }
+
+/// How long a window's size holds still before a resize counts as done.
+const SETTLED: Duration = Duration::from_millis(120);
+/// While a window's size keeps changing, frames are drawn at most this often;
+/// in between it stretches the last one, which costs the compositor nothing.
+const RESIZE_FRAME_EVERY: Duration = Duration::from_millis(60);
 
 fn run(
     socket: UnixStream,
@@ -271,6 +302,8 @@ fn run(
         serial: 0,
         size: (size.0 as i32, size.1 as i32),
         configured: false,
+        shown_size: (size.0 as i32, size.1 as i32),
+        resized: None,
     };
     let mut pending = None;
     wake.set_nonblocking(true).map_err(|error| error.to_string())?;
@@ -292,15 +325,30 @@ fn run(
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         }
+        // The newest frame is shown even when the window has been resized
+        // since: stretched to fit, it follows the pointer until a sharp one
+        // arrives.
         if app.configured
-            && let Some(frame) = pending.take().filter(|frame| frame.logical == app.size)
+            && let Some(frame) = pending.take()
         {
             app.draw(frame, &queue_handle)?;
+        }
+        // A resize that has held still asks for a sharp frame.
+        if app.resized.is_some_and(|resized| resized.elapsed() >= SETTLED) {
+            app.resized = None;
+            let _ = app.events.send(Event::Resize(app.size.0, app.size.1));
         }
         connection.flush().map_err(|error| error.to_string())?;
         let Some(guard) = queue.prepare_read() else { continue };
         let mut fds = [PollFd::new(&connection, PollFlags::IN), PollFd::new(&wake, PollFlags::IN)];
-        if let Err(error) = poll(&mut fds, None) {
+        let timeout = app.resized.map(|resized| {
+            let left = SETTLED.saturating_sub(resized.elapsed());
+            smithay::reexports::rustix::time::Timespec {
+                tv_sec: left.as_secs() as _,
+                tv_nsec: left.subsec_nanos().into(),
+            }
+        });
+        if let Err(error) = poll(&mut fds, timeout.as_ref()) {
             if error == smithay::reexports::rustix::io::Errno::INTR {
                 continue;
             }
@@ -344,8 +392,9 @@ impl App {
             queue_handle,
             (),
         );
-        self.viewport.set_destination(frame.logical.0, frame.logical.1);
-        self.shell.set_window_geometry(0, 0, frame.logical.0, frame.logical.1);
+        // Drawn for another size, it is stretched to the window's.
+        self.viewport.set_destination(self.size.0, self.size.1);
+        self.shell.set_window_geometry(0, 0, self.size.0, self.size.1);
         self.surface.attach(Some(&buffer), 0, 0);
         self.surface.damage_buffer(0, 0, frame.width, frame.height);
         self.surface.commit();
@@ -392,6 +441,13 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for App {
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             shell.ack_configure(serial);
+            // The picture shown so far is stretched to the new size at once.
+            if app.size != app.shown_size {
+                app.shown_size = app.size;
+                app.resized = Some(Instant::now());
+                app.viewport.set_destination(app.size.0, app.size.1);
+                shell.set_window_geometry(0, 0, app.size.0, app.size.1);
+            }
             app.surface.commit();
             app.configured = true;
             let _ = app.events.send(Event::Resize(app.size.0, app.size.1));

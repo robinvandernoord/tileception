@@ -1,6 +1,7 @@
 """A pretend ACP agent for tests: it wants a login, then streams an answer,
 reports a tool call and asks permission before finishing. The prompt "hang"
-starts an answer that never ends, not even on session/cancel."""
+starts an answer that never ends, not even on session/cancel. The prompt "ask"
+asks two questions in a form, as Codex does, over two messages."""
 import json
 import os
 import sys
@@ -32,9 +33,11 @@ for line in sys.stdin:
     if method == "initialize":
         assert params["clientCapabilities"]["auth"]["terminal"] is True
         assert params["clientCapabilities"]["fs"] == {"readTextFile": True, "writeTextFile": True}
+        assert params["clientCapabilities"]["elicitation"] == {"form": {}}
         send({"jsonrpc": "2.0", "id": mid, "result": {
             "protocolVersion": 1,
             "agentCapabilities": {},
+            "agentInfo": {"name": "fake", "version": "1.2.3"},
             "authMethods": [
                 {"id": "fake-login", "name": "Log in", "description": "Pretend to log in"},
                 {"id": "fake-key", "name": "API key", "_meta": {"api-key": {"provider": "fake"}}},
@@ -69,6 +72,25 @@ for line in sys.stdin:
     elif method is None and mid == 801:
         ok = "error" not in message
         update("s1", {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "saved" if ok else message["error"]["message"]}})
+        send({"jsonrpc": "2.0", "id": asked[0], "result": {"stopReason": "end_turn"}})
+    elif method == "session/prompt" and params["prompt"][-1]["text"] == "ask":
+        asked = (mid, 0)
+        update("s1", {"sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": {"type": "text", "text": "Two questions."}})
+        send({"jsonrpc": "2.0", "id": 700, "method": "elicitation/create", "params": {
+            "sessionId": "s1", "toolCallId": "q", "mode": "form", "message": "Codex needs your input to continue.",
+            "requestedSchema": {"type": "object", "required": ["drink", "name"], "properties": {
+                "drink": {"type": "string", "title": "Tea or coffee?", "oneOf": [
+                    {"const": "Tea", "title": "Tea"}, {"const": "Coffee", "title": "Coffee"},
+                    {"const": "Other", "title": "Other", "description": "Provide a different answer in the note field."}]},
+                "drink_other": {"type": "string", "title": "Additional answer or note",
+                                "_meta": {"codex": {"questionId": "drink", "role": "user_note"}}},
+                "name": {"type": "string", "title": "What should I call you?"},
+            }},
+        }})
+    elif method is None and mid == 700:
+        result = message["result"]
+        answer = json.dumps(result.get("content"), sort_keys=True) if result["action"] == "accept" else result["action"]
+        update("s1", {"sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": {"type": "text", "text": "Got " + answer}})
         send({"jsonrpc": "2.0", "id": asked[0], "result": {"stopReason": "end_turn"}})
     elif method == "session/prompt":
         texts = [b["text"] for b in params["prompt"] if b["type"] == "text"]

@@ -93,8 +93,10 @@ impl Tileception {
             return;
         }
         let mut ids = self.world.tree().windows_in(self.world.tree().root());
-        // Settings and Updates are Tileception's own and open fresh each time.
-        ids.retain(|window| !self.is_settings_window(*window) && !self.is_updates_window(*window));
+        // Settings, Updates and the doctor are Tileception's own and open fresh each time.
+        ids.retain(|window| {
+            !self.is_settings_window(*window) && !self.is_updates_window(*window) && !self.is_doctor_window(*window)
+        });
         ids.sort();
         if ids.is_empty() {
             return;

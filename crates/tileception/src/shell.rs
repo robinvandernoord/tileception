@@ -48,7 +48,9 @@ pub struct ShellConfig {
     pub power_menu: String,
     pub lock: String,
     pub media: String,
-    /// The doctor panel: "builtin" or "none".
+    /// The Wizard panel: "builtin" or "none". Written `wizard`; the old
+    /// name `doctor` still works.
+    #[serde(rename = "wizard", alias = "doctor")]
     pub doctor: String,
     /// The polkit authentication agent: "builtin" or "none".
     pub polkit: String,
@@ -116,7 +118,7 @@ impl ShellConfig {
         if self.tray_max_icons == 0 {
             return Err("[shell] tray_max_icons must be at least 1".into());
         }
-        for (name, value) in [("media", &self.media), ("doctor", &self.doctor), ("polkit", &self.polkit)] {
+        for (name, value) in [("media", &self.media), ("wizard", &self.doctor), ("polkit", &self.polkit)] {
             if let Part::Command(other) = Part::parse(value) {
                 return Err(format!("[shell] {name} is builtin or none, not {other:?}"));
             }

@@ -229,7 +229,7 @@ also change them later.
 
 Options:
   --preset <name>          recommended (Tileception's own everything), minimal
-                           (no bar, notifications or Doctor), keep (your
+                           (no bar, notifications or Wizard), keep (your
                            current settings) or customize
   --greeter <choice>       keep the login screen as it is, use tileception's
                            (installs greetd; affects every desktop's login),
@@ -245,7 +245,7 @@ Options:
   --lock <part>            builtin, none or a command such as
                            "swaylock -f -i {wallpaper}"
   --media <part>           builtin or none
-  --doctor <part>          builtin or none
+  --wizard <part>          builtin or none (also: --doctor)
   --handoff <on|off>       share this mouse, keyboard and clipboard with other
                            Tileception computers on the network
   --handoff-passphrase <words>
@@ -354,11 +354,12 @@ while [ "$#" -gt 0 ]; do
             need "$@"
             case $2 in top | bottom) want_bar_position=$2 ;; *) fail "--bar-position is top or bottom" ;; esac
             shift ;;
-        --media | --doctor)
+        --media | --doctor | --wizard)
             need "$@"
             value=$(normal "$2")
             case $value in builtin | none) ;; *) fail "$1 is builtin or none, not $2" ;; esac
-            eval "want_${1#--}=\$value"
+            # The Wizard was called the Doctor; its variables still are.
+            case $1 in --wizard) eval "want_doctor=\$value" ;; *) eval "want_${1#--}=\$value" ;; esac
             shift ;;
         --bar | --launcher | --notifications | --power-menu | --lock)
             need "$@"
@@ -533,7 +534,7 @@ part_name() {
         power_menu) echo "Power menu" ;;
         lock) echo "Lock screen" ;;
         media) echo "Volume, brightness and media keys" ;;
-        doctor) echo "Doctor" ;;
+        doctor) echo "Wizard" ;;
     esac
 }
 
@@ -602,7 +603,7 @@ ask_notifications() {
 
 ask_doctor() {
     [ -n "$want_doctor" ] && return
-    heading "Doctor"
+    heading "Wizard"
     say "  A panel (Super+/) where an AI agent answers questions about your setup and"
     say "  changes settings for you in plain language. Nothing is set up now: when you"
     say "  first open it, you choose an agent from the ACP Registry and sign in with"
@@ -697,9 +698,9 @@ if [ "$interactive" = 1 ]; then
             say "  Keep: your current settings, nothing else changes."
         fi
         say "  Recommended: Tileception's own bar, launcher, notifications, lock screen"
-        say "  and Doctor."
+        say "  and Wizard."
         say "  Customize: choose each part, or another program in its place."
-        say "  Minimal: no bar, notifications or Doctor; Super still opens the launcher"
+        say "  Minimal: no bar, notifications or Wizard; Super still opens the launcher"
         say "  and Super+T a terminal."
         if [ "$has_config" = 1 ]; then
             choose 1 "Keep my settings" "Recommended" "Customize" "Minimal"
@@ -773,7 +774,7 @@ summary() {
             say "    Started with the session: $notification_daemon"
         fi
         if [ "$want_doctor" = builtin ]; then
-            say "    Doctor asks which agent to use when you first open it (Super+/)."
+            say "    The Wizard asks which agent to use when you first open it (Super+/)."
         fi
         line="Sharing with other computers: $want_handoff"
         if [ "$want_handoff" = on ]; then
