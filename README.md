@@ -26,9 +26,9 @@ https://github.com/user-attachments/assets/c50f14f1-2a80-40f7-99ce-b32fb67fa9fa
 Tileception is in alpha. Expect changes between releases. Currently, only one
 monitor is supported; additional monitors stay inactive in a Tileception session.
 
-Packages are available for **Debian 13 / sid** and **Ubuntu 24.04 / 26.04**, on
-**amd64** and **arm64**, including derivatives based on those releases, such as
-**Linux Mint**.
+Packages are available for **Debian 13 and later, and sid**, and **Ubuntu 24.04
+and later**, interim releases included, on **amd64** and **arm64**, including
+derivatives based on those releases, such as **Linux Mint**.
 
 ```sh
 curl -fsSL https://tileception.space/install | sh

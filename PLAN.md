@@ -73,19 +73,6 @@ Report testing in the conversation, the commit or the pull request instead.
     desktop, not to the user's files.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
-  - Before the first ISO goes out: an R2 bucket `tileception-iso` with the
-    custom domain `iso.su6.nl` (which `/download/` redirects to), the R2
-    secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) in
-    the `apt` environment next to its SSH secrets, and the
-    `sign-checksums` command deployed on the apt server.
-    `tileception-desktop` is published with the next release.
-  - Packages for every supported Ubuntu release, interim releases included.
-    The deb matrix in `release.yml` and `DEB_IMAGES` follows
-    `ubuntu-distro-info --supported` (and `debian-distro-info`): a new
-    release joins at its beta, an old one leaves at its end of life, and
-    `SUITES` in `iso.yml` and on the apt server follow. The install script
-    and `docs/installation.md` describe that rule instead of naming
-    releases.
   - On a system without GNOME, `tileception-desktop`'s recommendations
     pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
     `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for

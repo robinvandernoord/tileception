@@ -308,8 +308,9 @@ build and publish hooks are empty; package building and publishing happen in CI.
 Pushing the tag starts the [release workflow](../.github/workflows/release.yml):
 
 1. Check that the tag matches the version in `Cargo.toml`.
-2. Build `.deb` packages for Debian trixie and sid, and Ubuntu noble and
-   resolute, on both amd64 and arm64.
+2. Build `.deb` packages for every release `scripts/suites.sh` lists (the
+   supported Debian and Ubuntu releases, from distro-info), on both amd64 and
+   arm64.
 3. Publish the packages and a per-distribution archive-keyring package to
    `https://apt.tileception.space`, then check the repository metadata and
    package downloads.

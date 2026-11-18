@@ -29,8 +29,19 @@ jobs:
       deb: ${{ steps.version.outputs.deb }}
       component: ${{ steps.version.outputs.component }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      releases: ${{ steps.releases.outputs.releases }}
     steps:
       - uses: actions/checkout@v4
+      - name: Releases to build for
+        # Every supported Debian and Ubuntu release, from distro-info: see
+        # scripts/suites.sh. The apt server serves the suites a release
+        # uploads.
+        id: releases
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq distro-info distro-info-data jq
+          releases=$(scripts/suites.sh matrix)
+          echo "Building for: $releases"
+          echo "releases=$releases" >> "$GITHUB_OUTPUT"
       - name: Tag matches Cargo.toml
         id: version
         run: |
@@ -61,11 +72,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        release:
-          - { image: "debian:trixie", suite: trixie }
-          - { image: "debian:sid", suite: sid }
-          - { image: "ubuntu:24.04", suite: noble }
-          - { image: "ubuntu:26.04", suite: resolute }
+        release: ${{ fromJSON(needs.version.outputs.releases) }}
         arch: [amd64, arm64]
     name: build (${{ matrix.release.suite }}, ${{ matrix.arch }})
     steps:

@@ -8,10 +8,11 @@
 # https://tileception.space/setup; options after `--` are passed to it), then
 # adds the Tileception apt repository (https://apt.tileception.space) with its
 # signing key, then installs the tileception package and
-# tileception-archive-keyring, which owns that key and source from then on. Runs on Debian 13
-# (trixie), Debian unstable (sid), Ubuntu 24.04 (noble) and 26.04 (resolute),
-# and on systems built on them such as PikaOS and Linux Mint, for amd64 and
-# arm64. Uses sudo when not run as root. Finally it applies the answers with
+# tileception-archive-keyring, which owns that key and source from then on. Runs on every
+# release the repository has packages for (supported Debian and Ubuntu
+# releases from Debian 13 and Ubuntu 24.04 on, and Debian unstable), and on
+# systems built on them such as PikaOS and Linux Mint, for amd64 and arm64.
+# Uses sudo when not run as root. Finally it applies the answers with
 # the installed tileception-setup, which can be run again later.
 #
 # TILECEPTION_REPO overrides the repository URL (for testing a mirror), and
@@ -23,7 +24,6 @@ set -eu
 main() {
     repo="${TILECEPTION_REPO:-https://apt.tileception.space}"
     site="${TILECEPTION_SITE:-https://tileception.space}"
-    suites="trixie sid noble resolute"
     keyring=/usr/share/keyrings/tileception-archive-keyring.gpg
     sources=/etc/apt/sources.list.d/tileception.sources
 
@@ -32,10 +32,7 @@ main() {
     . /etc/os-release
     # Mint and other derivatives say which Ubuntu or Debian release they are built on.
     suite="${UBUNTU_CODENAME:-${DEBIAN_CODENAME:-${VERSION_CODENAME:-}}}"
-    case " $suites " in
-        *" $suite "*) ;;
-        *) fail "${PRETTY_NAME:-this system} is not supported. Packages exist for Debian 13, Debian unstable (sid), and Ubuntu 24.04 and 26.04; on other releases, build from source: https://github.com/robinvandernoord/tileception#installing-as-a-session" ;;
-    esac
+    [ -n "$suite" ] || fail "${PRETTY_NAME:-this system} does not say which Debian or Ubuntu release it is"
     command -v apt-get >/dev/null 2>&1 || fail "apt-get is missing"
     arch=$(dpkg --print-architecture)
     case $arch in
@@ -56,6 +53,9 @@ main() {
 
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
+    # The repository serves each supported release under its codename.
+    fetch "$repo/dists/$suite/InRelease" "$tmp/InRelease" 2>/dev/null \
+        || fail "${PRETTY_NAME:-this system} ($suite) is not supported. Packages exist for supported Debian and Ubuntu releases from Debian 13 and Ubuntu 24.04 on, and Debian unstable; on other releases, build from source: https://github.com/robinvandernoord/tileception#installing-as-a-session"
     if dpkg-query -W -f '${Status}' tileception 2>/dev/null | grep -q 'ok installed'; then
         say "Tileception is installed; this updates it"
     fi

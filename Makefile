@@ -124,8 +124,8 @@ video: build
 	MUSIC="$(MUSIC)" scripts/promo/edit.sh
 
 # Optimised, stripped packages in target/deb. deb-docker builds amd64 and
-# arm64 for each release; override with DEB_IMAGES="..." DEB_ARCHS="...".
-DEB_IMAGES ?= debian:trixie debian:sid ubuntu:24.04 ubuntu:26.04
+# arm64 for each release scripts/suites.sh lists; override with DEB_IMAGES="..." DEB_ARCHS="...".
+DEB_IMAGES ?= $(shell scripts/suites.sh images)
 
 deb:
 	scripts/build-deb.sh
