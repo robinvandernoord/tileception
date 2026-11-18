@@ -126,9 +126,13 @@ struct Connection {
 }
 
 impl Connection {
-    fn open(name: &CStr) -> Result<Self, String> {
+    fn open(name: &CStr, timeout: Option<Duration>) -> Result<Self, String> {
         let path = pulseaudio::socket_path_from_env().ok_or("no PulseAudio socket")?;
         let stream = UnixStream::connect(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        stream
+            .set_read_timeout(timeout)
+            .and_then(|_| stream.set_write_timeout(timeout))
+            .map_err(|error| error.to_string())?;
         let cookie = cookie(pulseaudio::cookie_path_from_env().and_then(|path| std::fs::read(path).ok()));
         let mut connection = Self { socket: BufReader::new(stream), version: protocol::MAX_VERSION, seq: 0 };
         let auth =
@@ -161,6 +165,18 @@ impl Connection {
     }
 }
 
+/// Mutes just the named capture stream at the sound server, before its client
+/// receives audio. The caller supplies a unique name for its own stream.
+pub fn mute_capture_stream(name: &str, muted: bool) -> Result<(), String> {
+    let mut connection = Connection::open(c"Tileception recording", Some(Duration::from_secs(1)))?;
+    let streams: protocol::SourceOutputInfoList = connection.request(Command::GetSourceOutputInfoList)?;
+    let stream = streams
+        .iter()
+        .find(|stream| stream.name.as_bytes() == name.as_bytes())
+        .ok_or("microphone recording stream not found")?;
+    connection.ack(Command::SetSourceOutputMute(protocol::SetStreamMuteParams { index: stream.index, mute: muted }))
+}
+
 /// What a request needs that the snapshot leaves out.
 #[derive(Default)]
 struct Known {
@@ -184,15 +200,9 @@ struct Session {
 
 impl Session {
     fn open(sender: mpsc::Sender<Msg>) -> Result<Self, String> {
-        let requests = Connection::open(c"Tileception")?;
         // A stuck sound server must not stall this worker (and whoever stops it).
-        let timeout = Some(std::time::Duration::from_secs(5));
-        let socket = requests.socket.get_ref();
-        socket
-            .set_read_timeout(timeout)
-            .and_then(|_| socket.set_write_timeout(timeout))
-            .map_err(|error| error.to_string())?;
-        let mut listener = Connection::open(c"Tileception events")?;
+        let requests = Connection::open(c"Tileception", Some(Duration::from_secs(5)))?;
+        let mut listener = Connection::open(c"Tileception events", None)?;
         let mask = protocol::SubscriptionMask::SINK
             | protocol::SubscriptionMask::SOURCE
             | protocol::SubscriptionMask::SINK_INPUT

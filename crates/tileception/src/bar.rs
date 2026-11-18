@@ -60,8 +60,8 @@ const AGENDA_MAX: usize = 6;
 
 const BACK: &str = r#"<path d="M15 6l-6 6 6 6"/>"#;
 const FORWARD: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
-const STETHOSCOPE: &str =
-    r#"<path d="M6 3v6a5 5 0 0 0 10 0V3"/><path d="M11 14v2a4 4 0 0 0 8 0v-3"/><circle cx="19" cy="11" r="2"/>"#;
+/// The Wizard's pointed hat, its tip bent over, on a curved brim.
+const WIZARD_HAT: &str = r#"<path d="M2.5 18.5c4 2.5 15 2.5 19 0"/><path d="M6 19.6L10.5 8.5C12 5 15 3.5 18.5 3.5C16 5.5 15 8 15.2 11L17.5 19.8"/><path d="M11 14.5h.01"/>"#;
 const LAYERS: &str = r#"<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>"#;
 const SCREEN: &str = r#"<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>"#;
 const UPDATES: &str = r#"<path d="M12 19V5M5 12l7-7 7 7"/>"#;
@@ -879,6 +879,15 @@ impl Tileception {
     }
 
     /// Whether the bar (or the open calendar) takes the pointer here.
+    /// Whether `point` is on one of the bar's open cards, which lie over the
+    /// Wizard and the notifications and so take the pointer first.
+    pub(crate) fn bar_card_at(&self, point: Point) -> bool {
+        (self.bar.calendar.zoom.open && self.calendar_card().contains(point))
+            || (self.bar.minimap.zoom.open && self.minimap_card().contains(point))
+            || (self.updates.popover.zoom.open && self.updates_popover_contains(point))
+            || (self.network.zoom.open && self.network_card().contains(point))
+    }
+
     pub fn bar_takes(&self, point: Point) -> bool {
         if self.overlay_under(point) {
             return false;
@@ -1252,10 +1261,15 @@ impl Tileception {
             .collect()
     }
 
-    pub fn bar_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+    /// The bar with its popovers, and apart, its hover tooltips.
+    pub(crate) fn bar_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) -> (Vec<OutputElement>, Vec<OutputElement>) {
         let mode = self.bar_mode();
         if matches!(mode, Mode::Off | Mode::Covered) || self.is_locked() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let theme = &self.theme;
         let mut painter = Painter::new(self, renderer);
@@ -1266,17 +1280,19 @@ impl Tileception {
             painter.fill(Rect::new(out.x, top, out.w, 2.0), theme.accent.alpha(0.35), 0.0);
         }
         if let Some(layout) = &layout {
-            self.draw_bar(&mut painter, layout, mode);
+            self.draw_bar(&mut painter, layout, mode, feedback);
         }
         let duration = self.world.settings.animation;
+        // The cards go with the tooltips, over the Wizard and the
+        // notifications: each opens from the bar, beside them.
         let level = ease_out(self.bar.calendar.zoom.level(duration));
         if level > 0.001 {
             let clock = self.calendar_clock(layout.as_ref());
-            self.draw_calendar(&mut painter, clock, level);
+            painter.tooltip(|painter| self.draw_calendar(painter, clock, level));
         }
         let level = ease_out(self.updates.popover.zoom.level(duration));
         if level > 0.001 {
-            self.draw_updates_popover(&mut painter, level);
+            painter.tooltip(|painter| self.draw_updates_popover(painter, level));
         }
         let level = ease_out(self.bar.minimap.zoom.level(duration));
         if level > 0.001 {
@@ -1285,28 +1301,29 @@ impl Tileception {
                 let top = if self.bar_at_bottom() { out.bottom() - BAR_H } else { out.y };
                 Rect::new(out.x + 100.0, top, 40.0, BAR_H)
             });
-            self.draw_minimap_card(&mut painter, chip, level);
+            painter.tooltip(|painter| self.draw_minimap_card(painter, chip, level));
         }
         let level = ease_out(self.network.zoom.level(duration));
         if level > 0.001 {
             let chip = self.network_anchor_in(layout.as_ref());
-            self.draw_network_card(&mut painter, chip, level);
+            painter.tooltip(|painter| self.draw_network_card(painter, chip, level));
         }
-        painter.finish()
+        painter.finish_with_tooltips()
     }
 
     /// Tray popovers float above the shell panels, below overlay clients.
-    pub fn tray_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+    /// Its tooltips come apart, like the bar's.
+    pub fn tray_elements(&self, renderer: &mut GlesRenderer) -> (Vec<OutputElement>, Vec<OutputElement>) {
         if matches!(self.bar_mode(), Mode::Off | Mode::Covered) || self.is_locked() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let Some(layout) = self.bar_layout() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let mut painter = Painter::new(self, renderer);
         let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
         self.draw_tray_popup(&mut painter, &layout.tray, anchor);
-        painter.finish()
+        painter.finish_with_tooltips()
     }
 
     pub(crate) fn tray_pointer_anchor(&self) -> Option<Rect> {
@@ -1314,7 +1331,13 @@ impl Tileception {
         Some(layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock))
     }
 
-    fn draw_bar(&self, painter: &mut Painter, layout: &Layout, mode: Mode) {
+    fn draw_bar(
+        &self,
+        painter: &mut Painter,
+        layout: &Layout,
+        mode: Mode,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) {
         let theme = &self.theme;
         let bar = layout.bar;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
@@ -1344,11 +1367,11 @@ impl Tileception {
         painter.fill(Rect::new(mark_x + 9.0, mark_y, 7.0, 7.0), theme.accent, 1.5);
         painter.fill(Rect::new(mark_x + 9.0, mark_y + 9.0, 7.0, 7.0), theme.accent_end, 1.5);
 
-        // The doctor, with its health light.
+        // The Wizard, with its health light.
         let error = unseen_error(self.bar.seen_error);
         hover_fill(painter, layout.doctor, hit == Some(Hit::Doctor));
         painter.glyph(
-            STETHOSCOPE,
+            WIZARD_HAT,
             Rect::new(layout.doctor.x + 2.0, layout.doctor.y, 22.0, layout.doctor.h),
             ICON,
             theme.text,
@@ -1504,12 +1527,12 @@ impl Tileception {
         if hit == Some(Hit::Doctor) {
             let (title, body) = match &error {
                 Some((_, message)) => ("Something went wrong \u{b7} click to ask about it", message.as_str()),
-                None => ("Doctor", "Ask about settings, shortcuts and apps (Super+/)"),
+                None => ("Wizard", "Ask about settings, shortcuts and apps (Super+/)"),
             };
             self.bar_tooltip(painter, layout.doctor.x, bar, title, body);
         }
         if let Some(Hit::Slot(slot)) = hit {
-            self.draw_slot_preview(painter, layout, slot);
+            painter.tooltip(|painter| self.draw_slot_preview(painter, layout, slot, feedback));
         }
         if hit == Some(Hit::Network)
             && !self.network.zoom.open
@@ -1633,21 +1656,25 @@ impl Tileception {
         painter.text(&initial, rect, Style::new(theme.font_size * 0.66, theme.on_accent).bold().align(Align::Centre));
     }
 
+    /// A hover tooltip for a bar widget, in the painter's tooltip layer so
+    /// it shows over open panels and popovers.
     pub(crate) fn bar_tooltip(&self, painter: &mut Painter, preferred_x: f64, anchor: Rect, title: &str, body: &str) {
         let theme = &self.theme;
         let width = 320.0_f64.min(self.output_rect().w - 16.0);
         let left = preferred_x.min(self.output_rect().right() - width - 8.0).max(8.0);
         let body_style = Style::new(theme.font_size * 0.9, theme.muted).lines(4);
-        let (_, body_h) = (0.0, self.bar_measure_height(body, body_style, width - 24.0));
+        let body_h = self.bar_measure_height(body, body_style, width - 24.0);
         let top = self.bar_popup_y(anchor, 40.0 + body_h);
         let rect = Rect::new(left, top, width, 40.0 + body_h);
-        painter.popup(rect);
-        painter.text(
-            title,
-            Rect::new(left + 12.0, top + 8.0, width - 24.0, 20.0),
-            Style::new(theme.font_size * 0.86, theme.text).bold(),
-        );
-        painter.text(body, Rect::new(left + 12.0, top + 30.0, width - 24.0, body_h), body_style);
+        painter.tooltip(|painter| {
+            painter.popup(rect);
+            painter.text(
+                title,
+                Rect::new(left + 12.0, top + 8.0, width - 24.0, 20.0),
+                Style::new(theme.font_size * 0.86, theme.text).bold(),
+            );
+            painter.text(body, Rect::new(left + 12.0, top + 30.0, width - 24.0, body_h), body_style);
+        });
     }
 
     /// How wide the bell's badge is for `label`: round for one digit, a
@@ -1667,7 +1694,13 @@ impl Tileception {
 
     /// What a saved view frames, drawn small beside its slot: on a split
     /// screen, each area's part side by side.
-    fn draw_slot_preview(&self, painter: &mut Painter, layout: &Layout, slot_number: usize) {
+    fn draw_slot_preview(
+        &self,
+        painter: &mut Painter,
+        layout: &Layout,
+        slot_number: usize,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) {
         // Each area holding the view: its world, the node and its shape on screen.
         let parts: Vec<_> = self
             .area_worlds()
@@ -1715,7 +1748,9 @@ impl Tileception {
                 )
                 .inset(2.0);
                 painter.fill(rect, self.theme.surface, 3.0);
-                if let Some(fitted) = self.fit_into(window, rect) {
+                if let Some(fitted) = self.fit_into(window, rect)
+                    && self.draw_capture_window(window, feedback)
+                {
                     painter.window(window, fitted);
                 }
             }

@@ -1,12 +1,15 @@
 #!/bin/sh
-# Screenshots for Tileception, with grim and slurp, and a notification
-# that shows it worked.
+# Whole-screen screenshots for Tileception (Print), with grim, and a
+# notification that shows it worked.
 #
 #   tileception-screenshot          the whole screen: ask whether to Copy, Save,
 #                                   or Save and copy; closing the prompt discards it
-#   tileception-screenshot region   drag a region first, then ask the same question
-#   ... --ask                       explicitly request the default prompt
 #   ... --no-ask                    save to Pictures/Screenshots and copy immediately
+#
+# An area is not taken here: Shift+Print (`tileception msg snip`) opens
+# Tileception's own screenshot tool, which picks an area or a window and can
+# draw on it, blur it, copy, save or record it. `region` (slurp, then the same
+# question) is left only for key bindings made before that tool existed.
 set -u
 
 mode=screen

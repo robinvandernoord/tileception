@@ -334,7 +334,11 @@ impl Tileception {
         true
     }
 
-    pub fn strip_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+    pub(crate) fn strip_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) -> Vec<OutputElement> {
         let level = ease_out(self.strip.level());
         let Some(strip) = self.strip_rect().filter(|_| level > 0.001) else { return Vec::new() };
         let theme = &self.theme;
@@ -361,7 +365,9 @@ impl Tileception {
             );
             // The window as it was, fitted into the preview.
             painter.fill(card.preview, theme.background, (theme.radius - 2.0).max(0.0));
-            if let Some(fitted) = self.fit_preview(card.window, card.preview.inset(4.0)) {
+            if let Some(fitted) = self.fit_preview(card.window, card.preview.inset(4.0))
+                && self.draw_capture_window(card.window, feedback)
+            {
                 painter.window(card.window, fitted);
             }
             let window = self.windows.get(&card.window);

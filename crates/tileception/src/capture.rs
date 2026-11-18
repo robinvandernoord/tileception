@@ -6,7 +6,7 @@
 //! reading it back; GPU buffers (dmabufs, which screen sharing uses) are
 //! rendered into directly.
 
-use std::{path::PathBuf, time::Duration};
+use std::{cell::Cell, path::PathBuf, time::Duration};
 
 use smithay::{
     backend::{
@@ -54,9 +54,6 @@ pub enum CaptureTarget {
     },
     /// The whole output without the rubber duck, for its question.
     Duck,
-    /// The whole output under the feedback dialog, for the report it was
-    /// asked for.
-    Feedback(u64),
     /// The whole output, for the colour picker's magnifier.
     ColourPick,
     /// The whole output without the area picker, for the area screenshot.
@@ -70,6 +67,21 @@ struct Scene {
     elements: Vec<OutputElement>,
     size: (i32, i32),
     clear: [f32; 4],
+}
+
+/// The Wizard policy for a feedback still, and whether it was drawn into it.
+pub(crate) struct FeedbackCapture {
+    include_wizard: bool,
+    drew_wizard: Cell<bool>,
+}
+
+impl FeedbackCapture {
+    pub(crate) fn draw_wizard(&self) -> bool {
+        if self.include_wizard {
+            self.drew_wizard.set(true);
+        }
+        self.include_wizard
+    }
 }
 
 pub struct PendingCapture {
@@ -97,7 +109,6 @@ impl Tileception {
                 CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
                 CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
                 CaptureTarget::Duck => {}
-                CaptureTarget::Feedback(shot) => self.feedback_screen_failed(shot),
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
                 CaptureTarget::Shot => self.cancel_shot(),
                 CaptureTarget::Recording => {}
@@ -123,25 +134,19 @@ impl Tileception {
         self.schedule_render();
     }
 
-    /// Queues a screenshot of the whole output, without the feedback dialog.
-    pub fn feedback_screenshot(&mut self, shot: u64) {
-        let region = self.output_region();
-        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::Feedback(shot) });
-        self.schedule_render();
-    }
-
     /// What is on screen now, ready to render into a capture.
-    fn scene(&mut self, renderer: &mut GlesRenderer) -> Scene {
+    fn scene(&mut self, renderer: &mut GlesRenderer, feedback: Option<&FeedbackCapture>) -> Scene {
         self.update_settings_client(renderer);
         self.update_updates_client(renderer);
+        self.update_doctor_client(renderer);
         if self.draws_lock_screen() {
             self.wallpaper_buffer();
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         let now = self.now();
         self.frost.borrow_mut().begin();
-        let others = self.other_area_elements(renderer, now);
-        let (mut elements, under) = self.render_elements(renderer, now, others);
+        let others = self.other_area_elements(renderer, now, feedback);
+        let (mut elements, under) = self.render_elements(renderer, now, others, feedback);
         if let Some(drawn) = wallpaper {
             crate::render::push_wallpaper(&mut elements, renderer, &drawn, (0.0, 0.0), self.scale);
         }
@@ -152,12 +157,12 @@ impl Tileception {
     /// The scene with the pointer on top, for captures that asked for it.
     fn scene_with_pointer(&mut self, renderer: &mut GlesRenderer) -> Scene {
         if !self.is_active_output() {
-            return self.scene(renderer);
+            return self.scene(renderer, None);
         }
         let mut cursor = self.capture_cursor.take().unwrap_or_else(|| crate::cursor::Cursor::load(self.scale));
         let mut elements = self.cursor_elements(renderer, &mut cursor);
         self.capture_cursor = Some(cursor);
-        let scene = self.scene(renderer);
+        let scene = self.scene(renderer, None);
         elements.extend(scene.elements);
         Scene { elements, ..scene }
     }
@@ -173,7 +178,7 @@ impl Tileception {
         let duck = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Duck)).last();
         if let Some(capture) = duck {
             self.duck.hidden = true;
-            let scene = self.scene(renderer);
+            let scene = self.scene(renderer, None);
             self.duck.hidden = false;
             let region = capture.region;
             match pixels(renderer, &mut None, &scene, region) {
@@ -181,29 +186,23 @@ impl Tileception {
                 Err(err) => tracing::warn!("duck capture failed: {err}"),
             }
         }
-        // So does the feedback dialog's: the report is about what is under it.
-        let feedback = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Feedback(_))).last();
-        if let Some(PendingCapture { region, target: CaptureTarget::Feedback(shot) }) = feedback {
-            self.feedback_hidden(true);
-            let scene = self.scene(renderer);
-            self.feedback_hidden(false);
-            match pixels(renderer, &mut None, &scene, region) {
-                Ok(rgba) => self.feedback_screen_taken(shot, rgba, (region.size.w as u32, region.size.h as u32)),
-                Err(err) => {
-                    tracing::warn!("feedback capture failed: {err}");
-                    self.feedback_screen_failed(shot);
-                }
-            }
-        }
         // The area picker leaves itself out of its still.
         let shot = pending.extract_if(.., |queued| matches!(queued.target, CaptureTarget::Shot)).last();
         if let Some(capture) = shot {
+            let feedback = self.shot.as_ref().and_then(|shot| shot.feedback()).map(|feedback| FeedbackCapture {
+                include_wizard: feedback.shows_doctor(),
+                drew_wizard: Cell::new(false),
+            });
             self.shot_hidden(true);
-            let scene = self.scene(renderer);
+            let scene = self.scene(renderer, feedback.as_ref());
             self.shot_hidden(false);
             let region = capture.region;
             match pixels(renderer, &mut None, &scene, region) {
-                Ok(rgba) => self.shot_still_taken(rgba, (region.size.w, region.size.h)),
+                Ok(rgba) => self.shot_still_taken(
+                    rgba,
+                    (region.size.w, region.size.h),
+                    feedback.is_some_and(|capture| capture.drew_wizard.get()),
+                ),
                 Err(err) => {
                     tracing::warn!("area screenshot capture failed: {err}");
                     self.cancel_shot();
@@ -224,7 +223,7 @@ impl Tileception {
         if pending.is_empty() {
             return;
         }
-        let scene = self.scene(renderer);
+        let scene = self.scene(renderer, None);
         let wants_pointer = pending.iter().any(|capture| {
             matches!(
                 capture.target,
@@ -268,7 +267,7 @@ impl Tileception {
                         self.cancel_colour_pick();
                     }
                 },
-                CaptureTarget::Duck | CaptureTarget::Feedback(_) | CaptureTarget::Shot | CaptureTarget::Recording => {}
+                CaptureTarget::Duck | CaptureTarget::Shot | CaptureTarget::Recording => {}
             }
         }
     }

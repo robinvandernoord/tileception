@@ -1,11 +1,15 @@
-//! The area screenshot (Shift+Print, `tileception msg capture`).
+//! The area screenshot (Shift+Print, `tileception msg snip`).
 //!
 //! The screen freezes under a picker: hover a window and click to take it,
 //! or drag an area. The area then gets handles to resize it, a column of
 //! drawing tools beside it and a row of actions under it: copy, save, ask
-//! the Doctor or record the area. Freezing can be switched off to pick
-//! over the live screen; the picture is then taken when it is copied or
-//! saved.
+//! the Doctor or record the area, with or without sound. Freezing can be
+//! switched off to pick over the live screen; the picture is then taken
+//! when it is copied or saved.
+//!
+//! The feedback dialog opens it in a mode of its own, which only attaches
+//! the picture to the feedback (or cancels back to it); the dialog waits
+//! inside the picker meanwhile, out of the picture.
 
 mod export;
 mod marks;
@@ -14,6 +18,7 @@ pub mod record;
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -57,6 +62,8 @@ const GRAB: f64 = 7.0;
 const DRAG: f64 = 3.0;
 /// The arrow joined to Copy and Save.
 const ARROW: f64 = 24.0;
+/// The button that attaches the picture to feedback.
+const ATTACH: f64 = 176.0;
 /// The menu of formats and sizes beside Copy and Save.
 const MENU_W: f64 = 272.0;
 const MENU_TITLE: f64 = 26.0;
@@ -73,7 +80,7 @@ const ZOOM_CELL: f64 = 9.0;
 /// An area screenshot being picked.
 pub struct Shot {
     output: Option<Output>,
-    still: Option<Still>,
+    still: Option<Rc<Still>>,
     /// Over the live screen instead of a still of it.
     live: bool,
     /// While a still is taken, the picker leaves itself out of it.
@@ -106,6 +113,23 @@ pub struct Shot {
     overlay: RefCell<Option<Overlay>>,
     /// Counts changes to the marks and the selection.
     generation: u64,
+    /// The sounds Record takes along.
+    sources: record::Sources,
+    /// The feedback dialog this picks a picture for, waiting meanwhile.
+    feedback: Option<Box<crate::feedback::Feedback>>,
+}
+
+/// A picture attached to feedback, kept so Edit can reopen it: the frozen
+/// screen, the area and the marks on it.
+#[derive(Clone)]
+pub struct Draft {
+    output: Option<Output>,
+    still: Rc<Still>,
+    selection: Rect,
+    marks: Vec<Mark>,
+    tool: Tool,
+    colour: usize,
+    width: usize,
 }
 
 struct Still {
@@ -115,6 +139,7 @@ struct Still {
     /// Pixels per point when it was taken.
     scale: f64,
     buffer: MemoryRenderBuffer,
+    includes_wizard: bool,
 }
 
 impl Still {
@@ -280,10 +305,16 @@ enum Control {
     Redo,
     Live,
     Record,
+    /// Whether Record takes along what the speakers play.
+    SystemSound,
+    /// Whether Record takes along the microphone.
+    Microphone,
     Doctor,
     Cancel,
     Save,
     Copy,
+    /// Hands the picture to the feedback dialog.
+    Attach,
     /// The arrow beside Copy or Save, which opens its menu.
     Menu(Out),
     /// A choice in the open menu: PNG, WebP, then each JPG quality.
@@ -298,12 +329,15 @@ enum Finish {
     Copy(Export),
     Save(Export),
     Doctor,
+    /// Attaches the picture to the waiting feedback dialog.
+    Feedback,
 }
 
 /// Where the toolbars go around a selection.
 struct Layout {
     column: Rect,
     row: Rect,
+    row_separator: Option<Rect>,
     palette: Option<Rect>,
     menu: Option<Rect>,
     /// The column is to the right of the selection (or inside it, at its right).
@@ -337,7 +371,39 @@ impl Shot {
             files: None,
             overlay: RefCell::new(None),
             generation: 0,
+            sources: record::Sources::load(),
+            feedback: None,
         }
+    }
+
+    /// The picker again on an attached picture, as it was left.
+    fn from_draft(draft: Draft) -> Shot {
+        let mut shot = Shot::new(draft.output);
+        shot.still = Some(draft.still);
+        shot.selection = Some(draft.selection);
+        shot.marks = draft.marks;
+        shot.tool = draft.tool;
+        shot.colour = draft.colour;
+        shot.width = draft.width;
+        shot
+    }
+
+    /// What Edit needs to reopen this picture.
+    fn draft(&self) -> Option<Draft> {
+        Some(Draft {
+            output: self.output.clone(),
+            still: self.still.clone()?,
+            selection: self.selection?,
+            marks: self.marks.clone(),
+            tool: self.tool,
+            colour: self.colour,
+            width: self.width,
+        })
+    }
+
+    /// The feedback dialog waiting for this picture, if any.
+    pub(crate) fn feedback(&self) -> Option<&crate::feedback::Feedback> {
+        self.feedback.as_deref()
     }
 
     fn colour(&self) -> [u8; 3] {
@@ -387,6 +453,17 @@ impl Shot {
         }
     }
 
+    /// Switches what the speakers play (`system`) or the microphone on or
+    /// off for Record, and remembers it for next time.
+    fn toggle_sound(&mut self, system: bool) {
+        if system {
+            self.sources.system = !self.sources.system;
+        } else {
+            self.sources.microphone = !self.sources.microphone;
+        }
+        self.sources.save();
+    }
+
     fn next_step(&self) -> u32 {
         let steps = self.marks.iter().filter(|mark| matches!(mark, Mark::Step { .. })).count();
         steps as u32 + 1
@@ -407,7 +484,13 @@ impl Control {
             Control::Live if shot.live => "Freeze the screen  F",
             Control::Live => "Show the live screen  F",
             Control::Record => "Record the area  Ctrl+R",
-            Control::Doctor => "Ask the Doctor  D",
+            Control::SystemSound if shot.sources.system => "Record with system sound: on  O",
+            Control::SystemSound => "Record with system sound: off  O",
+            Control::Microphone if shot.sources.microphone => "Record with the microphone: on  M",
+            Control::Microphone => "Record with the microphone: off  M",
+            Control::Attach => "Attach to feedback  Enter",
+            Control::Doctor => "Ask the Wizard  D",
+            Control::Cancel if shot.feedback.is_some() => "Back to the feedback  Esc",
             Control::Cancel => "Cancel  Esc",
             Control::Save => "Save  Ctrl+S",
             Control::Copy => "Copy  Enter",
@@ -627,6 +710,31 @@ impl Tileception {
         self.force_keyboard_focus_sync();
     }
 
+    /// Picks a picture for `feedback`, which waits in the picker until it
+    /// is attached or the picker is cancelled. With a `draft`, the picker
+    /// reopens on that picture, as long as its screen is still there.
+    pub(crate) fn capture_for_feedback(&mut self, feedback: crate::feedback::Feedback, draft: Option<Draft>) {
+        if self.is_locked() || self.shot.is_some() {
+            self.feedback = Some(feedback);
+            return;
+        }
+        self.cancel_colour_pick();
+        let outputs = self.all_outputs();
+        let draft = draft.filter(|draft| draft.output.as_ref().is_some_and(|output| outputs.contains(output)));
+        let fresh = draft.is_none();
+        let mut shot = match draft {
+            Some(draft) => Shot::from_draft(draft),
+            None => Shot::new(self.output.clone()),
+        };
+        shot.feedback = Some(Box::new(feedback));
+        self.shot = Some(shot);
+        if fresh {
+            self.take_shot_still();
+        }
+        self.force_keyboard_focus_sync();
+        self.schedule_render();
+    }
+
     /// Queues a still of the screen under the picker, which leaves itself out.
     fn take_shot_still(&mut self) {
         let region = smithay::utils::Rectangle::from_size(self.output_pixels().into());
@@ -636,13 +744,13 @@ impl Tileception {
 
     /// The still from [`Self::process_captures`], in the captured screen's
     /// context.
-    pub fn shot_still_taken(&mut self, rgba: Vec<u8>, (width, height): (i32, i32)) {
+    pub fn shot_still_taken(&mut self, rgba: Vec<u8>, (width, height): (i32, i32), includes_wizard: bool) {
         let scale = self.scale;
         let output = self.output.clone();
         let Some(shot) = self.shot.as_mut().filter(|shot| shot.output == output) else { return };
         let buffer =
             MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, (width, height), 1, Transform::Normal, None);
-        shot.still = Some(Still { rgba, width, height, scale, buffer });
+        shot.still = Some(Rc::new(Still { rgba, width, height, scale, buffer, includes_wizard }));
         shot.changed();
         if let Some(finish) = shot.waiting.take() {
             self.finish_shot_now(finish);
@@ -657,8 +765,12 @@ impl Tileception {
         }
     }
 
+    /// Closes the picker; a feedback dialog waiting in it comes back as it was.
     pub fn cancel_shot(&mut self) {
-        if self.shot.take().is_some() {
+        if let Some(shot) = self.shot.take() {
+            if let Some(feedback) = shot.feedback {
+                self.feedback = Some(*feedback);
+            }
             self.force_keyboard_focus_sync();
             self.schedule_render();
         }
@@ -922,6 +1034,9 @@ impl Tileception {
             Control::Redo => shot.redo(),
             Control::Live => self.toggle_shot_live(),
             Control::Record => self.record_shot(),
+            Control::SystemSound => shot.toggle_sound(true),
+            Control::Microphone => shot.toggle_sound(false),
+            Control::Attach => self.finish_shot(Finish::Feedback),
             Control::Doctor if doctor => self.finish_shot(Finish::Doctor),
             Control::Doctor => {}
             Control::Cancel => self.cancel_shot(),
@@ -1046,9 +1161,11 @@ impl Tileception {
     }
 
     fn record_shot(&mut self) {
-        let Some(selection) = self.shot.as_ref().and_then(|shot| shot.selection) else { return };
+        let Some(shot) = self.shot.as_ref().filter(|shot| shot.feedback.is_none()) else { return };
+        let Some(selection) = shot.selection else { return };
+        let sources = shot.sources;
         self.cancel_shot();
-        self.start_recording(selection);
+        self.start_recording(selection, sources);
     }
 
     /// Keys while picking.
@@ -1068,6 +1185,10 @@ impl Tileception {
         let choices = self.shot_formats().len();
         let sizes = self.config.file.capture.sizes().len();
         let Some(shot) = self.shot.as_mut() else { return };
+        // For feedback, the picture can only be attached: copying, saving,
+        // recording, the Doctor and the live screen are not offered.
+        let feedback = shot.feedback.is_some();
+        let finish = if feedback { Finish::Feedback } else { Finish::Copy(Export::DEFAULT) };
         if let Some(typing) = shot.typing.as_mut() {
             match sym {
                 keysyms::KEY_Escape => shot.typing = None,
@@ -1107,21 +1228,24 @@ impl Tileception {
         }
         match (sym, letter) {
             (keysyms::KEY_Escape, _) if shot.palette => shot.palette = false,
-            (keysyms::KEY_Return | keysyms::KEY_KP_Enter, _) if mods.shift && shot.selection.is_some() => {
+            (keysyms::KEY_Return | keysyms::KEY_KP_Enter, _) if mods.shift && shot.selection.is_some() && !feedback => {
                 self.toggle_shot_menu(Out::Copy);
             }
-            (_, Some('s')) if mods.ctrl && mods.shift && shot.selection.is_some() => self.toggle_shot_menu(Out::Save),
+            (_, Some('s')) if mods.ctrl && mods.shift && shot.selection.is_some() && !feedback => {
+                self.toggle_shot_menu(Out::Save)
+            }
             (keysyms::KEY_Escape, _) => self.cancel_shot(),
+            (_, Some('c')) if mods.ctrl && feedback => {}
             (keysyms::KEY_Return | keysyms::KEY_KP_Enter, _) | (_, Some('c')) if mods.ctrl || letter.is_none() => {
                 if shot.selection.is_some() {
-                    self.finish_shot(Finish::Copy(Export::DEFAULT));
+                    self.finish_shot(finish);
                 } else {
                     let point = self.pointer_point();
                     let snapped = self.window_rect_at(point).unwrap_or_else(|| self.output_rect());
                     self.shot_select(snapped);
                 }
             }
-            (_, Some('s')) if mods.ctrl => self.finish_shot(Finish::Save(Export::DEFAULT)),
+            (_, Some('s')) if mods.ctrl && !feedback => self.finish_shot(Finish::Save(Export::DEFAULT)),
             (_, Some('r')) if mods.ctrl => self.record_shot(),
             (_, Some('z')) if mods.ctrl && mods.shift => shot.redo(),
             (_, Some('z')) if mods.ctrl => shot.undo(),
@@ -1130,8 +1254,10 @@ impl Tileception {
                 self.shot_arrow(sym, mods)
             }
             _ if mods.ctrl || mods.alt || mods.logo => {}
-            (_, Some('f')) => self.toggle_shot_live(),
-            (_, Some('d')) if doctor => self.finish_shot(Finish::Doctor),
+            (_, Some('f')) if !feedback => self.toggle_shot_live(),
+            (_, Some('d')) if doctor && !feedback => self.finish_shot(Finish::Doctor),
+            (_, Some('o')) if !feedback => shot.toggle_sound(true),
+            (_, Some('m')) if !feedback => shot.toggle_sound(false),
             (_, Some('[')) => shot.width = shot.width.saturating_sub(1),
             (_, Some(']')) => shot.width = (shot.width + 1).min(WIDTHS.len() - 1),
             (_, Some(digit @ '1'..='6')) => shot.colour = usize::from(digit as u8 - b'1'),
@@ -1241,20 +1367,33 @@ impl Tileception {
 
     /// Finishes with the still there is.
     fn finish_shot_now(&mut self, finish: Finish) {
-        let Some(shot) = self.shot.take() else { return };
+        let Some(mut shot) = self.shot.take() else { return };
         self.force_keyboard_focus_sync();
         self.schedule_render();
         let (rgba, width, height) = match self.shot_pixels(&shot) {
             Ok(pixels) => pixels,
             Err(error) => {
                 self.notify_locally("Screenshot failed", &error, Urgency::Normal);
+                if let Some(feedback) = shot.feedback.take() {
+                    self.feedback = Some(*feedback);
+                }
                 return;
             }
         };
+        if let Some(feedback) = shot.feedback.take() {
+            // Kept for Edit, which opens the same still, area and marks again.
+            let draft = shot.draft();
+            let includes_wizard = shot.still.as_ref().is_some_and(|still| still.includes_wizard);
+            let file = export::encode(&rgba, width, height, Format::Png);
+            let picture =
+                file.map(|png| crate::feedback::Picture { png, rgba, size: (width, height), draft, includes_wizard });
+            self.feedback_attach(*feedback, picture);
+            return;
+        }
         let preview = thumbnail(&rgba, width, height);
         let export = match finish {
             Finish::Copy(export) | Finish::Save(export) => export,
-            Finish::Doctor => Export::DEFAULT,
+            Finish::Doctor | Finish::Feedback => Export::DEFAULT,
         };
         let (file, png) = match shot_files(&shot, export, &rgba, width, height) {
             Ok(files) => files,
@@ -1304,6 +1443,8 @@ impl Tileception {
                     self.doctor_attach(file);
                 }
             }
+            // Attached above, while the dialog was at hand.
+            Finish::Feedback => {}
         }
     }
 
@@ -1422,43 +1563,92 @@ impl Tileception {
             (selection.right() - MARGIN - column_w, true)
         };
         let column_y = selection.y.clamp(screen.y + 4.0, (screen.bottom() - column_h - 4.0).max(screen.y + 4.0));
-        let column = Rect::new(column_x, column_y, column_w, column_h);
-
-        let mut row_items: Vec<(Option<Control>, f64)> =
-            vec![(Some(Control::Live), BUTTON), (Some(Control::Record), BUTTON)];
-        if self.shell().doctor() {
-            row_items.push((Some(Control::Doctor), BUTTON));
-        }
-        row_items.extend([
-            (None, SEPARATOR),
-            (Some(Control::Cancel), BUTTON),
-            (Some(Control::Save), 80.0),
-            (Some(Control::Menu(Out::Save)), ARROW),
-            (Some(Control::Copy), 82.0),
-            (Some(Control::Menu(Out::Copy)), ARROW),
-        ]);
-        // Each arrow is joined to its button, without a gap.
-        let row_w = PAD * 2.0
-            + row_items
-                .iter()
-                .map(|(item, width)| match item {
-                    Some(Control::Menu(_)) => *width,
-                    Some(_) => width + GAP,
-                    None => *width,
-                })
-                .sum::<f64>()
+        let row_items = if shot.feedback.is_some() {
+            vec![(Control::Cancel, BUTTON, None), (Control::Attach, ATTACH, None)]
+        } else {
+            let mut items = vec![
+                (Control::Live, BUTTON, None),
+                (Control::Record, BUTTON, None),
+                (Control::SystemSound, BUTTON, None),
+                (Control::Microphone, BUTTON, None),
+            ];
+            if self.shell().doctor() {
+                items.push((Control::Doctor, BUTTON, None));
+            }
+            items.extend([
+                (Control::Cancel, BUTTON, None),
+                (Control::Save, 80.0, Some(Out::Save)),
+                (Control::Copy, 82.0, Some(Out::Copy)),
+            ]);
+            items
+        };
+        let inset = 4.0_f64.min(screen.w / 4.0);
+        let row_pad = PAD.min(screen.w / 8.0);
+        let preferred = row_items
+            .iter()
+            .map(|(control, width, menu)| {
+                width
+                    + GAP
+                    + if menu.is_some() { ARROW } else { 0.0 }
+                    + if *control == Control::Cancel && shot.feedback.is_none() { SEPARATOR } else { 0.0 }
+            })
+            .sum::<f64>()
             - GAP;
-        let row_h = BUTTON + PAD * 2.0;
+        let room = screen.w - 2.0 * (inset + row_pad);
+        // A wrapped toolbar can reach into the tool column. Give the two
+        // their own horizontal space on narrow screens.
+        let reserve = if preferred > room && room >= column_w + MARGIN + BUTTON { column_w + MARGIN } else { 0.0 };
+        let column_x = if reserve == 0.0 {
+            column_x
+        } else if column_right {
+            screen.right() - inset - column_w
+        } else {
+            screen.x + inset
+        };
+        let column = Rect::new(column_x, column_y, column_w, column_h);
+        let available = room - reserve;
+        let mut row_buttons = Vec::new();
+        let mut row_separator = None;
+        let (mut row_x, mut row_y, mut used) = (0.0_f64, 0.0, 0.0_f64);
+        for (control, width, menu) in row_items {
+            let total = (width + if menu.is_some() { ARROW } else { 0.0 }).min(available);
+            let separator = control == Control::Cancel && shot.feedback.is_none();
+            let gap = if separator { GAP + SEPARATOR } else { GAP };
+            if row_x > 0.0 && row_x + gap + total > available {
+                row_x = 0.0;
+                row_y += step;
+            }
+            if row_x > 0.0 {
+                if separator {
+                    row_separator = Some(Rect::new(row_x + gap / 2.0, row_y + 4.0, 1.0, BUTTON - 8.0));
+                }
+                row_x += gap;
+            }
+            // Keep the format arrow attached to its button when wrapping.
+            let arrow = if menu.is_some() { ARROW.min(total / 3.0) } else { 0.0 };
+            row_buttons.push((Rect::new(row_x, row_y, total - arrow, BUTTON), control));
+            if let Some(out) = menu {
+                row_buttons.push((Rect::new(row_x + total - arrow, row_y, arrow, BUTTON), Control::Menu(out)));
+            }
+            row_x += total;
+            used = used.max(row_x);
+        }
+        let row_w = used + 2.0 * row_pad;
+        let row_h = row_y + BUTTON + 2.0 * PAD;
         let (row_y, row_below) = if selection.bottom() + MARGIN + row_h <= screen.bottom() - 4.0 {
             (selection.bottom() + MARGIN, true)
         } else if selection.y - MARGIN - row_h >= screen.y + 4.0 {
             (selection.y - MARGIN - row_h, false)
         } else {
-            (selection.bottom() - MARGIN - row_h, true)
+            ((selection.bottom() - MARGIN - row_h).max(screen.y + 4.0), true)
         };
         // Its right end lines up with the selection's, away from the column.
-        let row_x = (selection.right() - row_w).clamp(screen.x + 4.0, (screen.right() - row_w - 4.0).max(screen.x));
+        let left = screen.x + inset + if column_right { 0.0 } else { reserve };
+        let right = (screen.right() - row_w - inset - if column_right { reserve } else { 0.0 }).max(left);
+        let row_x = (selection.right() - row_w).clamp(left, right);
         let row = Rect::new(row_x, row_y, row_w, row_h);
+        let place = |rect: Rect| Rect::new(row.x + row_pad + rect.x, row.y + PAD + rect.y, rect.w, rect.h);
+        let row_separator = row_separator.map(place);
 
         let mut buttons = Vec::new();
         let mut cursor = column.y + PAD;
@@ -1476,19 +1666,7 @@ impl Tileception {
                 None => cursor += SEPARATOR,
             }
         }
-        let mut cursor = row.x + PAD;
-        for (item, width) in row_items {
-            match item {
-                Some(control) => {
-                    if matches!(control, Control::Menu(_)) {
-                        cursor -= GAP;
-                    }
-                    buttons.push((Rect::new(cursor, row.y + PAD, width, BUTTON), control));
-                    cursor += width + GAP;
-                }
-                None => cursor += SEPARATOR,
-            }
-        }
+        buttons.extend(row_buttons.into_iter().map(|(rect, control)| (place(rect), control)));
 
         let palette = match (shot.palette, colour_button) {
             (true, Some(anchor)) => {
@@ -1520,7 +1698,9 @@ impl Tileception {
         let menu = shot.menu.and_then(|out| {
             let (anchor, _) = buttons.iter().find(|(_, control)| *control == Control::Menu(out))?;
             let height = MenuParts::height();
-            let left = (anchor.right() - MENU_W).clamp(screen.x + 4.0, (screen.right() - MENU_W - 4.0).max(screen.x));
+            let width = MENU_W.min(screen.w - 2.0 * inset);
+            let min_x = screen.x + inset;
+            let left = (anchor.right() - width).clamp(min_x, (screen.right() - width - inset).max(min_x));
             let below = row.bottom() + 6.0;
             let above = row.y - 6.0 - height;
             let fits_below = below + height <= screen.bottom() - 4.0;
@@ -1530,7 +1710,7 @@ impl Tileception {
                 (_, _, true) => above,
                 _ => (screen.bottom() - height - 4.0).max(screen.y + 4.0),
             };
-            let rect = Rect::new(left, top, MENU_W, height);
+            let rect = Rect::new(left, top, width, height);
             let parts = MenuParts::new(
                 rect,
                 self.config.file.capture.qualities().len(),
@@ -1546,7 +1726,7 @@ impl Tileception {
         });
         // The palette and the menu are on top, so they are looked at first.
         buttons.reverse();
-        Some(Layout { column, row, palette, menu, column_right, row_below, buttons })
+        Some(Layout { column, row, row_separator, palette, menu, column_right, row_below, buttons })
     }
 
     /// The marks drawn for the screen, redrawn when they change.
@@ -1566,7 +1746,7 @@ impl Tileception {
             let font = self.theme.font.clone();
             let mut text = self.text.borrow_mut();
             // Live, there is nothing to redact from yet: grey blocks show where.
-            let source = shot.still.as_ref().filter(|_| !shot.live).map(Still::source);
+            let source = shot.still.as_ref().filter(|_| !shot.live).map(|still| still.source());
             marks::draw(
                 &mut pixmap,
                 (area.loc.x, area.loc.y),
@@ -1736,11 +1916,16 @@ impl Tileception {
 
     /// What to do, at the top of the screen, before anything is picked.
     fn shot_hint(&self, painter: &mut Painter<'_>, screen: Rect) {
-        let hints = [("Drag", "an area"), ("Click", "a window"), ("F", "live screen"), ("Esc", "cancel")];
-        let width = painter.key_hints(&hints, 0.0, 0.0, true) + 32.0;
+        let feedback = self.shot.as_ref().is_some_and(|shot| shot.feedback.is_some());
+        let hints: &[(&str, &str)] = if feedback {
+            &[("Drag", "an area"), ("Click", "a window"), ("Esc", "back to the feedback")]
+        } else {
+            &[("Drag", "an area"), ("Click", "a window"), ("F", "live screen"), ("Esc", "cancel")]
+        };
+        let width = painter.key_hints(hints, 0.0, 0.0, true) + 32.0;
         let rect = Rect::new(screen.x + (screen.w - width) / 2.0, screen.y + 48.0, width, 40.0);
         painter.popup(rect);
-        painter.key_hints(&hints, rect.x + 16.0, rect.y + rect.h / 2.0, false);
+        painter.key_hints(hints, rect.x + 16.0, rect.y + rect.h / 2.0, false);
     }
 
     fn shot_toolbars(&self, painter: &mut Painter<'_>, shot: &Shot, layout: &Layout, point: Point) {
@@ -1762,9 +1947,8 @@ impl Tileception {
         if let Some(y_pos) = column_gap {
             painter.fill(Rect::new(layout.column.x + 8.0, y_pos, layout.column.w - 16.0, 1.0), theme.border, 0.0);
         }
-        if let Some((cancel, _)) = layout.buttons.iter().find(|(_, control)| *control == Control::Cancel) {
-            let x_pos = cancel.x - SEPARATOR / 2.0 - GAP / 2.0;
-            painter.fill(Rect::new(x_pos, layout.row.y + 8.0, 1.0, layout.row.h - 16.0), theme.border, 0.0);
+        if let Some(separator) = layout.row_separator {
+            painter.fill(separator, theme.border, 0.0);
         }
         let mut hovered = None;
         for (rect, control) in &layout.buttons {
@@ -1793,6 +1977,20 @@ impl Tileception {
                 Control::Redo => Button::glyph(glyph::REDO, Look::Quiet).enabled(!shot.undone.is_empty()),
                 Control::Live => Button::glyph(if shot.live { glyph::EYE } else { glyph::SNOWFLAKE }, Look::Quiet),
                 Control::Record => Button::glyph(glyph::RECORD, Look::Quiet),
+                Control::SystemSound => {
+                    let (sign, look) = if shot.sources.system {
+                        (glyph::VOLUME_HIGH, Look::Plain)
+                    } else {
+                        (glyph::VOLUME_OFF, Look::Quiet)
+                    };
+                    Button::glyph(sign, look).focused(shot.sources.system)
+                }
+                Control::Microphone => {
+                    let (sign, look) =
+                        if shot.sources.microphone { (glyph::MIC, Look::Plain) } else { (glyph::MIC_OFF, Look::Quiet) };
+                    Button::glyph(sign, look).focused(shot.sources.microphone)
+                }
+                Control::Attach => Button::primary("Attach to feedback").icon(glyph::CHECK),
                 Control::Doctor => Button::glyph(glyph::CHAT, Look::Quiet),
                 Control::Cancel => Button::glyph(glyph::CLOSE, Look::Quiet),
                 Control::Save | Control::Copy => {
@@ -1829,8 +2027,8 @@ impl Tileception {
         }
         let style = Style::new(theme.font_size * 0.85, theme.text).align(Align::Centre);
         let (text_w, _) = painter.measure(label, 400.0, style);
-        let (width, height) = (text_w + 16.0, 26.0);
         let screen = self.output_rect();
+        let (width, height) = ((text_w + 16.0).min((screen.w - 4.0).max(1.0)), 26.0);
         let in_column = layout.column.contains(Point::new(rect.x + 1.0, rect.y + 1.0));
         let in_palette = layout.palette.is_some_and(|palette| palette.contains(Point::new(rect.x + 1.0, rect.y + 1.0)));
         let tip = if in_column {
@@ -1843,7 +2041,8 @@ impl Tileception {
         } else {
             let below = if in_palette { true } else { layout.row_below };
             let top = if below { rect.bottom() + PAD + 6.0 } else { rect.y - PAD - 6.0 - height };
-            let left = (rect.x + rect.w / 2.0 - width / 2.0).clamp(screen.x + 2.0, screen.right() - width - 2.0);
+            let left = (rect.x + rect.w / 2.0 - width / 2.0)
+                .clamp(screen.x + 2.0, (screen.right() - width - 2.0).max(screen.x + 2.0));
             Rect::new(left, top, width, height)
         };
         painter.shape(tip, Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.background, 5.0) });

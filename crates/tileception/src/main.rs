@@ -384,6 +384,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = state.display_handle.flush_clients();
         state.flush_dashboard_clients();
     })?;
+    // Restart replaces this process without running its destructors.
+    drop(state.recording.take());
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
     state.stop_plugins();

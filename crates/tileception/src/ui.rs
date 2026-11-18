@@ -156,6 +156,10 @@ impl Tileception {
         if self.launcher.open && !self.launcher.home && self.launcher_takes(point) {
             return self.launcher_pointer_target(point);
         }
+        // The bar's cards are drawn over the Wizard and the notifications.
+        if self.bar_card_at(point) && self.bar_takes(point) {
+            return self.bar_pointer_target(point);
+        }
         if self.doctor_contains(point) {
             return self.doctor_pointer_target(point);
         }
@@ -844,6 +848,9 @@ pub struct Painter<'a> {
     renderer: &'a mut GlesRenderer,
     shapes: Option<Shapes>,
     layers: Vec<OutputElement>,
+    /// What `tooltip` drew, bottom first, kept apart so it can go above
+    /// every panel and popover.
+    tooltips: Vec<OutputElement>,
     pub alpha: f32,
     pub offset: (f64, f64),
 }
@@ -851,17 +858,38 @@ pub struct Painter<'a> {
 impl<'a> Painter<'a> {
     pub fn new(state: &'a Tileception, renderer: &'a mut GlesRenderer) -> Painter<'a> {
         let shapes = state.shapes(renderer);
-        Painter { state, renderer, shapes, layers: Vec::new(), alpha: 1.0, offset: (0.0, 0.0) }
+        Painter { state, renderer, shapes, layers: Vec::new(), tooltips: Vec::new(), alpha: 1.0, offset: (0.0, 0.0) }
     }
 
     pub fn theme(&self) -> &'a crate::theme::Theme {
         &self.state.theme
     }
 
-    /// The elements, topmost first as the renderer wants them.
+    /// The elements, topmost first as the renderer wants them, with any
+    /// tooltips over the rest.
     pub fn finish(mut self) -> Vec<OutputElement> {
+        self.layers.append(&mut self.tooltips);
         self.layers.reverse();
         self.layers
+    }
+
+    /// The elements and, apart, the tooltips, each topmost first, for a
+    /// caller that puts the tooltips above other panels (see
+    /// `Tileception::render_elements`).
+    pub fn finish_with_tooltips(mut self) -> (Vec<OutputElement>, Vec<OutputElement>) {
+        self.layers.reverse();
+        self.tooltips.reverse();
+        (self.layers, self.tooltips)
+    }
+
+    /// Draws a tooltip or hover preview: over everything else this painter
+    /// draws, and over every panel when the caller uses
+    /// `finish_with_tooltips`.
+    pub fn tooltip(&mut self, draw: impl FnOnce(&mut Painter<'_>)) {
+        let start = self.layers.len();
+        draw(self);
+        let drawn = self.layers.split_off(start);
+        self.tooltips.extend(drawn);
     }
 
     /// Clip a scrolling block, including its text and icons, to a viewport.
@@ -1061,6 +1089,31 @@ impl<'a> Painter<'a> {
 
     /// A button filling `rect`; `hover` is whether the pointer is over it.
     /// Every button is drawn here: see the Buttons section of AGENTS.md.
+    /// An on/off switch, 34 by 20, at the centre of `rect`'s right edge.
+    /// Returns where it was drawn.
+    pub fn switch(&mut self, rect: Rect, on: bool) -> Rect {
+        let theme = &self.state.theme;
+        let (accent, raised, border, on_accent, muted) =
+            (theme.accent_fill(), theme.surface_raised, theme.border, theme.on_accent, theme.muted);
+        let switch = Rect::new(rect.right() - 38., rect.y + (rect.h - 20.) / 2., 34., 20.);
+        self.shape(
+            switch,
+            Shape {
+                radius: 10.,
+                fill: if on { accent } else { (raised, raised) },
+                border_width: if on { 0. } else { 1. },
+                border,
+                ..Default::default()
+            },
+        );
+        self.fill(
+            Rect::new(switch.x + if on { 17. } else { 3. }, switch.y + 3., 14., 14.),
+            if on { on_accent } else { muted },
+            7.,
+        );
+        switch
+    }
+
     pub fn button(&mut self, rect: Rect, button: Button<'_>, hover: bool) {
         let theme = self.theme();
         let Button { label, glyph, swatch, split, detail, look, enabled, focused, round } = button;

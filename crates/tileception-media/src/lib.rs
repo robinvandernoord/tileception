@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, Instant};
 
+pub use audio::mute_capture_stream;
 pub use backlight::pick_device;
 
 /// Volume and brightness are in percent; 100 is the normal, unamplified volume.

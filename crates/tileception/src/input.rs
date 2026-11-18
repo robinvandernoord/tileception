@@ -432,6 +432,9 @@ impl Tileception {
                 }
                 return FilterResult::Intercept(vec![Command::NetworkKey(sym, Mods::from_state(mods))]);
             }
+            if panels && state.updates_popover_key(sym, held) {
+                return FilterResult::Intercept(Vec::new());
+            }
             if panels
                 && state.notifications_keyboard()
                 && (!state.launcher.open || state.launcher.home)
@@ -1282,7 +1285,11 @@ impl Tileception {
         if !self.is_locked() && (self.password_prompt.is_some() || self.shot.is_some()) {
             return;
         }
-        if !self.is_locked() && self.power_menu.is_none() && self.tray.open {
+        let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        let card = !(self.launcher.open && !self.launcher.home && self.launcher_takes(point))
+            && self.bar_card_at(point)
+            && self.bar_takes(point);
+        if !self.is_locked() && self.power_menu.is_none() && (self.tray.open || card) {
             let notches = event
                 .amount_v120(Axis::Vertical)
                 .map(|v120| v120 / 120.0)
@@ -1304,11 +1311,7 @@ impl Tileception {
                 return;
             }
         }
-        if self.launcher.open
-            && !self.is_locked()
-            && !self.dashboard_has_pointer()
-            && self.launcher_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y))
-        {
+        if self.launcher.open && !self.is_locked() && !self.dashboard_has_pointer() && self.launcher_takes(point) {
             if let Some(value) = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical))
                 && value != 0.0
             {
@@ -1316,18 +1319,14 @@ impl Tileception {
             }
             return;
         }
-        if !self.is_locked() && self.doctor_contains(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+        if !self.is_locked() && self.doctor_contains(point) {
             let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
             if amount != 0.0 {
                 self.doctor_scroll(if amount > 0.0 { 1.0 } else { -1.0 });
             }
             return;
         }
-        if !self.is_locked()
-            && self.notifications.open
-            && self.notifications_contain(tileception_core::Point::new(self.pointer.x, self.pointer.y))
-        {
-            let point = tileception_core::Point::new(self.pointer.x, self.pointer.y);
+        if !self.is_locked() && self.notifications.open && self.notifications_contain(point) {
             let discrete = event.amount_v120(Axis::Vertical).is_some() && event.source() == AxisSource::Wheel;
             let amount = event.amount(Axis::Vertical).or_else(|| event.amount_v120(Axis::Vertical)).unwrap_or(0.0);
             if amount != 0.0 && self.controls_scroll(point, amount, discrete) {
@@ -1338,7 +1337,7 @@ impl Tileception {
             }
             return;
         }
-        if !self.is_locked() && self.bar_takes(tileception_core::Point::new(self.pointer.x, self.pointer.y)) {
+        if !self.is_locked() && self.bar_takes(point) {
             // In notches: a wheel step is one, smooth scrolling adds up to one.
             let notches = event
                 .amount_v120(Axis::Vertical)

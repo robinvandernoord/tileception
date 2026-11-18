@@ -191,6 +191,7 @@ impl Tileception {
     pub fn frame_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
         self.update_settings_client(renderer);
         self.update_updates_client(renderer);
+        self.update_doctor_client(renderer);
         if let Some(shapes) = self.shapes.get() {
             shapes.next_frame();
         }
@@ -199,8 +200,8 @@ impl Tileception {
         }
         let wallpaper = if self.is_locked() { None } else { self.wallpaper_buffer() };
         self.frost.borrow_mut().begin();
-        let others = self.other_area_elements(renderer, now);
-        let (mut elements, scene) = self.render_elements(renderer, now, others);
+        let others = self.other_area_elements(renderer, now, None);
+        let (mut elements, scene) = self.render_elements(renderer, now, others, None);
         if let Some(drawn) = wallpaper {
             let output_rect = self.output_rect();
             push_wallpaper(&mut elements, renderer, &drawn, (output_rect.x, output_rect.y), self.scale);
@@ -222,15 +223,21 @@ impl Tileception {
 
     /// The windows of a split screen's other areas, each cut to its area,
     /// for `render_elements`.
-    pub fn other_area_elements(&mut self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+    pub(crate) fn other_area_elements(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        now: f64,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) -> Vec<OutputElement> {
         if self.is_locked() || self.fullscreen.is_some() {
             return Vec::new();
         }
         let current = self.area_index();
         let mut elements = Vec::new();
         for index in (0..self.area_count()).filter(|index| *index != current) {
-            elements
-                .extend(self.with_local_area(index, |state| state.area_elements(renderer, now)).unwrap_or_default());
+            elements.extend(
+                self.with_local_area(index, |state| state.area_elements(renderer, now, feedback)).unwrap_or_default(),
+            );
         }
         elements
     }
@@ -238,11 +245,12 @@ impl Tileception {
     /// The whole frame but the wallpaper; `others` are the other areas'
     /// windows. Also returns where the scene under Tileception's panels (the
     /// windows, layers and wallpaper) starts, for frost.
-    pub fn render_elements(
+    pub(crate) fn render_elements(
         &self,
         renderer: &mut GlesRenderer,
         now: f64,
         others: Vec<OutputElement>,
+        feedback: Option<&crate::capture::FeedbackCapture>,
     ) -> (Vec<OutputElement>, usize) {
         if self.is_locked() {
             // Only the locker (and the volume card); black where it has not drawn yet.
@@ -278,11 +286,24 @@ impl Tileception {
         // Overlay layers (slurp, launchers) go over Tileception's own panels,
         // so a region pick can include the Doctor or the notifications.
         elements.extend(self.layer_elements(renderer, &[Layer::Overlay]));
+        if active && self.feedback.is_none() {
+            elements.extend(self.shell_pointer_feedback(renderer));
+        }
+        // Hover tooltips of the bar and the tray, and the bar's cards
+        // (calendar, map, updates, network), go over every panel, so one stays
+        // readable beside the open notifications or the Wizard. The lock screen, the volume card and
+        // the prompts above stay over them.
+        let (bar, mut tooltips) = self.bar_elements(renderer, feedback);
+        let tray = if active {
+            let (tray, tray_tooltips) = self.tray_elements(renderer);
+            tooltips.extend(tray_tooltips);
+            tray
+        } else {
+            Vec::new()
+        };
+        elements.extend(tooltips);
         if active {
-            if self.feedback.is_none() {
-                elements.extend(self.shell_pointer_feedback(renderer));
-            }
-            elements.extend(self.tray_elements(renderer));
+            elements.extend(tray);
             // The welcome screen is part of the desktop: notifications go over it.
             if !self.launcher.home {
                 elements.extend(self.launcher_elements(renderer));
@@ -290,16 +311,16 @@ impl Tileception {
         }
         // These stay on the screen they appeared on, whichever is active.
         elements.extend(self.notification_elements(renderer));
-        if !self.feedback_hides_doctor() {
+        if self.doctor_here() && feedback.is_none_or(|capture| capture.draw_wizard()) {
             elements.extend(self.doctor_elements(renderer));
         }
         // Over the strip, which it can stand on.
         elements.extend(self.duck_elements(renderer));
         if active {
-            elements.extend(self.strip_elements(renderer));
+            elements.extend(self.strip_elements(renderer, feedback));
             elements.extend(self.selection_elements(renderer));
         }
-        elements.extend(self.bar_elements(renderer));
+        elements.extend(bar);
         // Under the bar, so the calendar and the map open over it.
         if active && self.launcher.home {
             elements.extend(self.launcher_elements(renderer));
@@ -313,6 +334,9 @@ impl Tileception {
                 elements.extend(self.x11_overlay_elements(renderer));
             }
             for drawn in &self.drawn_windows(now) {
+                if !self.draw_capture_window(drawn.window_id, feedback) {
+                    continue;
+                }
                 if let Some(window) = self.windows.get(&drawn.window_id) {
                     let origin = physical_point((drawn.origin.x, drawn.origin.y), self.scale);
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
@@ -337,7 +361,9 @@ impl Tileception {
                 drag.size.1,
             );
             push_shape(&mut elements, shapes.as_ref(), &rect, self.frame(true, false));
-            elements.extend(self.picture(renderer, drag.window, &rect));
+            if self.draw_capture_window(drag.window, feedback) {
+                elements.extend(self.picture(renderer, drag.window, &rect));
+            }
             push_shape(
                 &mut elements,
                 shapes.as_ref(),
@@ -356,7 +382,7 @@ impl Tileception {
             }
         }
 
-        elements.extend(self.area_elements(renderer, now));
+        elements.extend(self.area_elements(renderer, now, feedback));
         elements.extend(others);
 
         // Bottommost: desktop widgets and wallpaper.
@@ -366,7 +392,12 @@ impl Tileception {
 
     /// The context area's windows, tabs and tiles, topmost first: cut to the
     /// area on a split screen, so its neighbours slide out under the next area.
-    fn area_elements(&self, renderer: &mut GlesRenderer, now: f64) -> Vec<OutputElement> {
+    fn area_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        now: f64,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) -> Vec<OutputElement> {
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
         let drawn_windows = self.drawn_windows(now);
@@ -398,6 +429,9 @@ impl Tileception {
             elements.extend(painter.finish());
             if fade < 1.0 {
                 for drawn in &drawn_windows {
+                    if !self.draw_capture_window(drawn.window_id, feedback) {
+                        continue;
+                    }
                     let faded = match self.windows.get(&drawn.window_id) {
                         Some(window) if drawn.live => live_faded(renderer, window, drawn, self.scale, 1.0 - fade),
                         _ => self.picture_faded(renderer, drawn.window_id, &drawn.content, 1.0 - fade),
@@ -412,6 +446,9 @@ impl Tileception {
         }
         let mut popups = Vec::new();
         for drawn in &drawn_windows {
+            if !self.draw_capture_window(drawn.window_id, feedback) {
+                continue;
+            }
             if self.handoff.windows.is_remote(drawn.window_id) {
                 // Another machine's window, drawn from its pictures, in a
                 // frame of the guest colour.
@@ -476,6 +513,15 @@ impl Tileception {
             Some(clip) => clip_elements(elements, &clip, self.scale),
             None => elements,
         }
+    }
+
+    /// A feedback still can exclude the Wizard's window and every preview of it.
+    pub(crate) fn draw_capture_window(
+        &self,
+        window: WindowId,
+        feedback: Option<&crate::capture::FeedbackCapture>,
+    ) -> bool {
+        !self.is_doctor_window(window) || feedback.is_none_or(|capture| capture.draw_wizard())
     }
 
     /// The compiled shape shader, made on first use with this renderer.
