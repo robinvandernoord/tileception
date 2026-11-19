@@ -4,6 +4,12 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.23.1 (2026-11-19)
+
+### ISO
+
+* Set Ghostty as default terminal on 26.04+
+
 ## v0.23.0 (2026-11-19)
 
 ### Features
