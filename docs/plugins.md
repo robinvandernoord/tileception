@@ -591,8 +591,10 @@ With `surface = true` in its `[dashboard]` block, a plugin is started with
 `WAYLAND_SOCKET`, one end of a Wayland connection made for it alone. Wayland
 client libraries (libwayland in C, pywayland, wayland-rs and others) use it in
 place of `WAYLAND_DISPLAY` without extra code. The connection offers
-`wl_compositor`, `wl_subcompositor`, `wl_shm`, `wp_viewporter`, a `wl_seat`
-with a pointer and no keyboard, and
+`wl_compositor`, `wl_subcompositor`, `wl_shm`, `zwp_linux_dmabuf_v1` (where
+Tileception runs on a GPU, so not in a nested or software-rendered instance),
+`wp_viewporter`, `wp_fractional_scale_manager_v1`, a `wl_seat` with a pointer
+and no keyboard, and
 [`tileception_dashboard_v1`](../resources/protocols/tileception-dashboard-v1.xml),
 installed as `/usr/share/tileception/protocols/tileception-dashboard-v1.xml`.
 It has no windows, outputs, clipboard or screen capture.
@@ -605,6 +607,20 @@ To draw an item:
 3. Draw at the size and buffer scale from the item's `configure` event, in
    buffers of at most 4096 pixels a side. A size of 0 by 0 means the item is
    not on screen; keep the last buffer.
+
+A toolkit that draws on the GPU (EGL or Vulkan) finds `zwp_linux_dmabuf_v1`
+and passes its buffers without copying them through shared memory. The
+buffer scale in `configure` is the screen's scale rounded up, so at a scale of
+1.5 such a buffer is drawn smaller than it is. To stay sharp there, take a
+`wp_fractional_scale_v1` for the surface, draw the configured size times its
+`preferred_scale`, and give the buffer the configured size with
+`wp_viewport.set_destination`; GTK, Qt and SDL do this by themselves.
+
+Shared memory has limits too: a `wl_shm_pool` of at most 64 MiB (one buffer
+of the largest size), and at most 24 pools and 48 shared memory buffers at
+a time. Destroy the buffers and pools of a size the item no longer has. A
+plugin that goes over a limit loses its connection, with the reason in the
+protocol error and in Tileception's log.
 
 Tileception clips what is drawn to the item's size. Frame callbacks arrive
 only while the item is on screen, so a plugin that draws on each callback

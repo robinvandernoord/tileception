@@ -271,6 +271,7 @@ pub fn init(
     let mut dmabuf_state = DmabufState::new();
     let global = dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
     state.dmabuf = Some((dmabuf_state, global));
+    state.dmabuf_feedback = Some(feedback);
 
     // Explicit sync, which NVIDIA needs to avoid flicker in GPU clients.
     if supports_syncobj_eventfd(&device_fd) {
@@ -710,6 +711,7 @@ impl Tileception {
         for layer in layer_map_for_output(output).layers() {
             layer.with_surfaces(&mut hold);
         }
+        self.with_dashboard_surfaces(&mut hold);
         buffers
     }
 

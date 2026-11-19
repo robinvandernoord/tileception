@@ -116,6 +116,8 @@ pub struct Tileception {
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub dmabuf: Option<(DmabufState, DmabufGlobal)>,
+    /// What the dmabuf global tells clients, for the dashboard's display to say the same.
+    pub dmabuf_feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
     pub syncobj_state: Option<DrmSyncobjState>,
     pub cursor_status: CursorImageStatus,
     /// A frame is already asked for when the animated pointer's next picture is due.
@@ -365,6 +367,7 @@ impl Tileception {
             popups: PopupManager::default(),
             seat,
             dmabuf: None,
+            dmabuf_feedback: None,
             syncobj_state: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_wake_pending: false,

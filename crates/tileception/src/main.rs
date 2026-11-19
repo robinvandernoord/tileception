@@ -27,6 +27,7 @@ mod config_edit;
 mod controls;
 mod cursor;
 mod dashboard;
+mod dashboard_shm;
 mod dashboard_surface;
 mod desk;
 mod doctor;

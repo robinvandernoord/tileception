@@ -4,7 +4,7 @@ use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
     delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection, delegate_seat,
-    delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
@@ -206,7 +206,7 @@ delegate_dispatch!(Tileception: [WlSurface: SurfaceUserData] => CompositorState)
 delegate_dispatch!(Tileception: [wl_callback::WlCallback: ()] => CompositorState);
 delegate_dispatch!(Tileception: [wl_subcompositor::WlSubcompositor: ()] => CompositorState);
 delegate_dispatch!(Tileception: [wl_subsurface::WlSubsurface: SubsurfaceUserData] => CompositorState);
-delegate_shm!(Tileception);
+// wl_shm is dispatched in dashboard_shm, which limits the dashboard's clients.
 
 /// Programs name a pointer shape (cursor-shape-v1) and Tileception draws it
 /// from its own theme; tablets have no pointer images of their own here.

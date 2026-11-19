@@ -58,6 +58,7 @@ pub fn init(
             let global =
                 dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
             state.dmabuf = Some((dmabuf_state, global));
+            state.dmabuf_feedback = Some(feedback);
             renderer
         }
         Err(error) => {
