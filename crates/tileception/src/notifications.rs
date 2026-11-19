@@ -657,7 +657,7 @@ impl Tileception {
 
     /// The history panel, against the right edge.
     fn notification_panel(&self) -> Rect {
-        let screen = self.usable_rect();
+        let screen = self.beside_sliding_bar(self.usable_rect());
         let width = screen.w.clamp(1.0, PANEL_W);
         Rect::new(screen.right() - width, screen.y, width, screen.h.max(1.0))
     }

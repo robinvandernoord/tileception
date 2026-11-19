@@ -428,6 +428,23 @@ impl Tileception {
         Rect::new(usable.x, top, usable.w, usable.h - reserved)
     }
 
+    /// The room left beside a hairline bar, which reserves nothing but slides
+    /// in over its edge: things that keep it out, such as the notification
+    /// panel, leave that edge free so the bar's controls still take clicks.
+    pub(crate) fn beside_sliding_bar(&self, usable: Rect) -> Rect {
+        if self.bar_mode() != Mode::Hairline {
+            return usable;
+        }
+        let out = self.output_rect();
+        if self.bar_at_bottom() {
+            let bottom = usable.bottom().min(out.bottom() - BAR_H);
+            Rect::new(usable.x, usable.y, usable.w, (bottom - usable.y).max(1.0))
+        } else {
+            let top = usable.y.max(out.y + BAR_H);
+            Rect::new(usable.x, top, usable.w, (usable.bottom() - top).max(1.0))
+        }
+    }
+
     /// Follows the camera and the pointer: reserves the edge or gives it to a
     /// framed window, and slides a hairline bar open while the pointer is at
     /// its edge. Called after each frame and on pointer motion.
@@ -457,7 +474,8 @@ impl Tileception {
                 || self.bar.calendar.zoom.open
                 || self.updates.popover.zoom.open
                 || self.bar.minimap.zoom.open
-                || self.network.zoom.open);
+                || self.network.zoom.open
+                || (self.notifications.open && self.notifications_here()));
         self.bar.set_revealed(reveal);
         if (!matches!(mode, Mode::Full | Mode::Hairline) || self.is_locked()) && self.updates.popover.zoom.open {
             self.close_updates_popover();
