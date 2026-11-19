@@ -4,6 +4,11 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.23.2 (2026-11-19)
+
+### Fix
+* **iso:** detect installable Ghostty packages
+
 ## v0.23.1 (2026-11-19)
 
 ### ISO
