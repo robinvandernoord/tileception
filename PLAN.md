@@ -73,11 +73,15 @@ Report testing in the conversation, the commit or the pull request instead.
     desktop, not to the user's files.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
-  - On a system without GNOME, `tileception-desktop`'s recommendations
-    pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
-    `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for
-    `apt install tileception-desktop` elsewhere, find which recommendation
-    brings them and replace or drop it.
+  - On Ubuntu 26.04 and later, `tileception-desktop`'s recommendation of
+    `nautilus` pulls in GNOME Shell, GDM and Ubuntu's GNOME session:
+    Nautilus recommends `xdg-desktop-portal-gnome` there, which recommends
+    `gnome-shell`. (On 24.04 Nautilus takes any portal backend, and
+    `xdg-desktop-portal-gtk` is one.) The ISO removes them afterwards; for
+    `apt install tileception-desktop` elsewhere, still to decide: another
+    file manager (Thunar brings no desktop with it; Nemo and Caja bring
+    parts of Cinnamon and MATE), or Nautilus left out of the
+    recommendations.
   - The arm64 ISOs are built but not installed in CI: GitHub's arm64
     runners have no KVM. Try one on an arm64 machine before trusting it.
   - Before release, what someone trying the ISO in a VM meets first:
@@ -144,16 +148,6 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
-- Doctor in a window: a pop-out from the panel into a window of its own,
-  remembered across openings and logins (whether it is popped out, and its
-  place and size), with a way back into the panel. Decided:
-  - Doctor's window is a built-in window like Settings and Updates: a
-    `settings::client::Kind::Doctor`, so it is a real xdg-shell toplevel
-    that tiles, floats, focuses and moves like any other window. Doctor's
-    model stays in the compositor; the window only draws it and takes its
-    input.
-  - The panel and the window show the same conversation; only one of them
-    is open at a time.
 - Game mode: Tileception's own Super bindings step aside while a game has
   the keyboard, so Super and Super combinations reach the game. Decided:
   - Super+Caps Lock toggles it (check that the binding can see Caps Lock
