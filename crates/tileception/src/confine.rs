@@ -129,16 +129,20 @@ impl Allowance {
         let mut read = Vec::new();
         if let Some(program) = find_program(command, path) {
             read.extend(installed_at(&program, home.as_deref()));
-        }
-        // `python3 /path/to/plugin.py`: the script an interpreter runs
-        // counts as the program does, and only as the first argument.
-        // Later arguments open nothing: the manifest would otherwise pick
-        // which of the user's folders its plugin reads.
-        if let Some(script) = args.first().map(Path::new)
-            && script.is_absolute()
-            && script.is_file()
-        {
-            read.extend(installed_at(script, home.as_deref()));
+            // `python3 /path/to/plugin.py`: the script a system interpreter
+            // runs is the plugin, so that one file is readable. Never its
+            // folder, and no argument of any other program: the manifest
+            // would otherwise pick which of the user's files its plugin
+            // reads. A file that is no script only fails to run.
+            if let Some(script) = args.first().map(Path::new)
+                && script.is_absolute()
+                && is_interpreter(&program)
+                && let Ok(script) = script.canonicalize()
+                && script.is_file()
+                && !SYSTEM.iter().any(|system| script.starts_with(system))
+            {
+                read.push(script);
+            }
         }
         read.sort();
         read.dedup();
@@ -385,6 +389,17 @@ fn find_program(command: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(&path).map(|dir| dir.join(command)).find(|file| file.is_file())
 }
 
+/// Whether `program` is a system interpreter that runs its first argument
+/// as a script and nothing else: its own program text comes from that file.
+fn is_interpreter(program: &Path) -> bool {
+    const INTERPRETERS: &[&str] = &["python", "pypy", "node", "ruby", "perl", "lua", "bash", "dash", "sh"];
+    let Ok(real) = program.canonicalize() else { return false };
+    let name = real.file_name().unwrap_or_default().to_string_lossy();
+    // `python3.13`, `lua5.4`: the name before its version.
+    let name = name.trim_end_matches(|letter: char| letter.is_ascii_digit() || letter == '.');
+    SYSTEM.iter().any(|system| real.starts_with(system)) && INTERPRETERS.contains(&name)
+}
+
 /// What a program at `file` needs to read to run, beyond the system
 /// folders: the Python environment it is installed in (with the Python
 /// that environment is made from), else the folder it lies in. A program
@@ -494,21 +509,33 @@ mod tests {
         touch(&home.join(".ssh/id_ed25519"));
         std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), odd.join("bin/python")).unwrap();
         assert_eq!(installed_at(&odd.join("bin/tool"), Some(&home)), vec![odd.clone()]);
-        // A bare name is looked up in the given PATH; the script an
-        // interpreter runs, its first argument, counts as the program does.
+        // A bare name is looked up in the given PATH.
         let path = std::env::join_paths([home.join(".local/bin")]).unwrap();
         let text = |path: &Path| path.to_string_lossy().into_owned();
-        let allowance = Allowance::for_plugin("weather", "weather", &[text(&own)], Some(&path));
-        assert!(allowance.read.contains(&venv) && allowance.read.contains(&home.join("plugins/lamp")));
-        // No other argument opens anything: a manifest cannot name the
-        // user's folders, or a file in them, for its plugin to read.
+        let allowance = Allowance::for_plugin("weather", "weather", &[], Some(&path));
+        assert!(allowance.read.contains(&venv));
+        assert!(allowance.private.ends_with("tileception/plugins/weather"));
         let key = home.join(".ssh/id_ed25519");
-        let allowance = Allowance::for_plugin("lamp", "/usr/bin/python3", &[text(&own), text(&key)], None);
-        assert_eq!(allowance.read, vec![home.join("plugins/lamp")]);
-        let allowance =
-            Allowance::for_plugin("lamp", "/usr/bin/python3", &["-c".into(), "pass".into(), text(&key)], None);
-        assert_eq!(allowance.read, Vec::<PathBuf>::new());
-        assert!(allowance.private.ends_with("tileception/plugins/lamp"));
+        let opens = |command: &Path, args: &[String]| Allowance::for_plugin("lamp", &text(command), args, None).read;
+        // The script a system interpreter runs is readable: that file,
+        // not what lies beside it, and no later argument.
+        if let Some(python) = ["/usr/bin/python3", "/bin/sh"].iter().map(Path::new).find(|path| is_interpreter(path)) {
+            assert_eq!(opens(python, &[text(&own)]), vec![own.clone()]);
+            assert_eq!(opens(python, &[text(&own), text(&key)]), vec![own.clone()]);
+            assert_eq!(opens(python, &["-c".into(), "pass".into(), text(&key)]), Vec::<PathBuf>::new());
+            // Named as the script, a key is that one file, which only fails
+            // to run; ~/.ssh stays closed.
+            assert_eq!(opens(python, &[text(&key)]), vec![key.clone()]);
+        }
+        // A plugin's own program opens its folder and nothing its
+        // arguments name: not the folder of a key, and not the key.
+        let evil = home.join("plugins/evil/evil");
+        touch(&evil);
+        assert_eq!(opens(&evil, &[text(&key)]), vec![home.join("plugins/evil")]);
+        assert_eq!(opens(&evil, &[text(&own)]), vec![home.join("plugins/evil")]);
+        // Nor do the arguments of a system program that is no interpreter.
+        assert_eq!(opens(Path::new("/usr/bin/env"), &[text(&key)]), Vec::<PathBuf>::new());
+        assert!(!is_interpreter(Path::new("/usr/bin/env")) && !is_interpreter(&evil));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

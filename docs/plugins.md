@@ -634,11 +634,18 @@ whatever that process starts, gets only:
   `/lib*`, `/etc`, `/opt`, `/nix/store`, `/sys` and the font cache;
 - the place it is installed, to read and run: its Python environment and the
   Python that environment was made from, or the folder its program lies in.
-  For an interpreter with a script, such as `command = "python3"` with
-  `args = ["/path/to/plugin.py"]`, the script counts when it is the first
-  argument; no other argument opens anything. A program in a shared `bin`
-  such as `~/.local/bin`, directly in the home folder, or in a folder the
-  home folder lies in (`/home`) gets only its own file;
+  A program in a shared `bin` such as `~/.local/bin`, directly in the home
+  folder, or in a folder the home folder lies in (`/home`) gets only its own
+  file. Arguments never open anything, with one exception: the script that
+  a system interpreter (`python3`, `node`, `ruby`, `perl`, `lua`, `bash`,
+  `sh`) gets as its first argument is readable, as that one file. Modules
+  beside such a script are not, so a plugin added by hand as
+  `command = "python3"` with a script must be a single file to run confined;
+  install it instead, or make the script the `command`, to open its folder.
+  Python packages from `pip install --user` live in `~/.local/lib`, which a
+  confined plugin cannot read: the [lava lamp](#dashboard-surfaces) runs
+  confined only with pywayland installed system-wide or in its own
+  environment;
 - one private folder to write, `$XDG_STATE_HOME/tileception/plugins/<id>`
   (`~/.local/state/tileception/plugins/<id>`), kept between runs and named in
   `TILECEPTION_PLUGIN_DATA`. `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`
