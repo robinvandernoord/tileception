@@ -4,22 +4,29 @@ name: ISO
 # They hold nothing of Tileception itself (the installer fetches the current
 # packages), so they are only rebuilt when Ubuntu publishes a new ISO or the
 # recipe under iso/ changes. iso/plan.sh decides which.
+#
+# The recipe is taken from the latest release, never from master: the
+# installer gets the released packages, and a recipe change on master can
+# need packages that are not out yet. So a recipe change is built once the
+# release that has it is published (when the Release workflow finishes), and
+# the weekly run picks up new Ubuntu ISOs.
 
 on:
   schedule:
     - cron: "23 5 * * 1"
-  push:
-    branches: [master]
-    paths:
-      - "iso/**"
-      - "packaging/tileception-archive-keyring.gpg"
-      - ".github/workflows/iso.yml"
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
     inputs:
       force:
         description: Rebuild every ISO, even unchanged ones
         type: boolean
         default: false
+      ref:
+        description: Build from this ref instead of the latest release (to try a recipe early)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -33,11 +40,27 @@ env:
 
 jobs:
   plan:
+    # Not after a release that failed. After a prerelease, this builds from
+    # the latest full release, like any other run.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       builds: ${{ steps.plan.outputs.builds }}
+      ref: ${{ steps.ref.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Release to build from
+        id: ref
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          ref=${REF:-$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)}
+          : "${ref:?no release tag found}"
+          git checkout -q "$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Building from $ref"
       - name: Install tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq distro-info distro-info-data ubuntu-keyring jq
       - name: Plan
@@ -69,6 +92,8 @@ jobs:
       WORK: /mnt/iso/test
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
       - name: Make room
         run: |
           sudo mkdir -p /mnt/iso && sudo chown "$USER" /mnt/iso
@@ -142,6 +167,8 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
       - uses: actions/download-artifact@v4
         with:
           pattern: entry-*
