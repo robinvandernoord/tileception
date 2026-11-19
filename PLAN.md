@@ -73,11 +73,12 @@ Report testing in the conversation, the commit or the pull request instead.
     desktop, not to the user's files.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
-  - On Ubuntu 26.04 and later, `tileception-desktop`'s recommendation of
-    `nautilus` pulls in GNOME Shell, GDM and Ubuntu's GNOME session:
-    Nautilus recommends `xdg-desktop-portal-gnome` there, which recommends
+  - On Ubuntu 26.04, `tileception-desktop`'s recommendation of `nautilus`
+    pulls in GNOME Shell, GDM and Ubuntu's GNOME session: Nautilus
+    recommends `xdg-desktop-portal-gnome` there, which recommends
     `gnome-shell`. (On 24.04 Nautilus takes any portal backend, and
-    `xdg-desktop-portal-gtk` is one.) The ISO removes them afterwards; for
+    `xdg-desktop-portal-gtk` is one.) The ISO, which starts from Ubuntu's
+    minimal desktop, purges them either way; for
     `apt install tileception-desktop` elsewhere, still to decide: another
     file manager (Thunar brings no desktop with it; Nemo and Caja bring
     parts of Cinnamon and MATE), or Nautilus left out of the
@@ -148,6 +149,10 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
+- Doctor's window, the rest: its place and size are kept only when the
+  window is closed, so a move or resize is lost when the session ends with
+  it open; and a tiled window comes back as a new tile, without its place
+  in the layout.
 - Game mode: Tileception's own Super bindings step aside while a game has
   the keyboard, so Super and Super combinations reach the game. Decided:
   - Super+Caps Lock toggles it (check that the binding can see Caps Lock
