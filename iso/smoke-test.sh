@@ -146,7 +146,8 @@ check "snapd and its snaps are gone" "! dpkg-query -W -f='\${Status}' snapd 2>/d
 check "Vivaldi has its own source only" "test \"\$(grep -rl repo.vivaldi.com /etc/apt/sources.list.d | wc -l)\" = 1"
 check "apt has no source problems" "! apt-cache policy 2>&1 >/dev/null | grep -q -E '^(E|W):'"
 check "Thunderbird is installed" "flatpak info --system org.mozilla.thunderbird"
-check "Ptyxis is the session's terminal" "grep -q Ptyxis /etc/xdg/tileception-xdg-terminals.list && test -e /usr/share/applications/org.gnome.Ptyxis.desktop"
+# Ubuntu 24.04 has no Ghostty: tileception-desktop takes GNOME Terminal there.
+check "Ghostty (or GNOME Terminal without it) is the session's terminal" "grep -q ghostty /etc/xdg/tileception-xdg-terminals.list && if apt-cache show ghostty >/dev/null 2>&1; then test -e /usr/share/applications/com.mitchellh.ghostty.desktop; else test -e /usr/share/applications/org.gnome.Terminal.desktop; fi"
 check "zoxide's hook is in .bashrc" "grep -q 'zoxide init bash' ~/.bashrc"
 check "bat and fd work" "bat --version && fd --version"
 [ "$failed" = 0 ] || { report; fail "some checks failed; boot the disk with: sh iso/smoke-test.sh --boot $codename"; }

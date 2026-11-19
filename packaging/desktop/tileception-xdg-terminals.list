@@ -1,6 +1,8 @@
 # The terminal for Tileception sessions, from tileception-desktop: the first
 # installed one. Your own ~/.config/tileception-xdg-terminals.list or
 # ~/.config/xdg-terminals.list comes first, as does `terminal` in
-# Tileception's config.toml.
+# Tileception's config.toml. Ptyxis, the terminal before Ghostty, stays for
+# systems that have it but not Ghostty.
+com.mitchellh.ghostty.desktop
 org.gnome.Ptyxis.desktop
 org.gnome.Terminal.desktop

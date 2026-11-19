@@ -1,6 +1,6 @@
 # What tileception-desktop installs: the Tileception desktop with its
 # defaults, as on the premade ISO. One relation per line, with what needs it;
-# `a | b` takes the first that the release has (Ptyxis, Papers and Showtime
+# `a | b` takes the first that the release has (Ghostty, Papers and Showtime
 # are newer than Ubuntu 24.04). scripts/build-desktop-deb.sh reads this file.
 #
 # Not here: greetd, which tileception-setup installs without letting it take
@@ -32,7 +32,7 @@ adwaita-icon-theme              # icons and the default cursor
 
 [recommends]
 tileception-desktop-sources     # Mozilla's and GitHub's APT repositories
-ptyxis | gnome-terminal         # terminal
+ghostty | gnome-terminal        # terminal
 nautilus                        # files
 gnome-text-editor               # text
 loupe | eog                     # images

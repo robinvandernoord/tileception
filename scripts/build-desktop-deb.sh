@@ -9,7 +9,7 @@
 # tileception-desktop depends on and recommends what
 # packaging/desktop/packages.txt lists, and adds:
 #   /etc/xdg/tileception-xdg-terminals.list   the terminal for Tileception
-#                                             sessions (Ptyxis, else GNOME
+#                                             sessions (Ghostty, else GNOME
 #                                             Terminal)
 #   /usr/bin/bat, /usr/bin/fd                 links to Ubuntu's batcat and
 #                                             fdfind (the names clash with

@@ -48,10 +48,10 @@ desktop instead and sets up Tileception at the first start with a network.
 ## What you get
 
 - Tileception, with its login screen in place of Ubuntu's.
-- Ptyxis as the terminal, Nautilus for files, Text Editor, Loupe for images,
-  Papers for documents, File Roller for archives, Showtime and VLC for video,
-  Amberol for music, LibreOffice, and GNOME's calculator, calendar, clocks,
-  weather, maps, disk and system tools.
+- Ghostty as the terminal (GNOME Terminal on Ubuntu 24.04), Nautilus for
+  files, Text Editor, Loupe for images, Papers for documents, File Roller for
+  archives, Showtime and VLC for video, Amberol for music, LibreOffice, and
+  GNOME's calculator, calendar, clocks, weather, maps, disk and system tools.
 - Firefox and Vivaldi as debs from Mozilla's and Vivaldi's own repositories,
   and Thunderbird from Flathub.
 - GNOME Software for more apps, with Flathub.
