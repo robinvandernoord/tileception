@@ -107,11 +107,20 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           ISO_BUCKET: ${{ vars.ISO_BUCKET || 'tileception-iso' }}
+          # R2 sometimes leaves a request unanswered: each part is retried,
+          # and the whole upload twice more.
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: "10"
         run: |
           : "${AWS_ACCESS_KEY_ID:?set the R2_ACCESS_KEY_ID secret}" "${R2_ENDPOINT:?set the R2_ENDPOINT secret}"
           for iso in /mnt/iso/out/*.iso; do
-            aws s3 cp "$iso" "s3://$ISO_BUCKET/$(basename "$iso")" --endpoint-url "$R2_ENDPOINT" \
-              --content-type application/x-iso9660-image
+            for attempt in 1 2 3; do
+              aws s3 cp "$iso" "s3://$ISO_BUCKET/$(basename "$iso")" --endpoint-url "$R2_ENDPOINT" \
+                --content-type application/x-iso9660-image && break
+              [ "$attempt" -lt 3 ] || exit 1
+              echo "Upload failed; trying again in a minute"
+              sleep 60
+            done
           done
       - uses: actions/upload-artifact@v4
         with:
