@@ -1054,9 +1054,10 @@ impl Tileception {
         let Some(window) = self.doctor.window else { return };
         let float = match self.area_for_window(window) {
             Some(area) if self.context_area().as_ref() != Some(&area) => {
-                self.with_area(&area, |state| state.world.float_rect(window)).flatten()
+                self.with_area(&area, |state| state.world.floating_geometry(window)).flatten()
             }
-            _ => self.world.float_rect(window),
+            // Minimized, a floating window still has its place.
+            _ => self.world.floating_geometry(window),
         };
         if float != self.doctor.float {
             self.doctor.float = float;

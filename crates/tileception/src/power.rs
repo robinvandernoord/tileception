@@ -373,6 +373,10 @@ impl Tileception {
         if action != PowerAction::More {
             self.close_power_menu();
         }
+        if matches!(action, PowerAction::Restart | PowerAction::PowerOff | PowerAction::Uefi) {
+            // systemd ends the session without the event loop stopping.
+            self.remember_doctor_window();
+        }
         match action {
             PowerAction::Lock => self.lock_session(false),
             PowerAction::LogOut => self.loop_signal.stop(),
