@@ -88,6 +88,9 @@ pub struct Tileception {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub xdg_foreign_state: XdgForeignState,
+    /// Windows that have been put where a dialog of their parent goes. A
+    /// parent named again later leaves them where the user has them.
+    settled_dialogs: std::collections::HashSet<WindowId>,
     _xdg_dialog_state: XdgDialogState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
@@ -340,6 +343,7 @@ impl Tileception {
             compositor_state,
             xdg_shell_state,
             xdg_foreign_state,
+            settled_dialogs: std::collections::HashSet::new(),
             _xdg_dialog_state: xdg_dialog_state,
             xdg_decoration_state,
             shm_state,
@@ -665,7 +669,11 @@ impl Tileception {
         if self.send_child_away(window_id) {
             return;
         }
-        let parent_area = self.parent_window(window_id).and_then(|parent| self.area_for_window(parent));
+        let parent = self.parent_window(window_id);
+        if parent.is_some() {
+            self.settled_dialogs.insert(window_id);
+        }
+        let parent_area = parent.and_then(|parent| self.area_for_window(parent));
         if let Some(area) = parent_area
             && self.context_area().as_ref() != Some(&area)
         {
@@ -767,8 +775,15 @@ impl Tileception {
         };
         // Not placed yet: it opens beside its parent on its first commit.
         let Some(area) = self.area_for_window(window_id) else { return };
+        // Shown on another machine, the window stays there. A parent that
+        // is shown on another machine does not draw it over either.
         if self.handoff.windows.is_remote(window_id) || self.handoff.windows.away.contains_key(&window_id) {
             return;
+        }
+        // Only for its first parent: after that the user may have tiled or
+        // moved it, and it stays where they have it.
+        if !self.settled_dialogs.insert(window_id) {
+            return self.apply_layout();
         }
         let Some(parent_area) = self.area_for_window(parent) else { return };
         if area != parent_area && self.move_window_to_area(window_id, &parent_area, false).is_err() {
@@ -804,22 +819,15 @@ impl Tileception {
     }
 
     /// The modal dialog that keeps a window from being used, if it has one
-    /// in this layout: the dialog's own modal dialog when that has one too.
+    /// in this layout.
     fn modal_dialog_of(&self, window_id: WindowId) -> Option<WindowId> {
-        let mut blocked = window_id;
-        let mut found = None;
-        // No longer than the windows there are, whatever the programs claim.
-        for _ in 0..self.windows.len() {
-            let dialog = self.windows.iter().find_map(|(dialog, window)| {
-                let modal = window.toplevel().is_some_and(is_modal);
-                (modal && self.world.contains_window(*dialog) && self.parent_window(*dialog) == Some(blocked))
-                    .then_some(*dialog)
-            });
-            let Some(dialog) = dialog else { break };
-            found = Some(dialog);
-            blocked = dialog;
-        }
-        found
+        let modals: Vec<(WindowId, WindowId)> = self
+            .windows
+            .iter()
+            .filter(|(dialog, window)| window.toplevel().is_some_and(is_modal) && self.world.contains_window(**dialog))
+            .filter_map(|(dialog, _)| Some((*dialog, self.parent_window(*dialog)?)))
+            .collect();
+        blocking_dialog(window_id, &modals)
     }
 
     pub fn remove_window(&mut self, surface: &WlSurface) {
@@ -836,6 +844,7 @@ impl Tileception {
             return;
         }
         self.selection.windows.remove(&window_id);
+        self.settled_dialogs.remove(&window_id);
         if self.windows.remove(&window_id).is_none() {
             return;
         }
@@ -866,6 +875,12 @@ impl Tileception {
         // A window with a modal dialog open cannot be used until the dialog
         // is answered: focusing it, however, focuses the dialog.
         if let Some(dialog) = self.world.focus().and_then(|focus| self.modal_dialog_of(focus)) {
+            // Only the fullscreen window is drawn, and the dialog must be
+            // seen to be answered: fullscreen ends, as it does when a new
+            // window opens. That lays out again, and comes back here.
+            if let Some(full) = self.fullscreen.filter(|full| *full != dialog && self.windows.contains_key(full)) {
+                return self.set_fullscreen(full, false);
+            }
             self.world.focus_window(dialog, self.now());
         }
         let focus = self.world.focus();
@@ -1099,6 +1114,27 @@ impl Tileception {
             let _ = x11.close();
         }
     }
+}
+
+/// The dialog that takes the focus of `window`, given every modal dialog
+/// with its parent: the newest of the window's own, and that dialog's own
+/// modal dialog when it has one too.
+fn blocking_dialog(window: WindowId, modals: &[(WindowId, WindowId)]) -> Option<WindowId> {
+    let mut blocked = window;
+    let mut found = None;
+    // No longer than the dialogs there are, whatever the programs claim.
+    for _ in 0..modals.len() {
+        // Window ids grow, so the largest is the dialog opened last.
+        let newest = modals
+            .iter()
+            .filter(|(_, parent)| *parent == blocked)
+            .map(|(dialog, _)| *dialog)
+            .max_by_key(|dialog| dialog.0);
+        let Some(dialog) = newest else { break };
+        found = Some(dialog);
+        blocked = dialog;
+    }
+    found
 }
 
 /// Whether a window said through `xdg_dialog_v1` that it is a modal dialog.
@@ -1338,6 +1374,24 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modal_dialog_takes_its_parents_focus() {
+        let win = WindowId;
+        // Nothing modal, or modal for another window.
+        assert_eq!(blocking_dialog(win(1), &[]), None);
+        assert_eq!(blocking_dialog(win(1), &[(win(3), win(2))]), None);
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1))]), Some(win(2)));
+        // The dialog itself is not blocked.
+        assert_eq!(blocking_dialog(win(2), &[(win(2), win(1))]), None);
+        // Two on one parent: the one opened last, in whatever order they come.
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1)), (win(5), win(1))]), Some(win(5)));
+        assert_eq!(blocking_dialog(win(1), &[(win(5), win(1)), (win(2), win(1))]), Some(win(5)));
+        // A modal dialog of the dialog comes first.
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1)), (win(3), win(2))]), Some(win(3)));
+        // Parents in a circle end somewhere instead of going round for ever.
+        assert!(blocking_dialog(win(1), &[(win(2), win(1)), (win(1), win(2))]).is_some());
+    }
 
     #[test]
     fn a_window_never_asks_for_more_than_its_slot_holds() {

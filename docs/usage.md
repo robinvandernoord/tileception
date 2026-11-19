@@ -177,9 +177,11 @@ Floating windows can be moved and resized with the same Alt-drag controls.
 
 Dialogs float by themselves. A dialog opens centred over the window it belongs
 to, in that window's area on a split screen; this includes the file chooser
-and other dialogs the desktop portal shows for a program. While a dialog that
+and other dialogs the desktop portal shows for a program, and the dialogs of
+X11 programs. While a dialog that
 its program marks as modal is open, focusing or clicking its window focuses
-the dialog instead, until the dialog is closed.
+the dialog instead, until the dialog is closed. A fullscreen window returns
+to the layout when that happens, so the dialog can be seen.
 
 ### Clearing the desk
 
