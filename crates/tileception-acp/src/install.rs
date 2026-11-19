@@ -102,7 +102,11 @@ fn safe(name: &str) -> String {
         .collect()
 }
 
-fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String> {
+/// Downloads an archive over https into `dir`, replacing what is there, once
+/// its checksum matches `sha256` and it unpacked without a member that would
+/// land outside. A download that is not an archive but the program `cmd`
+/// itself is kept under that name. `dir` is untouched when anything fails.
+pub fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err(format!("refusing a download that is not https: {url}"));
     }
@@ -112,37 +116,11 @@ fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String
     let partial = PathBuf::from(partial);
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir_all(&partial).map_err(|error| format!("{}: {error}", partial.display()))?;
-    let name = url.rsplit('/').next().unwrap_or("archive");
-    let archive = partial.join(format!("download-{}", safe(name)));
-    crate::curl(url, &archive, MAX_ARCHIVE)?;
-    let actual = sha256_of(&archive)?;
-    if !actual.eq_ignore_ascii_case(sha256) {
+    let unpacked = unpack(url, sha256, cmd, &partial);
+    if let Err(error) = unpacked {
         let _ = std::fs::remove_dir_all(&partial);
-        return Err(format!("the download's checksum does not match the registry ({actual} instead of {sha256})"));
+        return Err(error);
     }
-    let archive_path = archive.as_os_str();
-    let destination = partial.as_os_str();
-    let lower = name.to_lowercase();
-    if lower.ends_with(".zip") {
-        run("unzip", &[OsStr::new("-q"), archive_path, OsStr::new("-d"), destination])?;
-    } else if lower.ends_with(".tar.gz")
-        || lower.ends_with(".tgz")
-        || lower.ends_with(".tar.bz2")
-        || lower.ends_with(".tar.xz")
-    {
-        // tar picks the compression itself; --no-same-owner keeps files ours.
-        run("tar", &[OsStr::new("-xf"), archive_path, OsStr::new("-C"), destination, OsStr::new("--no-same-owner")])?;
-    } else if Path::new(cmd.trim_start_matches("./")).file_name() == Some(OsStr::new(name)) {
-        // Not an archive but the program itself (sigit ships so).
-        let program = partial.join(name);
-        std::fs::rename(&archive, &program).map_err(|error| format!("{}: {error}", program.display()))?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("{}: {error}", program.display()))?;
-    } else {
-        return Err(format!("unknown archive type: {name}"));
-    }
-    let _ = std::fs::remove_file(&archive);
     let _ = std::fs::remove_dir_all(dir);
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -150,7 +128,83 @@ fn download(url: &str, sha256: &str, cmd: &str, dir: &Path) -> Result<(), String
     std::fs::rename(&partial, dir).map_err(|error| error.to_string())
 }
 
-fn sha256_of(path: &Path) -> Result<String, String> {
+/// The download, checked and unpacked into `partial`.
+fn unpack(url: &str, sha256: &str, cmd: &str, partial: &Path) -> Result<(), String> {
+    let name = url.rsplit('/').next().unwrap_or("archive");
+    let archive = partial.join(format!("download-{}", safe(name)));
+    crate::curl(url, &archive, MAX_ARCHIVE)?;
+    unpack_file(&archive, name, sha256, cmd, partial)
+}
+
+/// Checks the downloaded `archive`, called `name` where it came from, and
+/// unpacks it into `partial`.
+fn unpack_file(archive: &Path, name: &str, sha256: &str, cmd: &str, partial: &Path) -> Result<(), String> {
+    let actual = sha256_of(archive)?;
+    if !actual.eq_ignore_ascii_case(sha256) {
+        return Err(format!("the download's checksum does not match the published one ({actual} instead of {sha256})"));
+    }
+    let archive_path = archive.as_os_str();
+    let destination = partial.as_os_str();
+    let lower = name.to_lowercase();
+    if lower.ends_with(".zip") {
+        refuse_unsafe_members(&listing("unzip", &[OsStr::new("-Z1"), archive_path])?)?;
+        run("unzip", &[OsStr::new("-q"), archive_path, OsStr::new("-d"), destination])?;
+    } else if is_tarball(&lower) {
+        refuse_unsafe_members(&listing("tar", &[OsStr::new("-tf"), archive_path])?)?;
+        // tar picks the compression itself; --no-same-owner keeps files ours.
+        run("tar", &[OsStr::new("-xf"), archive_path, OsStr::new("-C"), destination, OsStr::new("--no-same-owner")])?;
+    } else if Path::new(cmd.trim_start_matches("./")).file_name() == Some(OsStr::new(name)) {
+        // Not an archive but the program itself (sigit ships so).
+        let program = partial.join(name);
+        std::fs::rename(archive, &program).map_err(|error| format!("{}: {error}", program.display()))?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("{}: {error}", program.display()))?;
+    } else {
+        return Err(format!("unknown archive type: {name}"));
+    }
+    let _ = std::fs::remove_file(archive);
+    Ok(())
+}
+
+fn is_tarball(lower: &str) -> bool {
+    [".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"].iter().any(|ending| lower.ends_with(ending))
+}
+
+/// Whether [`download`] can unpack a file of this name.
+pub fn is_archive(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".zip") || is_tarball(&lower)
+}
+
+/// What a program prints, such as an archive's members.
+fn listing(program: &str, args: &[&OsStr]) -> Result<String, String> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("{program}: {error}"))?;
+    if !out.status.success() {
+        return Err(format!("{program} could not read the archive: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Refuses an archive with a member that is absolute or climbs out with
+/// `..`, whatever the unpacking program would have made of it.
+fn refuse_unsafe_members(members: &str) -> Result<(), String> {
+    let climbs = |member: &&str| {
+        let path = Path::new(member);
+        path.is_absolute() || path.components().any(|component| matches!(component, std::path::Component::ParentDir))
+    };
+    match members.lines().find(climbs) {
+        Some(member) => Err(format!("the archive holds an unsafe path: {member}")),
+        None => Ok(()),
+    }
+}
+
+/// A file's SHA-256, in hex.
+pub fn sha256_of(path: &Path) -> Result<String, String> {
     let out =
         std::process::Command::new("sha256sum").arg(path).output().map_err(|error| format!("sha256sum: {error}"))?;
     if !out.status.success() {
@@ -172,6 +226,75 @@ mod tests {
         assert!(inside(dir, "../../bin/sh").is_err());
         assert!(inside(dir, "/bin/sh").is_err());
         assert_eq!(safe("@scope/pkg 1"), "_scope_pkg_1");
+    }
+
+    #[test]
+    fn archives_may_not_unpack_outside() {
+        assert_eq!(refuse_unsafe_members("plugin/\nplugin/bin/tool\n./README.md\n"), Ok(()));
+        assert_eq!(refuse_unsafe_members("plugin/a..b\n"), Ok(()));
+        for member in ["../.bashrc", "plugin/../../.ssh/authorized_keys", "/etc/passwd"] {
+            let error = refuse_unsafe_members(&format!("plugin/tool\n{member}\n")).expect_err("refused");
+            assert!(error.contains(member), "{error}");
+        }
+        assert!(is_archive("tool-x86_64-unknown-linux-gnu.tar.gz"));
+        assert!(is_archive("Tool_Linux_amd64.ZIP"));
+        assert!(!is_archive("tool-linux-amd64"));
+        assert!(!is_archive("checksums.txt"));
+    }
+
+    #[test]
+    fn archives_are_checked_before_they_unpack() {
+        let work = std::env::temp_dir().join(format!("tileception-acp-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let source = work.join("source/plugin");
+        std::fs::create_dir_all(&source).expect("source dir");
+        std::fs::write(source.join("tool"), "#!/bin/sh\n").expect("tool");
+        let tar = |archive: &Path, extra: &[&str], member: &str| {
+            let made = std::process::Command::new("tar")
+                .arg("-czf")
+                .arg(archive)
+                .args(extra)
+                .arg("-C")
+                .arg(work.join("source/plugin"))
+                .arg(member)
+                .status()
+                .expect("tar runs");
+            assert!(made.success());
+        };
+        let good = work.join("good.tar.gz");
+        tar(&good, &[], "tool");
+        let sha256 = sha256_of(&good).expect("a checksum");
+        let unpacked = |archive: &Path, sha256: &str| {
+            let partial = work.join("partial");
+            let _ = std::fs::remove_dir_all(&partial);
+            std::fs::create_dir_all(&partial).expect("partial dir");
+            let copy = partial.join("download");
+            std::fs::copy(archive, &copy).expect("copy");
+            unpack_file(&copy, "tool-linux.tar.gz", sha256, "", &partial).map(|()| partial.join("tool").is_file())
+        };
+        assert_eq!(unpacked(&good, &sha256.to_uppercase()), Ok(true));
+        // Another archive than the one published is not unpacked at all.
+        let wrong = "0".repeat(64);
+        let error = unpacked(&good, &wrong).expect_err("a wrong checksum");
+        assert!(error.contains("checksum does not match"), "{error}");
+        assert!(!work.join("partial/tool").exists());
+        // Nor is one with a member that climbs out, even with the right checksum.
+        let climbing = work.join("climbing.tar.gz");
+        tar(&climbing, &["-P"], "../plugin/tool");
+        let error = unpacked(&climbing, &sha256_of(&climbing).expect("a checksum")).expect_err("an unsafe member");
+        assert!(error.contains("unsafe path: ../plugin/tool"), "{error}");
+        assert!(!work.join("partial/tool").exists());
+        let _ = std::fs::remove_dir_all(work);
+    }
+
+    #[test]
+    fn a_failed_download_leaves_what_was_installed() {
+        let dir = std::env::temp_dir().join(format!("tileception-acp-download-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("installed dir");
+        std::fs::write(dir.join("tool"), "old").expect("installed tool");
+        assert!(download("http://example.invalid/tool.tar.gz", "00", "tool", &dir).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("tool")).expect("still there"), "old");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

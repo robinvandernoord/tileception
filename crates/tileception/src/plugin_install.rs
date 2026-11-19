@@ -8,6 +8,11 @@
 //! `pyproject.toml` is read before anything is installed, so the launcher
 //! can say what is about to run. What was installed this way is kept in
 //! `$XDG_DATA_HOME/tileception/installed-plugins.toml`, by plugin ID.
+//!
+//! A repository without a `pyproject.toml` installs from its release
+//! instead: the archive for this machine, checked against the SHA-256 the
+//! release publishes and unpacked like Doctor's binary agents, holding one
+//! program that takes the same subcommands.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -33,6 +38,10 @@ const QUICK_TIMEOUT: Duration = Duration::from_secs(60);
 const OUTPUT_GRACE: Duration = Duration::from_secs(2);
 /// The largest `pyproject.toml` read.
 const MAX_PYPROJECT: &str = "1000000";
+/// The largest description of a release, or list of checksums, read.
+const MAX_RELEASE: &str = "4000000";
+/// How deep in a release's archive its program is looked for.
+const PROGRAM_DEPTH: usize = 3;
 
 /// How git reaches a repository: anonymously over https, or over ssh with
 /// the user's own keys, which is how a private repository is reached.
@@ -286,6 +295,246 @@ pub struct Lookup {
     pub commit: String,
     /// How the repository was reached, and is installed from.
     pub transport: Transport,
+    /// The release archive that installs, for a repository that is not a
+    /// Python package. `package` then describes that archive, and `commit`
+    /// is the one the release's tag points at.
+    pub release: Option<Release>,
+}
+
+/// The archive of a release that fits this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Release {
+    pub tag: String,
+    /// The archive's file name.
+    pub asset: String,
+    pub url: String,
+    /// What the archive must hash to, as the release says.
+    pub sha256: String,
+}
+
+/// What GitHub says about a release.
+#[derive(Debug, Deserialize)]
+struct ReleaseListing {
+    tag_name: String,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+    /// `sha256:<hex>`, on assets uploaded since GitHub started hashing them.
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+/// Where an archive's checksum comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Checksum {
+    /// GitHub's own digest of the asset.
+    Known(String),
+    /// A file of the same release that lists it: its URL, and whether it
+    /// is about this archive alone.
+    Listed { url: String, own: bool },
+}
+
+/// Where GitHub's API and its downloads are. A debug build can be pointed at
+/// a stand-in, to try installing without publishing a release.
+fn github() -> (String, String) {
+    #[cfg(debug_assertions)]
+    if let Ok(stand_in) = std::env::var("TILECEPTION_GITHUB_STAND_IN") {
+        let stand_in = stand_in.trim_end_matches('/');
+        return (format!("{stand_in}/api"), stand_in.to_string());
+    }
+    ("https://api.github.com".into(), "https://github.com".into())
+}
+
+/// The API's address of a repository's latest release, or the one of a tag.
+fn release_url(api: &str, source: &Source) -> String {
+    let repository = format!("{api}/repos/{}/{}/releases", source.owner, source.repo);
+    match &source.rev {
+        Some(tag) => format!("{repository}/tags/{tag}"),
+        None => format!("{repository}/latest"),
+    }
+}
+
+/// The ways release archives spell a machine architecture.
+fn architecture_names(architecture: &str) -> Vec<&str> {
+    match architecture {
+        "x86_64" => vec!["x86_64", "amd64", "x64"],
+        "aarch64" => vec!["aarch64", "arm64"],
+        // Not `x86`, which `x86_64` holds as a part of its own.
+        "x86" => vec!["i686", "i586", "i386"],
+        other => vec![other],
+    }
+}
+
+/// Whether a file name holds `word` as a part of its own: `arm` is not in
+/// `arm64`, and `linux` is in `tool_Linux_amd64`.
+fn names_part(name: &str, word: &str) -> bool {
+    let name = name.to_lowercase();
+    name.match_indices(word).any(|(start, _)| {
+        let before = name[..start].chars().next_back();
+        let after = name[start + word.len()..].chars().next();
+        !before.is_some_and(|letter| letter.is_ascii_alphanumeric())
+            && !after.is_some_and(|letter| letter.is_ascii_alphanumeric())
+    })
+}
+
+/// The archive among a release's files for Linux on `architecture`. One
+/// built for glibc is preferred, then one that does not say, then musl,
+/// which runs anywhere.
+fn pick_asset<'assets>(assets: &'assets [Asset], architecture: &str) -> Option<&'assets Asset> {
+    let libc = |name: &str| {
+        if names_part(name, "gnu") || names_part(name, "glibc") {
+            0
+        } else if names_part(name, "musl") {
+            2
+        } else {
+            1
+        }
+    };
+    assets
+        .iter()
+        .filter(|asset| tileception_acp::install::is_archive(&asset.name))
+        .filter(|asset| names_part(&asset.name, "linux") && !names_part(&asset.name, "android"))
+        .filter(|asset| architecture_names(architecture).iter().any(|word| names_part(&asset.name, word)))
+        .min_by_key(|asset| (libc(&asset.name), asset.name.clone()))
+}
+
+/// A SHA-256 in hex, lowercase, or nothing when `text` is not one.
+fn sha256_hex(text: &str) -> Option<String> {
+    (text.len() == 64 && text.chars().all(|letter| letter.is_ascii_hexdigit())).then(|| text.to_ascii_lowercase())
+}
+
+/// Where the release says what `archive` hashes to: GitHub's digest of it,
+/// else `<archive>.sha256`, else a list of checksums.
+fn pick_checksum(assets: &[Asset], archive: &Asset) -> Option<Checksum> {
+    if let Some(digest) = archive.digest.as_deref().and_then(|digest| digest.strip_prefix("sha256:"))
+        && let Some(sha256) = sha256_hex(digest)
+    {
+        return Some(Checksum::Known(sha256));
+    }
+    let lower = |asset: &Asset| asset.name.to_lowercase();
+    let own =
+        [format!("{}.sha256", archive.name), format!("{}.sha256sum", archive.name)].map(|name| name.to_lowercase());
+    if let Some(asset) = assets.iter().find(|asset| own.contains(&lower(asset))) {
+        return Some(Checksum::Listed { url: asset.browser_download_url.clone(), own: true });
+    }
+    let list = |asset: &&Asset| {
+        let name = lower(asset);
+        (name.contains("checksums") || name.contains("sha256sums") || name == "sha256sum.txt")
+            && ![".sig", ".asc", ".pem", ".minisig", ".sigstore", ".json"].iter().any(|ending| name.ends_with(ending))
+    };
+    assets.iter().find(list).map(|asset| Checksum::Listed { url: asset.browser_download_url.clone(), own: false })
+}
+
+/// The checksum of `archive` in a checksum file, as `sha256sum` writes them:
+/// `<hex>  <name>` on a line. A file about one archive alone may hold just
+/// the hash.
+fn checksum_in(text: &str, archive: &str, own: bool) -> Option<String> {
+    let listed = text.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        let (hash, name) = (words.next()?, words.next()?);
+        let name = name.trim_start_matches('*').trim_start_matches("./");
+        (name == archive).then(|| sha256_hex(hash)).flatten()
+    });
+    listed.or_else(|| if own { sha256_hex(text.trim()) } else { None })
+}
+
+/// What installs from a release: its tag, the archive for this machine and
+/// where that archive's checksum is. `listing` is GitHub's JSON.
+fn choose_release(source: &Source, listing: &str, architecture: &str) -> Result<(String, Asset, Checksum), String> {
+    let listing: ReleaseListing =
+        serde_json::from_str(listing).map_err(|error| format!("its release could not be read: {error}"))?;
+    let tag = listing.tag_name;
+    let rev_like = Source::parse(&format!("{}@{tag}", source.repository())).is_ok();
+    if !rev_like {
+        return Err(format!("its release has a tag that cannot be installed: {tag}"));
+    }
+    let archive = pick_asset(&listing.assets, architecture).ok_or_else(|| {
+        let names: Vec<&str> = listing.assets.iter().map(|asset| asset.name.as_str()).collect();
+        let has = if names.is_empty() { "no files".to_string() } else { names.join(", ") };
+        format!("its release {tag} has no archive for Linux on {architecture} (it has {has})")
+    })?;
+    let checksum = pick_checksum(&listing.assets, archive).ok_or_else(|| {
+        format!(
+            "its release {tag} publishes no SHA-256 checksum for {}: the archive cannot be checked, so it is not installed",
+            archive.name
+        )
+    })?;
+    Ok((tag, archive.clone(), checksum))
+}
+
+/// Whether `url` is a file of one of the repository's releases, which is all
+/// that is downloaded for it.
+fn release_file(downloads: &str, source: &Source, url: &str) -> bool {
+    let prefix = format!("{downloads}/{}/{}/releases/download/", source.owner, source.repo);
+    url.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(&prefix))
+        && !url[prefix.len()..].split('/').any(|part| part.is_empty() || part == "..")
+}
+
+/// A release archive described like a Python package: named after the
+/// repository, as its program is, with the tag as its version.
+fn release_package(source: &Source, release: &Release) -> Result<Package, String> {
+    let name = source.repo.clone();
+    let lower = name.to_lowercase();
+    let plugin_id = lower.strip_prefix("tileception-").unwrap_or(&lower).to_string();
+    if plugin_id.is_empty() || plugin_id == "plugins" || plugin_id.contains('.') {
+        return Err(format!("{plugin_id} cannot be a plugin ID"));
+    }
+    Ok(Package {
+        script: name.clone(),
+        name,
+        version: release.tag.clone(),
+        description: format!("{} from its release", release.asset),
+        plugin_id,
+        extras: Vec::new(),
+        needs: Vec::new(),
+        python: None,
+    })
+}
+
+/// Where a plugin's release archive is unpacked.
+fn release_dir(plugin_id: &str) -> PathBuf {
+    data_dir().join("plugin-releases").join(plugin_id)
+}
+
+/// The program in an unpacked release: the executable file named `name`,
+/// the one nearest the top, else the only executable file there is.
+fn find_program(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut programs = Vec::new();
+    let mut folders = vec![(dir.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        for entry in entries.flatten() {
+            // Links are not followed: the program is a file of the archive.
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() && depth < PROGRAM_DEPTH {
+                folders.push((entry.path(), depth + 1));
+            } else if kind.is_file() && entry.metadata().is_ok_and(|file| file.permissions().mode() & 0o111 != 0) {
+                programs.push((depth, entry.path()));
+            }
+        }
+    }
+    programs.sort();
+    let named = programs.iter().find(|(_, path)| path.file_name().is_some_and(|file| file == name));
+    match (named, &programs[..]) {
+        (Some((_, path)), _) | (None, [(_, path)]) => Ok(path.clone()),
+        (None, []) => Err(format!("the archive holds no program: it needs an executable file called {name}")),
+        (None, _) => Err(format!("the archive holds several programs and none is called {name}")),
+    }
+}
+
+/// Whether what is installed is what a fresh lookup found, so an update has
+/// nothing to do.
+fn is_current(installed: &Installed, lookup: &Lookup) -> bool {
+    let release = lookup.release.as_ref();
+    installed.commit.as_deref() == Some(lookup.commit.as_str())
+        && installed.release.as_deref() == release.map(|release| release.tag.as_str())
+        && release.is_none_or(|release| installed.sha256.as_deref() == Some(release.sha256.as_str()))
 }
 
 /// The requirement `uvenv install` gets, extras and all.
@@ -325,24 +574,36 @@ pub struct Installed {
     /// there before stays.
     #[serde(default)]
     pub wrote_manifest: bool,
+    /// The tag of the release it was unpacked from, for a plugin that is
+    /// not a Python package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    /// The SHA-256 of that release's archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// The program that installed a plugin's package.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[expect(clippy::enum_variant_names, reason = "uv's own subcommand is called `uv tool`")]
 pub enum Tool {
     /// `uv tool install`, which installed plugins before uvenv did.
     #[default]
     #[serde(rename = "uv")]
     UvTool,
     Uvenv,
+    /// Nothing: the archive of a release, unpacked by Tileception.
+    Release,
 }
 
 impl Tool {
-    fn program(self) -> &'static str {
+    /// The program that removes the package; a release needs none.
+    fn program(self) -> Option<&'static str> {
         match self {
-            Tool::UvTool => "uv",
-            Tool::Uvenv => "uvenv",
+            Tool::UvTool => Some("uv"),
+            Tool::Uvenv => Some("uvenv"),
+            Tool::Release => None,
         }
     }
 
@@ -350,6 +611,7 @@ impl Tool {
         match self {
             Tool::UvTool => vec!["tool", "uninstall", package],
             Tool::Uvenv => vec!["uninstall", package],
+            Tool::Release => Vec::new(),
         }
     }
 }
@@ -663,6 +925,13 @@ pub fn listing() -> String {
         .collect()
 }
 
+/// Whether reading a file failed because the repository does not have it,
+/// as curl says of GitHub's answer and git of a commit, and not because
+/// GitHub could not be reached.
+fn no_such_file(error: &str) -> bool {
+    error.contains("error: 404") || error.contains("does not exist in") || error.contains("exists on disk, but not in")
+}
+
 /// A file of its own for each lookup: two can run at once, and one must
 /// not read what the other fetched.
 fn lookup_file() -> String {
@@ -800,11 +1069,14 @@ impl Runner {
 
     /// The program a plugin's package is installed and removed with.
     fn find(&self, tool: Tool) -> Result<PathBuf, String> {
-        tileception_acp::local::find(tool.program()).ok_or_else(|| match tool {
+        let program = tool.program().ok_or("A plugin from a release is removed without another program")?;
+        tileception_acp::local::find(program).ok_or_else(|| match tool {
             Tool::Uvenv => "Plugins are installed and removed with uvenv, which is not installed: run tileception setup to install it, \
                             or see https://github.com/robinvandernoord/uvenv"
                 .into(),
-            Tool::UvTool => "This plugin was installed with uv, which is not installed anymore".into(),
+            Tool::UvTool | Tool::Release => {
+                "This plugin was installed with uv, which is not installed anymore".into()
+            }
         })
     }
 
@@ -943,24 +1215,87 @@ impl Runner {
             .join("tileception");
         std::fs::create_dir_all(&cache).map_err(|error| format!("{}: {error}", cache.display()))?;
         let path = cache.join(lookup_file());
-        let missing = |error: String| {
-            format!("{} has no pyproject.toml to read at {} ({error})", source.repository(), short(&commit))
-        };
         let text = match transport {
-            Transport::Https => {
-                tileception_acp::curl(&source.raw_url(&commit, "pyproject.toml"), &path, MAX_PYPROJECT)
-                    .map_err(missing)?;
-                let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
-                let _ = std::fs::remove_file(&path);
-                text?
-            }
-            Transport::Ssh => self.git_pyproject(source, &commit, transport, &path).map_err(missing)?,
+            Transport::Https => tileception_acp::curl(&source.raw_url(&commit, "pyproject.toml"), &path, MAX_PYPROJECT)
+                .and_then(|()| {
+                    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string());
+                    let _ = std::fs::remove_file(&path);
+                    text
+                }),
+            Transport::Ssh => self.git_pyproject(source, &commit, transport, &path),
         };
-        Ok(Lookup { package: package(&text)?, commit, transport })
+        match text {
+            Ok(text) => Ok(Lookup { package: package(&text)?, commit, transport, release: None }),
+            // Not a Python package: its release may hold a program instead.
+            Err(error) if no_such_file(&error) => {
+                self.read_release(source, &commit, transport, &path).map_err(|release| {
+                    format!("{} has no pyproject.toml at {}, and {release}", source.repository(), short(&commit))
+                })
+            }
+            Err(error) => {
+                Err(format!("{} has no pyproject.toml to read at {} ({error})", source.repository(), short(&commit)))
+            }
+        }
+    }
+
+    /// Finds the archive to install from the latest release, or from the
+    /// release of the tag the source names. `scratch` is a file to use.
+    fn read_release(
+        &self,
+        source: &Source,
+        commit: &str,
+        transport: Transport,
+        scratch: &Path,
+    ) -> Result<Lookup, String> {
+        if transport == Transport::Ssh {
+            return Err("its releases cannot be read: an archive is only downloaded from a public repository".into());
+        }
+        let (api, downloads) = github();
+        let fetch = |url: &str| {
+            let fetched = tileception_acp::curl(url, scratch, MAX_RELEASE)
+                .and_then(|()| std::fs::read_to_string(scratch).map_err(|error| error.to_string()));
+            let _ = std::fs::remove_file(scratch);
+            fetched
+        };
+        let listing = fetch(&release_url(&api, source)).map_err(|error| match &source.rev {
+            Some(rev) if no_such_file(&error) => format!("it has no release tagged {rev}"),
+            None if no_such_file(&error) => "it has no release".to_string(),
+            _ if error.contains("error: 403") || error.contains("error: 429") => {
+                "GitHub is not answering questions about releases from this address now; try again in an hour".into()
+            }
+            _ => format!("its release could not be read ({error})"),
+        })?;
+        let (tag, archive, checksum) = choose_release(source, &listing, std::env::consts::ARCH)?;
+        let inside = |url: &str| {
+            if release_file(&downloads, source, url) {
+                Ok(())
+            } else {
+                Err(format!("its release {tag} points at a file elsewhere: {url}"))
+            }
+        };
+        inside(&archive.browser_download_url)?;
+        let sha256 = match checksum {
+            Checksum::Known(sha256) => sha256,
+            Checksum::Listed { url, own } => {
+                inside(&url)?;
+                let text = fetch(&url)
+                    .map_err(|error| format!("the checksums of its release {tag} could not be read ({error})"))?;
+                checksum_in(&text, &archive.name, own)
+                    .ok_or_else(|| format!("the checksums of its release {tag} do not list {}", archive.name))?
+            }
+        };
+        // The commit the tag is at, which the record and the launcher show.
+        let commit = if source.rev.as_deref() == Some(tag.as_str()) {
+            commit.to_string()
+        } else {
+            self.resolve(&Source { rev: Some(tag.clone()), ..source.clone() })?.0
+        };
+        let release = Release { tag, asset: archive.name, url: archive.browser_download_url, sha256 };
+        Ok(Lookup { package: release_package(source, &release)?, commit, transport, release: Some(release) })
     }
 
     /// An installed plugin's environment and the links into it.
-    fn old_paths(&self, uvenv: &Path, installed: &Installed) -> Vec<PathBuf> {
+    fn old_paths(&self, uvenv: &Path, plugin_id: &str, installed: &Installed) -> Vec<PathBuf> {
         match installed.tool {
             Tool::Uvenv => {
                 let venv = uvenv_venv_dir(&installed.package);
@@ -983,6 +1318,7 @@ impl Runner {
                 paths.push(tool);
                 paths
             }
+            Tool::Release => vec![release_dir(plugin_id)],
         }
     }
 
@@ -990,6 +1326,9 @@ impl Runner {
     /// itself up without asking anything, makes sure a manifest exists, and
     /// asks whether it still needs configuring.
     fn install(&self, source: &Source, lookup: &Lookup) -> Result<(String, Option<Configure>), String> {
+        if let Some(release) = &lookup.release {
+            return self.install_release(source, lookup, release);
+        }
         let package = &lookup.package;
         // Again, as something else may have been installed since the lookup.
         conflict(&Record::load(), source, package)?;
@@ -1018,7 +1357,7 @@ impl Runner {
             Some(installed) => {
                 self.step(format!("Setting {} aside until its replacement is installed", installed.package));
                 let folder = data_dir().join("set-aside").join(&package.plugin_id);
-                Some(Aside::take(folder, self.old_paths(&uvenv, installed))?)
+                Some(Aside::take(folder, self.old_paths(&uvenv, &package.plugin_id, installed))?)
             }
             None => None,
         };
@@ -1055,6 +1394,8 @@ impl Runner {
                 tool: Tool::Uvenv,
                 command: command.clone(),
                 wrote_manifest: wrote_before || !had_manifest,
+                release: None,
+                sha256: None,
             },
         );
         record.save()?;
@@ -1099,24 +1440,103 @@ impl Runner {
         if let Some(aside) = aside {
             aside.discard();
         }
+        self.finish(&mut record, lookup, before.as_ref(), &command)
+    }
+
+    /// Unpacks the release archive looked up in place of the installed one,
+    /// which comes back if that fails.
+    fn install_release(
+        &self,
+        source: &Source,
+        lookup: &Lookup,
+        release: &Release,
+    ) -> Result<(String, Option<Configure>), String> {
+        let package = &lookup.package;
+        conflict(&Record::load(), source, package)?;
+        let mut record = Record::load();
+        let before = record.plugins.get(&package.plugin_id).cloned();
+        let dir = release_dir(&package.plugin_id);
+        let ours = before.as_ref().is_some_and(|installed| installed.tool == Tool::Release);
+        if !ours && std::fs::symlink_metadata(&dir).is_ok() {
+            return Err(format!(
+                "{} is in the way, and no installed plugin put it there; remove it first",
+                dir.display()
+            ));
+        }
+        let aside = match &before {
+            Some(installed) => {
+                self.step(format!("Setting {} aside until its replacement is installed", installed.package));
+                let uvenv = if installed.tool == Tool::Uvenv { self.find(Tool::Uvenv)? } else { PathBuf::new() };
+                let folder = data_dir().join("set-aside").join(&package.plugin_id);
+                Some(Aside::take(folder, self.old_paths(&uvenv, &package.plugin_id, installed))?)
+            }
+            None => None,
+        };
+        self.step(format!("Downloading {} of {} {}", release.asset, package.name, release.tag));
+        let placed = tileception_acp::install::download(&release.url, &release.sha256, "", &dir)
+            .and_then(|()| find_program(&dir, &package.script));
+        let command = match placed {
+            Ok(command) => command,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(match aside.map_or(Ok(()), Aside::restore) {
+                    Ok(()) => format!("Did not install {}: {error}", package.name),
+                    Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
+                });
+            }
+        };
+        if let Some(aside) = aside {
+            aside.discard();
+        }
+        let had_manifest = manifest_path(&package.plugin_id).exists();
+        let wrote_before = before.as_ref().is_some_and(|installed| installed.wrote_manifest);
+        // No commit until setup is through, so an update tries it again.
+        record.plugins.insert(
+            package.plugin_id.clone(),
+            Installed {
+                source: source.to_string(),
+                commit: None,
+                package: package.name.clone(),
+                tool: Tool::Release,
+                command: command.clone(),
+                wrote_manifest: wrote_before || !had_manifest,
+                release: Some(release.tag.clone()),
+                sha256: Some(release.sha256.clone()),
+            },
+        );
+        record.save()?;
+        self.finish(&mut record, lookup, before.as_ref(), &command)
+    }
+
+    /// The rest of installing, once the program is in place: lets the plugin
+    /// set itself up, records the commit, and asks whether it is configured.
+    fn finish(
+        &self,
+        record: &mut Record,
+        lookup: &Lookup,
+        before: Option<&Installed>,
+        command: &Path,
+    ) -> Result<(String, Option<Configure>), String> {
+        let package = &lookup.package;
+        let manifest = manifest_path(&package.plugin_id);
         // A manifest Tileception wrote for where the plugin was before.
-        if let Some(installed) = &before
+        if let Some(installed) = before
             && installed.command != command
             && std::fs::read_to_string(&manifest).is_ok_and(|text| text == minimal_manifest(&installed.command))
         {
-            std::fs::write(&manifest, minimal_manifest(&command))
+            std::fs::write(&manifest, minimal_manifest(command))
                 .map_err(|error| format!("{}: {error}", manifest.display()))?;
         }
         if !command.is_file() {
             return Err(format!("{} did not install {}", package.name, command.display()));
         }
         self.step(format!("Running {} install, which may take a while", package.script));
-        self.setup(&package.plugin_id, &command)?;
+        self.setup(&package.plugin_id, command)?;
         record.plugins.get_mut(&package.plugin_id).expect("installation was recorded").commit =
             Some(lookup.commit.clone());
         record.save()?;
         self.step(format!("Asking {} whether it is configured", package.script));
-        let status = self.status(&command);
+        let status = self.status(command);
         let configure =
             (!status.configured).then(|| Configure { plugin_id: package.plugin_id.clone(), setup: status.setup });
         let version = if package.version.is_empty() { String::new() } else { format!(" {}", package.version) };
@@ -1188,7 +1608,7 @@ impl Runner {
                 lookup.package.plugin_id
             ));
         }
-        if installed.commit.as_deref() == Some(lookup.commit.as_str()) {
+        if is_current(installed, &lookup) {
             return Ok((Updated::Current, None));
         }
         let from = installed.commit.clone();
@@ -1219,7 +1639,10 @@ impl Runner {
             .get(plugin_id)
             .cloned()
             .ok_or_else(|| format!("{plugin_id} was not installed from a repository"))?;
-        let program = self.find(installed.tool)?;
+        let program = match installed.tool {
+            Tool::Release => None,
+            tool => Some(self.find(tool)?),
+        };
         let mut notes = Vec::new();
         let manifest = manifest_path(plugin_id);
         // A plugin may remove its manifest itself. Keep unowned contents before
@@ -1249,11 +1672,25 @@ impl Runner {
             }
             std::fs::write(&manifest, contents).map_err(|error| format!("{}: {error}", manifest.display()))?;
         }
-        self.check(
-            &format!("{} uninstall {}", installed.tool.program(), installed.package),
-            self.command(&program, &installed.tool.uninstall_args(&installed.package)),
-            PACKAGE_TIMEOUT,
-        )?;
+        match (&program, installed.tool.program()) {
+            (Some(program), Some(name)) => {
+                self.check(
+                    &format!("{name} uninstall {}", installed.package),
+                    self.command(program, &installed.tool.uninstall_args(&installed.package)),
+                    PACKAGE_TIMEOUT,
+                )?;
+            }
+            // A release is the folder its archive was unpacked into.
+            _ => {
+                let dir = release_dir(plugin_id);
+                if installed.command.starts_with(&dir)
+                    && let Err(error) = std::fs::remove_dir_all(&dir)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(format!("{}: {error}", dir.display()));
+                }
+            }
+        }
         if let Some(note) = remove_manifest(&installed, &manifest)? {
             notes.push(note);
         }
@@ -1622,7 +2059,7 @@ tileception-odoo = "tileception_odoo.cli:main"
         assert_eq!(plain.python.as_deref(), Some(">=3.14"));
         let source = Source::parse("robinvandernoord/tileception-odoo").expect("a plain source");
         let commit = "0123456789abcdef0123456789abcdef01234567".to_string();
-        let lookup = Lookup { package: plain, commit: commit.clone(), transport: Transport::Https };
+        let lookup = Lookup { package: plain, commit: commit.clone(), transport: Transport::Https, release: None };
         // What installs is the commit that was looked up, not whatever the
         // default branch is at by then.
         assert_eq!(
@@ -1652,7 +2089,10 @@ needs = ["the 2fas CLI"]
         .expect("a declared pyproject");
         assert_eq!((declared.plugin_id.as_str(), declared.needs.len()), ("totp", 1));
         assert_eq!(
-            requirement(&source, &Lookup { package: declared, commit: commit.clone(), transport: Transport::Https }),
+            requirement(
+                &source,
+                &Lookup { package: declared, commit: commit.clone(), transport: Transport::Https, release: None }
+            ),
             "tileception-2fas[security-key] @ git+https://github.com/robinvandernoord/tileception-odoo@0123456789abcdef0123456789abcdef01234567"
         );
 
@@ -1749,7 +2189,268 @@ needs = ["the 2fas CLI"]
             tool: Tool::Uvenv,
             command: format!("/home/me/.local/bin/{package}").into(),
             wrote_manifest: true,
+            release: None,
+            sha256: None,
         }
+    }
+
+    fn asset(name: &str) -> Asset {
+        Asset {
+            name: name.into(),
+            browser_download_url: format!("https://github.com/me/tileception-dice/releases/download/v1.2.0/{name}"),
+            digest: None,
+        }
+    }
+
+    #[test]
+    fn release_archives_match_the_machine() {
+        let assets: Vec<Asset> = [
+            "tileception-dice-v1.2.0-aarch64-unknown-linux-gnu.tar.gz",
+            "tileception-dice-v1.2.0-aarch64-unknown-linux-musl.tar.gz",
+            "tileception-dice-v1.2.0-x86_64-unknown-linux-musl.tar.gz",
+            "tileception-dice-v1.2.0-x86_64-unknown-linux-gnu.tar.gz",
+            "tileception-dice-v1.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256",
+            "tileception-dice-v1.2.0-x86_64-apple-darwin.tar.gz",
+            "tileception-dice-v1.2.0-x86_64-pc-windows-msvc.zip",
+            "tileception-dice-v1.2.0-aarch64-linux-android.tar.gz",
+            "checksums.txt",
+        ]
+        .map(asset)
+        .to_vec();
+        let picked =
+            |assets: &[Asset], architecture: &str| pick_asset(assets, architecture).map(|asset| asset.name.clone());
+        assert_eq!(
+            picked(&assets, "x86_64").as_deref(),
+            Some("tileception-dice-v1.2.0-x86_64-unknown-linux-gnu.tar.gz")
+        );
+        assert_eq!(
+            picked(&assets, "aarch64").as_deref(),
+            Some("tileception-dice-v1.2.0-aarch64-unknown-linux-gnu.tar.gz")
+        );
+        assert_eq!(picked(&assets, "riscv64"), None);
+        // The other spellings, as GoReleaser and others write them.
+        let goreleaser: Vec<Asset> = [
+            "dice_1.2.0_Linux_amd64.tar.gz",
+            "dice_1.2.0_Linux_arm64.tar.gz",
+            "dice_1.2.0_Linux_armv7.tar.gz",
+            "dice_1.2.0_Darwin_arm64.tar.gz",
+        ]
+        .map(asset)
+        .to_vec();
+        assert_eq!(picked(&goreleaser, "x86_64").as_deref(), Some("dice_1.2.0_Linux_amd64.tar.gz"));
+        assert_eq!(picked(&goreleaser, "aarch64").as_deref(), Some("dice_1.2.0_Linux_arm64.tar.gz"));
+        assert_eq!(picked(&goreleaser, "arm"), None);
+        // Without a glibc build, one that does not say comes before musl.
+        let plain = ["dice-linux-x64-musl.zip", "dice-linux-x64.zip"].map(asset).to_vec();
+        assert_eq!(picked(&plain, "x86_64").as_deref(), Some("dice-linux-x64.zip"));
+        assert_eq!(picked(&plain[..1], "x86_64").as_deref(), Some("dice-linux-x64-musl.zip"));
+        // A bare program or an installer is not an archive.
+        let bare = ["dice-linux-x86_64", "dice-linux-x86_64.deb"].map(asset).to_vec();
+        assert_eq!(picked(&bare, "x86_64"), None);
+        assert!(names_part("tool_Linux_amd64", "linux"));
+        assert!(!names_part("tool-arm64", "arm"));
+        // A 32-bit machine does not take the 64-bit archive.
+        assert_eq!(picked(&assets, "x86"), None);
+        assert_eq!(
+            picked(&[asset("dice-i686-unknown-linux-gnu.tar.gz")], "x86").as_deref(),
+            Some("dice-i686-unknown-linux-gnu.tar.gz")
+        );
+    }
+
+    #[test]
+    fn release_checksums() {
+        let hash = "5d41402abc4b2a76b9719d911017c592ae2c8a4f2b6d3c1e9a7b5c3d1e0f9a8b";
+        let archive = "dice-x86_64-unknown-linux-gnu.tar.gz";
+        // GitHub's own digest comes first.
+        let digested = Asset { digest: Some(format!("sha256:{}", hash.to_uppercase())), ..asset(archive) };
+        let assets = vec![digested.clone(), asset("checksums.txt")];
+        assert_eq!(pick_checksum(&assets, &digested), Some(Checksum::Known(hash.into())));
+        // Then a file about the archive alone, then a list.
+        let plain = asset(archive);
+        let own = asset("dice-x86_64-unknown-linux-gnu.tar.gz.sha256");
+        let list = asset("dice_1.2.0_checksums.txt");
+        assert_eq!(
+            pick_checksum(&[plain.clone(), list.clone(), own.clone()], &plain),
+            Some(Checksum::Listed { url: own.browser_download_url.clone(), own: true })
+        );
+        assert_eq!(
+            pick_checksum(&[plain.clone(), asset("checksums.txt.sig"), list.clone()], &plain),
+            Some(Checksum::Listed { url: list.browser_download_url.clone(), own: false })
+        );
+        assert_eq!(
+            pick_checksum(&[plain.clone(), asset("SHA256SUMS")], &plain),
+            Some(Checksum::Listed { url: asset("SHA256SUMS").browser_download_url, own: false })
+        );
+        // Another kind of digest, or none, is no checksum.
+        let md5 = Asset { digest: Some("md5:abc".into()), ..asset(archive) };
+        assert_eq!(pick_checksum(std::slice::from_ref(&md5), &md5), None);
+        assert_eq!(pick_checksum(&[plain.clone(), asset("README.md")], &plain), None);
+
+        let other = "a".repeat(64);
+        let text = format!("{other}  dice-aarch64-unknown-linux-gnu.tar.gz\n{hash} *./{archive}\n");
+        assert_eq!(checksum_in(&text, archive, false).as_deref(), Some(hash));
+        assert_eq!(checksum_in(&text, "dice.zip", false), None);
+        assert_eq!(checksum_in(&format!("{hash}\n"), archive, true).as_deref(), Some(hash));
+        // A lone hash in a list is not about this archive.
+        assert_eq!(checksum_in(&format!("{hash}\n"), archive, false), None);
+        assert_eq!(checksum_in("not-a-hash  dice.zip\n", "dice.zip", true), None);
+        assert_eq!(sha256_hex(&hash[1..]), None);
+    }
+
+    #[test]
+    fn releases_are_chosen_from_githubs_listing() {
+        let source = Source::parse("me/tileception-dice").unwrap();
+        let hash = "b".repeat(64);
+        let listing = format!(
+            r#"{{"tag_name": "v1.2.0", "name": "Dice 1.2", "assets": [
+                {{"name": "dice-aarch64-unknown-linux-gnu.tar.gz", "digest": "sha256:{hash}",
+                  "browser_download_url": "https://github.com/me/tileception-dice/releases/download/v1.2.0/dice-aarch64-unknown-linux-gnu.tar.gz"}},
+                {{"name": "dice-x86_64-unknown-linux-gnu.tar.gz", "digest": null,
+                  "browser_download_url": "https://github.com/me/tileception-dice/releases/download/v1.2.0/dice-x86_64-unknown-linux-gnu.tar.gz"}}
+            ]}}"#
+        );
+        let (tag, archive, checksum) = choose_release(&source, &listing, "aarch64").unwrap();
+        assert_eq!((tag.as_str(), archive.name.as_str()), ("v1.2.0", "dice-aarch64-unknown-linux-gnu.tar.gz"));
+        assert_eq!(checksum, Checksum::Known(hash));
+        // An archive nothing vouches for is refused, and so is a machine
+        // the release was not built for.
+        let error = choose_release(&source, &listing, "x86_64").unwrap_err();
+        assert!(error.contains("publishes no SHA-256 checksum for dice-x86_64-unknown-linux-gnu.tar.gz"), "{error}");
+        let error = choose_release(&source, &listing, "riscv64").unwrap_err();
+        assert!(error.contains("no archive for Linux on riscv64"), "{error}");
+        assert!(error.contains("dice-aarch64-unknown-linux-gnu.tar.gz, dice-x86_64"), "{error}");
+        let error = choose_release(&source, r#"{"tag_name": "v1"}"#, "x86_64").unwrap_err();
+        assert!(error.contains("it has no files"), "{error}");
+        assert!(choose_release(&source, r#"{"tag_name": "v1 --upload-pack=x", "assets": []}"#, "x86_64").is_err());
+        assert!(choose_release(&source, r#"{"message": "Not Found"}"#, "x86_64").is_err());
+
+        assert_eq!(
+            release_url("https://api.github.com", &source),
+            "https://api.github.com/repos/me/tileception-dice/releases/latest"
+        );
+        assert_eq!(
+            release_url("https://api.github.com", &Source::parse("me/tileception-dice@v1.2.0").unwrap()),
+            "https://api.github.com/repos/me/tileception-dice/releases/tags/v1.2.0"
+        );
+        // Only the repository's own release files are downloaded.
+        let downloads = "https://github.com";
+        assert!(release_file(
+            downloads,
+            &source,
+            "https://github.com/Me/Tileception-Dice/releases/download/v1.2.0/dice.tar.gz"
+        ));
+        for url in [
+            "https://github.com/other/tileception-dice/releases/download/v1.2.0/dice.tar.gz",
+            "https://example.com/me/tileception-dice/releases/download/v1.2.0/dice.tar.gz",
+            "https://github.com/me/tileception-dice/releases/download/../../../other/x/dice.tar.gz",
+            "http://github.com/me/tileception-dice/releases/download/v1.2.0/dice.tar.gz",
+        ] {
+            assert!(!release_file(downloads, &source, url), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_repository_without_pyproject_falls_through_to_its_release() {
+        // curl on GitHub's 404, and git on a commit without the file.
+        assert!(no_such_file("download failed: curl: (22) The requested URL returned error: 404"));
+        assert!(no_such_file("git show failed: fatal: path 'pyproject.toml' does not exist in 'FETCH_HEAD'"));
+        // Anything else is a failure to read, not a missing file.
+        assert!(!no_such_file("download failed: curl: (6) Could not resolve host: raw.githubusercontent.com"));
+        assert!(!no_such_file("download failed: curl: (22) The requested URL returned error: 500"));
+
+        let release = Release {
+            tag: "v1.2.0".into(),
+            asset: "dice-x86_64-unknown-linux-gnu.tar.gz".into(),
+            url: asset("dice-x86_64-unknown-linux-gnu.tar.gz").browser_download_url,
+            sha256: "c".repeat(64),
+        };
+        let package = release_package(&Source::parse("me/Tileception-Dice").unwrap(), &release).unwrap();
+        assert_eq!((package.name.as_str(), package.script.as_str()), ("Tileception-Dice", "Tileception-Dice"));
+        assert_eq!((package.plugin_id.as_str(), package.version.as_str()), ("dice", "v1.2.0"));
+        assert_eq!(package.python, None);
+        assert!(release_package(&Source::parse("me/plugins").unwrap(), &release).is_err());
+        assert!(release_package(&Source::parse("me/dice.rs").unwrap(), &release).is_err());
+        assert!(release_package(&Source::parse("me/tileception-").unwrap(), &release).is_err());
+    }
+
+    #[test]
+    fn the_program_of_a_release_is_found() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("tileception-release-program-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = |path: &str, mode: u32| {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        file("dice-1.2.0/README.md", 0o644);
+        assert!(find_program(&dir, "tileception-dice").unwrap_err().contains("no program"));
+        // The only program there is, whatever it is called.
+        file("dice-1.2.0/bin/dice", 0o755);
+        assert_eq!(find_program(&dir, "tileception-dice"), Ok(dir.join("dice-1.2.0/bin/dice")));
+        // With several, the one named after the repository.
+        file("dice-1.2.0/bin/helper", 0o755);
+        assert!(find_program(&dir, "tileception-dice").unwrap_err().contains("several programs"));
+        file("dice-1.2.0/libexec/tileception-dice", 0o755);
+        file("dice-1.2.0/tileception-dice", 0o755);
+        assert_eq!(find_program(&dir, "tileception-dice"), Ok(dir.join("dice-1.2.0/tileception-dice")));
+        // A link is not a file of the archive, and is not run.
+        std::os::unix::fs::symlink("/bin/sh", dir.join("tileception-dice")).unwrap();
+        assert_eq!(find_program(&dir, "tileception-dice"), Ok(dir.join("dice-1.2.0/tileception-dice")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_release_updates_only_when_it_changed() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let release = |tag: &str, sha256: &str| Release {
+            tag: tag.into(),
+            asset: "dice-x86_64-unknown-linux-gnu.tar.gz".into(),
+            url: asset("dice-x86_64-unknown-linux-gnu.tar.gz").browser_download_url,
+            sha256: sha256.into(),
+        };
+        let source = Source::parse("me/tileception-dice").unwrap();
+        let lookup = |commit: &str, release: Release| Lookup {
+            package: release_package(&source, &release).unwrap(),
+            commit: commit.into(),
+            transport: Transport::Https,
+            release: Some(release),
+        };
+        let (old, new) = ("a".repeat(64), "b".repeat(64));
+        let on_disk = Installed {
+            tool: Tool::Release,
+            release: Some("v1.2.0".into()),
+            sha256: Some(old.clone()),
+            ..installed("me/tileception-dice", "tileception-dice")
+        };
+        assert!(is_current(&on_disk, &lookup(commit, release("v1.2.0", &old))));
+        // A newer release, the same tag moved, or its archive replaced.
+        assert!(!is_current(&on_disk, &lookup("89abcdef0123456789abcdef0123456789abcdef", release("v1.3.0", &new))));
+        assert!(!is_current(&on_disk, &lookup("89abcdef0123456789abcdef0123456789abcdef", release("v1.2.0", &old))));
+        assert!(!is_current(&on_disk, &lookup(commit, release("v1.2.0", &new))));
+        // One whose setup never finished has no commit, and is tried again.
+        let unfinished = Installed { commit: None, ..on_disk.clone() };
+        assert!(!is_current(&unfinished, &lookup(commit, release("v1.2.0", &old))));
+        // A Python package is current at its commit, and no longer once the
+        // repository has moved to releases.
+        let python = installed("me/tileception-dice", "tileception-dice");
+        let package = release_package(&source, &release("v1.2.0", &old)).unwrap();
+        let plain = Lookup { package, commit: commit.into(), transport: Transport::Https, release: None };
+        assert!(is_current(&python, &plain));
+        assert!(!is_current(&python, &lookup(commit, release("v1.2.0", &old))));
+        assert!(!is_current(&on_disk, &plain));
+
+        // The record keeps the release, and older records read as before.
+        let mut record = Record::default();
+        record.plugins.insert("dice".into(), on_disk.clone());
+        let text = toml::to_string(&record).unwrap();
+        assert!(text.contains("tool = \"release\""), "{text}");
+        assert!(text.contains("release = \"v1.2.0\""), "{text}");
+        assert_eq!(toml::from_str::<Record>(&text).unwrap(), record);
+        let text = toml::to_string(&Record { plugins: BTreeMap::from([("dice".to_string(), python)]) }).unwrap();
+        assert!(!text.contains("release") && !text.contains("sha256"), "{text}");
+        assert_eq!(Tool::Release.program(), None);
     }
 
     #[test]
@@ -1776,7 +2477,7 @@ needs = ["the 2fas CLI"]
             .expect("a pyproject");
         let commit = "e4aea3ab10cb380899a9343d2650580dbda72c04".to_string();
         assert_eq!(
-            requirement(&source, &Lookup { package, commit, transport: Transport::Ssh }),
+            requirement(&source, &Lookup { package, commit, transport: Transport::Ssh, release: None }),
             "tileception-t3-update @ git+ssh://git@github.com/robinvandernoord/t3-update.git@e4aea3ab10cb380899a9343d2650580dbda72c04"
         );
     }

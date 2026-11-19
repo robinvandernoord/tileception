@@ -69,6 +69,20 @@ login, Tileception asks for it: in the launcher when the plugin offers a setup
 prompt, otherwise in a terminal that runs its `configure` step. Plugins are
 reloaded again when setup ends.
 
+A repository without a `pyproject.toml` is installed from its latest release
+instead, or from the release of the tag you named: Tileception downloads the
+archive for Linux on this machine's architecture, checks it against the
+SHA-256 the release publishes and unpacks it into
+`$XDG_DATA_HOME/tileception/plugin-releases/<id>`. This needs `git`, `curl`,
+`tar` (or `unzip`) and `sha256sum`, and neither uvenv nor Python. The launcher
+shows the archive, the release's tag and the commit that tag is at before
+anything is downloaded. An archive whose checksum does not match, or one
+with a file that would land outside its folder, is not installed. The
+checksum comes from the same release as the archive, so it shows the download
+arrived whole and is the file GitHub lists; as with a Python package, it does
+not vouch for whoever published it. Only public repositories install this
+way.
+
 Only one install, update or removal runs at a time. A plugin ID belongs to one
 repository: installing a different repository with the same plugin ID or
 Python package is refused until you remove the installed one. Installing the
@@ -101,11 +115,15 @@ result.
 
 Updating is the only step that moves a plugin to a newer commit. It looks up
 where the default branch, or the tag or branch you installed, is now, and
-installs that commit. A notification lists each plugin as updated, up to date
-or failed; one failure does not stop the others.
+installs that commit. A plugin from a release moves to the newest release
+(or stays at the tag you installed), and its archive replaces the one before;
+it is up to date while the tag, the commit it is at and the archive's
+checksum are the same. A notification lists each plugin as updated, up to date
+or failed; one failure does not stop the others, and a plugin whose update
+failed keeps the version it had.
 
 Removing runs the plugin's own `uninstall` first, so it can stop its timers,
-then removes the package. It deletes the manifest only if installing created
+then removes the package, or the folder a release was unpacked into. It deletes the manifest only if installing created
 it; a manifest you wrote before installing stays. The plugin's configuration
 and cache stay unless its `uninstall` removes them.
 
@@ -629,7 +647,8 @@ plugin with the ID `add` cannot be called this way.
 
 ## Making a plugin installable
 
-`plugins add` installs Python packages. The repository needs a
+`plugins add` installs Python packages, and programs from
+[release archives](#release-archives). For a Python package the repository needs a
 `pyproject.toml` with a `[project]` table and one console script, such as
 `tileception-odoo`. With several scripts, Tileception uses the one named like
 the package, or the one `[tool.tileception] script` names. The script takes
@@ -676,6 +695,37 @@ needs = ["the 2fas CLI"]         # shown before installing
 A plugin ID may contain letters, digits, `-` and `_`, and cannot be
 `plugins`. `requires-python` is passed to uvenv, whose uv finds or downloads a
 Python that fits.
+
+### Release archives
+
+A plugin written in another language, such as Rust or Go, installs from the
+repository's GitHub releases. The repository must have no `pyproject.toml` at
+its top level, and its release needs:
+
+- An archive (`.tar.gz`, `.tgz`, `.tar.xz`, `.tar.bz2` or `.zip`) per
+  architecture whose file name says `linux` and the architecture: `x86_64`,
+  `amd64` or `x64`, and `aarch64` or `arm64`. Target triples such as
+  `tileception-dice-v1.2.0-x86_64-unknown-linux-gnu.tar.gz` and names such as
+  `dice_1.2.0_Linux_arm64.tar.gz` both work. With several that fit, one built
+  for glibc (`gnu`) wins over one that does not say, and that over `musl`.
+- A SHA-256 for that archive. GitHub records one for every file uploaded to
+  a release since mid-2025, which is enough. Otherwise publish
+  `<archive>.sha256`, or a list as `sha256sum` writes it in a file whose name
+  contains `checksums` or `sha256sums` (`checksums.txt`, `SHA256SUMS`). A
+  release without any is refused.
+- In the archive, one program that takes the subcommands above. It is the
+  executable file named like the repository, the one nearest the top if there
+  are several, up to three folders deep; an archive with a single executable
+  file may call it anything. Other files, such as libraries beside it, are
+  unpacked with it.
+
+The plugin ID is the repository's name in lowercase, without a leading
+`tileception-`. There is no `[tool.tileception]` table for an archive, so
+nothing is shown under "needs" before installing: say what the plugin needs
+in `status` and `configure`. The program's path changes with each update when
+the archive's top folder carries the version, so a manifest your `install`
+writes should take the path it runs from, and `install --non-interactive`
+runs again after every update to write it afresh.
 
 ### Setting up in the launcher
 

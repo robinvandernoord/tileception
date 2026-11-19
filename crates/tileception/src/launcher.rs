@@ -1598,7 +1598,7 @@ impl Tileception {
                 Ok(source) if installer.looking.as_ref() == Some(&source) => (
                     glyph::GLOBE,
                     format!("Reading {source}\u{2026}"),
-                    "Finding its commit and reading its pyproject.toml from GitHub".into(),
+                    "Finding its commit and reading its pyproject.toml, or else its release, from GitHub".into(),
                 ),
                 Ok(source) => match &installer.looked {
                     Some((looked, Ok(lookup))) if *looked == source => {
@@ -1622,7 +1622,7 @@ impl Tileception {
                     _ => (
                         glyph::GLOBE,
                         format!("Look up {source}"),
-                        "Reads its pyproject.toml from GitHub; nothing is installed yet".into(),
+                        "Reads its pyproject.toml, or else its release, from GitHub; nothing is installed yet".into(),
                     ),
                 },
             },

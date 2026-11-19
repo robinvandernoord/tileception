@@ -289,7 +289,8 @@ Smart home ([home] in config.toml):
 
 Plugins:
   plugins reload            rediscover manifests and restart plugins without changing config
-  plugins add <owner/repo>  install a plugin from GitHub with uv, then set it up
+  plugins add <owner/repo>  install a plugin from GitHub (a Python package
+                            with uv, or a release's archive), then set it up
   plugins list              plugins installed from repositories
   plugins configure <id>    run a plugin's setup, in the launcher or a terminal
   plugins update [id]       update one installed plugin, or all of them
