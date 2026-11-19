@@ -130,12 +130,15 @@ impl Allowance {
         if let Some(program) = find_program(command, path) {
             read.extend(installed_at(&program, home.as_deref()));
         }
-        // `python3 /path/to/plugin.py`: the script's folder as well.
-        for arg in args {
-            let file = Path::new(arg);
-            if file.is_absolute() && file.is_file() {
-                read.extend(installed_at(file, home.as_deref()));
-            }
+        // `python3 /path/to/plugin.py`: the script an interpreter runs
+        // counts as the program does, and only as the first argument.
+        // Later arguments open nothing: the manifest would otherwise pick
+        // which of the user's folders its plugin reads.
+        if let Some(script) = args.first().map(Path::new)
+            && script.is_absolute()
+            && script.is_file()
+        {
+            read.extend(installed_at(script, home.as_deref()));
         }
         read.sort();
         read.dedup();
@@ -159,6 +162,19 @@ impl Allowance {
                 .map_err(|error| format!("{}: {error}", dir.display()))?;
         }
         let ruleset = self.ruleset()?;
+        // Only what a program needs to run comes along from the session:
+        // not the addresses of its buses, displays and agents, and not
+        // the tokens people keep in their environment.
+        let given: Vec<(OsString, Option<OsString>)> =
+            process.get_envs().map(|(key, value)| (key.to_os_string(), value.map(OsStr::to_os_string))).collect();
+        process.env_clear();
+        process.envs(std::env::vars_os().filter(|(key, _)| passes_on(key)));
+        for (key, value) in given {
+            match value {
+                Some(value) if passes_on(&key) => process.env(key, value),
+                _ => process.env_remove(key),
+            };
+        }
         // Whatever a program writes without being told where lands in the
         // private folder: caches, temporary files, and the buffers Wayland
         // clients keep in the runtime folder. The session's own runtime
@@ -243,6 +259,27 @@ impl Allowance {
     }
 }
 
+/// Whether a confined plugin gets the session's variable `key`: where
+/// programs and their data are, who and where the user is, the language,
+/// and how Python should behave.
+fn passes_on(key: &OsStr) -> bool {
+    const NAMES: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "XDG_DATA_DIRS",
+        "XDG_CONFIG_DIRS",
+        "TILECEPTION_PROTOCOLS",
+    ];
+    let Some(key) = key.to_str() else { return false };
+    NAMES.contains(&key) || key.starts_with("LC_") || key.starts_with("PYTHON")
+}
+
 fn add_rule(ruleset: &OwnedFd, file: &File, access: u64) -> std::io::Result<()> {
     if access == 0 {
         return Ok(());
@@ -280,9 +317,11 @@ const AUDIT_ARCH: Option<u32> = Some(0xC000_00B7);
 const AUDIT_ARCH: Option<u32> = None;
 
 /// A seccomp filter that refuses what would open a way out: `socket` for
-/// any family, `io_uring_setup` (which can make sockets too) and datagram
-/// socket pairs (which can send to any Unix socket by its path). Stream
-/// socket pairs, and sockets the plugin was started with, keep working.
+/// any family, `io_uring_setup` (which can make sockets too), `connect`
+/// and `bind`, and every socket pair but stream and sequenced-packet ones,
+/// which only ever talk to each other. A datagram pair (the kernel makes a
+/// raw one a datagram pair too) could send to any Unix socket by its path.
+/// Sockets the plugin was started with keep working.
 fn socket_filter() -> Result<Vec<libc::sock_filter>, String> {
     // Classic BPF: load a word, jump if equal or greater, and, return.
     const LOAD: u16 = 0x20;
@@ -312,14 +351,18 @@ fn socket_filter() -> Result<Vec<libc::sock_filter>, String> {
         // So would the x32 calls, numbered from this bit up.
         step(JUMP_AT_LEAST, 0, 1, 0x4000_0000),
         step(RETURN, 0, 0, NO_SUCH_CALL),
-        step(JUMP_EQUAL, 6, 0, libc::SYS_socket as u32),
-        step(JUMP_EQUAL, 5, 0, libc::SYS_io_uring_setup as u32),
-        step(JUMP_EQUAL, 0, 3, libc::SYS_socketpair as u32),
+        step(JUMP_EQUAL, 8, 0, libc::SYS_socket as u32),
+        step(JUMP_EQUAL, 7, 0, libc::SYS_io_uring_setup as u32),
+        step(JUMP_EQUAL, 6, 0, libc::SYS_connect as u32),
+        step(JUMP_EQUAL, 5, 0, libc::SYS_bind as u32),
+        step(JUMP_EQUAL, 0, 5, libc::SYS_socketpair as u32),
+        // The type, without the close-on-exec and nonblocking flags above it.
         step(LOAD, 0, 0, SECOND_ARGUMENT),
         step(AND, 0, 0, 0xf),
-        step(JUMP_EQUAL, 1, 0, libc::SOCK_DGRAM as u32),
-        step(RETURN, 0, 0, ALLOW),
+        step(JUMP_EQUAL, 2, 0, libc::SOCK_STREAM as u32),
+        step(JUMP_EQUAL, 1, 0, libc::SOCK_SEQPACKET as u32),
         step(RETURN, 0, 0, REFUSE),
+        step(RETURN, 0, 0, ALLOW),
     ])
 }
 
@@ -345,8 +388,9 @@ fn find_program(command: &str, path: Option<&OsStr>) -> Option<PathBuf> {
 /// What a program at `file` needs to read to run, beyond the system
 /// folders: the Python environment it is installed in (with the Python
 /// that environment is made from), else the folder it lies in. A program
-/// directly in the home folder or in a shared `bin` gets only itself, so
-/// that being installed there does not open everything beside it.
+/// in a shared `bin`, or in a folder the home folder lies in or is (`/`,
+/// `/home`, the home folder itself), gets only itself, so that being
+/// installed there does not open everything beside it.
 fn installed_at(file: &Path, home: Option<&Path>) -> Vec<PathBuf> {
     // What a link points at is what runs; following the link itself needs no rule.
     let Ok(real) = file.canonicalize() else { return Vec::new() };
@@ -354,33 +398,38 @@ fn installed_at(file: &Path, home: Option<&Path>) -> Vec<PathBuf> {
         return Vec::new();
     }
     let Some(folder) = real.parent() else { return vec![real] };
-    if folder.file_name().is_some_and(|name| name == "bin")
+    let around_home = |folder: &Path| home.is_none_or(|home| home.starts_with(folder)) || folder.parent().is_none();
+    let in_bin = folder.file_name().is_some_and(|name| name == "bin");
+    if in_bin
         && let Some(prefix) = folder.parent()
         && prefix.join("pyvenv.cfg").is_file()
+        && !around_home(prefix)
     {
         let mut read = vec![prefix.to_path_buf()];
         // The environment's `python` links to the Python it was made
-        // from, which uv keeps outside the system folders.
+        // from, which uv keeps outside the system folders. Only a Python
+        // installation counts: a link to anywhere else opens nothing.
         if let Ok(python) = folder.join("python").canonicalize()
             && !python.starts_with(prefix)
         {
-            read.extend(installed_at(&python, home));
+            read.extend(python_installation(&python, home));
         }
         return read;
     }
-    // A Python of uv's own: `<install>/bin/python3.x` with its library beside `bin`.
-    if folder.file_name().is_some_and(|name| name == "bin")
-        && let Some(prefix) = folder.parent()
-        && prefix.join("lib").is_dir()
-        && real.file_name().is_some_and(|name| name.to_string_lossy().starts_with("python"))
-        && Some(prefix) != home
-        && home.is_none_or(|home| prefix != home.join(".local"))
-    {
-        return vec![prefix.to_path_buf()];
+    if let Some(python) = python_installation(&real, home) {
+        return vec![python];
     }
-    let shared =
-        folder.file_name().is_some_and(|name| name == "bin") || Some(folder) == home || folder.parent().is_none();
-    if shared { vec![real] } else { vec![folder.to_path_buf()] }
+    if in_bin || around_home(folder) { vec![real] } else { vec![folder.to_path_buf()] }
+}
+
+/// The folder of a Python of uv's own, `<install>/bin/python3.x` with its
+/// library beside `bin`, when `python` is one outside the system folders.
+fn python_installation(python: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let prefix = python.parent().filter(|folder| folder.file_name().is_some_and(|name| name == "bin"))?.parent()?;
+    let named = python.file_name().is_some_and(|name| name.to_string_lossy().starts_with("python"));
+    let apart = home.is_none_or(|home| !home.starts_with(prefix) && prefix != home.join(".local"));
+    (named && apart && prefix.join("lib").is_dir() && !SYSTEM.iter().any(|system| python.starts_with(system)))
+        .then(|| prefix.to_path_buf())
 }
 
 #[cfg(test)]
@@ -434,11 +483,32 @@ mod tests {
         // System programs need nothing more, and a missing one nothing at all.
         assert_eq!(installed_at(Path::new("/usr/bin/env"), Some(&home)), Vec::<PathBuf>::new());
         assert_eq!(installed_at(&home.join("gone"), Some(&home)), Vec::<PathBuf>::new());
-        // A bare name is looked up in the given PATH; a script argument counts.
+        // Directly in a folder the home folder lies in, such as /home: the file alone.
+        let beside = dir.join("beside.py");
+        touch(&beside);
+        assert_eq!(installed_at(&beside, Some(&home)), vec![beside.clone()]);
+        // An environment whose python links somewhere that is no Python opens only itself.
+        let odd = home.join("odd");
+        touch(&odd.join("pyvenv.cfg"));
+        touch(&odd.join("bin/tool"));
+        touch(&home.join(".ssh/id_ed25519"));
+        std::os::unix::fs::symlink(home.join(".ssh/id_ed25519"), odd.join("bin/python")).unwrap();
+        assert_eq!(installed_at(&odd.join("bin/tool"), Some(&home)), vec![odd.clone()]);
+        // A bare name is looked up in the given PATH; the script an
+        // interpreter runs, its first argument, counts as the program does.
         let path = std::env::join_paths([home.join(".local/bin")]).unwrap();
-        let allowance = Allowance::for_plugin("weather", "weather", &[own.to_string_lossy().into_owned()], Some(&path));
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let allowance = Allowance::for_plugin("weather", "weather", &[text(&own)], Some(&path));
         assert!(allowance.read.contains(&venv) && allowance.read.contains(&home.join("plugins/lamp")));
-        assert!(allowance.private.ends_with("tileception/plugins/weather"));
+        // No other argument opens anything: a manifest cannot name the
+        // user's folders, or a file in them, for its plugin to read.
+        let key = home.join(".ssh/id_ed25519");
+        let allowance = Allowance::for_plugin("lamp", "/usr/bin/python3", &[text(&own), text(&key)], None);
+        assert_eq!(allowance.read, vec![home.join("plugins/lamp")]);
+        let allowance =
+            Allowance::for_plugin("lamp", "/usr/bin/python3", &["-c".into(), "pass".into(), text(&key)], None);
+        assert_eq!(allowance.read, Vec::<PathBuf>::new());
+        assert!(allowance.private.ends_with("tileception/plugins/lamp"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -453,10 +523,74 @@ mod tests {
         assert_eq!(filter.last().unwrap().code, 0x06);
     }
 
+    /// What the filter says to the system call `number` with `arguments`,
+    /// made on the instruction set `arch`: runs the classic BPF by hand.
+    fn verdict(arch: u32, number: i64, arguments: [u64; 2]) -> u32 {
+        let mut data = Vec::new();
+        data.extend((number as u32).to_ne_bytes());
+        data.extend(arch.to_ne_bytes());
+        data.extend(0u64.to_ne_bytes());
+        for argument in arguments {
+            data.extend(argument.to_ne_bytes());
+        }
+        let filter = socket_filter().unwrap();
+        let (mut next, mut loaded) = (0, 0u32);
+        loop {
+            let step = filter[next];
+            next += 1;
+            let jump = |taken: bool| usize::from(if taken { step.jt } else { step.jf });
+            match step.code {
+                0x20 => {
+                    let from = step.k as usize;
+                    loaded = u32::from_ne_bytes(data[from..from + 4].try_into().unwrap());
+                }
+                0x54 => loaded &= step.k,
+                0x15 => next += jump(loaded == step.k),
+                0x35 => next += jump(loaded >= step.k),
+                0x06 => return step.k,
+                other => panic!("unexpected instruction {other:#x}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_socket_filter_leaves_only_pairs_that_talk_to_each_other() {
+        let native = AUDIT_ARCH.unwrap();
+        let allow = libc::SECCOMP_RET_ALLOW;
+        let refuse = libc::SECCOMP_RET_ERRNO | libc::EACCES as u32;
+        let unix = libc::AF_UNIX as u64;
+        let flags = (libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u64;
+        let pair = |kind: libc::c_int, flags: u64| verdict(native, libc::SYS_socketpair, [unix, kind as u64 | flags]);
+        assert_eq!(pair(libc::SOCK_STREAM, 0), allow);
+        assert_eq!(pair(libc::SOCK_STREAM, flags), allow);
+        assert_eq!(pair(libc::SOCK_SEQPACKET, flags), allow);
+        // A datagram pair, and the raw one the kernel makes a datagram
+        // pair, could send to any Unix socket by its path.
+        for kind in [libc::SOCK_DGRAM, libc::SOCK_RAW, libc::SOCK_RDM, 10, 0, 15] {
+            assert_eq!(pair(kind, 0), refuse, "socket pair of type {kind}");
+            assert_eq!(pair(kind, flags), refuse, "socket pair of type {kind}");
+        }
+        for call in [libc::SYS_socket, libc::SYS_connect, libc::SYS_bind, libc::SYS_io_uring_setup] {
+            assert_eq!(verdict(native, call, [unix, libc::SOCK_STREAM as u64]), refuse);
+        }
+        for call in [libc::SYS_read, libc::SYS_write, libc::SYS_sendmsg, libc::SYS_recvmsg, libc::SYS_openat] {
+            assert_eq!(verdict(native, call, [0, 0]), allow);
+        }
+        // Other instruction sets and the x32 numbers get nowhere at all.
+        let no_such_call = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+        assert_eq!(verdict(0x4000_0003, 359, [unix, libc::SOCK_STREAM as u64]), no_such_call);
+        assert_eq!(verdict(native, 0x4000_0000 + 41, [unix, libc::SOCK_STREAM as u64]), no_such_call);
+    }
+
     /// Runs `script` in bash, confined to `allowance`.
     fn confined(allowance: &Allowance, script: &str) -> std::process::Output {
         let mut process = Command::new("/bin/bash");
         process.args(["-c", script]).stdin(Stdio::null());
+        // Stand-ins for what a session's environment holds.
+        process
+            .env("SSH_AUTH_SOCK", "/run/user/1000/agent")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+        process.env("SECRET_TOKEN", "hunter2").env("GIVEN_TOKEN", "hunter2");
         allowance.apply(&mut process).unwrap();
         process.output().unwrap()
     }
@@ -517,6 +651,24 @@ mod tests {
             Command::new("/bin/bash").args(["-c", &format!("exec 3<>/dev/tcp/127.0.0.1/{port}")]).status().unwrap();
         assert!(free.success());
         assert!(listener.accept().is_ok());
+
+        // Nor does a socket pair give a way out: Python makes them where
+        // bash cannot, when it is there.
+        if Path::new("/usr/bin/python3").exists() {
+            let python = |code: &str| format!("/usr/bin/python3 -c 'import socket\n{code}'");
+            allowed(&python("a, b = socket.socketpair(); a.send(b\"x\"); assert b.recv(1) == b\"x\""));
+            allowed(&python("socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)"));
+            refused(&python("socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)"));
+            refused(&python("socket.socketpair(socket.AF_UNIX, socket.SOCK_RAW)"));
+            refused(&python("socket.socket(socket.AF_UNIX)"));
+        }
+
+        // The session's addresses and tokens stay behind; the basics come along.
+        assert_eq!(
+            allowed("echo \"${SECRET_TOKEN-}${SSH_AUTH_SOCK-}${DBUS_SESSION_BUS_ADDRESS-}${GIVEN_TOKEN-}\""),
+            "\n"
+        );
+        assert_eq!(allowed("echo \"$PATH\""), format!("{}\n", std::env::var("PATH").unwrap()));
 
         // What it starts stays confined.
         refused(&format!("bash -c 'cat {}'", outside.join("secret").display()));

@@ -633,27 +633,39 @@ whatever that process starts, gets only:
 - the system folders to read and run programs from: `/usr`, `/bin`, `/sbin`,
   `/lib*`, `/etc`, `/opt`, `/nix/store`, `/sys` and the font cache;
 - the place it is installed, to read and run: its Python environment and the
-  Python that environment was made from, or the folder its program or script
-  lies in. A program directly in the home folder or in a shared `bin` such
-  as `~/.local/bin` gets only its own file;
+  Python that environment was made from, or the folder its program lies in.
+  For an interpreter with a script, such as `command = "python3"` with
+  `args = ["/path/to/plugin.py"]`, the script counts when it is the first
+  argument; no other argument opens anything. A program in a shared `bin`
+  such as `~/.local/bin`, directly in the home folder, or in a folder the
+  home folder lies in (`/home`) gets only its own file;
 - one private folder to write, `$XDG_STATE_HOME/tileception/plugins/<id>`
   (`~/.local/state/tileception/plugins/<id>`), kept between runs and named in
   `TILECEPTION_PLUGIN_DATA`. `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`
   point into it, so caches, temporary files and the buffer files Wayland
-  libraries create land there. Nothing in it can be run;
+  libraries create land there. A program written there cannot be started,
+  though an interpreter can still read a script from it;
 - `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and
   the GPU in `/dev/dri`;
 - what it was started with: its pipes to Tileception and, with
-  `surface = true`, its dashboard connection.
+  `surface = true`, its dashboard connection;
+- a small environment: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+  `LANGUAGE`, `LC_*`, `TZ`, `XDG_DATA_DIRS`, `XDG_CONFIG_DIRS`, `PYTHON*`
+  and `TILECEPTION_PROTOCOLS` from the session, and the variables above.
+  The addresses of the session's bus, displays and SSH agent, and whatever
+  tokens the session's environment holds, stay behind.
 
 Everything else is refused: the home folder, `/tmp`, the session's runtime
 folder, other disks. The plugin can still see that a file exists and how big
 it is, never what is in it.
 
-It cannot open a socket of any kind, so it has no network (TCP, UDP or
-anything else, the local machine included), no D-Bus, and no way to the
-desktop's own Wayland or X11 display or to other programs' sockets. Socket
-pairs it makes for itself keep working, except datagram ones.
+It cannot make a socket that reaches anything: `socket`, `connect`, `bind`
+and `io_uring_setup` are refused, and of socket pairs only stream and
+sequenced-packet ones are left, which talk to each other alone. So it has no
+network (TCP, UDP or anything else, the local machine included), no D-Bus,
+and no way to the desktop's own Wayland or X11 display or to other programs'
+sockets. What is not covered: a socket that another program hands it over a
+connection it already has. Tileception hands it none.
 
 Linux's Landlock and seccomp do this, applied by Tileception before the
 plugin's program starts; the plugin needs no code for it and cannot undo it.
@@ -661,6 +673,13 @@ Landlock needs Linux 5.13 or later. From Linux 6.12 the plugin also cannot
 send signals to programs outside itself; before that it can, as the session
 user. On a kernel without Landlock a plugin that asks for confinement is not
 started, and the log says why, instead of running unconfined.
+
+Confinement starts when Tileception runs the plugin. Installing does not have
+it: `plugins add`, updating and removing run the package's installer and the
+plugin's own `install`, `status` and `uninstall` as the session user with
+everything that user can reach, as any installed program does. Confinement
+protects against what a plugin does while it runs, not against a package you
+should not have installed.
 
 The option belongs to the plugin's one process, so it also holds for the
 plugin's launcher rows, bar chips and panel block, and when its dashboard
