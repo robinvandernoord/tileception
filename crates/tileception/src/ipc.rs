@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -188,16 +188,27 @@ pub fn describe(state: &Tileception) -> String {
 
 fn only_socket() -> std::io::Result<PathBuf> {
     let dir = socket_path("x").parent().map(PathBuf::from).unwrap_or_default();
-    let found: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("tileception-")))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sock"))
-        .collect();
-    match &found[..] {
+    match &sockets_in(&dir)?[..] {
         [one] => Ok(one.clone()),
         [] => Err(std::io::Error::other("no running Tileception found")),
         _ => Err(std::io::Error::other("several Tileceptions are running; set TILECEPTION_SOCKET")),
     }
+}
+
+/// The command sockets of the Tileceptions running from `dir`. A command
+/// socket is named after its Wayland display, which lies beside it; anything
+/// else called `tileception-*.sock`, such as the session's link to the SSH
+/// agent, is not an instance.
+fn sockets_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name.strip_prefix("tileception-")
+                .and_then(|name| name.strip_suffix(".sock"))
+                .is_some_and(|display| !display.is_empty() && dir.join(display).exists())
+        })
+        .collect())
 }
 
 /// `tileception msg ...`: sends a command to the running compositor.
@@ -263,5 +274,21 @@ mod tests {
         assert_eq!(unsendable(&words(&["plugin", "add", "python3", "/tmp/weather.py"])), None);
         // Other commands join their words on purpose: `msg type "two words"`.
         assert_eq!(unsendable(&words(&["type", "two words"])), None);
+    }
+
+    #[test]
+    fn only_command_sockets_count_as_instances() {
+        let dir = std::env::temp_dir().join(format!("tileception-ipc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let touch = |name: &str| std::fs::write(dir.join(name), "").unwrap();
+        touch("wayland-1");
+        touch("tileception-wayland-1.sock");
+        // The session's stable link to the SSH agent, and a display that is gone.
+        touch("tileception-ssh-agent.sock");
+        touch("tileception-wayland-7.sock");
+        touch("tileception-.sock");
+        let found = sockets_in(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, vec![dir.join("tileception-wayland-1.sock")]);
     }
 }

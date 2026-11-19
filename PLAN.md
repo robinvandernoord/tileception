@@ -80,12 +80,10 @@ Report testing in the conversation, the commit or the pull request instead.
     brings them and replace or drop it.
   - The arm64 ISOs are built but not installed in CI: GitHub's arm64
     runners have no KVM. Try one on an arm64 machine before trusting it.
-  - Before release, what someone trying the ISO in a VM meets first:
-    `tileception msg` without `TILECEPTION_SOCKET` counts
-    `tileception-ssh-agent.sock` as a second instance, and the VMware
-    absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which QEMU
-    offers through its default `vmport` on x86, and VMware itself) moves
-    nothing.
+  - Before release, what someone trying the ISO in a VM meets first: the
+    VMware absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which
+    QEMU offers through its default `vmport` on x86, and VMware itself)
+    moves nothing.
 
 ### Later
 
