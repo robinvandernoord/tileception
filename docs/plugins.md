@@ -138,6 +138,7 @@ args = ["--stdio"]
 [dashboard]
 # enabled = false
 # surface = true
+# confined = true
 ```
 
 `command` is one executable, not a shell command line: put each argument in
@@ -156,6 +157,8 @@ Each block switches on a place:
 - Bar chips show only with a `[bar]` block.
 - Dashboard items show only with a `[dashboard]` block.
   `surface = true` lets the plugin [draw its own items](#dashboard-surfaces).
+  `confined = true` starts the plugin [without the user's files or the
+  network](#confined-plugins).
 
 Without `prefixes`, the plugin's own from `launcher_info` apply. An empty list
 switches its launcher source off. A prefix is a nonempty word other than
@@ -612,13 +615,59 @@ uses no CPU while the dashboard is hidden. The surface gets pointer motion,
 buttons and scroll while the pointer is over it.
 
 The protocol limits what the plugin can do to the desktop, not what its
-process can do: it still runs as the session user.
+process can do: it still runs as the session user, unless its manifest
+[confines it](#confined-plugins).
 
 [`resources/plugins/lava-lamp`](../resources/plugins/lava-lamp) is a complete
 example in Python with pywayland: a lava lamp that changes colour when
 clicked, and a card whose Shake button calls the plugin's tool. Install
 pywayland, copy `lava-lamp.toml` to `~/.local/share/tileception/plugins/` and
 set its `command` to the absolute path of `lava-lamp.py`.
+
+#### Confined plugins
+
+A plugin that only draws and answers needs neither the user's files nor the
+network. With `confined = true` in its `[dashboard]` block, its process, and
+whatever that process starts, gets only:
+
+- the system folders to read and run programs from: `/usr`, `/bin`, `/sbin`,
+  `/lib*`, `/etc`, `/opt`, `/nix/store`, `/sys` and the font cache;
+- the place it is installed, to read and run: its Python environment and the
+  Python that environment was made from, or the folder its program or script
+  lies in. A program directly in the home folder or in a shared `bin` such
+  as `~/.local/bin` gets only its own file;
+- one private folder to write, `$XDG_STATE_HOME/tileception/plugins/<id>`
+  (`~/.local/state/tileception/plugins/<id>`), kept between runs and named in
+  `TILECEPTION_PLUGIN_DATA`. `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`
+  point into it, so caches, temporary files and the buffer files Wayland
+  libraries create land there. Nothing in it can be run;
+- `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and
+  the GPU in `/dev/dri`;
+- what it was started with: its pipes to Tileception and, with
+  `surface = true`, its dashboard connection.
+
+Everything else is refused: the home folder, `/tmp`, the session's runtime
+folder, other disks. The plugin can still see that a file exists and how big
+it is, never what is in it.
+
+It cannot open a socket of any kind, so it has no network (TCP, UDP or
+anything else, the local machine included), no D-Bus, and no way to the
+desktop's own Wayland or X11 display or to other programs' sockets. Socket
+pairs it makes for itself keep working, except datagram ones.
+
+Linux's Landlock and seccomp do this, applied by Tileception before the
+plugin's program starts; the plugin needs no code for it and cannot undo it.
+Landlock needs Linux 5.13 or later. From Linux 6.12 the plugin also cannot
+send signals to programs outside itself; before that it can, as the session
+user. On a kernel without Landlock a plugin that asks for confinement is not
+started, and the log says why, instead of running unconfined.
+
+The option belongs to the plugin's one process, so it also holds for the
+plugin's launcher rows, bar chips and panel block, and when its dashboard
+items are switched off. `[plugins.<id>.dashboard] confined = false` in
+`config.toml` lifts it for a plugin you trust, and `confined = true` there
+confines a plugin whose manifest does not ask; a plugin that needs the
+network or your files then fails where it uses them.
 
 ### Commands
 

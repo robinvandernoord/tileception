@@ -97,6 +97,12 @@ impl PluginConfig {
         self.on_dashboard() && self.dashboard.as_ref().is_some_and(|dashboard| dashboard.surface == Some(true))
     }
 
+    /// Whether the plugin's process is confined. It is one process for
+    /// every place, so this holds with the dashboard switched off too.
+    pub fn confined(&self) -> bool {
+        self.dashboard.as_ref().is_some_and(|dashboard| dashboard.confined == Some(true))
+    }
+
     /// Whether the plugin's items show on the dashboard.
     pub fn on_dashboard(&self) -> bool {
         self.dashboard.as_ref().is_some_and(|dashboard| dashboard.enabled != Some(false))
@@ -132,6 +138,9 @@ pub struct DashboardOptions {
     /// Started with `WAYLAND_SOCKET`, a connection of its own on which it
     /// may draw its `surface` items.
     pub surface: Option<bool>,
+    /// Started confined: without the user's files, apart from a private
+    /// folder, and without network. See `confine.rs`.
+    pub confined: Option<bool>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -208,6 +217,9 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         }
         if dashboard.surface.is_some() {
             base.surface = dashboard.surface;
+        }
+        if dashboard.confined.is_some() {
+            base.confined = dashboard.confined;
         }
     }
 }
@@ -1878,6 +1890,13 @@ impl Session {
                 }
             }
         }
+        let args = config.args.as_deref().unwrap_or_default();
+        if config.confined() {
+            let path = environment.iter().rev().find(|(key, _)| key == "PATH").and_then(|(_, value)| value.as_deref());
+            crate::confine::Allowance::for_plugin(name, command, args, path.map(std::ffi::OsStr::new))
+                .apply(&mut process)
+                .map_err(|error| format!("Plugin {name} asks to be confined: {error}"))?;
+        }
         // Its own Wayland connection, for drawing on the dashboard only.
         let mut dashboard = None;
         if config.draws_surfaces() {
@@ -1898,7 +1917,7 @@ impl Session {
             dashboard = Some((ours, theirs));
         }
         let mut child = process
-            .args(config.args.as_deref().unwrap_or_default())
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2541,11 +2560,52 @@ mod tests {
         assert!(settings.plugins["cards"].on_dashboard() && !settings.plugins["cards"].draws_surfaces());
         assert!(settings.plugins["lamp"].draws_surfaces());
         // Switched off in the config: no items and no connection either.
-        let dashboard = DashboardOptions { enabled: None, surface: Some(true) };
+        let dashboard = DashboardOptions { surface: Some(true), ..DashboardOptions::default() };
         let mut manifest = PluginConfig { dashboard: Some(dashboard), ..PluginConfig::default() };
         assert!(manifest.draws_surfaces());
         overlay(&mut manifest, settings.plugins["off"].clone());
         assert!(!manifest.on_dashboard() && !manifest.draws_surfaces());
+    }
+
+    #[test]
+    fn confinement_is_opt_in_and_the_config_decides() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain.dashboard]
+
+            [plugins.boxed.dashboard]
+            confined = true
+
+            [plugins.trusted.dashboard]
+            confined = false
+
+            [plugins.hidden.dashboard]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(!settings.plugins["plain"].confined());
+        assert!(settings.plugins["boxed"].confined());
+        let asks = || PluginConfig {
+            dashboard: Some(DashboardOptions { confined: Some(true), ..DashboardOptions::default() }),
+            ..PluginConfig::default()
+        };
+        // A manifest that asks stays confined under a config that says
+        // nothing about it, also with its dashboard items switched off.
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["plain"].clone());
+        assert!(manifest.confined());
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["hidden"].clone());
+        assert!(manifest.confined() && !manifest.on_dashboard());
+        // The user may lift it, or confine a plugin that did not ask.
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["trusted"].clone());
+        assert!(!manifest.confined());
+        let mut manifest = PluginConfig::default();
+        overlay(&mut manifest, settings.plugins["boxed"].clone());
+        assert!(manifest.confined());
     }
 
     #[test]

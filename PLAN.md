@@ -68,9 +68,6 @@ Report testing in the conversation, the commit or the pull request instead.
     draws sharp.
   - A cap on each dashboard client's shared memory pools, on top of the
     4096-pixel cap on buffers.
-  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
-    network) as a manifest option. The protocol limits what it can do to the
-    desktop, not to the user's files.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
   - On a system without GNOME, `tileception-desktop`'s recommendations

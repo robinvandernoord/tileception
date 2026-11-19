@@ -24,6 +24,7 @@ mod colour_pick;
 mod commands;
 mod config;
 mod config_edit;
+mod confine;
 mod controls;
 mod cursor;
 mod dashboard;
