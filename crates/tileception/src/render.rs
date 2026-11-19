@@ -211,6 +211,7 @@ impl Tileception {
             push_wallpaper(&mut elements, renderer, &drawn, (output_rect.x, output_rect.y), self.scale);
         }
         self.add_frost(renderer, &mut elements, scene);
+        let mut elements = self.zoom_elements(renderer, elements);
         if self.fade_in == FadeIn::Waiting {
             self.fade_in = FadeIn::Since(std::time::Instant::now());
         }
@@ -718,7 +719,8 @@ impl Tileception {
         {
             self.cursor_status = CursorImageStatus::default_named();
         }
-        let pos = self.pointer;
+        // Enlarged with the area while one is presented.
+        let pos = self.zoom_pointer();
         let scale = self.scale;
         if cursor.scale != scale {
             *cursor = Cursor::load(scale);

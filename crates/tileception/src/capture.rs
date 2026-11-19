@@ -240,6 +240,7 @@ impl Tileception {
             crate::render::push_wallpaper(&mut elements, renderer, &drawn, (0.0, 0.0), self.scale);
         }
         self.add_frost(renderer, &mut elements, under);
+        let elements = self.zoom_elements(renderer, elements);
         Scene { elements, size: self.output_pixels(), clear: self.clear_colour() }
     }
 

@@ -3,7 +3,8 @@
 //! The screen freezes under a picker: hover a window and click to take it,
 //! or drag an area. The area then gets handles to resize it, a column of
 //! drawing tools beside it and a row of actions under it: copy, save, ask
-//! the Doctor or record the area, with or without sound. Freezing can be
+//! the Doctor, record the area with or without sound, or present it over
+//! the whole screen (see `zoom`). Freezing can be
 //! switched off to pick over the live screen; the picture is then taken
 //! when it is copied or saved.
 //!
@@ -309,6 +310,8 @@ enum Control {
     SystemSound,
     /// Whether Record takes along the microphone.
     Microphone,
+    /// Presents the area over the whole screen, live.
+    Zoom,
     Doctor,
     Cancel,
     Save,
@@ -488,6 +491,7 @@ impl Control {
             Control::SystemSound => "Record with system sound: off  O",
             Control::Microphone if shot.sources.microphone => "Record with the microphone: on  M",
             Control::Microphone => "Record with the microphone: off  M",
+            Control::Zoom => "Present the area full-screen  Z",
             Control::Attach => "Attach to feedback  Enter",
             Control::Doctor => "Ask the Wizard  D",
             Control::Cancel if shot.feedback.is_some() => "Back to the feedback  Esc",
@@ -1036,6 +1040,7 @@ impl Tileception {
             Control::Record => self.record_shot(),
             Control::SystemSound => shot.toggle_sound(true),
             Control::Microphone => shot.toggle_sound(false),
+            Control::Zoom => self.present_shot(),
             Control::Attach => self.finish_shot(Finish::Feedback),
             Control::Doctor if doctor => self.finish_shot(Finish::Doctor),
             Control::Doctor => {}
@@ -1168,6 +1173,14 @@ impl Tileception {
         self.start_recording(selection, sources);
     }
 
+    /// Presents the picked area over the whole screen, leaving the picker.
+    fn present_shot(&mut self) {
+        let Some(shot) = self.shot.as_ref().filter(|shot| shot.feedback.is_none()) else { return };
+        let Some(selection) = shot.selection else { return };
+        self.cancel_shot();
+        self.start_zoom(selection);
+    }
+
     /// Keys while picking.
     pub fn shot_key(&mut self, sym: u32, mods: Mods) {
         let Some(output) = self.shot.as_ref().and_then(|shot| shot.output.clone()) else { return };
@@ -1258,6 +1271,7 @@ impl Tileception {
             (_, Some('d')) if doctor && !feedback => self.finish_shot(Finish::Doctor),
             (_, Some('o')) if !feedback => shot.toggle_sound(true),
             (_, Some('m')) if !feedback => shot.toggle_sound(false),
+            (_, Some('z')) if !feedback && shot.selection.is_some() => self.present_shot(),
             (_, Some('[')) => shot.width = shot.width.saturating_sub(1),
             (_, Some(']')) => shot.width = (shot.width + 1).min(WIDTHS.len() - 1),
             (_, Some(digit @ '1'..='6')) => shot.colour = usize::from(digit as u8 - b'1'),
@@ -1571,6 +1585,7 @@ impl Tileception {
                 (Control::Record, BUTTON, None),
                 (Control::SystemSound, BUTTON, None),
                 (Control::Microphone, BUTTON, None),
+                (Control::Zoom, BUTTON, None),
             ];
             if self.shell().doctor() {
                 items.push((Control::Doctor, BUTTON, None));
@@ -1990,6 +2005,7 @@ impl Tileception {
                         if shot.sources.microphone { (glyph::MIC, Look::Plain) } else { (glyph::MIC_OFF, Look::Quiet) };
                     Button::glyph(sign, look).focused(shot.sources.microphone)
                 }
+                Control::Zoom => Button::glyph(glyph::ZOOM_IN, Look::Quiet),
                 Control::Attach => Button::primary("Attach to feedback").icon(glyph::CHECK),
                 Control::Doctor => Button::glyph(glyph::CHAT, Look::Quiet),
                 Control::Cancel => Button::glyph(glyph::CLOSE, Look::Quiet),

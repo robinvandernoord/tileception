@@ -212,15 +212,20 @@ impl Tileception {
             self.used_here();
         }
         match input {
-            Inject::Pointer(x_pos, y_pos) => self.inject_motion(x_pos, y_pos, time),
+            Inject::Pointer(x_pos, y_pos) => {
+                let pos = self.zoom_absolute((x_pos, y_pos).into());
+                self.inject_motion(pos.x, pos.y, time);
+            }
             Inject::Motion(right, down) => {
                 if !self.forward_message(tileception_handoff::Message::Motion { right, down }) {
-                    self.inject_motion(self.pointer.x + right, self.pointer.y + down, time);
+                    let pos = self.zoom_relative((right, down).into());
+                    self.inject_motion(pos.x, pos.y, time);
                 }
             }
             Inject::Click { position, button } => {
                 if let Some((x_pos, y_pos)) = position {
-                    self.inject_motion(x_pos, y_pos, time);
+                    let pos = self.zoom_absolute((x_pos, y_pos).into());
+                    self.inject_motion(pos.x, pos.y, time);
                 }
                 for pressed in [true, false] {
                     if !self.forward_message(tileception_handoff::Message::Button { button, pressed }) {

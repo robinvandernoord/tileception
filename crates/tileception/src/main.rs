@@ -102,6 +102,7 @@ mod winit;
 mod x11_paste;
 mod xwayland;
 mod zones;
+mod zoom;
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 

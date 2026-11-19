@@ -207,6 +207,8 @@ pub struct Tileception {
     pub shot: Option<crate::shot::Shot>,
     /// An area being recorded.
     pub recording: Option<crate::shot::record::Recording>,
+    /// A snipped area presented over the whole screen.
+    pub zoom: Option<crate::zoom::Zoom>,
     pub launcher: crate::launcher::Launcher,
     /// Plugins, once started.
     pub plugins: Option<crate::plugins::Host>,
@@ -424,6 +426,7 @@ impl Tileception {
             feedback: None,
             colour_pick: None,
             shot: None,
+            zoom: None,
             recording: None,
             launcher,
             plugins: None,

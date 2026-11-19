@@ -439,6 +439,7 @@ The row under the area finishes:
 | Ctrl+R            | Record the area                                  |
 | O                 | Record with system sound, or without             |
 | M                 | Record with the microphone, or without           |
+| Z                 | Present the area full-screen                     |
 
 The arrows beside **Copy** and **Save** open the same menus as Shift+Enter
 and Ctrl+Shift+S: choose a size (full, half or a thumbnail) at the top, then
@@ -459,6 +460,12 @@ the sounds being recorded, and **Stop**. The microphone's button there mutes
 it in the recording and back. Click **Stop**, or press **Shift+Print** again,
 then copy the recording as an MP4 or GIF, or save it. A GIF has no sound.
 Recording needs `ffmpeg`.
+
+**Z**, or the magnifier button, presents the area: the screen then shows only
+that area, live and as large as it fits, with dark bars beside it, for
+showing detail in a call or on a projector. Programs in the area keep
+working; the pointer stays inside it and moves at the enlarged scale. Screen
+sharing and screenshots show the enlarged area too. **Escape** ends it.
 
 Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
@@ -565,7 +572,8 @@ and it says **Restart** when earlier updates need one or names a newer Ubuntu
 release once one is out. With nothing to do there is no chip.
 
 Click the chip for a card with the updates by kind and three buttons:
-**Install all**, **Security only** and **Review**. **Enter** installs all;
+**Review**, **Install all** and **Security only**. **Enter** opens the
+Updates window to review them;
 **Tab**, **Shift+Tab** and the arrow keys move between the buttons, and
 **Escape** closes the card. Installing needs an
 administrator: polkit asks for the password in Tileception's prompt and

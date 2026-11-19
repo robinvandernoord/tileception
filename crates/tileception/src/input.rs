@@ -175,6 +175,7 @@ impl Tileception {
                 } else {
                     pos + Point::from((screen.x, screen.y)) - origin
                 };
+                let pos = self.zoom_absolute(pos);
                 if self.handoff_cross(Source::Local, pos) {
                     return;
                 }
@@ -183,7 +184,7 @@ impl Tileception {
                 self.activate_constraint_under();
             }
             InputEvent::PointerMotion { event } => {
-                let pos = self.pointer + event.delta();
+                let pos = self.zoom_relative(event.delta());
                 // A locked or confined pointer may not move; raw motion is reported either way.
                 if let Some(pos) = self.constrained_motion(event.delta(), event.delta_unaccel(), event.time(), pos) {
                     if self.handoff_cross(Source::Local, pos) {
@@ -222,26 +223,26 @@ impl Tileception {
                 if self.output.is_none() {
                     return;
                 }
-                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
                 self.touch_down(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchMotion { event } => {
                 if self.output.is_none() {
                     return;
                 }
-                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
                 self.touch_motion(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchUp { event } => self.touch_up(event.slot(), event.time_msec()),
             InputEvent::TouchCancel { event } => self.touch_cancel(event.time_msec()),
             InputEvent::TouchFrame { .. } => self.touch_frame(),
             InputEvent::TabletToolAxis { event } if self.output.is_some() => {
-                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
             InputEvent::TabletToolProximity { event } if self.output.is_some() => {
-                let pos = self.absolute_output_position(event.position_transformed((1, 1).into()));
+                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
@@ -381,6 +382,10 @@ impl Tileception {
             }
             if state.shot.is_some() {
                 return FilterResult::Intercept(vec![Command::ShotKey(sym, held)]);
+            }
+            // Escape ends a presented area instead of reaching the program in it.
+            if sym == keysyms::KEY_Escape && held == Mods::default() && state.end_zoom() {
+                return FilterResult::Intercept(Vec::new());
             }
             // A popup given the keyboard with Super+Enter keeps it until a
             // button is chosen or Esc; other Super shortcuts give it back first.
