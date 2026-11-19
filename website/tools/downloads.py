@@ -51,11 +51,18 @@ def until(eol):
     return f"Supported until {day.strftime('%B %Y')}"
 
 
+def release(version):
+    """Ubuntu's release, without the point release: 24.04 for 24.04.5.1."""
+    return ".".join(version.split(".")[:2])
+
+
 def releases(isos):
-    """The ISOs grouped by Ubuntu release, newest release first."""
+    """The ISOs grouped by Ubuntu release, newest release first. One release's
+    ISOs can be from different point releases (24.04.5.1 for amd64, 24.04.5
+    for arm64), which each file shows."""
     groups = {}
     for iso in isos:
-        groups.setdefault(iso["ubuntu"], []).append(iso)
+        groups.setdefault(release(iso["ubuntu"]), []).append(iso)
     order = sorted(groups, key=lambda v: [int(p) for p in v.split(".")], reverse=True)
     return [(version, sorted(groups[version], key=lambda i: list(ARCHES).index(i["arch"])
                              if i["arch"] in ARCHES else 99)) for version in order]
@@ -89,7 +96,8 @@ def render(manifest):
             out.append('          <div class="dl-file">')
             out.append(f'            <a class="get" href="{name}" download>Download for {label}, '
                        f'{size(iso["size"])}</a>')
-            out.append(f'            <span class="sum">SHA256 {html.escape(iso["sha256"])}</span>')
+            out.append(f'            <span class="sum">Ubuntu {html.escape(iso["ubuntu"])} &middot; '
+                       f'SHA256 {html.escape(iso["sha256"])}</span>')
             out.append("          </div>")
         out.append("        </div>")
         out.append("      </section>")
