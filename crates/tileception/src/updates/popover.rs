@@ -170,7 +170,7 @@ impl Tileception {
     }
 
     /// The main button's place among the controls: the first of the row of
-    /// buttons at the bottom, which is Install all while updates wait.
+    /// buttons at the bottom, which is Review while updates wait.
     fn updates_popover_primary(&self, controls: &[(Rect, Hit)]) -> Option<usize> {
         let (_, parts) = self.updates_popover_layout();
         let row = parts.iter().find_map(|(rect, part)| matches!(part, Part::Buttons(_)).then_some(*rect))?;
@@ -296,11 +296,10 @@ impl Tileception {
             parts.push(Part::Buttons(vec![("Check now", Hit::CheckNow), ("Open Updates", Hit::Review)]));
         } else {
             let totals = updates.snapshot.totals();
-            let mut buttons = vec![("Install all", Hit::Install)];
+            let mut buttons = vec![("Review", Hit::Review), ("Install all", Hit::Install)];
             if totals.security > 0 && totals.security < totals.count {
                 buttons.push(("Security only", Hit::Security));
             }
-            buttons.push(("Review", Hit::Review));
             parts.push(Part::Buttons(buttons));
             if totals.bytes > 0 {
                 parts.push(Part::Footer(format!("{} download", backend::human_size(totals.bytes))));
@@ -464,9 +463,11 @@ impl Tileception {
                     painter.text(text, rect, small.colour(if *error { theme.danger } else { theme.muted }));
                 }
                 Part::Buttons(buttons) => {
+                    // Review leads while updates wait; Open Updates elsewhere stays plain.
+                    let waiting = buttons.iter().any(|(_, hit)| *hit == Hit::Install);
                     let rects = Self::button_rects(rect, buttons.len());
                     for (place, (label, hit)) in rects.into_iter().zip(buttons) {
-                        button(painter, place, label, *hit == Hit::Install, *hit == Hit::Security);
+                        button(painter, place, label, waiting && *hit == Hit::Review, *hit == Hit::Security);
                     }
                 }
                 Part::Footer(text) => {
