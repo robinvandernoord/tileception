@@ -149,10 +149,8 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
-- Doctor's window, the rest: its place and size are kept only when the
-  window is closed, so a move or resize is lost when the session ends with
-  it open; and a tiled window comes back as a new tile, without its place
-  in the layout.
+- Doctor's window, the rest: a tiled window comes back as a new tile,
+  without its place in the layout.
 - Game mode: Tileception's own Super bindings step aside while a game has
   the keyboard, so Super and Super combinations reach the game. Decided:
   - Super+Caps Lock toggles it (check that the binding can see Caps Lock

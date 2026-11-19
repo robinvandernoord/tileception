@@ -1047,21 +1047,26 @@ impl Tileception {
         self.force_keyboard_focus_sync();
     }
 
+    /// Keeps where the doctor's window is, for the next one: floating or
+    /// tiled, it comes back the same way. Also when the session ends with
+    /// the window open, which closes nothing.
+    pub fn remember_doctor_window(&mut self) {
+        let Some(window) = self.doctor.window else { return };
+        let float = match self.area_for_window(window) {
+            Some(area) if self.context_area().as_ref() != Some(&area) => {
+                self.with_area(&area, |state| state.world.float_rect(window)).flatten()
+            }
+            _ => self.world.float_rect(window),
+        };
+        if float != self.doctor.float {
+            self.doctor.float = float;
+            self.save_doctor();
+        }
+    }
+
     /// Puts the doctor away, panel or window. The conversation stays.
     pub fn close_doctor(&mut self) {
-        // Floating or tiled, the next window comes back the same way.
-        if let Some(window) = self.doctor.window {
-            let float = match self.area_for_window(window) {
-                Some(area) if self.context_area().as_ref() != Some(&area) => {
-                    self.with_area(&area, |state| state.world.float_rect(window)).flatten()
-                }
-                _ => self.world.float_rect(window),
-            };
-            if float != self.doctor.float {
-                self.doctor.float = float;
-                self.save_doctor();
-            }
-        }
+        self.remember_doctor_window();
         self.doctor.open = false;
         self.doctor.focused = false;
         self.doctor.field_drag = None;

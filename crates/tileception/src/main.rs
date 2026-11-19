@@ -394,6 +394,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(state.recording.take());
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
+    // Logging out, quitting and restarting close no windows.
+    state.remember_doctor_window();
     state.stop_plugins();
     if state.restart {
         return Err(restart_in_place().into());
