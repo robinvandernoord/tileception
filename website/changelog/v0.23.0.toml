@@ -1,0 +1,52 @@
+version = "0.23.0"
+date = 2026-11-19
+lede = "From the area screenshot tool you can now enlarge one area of the screen to fill it, and with frost on, translucent windows blur what is behind them. The Updates window also lists Python tools installed with uvenv."
+
+[[features]]
+area = "zoom"
+title = "Enlarge an area of the screen to fill it"
+text = "In the area screenshot tool (Shift+Print), pick an area and press Z or the :zoom-in: button. The screen then shows only that area, live and as large as it fits, for showing detail in a call or on a projector. Apps in the area keep working, and screen sharing shows the enlarged area too. Escape ends it."
+
+[[features]]
+area = "render"
+title = "Frost blurs what is behind translucent windows"
+text = "With `frost = true` under `[theme]` in `config.toml`, a window that asks for blur shows what is behind it blurred, as Tileception's own panels do. Terminals such as kitty, foot, Ghostty and Konsole can ask for it when their background is translucent. Without frost, what is behind a translucent window stays sharp."
+
+[features.media]
+kind = "compare"
+before = "blur-before.jpg"
+after = "blur-after.jpg"
+alt = "A translucent Ghostty terminal floating over a browser window, with frost on"
+caption = "The same translucent Ghostty window over a browser: in 0.22.0 the page shows through sharp, in 0.23.0 it shows through blurred."
+
+[[features]]
+area = "updates"
+title = "The Updates window lists Python tools installed with uvenv"
+text = "Tools you installed with uvenv appear under Tools when PyPI has a newer version, and Install updates them along with the other updates. This needs uvenv 3.13 or newer; tools installed from git or a local folder are left out. Plugins now install with uvenv too, and plugins installed earlier move to uvenv at their next update. The installer and `tileception setup` put uv and uvenv in `~/.local/bin` when they are missing."
+
+[[features]]
+area = "touchpad"
+issue = 93
+title = "The touchpad can switch off while a mouse is plugged in"
+text = "Turn on Ignore touchpad with a mouse in Settings, under Keyboard & touchpad, or set `disable_on_external_mouse = true` under `[touchpad]` in `config.toml`. The touchpad then does nothing while an external mouse is plugged in, and works again when you unplug the mouse."
+
+[[fixes]]
+area = "notifications"
+issue = 96
+text = "When one window fills the screen and the bar only slides in at the screen edge, the notification list no longer covers the bar: the bar stays open while the list is open, and its buttons respond to clicks again."
+
+[[fixes]]
+area = "updates"
+text = "In the card under the Updates chip, Review is now the first and highlighted button, so Enter opens the Updates window instead of installing every update."
+
+[[fixes]]
+area = "input"
+text = "The Caps Lock, Num Lock and Scroll Lock lights on your keyboard now light up while that lock is on."
+
+[[fixes]]
+area = "session"
+text = "After `tileception msg restart`, GTK 4 apps such as Ghostty open their windows right away, instead of after a wait of about two minutes."
+
+[[fixes]]
+area = "plugins"
+text = "`plugins add` in the launcher can install a plugin from a private GitHub repository. It connects over ssh, which needs a key GitHub accepts that ssh can use without asking anything, such as one in your ssh agent. `ssh -T git@github.com` checks this."

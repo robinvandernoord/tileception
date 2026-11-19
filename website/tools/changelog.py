@@ -47,6 +47,13 @@ BANNED = {
     "’": "curly apostrophe",
 }
 
+# Glyphs that text can show inline as :name:, so it can point at a button.
+# Each is (what a screen reader says, the shapes of the glyph of that name in
+# `glyph` in crates/tileception/src/ui.rs).
+GLYPHS = {
+    "zoom-in": ("magnifier", '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/>'),
+}
+
 RELEASE_KEYS = {"version", "date", "lede", "features", "fixes"}
 FEATURE_KEYS = {"area", "issue", "title", "text", "media"}
 FIX_KEYS = {"area", "issue", "text"}
@@ -135,9 +142,26 @@ def load_areas():
     return areas
 
 
+def icon(name):
+    label, shapes = GLYPHS[name]
+    return (
+        f'<svg class="icon" role="img" aria-label="{label}" viewBox="0 0 24 24" fill="none" '
+        f'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{shapes}</svg>'
+    )
+
+
+PROSE = re.compile(r"`([^`]+)`|:(" + "|".join(map(re.escape, GLYPHS)) + r"):")
+
+
 def prose(text):
-    """Escapes text, turning `code` into <code>."""
-    return re.sub(r"`([^`]+)`", r"<code>\1</code>", html.escape(text, quote=False))
+    """Escapes text, turning `code` into <code> and :name: into that glyph."""
+
+    def piece(match):
+        if match.group(1) is not None:
+            return f"<code>{match.group(1)}</code>"
+        return icon(match.group(2))
+
+    return PROSE.sub(piece, html.escape(text, quote=False))
 
 
 class Page:

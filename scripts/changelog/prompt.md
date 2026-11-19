@@ -71,6 +71,9 @@ Use only these. Never add a fact they don't support; leave the claim out instead
 - Plain ASCII punctuation only: no em or en dashes, no curly quotes, no ellipsis
   character. The page generator refuses them.
 - Put file names, settings and commands in backticks; the page shows them as code.
+- To point at a button by its icon, write its glyph as `:zoom-in:`; the page
+  draws the icon there. Only the glyphs in `GLYPHS` in
+  `website/tools/changelog.py` work; add one there to use another.
 
 ## Clarity check
 

@@ -88,6 +88,11 @@
 .cl-page code {
   overflow-wrap: anywhere;
 }
+.cl-page .icon {
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.2em;
+}
 .caption {
   margin-top: 10px;
   font-size: 14px;
