@@ -4,6 +4,21 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.23.0 (2026-11-19)
+
+### Features
+* **zoom:** present selected areas full-screen
+* **render:** add per-window blur support
+* **updates:** support uvenv tools and plugin setup
+* **touchpad:** support disabling touchpad with external mouse
+
+### Fixes
+* **notifications:** keep sliding bar controls clickable
+* **updates:** make review the primary popover action
+* **input:** sync keyboard lock lights with seat state
+* **session:** restart portal backends after compositor restart
+* **plugins:** install private repositories over ssh
+
 ## v0.22.0 (2026-11-18)
 
 ### Features
