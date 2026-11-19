@@ -26,6 +26,11 @@ autoinstall:
   drivers:
     install: true
   updates: security
+  # The installer's own logs on the serial console, so install-serial.log
+  # shows where an install that never finishes got stuck.
+  early-commands:
+    - /usr/bin/systemd-run --unit=smoke-test-log --property=StandardOutput=file:/dev/ttyS0
+      /usr/bin/tail -n +1 -F /var/log/installer/subiquity-server-info.log /var/log/installer/curtin-install.log
   late-commands:
     - mkdir -p /target/usr/lib/tileception-iso
     - cp -a /cdrom/tileception/. /target/usr/lib/tileception-iso/

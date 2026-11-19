@@ -96,7 +96,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: smoke-test-${{ matrix.codename }}
-          path: /mnt/iso/test/*.log
+          path: |
+            /mnt/iso/test/*.log
+            /mnt/iso/test/*.png
           if-no-files-found: ignore
       - name: Upload the ISO
         env:

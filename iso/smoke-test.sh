@@ -51,7 +51,9 @@ rm -f "$key" "$key.pub"
 ssh-keygen -q -t ed25519 -N "" -C tileception-smoke-test -f "$key"
 sed "s|@SMOKE_TEST_KEY@|$(cat "$key.pub")|" iso/test/autoinstall.yaml > "$work/autoinstall.yaml"
 rm -f "$work"/tileception-ubuntu-*-test.*
-AUTOINSTALL="$work/autoinstall.yaml" BOOT_ARGS="autoinstall console=tty0 console=ttyS0,115200" ISO_SUFFIX=-test \
+# noprompt: nobody is there to take the disc out and press Enter when the
+# installer powers off.
+AUTOINSTALL="$work/autoinstall.yaml" BOOT_ARGS="autoinstall noprompt console=tty0 console=ttyS0,115200" ISO_SUFFIX=-test \
     iso/build.sh "$codename" amd64 "$work"
 iso=$(ls "$work"/tileception-ubuntu-*-amd64-test.iso)
 
@@ -59,10 +61,32 @@ iso=$(ls "$work"/tileception-ubuntu-*-amd64-test.iso)
 rm -f "$disk"
 qemu-img create -q -f qcow2 "$disk" 40G
 echo "Installing $(basename "$iso") (the installer powers off when done)"
-timeout "${INSTALL_TIMEOUT:-5400}" qemu-system-x86_64 -name "Tileception smoke test install" -enable-kvm \
+# An install takes about twenty minutes. One that takes much longer is stuck
+# (an error dialog, or a prompt): the screen then goes into install-screen.png,
+# asked for over QMP on the monitor.in pipe (the human monitor echoes every
+# character it reads, which fills monitor.out when nobody reads it).
+limit=${INSTALL_TIMEOUT:-2700}
+rm -f "$work/monitor.in" "$work/monitor.out" "$work/install-screen.png"
+mkfifo "$work/monitor.in" "$work/monitor.out"
+qemu-system-x86_64 -name "Tileception smoke test install" -enable-kvm \
     -machine q35,vmport=off -cpu host -smp 4 -m 8G -drive file="$disk",if=virtio -cdrom "$iso" -boot d \
     -nic user,model=virtio-net-pci -device virtio-vga -display none -serial file:"$work/install-serial.log" \
-    || fail "the install did not finish (see $work/install-serial.log)"
+    -qmp pipe:"$work/monitor" &
+installer=$!
+waited=0
+while kill -0 "$installer" 2>/dev/null; do
+    if [ "$waited" -ge "$limit" ]; then
+        printf '{"execute":"qmp_capabilities"}\n{"execute":"screendump","arguments":{"filename":"%s","format":"png"}}\n' \
+            "$work/install-screen.png" > "$work/monitor.in"
+        sleep 5
+        kill "$installer" 2>/dev/null || true
+        wait "$installer" || true
+        fail "the install did not finish in $((limit / 60)) minutes (see install-serial.log and install-screen.png in $work)"
+    fi
+    sleep 10
+    waited=$((waited + 10))
+done
+wait "$installer" || fail "QEMU stopped with an error during the install (see $work/install-serial.log)"
 
 # ------------------------------------------------------------ first boot
 echo "Booting the installed system"
