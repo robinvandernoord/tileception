@@ -4,7 +4,7 @@ use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
     delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection, delegate_seat,
-    delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_shm, delegate_xdg_decoration, delegate_xdg_dialog, delegate_xdg_foreign, delegate_xdg_shell,
     desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
@@ -37,9 +37,10 @@ use smithay::{
         },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            decoration::XdgDecorationHandler,
+            decoration::XdgDecorationHandler, dialog::XdgDialogHandler,
         },
         shm::{ShmHandler, ShmState},
+        xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
 
@@ -157,7 +158,7 @@ impl CompositorHandler for Tileception {
                     // Placed where its parent is shown, once it has drawn.
                 } else if self.world.float_needs_size(window_id) && geo.size.w > 0 && geo.size.h > 0 {
                     // A new floating window has drawn at the size it wants.
-                    self.world.size_float(window_id, geo.size.w as f64, geo.size.h as f64);
+                    self.size_float(window_id, geo.size.w as f64, geo.size.h as f64);
                     self.apply_layout();
                 } else if let Some(rect) = self.world.float_rect(window_id) {
                     // A floating window that grew past its rectangle (a dialog
@@ -412,6 +413,12 @@ impl XdgShellHandler for Tileception {
         self.remove_window(surface.wl_surface());
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.window_parent_changed(window_id);
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         if let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
@@ -550,6 +557,31 @@ impl XdgShellHandler for Tileception {
 }
 
 delegate_xdg_shell!(Tileception);
+
+// A program hands another one a handle to its window, so that the other's
+// window can be a dialog of it: the desktop portal's file chooser, for one.
+impl XdgForeignHandler for Tileception {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
+delegate_xdg_foreign!(Tileception);
+
+impl XdgDialogHandler for Tileception {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, _is_modal: bool) {
+        // The dialog takes the focus from its parent, or gives it up.
+        if let Some(area) = self.area_for_surface(toplevel.wl_surface())
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, Self::apply_layout);
+            return;
+        }
+        self.apply_layout();
+    }
+}
+
+delegate_xdg_dialog!(Tileception);
 
 impl Tileception {
     /// Keeps popups inside the screen, relative to their window's place on it.

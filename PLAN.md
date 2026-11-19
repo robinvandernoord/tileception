@@ -192,13 +192,6 @@ Report testing in the conversation, the commit or the pull request instead.
   one on another workspace still shares. Before building: try the portal on
   Ubuntu 26.04 to see how it behaves by default (which chooser it uses, and
   whether it needs a Tileception chooser at all).
-- Dialogs over their parent: `xdg_dialog_v1` and `zxdg_foreign_v2`. Portal
-  dialogs such as the file chooser already float (by their app id), but
-  without xdg-foreign they cannot name the window they belong to, so they
-  open where any float does instead of centred over their parent, and do
-  not follow it to its area on a split screen as other child windows do.
-  `xdg_dialog_v1` marks a dialog as modal, which could dim or block its
-  parent until it closes. Smithay has both.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with

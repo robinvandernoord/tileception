@@ -175,6 +175,12 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
+Dialogs float by themselves. A dialog opens centred over the window it belongs
+to, in that window's area on a split screen; this includes the file chooser
+and other dialogs the desktop portal shows for a program. While a dialog that
+its program marks as modal is open, focusing or clicking its window focuses
+the dialog instead, until the dialog is closed.
+
 ### Clearing the desk
 
 **Super+D** clears the desk of the screen: every window there, tiled and

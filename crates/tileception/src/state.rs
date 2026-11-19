@@ -21,9 +21,12 @@ use smithay::{
         output::OutputManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::wlr_layer::WlrLayerShellState,
-        shell::xdg::{SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState},
+        shell::xdg::{
+            SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState,
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xdg_foreign::XdgForeignState,
         xwayland_shell::XWaylandShellState,
     },
     xwayland::{X11Surface, X11Wm},
@@ -84,6 +87,8 @@ pub struct Tileception {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_foreign_state: XdgForeignState,
+    _xdg_dialog_state: XdgDialogState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
@@ -282,6 +287,8 @@ impl Tileception {
         crate::capture::init_screencopy(&display_handle);
         crate::blur::init_blur(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
+        let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
@@ -332,6 +339,8 @@ impl Tileception {
             restart: false,
             compositor_state,
             xdg_shell_state,
+            xdg_foreign_state,
+            _xdg_dialog_state: xdg_dialog_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -656,13 +665,7 @@ impl Tileception {
         if self.send_child_away(window_id) {
             return;
         }
-        let parent_area = self
-            .windows
-            .get(&window_id)
-            .and_then(|window| window.toplevel())
-            .and_then(|toplevel| toplevel.parent())
-            .and_then(|parent| self.window_id(&parent))
-            .and_then(|parent| self.area_for_window(parent));
+        let parent_area = self.parent_window(window_id).and_then(|parent| self.area_for_window(parent));
         if let Some(area) = parent_area
             && self.context_area().as_ref() != Some(&area)
         {
@@ -688,7 +691,7 @@ impl Tileception {
         self.world.add_window(window_id, placement, now);
         self.restore_window_layout(window_id);
         if let Some([width, height]) = rule.size.filter(|_| float) {
-            self.world.size_float(window_id, f64::from(width), f64::from(height));
+            self.size_float(window_id, f64::from(width), f64::from(height));
         }
         // The Wizard's window floats where it did when it was closed.
         if let Some(rect) = self.doctor.float.filter(|_| float && self.is_doctor_window(window_id)) {
@@ -698,7 +701,7 @@ impl Tileception {
         if let Some(x11) = self.windows.get(&window_id).and_then(|placed| placed.x11_surface()) {
             let geometry = x11.geometry();
             if self.world.float_needs_size(window_id) && geometry.size.w > 0 && geometry.size.h > 0 {
-                self.world.size_float(window_id, geometry.size.w as f64, geometry.size.h as f64);
+                self.size_float(window_id, geometry.size.w as f64, geometry.size.h as f64);
             }
         }
         self.apply_layout();
@@ -712,6 +715,111 @@ impl Tileception {
         } else if rule.fullscreen {
             self.set_fullscreen(window_id, true);
         }
+    }
+
+    /// The window a dialog belongs to: its xdg-shell parent, named by the
+    /// program itself or by another one through xdg-foreign, or the window an
+    /// X11 one is transient for.
+    pub(crate) fn parent_window(&self, window_id: WindowId) -> Option<WindowId> {
+        let window = self.windows.get(&window_id)?;
+        if let Some(toplevel) = window.toplevel() {
+            return toplevel.parent().and_then(|parent| self.window_id(&parent)).filter(|parent| *parent != window_id);
+        }
+        let transient_for = window.x11_surface()?.is_transient_for()?;
+        self.windows
+            .iter()
+            .find(|(_, other)| other.x11_surface().is_some_and(|x11| x11.window_id() == transient_for))
+            .map(|(parent, _)| *parent)
+            .filter(|parent| *parent != window_id)
+    }
+
+    /// Takes the size a new floating window chose. A dialog opens centred
+    /// over the window it belongs to when that is on screen, anything else
+    /// in the middle of the screen.
+    pub(crate) fn size_float(&mut self, window_id: WindowId, width: f64, height: f64) {
+        self.world.size_float(window_id, width, height);
+        self.centre_over_parent(window_id);
+    }
+
+    fn centre_over_parent(&mut self, window_id: WindowId) {
+        let Some(parent) = self.parent_window(window_id) else { return };
+        let screen = self.world.screen();
+        let over = self
+            .world
+            .placements(self.world.target_view())
+            .into_iter()
+            .find(|placement| placement.window == parent)
+            .map(|placement| placement.rect)
+            .filter(|rect| rect.intersects(&screen));
+        if let Some(over) = over {
+            self.world.centre_float_over(window_id, over);
+        }
+    }
+
+    /// A window was given a parent, or lost it, after it opened. A portal's
+    /// dialog names the window it belongs to through xdg-foreign, which can
+    /// arrive once the dialog is already shown: it then goes to where a
+    /// dialog of that window would have opened.
+    pub fn window_parent_changed(&mut self, window_id: WindowId) {
+        let Some(parent) = self.parent_window(window_id) else {
+            // A modal dialog let go of its parent.
+            return self.apply_layout();
+        };
+        // Not placed yet: it opens beside its parent on its first commit.
+        let Some(area) = self.area_for_window(window_id) else { return };
+        if self.handoff.windows.is_remote(window_id) || self.handoff.windows.away.contains_key(&window_id) {
+            return;
+        }
+        let Some(parent_area) = self.area_for_window(parent) else { return };
+        if area != parent_area && self.move_window_to_area(window_id, &parent_area, false).is_err() {
+            return;
+        }
+        if self.context_area().as_ref() != Some(&parent_area) {
+            self.with_area(&parent_area, |state| state.settle_over_parent(window_id));
+        } else {
+            self.settle_over_parent(window_id);
+        }
+        self.schedule_render();
+    }
+
+    /// Floats a window that became a dialog, over the window it belongs to.
+    fn settle_over_parent(&mut self, window_id: WindowId) {
+        if !self.world.contains_window(window_id) || self.fullscreen == Some(window_id) {
+            return;
+        }
+        if self.world.float_rect(window_id).is_none() {
+            let Some(window) = self.windows.get(&window_id) else { return };
+            let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
+            if rule.float == Some(false) {
+                return;
+            }
+            let now = self.now();
+            self.world.toggle_float(window_id, now);
+        }
+        // A window still choosing its size is centred once it has.
+        if !self.world.float_needs_size(window_id) {
+            self.centre_over_parent(window_id);
+        }
+        self.apply_layout();
+    }
+
+    /// The modal dialog that keeps a window from being used, if it has one
+    /// in this layout: the dialog's own modal dialog when that has one too.
+    fn modal_dialog_of(&self, window_id: WindowId) -> Option<WindowId> {
+        let mut blocked = window_id;
+        let mut found = None;
+        // No longer than the windows there are, whatever the programs claim.
+        for _ in 0..self.windows.len() {
+            let dialog = self.windows.iter().find_map(|(dialog, window)| {
+                let modal = window.toplevel().is_some_and(is_modal);
+                (modal && self.world.contains_window(*dialog) && self.parent_window(*dialog) == Some(blocked))
+                    .then_some(*dialog)
+            });
+            let Some(dialog) = dialog else { break };
+            found = Some(dialog);
+            blocked = dialog;
+        }
+        found
     }
 
     pub fn remove_window(&mut self, surface: &WlSurface) {
@@ -755,6 +863,11 @@ impl Tileception {
     /// they redraw during the animation. In Overview nothing is resized: the
     /// windows keep the size they have when framed and are drawn scaled.
     pub fn apply_layout(&mut self) {
+        // A window with a modal dialog open cannot be used until the dialog
+        // is answered: focusing it, however, focuses the dialog.
+        if let Some(dialog) = self.world.focus().and_then(|focus| self.modal_dialog_of(focus)) {
+            self.world.focus_window(dialog, self.now());
+        }
         let focus = self.world.focus();
         if !self.world.in_overview() {
             let screen = self.world.screen();
@@ -988,11 +1101,21 @@ impl Tileception {
     }
 }
 
+/// Whether a window said through `xdg_dialog_v1` that it is a modal dialog.
+fn is_modal(toplevel: &ToplevelSurface) -> bool {
+    with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .is_some_and(|data| data.lock().expect("toplevel role").modal)
+    })
+}
+
 /// Dialogs and fixed-size windows float instead of tiling.
 pub(crate) fn wants_float(window: &Window) -> bool {
-    // The desktop portal's dialogs, such as its file chooser. Without
-    // xdg-foreign they cannot name the window they belong to, so they come
-    // without a parent, but they are always dialogs.
+    // The desktop portal's dialogs, such as its file chooser. They are
+    // always dialogs, also for a program that named no window of its own
+    // for them to belong to.
     if app_id(window).starts_with("xdg-desktop-portal") {
         return true;
     }
