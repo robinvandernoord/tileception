@@ -156,7 +156,8 @@ jobs:
   publish:
     needs: [plan, build]
     # After the builds that succeeded; a failed one keeps its previous ISO.
-    if: always() && needs.plan.outputs.builds != '[]' && !cancelled()
+    # Not when the plan was skipped (after a failed release).
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.builds != '[]' && !cancelled()
     runs-on: ubuntu-latest
     # The apt environment, for the apt server's SSH secrets (as in release.yml).
     environment:

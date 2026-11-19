@@ -66,7 +66,12 @@ fi
 apt-get update -qq
 # shellcheck disable=SC2086 # word-split package list
 if ! apt-get install -qq -y --no-install-recommends $packages >/tmp/apt.log 2>&1; then
-    grep -A3 -e '^dpkg: error' -e '^E:' /tmp/apt.log >&2 || tail -40 /tmp/apt.log >&2
+    # apt names the packages it cannot install before its final E: line.
+    if grep -q 'have unmet dependencies' /tmp/apt.log; then
+        sed -n '/have unmet dependencies/,$p' /tmp/apt.log >&2
+    else
+        grep -A3 -e '^dpkg: error' -e '^E:' /tmp/apt.log >&2 || tail -40 /tmp/apt.log >&2
+    fi
     exit 1
 fi
 
