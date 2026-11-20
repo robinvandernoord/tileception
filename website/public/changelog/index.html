@@ -16,13 +16,13 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Tileception" />
     <meta property="og:url" content="https://tileception.space/changelog/" />
-    <meta property="og:title" content="What&#x27;s new in Tileception 0.23.0" />
-    <meta property="og:description" content="From the area screenshot tool you can now enlarge one area of the screen to fill it, and with frost on, translucent windows blur what is behind them. The Updates window also lists Python tools installed with uvenv." />
-    <meta property="og:image" content="https://tileception.space/changelog/v0.23.0/blur-after.jpg" />
+    <meta property="og:title" content="What&#x27;s new in Tileception 0.24.0" />
+    <meta property="og:description" content="What changed in each Tileception release, with screenshots of the changes." />
+    <meta property="og:image" content="https://tileception.space/og.png" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="What&#x27;s new in Tileception 0.23.0" />
-    <meta name="twitter:description" content="From the area screenshot tool you can now enlarge one area of the screen to fill it, and with frost on, translucent windows blur what is behind them. The Updates window also lists Python tools installed with uvenv." />
-    <meta name="twitter:image" content="https://tileception.space/changelog/v0.23.0/blur-after.jpg" />
+    <meta name="twitter:title" content="What&#x27;s new in Tileception 0.24.0" />
+    <meta name="twitter:description" content="What changed in each Tileception release, with screenshots of the changes." />
+    <meta name="twitter:image" content="https://tileception.space/og.png" />
     <meta name="theme-color" content="#121212" />
     <meta name="color-scheme" content="light" />
     <link rel="icon" href="../favicon.ico" sizes="32x32" />
@@ -40,6 +40,7 @@
           <span>Want the short version? <a href="https://github.com/robinvandernoord/tileception/blob/master/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a></span>
         </div>
       </header>
+<section class="cl-release" id="v0.24.0"><div class="blk cl-compact"><div><h2 class="display">0.24.0</h2><time datetime="2026-11-20">2026-11-20</time></div><div><ul><li><span class="area" style="--c: var(--yellow)">Updates</span> <b>Package sources can be switched on again after a release upgrade.</b> After a release upgrade, the Release page of the Updates window lists the package sources that are still switched off and says whether each one has the new Ubuntu release yet. Switch on moves a source to the new release and switches it on again.</li><li><span class="area" style="--c: var(--yellow)">Updates</span> <b>Ubuntu can offer every new release instead of only LTS releases.</b> A switch on the Settings page of the Updates window chooses between the two. It sets <code>Prompt=</code> in <code>/etc/update-manager/release-upgrades</code> to <code>normal</code> or <code>lts</code> and checks for a newer release at once. Releases between two LTS releases are supported for 9 months, so you have to move on to each next release. Switching back to LTS takes effect at the next LTS release. The switch is hidden when the file says <code>never</code>, and on Linux Mint.</li></ul></div></div></section>
 <section class="cl-release" id="v0.23.0">
 <div class="blk cl-version"><div><h2 class="display">0.23.0</h2><time datetime="2026-11-19">2026-11-19</time></div><p>From the area screenshot tool you can now enlarge one area of the screen to fill it, and with frost on, translucent windows blur what is behind them. The Updates window also lists Python tools installed with uvenv.</p></div>
 <article class="blk cl-hero wide"><div class="media"><div class="compare" style="--split: 50%" tabindex="0" role="slider" aria-label="Before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><img src="v0.23.0/blur-before.jpg" alt="Before: A translucent Ghostty terminal floating over a browser window, with frost on" loading="lazy" /><div class="after-layer"><img src="v0.23.0/blur-after.jpg" alt="After: A translucent Ghostty terminal floating over a browser window, with frost on" loading="lazy" /></div><div class="handle" aria-hidden="true"></div><span class="label before">Before</span><span class="label after">After</span></div></div><div class="text"><div class="labels"><span class="area" style="--c: var(--canvas)">Render</span></div><h3 class="display">Frost blurs what is behind translucent windows</h3><p>With <code>frost = true</code> under <code>[theme]</code> in <code>config.toml</code>, a window that asks for blur shows what is behind it blurred, as Tileception's own panels do. Terminals such as kitty, foot, Ghostty and Konsole can ask for it when their background is translucent. Without frost, what is behind a translucent window stays sharp.</p><p class="caption">The same translucent Ghostty window over a browser: in 0.22.0 the page shows through sharp, in 0.23.0 it shows through blurred.</p></div></article>

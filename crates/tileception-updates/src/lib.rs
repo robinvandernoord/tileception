@@ -15,6 +15,7 @@ pub mod kernels;
 mod mint;
 pub mod mirrors;
 pub mod release;
+pub mod switched_off;
 pub mod task;
 
 use std::path::{Path, PathBuf};

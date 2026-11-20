@@ -629,9 +629,9 @@ list, **Space** ticks a row and **Enter** runs the page's main button.
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
 | Kernels   | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below.                                                                                                                                                                                                                                                            |
-| Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions.                                                                              |
+| Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. Afterwards it lists the other sources that are switched off, says whether each has the new release yet, and **Switch on** moves a source to the new release and switches it on again. |
 | History   | What apt did before, from its log. **Ask the Wizard** sends the packages of one entry to the Wizard; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
-| Settings  | Notifications, automatic updates, firmware updates, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                    |
+| Settings  | Notifications, automatic updates, firmware updates, which releases are offered, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                  |
 
 Flatpaks of the system and of your own installation, and snaps, are listed
 under **Apps**. Asking for them uses the network, so they are listed when the
@@ -713,6 +713,15 @@ Linux Mint it switches Update Manager's automatic upgrades timer instead,
 preserving its system blacklist, and covers what Update Manager installs: every update
 but its blacklist, or fewer when `/etc/mintupdate-automatic-upgrades.conf`
 narrows it. Where neither is installed, the row says so.
+
+On Ubuntu, a switch below it offers every release instead of only LTS
+releases: it sets `Prompt=` to `normal` or `lts` in
+`/etc/update-manager/release-upgrades` and asks for a newer release at once.
+Each release between two LTS releases is supported for 9 months, so the next
+one has to follow. Switching back to LTS only takes effect at the next LTS
+release; there is no way back to an older one. The switch does not offer
+`never`, and it is left out when the file says `never`, so a system set that way by
+hand stays as it is. Linux Mint has no such file and no switch.
 
 Below that, the page shows the Ubuntu mirror in use. **Test**, in the row
 below the mirror, asks the mirror in use, the main archive and the mirrors Ubuntu lists for your country
