@@ -140,19 +140,6 @@ Report testing in the conversation, the commit or the pull request instead.
     frost (no blur redone behind it every frame) and keeps the screen
     awake. A game's content type is also a hint for game mode switching on
     by itself.
-- Sharing a single window. xdg-desktop-portal-wlr 0.7 (Ubuntu 24.04) only
-  captures whole outputs through `wlr-screencopy`, so a browser's "Window"
-  choice shares the entire screen. Window capture came in
-  xdg-desktop-portal-wlr 0.8.0 through `ext_image_copy_capture_v1`, with
-  sources from `ext_image_capture_source_v1` (implied by its release notes,
-  to confirm in its source) and windows listed through
-  `ext_foreign_toplevel_list_v1`, which Tileception already has. Use 0.8.4
-  or later: 0.8.3 sometimes stalls recordings. Smithay 0.7 has neither
-  capture protocol, so they are written next to `capture.rs`'s screencopy;
-  a window's capture renders only its own surfaces, so a covered window or
-  one on another workspace still shares. Before building: try the portal on
-  Ubuntu 26.04 to see how it behaves by default (which chooser it uses, and
-  whether it needs a Tileception chooser at all).
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
