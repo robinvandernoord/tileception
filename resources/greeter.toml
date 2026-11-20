@@ -13,8 +13,9 @@ hidden_sessions = ["tileception-nested"]
 # takes any username.
 hidden_users = []
 # tabs: one tab per person on the login tile.
-# tiles: a tile per person side by side, each over their shared wallpaper;
-# the selected person's is widest and holds the password field.
+# tiles: a tile per person, laid out like windows: the selected person's is
+# the main tile and holds the password field, the others are stacked beside
+# it. Each shows the wallpaper that person shares, or their accent colour.
 users_as = "tabs"
 # strftime, such as "%H:%M" or "%I:%M %p".
 clock_format = "%H:%M"

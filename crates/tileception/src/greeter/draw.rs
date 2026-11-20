@@ -26,11 +26,11 @@ const PILL_H: f64 = 26.0;
 const AVATAR: f64 = 92.0;
 const FIELD_H: f64 = 48.0;
 const PALETTE_ROWS: usize = 8;
-/// With people as tiles, how much wider the selected person's tile is than
-/// the others, and the narrowest each may get before fewer people are shown.
-const CARD_GROW: f64 = 2.8;
-const CARD_MIN: f64 = 96.0;
-const CARD_SELECTED_MIN: f64 = 300.0;
+/// With people as tiles: the selected person's share of the login panel,
+/// and how short the others' tiles in the stack beside it may get before
+/// fewer of them are shown.
+const CARD_MAIN: f64 = 0.62;
+const CARD_MIN: f64 = 110.0;
 /// How long the field shakes after a wrong password, in seconds.
 const SHAKE: f64 = 0.45;
 /// How long a change of person takes to crossfade, in seconds.
@@ -166,8 +166,7 @@ impl Tileception {
                 top = login.y + 6.0 + TAB_H + 10.0;
             } else if greeter.cards() {
                 let gap = self.config.file.general.gap.clamp(4.0, 32.0);
-                for (person, left, width) in card_row(login.w, gap, greeter.people(), greeter.user) {
-                    let card = Rect::new(login.x + left, login.y, width, login.h);
+                for (person, card) in card_tiles(login, gap, greeter.people(), greeter.user) {
                     if person == greeter.user {
                         area = card;
                     }
@@ -379,10 +378,7 @@ impl Tileception {
     /// per-user looks off, the `[theme]` wallpaper.
     fn greeter_draw_backdrop(&self, painter: &mut Painter, greeter: &Greeter, screen: Rect, accent: (Colour, Colour)) {
         let theme = &self.theme;
-        let fallback = match greeter.file.per_user.wallpaper_fallback {
-            WallpaperFallback::Generated if !greeter.file.per_user.wallpaper => WallpaperFallback::System,
-            other => other,
-        };
+        let fallback = wallpaper_fallback(greeter);
         painter.fill(screen, theme.background, 0.0);
         if greeter.aid_on(Aid::HighContrast) {
             return;
@@ -731,9 +727,11 @@ impl Tileception {
         );
     }
 
-    /// People as tiles: each over their own wallpaper (or their accent),
-    /// darkened so text reads on it. The selected one, widest, gets the
-    /// login form from [`Self::greeter_draw_login`]; the others their
+    /// People as tiles, framed like the other tiles with a title of their
+    /// own: each over the wallpaper they shared, or else what
+    /// `wallpaper_fallback` gives (their accent by default),
+    /// darkened so text reads on it. The selected one, in the main tile, gets
+    /// the login form from [`Self::greeter_draw_login`]; the others their
     /// picture and name.
     fn greeter_draw_cards(&self, painter: &mut Painter, greeter: &Greeter, scene: &Scene, accent: (Colour, Colour)) {
         let theme = &self.theme;
@@ -742,57 +740,56 @@ impl Tileception {
         for (person, rect) in &scene.cards {
             let active = *person == greeter.user;
             let own = greeter.accent_of(theme, *person);
-            let drop = if theme.frost { 0.0 } else { 4.0 };
-            painter.shape(
-                Rect::new(rect.x, rect.y + drop, rect.w, rect.h),
-                Shape {
-                    radius: theme.radius,
-                    glow_radius: 14.0,
-                    glow: Colour([0.0, 0.0, 0.0, 0.2]),
-                    ..Default::default()
-                },
-            );
-            painter.fill(*rect, theme.surface, theme.radius);
-            if !contrast {
-                let wallpaper = greeter.wallpapers.get(person).filter(|_| greeter.file.per_user.wallpaper);
-                match wallpaper {
-                    Some(wallpaper) => {
-                        painter.clipped(*rect, |clipped| clipped.image(wallpaper, (scene.screen.x, scene.screen.y)));
-                    }
-                    None => painter.shape(
-                        *rect,
-                        Shape {
-                            fill: (own.0.alpha(0.22), own.1.alpha(0.10)),
-                            radius: theme.radius,
-                            ..Default::default()
-                        },
-                    ),
-                }
-                let shade = if active { 0.45 } else { 0.68 };
-                painter.fill(*rect, Colour([0.0, 0.0, 0.0, shade]), theme.radius);
-            }
             let lit = active && focused;
+            draw_frame(painter, *rect, lit, own);
+            if !contrast {
+                let shared = greeter.wallpapers.get(person).filter(|_| greeter.file.per_user.wallpaper);
+                let system = self.wallpaper.as_ref().map(|wallpaper| &wallpaper.buffer);
+                let fallback = wallpaper_fallback(greeter);
+                let picture = match (shared, fallback) {
+                    (Some(wallpaper), _) => Some(wallpaper),
+                    (None, WallpaperFallback::System) => system,
+                    (None, WallpaperFallback::Generated | WallpaperFallback::Flat) => None,
+                };
+                match picture {
+                    Some(picture) => {
+                        painter.clipped(*rect, |clipped| clipped.image(picture, (scene.screen.x, scene.screen.y)));
+                        let shade = if active { 0.55 } else { 0.65 };
+                        painter.fill(*rect, Colour([0.0, 0.0, 0.0, shade]), theme.radius);
+                    }
+                    None if fallback == WallpaperFallback::Generated => {
+                        // Their accent, fading from one colour to the other.
+                        let strength = if active { 0.24 } else { 0.14 };
+                        let fill = (own.0.alpha(strength), own.1.alpha(strength * 0.6));
+                        painter.shape(*rect, Shape { fill, radius: theme.radius, ..Default::default() });
+                    }
+                    None => {}
+                }
+            }
+            // The frame again over the picture, so its edge stays crisp.
             painter.shape(
                 *rect,
                 Shape {
-                    border_width: if lit { 1.5 } else { 1.0 },
-                    border: if lit { accent.0 } else { theme.border },
-                    glow_radius: if lit { theme.glow * 0.7 } else { 0.0 },
-                    glow: accent.0.alpha(0.2),
+                    border_width: 1.0,
+                    border: if lit { accent.0.mix(theme.border, 0.35) } else { theme.border },
                     radius: theme.radius,
                     ..Default::default()
                 },
             );
+            let title = greeter.accounts.get(*person).map_or("Not listed", |account| account.login.as_str());
+            draw_title(painter, theme, *rect, title, lit.then_some(accent.0));
             if active {
                 continue;
             }
             let font_size = f64::from(theme.font_size);
-            let size = (rect.w * 0.5).clamp(32.0, 64.0);
+            // Picture and name centred under the title, smaller in a short tile.
             let name_h = (font_size * 1.6).max(22.0);
-            let top = rect.y + ((rect.h - size - 10.0 - name_h) / 2.0).max(0.0);
+            let (below, room) = (rect.y + 32.0, rect.h - 32.0);
+            let size = (rect.w * 0.5).min(room - name_h - 22.0).clamp(32.0, 64.0);
+            let top = below + ((room - size - 10.0 - name_h) / 2.0).max(0.0);
             let picture = Rect::new(rect.x + (rect.w - size) / 2.0, top, size, size);
             self.greeter_draw_avatar(painter, greeter, *person, picture, own, 0.42);
-            let name = greeter.accounts.get(*person).map_or("Not listed", |account| account.name.as_str());
+            let name = greeter.accounts.get(*person).map_or("Someone else", |account| account.name.as_str());
             painter.text(
                 name,
                 Rect::new(rect.x + 8.0, picture.bottom() + 10.0, rect.w - 16.0, name_h),
@@ -1296,6 +1293,15 @@ fn palette_first(greeter: &Greeter) -> usize {
     (selected + 1).saturating_sub(PALETTE_ROWS)
 }
 
+/// What shows where nobody's shared wallpaper does: with per-user looks
+/// off, the `[theme]` wallpaper in place of a wash of someone's accent.
+fn wallpaper_fallback(greeter: &Greeter) -> WallpaperFallback {
+    match greeter.file.per_user.wallpaper_fallback {
+        WallpaperFallback::Generated if !greeter.file.per_user.wallpaper => WallpaperFallback::System,
+        other => other,
+    }
+}
+
 /// A tile, as windows are framed on the desktop.
 fn draw_frame(painter: &mut Painter, rect: Rect, focused: bool, accent: (Colour, Colour)) {
     let theme = painter.theme();
@@ -1355,32 +1361,51 @@ const PLUS: &str = r#"<path d="M12 5v14M5 12h14"/>"#;
 const CHEVRON_LEFT: &str = r#"<path d="M15 6l-6 6 6 6"/>"#;
 const CHEVRON_RIGHT: &str = r#"<path d="M9 6l6 6-6 6"/>"#;
 
-/// People as tiles across `width`, `gap` apart: which of `count` people
-/// (someone not listed last, always shown) get one, where each starts and
-/// how wide it is. The selected one is [`CARD_GROW`] times as wide as the
-/// others; when they would be too narrow, fewer people are shown, around
-/// the selected one.
-fn card_row(width: f64, gap: f64, count: usize, selected: usize) -> Vec<(usize, f64, f64)> {
+/// People as tiles in `area`, laid out as windows are: the selected person
+/// in the main tile, the others stacked beside it, `gap` apart, or below it
+/// on a tall panel. Which of `count` people (someone not listed last, always
+/// shown) get a tile, and where. When the stack would get too crowded, it
+/// shows fewer people, those nearest the selected one.
+fn card_tiles(area: Rect, gap: f64, count: usize, selected: usize) -> Vec<(usize, Rect)> {
     let listed = count.saturating_sub(1);
-    let fits = |shown: usize| {
-        let others = shown as f64;
-        let unit = (width - gap * others) / (others + CARD_GROW);
-        unit >= CARD_MIN && unit * CARD_GROW >= CARD_SELECTED_MIN
+    let tall = area.h > area.w;
+    let (main, stack) = if tall {
+        let main_h = ((area.h - gap) * CARD_MAIN).round();
+        (
+            Rect::new(area.x, area.y, area.w, main_h),
+            Rect::new(area.x, area.y + main_h + gap, area.w, area.h - main_h - gap),
+        )
+    } else {
+        let main_w = ((area.w - gap) * CARD_MAIN).round();
+        (
+            Rect::new(area.x, area.y, main_w, area.h),
+            Rect::new(area.x + main_w + gap, area.y, area.w - main_w - gap, area.h),
+        )
     };
-    let shown = (1..=listed).rev().find(|shown| fits(*shown)).unwrap_or(1.min(listed));
-    let people: Vec<usize> = tab_window(listed, selected, shown).chain(std::iter::once(listed)).collect();
-    let others = (people.len() - 1) as f64;
-    let unit = ((width - gap * others) / (others + CARD_GROW)).max(1.0);
-    let mut left = 0.0;
-    people
-        .into_iter()
-        .map(|person| {
-            let card = if person == selected { unit * CARD_GROW } else { unit };
-            let placed = (person, left, card);
-            left += card + gap;
-            placed
-        })
-        .collect()
+    // Along the stack: down it beside the main tile, across it below.
+    let length = if tall { stack.w } else { stack.h };
+    let fits = (((length + gap) / (CARD_MIN + gap)).floor() as usize).max(1);
+    let others: Vec<usize> = (0..listed).filter(|person| *person != selected).collect();
+    let unlisted = selected != listed;
+    let room = fits.saturating_sub(usize::from(unlisted)).max(1);
+    let around = others.partition_point(|person| *person < selected);
+    let mut stacked: Vec<usize> = others[tab_window(others.len(), around, room)].to_vec();
+    if unlisted {
+        stacked.push(listed);
+    }
+    let shown = stacked.len() as f64;
+    let each = ((length - gap * (shown - 1.0)) / shown).max(1.0);
+    let mut tiles = vec![(selected, main)];
+    tiles.extend(stacked.into_iter().enumerate().map(|(index, person)| {
+        let start = index as f64 * (each + gap);
+        let tile = if tall {
+            Rect::new(stack.x + start, stack.y, each, stack.h)
+        } else {
+            Rect::new(stack.x, stack.y + start, stack.w, each)
+        };
+        (person, tile)
+    }));
+    tiles
 }
 
 /// Which of `count` people's tabs show when only `fits` do: a run around the
@@ -1633,24 +1658,45 @@ mod tests {
     }
 
     #[test]
-    fn people_as_tiles_fill_the_row_around_the_selected_one() {
-        // Three listed and someone not listed, with room for all.
-        let row = card_row(1000.0, 10.0, 4, 1);
-        assert_eq!(row.iter().map(|(person, _, _)| *person).collect::<Vec<_>>(), [0, 1, 2, 3]);
-        let (_, left, width) = row[1];
-        assert!((width / row[0].2 - CARD_GROW).abs() < 1e-9);
-        assert!((left - row[0].2 - 10.0).abs() < 1e-9);
-        let (_, last_left, last_width) = row[3];
-        assert!((last_left + last_width - 1000.0).abs() < 1e-9);
-        // Too many for the width: fewer, around the selected one, and
-        // someone not listed still last.
-        let row = card_row(700.0, 10.0, 11, 6);
-        let people: Vec<usize> = row.iter().map(|(person, _, _)| *person).collect();
-        assert!(people.contains(&6) && people.last() == Some(&10) && people.len() < 11);
-        assert!(row.iter().all(|(person, _, width)| *person == 6 || *width >= CARD_MIN));
-        // Someone not listed selected: the last listed people beside them.
-        let row = card_row(700.0, 10.0, 11, 10);
-        assert_eq!(row.last().map(|(person, _, width)| (*person, *width >= CARD_SELECTED_MIN)), Some((10, true)));
+    fn people_as_tiles_put_the_selected_one_in_the_main_tile() {
+        let area = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        // Three listed and someone not listed: the selected one first and
+        // widest, the others stacked beside it in order.
+        let tiles = card_tiles(area, 10.0, 4, 1);
+        assert_eq!(tiles.iter().map(|(person, _)| *person).collect::<Vec<_>>(), [1, 0, 2, 3]);
+        let (_, main) = tiles[0];
+        assert_eq!((main.x, main.y, main.h), (0.0, 0.0, 800.0));
+        assert!(main.w > 600.0);
+        for (_, tile) in &tiles[1..] {
+            assert!((tile.x - (main.right() + 10.0)).abs() < 1e-9);
+            assert!((tile.right() - 1000.0).abs() < 1e-9);
+        }
+        assert!((tiles[3].1.bottom() - 800.0).abs() < 1e-9);
+        assert!((tiles[2].1.y - (tiles[1].1.bottom() + 10.0)).abs() < 1e-9);
+        // Someone not listed selected: everyone else in the stack.
+        let tiles = card_tiles(area, 10.0, 4, 3);
+        assert_eq!(tiles.iter().map(|(person, _)| *person).collect::<Vec<_>>(), [3, 0, 1, 2]);
+    }
+
+    #[test]
+    fn a_crowded_stack_shows_those_nearest_the_selected_one() {
+        let area = Rect::new(0.0, 0.0, 1000.0, 500.0);
+        let tiles = card_tiles(area, 10.0, 21, 12);
+        let people: Vec<usize> = tiles.iter().map(|(person, _)| *person).collect();
+        assert_eq!(people[0], 12);
+        assert_eq!(people.last(), Some(&20));
+        assert!(people.len() < 21);
+        assert!(tiles[1..].iter().all(|(_, tile)| tile.h >= CARD_MIN));
+        assert!(people[1..people.len() - 1].iter().all(|person| person.abs_diff(12) <= 3));
+    }
+
+    #[test]
+    fn on_a_tall_panel_the_stack_goes_below() {
+        let tiles = card_tiles(Rect::new(0.0, 0.0, 600.0, 1000.0), 10.0, 3, 0);
+        let (_, main) = tiles[0];
+        assert_eq!((main.w, main.y), (600.0, 0.0));
+        assert!(tiles[1..].iter().all(|(_, tile)| tile.y > main.bottom() && (tile.h - tiles[1].1.h).abs() < 1e-9));
+        assert!((tiles[2].1.right() - 600.0).abs() < 1e-9);
     }
 
     #[test]

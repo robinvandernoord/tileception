@@ -12,8 +12,9 @@ use crate::{config::Keyboard, theme::ThemeFile};
 pub enum UsersAs {
     /// A tab per person on the login tile.
     Tabs,
-    /// A tile per person side by side in the login panel, the selected one
-    /// widest and holding the field, each over that person's wallpaper.
+    /// A tile per person in the login panel, laid out like windows: the
+    /// selected one in the main tile, holding the field, the others stacked
+    /// beside it, each over that person's wallpaper.
     Tiles,
 }
 

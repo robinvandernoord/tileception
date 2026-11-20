@@ -75,9 +75,13 @@ users and sessions, panel layout, clock, theme and keyboard layout. Settings are
 read when the greeter starts.
 
 - **People as tiles:** with `users_as = "tiles"`, everyone gets a tile of
-  their own instead of a tab, over the wallpaper their Tileception session
-  shares. The selected person's tile is the widest and holds the password
-  field; click another tile or press **Super+Tab** to switch.
+  their own instead of a tab, laid out the way Tileception lays out windows.
+  The selected person's is the main tile and holds the password field; the
+  others are stacked beside it (below it on a portrait screen). Click another
+  tile or press **Super+Tab** to switch. Each tile is titled with the
+  person's login name and shows the wallpaper their Tileception session
+  shares, or else their accent colour (`wallpaper_fallback`). When the stack
+  is full, it shows the people nearest the selected one.
 - **Message panel:** add `motd` to `[panels] columns` to show a message to
   everyone who logs in. Set its `title` and `text` in `[motd]`, or point `file` at
   a file such as `/etc/motd`.
