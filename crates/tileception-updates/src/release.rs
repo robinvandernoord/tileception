@@ -50,21 +50,88 @@ pub enum Track {
     Never,
 }
 
+/// `Prompt=` in one file, read as update-manager reads it: `never` and
+/// `no` in any case switch offers off, `lts` keeps to LTS releases, and any
+/// other value offers every release.
+fn prompt(text: &str) -> Option<Track> {
+    let value = text.lines().map(str::trim).filter(|line| !line.starts_with('#')).find_map(|line| {
+        let (key, value) = line.split_once(['=', ':'])?;
+        key.trim().eq_ignore_ascii_case("prompt").then(|| value.trim().to_ascii_lowercase())
+    })?;
+    Some(match value.as_str() {
+        "never" | "no" => Track::Never,
+        "lts" => Track::Lts,
+        _ => Track::Normal,
+    })
+}
+
 pub fn parse_track(text: &str) -> Track {
-    let prompt = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with('#'))
-        .find_map(|line| line.strip_prefix("Prompt")?.trim_start().strip_prefix('='));
-    match prompt.map(str::trim) {
-        Some("normal") => Track::Normal,
-        Some("never") => Track::Never,
-        _ => Track::Lts,
+    prompt(text).unwrap_or_default()
+}
+
+/// Where the track is set.
+pub const TRACK_FILE: &str = "/etc/update-manager/release-upgrades";
+
+impl Track {
+    /// The value of `Prompt=`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Track::Lts => "lts",
+            Track::Normal => "normal",
+            Track::Never => "never",
+        }
     }
 }
 
-pub fn track(files: &Files) -> Track {
-    files.read("/etc/update-manager/release-upgrades").map(|text| parse_track(&text)).unwrap_or_default()
+/// The drop-ins read after the file, in this order; the last `Prompt=` counts.
+fn drop_ins(files: &Files) -> Vec<String> {
+    let mut texts: Vec<(std::path::PathBuf, String)> = std::fs::read_dir(files.path(&format!("{TRACK_FILE}.d")))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "cfg"))
+                .filter_map(|path| Some((path.clone(), std::fs::read_to_string(&path).ok()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    texts.sort();
+    texts.into_iter().map(|(_, text)| text).collect()
+}
+
+/// Which releases are offered, and whether a drop-in in
+/// `release-upgrades.d` decides it, so that the file cannot change it. None
+/// where there is no `do-release-upgrade` to set it for.
+pub fn track(files: &Files) -> Option<(Track, bool)> {
+    let main = files.read(TRACK_FILE)?;
+    let later = drop_ins(files).iter().filter_map(|text| prompt(text)).next_back();
+    Some(match later {
+        Some(track) => (track, true),
+        None => (parse_track(&main), false),
+    })
+}
+
+/// The file with `Prompt=` set to `track`, everything else as it was.
+pub fn set_track(text: &str, track: Track) -> String {
+    let prompt = format!("Prompt={}", track.word());
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let setting = lines.iter().position(|line| {
+        let line = line.trim();
+        !line.starts_with('#') && line.strip_prefix("Prompt").is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    match setting {
+        Some(number) => lines[number] = prompt,
+        None => match lines.iter().position(|line| line.trim() == "[DEFAULT]") {
+            Some(section) => lines.insert(section + 1, prompt),
+            None => {
+                lines.push("[DEFAULT]".into());
+                lines.push(prompt);
+            }
+        },
+    }
+    let mut changed = lines.join("\n");
+    changed.push('\n');
+    changed
 }
 
 /// The release named in `do-release-upgrade -c`: `New release '26.04 LTS' available.`
@@ -99,13 +166,13 @@ pub fn restart_required(files: &Files) -> bool {
     files.exists("/var/run/reboot-required") || files.exists("/run/reboot-required")
 }
 
-fn official(host: &str) -> bool {
+pub(crate) fn official(host: &str) -> bool {
     ["ubuntu.com", "canonical.com", "debian.org", "linuxmint.com"]
         .iter()
         .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
 }
 
-fn host_of(uri: &str) -> Option<&str> {
+pub(crate) fn host_of(uri: &str) -> Option<&str> {
     let rest = uri.split_once("://")?.1;
     rest.split(['/', ':']).next().filter(|host| !host.is_empty())
 }
@@ -170,6 +237,8 @@ pub enum State {
     Attention,
     /// Worth doing, not needed.
     Optional,
+    /// Worth knowing; the upgrade takes care of it.
+    Notice,
 }
 
 /// One thing to look at before upgrading.
@@ -241,8 +310,8 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
                 if count == 1 { "" } else { "s" },
                 if count == 1 { "s" } else { "" }
             ),
-            format!("{}. Switch them on again afterwards.", readiness.third_party.join(", ")),
-            State::Attention,
+            format!("{}. Switch them on again here afterwards.", readiness.third_party.join(", ")),
+            State::Notice,
         )
     });
     match readiness.on_battery {
@@ -259,7 +328,12 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
 
 /// Whether nothing stands in the way.
 pub fn ready(checks: &[Check]) -> bool {
-    !checks.iter().any(|check| check.state == State::Attention)
+    blocking(checks).next().is_none()
+}
+
+/// The checks that hold an upgrade back.
+pub fn blocking(checks: &[Check]) -> impl Iterator<Item = &Check> {
+    checks.iter().filter(|check| check.state == State::Attention)
 }
 
 #[cfg(test)]
@@ -288,6 +362,16 @@ mod tests {
         assert_eq!(parse_track("# comment\n[DEFAULT]\nPrompt=lts\n"), Track::Lts);
         assert_eq!(parse_track("[DEFAULT]\nPrompt = normal\n"), Track::Normal);
         assert_eq!(parse_track("#Prompt=never\n"), Track::Lts);
+        assert_eq!(parse_track("[DEFAULT]\nPrompt=NEVER\n"), Track::Never);
+        assert_eq!(parse_track("[DEFAULT]\nprompt = no\n"), Track::Never);
+        assert_eq!(parse_track("[DEFAULT]\nPrompt=LTS\n"), Track::Lts);
+        assert_eq!(parse_track("[DEFAULT]\nPrompt=sometimes\n"), Track::Normal);
+        let file = "# Default behavior for the release upgrader.\n#Prompt=never\n[DEFAULT]\nPrompt = lts\n";
+        let changed = set_track(file, Track::Normal);
+        assert_eq!(changed, "# Default behavior for the release upgrader.\n#Prompt=never\n[DEFAULT]\nPrompt=normal\n");
+        assert_eq!(parse_track(&changed), Track::Normal);
+        assert_eq!(set_track("# only comments\n[DEFAULT]\n", Track::Lts), "# only comments\n[DEFAULT]\nPrompt=lts\n");
+        assert_eq!(set_track("", Track::Normal), "[DEFAULT]\nPrompt=normal\n");
         assert_eq!(
             parse_offer(
                 "Checking for a new Ubuntu release\nNew release '26.04 LTS' available.\nRun 'do-release-upgrade' to upgrade to it.\n"
@@ -316,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_updates_and_sources_hold_an_upgrade_back() {
+    fn pending_updates_hold_an_upgrade_back_but_other_sources_do_not() {
         let mut readiness = Readiness { free: Some(38_000_000_000), on_battery: Some(false), ..Default::default() };
         assert!(ready(&checks(&readiness)));
         readiness.pending = 12;
@@ -326,6 +410,11 @@ mod tests {
         assert!(!ready(&list));
         assert_eq!(list[1].detail, "12 waiting, 3 for security");
         assert_eq!(list[2].title, "1 other source gets switched off");
+        assert_eq!(list[2].state, State::Notice);
+        readiness.pending = 0;
+        readiness.security = 0;
+        assert!(ready(&checks(&readiness)), "do-release-upgrade switches other sources off itself");
+        readiness.pending = 12;
         readiness.free = Some(2_000_000_000);
         assert_eq!(checks(&readiness)[0].state, State::Attention);
     }

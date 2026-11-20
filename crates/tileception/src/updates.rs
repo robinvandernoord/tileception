@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{RegistrationToken, channel};
 pub use tileception_updates::task::Task;
 use tileception_updates::{
-    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, task,
+    self as backend, Files, Snapshot, apps, apt, automatic, firmware, kernels, mirrors, release, switched_off, task,
 };
 use zeroize::Zeroizing;
 
@@ -98,8 +98,11 @@ pub struct Scan {
     /// The next release, when this look asked for it.
     offer: Option<release::Offer>,
     third_party: Vec<String>,
+    /// Other sources that are switched off, asked whether they serve the
+    /// installed release when this look could use the network.
+    switched_off: Vec<switched_off::Source>,
     free: Option<u64>,
-    track: release::Track,
+    track: Option<(release::Track, bool)>,
     automatic: automatic::Automatic,
     /// The mirror in use, from the package sources.
     mirror: Option<String>,
@@ -183,8 +186,12 @@ pub struct Updates {
     scanned: bool,
     offer: release::Offer,
     third_party: Vec<String>,
+    /// Other sources that are switched off, as an upgrade leaves them.
+    pub(crate) switched_off: Vec<switched_off::Source>,
     free: Option<u64>,
-    track: release::Track,
+    /// Which releases are offered, and whether a drop-in decides it; none
+    /// without `do-release-upgrade`.
+    track: Option<(release::Track, bool)>,
     /// The Flatpak, Snap and uvenv updates last listed.
     apps: Vec<apt::Update>,
     /// Flatpak, Snap and uvenv were asked at least once, so `apps` says what
@@ -423,8 +430,14 @@ impl Updates {
         &self.offer
     }
 
-    pub(crate) fn track(&self) -> release::Track {
-        self.track
+    pub(crate) fn track(&self) -> Option<release::Track> {
+        self.track.map(|(track, _)| track)
+    }
+
+    /// Whether the switch may change the track: the file decides it, and
+    /// offers are not switched off.
+    pub(crate) fn track_switchable(&self) -> bool {
+        matches!(self.track, Some((release::Track::Lts | release::Track::Normal, false)))
     }
 
     /// Packages to purge to clean up: old kernels, then leftovers.
@@ -750,6 +763,17 @@ impl Tileception {
         self.updates.skipped.clear();
         self.updates.merge();
         self.updates.third_party = scan.third_party;
+        // A look without the network keeps what the last one found out.
+        let mut found = scan.switched_off;
+        for source in found.iter_mut().filter(|source| source.available.is_none()) {
+            source.available = self
+                .updates
+                .switched_off
+                .iter()
+                .find(|old| old.uris == source.uris && old.suites == source.suites)
+                .and_then(|old| old.available);
+        }
+        self.updates.switched_off = found;
         self.updates.free = scan.free;
         self.updates.track = scan.track;
         self.updates.automatic = scan.automatic;
@@ -937,6 +961,10 @@ impl Tileception {
                     Task::Automatic(true) => "Automatic updates are on.".to_string(),
                     Task::Automatic(false) => "Automatic updates are off.".to_string(),
                     Task::Mirror(url) => format!("Now using {url}."),
+                    Task::Sources(sources) if sources.len() == 1 => "The source is switched on.".to_string(),
+                    Task::Sources(sources) => format!("{} sources are switched on.", sources.len()),
+                    Task::Track(release::Track::Normal) => "Every release is offered.".to_string(),
+                    Task::Track(_) => "Only LTS releases are offered.".to_string(),
                 };
                 if task.changes_packages() {
                     self.notify_locally("Updates", &message, Urgency::Low);
@@ -1141,8 +1169,10 @@ impl Tileception {
         let Some(name) = self.updates.release().map(str::to_string) else {
             return Err("no newer release is offered".into());
         };
-        if !release::ready(&self.updates_release_checks()) {
-            return Err(format!("not ready for {name}: see `updates open release`"));
+        let checks = self.updates_release_checks();
+        if !release::ready(&checks) {
+            let blocking: Vec<&str> = release::blocking(&checks).map(|check| check.title.as_str()).collect();
+            return Err(format!("not ready for {name}: {}", blocking.join("; ")));
         }
         let sudo = if task::is_root() { "" } else { "sudo " };
         self.run_in_terminal(&format!("{sudo}do-release-upgrade; echo; echo 'Press Enter to close.'; read -r _"))
@@ -1519,6 +1549,12 @@ fn scan(with_offer: bool, network: bool, firmware: bool) -> Scan {
     // Restarting is easier to explain than logging out and in again.
     snapshot.restart |= replaced();
     let codename = snapshot.system.archive.clone();
+    let mut off = switched_off::find(&files, &codename, &switched_off::codenames(&files));
+    if network {
+        for source in &mut off {
+            source.available = switched_off::available(&runner, source);
+        }
+    }
     let mirror = mirrors::current(&files);
     let mirror_check = (with_offer && network && mirror.is_some())
         .then(|| mirrors::check_current(&runner, &files, &codename))
@@ -1527,6 +1563,7 @@ fn scan(with_offer: bool, network: bool, firmware: bool) -> Scan {
         snapshot,
         offer: with_offer.then(|| release::offer(&runner)),
         third_party: release::third_party(&files),
+        switched_off: off,
         free: release::free_space(&runner),
         track: release::track(&files),
         automatic: automatic::read(&runner, &files),
@@ -1660,6 +1697,8 @@ fn run(
                     continue;
                 };
                 let refreshed = matches!(task, Task::Refresh) && result.is_ok();
+                // A new track offers another release: ask again at once.
+                let track = matches!(task, Task::Track(_)) && result.is_ok();
                 // After a refresh the apps are asked for too; after an
                 // install of apps, they are listed again.
                 let apps =
@@ -1674,7 +1713,7 @@ fn run(
                 if refreshed {
                     asked = Instant::now();
                 }
-                watch.scan(refreshed && !quiet, apps)
+                watch.scan((refreshed && !quiet) || track, apps)
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };

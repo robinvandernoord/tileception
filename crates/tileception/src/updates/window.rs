@@ -251,6 +251,8 @@ enum Row {
     Notify,
     /// Automatic updates, with the switch.
     Automatic,
+    /// Every release or only LTS releases, with the switch.
+    Track,
     /// Firmware from fwupd, listed or not, with the switch.
     Firmware,
     /// A tested mirror.
@@ -265,6 +267,8 @@ enum Row {
     Kernel(usize),
     Leftovers(Leftover),
     Check(usize),
+    /// Another package source that is switched off, with its button.
+    Source(usize),
     Entry(usize),
     /// The dependencies that are no longer needed, with what removes them.
     Unneeded,
@@ -283,7 +287,7 @@ impl Row {
             | Row::Mirror(_)
             | Row::TestMirrors
             | Row::Waiting(_) => 34.0,
-            Row::Check(_) | Row::Notify | Row::Automatic | Row::Firmware => 48.0,
+            Row::Check(_) | Row::Source(_) | Row::Notify | Row::Automatic | Row::Firmware | Row::Track => 48.0,
             Row::Text(_) => 18.0,
         }
     }
@@ -300,9 +304,11 @@ impl Row {
                 | Row::Unneeded
                 | Row::Notify
                 | Row::Automatic
+                | Row::Track
                 | Row::Firmware
                 | Row::Mirror(_)
                 | Row::TestMirrors
+                | Row::Source(_)
         )
     }
 }
@@ -345,12 +351,16 @@ enum Hit {
     Hold(bool),
     /// Turns automatic updates on or off.
     Automatic(bool),
+    /// Offers every release, or only LTS releases.
+    EveryRelease(bool),
     /// Lists firmware updates or stops listing them (`[updates] firmware`).
     Firmware(bool),
     /// Notifies about new updates or stops (`[updates] notify`).
     Notify(bool),
     TestMirrors,
     UseMirror(usize),
+    /// Switches a switched-off source on again.
+    SwitchOn(usize),
 }
 
 impl crate::ui::PointerAction for Hit {
@@ -424,6 +434,14 @@ fn switch_row(
 
 fn row_button(row: Rect) -> Rect {
     Rect::new(row.right() - 86.0, row.y + (row.h - 26.0) / 2.0, 78.0, 26.0)
+}
+
+/// Adds a control in a row, only as far as the list shows it: a row scrolled
+/// half out of view must not take clicks meant for the header above it.
+fn push_visible(controls: &mut Vec<(Rect, Hit)>, list: Rect, (rect, hit): (Rect, Hit)) {
+    if let Some(visible) = crate::settings::intersect(rect, list) {
+        controls.push((visible, hit));
+    }
 }
 
 fn tick_box(row: Rect) -> Rect {
@@ -712,6 +730,11 @@ impl Tileception {
                 }
                 rows.push(Row::Heading("Firmware".into(), String::new()));
                 rows.push(Row::Firmware);
+                // `never`, and a drop-in that decides, are left to whoever set them.
+                if updates.track_switchable() {
+                    rows.push(Row::Heading("Release upgrades".into(), "through do-release-upgrade".into()));
+                    rows.push(Row::Track);
+                }
                 let mirrors = &updates.mirrors;
                 let note = mirrors.current.clone().unwrap_or_else(|| "none found in the package sources".into());
                 rows.push(Row::Heading("Mirror".into(), note));
@@ -760,6 +783,10 @@ impl Tileception {
             Page::Release => {
                 rows.push(Row::Heading("Before you start".into(), String::new()));
                 rows.extend((0..self.updates_release_checks().len()).map(Row::Check));
+                if !self.updates.switched_off.is_empty() {
+                    rows.push(Row::Heading("Switched-off sources".into(), "an upgrade switches them off".into()));
+                    rows.extend((0..self.updates.switched_off.len()).map(Row::Source));
+                }
             }
             Page::History => {
                 rows.extend((0..snapshot.history.len()).map(Row::Entry));
@@ -1050,6 +1077,9 @@ impl Tileception {
                 if names.is_empty() { Ok(()) } else { self.updates_hold(names, hold) }
             }
             Hit::Automatic(enable) => self.updates_start(Task::Automatic(enable)),
+            Hit::EveryRelease(every) => {
+                self.updates_start(Task::Track(if every { release::Track::Normal } else { release::Track::Lts }))
+            }
             // The config file holds it; the running Tileception reloads it
             // from there and lists or drops firmware.
             Hit::Firmware(enable) => {
@@ -1070,6 +1100,16 @@ impl Tileception {
                 Some(mirror) => {
                     let url = mirror.url.clone();
                     self.updates_start(Task::Mirror(url))
+                }
+                None => Ok(()),
+            },
+            Hit::SwitchOn(index) => match self.updates.switched_off.get(index) {
+                Some(source) if source.available == Some(false) => {
+                    Err(format!("{} has no {} yet.", source.host(), source.suites.join(", ")))
+                }
+                Some(source) => {
+                    let reference = source.reference();
+                    self.updates_start(Task::Sources(vec![reference]))
                 }
                 None => Ok(()),
             },
@@ -1396,6 +1436,10 @@ impl Tileception {
                     let enabled = self.updates.automatic.enabled;
                     self.updates_window_activate(Hit::Automatic(!enabled));
                 }
+                Some(Row::Track) if !self.updates.busy() => {
+                    let every = self.updates.track() == Some(release::Track::Normal);
+                    self.updates_window_activate(Hit::EveryRelease(!every));
+                }
                 Some(Row::Firmware) => {
                     let enabled = self.config.file.updates.firmware;
                     self.updates_window_activate(Hit::Firmware(!enabled));
@@ -1431,13 +1475,20 @@ impl Tileception {
             keysyms::KEY_Return | keysyms::KEY_KP_Enter if !self.updates.busy() => match self.updates.window.page {
                 Page::Available => self.updates_window_activate(Hit::Install),
                 Page::Kernels => self.updates_window_activate(Hit::Apply),
-                Page::Release => self.updates_window_activate(Hit::Upgrade),
+                Page::Release => match self.updates_selected_row() {
+                    Some(Row::Source(index)) => self.updates_window_activate(Hit::SwitchOn(index)),
+                    _ => self.updates_window_activate(Hit::Upgrade),
+                },
                 Page::Settings => match self.updates_selected_row() {
                     Some(Row::Mirror(index)) => self.updates_window_activate(Hit::UseMirror(index)),
                     Some(Row::TestMirrors) => self.updates_window_activate(Hit::TestMirrors),
                     Some(Row::Automatic) => {
                         let enabled = self.updates.automatic.enabled;
                         self.updates_window_activate(Hit::Automatic(!enabled));
+                    }
+                    Some(Row::Track) => {
+                        let every = self.updates.track() == Some(release::Track::Normal);
+                        self.updates_window_activate(Hit::EveryRelease(!every));
                     }
                     Some(Row::Firmware) => {
                         let enabled = self.config.file.updates.firmware;
@@ -1622,6 +1673,9 @@ impl Tileception {
                 Row::Automatic if !updates.busy() => {
                     controls.push((visible, Hit::Automatic(!updates.automatic.enabled)));
                 }
+                Row::Track if !updates.busy() => {
+                    controls.push((visible, Hit::EveryRelease(updates.track() != Some(release::Track::Normal))));
+                }
                 Row::Notify => {
                     controls.push((visible, Hit::Notify(!self.config.file.updates.notify)));
                 }
@@ -1633,24 +1687,34 @@ impl Tileception {
                         mirror.error.is_none() && Some(&mirror.url) != updates.mirrors.current.as_ref()
                     });
                     if usable {
-                        controls.push((row_button(*rect), Hit::UseMirror(*mirror)));
+                        push_visible(&mut controls, frame.list, (row_button(*rect), Hit::UseMirror(*mirror)));
                     }
                 }
                 Row::Kernel(kernel) if !updates.busy() => {
                     if found.get(*kernel).is_some_and(|kernel| !kernel.running) {
-                        controls.push((row_button(*rect), Hit::Kernel(*kernel)));
+                        push_visible(&mut controls, frame.list, (row_button(*rect), Hit::Kernel(*kernel)));
                     }
                 }
-                Row::Leftovers(kind) if !updates.busy() => controls.push((row_button(*rect), Hit::Leftovers(*kind))),
-                Row::TestMirrors if !updates.busy() => controls.push((row_button(*rect), Hit::TestMirrors)),
+                Row::Leftovers(kind) if !updates.busy() => {
+                    push_visible(&mut controls, frame.list, (row_button(*rect), Hit::Leftovers(*kind)))
+                }
+                Row::TestMirrors if !updates.busy() => {
+                    push_visible(&mut controls, frame.list, (row_button(*rect), Hit::TestMirrors))
+                }
                 Row::Unneeded if !updates.busy() => {
-                    controls.push((row_button(*rect), Hit::Sheet(Sheet::Autoremove)));
+                    push_visible(&mut controls, frame.list, (row_button(*rect), Hit::Sheet(Sheet::Autoremove)));
                 }
                 Row::Series(..) => controls.push((visible, Hit::Fold(index))),
                 Row::Check(check) => {
                     if let Some((_, page)) = checks.get(*check).and_then(Self::updates_check_page) {
-                        controls.push((row_button(*rect), Hit::Page(page)));
+                        push_visible(&mut controls, frame.list, (row_button(*rect), Hit::Page(page)));
                     }
+                }
+                Row::Source(source)
+                    if !updates.busy()
+                        && updates.switched_off.get(*source).is_some_and(|source| source.available != Some(false)) =>
+                {
+                    push_visible(&mut controls, frame.list, (row_button(*rect), Hit::SwitchOn(*source)));
                 }
                 _ => {}
             }
@@ -1891,7 +1955,7 @@ impl Tileception {
                 Style::new(size * 1.1, theme.text).bold(),
             );
             painter.text(&detail, Rect::new(hero.x + 16.0, hero.y + 34.0, hero.w - 150.0, 20.0), muted);
-            let track = match updates.track() {
+            let track = match updates.track().unwrap_or_default() {
                 release::Track::Lts => "LTS releases only",
                 release::Track::Normal => "Every release",
                 release::Track::Never => "Offers switched off",
@@ -2040,6 +2104,17 @@ impl Tileception {
                             automatic.enabled,
                         );
                     }
+                    Row::Track => switch_row(
+                        painter,
+                        rect,
+                        (
+                            "Offer every release, not only LTS",
+                            "Each lasts 9 months, so upgrade twice a year. Back to LTS only takes effect at the next \
+                             LTS release.",
+                        ),
+                        (body, muted),
+                        updates.track() == Some(release::Track::Normal),
+                    ),
                     Row::Firmware => switch_row(
                         painter,
                         rect,
@@ -2257,6 +2332,7 @@ impl Tileception {
                             release::State::Ready => (glyph::CHECK, theme.accent),
                             release::State::Attention => (glyph::ALERT, theme.warning),
                             release::State::Optional => (glyph::MINUS, theme.muted),
+                            release::State::Notice => (glyph::ALERT, theme.muted),
                         };
                         painter.glyph(icon, Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, 20.0), 15, tint);
                         painter.text(&check.title, Rect::new(rect.x + 34.0, rect.y + 5.0, rect.w - 130.0, 20.0), body);
@@ -2267,6 +2343,28 @@ impl Tileception {
                         );
                         if let Some((label, _)) = Self::updates_check_page(check) {
                             draw_button(painter, row_button(rect), label, Look::Plain, pointer);
+                        }
+                    }
+                    Row::Source(source) => {
+                        let Some(source) = updates.switched_off.get(*source) else { continue };
+                        let suites = source.suites.join(", ");
+                        let file = source.file.rsplit('/').next().unwrap_or(&source.file);
+                        let (icon, tint, detail) = match source.available {
+                            Some(true) => (glyph::CHECK, theme.accent, format!("Has {suites} \u{b7} {file}")),
+                            Some(false) => (glyph::MINUS, theme.muted, format!("No {suites} yet \u{b7} {file}")),
+                            None => {
+                                (glyph::MINUS, theme.muted, format!("Could not be asked about {suites} \u{b7} {file}"))
+                            }
+                        };
+                        painter.glyph(icon, Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, 20.0), 15, tint);
+                        painter.text(
+                            &source.host(),
+                            Rect::new(rect.x + 34.0, rect.y + 5.0, rect.w - 130.0, 20.0),
+                            body,
+                        );
+                        painter.text(&detail, Rect::new(rect.x + 34.0, rect.y + 24.0, rect.w - 130.0, 18.0), muted);
+                        if !updates.busy() && source.available != Some(false) {
+                            draw_button(painter, row_button(rect), "Switch on", Look::Plain, pointer);
                         }
                     }
                     Row::Entry(entry) => {

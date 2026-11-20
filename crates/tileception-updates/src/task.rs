@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 
-use crate::{Files, apps, apt, automatic, firmware, mint, mirrors};
+use crate::{Files, apps, apt, automatic, firmware, mint, mirrors, release, switched_off};
 
 /// Where the helper is installed. The polkit policy names this path.
 pub const HELPER: &str = "/usr/libexec/tileception-updates-helper";
@@ -48,6 +48,12 @@ pub enum Task {
     Automatic(bool),
     /// Use this mirror for the release and its updates, then refresh.
     Mirror(String),
+    /// Switch these sources on again for the installed release, then
+    /// refresh: `<file>#<index>`, as `switched_off` lists them.
+    Sources(Vec<String>),
+    /// Offer every release or only LTS releases. Turning offers off is left
+    /// to the file itself.
+    Track(release::Track),
 }
 
 impl Task {
@@ -68,11 +74,13 @@ impl Task {
             Task::Automatic(true) => "Turning on automatic updates",
             Task::Automatic(false) => "Turning off automatic updates",
             Task::Mirror(_) => "Changing the mirror",
+            Task::Sources(_) => "Switching sources on",
+            Task::Track(_) => "Changing which releases are offered",
         }
     }
 
     /// Every title a task can have, to read a kept log back.
-    pub const TITLES: [&'static str; 15] = [
+    pub const TITLES: [&'static str; 17] = [
         "Checking for updates",
         "Installing updates",
         "Changing kernels",
@@ -88,6 +96,8 @@ impl Task {
         "Turning on automatic updates",
         "Turning off automatic updates",
         "Changing the mirror",
+        "Switching sources on",
+        "Changing which releases are offered",
     ];
 
     /// Whether the task needs root. A user's own Flatpaks and uvenv tools
@@ -103,7 +113,8 @@ impl Task {
             | Task::Remove(names)
             | Task::Snap(names)
             | Task::Firmware(names)
-            | Task::Uvenv(names) => names.len(),
+            | Task::Uvenv(names)
+            | Task::Sources(names) => names.len(),
             Task::InstallKeeping { names, .. } => names.len(),
             Task::Hold { names, .. } => names.len(),
             Task::Flatpak { refs, .. } => refs.len(),
@@ -194,6 +205,8 @@ impl Task {
             }
             // Backend-specific changes are handled by `run`.
             Task::Automatic(_) => Vec::new(),
+            Task::Track(release::Track::Never) => return Err("offers are switched off in the file itself".into()),
+            Task::Track(_) => Vec::new(),
             Task::Mirror(url) => {
                 if !mirrors::valid(url) {
                     return Err(format!("{url:?} is not a mirror address"));
@@ -203,13 +216,25 @@ impl Task {
                 // are put back. Other sources that fail are left alone.
                 vec![apt(vec!["update".into()])]
             }
+            Task::Sources(ids) => {
+                checked(ids, |reference| switched_off::parse_reference(reference).is_some(), "a switched-off source")?;
+                vec![apt(vec!["update".into()])]
+            }
         })
     }
 
     /// Whether the task changes packages, so that the computer must stay on
     /// until it ends. Refreshing the lists can be cut short.
     pub fn changes_packages(&self) -> bool {
-        !matches!(self, Task::Refresh | Task::Hold { .. } | Task::Automatic(_) | Task::Mirror(_))
+        !matches!(
+            self,
+            Task::Refresh
+                | Task::Hold { .. }
+                | Task::Automatic(_)
+                | Task::Mirror(_)
+                | Task::Sources(_)
+                | Task::Track(_)
+        )
     }
 
     /// The helper's arguments for this task. The first one is what the
@@ -249,6 +274,8 @@ impl Task {
             Task::Hold { names, hold } => change(if *hold { "hold" } else { "unhold" }, names.clone()),
             Task::Automatic(enable) => change("automatic", vec![if *enable { "on" } else { "off" }.to_string()]),
             Task::Mirror(url) => change("mirror", vec![url.clone()]),
+            Task::Sources(ids) => change("sources", ids.clone()),
+            Task::Track(track) => change("track", vec![track.word().to_string()]),
         }
     }
 
@@ -278,6 +305,9 @@ impl Task {
             }
             ["change", "automatic", which @ ("on" | "off")] => Task::Automatic(*which == "on"),
             ["change", "mirror", url] => Task::Mirror((*url).to_string()),
+            ["change", "sources", ids @ ..] => Task::Sources(owned(ids)),
+            ["change", "track", "lts"] => Task::Track(release::Track::Lts),
+            ["change", "track", "normal"] => Task::Track(release::Track::Normal),
             ["change", "kernels", mode @ ("purge" | "keep"), names @ ..] => {
                 let mut install = Vec::new();
                 let mut remove = Vec::new();
@@ -292,7 +322,7 @@ impl Task {
             }
             _ => {
                 return Err(
-                    "usage: refresh | change install|remove|autoremove|repair|kernels|flatpak|snap|firmware|hold|unhold|automatic|mirror ..."
+                    "usage: refresh | change install|remove|autoremove|repair|kernels|flatpak|snap|firmware|hold|unhold|automatic|mirror|sources|track ..."
                         .into(),
                 );
             }
@@ -401,6 +431,67 @@ fn replace_source(path: &std::path::Path, text: &str) -> Result<(), String> {
     replace().map_err(|error| format!("could not replace {}: {error}", path.display()))
 }
 
+/// Writes a new source file, never through a link that is already there.
+fn create_source(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(path)
+        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()))
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+/// Puts a source file back as it was: its text, or gone when it was new.
+fn put_back(path: &std::path::Path, text: Option<&str>) -> Result<(), String> {
+    match text {
+        Some(text) if path.exists() => replace_source(path, text),
+        Some(text) => create_source(path, text),
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("could not remove {}: {error}", path.display())),
+        },
+    }
+}
+
+/// Switches sources on, the last of a file first so that the others keep
+/// their place in it. What each file was goes to `restore`.
+fn switch_on(
+    files: &Files,
+    ids: &[String],
+    restore: &mut Vec<(String, Option<String>)>,
+    line: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    let release = release::system(files).archive;
+    let codenames = switched_off::codenames(files);
+    let mut chosen: Vec<(&str, usize, &str)> =
+        ids.iter().filter_map(|reference| switched_off::parse_reference(reference)).collect();
+    chosen.sort_by(|first, second| second.cmp(first));
+    chosen.dedup();
+    for (file, index, uri) in chosen {
+        let text = files.read(file).ok_or_else(|| format!("could not read {file}"))?;
+        let read = |path: &str| files.read(path);
+        for edit in switched_off::switch_on(file, &text, index, uri, &release, &codenames, &read)? {
+            let path = files.path(&edit.file);
+            line(&format!("{} {}", if edit.text.is_some() { "Writing" } else { "Removing" }, edit.file));
+            let before = files.read(&edit.file);
+            match &edit.text {
+                Some(text) if before.is_some() => replace_source(&path, text)?,
+                Some(text) => create_source(&path, text)?,
+                None => {
+                    std::fs::remove_file(&path).map_err(|error| format!("could not remove {}: {error}", edit.file))?
+                }
+            }
+            restore.push((edit.file, before));
+        }
+    }
+    Ok(())
+}
+
 /// Runs a task's programs. This process must be root. Every line they print
 /// goes to `line`, each command first as `$ command`; the error is why the
 /// last program failed.
@@ -422,6 +513,13 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                 .map_err(|error| format!("could not write {}: {error}", automatic::CONFIG))
         }
     };
+    if let Task::Track(track) = task {
+        let path = files.path(release::TRACK_FILE);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", release::TRACK_FILE))?;
+        line(&format!("{}: Prompt={}", release::TRACK_FILE, track.word()));
+        return replace_source(&path, &release::set_track(&text, *track));
+    }
     if let Task::Automatic(enable) = task {
         if automatic::Tool::here(&files) == automatic::Tool::Mint {
             let config = files.path(automatic::CONFIG);
@@ -462,9 +560,13 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
         }
         return write_automatic(*enable, line);
     }
-    // The sources as they were, to put back when the new mirror fails.
-    let mut restore: Vec<(&str, String)> = Vec::new();
+    // The sources as they were, to put back when the task fails: their
+    // text, or none for a file the task made.
+    let mut restore: Vec<(String, Option<String>)> = Vec::new();
     let result = (|| {
+        if let Task::Sources(ids) = task {
+            switch_on(&files, ids, &mut restore, line)?;
+        }
         if let Task::Mirror(url) = task {
             let current = mirrors::current(&files).ok_or("no Ubuntu mirror was found in the package sources")?;
             for path in mirrors::FILES {
@@ -473,7 +575,7 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                 if changed != text {
                     line(&format!("{path}: {current} \u{2192} {url}"));
                     replace_source(&files.path(path), &changed)?;
-                    restore.push((path, text));
+                    restore.push((path.to_string(), Some(text)));
                 }
             }
         }
@@ -529,6 +631,12 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                         result = Err(failed);
                     }
                 }
+                // Another source that fails is not a reason to switch these
+                // off again; one of these, or sources apt cannot read, is.
+                Task::Sources(ids) if result.is_err() && !switched_off::failed(&errors, ids) => {
+                    restore.clear();
+                    line("W: the refresh failed for another reason; the sources stay switched on");
+                }
                 Task::InstallKeeping { keep, .. } if !keep.is_empty() => {
                     result = result.map_err(|error| {
                         format!(
@@ -560,7 +668,7 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
         let mut failures = Vec::new();
         for (path, text) in restore.into_iter().rev() {
             line(&format!("Putting {path} back"));
-            if let Err(error) = replace_source(&files.path(path), &text) {
+            if let Err(error) = put_back(&files.path(&path), text.as_deref()) {
                 line(&format!("W: could not put {path} back: {error}"));
                 failures.push(error);
             }
@@ -605,6 +713,12 @@ mod tests {
             Task::Automatic(true),
             Task::Automatic(false),
             Task::Mirror("https://mirror.example.org/ubuntu".into()),
+            Task::Sources(strings(&[
+                "/etc/apt/sources.list.d/docker.sources#0#https://download.docker.com/linux/ubuntu",
+                "/etc/apt/sources.list#1#https://example.org/apt",
+            ])),
+            Task::Track(release::Track::Lts),
+            Task::Track(release::Track::Normal),
         ];
         for task in tasks {
             assert_eq!(Task::from_args(&task.to_args()), Ok(task));
@@ -646,6 +760,11 @@ mod tests {
             &["change", "automatic", "maybe"],
             &["change", "mirror", "file:///etc"],
             &["change", "mirror", "http://a", "http://b"],
+            &["change", "sources"],
+            &["change", "track", "never"],
+            &["change", "track"],
+            &["change", "sources", "/etc/shadow#0"],
+            &["change", "sources", "/etc/apt/sources.list.d/../../shadow.sources#0"],
         ] {
             assert!(Task::from_args(&strings(args)).is_err(), "{args:?} was taken");
         }
@@ -674,6 +793,8 @@ mod tests {
         ]));
         assert_eq!(firmware.commands().map(|commands| commands.len()), Ok(2));
         assert!(Task::TITLES.contains(&Task::Mirror(String::new()).title()));
+        assert!(Task::TITLES.contains(&Task::Sources(Vec::new()).title()));
+        assert!(Task::TITLES.contains(&Task::Track(release::Track::Lts).title()));
     }
 
     #[test]
