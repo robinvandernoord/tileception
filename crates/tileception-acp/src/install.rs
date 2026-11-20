@@ -163,9 +163,7 @@ fn unpack_file(archive: &Path, name: &str, sha256: &str, cmd: &str, partial: &Pa
     let destination = partial.as_os_str();
     let lower = name.to_lowercase();
     if lower.ends_with(".zip") {
-        if let Some(members) = zip_members(archive_path) {
-            refuse_unsafe_members(&members)?;
-        }
+        refuse_unsafe_members(&zip_members(archive_path)?)?;
         refuse_larger(most, "unzip", &[OsStr::new("-p"), archive_path])?;
         run("unzip", &[OsStr::new("-q"), archive_path, OsStr::new("-d"), destination])?;
     } else if is_tarball(&lower) {
@@ -212,18 +210,20 @@ fn listing(program: &str, args: &[&OsStr]) -> Result<String, String> {
 
 /// The members of a zip archive, one a line, however this system's unzip
 /// lists them: Info-ZIP's `-Z1`, `zipinfo`, or the table `unzip -l` prints,
-/// which is all BusyBox has. Nothing when none of them works; what was
-/// unpacked is looked over afterwards either way.
-fn zip_members(archive: &OsStr) -> Option<String> {
+/// which is all BusyBox has. An archive that cannot be listed is refused:
+/// what lands outside the folder would not be seen afterwards.
+fn zip_members(archive: &OsStr) -> Result<String, String> {
     listing("unzip", &[OsStr::new("-Z1"), archive])
         .or_else(|_| listing("zipinfo", &[OsStr::new("-1"), archive]))
-        .ok()
-        .or_else(|| listing("unzip", &[OsStr::new("-l"), archive]).ok().map(|table| names_in_table(&table)))
+        .or_else(|_| listing("unzip", &[OsStr::new("-l"), archive]).and_then(|table| names_in_table(&table)))
+        .map_err(|error| format!("the zip archive could not be listed, so it is not unpacked ({error})"))
 }
 
-/// The names in what `unzip -l` prints: the rows that start with a length, a
-/// date and a time.
-fn names_in_table(table: &str) -> String {
+/// The names in what `unzip -l` prints: every row between the two dashed
+/// lines starts with a length, a date and a time, and there are as many as
+/// the last line counts. A row that does not, such as the rest of a name
+/// with a line break in it, refuses the archive.
+fn names_in_table(table: &str) -> Result<String, String> {
     let name = |line: &str| {
         let mut rest = line;
         for column in 0..3 {
@@ -242,7 +242,21 @@ fn names_in_table(table: &str) -> String {
         }
         Some(rest.trim_start().to_string())
     };
-    table.lines().filter_map(name).collect::<Vec<_>>().join("\n")
+    let unreadable = || "unzip -l printed a list that cannot be read".to_string();
+    let lines: Vec<&str> = table.lines().collect();
+    let dashed: Vec<usize> =
+        lines.iter().enumerate().filter(|(_, line)| line.trim_start().starts_with("---")).map(|(row, _)| row).collect();
+    let [first, last] = dashed[..] else { return Err(unreadable()) };
+    let names =
+        lines[first + 1..last].iter().map(|line| name(line)).collect::<Option<Vec<_>>>().ok_or_else(unreadable)?;
+    let counted = lines
+        .get(last + 1)
+        .and_then(|footer| footer.split_whitespace().nth(1))
+        .and_then(|count| count.parse::<usize>().ok());
+    if counted != Some(names.len()) {
+        return Err(unreadable());
+    }
+    Ok(names.join("\n"))
 }
 
 /// Refuses an archive with a member that is absolute or climbs out with
@@ -287,6 +301,23 @@ fn refuse_larger(most: u64, program: &str, args: &[&OsStr]) -> Result<(), String
     if total > most { Err(too_large(most)) } else { Ok(()) }
 }
 
+/// Whether `target`, followed from `folder` inside `root` one part at a
+/// time, never leaves `root`.
+fn stays_within(root: &Path, folder: &Path, target: &Path) -> bool {
+    use std::path::Component;
+    let Ok(start) = folder.strip_prefix(root) else { return false };
+    let mut depth = start.components().count();
+    for part in target.components() {
+        match part {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir if depth > 0 => depth -= 1,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
+}
+
 fn too_large(most: u64) -> String {
     format!("the archive unpacks to more than {} MB", most / 1_000_000)
 }
@@ -314,8 +345,10 @@ fn refuse_unsafe_files(root: &Path, most: u64) -> Result<(), String> {
                 }
             } else if kind.is_symlink() {
                 let target = std::fs::read_link(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-                // Followed all the way, through other links as well.
-                let stays = !target.is_absolute() && path.canonicalize().is_ok_and(|real| real.starts_with(&inside));
+                // Not out even to come back, as the folder is renamed once
+                // it is whole; and followed all the way, through other links.
+                let within = path.parent().is_some_and(|folder| stays_within(root, folder, &target));
+                let stays = within && path.canonicalize().is_ok_and(|real| real.starts_with(&inside));
                 if !stays {
                     return Err(format!(
                         "the archive holds a link that points outside it: {} to {}",
@@ -376,8 +409,27 @@ mod tests {
     fn zip_members_are_read_from_unzips_table() {
         // As Info-ZIP and BusyBox print it.
         let table = "Archive:  tool.zip\n  Length      Date    Time    Name\n---------  ---------- -----   ----\n        0  2026-11-19 20:00   tool/\n     1234  2026-11-19 20:00   tool/bin/my tool\n       12  11-19-2026 20:00   ../climbs\n---------                     -------\n     1246                     3 files\n";
-        assert_eq!(names_in_table(table), "tool/\ntool/bin/my tool\n../climbs");
-        assert!(refuse_unsafe_members(&names_in_table(table)).is_err());
+        let names = names_in_table(table).expect("a table");
+        assert_eq!(names, "tool/\ntool/bin/my tool\n../climbs");
+        assert!(refuse_unsafe_members(&names).is_err());
+        // A name with a line break hides the rest on a row of its own.
+        let broken = table.replace("tool/bin/my tool\n", "tool/bin/my tool\n../../../x\n");
+        assert!(names_in_table(&broken).is_err());
+        // So does a count that does not match, or no table at all.
+        assert!(names_in_table(&table.replace("3 files", "4 files")).is_err());
+        assert!(names_in_table("Archive:  tool.zip\n").is_err());
+    }
+
+    #[test]
+    fn links_may_not_leave_even_to_come_back() {
+        let root = Path::new("/r/installed.part");
+        let folder = root.join("lib");
+        assert!(stays_within(root, &folder, Path::new("../tool")));
+        assert!(stays_within(root, &folder, Path::new("./x/../y")));
+        assert!(stays_within(root, root, Path::new("lib/tool.so")));
+        assert!(!stays_within(root, root, Path::new("../installed.part/tool")));
+        assert!(!stays_within(root, &folder, Path::new("../../installed.part/tool")));
+        assert!(!stays_within(root, &folder, Path::new("/r/installed.part/tool")));
     }
 
     /// A folder to work in, and a way to make an archive of `source/plugin`.
@@ -446,7 +498,9 @@ mod tests {
         let partial = staged(&work, &inside, &sha256, MAX_UNPACKED).expect("links inside are fine");
         assert!(partial.join("tool.so").is_file());
 
-        for (name, target) in [("home", "/home"), ("up", "../.."), ("nowhere", "lib/missing")] {
+        for (name, target) in
+            [("home", "/home"), ("up", "../.."), ("nowhere", "lib/missing"), ("back", "../installed.part/lib/tool.so")]
+        {
             std::os::unix::fs::symlink(target, plugin.join(name)).expect("a link");
             let (archive, sha256) = tar(&work, "outside.tar.gz", &[], ".");
             let error = staged(&work, &archive, &sha256, MAX_UNPACKED).expect_err("a link outside");

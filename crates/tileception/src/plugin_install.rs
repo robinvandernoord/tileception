@@ -616,38 +616,16 @@ fn swap_in<Done>(
     }
 }
 
-/// Puts a release back that a run which never ended left set aside in
-/// `folder`, when nothing is at `dir` in its place. Says whether it did.
-fn recover_release(dir: &Path, folder: &Path) -> bool {
-    // The folder is the only thing set aside for a release: the first.
-    let stored = folder.join("0");
-    if std::fs::symlink_metadata(dir).is_ok() || !stored.is_dir() {
-        return false;
-    }
-    let back = dir.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::rename(&stored, dir));
-    match back {
-        Ok(()) => {
-            let _ = std::fs::remove_dir_all(folder);
-            // The folder for every plugin's, once it holds none.
-            if let Some(parent) = folder.parent() {
-                let _ = std::fs::remove_dir(parent);
+/// Puts back what updates that never ended left set aside, for every
+/// installed plugin.
+fn recover_set_aside(record: &Record) {
+    for plugin_id in record.plugins.keys() {
+        match Aside::recover(&data_dir().join("set-aside").join(plugin_id)) {
+            Ok(true) => {
+                tracing::info!("put the plugin {plugin_id} back, which an update that never ended had set aside")
             }
-            true
-        }
-        Err(error) => {
-            tracing::warn!("{} could not be put back from {}: {error}", dir.display(), stored.display());
-            false
-        }
-    }
-}
-
-/// Puts back every release an update that never ended left set aside.
-fn recover_releases(record: &Record) {
-    for (plugin_id, installed) in &record.plugins {
-        if installed.tool == Tool::Release
-            && recover_release(&release_dir(plugin_id), &data_dir().join("set-aside").join(plugin_id))
-        {
-            tracing::info!("put the plugin {plugin_id} back, which an update that never ended had set aside");
+            Ok(false) => {}
+            Err(error) => tracing::warn!("{plugin_id}: {error}"),
         }
     }
 }
@@ -808,6 +786,9 @@ fn links_into(link: &Path, dir: &Path) -> bool {
     std::fs::read_link(link).is_ok_and(|target| target.starts_with(dir))
 }
 
+/// The list of what [`Aside`] moved, in its folder.
+const MOVED: &str = "moved.json";
+
 /// An installed plugin's environment and links, moved out of the way while
 /// its replacement installs, so a failed update can put them back.
 struct Aside {
@@ -817,19 +798,29 @@ struct Aside {
 }
 
 impl Aside {
-    /// Moves `paths` into `folder`, or moves nothing.
+    /// Moves `paths` into `folder`, or moves nothing. What an earlier run
+    /// left there is put back first, where nothing has replaced it.
     fn take(folder: PathBuf, paths: Vec<PathBuf>) -> Result<Self, String> {
-        // Left by an update that ended without finishing: what it moved was
-        // replaced since, or the update starts over now.
-        let _ = std::fs::remove_dir_all(&folder);
+        Self::recover(&folder)?;
         std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
         let mut aside = Aside { moved: Vec::new(), folder };
+        let mut listed: Vec<(usize, PathBuf)> = Vec::new();
         for (index, path) in paths.into_iter().enumerate() {
             if std::fs::symlink_metadata(&path).is_err() {
                 continue;
             }
             let stored = aside.folder.join(index.to_string());
-            if let Err(error) = std::fs::rename(&path, &stored) {
+            // Listed before it moves, so a run that ends in between can
+            // still be undone.
+            listed.push((index, path.clone()));
+            let moved = serde_json::to_string(&listed)
+                .map_err(|error| error.to_string())
+                .and_then(|text| {
+                    std::fs::write(aside.folder.join(MOVED), text)
+                        .map_err(|error| format!("{}: {error}", aside.folder.display()))
+                })
+                .and_then(|()| std::fs::rename(&path, &stored).map_err(|error| error.to_string()));
+            if let Err(error) = moved {
                 let error = format!("Could not set {} aside: {error}", path.display());
                 aside.restore()?;
                 return Err(error);
@@ -837,6 +828,42 @@ impl Aside {
             aside.moved.push((path, stored));
         }
         Ok(aside)
+    }
+
+    /// Puts back what a run that never ended left in `folder`, where nothing
+    /// is in its place, and removes the rest, which was replaced since. Says
+    /// whether anything came back. What cannot be put back stays, and is an
+    /// error.
+    fn recover(folder: &Path) -> Result<bool, String> {
+        if std::fs::symlink_metadata(folder).is_err() {
+            return Ok(false);
+        }
+        let kept = || {
+            format!("{} holds what an update that never ended set aside; put it back or remove it", folder.display())
+        };
+        let listed: Vec<(usize, PathBuf)> = match std::fs::read_to_string(folder.join(MOVED)) {
+            Ok(text) => serde_json::from_str(&text).map_err(|_| kept())?,
+            // Nothing listed was moved: an earlier version's folder, or one
+            // that ended before it moved anything.
+            Err(_) if std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_none()) => Vec::new(),
+            Err(_) => return Err(kept()),
+        };
+        let mut back = false;
+        for (index, path) in listed.iter().rev() {
+            let stored = folder.join(index.to_string());
+            if std::fs::symlink_metadata(&stored).is_ok() && std::fs::symlink_metadata(path).is_err() {
+                path.parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|()| std::fs::rename(&stored, path))
+                    .map_err(|error| format!("{}: {error}; {}", path.display(), kept()))?;
+                back = true;
+            }
+        }
+        std::fs::remove_dir_all(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+        if let Some(parent) = folder.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        Ok(back)
     }
 
     /// Puts everything back where it was.
@@ -1559,8 +1586,8 @@ impl Runner {
         let dir = release_dir(plugin_id);
         let folder = data_dir().join("set-aside").join(plugin_id);
         let ours = before.as_ref().is_some_and(|installed| installed.tool == Tool::Release);
-        if ours && recover_release(&dir, &folder) {
-            tracing::info!("put {} back, which an update that never ended had set aside", dir.display());
+        if Aside::recover(&folder)? {
+            tracing::info!("put {plugin_id} back, which an update that never ended had set aside");
         }
         if !ours && std::fs::symlink_metadata(&dir).is_ok() {
             return Err(format!(
@@ -1609,15 +1636,20 @@ impl Runner {
             record.save()?;
             self.finish(&mut record, lookup, before.as_ref(), &command)
         });
-        let (error, installed) = match (swapped, before) {
+        let (error, restored, installed) = match (swapped, before) {
             (Ok(done), _) => return Ok(done),
-            (Err(Swap { error, restored: true }), Some(installed)) => (error, installed),
-            (Err(Swap { error, .. }), _) => return Err(error),
+            (Err(Swap { error, restored }), Some(installed)) => (error, restored, installed),
+            (Err(Swap { error, .. }), None) => return Err(error),
         };
-        // The version from before is back: so are its record and manifest,
-        // and whatever its own `install` sets up.
+        // The record goes back either way: the new version is gone, and the
+        // one from before is in place or waits in set-aside to come back.
         record.plugins.insert(plugin_id.clone(), installed.clone());
         record.save()?;
+        if !restored {
+            return Err(error);
+        }
+        // The version from before is back: so is its manifest, and whatever
+        // its own `install` sets up.
         let manifest = manifest_path(plugin_id);
         if std::fs::read_to_string(&manifest).is_ok_and(|text| text == minimal_manifest(&command)) {
             std::fs::write(&manifest, minimal_manifest(&installed.command))
@@ -1908,7 +1940,7 @@ impl Tileception {
         let (sender, receiver) = channel::channel();
         self.installer.sender = Some(sender);
         self.installer.record = Record::load();
-        recover_releases(&self.installer.record);
+        recover_set_aside(&self.installer.record);
         self.loop_handle
             .insert_source(receiver, |event, _, state| {
                 if let channel::Event::Msg(report) = event {
@@ -2590,13 +2622,31 @@ needs = ["the 2fas CLI"]
         // installed: it comes back, and is not deleted by the next try.
         let _left = aside().unwrap();
         assert_eq!(installed(), None);
-        assert!(recover_release(&dir, &folder));
+        assert_eq!(Aside::recover(&folder), Ok(true));
         assert_eq!(installed().as_deref(), Some("1.1"));
         assert!(!folder.exists() && !work.join("aside").exists());
-        // With something installed, what lies aside is not put over it.
+        // The next try to set it aside puts it back first, too, whatever
+        // was set aside: a uv environment and its link as well.
+        let (venv, link) = (work.join("venvs/dice"), work.join("bin/dice"));
+        unpack(&venv, "uv");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(venv.join("dice"), &link).unwrap();
+        let _left = Aside::take(folder.clone(), vec![link.clone(), venv.clone()]).unwrap();
+        assert!(!venv.exists() && std::fs::symlink_metadata(&link).is_err());
+        let again = Aside::take(folder.clone(), vec![link.clone(), venv.clone()]).unwrap();
+        again.restore().unwrap();
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "uv");
+        // With something in its place, what lies aside was replaced since.
+        let _left = aside().unwrap();
+        unpack(&dir, "1.2");
+        assert_eq!(Aside::recover(&folder), Ok(false));
+        assert_eq!(installed().as_deref(), Some("1.2"));
+        assert!(!folder.exists());
+        // A folder it cannot tell about is left alone.
         unpack(&folder.join("0"), "0.9");
-        assert!(!recover_release(&dir, &folder));
-        assert_eq!(installed().as_deref(), Some("1.1"));
+        assert!(Aside::recover(&folder).unwrap_err().contains("put it back or remove it"));
+        assert!(Aside::take(folder.clone(), vec![dir.clone()]).is_err());
+        assert_eq!(std::fs::read_to_string(folder.join("0/dice")).unwrap(), "0.9");
         std::fs::remove_dir_all(&folder).unwrap();
 
         // A first install that fails stays, to be tried again.
