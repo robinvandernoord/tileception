@@ -38,6 +38,8 @@ pub struct ConfigFile {
     /// Exact touchscreen device names mapped to output connector names.
     pub touchscreens: BTreeMap<String, crate::touch::TouchscreenConfig>,
     pub idle: crate::idle::IdleConfig,
+    /// What Tileception's own lock screen shows of notifications.
+    pub lock: crate::lock::LockConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub updates: crate::updates::UpdatesConfig,

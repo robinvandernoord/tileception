@@ -35,6 +35,12 @@ impl Tileception {
         self.builtin_locker.user.as_deref()
     }
 
+    /// Whether locking shows Tileception's own lock screen, rather than
+    /// running another locker or nothing.
+    pub fn builtin_lock_screen(&self) -> bool {
+        self.shell().lock().is_builtin() && self.config.file.general.lock_command.is_none()
+    }
+
     pub fn lock_session(&mut self, suspend: bool) {
         if suspend && !self.config.file.general.suspend_enabled {
             tracing::warn!("suspend is disabled by [general] suspend_enabled = false");
@@ -91,10 +97,10 @@ impl Tileception {
         locker.submitted = None;
         let unavailable = locker.user.is_none() || locker.worker.is_none();
         let login = locker.user.clone().unwrap_or_else(|| "Locked".into());
-        let notifications = self.notification_status().map_or(0, |(count, _)| count);
+        self.notifications_locked();
         // Without animations in the session, the lock screen holds still too.
         let still = self.world.settings.animation <= 0.0;
-        let mut screen = Greeter::lock(&login, notifications, still);
+        let mut screen = Greeter::lock(&login, still);
         if unavailable {
             screen.notice = Some(UNAVAILABLE.into());
         }
