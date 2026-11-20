@@ -76,8 +76,10 @@ SHA-256 the release publishes and unpacks it into
 `$XDG_DATA_HOME/tileception/plugin-releases/<id>`. This needs `git`, `curl`,
 `tar` (or `unzip`) and `sha256sum`, and neither uvenv nor Python. The launcher
 shows the archive, the release's tag and the commit that tag is at before
-anything is downloaded. An archive whose checksum does not match, or one
-with a file that would land outside its folder, is not installed. The
+anything is downloaded. An archive is not installed when its checksum does
+not match, when a file in it would land outside its folder or a link in it
+points outside or nowhere, when it holds anything but files, folders and
+links, or when it would unpack to more than 2 GB. The
 checksum comes from the same release as the archive, so it shows the download
 arrived whole and is the file GitHub lists; as with a Python package, it does
 not vouch for whoever published it. Only public repositories install this
@@ -119,8 +121,12 @@ installs that commit. A plugin from a release moves to the newest release
 (or stays at the tag you installed), and its archive replaces the one before;
 it is up to date while the tag, the commit it is at and the archive's
 checksum are the same. A notification lists each plugin as updated, up to date
-or failed; one failure does not stop the others, and a plugin whose update
-failed keeps the version it had.
+or failed; one failure does not stop the others. A plugin from a release keeps
+the version it had when its update fails, whether the download, the checks
+or the new version's own `install` failed: the installed version runs until
+the new one is unpacked, and is deleted only once the new one has set itself
+up. A Python package keeps the version it had when the new one could not be
+installed.
 
 Removing runs the plugin's own `uninstall` first, so it can stop its timers,
 then removes the package, or the folder a release was unpacked into. It deletes the manifest only if installing created

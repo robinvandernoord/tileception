@@ -384,7 +384,7 @@ fn names_part(name: &str, word: &str) -> bool {
 
 /// The archive among a release's files for Linux on `architecture`. One
 /// built for glibc is preferred, then one that does not say, then musl,
-/// which runs anywhere.
+/// which runs anywhere; among those, the plain build with the shortest name.
 fn pick_asset<'assets>(assets: &'assets [Asset], architecture: &str) -> Option<&'assets Asset> {
     let libc = |name: &str| {
         if names_part(name, "gnu") || names_part(name, "glibc") {
@@ -395,12 +395,17 @@ fn pick_asset<'assets>(assets: &'assets [Asset], architecture: &str) -> Option<&
             1
         }
     };
+    // A build for newer processors only, or one for debugging, loses to the
+    // plain one; so does a longer name, which says more than is asked for.
+    let variant = |name: &str| {
+        ["v2", "v3", "v4", "debug", "dbg", "debuginfo", "symbols", "dsym"].iter().any(|word| names_part(name, word))
+    };
     assets
         .iter()
         .filter(|asset| tileception_acp::install::is_archive(&asset.name))
         .filter(|asset| names_part(&asset.name, "linux") && !names_part(&asset.name, "android"))
         .filter(|asset| architecture_names(architecture).iter().any(|word| names_part(&asset.name, word)))
-        .min_by_key(|asset| (libc(&asset.name), asset.name.clone()))
+        .min_by_key(|asset| (libc(&asset.name), variant(&asset.name), asset.name.len(), asset.name.clone()))
 }
 
 /// A SHA-256 in hex, lowercase, or nothing when `text` is not one.
@@ -422,12 +427,24 @@ fn pick_checksum(assets: &[Asset], archive: &Asset) -> Option<Checksum> {
     if let Some(asset) = assets.iter().find(|asset| own.contains(&lower(asset))) {
         return Some(Checksum::Listed { url: asset.browser_download_url.clone(), own: true });
     }
+    // A list that says it is SHA-256 comes before one that does not say,
+    // and one of another kind of hash is no use.
     let list = |asset: &&Asset| {
         let name = lower(asset);
-        (name.contains("checksums") || name.contains("sha256sums") || name == "sha256sum.txt")
-            && ![".sig", ".asc", ".pem", ".minisig", ".sigstore", ".json"].iter().any(|ending| name.ends_with(ending))
+        let signature =
+            [".sig", ".asc", ".pem", ".minisig", ".sigstore", ".json"].iter().any(|ending| name.ends_with(ending));
+        let other = ["sha512", "sha384", "sha224", "sha1", "md5", "blake", "b2sum", "b3sum"]
+            .iter()
+            .any(|hash| name.contains(hash));
+        let says = name.contains("sha256");
+        let fits = !signature && (name.contains("checksums") || name.contains("sha256sums") || name == "sha256sum.txt");
+        (fits && (says || !other)).then_some((!says, name))
     };
-    assets.iter().find(list).map(|asset| Checksum::Listed { url: asset.browser_download_url.clone(), own: false })
+    assets
+        .iter()
+        .filter_map(|asset| list(&asset).map(|rank| (rank, asset)))
+        .min_by(|(one, _), (other, _)| one.cmp(other))
+        .map(|(_, asset)| Checksum::Listed { url: asset.browser_download_url.clone(), own: false })
 }
 
 /// The checksum of `archive` in a checksum file, as `sha256sum` writes them:
@@ -551,6 +568,88 @@ fn install_args(source: &Source, lookup: &Lookup) -> Vec<String> {
     }
     args.push(requirement(source, lookup));
     args
+}
+
+/// Why a release was not swapped in, and whether what was there is back.
+#[derive(Debug, PartialEq, Eq)]
+struct Swap {
+    error: String,
+    restored: bool,
+}
+
+/// Puts the unpacked release `staged` at `dir`, where the installed version
+/// was until `aside` took it, and lets `finish` set it up. The installed
+/// version is deleted only once that worked; otherwise it comes back and
+/// the new one goes. A first install that fails stays for another try.
+fn swap_in<Done>(
+    staged: &Path,
+    dir: &Path,
+    aside: Option<Aside>,
+    finish: impl FnOnce() -> Result<Done, String>,
+) -> Result<Done, Swap> {
+    let placed = dir
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::rename(staged, dir))
+        .map_err(|error| format!("{}: {error}", dir.display()));
+    let failed = match placed.and_then(|()| finish()) {
+        Ok(done) => {
+            if let Some(aside) = aside {
+                aside.discard();
+            }
+            return Ok(done);
+        }
+        Err(error) => error,
+    };
+    let Some(aside) = aside else {
+        let _ = std::fs::remove_dir_all(staged);
+        return Err(Swap { error: failed, restored: false });
+    };
+    let _ = std::fs::remove_dir_all(staged);
+    let _ = std::fs::remove_dir_all(dir);
+    match aside.restore() {
+        Ok(()) => Err(Swap { error: failed, restored: true }),
+        Err(stuck) => Err(Swap {
+            error: format!("{failed}; the installed version could not be put back: {stuck}"),
+            restored: false,
+        }),
+    }
+}
+
+/// Puts a release back that a run which never ended left set aside in
+/// `folder`, when nothing is at `dir` in its place. Says whether it did.
+fn recover_release(dir: &Path, folder: &Path) -> bool {
+    // The folder is the only thing set aside for a release: the first.
+    let stored = folder.join("0");
+    if std::fs::symlink_metadata(dir).is_ok() || !stored.is_dir() {
+        return false;
+    }
+    let back = dir.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::rename(&stored, dir));
+    match back {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(folder);
+            // The folder for every plugin's, once it holds none.
+            if let Some(parent) = folder.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+            true
+        }
+        Err(error) => {
+            tracing::warn!("{} could not be put back from {}: {error}", dir.display(), stored.display());
+            false
+        }
+    }
+}
+
+/// Puts back every release an update that never ended left set aside.
+fn recover_releases(record: &Record) {
+    for (plugin_id, installed) in &record.plugins {
+        if installed.tool == Tool::Release
+            && recover_release(&release_dir(plugin_id), &data_dir().join("set-aside").join(plugin_id))
+        {
+            tracing::info!("put the plugin {plugin_id} back, which an update that never ended had set aside");
+        }
+    }
 }
 
 /// A plugin installed from a repository.
@@ -1443,8 +1542,9 @@ impl Runner {
         self.finish(&mut record, lookup, before.as_ref(), &command)
     }
 
-    /// Unpacks the release archive looked up in place of the installed one,
-    /// which comes back if that fails.
+    /// Unpacks the release archive looked up beside the installed one, and
+    /// puts it in its place once it is whole. The installed one stays aside
+    /// until the plugin has set itself up, and comes back if that fails.
     fn install_release(
         &self,
         source: &Source,
@@ -1452,60 +1552,83 @@ impl Runner {
         release: &Release,
     ) -> Result<(String, Option<Configure>), String> {
         let package = &lookup.package;
+        let plugin_id = &package.plugin_id;
         conflict(&Record::load(), source, package)?;
         let mut record = Record::load();
-        let before = record.plugins.get(&package.plugin_id).cloned();
-        let dir = release_dir(&package.plugin_id);
+        let before = record.plugins.get(plugin_id).cloned();
+        let dir = release_dir(plugin_id);
+        let folder = data_dir().join("set-aside").join(plugin_id);
         let ours = before.as_ref().is_some_and(|installed| installed.tool == Tool::Release);
+        if ours && recover_release(&dir, &folder) {
+            tracing::info!("put {} back, which an update that never ended had set aside", dir.display());
+        }
         if !ours && std::fs::symlink_metadata(&dir).is_ok() {
             return Err(format!(
                 "{} is in the way, and no installed plugin put it there; remove it first",
                 dir.display()
             ));
         }
+        let uvenv = match &before {
+            Some(installed) if installed.tool == Tool::Uvenv => self.find(Tool::Uvenv)?,
+            _ => PathBuf::new(),
+        };
+        // What is installed keeps running while this downloads and unpacks.
+        self.step(format!("Downloading {} of {} {}", release.asset, package.name, release.tag));
+        let staged = tileception_acp::install::stage(&release.url, &release.sha256, "", &dir)
+            .map_err(|error| format!("Did not install {}: {error}", package.name))?;
+        let unstage = |error: String| {
+            let _ = std::fs::remove_dir_all(&staged);
+            format!("Did not install {}: {error}", package.name)
+        };
+        let program = find_program(&staged, &package.script).map_err(unstage)?;
+        let command = dir.join(program.strip_prefix(&staged).unwrap_or(&program));
         let aside = match &before {
             Some(installed) => {
-                self.step(format!("Setting {} aside until its replacement is installed", installed.package));
-                let uvenv = if installed.tool == Tool::Uvenv { self.find(Tool::Uvenv)? } else { PathBuf::new() };
-                let folder = data_dir().join("set-aside").join(&package.plugin_id);
-                Some(Aside::take(folder, self.old_paths(&uvenv, &package.plugin_id, installed))?)
+                self.step(format!("Setting {} aside until its replacement is set up", installed.package));
+                Some(Aside::take(folder, self.old_paths(&uvenv, plugin_id, installed)).map_err(unstage)?)
             }
             None => None,
         };
-        self.step(format!("Downloading {} of {} {}", release.asset, package.name, release.tag));
-        let placed = tileception_acp::install::download(&release.url, &release.sha256, "", &dir)
-            .and_then(|()| find_program(&dir, &package.script));
-        let command = match placed {
-            Ok(command) => command,
-            Err(error) => {
-                let _ = std::fs::remove_dir_all(&dir);
-                return Err(match aside.map_or(Ok(()), Aside::restore) {
-                    Ok(()) => format!("Did not install {}: {error}", package.name),
-                    Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
-                });
-            }
-        };
-        if let Some(aside) = aside {
-            aside.discard();
-        }
-        let had_manifest = manifest_path(&package.plugin_id).exists();
+        let had_manifest = manifest_path(plugin_id).exists();
         let wrote_before = before.as_ref().is_some_and(|installed| installed.wrote_manifest);
-        // No commit until setup is through, so an update tries it again.
-        record.plugins.insert(
-            package.plugin_id.clone(),
-            Installed {
-                source: source.to_string(),
-                commit: None,
-                package: package.name.clone(),
-                tool: Tool::Release,
-                command: command.clone(),
-                wrote_manifest: wrote_before || !had_manifest,
-                release: Some(release.tag.clone()),
-                sha256: Some(release.sha256.clone()),
-            },
-        );
+        let swapped = swap_in(&staged, &dir, aside, || {
+            // No commit until setup is through, so an update tries it again.
+            record.plugins.insert(
+                plugin_id.clone(),
+                Installed {
+                    source: source.to_string(),
+                    commit: None,
+                    package: package.name.clone(),
+                    tool: Tool::Release,
+                    command: command.clone(),
+                    wrote_manifest: wrote_before || !had_manifest,
+                    release: Some(release.tag.clone()),
+                    sha256: Some(release.sha256.clone()),
+                },
+            );
+            record.save()?;
+            self.finish(&mut record, lookup, before.as_ref(), &command)
+        });
+        let (error, installed) = match (swapped, before) {
+            (Ok(done), _) => return Ok(done),
+            (Err(Swap { error, restored: true }), Some(installed)) => (error, installed),
+            (Err(Swap { error, .. }), _) => return Err(error),
+        };
+        // The version from before is back: so are its record and manifest,
+        // and whatever its own `install` sets up.
+        record.plugins.insert(plugin_id.clone(), installed.clone());
         record.save()?;
-        self.finish(&mut record, lookup, before.as_ref(), &command)
+        let manifest = manifest_path(plugin_id);
+        if std::fs::read_to_string(&manifest).is_ok_and(|text| text == minimal_manifest(&command)) {
+            std::fs::write(&manifest, minimal_manifest(&installed.command))
+                .map_err(|error| format!("{}: {error}", manifest.display()))?;
+        }
+        self.step(format!("Setting {} up again as it was", installed.package));
+        let kept = match self.setup(plugin_id, &installed.command) {
+            Ok(()) => "the installed version was kept".to_string(),
+            Err(again) => format!("the installed version was put back, but its own install failed ({again})"),
+        };
+        Err(format!("{error}; {kept}"))
     }
 
     /// The rest of installing, once the program is in place: lets the plugin
@@ -1785,6 +1908,7 @@ impl Tileception {
         let (sender, receiver) = channel::channel();
         self.installer.sender = Some(sender);
         self.installer.record = Record::load();
+        recover_releases(&self.installer.record);
         self.loop_handle
             .insert_source(receiver, |event, _, state| {
                 if let channel::Event::Msg(report) = event {
@@ -2244,6 +2368,18 @@ needs = ["the 2fas CLI"]
         let plain = ["dice-linux-x64-musl.zip", "dice-linux-x64.zip"].map(asset).to_vec();
         assert_eq!(picked(&plain, "x86_64").as_deref(), Some("dice-linux-x64.zip"));
         assert_eq!(picked(&plain[..1], "x86_64").as_deref(), Some("dice-linux-x64-musl.zip"));
+        // A build for newer processors or for debugging does not win a tie,
+        // whatever the order of the names.
+        let variants = [
+            "dice-linux-amd64-debug.tar.gz",
+            "dice-linux-amd64-v3.tar.gz",
+            "dice-linux-amd64.tar.gz",
+            "dice-linux-amd64.tar.gz.zip",
+        ]
+        .map(asset)
+        .to_vec();
+        assert_eq!(picked(&variants, "x86_64").as_deref(), Some("dice-linux-amd64.tar.gz"));
+        assert_eq!(picked(&variants[..2], "x86_64").as_deref(), Some("dice-linux-amd64-v3.tar.gz"));
         // A bare program or an installer is not an archive.
         let bare = ["dice-linux-x86_64", "dice-linux-x86_64.deb"].map(asset).to_vec();
         assert_eq!(picked(&bare, "x86_64"), None);
@@ -2281,6 +2417,23 @@ needs = ["the 2fas CLI"]
             pick_checksum(&[plain.clone(), asset("SHA256SUMS")], &plain),
             Some(Checksum::Listed { url: asset("SHA256SUMS").browser_download_url, own: false })
         );
+        // A list of another hash does not shadow the SHA-256 one, in
+        // either order, and is not read as SHA-256 on its own.
+        let (sha512, sha256, unnamed) =
+            (asset("dice_sha512-checksums.txt"), asset("dice_sha256-checksums.txt"), asset("checksums.txt"));
+        for assets in
+            [[sha512.clone(), unnamed.clone(), sha256.clone()], [sha256.clone(), sha512.clone(), unnamed.clone()]]
+        {
+            assert_eq!(
+                pick_checksum(&assets, &plain),
+                Some(Checksum::Listed { url: sha256.browser_download_url.clone(), own: false })
+            );
+        }
+        assert_eq!(
+            pick_checksum(&[sha512.clone(), unnamed.clone()], &plain),
+            Some(Checksum::Listed { url: unnamed.browser_download_url.clone(), own: false })
+        );
+        assert_eq!(pick_checksum(&[sha512, asset("checksums.md5.txt")], &plain), None);
         // Another kind of digest, or none, is no checksum.
         let md5 = Asset { digest: Some("md5:abc".into()), ..asset(archive) };
         assert_eq!(pick_checksum(std::slice::from_ref(&md5), &md5), None);
@@ -2399,6 +2552,60 @@ needs = ["the 2fas CLI"]
         std::os::unix::fs::symlink("/bin/sh", dir.join("tileception-dice")).unwrap();
         assert_eq!(find_program(&dir, "tileception-dice"), Ok(dir.join("dice-1.2.0/tileception-dice")));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_update_keeps_the_installed_release() {
+        let work = std::env::temp_dir().join(format!("tileception-release-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let (dir, staged, folder) =
+            (work.join("releases/dice"), work.join("releases/dice.part"), work.join("aside/dice"));
+        let unpack = |into: &Path, version: &str| {
+            std::fs::create_dir_all(into).unwrap();
+            std::fs::write(into.join("dice"), version).unwrap();
+        };
+        let installed = || std::fs::read_to_string(dir.join("dice")).ok();
+        let aside = || Some(Aside::take(folder.clone(), vec![dir.clone()]).unwrap());
+        unpack(&dir, "1.0");
+
+        // The plugin's own install fails: the old version is back, whole.
+        unpack(&staged, "1.1");
+        let failed = swap_in(&staged, &dir, aside(), || {
+            // What runs meanwhile is the new version, with the old one kept.
+            assert_eq!(installed().as_deref(), Some("1.1"));
+            assert_eq!(std::fs::read_to_string(folder.join("0/dice")).unwrap(), "1.0");
+            Err::<(), _>("dice install failed".to_string())
+        });
+        assert_eq!(failed, Err(Swap { error: "dice install failed".into(), restored: true }));
+        assert_eq!(installed().as_deref(), Some("1.0"));
+        assert!(!staged.exists() && !folder.exists());
+
+        // It works: only now is the old version gone.
+        unpack(&staged, "1.1");
+        assert_eq!(swap_in(&staged, &dir, aside(), || Ok(7)), Ok(7));
+        assert_eq!(installed().as_deref(), Some("1.1"));
+        assert!(!staged.exists() && !folder.exists());
+
+        // A run that ended between setting aside and placing left nothing
+        // installed: it comes back, and is not deleted by the next try.
+        let _left = aside().unwrap();
+        assert_eq!(installed(), None);
+        assert!(recover_release(&dir, &folder));
+        assert_eq!(installed().as_deref(), Some("1.1"));
+        assert!(!folder.exists() && !work.join("aside").exists());
+        // With something installed, what lies aside is not put over it.
+        unpack(&folder.join("0"), "0.9");
+        assert!(!recover_release(&dir, &folder));
+        assert_eq!(installed().as_deref(), Some("1.1"));
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        // A first install that fails stays, to be tried again.
+        std::fs::remove_dir_all(&dir).unwrap();
+        unpack(&staged, "1.0");
+        let first = swap_in(&staged, &dir, None, || Err::<(), _>("dice install failed".to_string()));
+        assert_eq!(first, Err(Swap { error: "dice install failed".into(), restored: false }));
+        assert_eq!(installed().as_deref(), Some("1.0"));
+        std::fs::remove_dir_all(&work).unwrap();
     }
 
     #[test]
