@@ -4,6 +4,14 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.24.0 (2026-11-20)
+
+### Feature
+* **updates:** manage release tracks and restore switched-off sources
+
+### Fix
+* **release:** guard ISO publishing and clarify apt errors
+
 ## v0.23.2 (2026-11-19)
 
 ### Fix
