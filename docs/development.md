@@ -170,10 +170,111 @@ helper beside the `tileception` binary runs through `sudo`. Set
 `TILECEPTION_POLKIT=1` to make a nested or headless instance the polkit agent
 of the programs it starts.
 
+A nested or headless instance does not serve the desktop portal backend
+either, since the desktop it runs in has its own. To try screen sharing,
+typing or global shortcuts against an instance, give it a session bus of its
+own (`dbus-daemon --session --address=unix:path=...`) with
+`DBUS_SESSION_BUS_ADDRESS`, start it with `TILECEPTION_PORTAL=1`, and run
+`xdg-desktop-portal` and `xdg-desktop-portal-wlr` on that bus with the
+instance's `WAYLAND_DISPLAY`. `XDG_DESKTOP_PORTAL_DIR` points the portal at a
+directory holding this checkout's `resources/tileception.portal` with the
+system's other `.portal` files, and `XDG_CONFIG_HOME` at a directory whose
+`xdg-desktop-portal/` holds `resources/tileception-portals.conf`. Programs
+started in the instance then share its screens and windows through
+Tileception's launcher.
+
 Headless instances run Xwayland too, so X11 programs can be tried the same way.
 Start programs inside an instance with `tileception msg spawn <command line>`,
 drive them with `pointer`, `click`, `press`, `release`, `key` and `type`, and
 check the result with `screenshot <file.png>`.
+
+### Screen sharing
+
+Tileception is the ScreenCast portal backend (`screen_cast.rs`). It passes
+every call through to xdg-desktop-portal-wlr, which makes the PipeWire
+stream, and adds restore data of its own. The portal asks `tileception
+pick-source` (`share_pick.rs`), its dmenu-style chooser, what to share. That
+command asks the running compositor, which shows the choices in the
+launcher. Frames come from `ext-image-copy-capture-v1` (`image_copy.rs`) or
+`wlr-screencopy` (`capture.rs`).
+
+The portal's version decides most of the behaviour. Check it with
+`dpkg-query -W xdg-desktop-portal-wlr pipewire`. Ubuntu 24.04 ships 0.7.1,
+26.04 ships 0.8.1 and 26.10 ships 0.8.4.
+
+- **0.7** captures only whole screens, through `wlr-screencopy`. It passes
+  bare output names to the chooser and never sends the Closed signal.
+- **0.8** lists windows only when the compositor offers
+  `ext-image-copy-capture-v1` with a foreign-toplevel capture source.
+  Otherwise its log says `No supported targets specified`.
+- **0.8 through the wlr-screencopy path** sends one frame and stops
+  (upstream issues #369 and #411, fixed in 0.9.0). Its
+  `ext-image-copy-capture-v1` path does not have this problem.
+- **0.8 and a resized window:** when the size changes, 0.8 restarts its
+  stream. It then creates a new frame without destroying the one Tileception
+  holds for an idle window. The protocol calls that `duplicate_frame`, and
+  posting the error kills the portal (`a frame already exists` in its
+  journal). Tileception drops the old frame without sending it events
+  instead (`FrameData::replaced`). Sending it `failed` would break the
+  stream too, because the portal's handlers act on its current frame.
+- **Failing a frame with `buffer_constraints` stalls 0.8.4.** For a window
+  whose size changed, keep drawing into the buffer it has and announce the
+  new size instead.
+- **Idle windows:** an unchanged window sends a single frame, which a call
+  may drop. Idle windows are sent again once a second (`REFRESH`).
+
+Chromium-based browsers choose in a preview session. They then start the
+real capture in a new session with the portal's restore token. Some sites,
+such as Jitsi, start that capture twice within milliseconds. The portal
+frontend deletes a token once it is used, and xdg-desktop-portal-wlr gives
+restore data only for screens. So Tileception adds its own restore data
+(`("tileception", 1, {window|screen: id})`) and answers a second start that
+quickly follows a restored one (`unstarted`, `RETRY`).
+
+Restore tokens are the only way to tell a browser's "Share" from "Choose a
+different window": both send identical portal requests. Heuristics based on
+timing, new windows or the browser's "is sharing" bar were tried, and each
+one broke one of the two buttons.
+
+To try sharing against a headless instance, set it up as above. Then put a
+link to your build named `tileception` first on the `PATH` of
+xdg-desktop-portal-wlr, so that it runs your `pick-source` and not the
+installed one. Also give the portal `XDG_CONFIG_HOME/xdg-desktop-portal-wlr/Tileception`
+from `resources/xdg-desktop-portal-wlr.conf`. Start a browser in the
+instance on a getDisplayMedia test page, or on a Jitsi room, which starts
+the capture twice. Drive it with `click` and `key`, and check the stream in
+the page with `screenshot`. Use `click` without coordinates when testing
+what happens after a key closes the launcher: with coordinates the pointer
+moves first, and that can hide focus bugs. Run all of these as one
+transient user unit (`systemd-run --user --unit=...`) so that a single
+`systemctl --user stop` ends them. `pkill -f` patterns must not match your
+own shell's command line.
+
+To see what happened:
+
+- **The chooser's decisions:** set `RUST_LOG=info,smithay=warn,tileception::share_pick=debug,tileception::launcher=debug`.
+  The `share:` lines then show asked, chosen, answered from restore data,
+  and which code closed the launcher.
+- **The portal:** `journalctl --user -u xdg-desktop-portal-wlr -b` shows its
+  errors. To trace it, stop `xdg-desktop-portal-wlr.service` and run
+  `/usr/libexec/xdg-desktop-portal-wlr -r -l TRACE` with the session's
+  `WAYLAND_DISPLAY`. A frozen stream shows one `ready` and then no
+  `on process` lines.
+- **The browser:** run a second Vivaldi or Chromium with
+  `--user-data-dir=<tmp> --ozone-platform=wayland --enable-logging=stderr
+  --vmodule='*pipewire*=4,*screencast*=4,*portal*=4,*desktop_media*=4'`.
+  `desktop_capture_device ... Create(source=...)` marks the real capture.
+- **Another release's portal without a test machine:** run a container from
+  that release with `xdg-desktop-portal-wlr pipewire wireplumber dbus
+  gstreamer1.0-pipewire gstreamer1.0-tools`, as your uid, with
+  `--device /dev/dri` and the headless instance's Wayland socket
+  bind-mounted. Call `org.freedesktop.impl.portal.desktop.wlr` directly
+  (CreateSession, SelectSources, Start), then count frames with
+  `gst-launch-1.0 pipewiresrc target-object=<serial>
+  stream-properties="props,media.type=Video,media.category=Capture,media.role=Screen"
+  ! video/x-raw,format=BGRx ! fakesink silent=false -v`. WirePlumber
+  links the stream only with those properties, and negotiation fails
+  without the caps.
 
 ### Handoff between two instances
 

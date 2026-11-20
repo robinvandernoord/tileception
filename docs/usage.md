@@ -485,6 +485,26 @@ Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
 your Videos folder.
 
+### Sharing your screen
+
+When a program such as a browser or a video call asks to share your screen,
+the launcher opens with what you can share: your screens and, with
+xdg-desktop-portal-wlr 0.8 or newer (Ubuntu 26.04 and later), each open
+window. Type to narrow the list, then press **Enter** to share the one
+chosen; **Escape** shares nothing. A shared window is sent on its own, at its
+own size, without what lies around or over it. With the portal 0.7 that
+Ubuntu 24.04 ships, only whole screens can be shared.
+
+Browsers based on Chromium, such as Chrome, Vivaldi and Edge, show what you
+chose in a preview before sharing it; their **Share** button then shares
+that screen or window without asking again, and **Choose a different window**
+asks again.
+
+The launcher is the portal's chooser through
+`/etc/xdg/xdg-desktop-portal-wlr/Tileception` (or, for a session installed
+from source, `~/.config/xdg-desktop-portal-wlr/Tileception`). The portal reads
+it when it starts, so log out and back in after installing or updating.
+
 ### Colour picker
 
 **Ctrl+Print**, or "Pick a colour" in the launcher, shows a magnifier next to
