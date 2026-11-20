@@ -4,7 +4,7 @@ use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
     delegate_data_device, delegate_dmabuf, delegate_drm_syncobj, delegate_primary_selection, delegate_seat,
-    delegate_shm, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_decoration, delegate_xdg_dialog, delegate_xdg_foreign, delegate_xdg_shell,
     desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords},
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     reexports::{
@@ -37,9 +37,10 @@ use smithay::{
         },
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            decoration::XdgDecorationHandler,
+            decoration::XdgDecorationHandler, dialog::XdgDialogHandler,
         },
         shm::{ShmHandler, ShmState},
+        xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
 
@@ -157,7 +158,7 @@ impl CompositorHandler for Tileception {
                     // Placed where its parent is shown, once it has drawn.
                 } else if self.world.float_needs_size(window_id) && geo.size.w > 0 && geo.size.h > 0 {
                     // A new floating window has drawn at the size it wants.
-                    self.world.size_float(window_id, geo.size.w as f64, geo.size.h as f64);
+                    self.size_float(window_id, geo.size.w as f64, geo.size.h as f64);
                     self.apply_layout();
                 } else if let Some(rect) = self.world.float_rect(window_id) {
                     // A floating window that grew past its rectangle (a dialog
@@ -189,7 +190,9 @@ impl CompositorHandler for Tileception {
 }
 
 impl BufferHandler for Tileception {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+    fn buffer_destroyed(&mut self, buffer: &wl_buffer::WlBuffer) {
+        self.dashboard_buffer_destroyed(buffer);
+    }
 }
 
 impl ShmHandler for Tileception {
@@ -206,7 +209,7 @@ delegate_dispatch!(Tileception: [WlSurface: SurfaceUserData] => CompositorState)
 delegate_dispatch!(Tileception: [wl_callback::WlCallback: ()] => CompositorState);
 delegate_dispatch!(Tileception: [wl_subcompositor::WlSubcompositor: ()] => CompositorState);
 delegate_dispatch!(Tileception: [wl_subsurface::WlSubsurface: SubsurfaceUserData] => CompositorState);
-delegate_shm!(Tileception);
+// wl_shm is dispatched in dashboard_shm, which limits the dashboard's clients.
 
 /// Programs name a pointer shape (cursor-shape-v1) and Tileception draws it
 /// from its own theme; tablets have no pointer images of their own here.
@@ -412,6 +415,12 @@ impl XdgShellHandler for Tileception {
         self.remove_window(surface.wl_surface());
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(window_id) = self.window_id(surface.wl_surface()) {
+            self.window_parent_changed(window_id);
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         if let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(surface.clone()))
@@ -551,6 +560,31 @@ impl XdgShellHandler for Tileception {
 
 delegate_xdg_shell!(Tileception);
 
+// A program hands another one a handle to its window, so that the other's
+// window can be a dialog of it: the desktop portal's file chooser, for one.
+impl XdgForeignHandler for Tileception {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
+delegate_xdg_foreign!(Tileception);
+
+impl XdgDialogHandler for Tileception {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, _is_modal: bool) {
+        // The dialog takes the focus from its parent, or gives it up.
+        if let Some(area) = self.area_for_surface(toplevel.wl_surface())
+            && self.context_area().as_ref() != Some(&area)
+        {
+            self.with_area(&area, Self::apply_layout);
+            return;
+        }
+        self.apply_layout();
+    }
+}
+
+delegate_xdg_dialog!(Tileception);
+
 impl Tileception {
     /// Keeps popups inside the screen, relative to their window's place on it.
     fn unconstrain_popup(&mut self, popup: &PopupSurface) {
@@ -617,16 +651,41 @@ impl DmabufHandler for Tileception {
     }
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        // A dashboard plugin's buffers are limited in size and number
+        // before anything is imported for them, as its shm buffers are.
+        let dashboard = notifier.client().and_then(|client| crate::dashboard_shm::shared_of(&client));
+        if let Some(shared) = &dashboard {
+            let size = smithay::backend::allocator::Buffer::size(&dmabuf);
+            let largest = crate::dashboard_surface::LARGEST_BUFFER;
+            if size.w > largest || size.h > largest {
+                return notifier.invalid_dimensions();
+            }
+            if !shared.lock().is_ok_and(|mut counted| counted.shared.buffer().is_ok()) {
+                tracing::warn!("a dashboard plugin has too many buffers; its dmabuf is refused");
+                return notifier.failed();
+            }
+        }
         let renderer = match (self.udev.as_mut(), self.headless.as_mut()) {
             (Some(udev), _) => Some(&mut udev.renderer),
             (None, Some(headless)) => Some(&mut headless.renderer),
             _ => None,
         };
         let imported = renderer.is_some_and(|gles| gles.import_dmabuf(&dmabuf, None).is_ok());
-        if imported {
-            let _ = notifier.successful::<Tileception>();
+        let buffer = if imported {
+            notifier.successful::<Tileception>().ok()
         } else {
             notifier.failed();
+            None
+        };
+        match (dashboard, buffer) {
+            (Some(shared), Some(buffer)) => self.dashboard_dmabuf(&buffer, shared),
+            // Counted above, and never made.
+            (Some(shared), None) => {
+                if let Ok(mut counted) = shared.lock() {
+                    counted.shared.buffer_destroyed();
+                }
+            }
+            _ => {}
         }
     }
 }

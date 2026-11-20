@@ -4,10 +4,17 @@
 //! A plugin whose `[dashboard]` block sets `surface = true` is started with
 //! `WAYLAND_SOCKET`, one end of a socket pair. The other end joins a Wayland
 //! display of its own, which has only `wl_compositor`, `wl_subcompositor`,
-//! `wl_shm`, `wp_viewporter`, a pointer-only `wl_seat` and
-//! `tileception_dashboard_v1`. Nothing else Tileception offers exists there:
-//! no windows, keyboard, clipboard, outputs or screen capture. A client on
-//! the usual socket cannot reach the dashboard global at all.
+//! `wl_shm`, `zwp_linux_dmabuf_v1` where the main display has it,
+//! `wp_viewporter`, `wp_fractional_scale_manager_v1`, a pointer-only
+//! `wl_seat` and `tileception_dashboard_v1`. Nothing else Tileception offers
+//! exists there: no windows, keyboard, clipboard, outputs or screen capture.
+//! A client on the usual socket cannot reach the dashboard global at all.
+//!
+//! A plugin that draws on the GPU passes its buffers as dmabufs, with the
+//! formats and device the main display names, and never copies them through
+//! shared memory. One that binds the fractional scale manager is told the
+//! output's real scale, and draws one buffer pixel to one screen pixel at
+//! 1.5 as at 2. Shared memory is limited in `dashboard_shm`.
 //!
 //! Tileception places each item, tells the plugin its size, clips what it
 //! draws to that size and frames it with the item's title and the plugin's
@@ -24,12 +31,15 @@ use smithay::{
     reexports::{
         calloop::{Interest, Mode, PostAction, generic::Generic},
         wayland_server::{
-            Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
-            protocol::wl_surface::WlSurface,
+            Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
+            backend::{ClientId, ObjectId},
+            protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
         },
     },
     wayland::{
-        compositor::{self, CompositorState},
+        compositor::{self, CompositorState, TraversalAction, with_surface_tree_downward},
+        dmabuf::DmabufGlobal,
+        fractional_scale::FractionalScaleManagerState,
         shm::ShmState,
         viewporter::ViewporterState,
     },
@@ -39,6 +49,7 @@ use tileception_core::{Point, Rect};
 use crate::{
     Tileception,
     dashboard::{Shown, Slot},
+    dashboard_shm::ClientShared,
     render::{OutputElement, clip_elements, enlarged, physical_point},
     state::ClientState,
 };
@@ -61,7 +72,7 @@ use protocol::{tileception_dashboard_item_v1::TileceptionDashboardItemV1, tilece
 /// The role a surface takes as a dashboard item.
 const ROLE: &str = "tileception_dashboard_item_v1";
 /// The largest buffer side a dashboard item may commit.
-const LARGEST_BUFFER: i32 = 4096;
+pub(crate) const LARGEST_BUFFER: i32 = 4096;
 
 /// The dashboard's own display and the items drawn on it.
 #[derive(Default)]
@@ -69,6 +80,9 @@ pub struct Surfaces {
     display: Option<Restricted>,
     /// Items by (plugin, item id).
     items: HashMap<(String, String), Item>,
+    /// The dmabuf buffers of dashboard clients, which count against the
+    /// client's buffers until they are destroyed.
+    dmabufs: HashMap<ObjectId, ClientShared>,
 }
 
 /// The display dashboard plugins connect to, and its globals.
@@ -80,6 +94,10 @@ struct Restricted {
     _compositor: CompositorState,
     _shm: ShmState,
     _viewporter: ViewporterState,
+    _fractional_scale: FractionalScaleManagerState,
+    /// None where the main display has no dmabuf either: nested, and
+    /// headless on the software renderer.
+    _dmabuf: Option<DmabufGlobal>,
 }
 
 struct Item {
@@ -87,12 +105,16 @@ struct Item {
     resource: TileceptionDashboardItemV1,
     /// The last configure sent: width, height and scale.
     configured: Option<(i32, i32, i32)>,
+    /// The output scale its surfaces were last told.
+    scale: Option<f64>,
 }
 
 /// Who a dashboard client is.
 #[derive(Debug, Clone)]
 pub struct Owner {
     pub plugin: String,
+    /// The shared memory objects it has, which are limited.
+    pub shared: ClientShared,
 }
 
 impl Tileception {
@@ -109,7 +131,10 @@ impl Tileception {
             }
         }
         let Some(display) = &mut self.dashboard_surfaces.display else { return };
-        let data = ClientState { dashboard: Some(Owner { plugin: plugin.clone() }), ..ClientState::default() };
+        let data = ClientState {
+            dashboard: Some(Owner { plugin: plugin.clone(), shared: ClientShared::default() }),
+            ..ClientState::default()
+        };
         if let Err(error) = display.handle.insert_client(stream, Arc::new(data)) {
             tracing::warn!("Plugin {plugin}: dashboard connection refused: {error}");
         }
@@ -121,6 +146,15 @@ impl Tileception {
         let compositor = CompositorState::new::<Self>(&handle);
         let shm = ShmState::new::<Self>(&handle, Vec::new());
         let viewporter = ViewporterState::new::<Self>(&handle);
+        let fractional_scale = FractionalScaleManagerState::new::<Self>(&handle);
+        // The same formats and device as the main display's global, from
+        // the same state, so an imported buffer is handled the same way.
+        let dmabuf = match (&mut self.dmabuf, &self.dmabuf_feedback) {
+            (Some((state, _)), Some(feedback)) => {
+                Some(state.create_global_with_default_feedback::<Self>(&handle, feedback))
+            }
+            _ => None,
+        };
         handle.create_global::<Self, tileception_dashboard_v1::TileceptionDashboardV1, ()>(1, ());
         // A seat with a pointer only: no keyboard exists here.
         let mut seat = self.seat_state.new_wl_seat(&handle, "dashboard");
@@ -136,7 +170,40 @@ impl Tileception {
             }
             Ok(PostAction::Continue)
         })?;
-        Ok(Restricted { handle, seat, pointer, _compositor: compositor, _shm: shm, _viewporter: viewporter })
+        Ok(Restricted {
+            handle,
+            seat,
+            pointer,
+            _compositor: compositor,
+            _shm: shm,
+            _viewporter: viewporter,
+            _fractional_scale: fractional_scale,
+            _dmabuf: dmabuf,
+        })
+    }
+
+    /// A dashboard client's dmabuf was imported: it counts as one of the
+    /// client's buffers, which `admit` made room for.
+    pub(crate) fn dashboard_dmabuf(&mut self, buffer: &WlBuffer, shared: ClientShared) {
+        // Entries of clients that are gone, whose counts only this map holds.
+        self.dashboard_surfaces.dmabufs.retain(|_, counted| Arc::strong_count(counted) > 1);
+        self.dashboard_surfaces.dmabufs.insert(buffer.id(), shared);
+    }
+
+    /// A buffer is gone; a dashboard client's dmabuf no longer counts.
+    /// Buffers of both displays come here, and an object id does not say
+    /// which display it is on: a window's buffer may have the same one as a
+    /// plugin's. So the entry counts only when the buffer's own display
+    /// says it was that plugin's.
+    pub(crate) fn dashboard_buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        let Some(owner) = crate::dashboard_shm::shared_of_buffer(buffer) else { return };
+        let ours = self.dashboard_surfaces.dmabufs.get(&buffer.id()).is_some_and(|shared| Arc::ptr_eq(shared, &owner));
+        if ours
+            && let Some(shared) = self.dashboard_surfaces.dmabufs.remove(&buffer.id())
+            && let Ok(mut counted) = shared.lock()
+        {
+            counted.shared.buffer_destroyed();
+        }
     }
 
     /// Whether the seat is the dashboard's, whose pointer only reaches
@@ -231,13 +298,30 @@ impl Tileception {
         self.dashboard_slots(self.home_panel())
     }
 
+    /// Every surface of the items on screen, subsurfaces too.
+    pub(crate) fn with_dashboard_surfaces(&self, mut each: impl FnMut(&WlSurface, &compositor::SurfaceData)) {
+        let slots = self.current_dashboard_slots();
+        for (_, item) in self.placed_items(&slots) {
+            with_surface_tree_downward(
+                &item.surface,
+                (),
+                |_, _, ()| TraversalAction::DoChildren(()),
+                |surface, states, ()| each(surface, states),
+                |_, _, ()| true,
+            );
+        }
+    }
+
     /// Tells items their size when it changes; items left out get 0 by 0.
     pub(crate) fn configure_dashboard_items(&mut self) {
         if self.dashboard_surfaces.items.is_empty() || !self.dashboard_shown() {
             return;
         }
         let slots = self.current_dashboard_slots();
-        let scale = self.scale.ceil().max(1.0) as i32;
+        // The whole scale for the configure event; the output's own, which
+        // may be fractional, through the surfaces themselves.
+        let output_scale = self.scale;
+        let scale = output_scale.ceil().max(1.0) as i32;
         let mut sizes: HashMap<(String, String), (i32, i32, i32)> = HashMap::new();
         for slot in &slots {
             if let Shown::Surface { plugin, surface } = &slot.what {
@@ -250,6 +334,10 @@ impl Tileception {
             if item.configured != Some(wanted) {
                 item.resource.configure(wanted.0, wanted.1, wanted.2);
                 item.configured = Some(wanted);
+            }
+            if item.scale != Some(output_scale) {
+                tell_scale(&item.surface, output_scale);
+                item.scale = Some(output_scale);
             }
         }
     }
@@ -375,6 +463,18 @@ impl Tileception {
     }
 }
 
+/// Tells the item's surface and its subsurfaces the output's scale: the
+/// preferred buffer scale, and the fractional scale to those that asked.
+fn tell_scale(surface: &WlSurface, scale: f64) {
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, ()| TraversalAction::DoChildren(()),
+        |surface, states, ()| crate::scale::send_scale_state(surface, states, scale),
+        |_, _, ()| true,
+    );
+}
+
 impl GlobalDispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tileception {
     fn bind(
         _state: &mut Self,
@@ -419,7 +519,7 @@ impl Dispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tilecept
             return;
         }
         let resource = data_init.init(made, key.clone());
-        state.dashboard_surfaces.items.insert(key, Item { surface, resource, configured: None });
+        state.dashboard_surfaces.items.insert(key, Item { surface, resource, configured: None, scale: None });
         state.configure_dashboard_items();
         state.schedule_render();
     }

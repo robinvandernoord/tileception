@@ -6,8 +6,10 @@ Plugins are programs that speak MCP over stdio. A plugin can add:
 - cards under the launcher;
 - a block in the notification panel;
 - chips in the bar;
+- readings on the [lock screen](#lock-screen);
 - items on the [dashboard](#dashboard), including surfaces it draws itself;
-- tools that scripts call with `tileception msg plugin`.
+- tools that scripts call with `tileception msg plugin`;
+- tools for [the Wizard's agent](#wizard-tools).
 
 Plugins run as the session user, with the session's environment and
 permissions. Installing or enabling one lets it run, so only install plugins
@@ -18,7 +20,9 @@ you trust.
 These plugins ship inside the `tileception` binary and need no installation:
 
 - `home`: the [smart home](configuration.md#smart-home) block, `home` in the
-  launcher and its bar chip. It runs while `[home] enabled = true`.
+  launcher, its bar chip, the indoor temperature on the [lock
+  screen](#lock-screen) and tools for the Wizard's agent. It runs while
+  `[home] enabled = true`.
 - `folders`: `z` in the launcher, for often visited folders.
 - `timers`: `timer` in the launcher, with a card under the launcher for each
   timer. The launcher also hands sentences such as "set a timer for 10
@@ -138,6 +142,14 @@ args = ["--stdio"]
 [dashboard]
 # enabled = false
 # surface = true
+# confined = true
+
+[lock]
+# enabled = false
+
+[doctor]
+# enabled = false
+# tools = ["status"]
 ```
 
 `command` is one executable, not a shell command line: put each argument in
@@ -156,6 +168,12 @@ Each block switches on a place:
 - Bar chips show only with a `[bar]` block.
 - Dashboard items show only with a `[dashboard]` block.
   `surface = true` lets the plugin [draw its own items](#dashboard-surfaces).
+  `confined = true` starts the plugin [without the user's files or the
+  network](#confined-plugins).
+- Readings on the lock screen show only with a `[lock]` block;
+  `[plugins.home.lock] enabled = false` takes the indoor temperature off it.
+- The Wizard's agent gets the tools a plugin offers it unless `[doctor]` says
+  `enabled = false`; `tools` keeps only the tools it names.
 
 Without `prefixes`, the plugin's own from `launcher_info` apply. An empty list
 switches its launcher source off. A prefix is a nonempty word other than
@@ -294,7 +312,7 @@ symbols: `folder`, `file`, `globe`, `terminal`, `copy`, `home`, `search`,
 `bluetooth`, `headphones`, `headset`, `speaker`, `mouse`, `keyboard`,
 `gamepad`, `phone`, `laptop`, `monitor`, `camera`, `bell`, `lock`, `clock`,
 `play`, `pause`, `stop`, `next`, `previous`, `plus`, `minus`, `check` and
-`close`. Panel blocks, cards and bar chips only draw `glyph:` icons.
+`close`. Panel blocks, cards, bar chips and lock screen readings only draw `glyph:` icons.
 
 ### Launcher
 
@@ -591,8 +609,10 @@ With `surface = true` in its `[dashboard]` block, a plugin is started with
 `WAYLAND_SOCKET`, one end of a Wayland connection made for it alone. Wayland
 client libraries (libwayland in C, pywayland, wayland-rs and others) use it in
 place of `WAYLAND_DISPLAY` without extra code. The connection offers
-`wl_compositor`, `wl_subcompositor`, `wl_shm`, `wp_viewporter`, a `wl_seat`
-with a pointer and no keyboard, and
+`wl_compositor`, `wl_subcompositor`, `wl_shm`, `zwp_linux_dmabuf_v1` (where
+Tileception runs on a GPU, so not in a nested or software-rendered instance),
+`wp_viewporter`, `wp_fractional_scale_manager_v1`, a `wl_seat` with a pointer
+and no keyboard, and
 [`tileception_dashboard_v1`](../resources/protocols/tileception-dashboard-v1.xml),
 installed as `/usr/share/tileception/protocols/tileception-dashboard-v1.xml`.
 It has no windows, outputs, clipboard or screen capture.
@@ -606,19 +626,155 @@ To draw an item:
    buffers of at most 4096 pixels a side. A size of 0 by 0 means the item is
    not on screen; keep the last buffer.
 
+A toolkit that draws on the GPU (EGL or Vulkan) finds `zwp_linux_dmabuf_v1`
+and passes its buffers without copying them through shared memory. The
+buffer scale in `configure` is the screen's scale rounded up, so at a scale of
+1.5 such a buffer is drawn smaller than it is. To stay sharp there, take a
+`wp_fractional_scale_v1` for the surface, draw the configured size times its
+`preferred_scale`, and give the buffer the configured size with
+`wp_viewport.set_destination`; GTK, Qt and SDL do this by themselves.
+
+Buffers have limits too: a `wl_shm_pool` of at most 64 MiB (one buffer of
+the largest size), at most 24 pools, and at most 48 buffers at a time,
+shared memory and dmabuf together. Destroy a buffer of a size the item no
+longer has once its `release` event says Tileception is done with it. A
+plugin that goes over a limit, with shared memory or a dmabuf, loses its
+connection, with the reason in the protocol error.
+
 Tileception clips what is drawn to the item's size. Frame callbacks arrive
 only while the item is on screen, so a plugin that draws on each callback
 uses no CPU while the dashboard is hidden. The surface gets pointer motion,
 buttons and scroll while the pointer is over it.
 
 The protocol limits what the plugin can do to the desktop, not what its
-process can do: it still runs as the session user.
+process can do: it still runs as the session user, unless its manifest
+[confines it](#confined-plugins).
 
 [`resources/plugins/lava-lamp`](../resources/plugins/lava-lamp) is a complete
 example in Python with pywayland: a lava lamp that changes colour when
 clicked, and a card whose Shake button calls the plugin's tool. Install
 pywayland, copy `lava-lamp.toml` to `~/.local/share/tileception/plugins/` and
 set its `command` to the absolute path of `lava-lamp.py`.
+
+#### Confined plugins
+
+A plugin that only draws and answers needs neither the user's files nor the
+network. With `confined = true` in its `[dashboard]` block, its process, and
+whatever that process starts, gets only:
+
+- the system folders to read and run programs from: `/usr`, `/bin`, `/sbin`,
+  `/lib*`, `/etc`, `/opt`, `/nix/store`, `/sys` and the font cache;
+- the place it is installed, to read and run: its Python environment and the
+  Python that environment was made from, or the folder its program lies in.
+  A program in a shared `bin` such as `~/.local/bin`, directly in the home
+  folder, or in a folder the home folder lies in (`/home`) gets only its own
+  file. Arguments never open anything, with one exception: the script that
+  a system interpreter (`python3`, `node`, `ruby`, `perl`, `lua`, `bash`,
+  `sh`) gets as its first argument is readable, as that one file. Modules
+  beside such a script are not, so a plugin added by hand as
+  `command = "python3"` with a script must be a single file to run confined;
+  install it instead, or make the script the `command`, to open its folder.
+  Python packages from `pip install --user` live in `~/.local/lib`, which a
+  confined plugin cannot read: the [lava lamp](#dashboard-surfaces) runs
+  confined only with pywayland installed system-wide or in its own
+  environment;
+- one private folder to write, `$XDG_STATE_HOME/tileception/plugins/<id>`
+  (`~/.local/state/tileception/plugins/<id>`), kept between runs and named in
+  `TILECEPTION_PLUGIN_DATA`. `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` and `TMPDIR`
+  point into it, so caches, temporary files and the buffer files Wayland
+  libraries create land there. A program written there cannot be started,
+  though an interpreter can still read a script from it;
+- `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and
+  the GPU in `/dev/dri`;
+- what it was started with: its pipes to Tileception and, with
+  `surface = true`, its dashboard connection;
+- a small environment: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+  `LANGUAGE`, `LC_*`, `TZ`, `XDG_DATA_DIRS`, `XDG_CONFIG_DIRS`, `PYTHON*`
+  and `TILECEPTION_PROTOCOLS` from the session, and the variables above.
+  The addresses of the session's bus, displays and SSH agent, and whatever
+  tokens the session's environment holds, stay behind.
+
+Everything else is refused: the home folder, `/tmp`, the session's runtime
+folder, other disks. The plugin can still see that a file exists and how big
+it is, never what is in it.
+
+It cannot make a socket that reaches anything: `socket`, `connect`, `bind`
+and `io_uring_setup` are refused, and of socket pairs only stream and
+sequenced-packet ones are left, which talk to each other alone. So it has no
+network (TCP, UDP or anything else, the local machine included), no D-Bus,
+and no way to the desktop's own Wayland or X11 display or to other programs'
+sockets. What is not covered: a socket that another program hands it over a
+connection it already has. Tileception hands it none.
+
+Linux's Landlock and seccomp do this, applied by Tileception before the
+plugin's program starts; the plugin needs no code for it and cannot undo it.
+Landlock needs Linux 5.13 or later. From Linux 6.12 the plugin also cannot
+send signals to programs outside itself; before that it can, as the session
+user. On a kernel without Landlock a plugin that asks for confinement is not
+started, and the log says why, instead of running unconfined.
+
+Confinement starts when Tileception runs the plugin. Installing does not have
+it: `plugins add`, updating and removing run the package's installer and the
+plugin's own `install`, `status` and `uninstall` as the session user with
+everything that user can reach, as any installed program does. Confinement
+protects against what a plugin does while it runs, not against a package you
+should not have installed.
+
+The option belongs to the plugin's one process, so it also holds for the
+plugin's launcher rows, bar chips and panel block, and when its dashboard
+items are switched off. `[plugins.<id>.dashboard] confined = false` in
+`config.toml` lifts it for a plugin you trust, and `confined = true` there
+confines a plugin whose manifest does not ask; a plugin that needs the
+network or your files then fails where it uses them.
+
+### Wizard tools
+
+A `tileception://doctor` resource names the tools the [Wizard](wizard.md)'s agent
+may use, from the plugin's `tools/list`, and what to tell the agent about
+them:
+
+```json
+{"tools":["status","why","set","toggle"],
+ "instructions":"The user's smart home devices. `status` lists them."}
+```
+
+The Wizard gives its agent one MCP server per plugin, named after the plugin ID,
+when an agent conversation starts: a plugin installed later reaches the agent
+from the next conversation (`/clear`) or restart (`/restart`). The server is
+`tileception doctor-mcp <id>`, which the agent starts. It lists the tools with
+their `tools/list` entries (without `outputSchema`) and passes each call to
+Tileception, which applies [the Wizard's permission mode](wizard.md#plugin-tools)
+and then calls the running plugin, like any other tool action. The agent never
+starts the plugin itself, and tools the plugin does not name here are refused.
+
+Mark tools that only read with the MCP annotation `"readOnlyHint": true`:
+The Wizard's Tweak mode lets them go ahead without asking. Answer with
+`structuredContent`; the agent reads its `text` field when it has one, else
+the JSON. The Wizard's calls have the usual three-second deadline once allowed.
+
+### Lock screen
+
+A `tileception://lock` resource holds readings for Tileception's own lock
+screen, for plugins with a `[lock]` block. Without the block, nothing of the
+plugin shows there, whatever it offers. The bundled smart home plugin offers
+the indoor temperature:
+
+```json
+{"readings":[{"title":"Indoors","value":"21.5°","icon":"glyph:thermometer"}]}
+```
+
+Readings are read-only: anyone at the locked screen can see them, so they take
+no input and have no actions, and a reading should not name people, devices or
+rooms. They show as pills in the clock tile, after the reading's `glyph:` icon,
+up to two per plugin, in the panel's order, as far as the tile is wide. A
+label is cut after 32 characters. Return no readings to show nothing.
+
+They follow the lock screen's privacy: when its `[lock]` settings in
+[`greeter.toml`](greeter.md#settings) show neither media nor the notification
+count, the lock screen shows nothing of the session until unlocked, readings
+included. They never show on the login screen, nor on the screen of an external
+locker such as swaylock, which draws only itself. Launcher sources never reach
+the lock screen; only this resource does.
 
 ### Commands
 

@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -44,8 +44,9 @@ pub fn listen(event_loop: &mut EventLoop<'static, Tileception>, path: &PathBuf) 
 /// Commands a plugin answers later.
 #[derive(Default)]
 pub struct Waiting {
-    /// Set while handling a command that will be answered later.
-    deferred: Option<u64>,
+    /// Set while handling a command that will be answered later: its
+    /// number, how long it may wait and what it is told after that.
+    deferred: Option<(u64, Duration, &'static str)>,
     /// Connections waiting, by request number.
     streams: HashMap<u64, UnixStream>,
 }
@@ -57,7 +58,27 @@ impl Tileception {
     /// The command being handled is answered by [`Tileception::reply_later`]
     /// with this number.
     pub(crate) fn defer_reply(&mut self, request: u64) {
-        self.ipc.deferred = Some(request);
+        self.defer_reply_for(request, PLUGIN_WAIT, "the plugin did not answer");
+    }
+
+    /// Like [`Tileception::defer_reply`], waiting up to `wait` and then
+    /// answering `late`.
+    pub(crate) fn defer_reply_for(&mut self, request: u64, wait: Duration, late: &'static str) {
+        self.ipc.deferred = Some((request, wait, late));
+    }
+
+    /// Whether a deferred command is still waiting for its answer: not
+    /// answered, timed out or given up by its sender.
+    pub(crate) fn reply_awaited(&self, request: u64) -> bool {
+        let Some(stream) = self.ipc.streams.get(&request) else { return false };
+        // The sender only reads now: end of file means it hung up.
+        if stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let waiting =
+            matches!((&*stream).read(&mut [0u8]), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock);
+        let _ = stream.set_nonblocking(false);
+        waiting
     }
 
     /// Answers a deferred command; nothing when it already timed out.
@@ -83,12 +104,12 @@ fn serve(state: &mut Tileception, stream: UnixStream) -> std::io::Result<()> {
         Ok(text) => text,
         Err(err) => format!("error: {err}\n"),
     };
-    if let Some(request) = state.ipc.deferred.take() {
+    if let Some((request, wait, late)) = state.ipc.deferred.take() {
         stream.set_write_timeout(Some(Duration::from_secs(1)))?;
         state.ipc.streams.insert(request, stream);
-        let timer = Timer::from_duration(PLUGIN_WAIT);
+        let timer = Timer::from_duration(wait);
         let _ = state.loop_handle.insert_source(timer, move |_, _, state| {
-            state.reply_later(request, Err("the plugin did not answer".into()));
+            state.reply_later(request, Err(late.into()));
             TimeoutAction::Drop
         });
         return Ok(());
@@ -188,16 +209,27 @@ pub fn describe(state: &Tileception) -> String {
 
 fn only_socket() -> std::io::Result<PathBuf> {
     let dir = socket_path("x").parent().map(PathBuf::from).unwrap_or_default();
-    let found: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("tileception-")))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sock"))
-        .collect();
-    match &found[..] {
+    match &sockets_in(&dir)?[..] {
         [one] => Ok(one.clone()),
         [] => Err(std::io::Error::other("no running Tileception found")),
         _ => Err(std::io::Error::other("several Tileceptions are running; set TILECEPTION_SOCKET")),
     }
+}
+
+/// The command sockets of the Tileceptions running from `dir`. A command
+/// socket is named after its Wayland display, which lies beside it; anything
+/// else called `tileception-*.sock`, such as the session's link to the SSH
+/// agent, is not an instance.
+fn sockets_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    Ok(std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            name.strip_prefix("tileception-")
+                .and_then(|name| name.strip_suffix(".sock"))
+                .is_some_and(|display| !display.is_empty() && dir.join(display).exists())
+        })
+        .collect())
 }
 
 /// `tileception msg ...`: sends a command to the running compositor.
@@ -263,5 +295,21 @@ mod tests {
         assert_eq!(unsendable(&words(&["plugin", "add", "python3", "/tmp/weather.py"])), None);
         // Other commands join their words on purpose: `msg type "two words"`.
         assert_eq!(unsendable(&words(&["type", "two words"])), None);
+    }
+
+    #[test]
+    fn only_command_sockets_count_as_instances() {
+        let dir = std::env::temp_dir().join(format!("tileception-ipc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let touch = |name: &str| std::fs::write(dir.join(name), "").unwrap();
+        touch("wayland-1");
+        touch("tileception-wayland-1.sock");
+        // The session's stable link to the SSH agent, and a display that is gone.
+        touch("tileception-ssh-agent.sock");
+        touch("tileception-wayland-7.sock");
+        touch("tileception-.sock");
+        let found = sockets_in(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, vec![dir.join("tileception-wayland-1.sock")]);
     }
 }

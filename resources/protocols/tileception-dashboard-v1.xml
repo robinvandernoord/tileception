@@ -7,8 +7,10 @@
   <description summary="draw items on Tileception's dashboard">
     A plugin with a [dashboard] block that sets surface = true is started
     with WAYLAND_SOCKET, a connection Tileception made for it alone. That
-    connection offers wl_compositor, wl_subcompositor, wl_shm, wp_viewporter
-    and this global, and nothing else: no windows, no input devices, no
+    connection offers wl_compositor, wl_subcompositor, wl_shm,
+    zwp_linux_dmabuf_v1 where Tileception has a GPU to import with,
+    wp_viewporter, wp_fractional_scale_manager_v1, a wl_seat with a pointer
+    and this global, and nothing else: no windows, no keyboard, no
     clipboard, no outputs, no screen capture.
 
     The plugin lists its items in its tileception://dashboard resource. For
@@ -57,6 +59,12 @@
     <description summary="one item's surface">
       Draw at the size of the last configure event, with the buffer scale it
       gives. Content beyond that size is not shown.
+
+      The buffer scale is the output's scale rounded up. A client that also
+      follows wp_fractional_scale_v1 on the surface may instead draw a
+      buffer of the size times that preferred scale and give it the
+      configured size with wp_viewport.set_destination; at a fractional
+      output scale only that is drawn one buffer pixel to one screen pixel.
     </description>
 
     <request name="destroy" type="destructor">

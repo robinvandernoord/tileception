@@ -164,16 +164,37 @@ class Surface:
             self.pointer = self.seat.get_pointer()
             self.pointer.dispatcher["button"] = self.clicked
         self.surface = self.compositor.create_surface()
+        # With both of these the lamp draws for the screen's real scale, 1.5
+        # as well as 2: the buffer has the screen's pixels and the viewport
+        # says how large it is in logical pixels.
+        self.viewport = None
+        self.fraction = 0
+        if "wp_viewporter" in globals_found and "wp_fractional_scale_manager_v1" in globals_found:
+            from pywayland.protocol.fractional_scale_v1 import WpFractionalScaleManagerV1
+            from pywayland.protocol.viewporter import WpViewporter
+
+            self.viewport = bind("wp_viewporter", WpViewporter).get_viewport(self.surface)
+            manager = bind("wp_fractional_scale_manager_v1", WpFractionalScaleManagerV1)
+            self.fractional = manager.get_fractional_scale(self.surface)
+            self.fractional.dispatcher["preferred_scale"] = self.scaled
         self.item = dashboard.get_item(self.surface, "lamp")
         self.item.dispatcher["configure"] = self.configured
         self.size = (0, 0, 1)
         self.buffer = None
+        # Whether Tileception still reads the buffer: from its commit until
+        # its release event.
+        self.busy = False
         self.waiting = False
         self.display.flush()
 
     def clicked(self, _pointer, _serial, _time, _button, state) -> None:
         if state == 1:
             self.lamp.palette = (self.lamp.palette + 1) % len(PALETTES)
+
+    def scaled(self, _fractional, scale: int) -> None:
+        """The screen's scale in 120ths: 180 is 1.5."""
+        self.fraction = scale
+        self.configured(None, *self.size)
 
     def configured(self, _item, width: int, height: int, scale: int) -> None:
         self.size = (width, height, max(scale, 1))
@@ -182,11 +203,32 @@ class Surface:
             if not self.waiting:
                 self.draw()
 
+    def retire_buffer(self) -> None:
+        """Destroys the buffer of the size the lamp no longer has, once
+        Tileception has let go of it. A plugin may keep only so many."""
+        old, self.buffer = self.buffer, None
+        if old is None:
+            return
+        if self.busy:
+            old.dispatcher["release"] = lambda buffer: buffer.destroy()
+        else:
+            old.destroy()
+        self.busy = False
+
+    def released(self, buffer) -> None:
+        if buffer is self.buffer:
+            self.busy = False
+
     def make_buffer(self) -> None:
         from pywayland.protocol.wayland import WlShm
 
+        self.retire_buffer()
         width, height, scale = self.size
-        self.pixel_size = (width * scale, height * scale)
+        if self.fraction:
+            # Rounded half up, as the fractional scale protocol asks.
+            self.pixel_size = ((width * self.fraction + 60) // 120, (height * self.fraction + 60) // 120)
+        else:
+            self.pixel_size = (width * scale, height * scale)
         stride = self.pixel_size[0] * 4
         length = stride * self.pixel_size[1]
         descriptor = os.memfd_create("lava-lamp")
@@ -195,6 +237,7 @@ class Surface:
         pool = self.shm.create_pool(descriptor, length)
         os.close(descriptor)
         self.buffer = pool.create_buffer(0, self.pixel_size[0], self.pixel_size[1], stride, WlShm.format.argb8888.value)
+        self.buffer.dispatcher["release"] = self.released
         pool.destroy()
 
     def draw(self, *_ignored) -> None:
@@ -207,11 +250,16 @@ class Surface:
         self.lamp.step()
         self.lamp.draw(memoryview(self.memory), *self.pixel_size)
         self.surface.attach(self.buffer, 0, 0)
-        self.surface.set_buffer_scale(self.size[2])
+        if self.fraction:
+            self.surface.set_buffer_scale(1)
+            self.viewport.set_destination(self.size[0], self.size[1])
+        else:
+            self.surface.set_buffer_scale(self.size[2])
         self.surface.damage_buffer(0, 0, *self.pixel_size)
         callback = self.surface.frame()
         callback.dispatcher["done"] = self.after_frame
         self.waiting = True
+        self.busy = True
         self.surface.commit()
         self.display.flush()
         self.spent = time.monotonic() - started
