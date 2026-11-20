@@ -1,0 +1,12 @@
+version = "0.24.0"
+date = 2026-11-20
+
+[[features]]
+area = "updates"
+title = "Package sources can be switched on again after a release upgrade"
+text = "After a release upgrade, the Release page of the Updates window lists the package sources that are still switched off and says whether each one has the new Ubuntu release yet. Switch on moves a source to the new release and switches it on again."
+
+[[features]]
+area = "updates"
+title = "Ubuntu can offer every new release instead of only LTS releases"
+text = "A switch on the Settings page of the Updates window chooses between the two. It sets `Prompt=` in `/etc/update-manager/release-upgrades` to `normal` or `lts` and checks for a newer release at once. Releases between two LTS releases are supported for 9 months, so you have to move on to each next release. Switching back to LTS takes effect at the next LTS release. The switch is hidden when the file says `never`, and on Linux Mint."
