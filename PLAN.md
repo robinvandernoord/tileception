@@ -61,31 +61,24 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Next
 
-- Dashboard surfaces, the rest. Decided:
-  - The dashboard's display also offers `linux-dmabuf` (with the same
-    feedback as the main display) and fractional scale, so GPU-drawn
-    surfaces do not go through shared memory and a fractional output scale
-    draws sharp.
-  - A cap on each dashboard client's shared memory pools, on top of the
-    4096-pixel cap on buffers.
-  - Confining a dashboard plugin's process (Landlock or bubblewrap, no
-    network) as a manifest option. The protocol limits what it can do to the
-    desktop, not to the user's files.
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
   download page), the rest. Decided:
-  - On a system without GNOME, `tileception-desktop`'s recommendations
-    pull in GNOME Shell, GDM and Ubuntu's GNOME session, through
-    `xdg-desktop-portal-gnome`. The ISO removes them afterwards; for
-    `apt install tileception-desktop` elsewhere, find which recommendation
-    brings them and replace or drop it.
+  - On Ubuntu 26.04, `tileception-desktop`'s recommendation of `nautilus`
+    pulls in GNOME Shell, GDM and Ubuntu's GNOME session: Nautilus
+    recommends `xdg-desktop-portal-gnome` there, which recommends
+    `gnome-shell`. (On 24.04 Nautilus takes any portal backend, and
+    `xdg-desktop-portal-gtk` is one.) The ISO, which starts from Ubuntu's
+    minimal desktop, purges them either way; for
+    `apt install tileception-desktop` elsewhere, still to decide: another
+    file manager (Thunar brings no desktop with it; Nemo and Caja bring
+    parts of Cinnamon and MATE), or Nautilus left out of the
+    recommendations.
   - The arm64 ISOs are built but not installed in CI: GitHub's arm64
     runners have no KVM. Try one on an arm64 machine before trusting it.
-  - Before release, what someone trying the ISO in a VM meets first:
-    `tileception msg` without `TILECEPTION_SOCKET` counts
-    `tileception-ssh-agent.sock` as a second instance, and the VMware
-    absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which QEMU
-    offers through its default `vmport` on x86, and VMware itself) moves
-    nothing.
+  - Before release, what someone trying the ISO in a VM meets first: the
+    VMware absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which
+    QEMU offers through its default `vmport` on x86, and VMware itself)
+    moves nothing.
 
 ### Later
 
@@ -96,18 +89,12 @@ Report testing in the conversation, the commit or the pull request instead.
     `tileception://` resource the host subscribes to, as the panel's is.
   - Each place gets a manifest block with the user's options for it, next
     to `[launcher]`; the plugin itself reports over MCP what it offers
-    there. `[lock]` is opt-in: without it, nothing on the lock screen.
-    Config overrides use the same blocks (`[plugins.home.lock]`).
+    there. Config overrides use the same blocks.
   - The instant pure launcher sources (calculations, conversions, times,
     colours, characters) and those needing compositor state (apps, windows,
     commands, app details, `>`, the colour picker) stay built in, as do the
     capture, Do not disturb and media chips.
   - The bundled smart home plugin goes into the remaining places first:
-    - Lock screen: the indoor temperature, read-only, following the lock
-      screen's privacy level, without input or actions. Never launcher
-      plugins.
-    - Doctor: plugins offered to Doctor's agent as MCP servers, under
-      Doctor's policy for running tools.
   - `tileception msg home` stays as a shorthand for the home plugin's
     `command` tool until key bindings in existing configs have moved to
     `tileception msg plugin home ...`.
@@ -118,24 +105,6 @@ Report testing in the conversation, the commit or the pull request instead.
   release has an archive for this architecture, downloaded and checked like
   Doctor's binary agents (`tileception-acp/src/install.rs`), with the same
   standard subcommands. Update replaces the archive with the newest release.
-- Notifications on Tileception's own lock screen (external lockers draw
-  only themselves), beyond Tileception's own notifications and a count.
-  Decided:
-
-  ```toml
-  [lock]
-  notifications = "count"   # "none" | "count" | "apps" | "full"
-  [lock.notification_apps]  # exceptions per app
-  "org.gnome.Calendar" = "full"
-  ```
-
-  - `notifications` is what every app gets; `notification_apps` holds the
-    exceptions. A low default with "full" exceptions is opt-in; "full"
-    with lower exceptions is opt-out. The default stays "count".
-  - A "Show on lock screen" toggle per app in the notification panel
-    writes that exception, so opting in needs no config editing.
-  - No buttons on the lock screen (they would run an app's action without
-    unlocking), except Tileception's own. Do not disturb applies there too.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
   rule-based parsing kept as the default.
@@ -144,16 +113,8 @@ Report testing in the conversation, the commit or the pull request instead.
   key, which files the issue as the App's bot. The key never ships in
   Tileception. The relay needs rate limiting, a length cap and a spam check,
   and new issues should wait in triage before they show publicly.
-- Doctor in a window: a pop-out from the panel into a window of its own,
-  remembered across openings and logins (whether it is popped out, and its
-  place and size), with a way back into the panel. Decided:
-  - Doctor's window is a built-in window like Settings and Updates: a
-    `settings::client::Kind::Doctor`, so it is a real xdg-shell toplevel
-    that tiles, floats, focuses and moves like any other window. Doctor's
-    model stays in the compositor; the window only draws it and takes its
-    input.
-  - The panel and the window show the same conversation; only one of them
-    is open at a time.
+- Doctor's window, the rest: a tiled window comes back as a new tile,
+  without its place in the layout.
 - Game mode: Tileception's own Super bindings step aside while a game has
   the keyboard, so Super and Super combinations reach the game. Decided:
   - Super+Caps Lock toggles it (check that the binding can see Caps Lock
@@ -192,13 +153,6 @@ Report testing in the conversation, the commit or the pull request instead.
   one on another workspace still shares. Before building: try the portal on
   Ubuntu 26.04 to see how it behaves by default (which chooser it uses, and
   whether it needs a Tileception chooser at all).
-- Dialogs over their parent: `xdg_dialog_v1` and `zxdg_foreign_v2`. Portal
-  dialogs such as the file chooser already float (by their app id), but
-  without xdg-foreign they cannot name the window they belong to, so they
-  open where any float does instead of centred over their parent, and do
-  not follow it to its area on a split screen as other child windows do.
-  `xdg_dialog_v1` marks a dialog as modal, which could dim or block its
-  parent until it closes. Smithay has both.
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
@@ -206,12 +160,12 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Maybe someday
 
-- Window management gestures on the touchpad.
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
-- Login screen: `users_as = "tiles"`, message-of-the-day and accessibility
-  panels, more than one screen, and the full tile-to-window morph at login.
+- Login screen: screen reader and on-screen keyboard switches beside larger
+  text and high contrast (nothing in the compositor provides either yet), more
+  than one screen, and the full tile-to-window morph at login.
 - Handoff hardening: key rotation and revocation, pointer locks inside a
   streamed window (a program there gets relative motion and holds the pointer
   where the window is shown), audio and owner-side portal dialogs.
