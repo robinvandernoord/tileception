@@ -144,6 +144,14 @@ fn shared_of_destroyed(resource: &impl Resource, client: ClientId) -> Option<Cli
     shared_on(&resource.handle().upgrade()?, client)
 }
 
+/// The count of the dashboard plugin a buffer, perhaps destroyed, belonged
+/// to, asked of the buffer's own display.
+pub fn shared_of_buffer(buffer: &WlBuffer) -> Option<ClientShared> {
+    let handle = buffer.handle().upgrade()?;
+    let client = handle.get_client(buffer.id()).ok()?;
+    shared_on(&handle, client)
+}
+
 /// The count of the client with this id on the display `handle` belongs to.
 fn shared_on(handle: &Handle, client: ClientId) -> Option<ClientShared> {
     let data = handle.get_client_data(client).ok()?;

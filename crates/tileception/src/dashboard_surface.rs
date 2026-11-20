@@ -185,12 +185,21 @@ impl Tileception {
     /// A dashboard client's dmabuf was imported: it counts as one of the
     /// client's buffers, which `admit` made room for.
     pub(crate) fn dashboard_dmabuf(&mut self, buffer: &WlBuffer, shared: ClientShared) {
+        // Entries of clients that are gone, whose counts only this map holds.
+        self.dashboard_surfaces.dmabufs.retain(|_, counted| Arc::strong_count(counted) > 1);
         self.dashboard_surfaces.dmabufs.insert(buffer.id(), shared);
     }
 
     /// A buffer is gone; a dashboard client's dmabuf no longer counts.
+    /// Buffers of both displays come here, and an object id does not say
+    /// which display it is on: a window's buffer may have the same one as a
+    /// plugin's. So the entry counts only when the buffer's own display
+    /// says it was that plugin's.
     pub(crate) fn dashboard_buffer_destroyed(&mut self, buffer: &WlBuffer) {
-        if let Some(shared) = self.dashboard_surfaces.dmabufs.remove(&buffer.id())
+        let Some(owner) = crate::dashboard_shm::shared_of_buffer(buffer) else { return };
+        let ours = self.dashboard_surfaces.dmabufs.get(&buffer.id()).is_some_and(|shared| Arc::ptr_eq(shared, &owner));
+        if ours
+            && let Some(shared) = self.dashboard_surfaces.dmabufs.remove(&buffer.id())
             && let Ok(mut counted) = shared.lock()
         {
             counted.shared.buffer_destroyed();

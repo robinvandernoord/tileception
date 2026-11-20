@@ -620,9 +620,8 @@ Buffers have limits too: a `wl_shm_pool` of at most 64 MiB (one buffer of
 the largest size), at most 24 pools, and at most 48 buffers at a time,
 shared memory and dmabuf together. Destroy a buffer of a size the item no
 longer has once its `release` event says Tileception is done with it. A
-plugin that goes over a limit loses its connection, with the reason in the
-protocol error and in Tileception's log; a dmabuf beyond the limits is
-refused.
+plugin that goes over a limit, with shared memory or a dmabuf, loses its
+connection, with the reason in the protocol error.
 
 Tileception clips what is drawn to the item's size. Frame callbacks arrive
 only while the item is on screen, so a plugin that draws on each callback
