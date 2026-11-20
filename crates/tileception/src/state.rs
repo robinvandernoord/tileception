@@ -104,6 +104,10 @@ pub struct Tileception {
     pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
     /// The window list for taskbars and switchers.
     pub toplevels: crate::toplevels::Toplevels,
+    /// Screen and window sharing through ext-image-copy-capture.
+    pub image_copy: crate::image_copy::ImageCopy,
+    /// What the screen cast portal and the share chooser tell each other.
+    pub sharing: crate::share_pick::Sharing,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
     pub keyboard_shortcuts_inhibit_state: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -290,6 +294,7 @@ impl Tileception {
 
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         crate::capture::init_screencopy(&display_handle);
+        crate::image_copy::init_image_copy(&display_handle);
         crate::blur::init_blur(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
@@ -431,6 +436,8 @@ impl Tileception {
             builtin_locker: Default::default(),
             greeter: None,
             pending_captures: Vec::new(),
+            image_copy: Default::default(),
+            sharing: Default::default(),
             capture_cursor: None,
             theme,
             text: Default::default(),

@@ -193,6 +193,9 @@ enum Entry {
     },
     /// An open or minimized window: Enter flies there.
     Window(WindowId),
+    /// A screen or window a program asks to share, by its index among the
+    /// portal's choices.
+    Source(usize),
     /// One of [`COMMANDS`].
     Command(usize),
     /// Something Enter copies.
@@ -476,6 +479,8 @@ pub struct Launcher {
     /// Plugins changed while a prompt was open: the results behind it are
     /// searched again once it is left.
     routes_changed: bool,
+    /// A program asks what to share: the launcher lists only that.
+    pick: Option<crate::share_pick::Pick>,
 }
 
 impl Default for Launcher {
@@ -513,6 +518,7 @@ impl Default for Launcher {
             prompt: None,
             prompt_serial: 0,
             routes_changed: false,
+            pick: None,
             usage: usage
                 .into_iter()
                 .map(|(app_id, value)| {
@@ -783,6 +789,50 @@ impl Tileception {
         self.schedule_render();
     }
 
+    /// Lists what a program may share, for the portal's chooser.
+    pub(crate) fn open_source_pick(&mut self, pick: crate::share_pick::Pick) {
+        // An earlier question nobody answered is answered with nothing.
+        if let Some(earlier) = self.launcher.pick.take() {
+            self.source_picked(earlier, None);
+        }
+        self.launcher.pick = Some(pick);
+        self.open_launcher(false);
+        self.schedule_render();
+    }
+
+    /// A share choice's title and detail in the launcher.
+    fn source_row(&self, choice: &crate::share_pick::Choice) -> (String, Option<String>) {
+        use crate::share_pick::Shared;
+        match &choice.what {
+            Shared::Screen { name, description } => {
+                let size = self
+                    .output_named(name)
+                    .and_then(|output| output.current_mode())
+                    .map(|mode| format!("{} \u{d7} {}", mode.size.w, mode.size.h));
+                let title = if description.is_empty() { name.clone() } else { description.clone() };
+                let detail = ["Screen", name].into_iter().map(str::to_string).chain(size).collect::<Vec<_>>();
+                (title, Some(detail.join(" \u{b7} ")))
+            }
+            Shared::Window { window: Some(window_id), .. } if let Some(window) = self.windows.get(window_id) => {
+                let app = crate::state::app_id(window);
+                let name = self
+                    .launcher
+                    .index
+                    .get(&format!("{app}.desktop"))
+                    .map_or(app.clone(), |desktop| desktop.name.clone());
+                let state = if self.minimized_anywhere(*window_id) { "Minimized window" } else { "Window" };
+                (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Shared::Window { title, .. } => (title.clone(), Some("Window".into())),
+        }
+    }
+
+    /// What typing filters a share choice by.
+    fn source_text(&self, choice: &crate::share_pick::Choice) -> String {
+        let (title, detail) = self.source_row(choice);
+        format!("{title} {}", detail.unwrap_or_default())
+    }
+
     pub fn toggle_launcher(&mut self) {
         if self.is_locked() {
             return;
@@ -865,7 +915,13 @@ impl Tileception {
         pointer.frame(self);
     }
 
+    #[track_caller]
     pub fn close_launcher(&mut self) {
+        // Closed without a choice: the program shares nothing.
+        if let Some(pick) = self.launcher.pick.take() {
+            tracing::debug!("share: launcher closed by {}", std::panic::Location::caller());
+            self.source_picked(pick, None);
+        }
         if let Some(plugins) = &self.plugins {
             plugins.cancel(crate::plugins::Place::Launcher);
         }
@@ -877,6 +933,10 @@ impl Tileception {
         self.launcher.home = false;
         self.launcher.selecting = false;
         self.force_keyboard_focus_sync();
+        // The pointer is over whatever the launcher covered again, so a
+        // click there without moving first reaches it (such as a browser's
+        // Share button after choosing what to share).
+        self.on_motion(self.pointer, (self.now() * 1000.0) as u32);
     }
 
     /// Works out the rows for what is typed now.
@@ -885,7 +945,11 @@ impl Tileception {
         self.launcher.prompt = None;
         self.launcher.routes_changed = false;
         let previous = self.launcher.plugin_query.take();
-        let query = self.plugins.as_ref().and_then(|plugins| plugins.search(self.launcher.input.text.trim_start()));
+        let query = self
+            .plugins
+            .as_ref()
+            .filter(|_| self.launcher.pick.is_none())
+            .and_then(|plugins| plugins.search(self.launcher.input.text.trim_start()));
         let retain =
             previous.as_ref().zip(query.as_ref()).is_some_and(|((_, previous), (_, current))| previous == current)
                 && self.launcher.plugin_rows.iter().any(|entry| matches!(entry, Entry::Plugin { .. }));
@@ -907,6 +971,9 @@ impl Tileception {
     /// The list's caption for plugin results: the plugin's name, or the
     /// result whose actions are listed.
     fn plugin_caption(&self) -> Option<String> {
+        if self.launcher.pick.is_some() {
+            return Some("SHARE".into());
+        }
         if let Some((_, row)) = &self.launcher.plugin_actions {
             return Some(format!("ACTIONS FOR {}", row.title.to_uppercase()));
         }
@@ -918,6 +985,16 @@ impl Tileception {
     fn launcher_entries(&self) -> Vec<Entry> {
         let text = self.launcher.input.text.trim();
         let launcher = &self.launcher;
+        if let Some(pick) = &launcher.pick {
+            let query = text.to_lowercase();
+            return pick
+                .choices
+                .iter()
+                .enumerate()
+                .filter(|(_, choice)| query.is_empty() || self.source_text(choice).to_lowercase().contains(&query))
+                .map(|(index, _)| Entry::Source(index))
+                .collect();
+        }
         if let Some((plugin, row)) = &launcher.plugin_actions {
             return row
                 .actions
@@ -1379,6 +1456,12 @@ impl Tileception {
             Entry::Window(window_id) => {
                 self.close_launcher();
                 self.fly_to_window(window_id);
+            }
+            Entry::Source(index) => {
+                if let Some(pick) = self.launcher.pick.take() {
+                    self.close_launcher();
+                    self.source_picked(pick, Some(index));
+                }
             }
             Entry::Command(index) => {
                 self.close_launcher();
@@ -2365,7 +2448,12 @@ impl Tileception {
         let size = theme.font_size * SEARCH_SCALE;
         if !typing {
             let hint = Rect::new(layout.text.x + 4.0, layout.text.y, layout.text.w - 4.0, layout.text.h);
-            painter.text("Search, calculate, or > run a command", hint, Style::new(size, theme.muted));
+            let hint_text = if self.launcher.pick.is_some() {
+                "Choose a screen or window to share"
+            } else {
+                "Search, calculate, or > run a command"
+            };
+            painter.text(hint_text, hint, Style::new(size, theme.muted));
         }
         let field = self.text.borrow_mut().field(
             &input.text,
@@ -2482,6 +2570,7 @@ impl Tileception {
             Some(Entry::Answer(_)) => "Copy",
             Some(Entry::Run(_)) => "Run",
             Some(Entry::Place(_) | Entry::Window(_)) => "Open",
+            Some(Entry::Source(_)) => "Share",
             Some(Entry::Command(_)) => "Do it",
             Some(Entry::Manage(manage)) => self.manage_enter(manage),
             Some(Entry::Ask(_)) => "Ask",
@@ -2617,6 +2706,22 @@ impl Tileception {
                     .get(&format!("{app}.desktop"))
                     .map_or(app.clone(), |desktop| desktop.name.clone());
                 (crate::state::window_title(window), Some(format!("{name} \u{b7} {state}")))
+            }
+            Entry::Source(index) => {
+                let Some(choice) = self.launcher.pick.as_ref().and_then(|pick| pick.choices.get(*index)) else {
+                    return;
+                };
+                match &choice.what {
+                    crate::share_pick::Shared::Screen { .. } => glyph_box(painter, glyph::MONITOR, theme.accent),
+                    crate::share_pick::Shared::Window { window: Some(window_id), .. }
+                        if let Some(window) = self.windows.get(window_id) =>
+                    {
+                        let app = crate::state::app_id(window);
+                        self.draw_app_icon(painter, icon, &app, None, &app);
+                    }
+                    crate::share_pick::Shared::Window { .. } => glyph_box(painter, glyph::WINDOW, theme.accent),
+                }
+                self.source_row(choice)
             }
             Entry::Manage(manage) => {
                 let (glyph, title, detail) = self.manage_text(manage);

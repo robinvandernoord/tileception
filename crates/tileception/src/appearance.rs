@@ -134,14 +134,15 @@ impl AppearanceService {
 
 impl Tileception {
     /// Starts Tileception's portal backend on the session bus: the theme's
-    /// appearance, typing for applications (`remote_desktop`) and their global
-    /// shortcuts (`global_shortcuts`). Done
+    /// appearance, typing for applications (`remote_desktop`), their global
+    /// shortcuts (`global_shortcuts`) and screen sharing (`screen_cast`). Done
     /// before the session environment is exported, so the portal finds it
     /// when it starts.
     pub fn start_portal(&mut self) {
         let service = zbus::blocking::connection::Builder::session()
             .and_then(|bus| self.serve_remote_desktop(bus))
             .and_then(|bus| self.serve_global_shortcuts(bus))
+            .and_then(|bus| self.serve_screen_cast(bus))
             .and_then(|bus| AppearanceService::start(bus, &self.theme));
         match service {
             Ok(service) => self.appearance = Some(service),

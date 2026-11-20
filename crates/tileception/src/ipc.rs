@@ -49,6 +49,17 @@ pub struct Waiting {
     deferred: Option<(u64, Duration, &'static str)>,
     /// Connections waiting, by request number.
     streams: HashMap<u64, UnixStream>,
+    /// The last number given by [`Waiting::next_request`].
+    requests: u64,
+}
+
+impl Waiting {
+    /// A number for a command the compositor answers itself later, apart
+    /// from the numbers plugins use.
+    pub(crate) fn next_request(&mut self) -> u64 {
+        self.requests += 1;
+        (1 << 62) | self.requests
+    }
 }
 
 /// How long a command waits for a plugin, beyond the plugin's own deadline.
@@ -98,7 +109,8 @@ fn serve(state: &mut Tileception, stream: UnixStream) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut line = String::new();
-    BufReader::new(&stream).take(4096).read_line(&mut line)?;
+    // Long enough for the screens and windows `pick-source` lists.
+    BufReader::new(&stream).take(64 * 1024).read_line(&mut line)?;
     state.ipc.deferred = None;
     let reply = match handle(state, line.trim()) {
         Ok(text) => text,

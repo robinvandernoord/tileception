@@ -63,11 +63,24 @@ impl Tileception {
                 }
                 None => {
                     let handle = self.toplevels.state.new_toplevel::<Tileception>(title.clone(), app.clone());
+                    // Screen sharing finds the window from its entry.
+                    handle.user_data().insert_if_missing_threadsafe(|| *window_id);
                     self.toplevels.listed.insert(*window_id, (handle, title, app));
                 }
             }
         }
         self.toplevels.state.cleanup_closed_handles();
+    }
+}
+
+impl Tileception {
+    /// The window whose entry in the list has this identifier.
+    pub fn window_with_identifier(&self, identifier: &str) -> Option<WindowId> {
+        self.toplevels
+            .listed
+            .iter()
+            .find(|(_, (handle, ..))| handle.identifier() == identifier)
+            .map(|(window_id, _)| *window_id)
     }
 }
 

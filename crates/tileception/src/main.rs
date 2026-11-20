@@ -49,6 +49,7 @@ mod headless;
 mod home;
 mod ics;
 mod idle;
+mod image_copy;
 mod inject;
 mod input;
 mod ipc;
@@ -79,10 +80,12 @@ mod render;
 mod rounded;
 mod rules;
 mod scale;
+mod screen_cast;
 mod screensaver;
 mod selection;
 mod settings;
 mod shapes;
+mod share_pick;
 mod shell;
 mod shortcuts_inhibit;
 mod shot;
@@ -167,6 +170,7 @@ Environment:
   TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
   TILECEPTION_UPDATES        start the update manager nested or headless too
   TILECEPTION_POLKIT         be the polkit agent nested or headless too
+  TILECEPTION_PORTAL         serve the portal backend nested or headless too
   RUST_LOG                   log filter (default: info,smithay=warn)
   GREETD_SOCK                greetd's socket, set by greetd (greeter)
   TILECEPTION_GREETER_CONFIG the greeter's settings file, for tests
@@ -199,6 +203,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match argv.get(1).map(String::as_str) {
             None | Some("-h" | "--help" | "help") => print!("{}", commands::HELP),
             _ => ipc::client(&argv[1..])?,
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("pick-source") {
+        if let Err(err) = share_pick::run() {
+            eprintln!("tileception pick-source: {err}");
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -335,6 +346,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if argv.iter().any(|argument| argument == RESTARTED) {
             restart_portals();
         }
+    }
+    // TILECEPTION_PORTAL serves the portal backend from a nested or headless
+    // instance, on its session bus, for tests with a portal of their own.
+    if (nested || headless) && std::env::var_os("TILECEPTION_PORTAL").is_some() {
+        state.start_portal();
     }
     // TILECEPTION_POLKIT makes a nested or headless instance the polkit
     // agent of what it starts, for tests.

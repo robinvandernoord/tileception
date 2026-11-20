@@ -59,6 +59,10 @@ pub fn init(
                 dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
             state.dmabuf = Some((dmabuf_state, global));
             state.dmabuf_feedback = Some(feedback);
+            state.image_copy.formats = Some(crate::image_copy::CaptureFormats::new(
+                node.dev_id(),
+                renderer.egl_context().dmabuf_render_formats().iter().copied(),
+            ));
             renderer
         }
         Err(error) => {
@@ -142,6 +146,7 @@ impl Tileception {
         self.update_doctor_client(&mut headless.renderer);
         let elapsed = self.start.elapsed();
         self.process_streams(&mut headless.renderer);
+        self.process_window_copies(&mut headless.renderer);
         for output in &headless.outputs {
             if self.output_named(&output.name()).is_none() {
                 continue;

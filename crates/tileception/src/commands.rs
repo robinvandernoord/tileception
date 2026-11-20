@@ -37,6 +37,9 @@ pub enum Command {
     CopyImage(std::path::PathBuf),
     /// Puts text on the clipboard.
     CopyText(String),
+    /// Asks which screen or window to share, from the portal's choices
+    /// (see [`crate::share_pick`]); answered once one is picked.
+    PickSource(String),
     /// Picks a colour from the screen with a magnifier and copies it.
     PickColour,
     /// Gives the newest popup with buttons the keyboard, or gives it back.
@@ -510,6 +513,12 @@ pub fn parse(line: &str) -> Result<Command, String> {
             }
             return Ok(Command::Screenshot(rest.into()));
         }
+        "pick-source" => {
+            if rest.is_empty() {
+                return Err("pick-source needs the choices".into());
+            }
+            return Ok(Command::PickSource(rest.to_string()));
+        }
         "copy-text" => {
             if rest.is_empty() {
                 return Err("copy-text needs some text".into());
@@ -662,6 +671,7 @@ impl Tileception {
             Command::Screenshot(path) => self.screenshot(path),
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::CopyText(text) => self.copy_text(text),
+            Command::PickSource(choices) => return self.pick_source(&choices),
             Command::PickColour => self.pick_colour(),
             Command::AnswerNotification => self.answer_notification(),
             Command::NotificationKey(sym, mods) => self.notification_key(sym, mods),

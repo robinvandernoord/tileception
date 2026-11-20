@@ -58,6 +58,7 @@ pub fn init(
             let now = state.now();
             state.process_special_captures(backend.renderer());
             state.process_streams(backend.renderer());
+            state.process_window_copies(backend.renderer());
             let renderer = backend.renderer();
             let mut elements = state.drag_elements(renderer);
             let scene = state.frame_elements(renderer, now);

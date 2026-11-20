@@ -272,6 +272,10 @@ pub fn init(
     let global = dmabuf_state.create_global_with_default_feedback::<Tileception>(&state.display_handle, &feedback);
     state.dmabuf = Some((dmabuf_state, global));
     state.dmabuf_feedback = Some(feedback);
+    state.image_copy.formats = Some(crate::image_copy::CaptureFormats::new(
+        primary.dev_id(),
+        renderer.egl_context().dmabuf_render_formats().iter().copied(),
+    ));
 
     // Explicit sync, which NVIDIA needs to avoid flicker in GPU clients.
     if supports_syncobj_eventfd(&device_fd) {
@@ -777,6 +781,7 @@ impl Tileception {
             return;
         };
         self.process_streams(&mut udev.renderer);
+        self.process_window_copies(&mut udev.renderer);
         for gpu in &mut gpus {
             for lit in &mut gpu.surfaces {
                 if !lit.enabled || lit.frame_pending {
