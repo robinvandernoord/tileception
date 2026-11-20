@@ -60,7 +60,7 @@ greetd_pam_text() {
 }
 
 # Whether logins need greetd_pam: greetd's own service unlocks neither the
-# keyring nor KWallet (Ubuntu's does, Debian's does not), and this greetd can
+# keyring nor KWallet (this varies by distribution and release), and this greetd can
 # use another service (0.10 and later).
 needs_greetd_pam() {
     [ -e /etc/pam.d/greetd ] || return 1
@@ -937,6 +937,15 @@ fi
 case $greeter in
     tileception) enable_greeter ;;
     previous) restore_login_screen ;;
+    keep)
+        # Older installations may already use our greeter without the PAM
+        # service. Keeping that login screen must still repair its keyring
+        # integration, without restarting greetd or ending the session.
+        if greeter_active && needs_greetd_pam \
+            && ! grep -qs 'service *= *"tileception-greetd"' "$greetd_config"; then
+            enable_greeter
+        fi
+        ;;
 esac
 
 say ""
