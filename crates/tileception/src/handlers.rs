@@ -189,7 +189,9 @@ impl CompositorHandler for Tileception {
 }
 
 impl BufferHandler for Tileception {
-    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+    fn buffer_destroyed(&mut self, buffer: &wl_buffer::WlBuffer) {
+        self.dashboard_buffer_destroyed(buffer);
+    }
 }
 
 impl ShmHandler for Tileception {
@@ -617,16 +619,41 @@ impl DmabufHandler for Tileception {
     }
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        // A dashboard plugin's buffers are limited in size and number
+        // before anything is imported for them, as its shm buffers are.
+        let dashboard = notifier.client().and_then(|client| crate::dashboard_shm::shared_of(&client));
+        if let Some(shared) = &dashboard {
+            let size = smithay::backend::allocator::Buffer::size(&dmabuf);
+            let largest = crate::dashboard_surface::LARGEST_BUFFER;
+            if size.w > largest || size.h > largest {
+                return notifier.invalid_dimensions();
+            }
+            if !shared.lock().is_ok_and(|mut counted| counted.shared.buffer().is_ok()) {
+                tracing::warn!("a dashboard plugin has too many buffers; its dmabuf is refused");
+                return notifier.failed();
+            }
+        }
         let renderer = match (self.udev.as_mut(), self.headless.as_mut()) {
             (Some(udev), _) => Some(&mut udev.renderer),
             (None, Some(headless)) => Some(&mut headless.renderer),
             _ => None,
         };
         let imported = renderer.is_some_and(|gles| gles.import_dmabuf(&dmabuf, None).is_ok());
-        if imported {
-            let _ = notifier.successful::<Tileception>();
+        let buffer = if imported {
+            notifier.successful::<Tileception>().ok()
         } else {
             notifier.failed();
+            None
+        };
+        match (dashboard, buffer) {
+            (Some(shared), Some(buffer)) => self.dashboard_dmabuf(&buffer, shared),
+            // Counted above, and never made.
+            (Some(shared), None) => {
+                if let Ok(mut counted) = shared.lock() {
+                    counted.shared.buffer_destroyed();
+                }
+            }
+            _ => {}
         }
     }
 }

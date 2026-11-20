@@ -31,8 +31,9 @@ use smithay::{
     reexports::{
         calloop::{Interest, Mode, PostAction, generic::Generic},
         wayland_server::{
-            Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource, backend::ClientId,
-            protocol::wl_surface::WlSurface,
+            Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
+            backend::{ClientId, ObjectId},
+            protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
         },
     },
     wayland::{
@@ -71,7 +72,7 @@ use protocol::{tileception_dashboard_item_v1::TileceptionDashboardItemV1, tilece
 /// The role a surface takes as a dashboard item.
 const ROLE: &str = "tileception_dashboard_item_v1";
 /// The largest buffer side a dashboard item may commit.
-const LARGEST_BUFFER: i32 = 4096;
+pub(crate) const LARGEST_BUFFER: i32 = 4096;
 
 /// The dashboard's own display and the items drawn on it.
 #[derive(Default)]
@@ -79,6 +80,9 @@ pub struct Surfaces {
     display: Option<Restricted>,
     /// Items by (plugin, item id).
     items: HashMap<(String, String), Item>,
+    /// The dmabuf buffers of dashboard clients, which count against the
+    /// client's buffers until they are destroyed.
+    dmabufs: HashMap<ObjectId, ClientShared>,
 }
 
 /// The display dashboard plugins connect to, and its globals.
@@ -178,9 +182,19 @@ impl Tileception {
         })
     }
 
-    /// The dashboard's display, once a plugin has connected to it.
-    pub(crate) fn dashboard_display(&self) -> Option<&DisplayHandle> {
-        self.dashboard_surfaces.display.as_ref().map(|display| &display.handle)
+    /// A dashboard client's dmabuf was imported: it counts as one of the
+    /// client's buffers, which `admit` made room for.
+    pub(crate) fn dashboard_dmabuf(&mut self, buffer: &WlBuffer, shared: ClientShared) {
+        self.dashboard_surfaces.dmabufs.insert(buffer.id(), shared);
+    }
+
+    /// A buffer is gone; a dashboard client's dmabuf no longer counts.
+    pub(crate) fn dashboard_buffer_destroyed(&mut self, buffer: &WlBuffer) {
+        if let Some(shared) = self.dashboard_surfaces.dmabufs.remove(&buffer.id())
+            && let Ok(mut counted) = shared.lock()
+        {
+            counted.shared.buffer_destroyed();
+        }
     }
 
     /// Whether the seat is the dashboard's, whose pointer only reaches

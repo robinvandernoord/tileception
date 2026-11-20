@@ -616,11 +616,13 @@ buffer scale in `configure` is the screen's scale rounded up, so at a scale of
 `preferred_scale`, and give the buffer the configured size with
 `wp_viewport.set_destination`; GTK, Qt and SDL do this by themselves.
 
-Shared memory has limits too: a `wl_shm_pool` of at most 64 MiB (one buffer
-of the largest size), and at most 24 pools and 48 shared memory buffers at
-a time. Destroy the buffers and pools of a size the item no longer has. A
+Buffers have limits too: a `wl_shm_pool` of at most 64 MiB (one buffer of
+the largest size), at most 24 pools, and at most 48 buffers at a time,
+shared memory and dmabuf together. Destroy a buffer of a size the item no
+longer has once its `release` event says Tileception is done with it. A
 plugin that goes over a limit loses its connection, with the reason in the
-protocol error and in Tileception's log.
+protocol error and in Tileception's log; a dmabuf beyond the limits is
+refused.
 
 Tileception clips what is drawn to the item's size. Frame callbacks arrive
 only while the item is on screen, so a plugin that draws on each callback

@@ -17,14 +17,18 @@
 //!
 //! `wl_shm`, `wl_shm_pool` and shm `wl_buffer` requests pass through here on
 //! their way to Smithay. The dashboard's clients are counted; everyone
-//! else's requests go straight on.
+//! else's requests go straight on, but for a pool resized to nothing, which
+//! Smithay would panic on.
+//!
+//! The buffers a dashboard client passes as dmabufs count as buffers too,
+//! in `dmabuf_imported`.
 
 use std::sync::{Arc, Mutex};
 
 use smithay::{
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, Resource,
-        backend::ClientId,
+        backend::{ClientId, Handle},
         delegate_global_dispatch,
         protocol::{
             wl_buffer::{self, WlBuffer},
@@ -43,9 +47,10 @@ pub const POOL_BYTES: usize = 4096 * 4096 * 4;
 /// The pool objects a client may have at once. A plugin has at most six
 /// items; one pool for each buffer of each, three buffers deep, is 18.
 pub const POOLS: usize = 24;
-/// The shm buffers a client may have at once: the same six items three
-/// buffers deep, with as many again for subsurfaces and for the old buffers
-/// that linger while an item changes size.
+/// The buffers a client may have at once, shared memory and dmabuf
+/// together: the same six items three buffers deep, with as many again for
+/// subsurfaces and for the old buffers that linger while an item changes
+/// size.
 pub const BUFFERS: usize = 48;
 
 /// What a client may not have more of.
@@ -114,36 +119,55 @@ impl Shared {
     }
 }
 
+/// What is kept with a dashboard client's connection.
+#[derive(Debug, Default)]
+pub struct Counted {
+    pub shared: Shared,
+    /// The client's `wl_shm`, whose interface has the error codes: a pool
+    /// has none of its own.
+    shm: Option<WlShm>,
+}
+
 /// A dashboard client's count, kept with its connection.
-pub type ClientShared = Arc<Mutex<Shared>>;
+pub type ClientShared = Arc<Mutex<Counted>>;
 
 /// The count of the client, when it is a dashboard plugin's.
-fn shared_of(client: &Client) -> Option<ClientShared> {
+pub fn shared_of(client: &Client) -> Option<ClientShared> {
     client.get_data::<ClientState>()?.dashboard.as_ref().map(|owner| owner.shared.clone())
 }
 
-impl Tileception {
-    /// The count of the client an object belonged to, when that was a
-    /// dashboard plugin's and it is still connected.
-    fn shared_of_id(&self, client: ClientId) -> Option<ClientShared> {
-        let data = self.dashboard_display()?.backend_handle().get_client_data(client).ok()?;
-        data.downcast_ref::<ClientState>()?.dashboard.as_ref().map(|owner| owner.shared.clone())
-    }
+/// The count of the client a destroyed object belonged to, when that was a
+/// dashboard plugin's. The client is looked up on the display the object
+/// itself was on: a client id means nothing on another display, where it
+/// could name someone else.
+fn shared_of_destroyed(resource: &impl Resource, client: ClientId) -> Option<ClientShared> {
+    shared_on(&resource.handle().upgrade()?, client)
+}
+
+/// The count of the client with this id on the display `handle` belongs to.
+fn shared_on(handle: &Handle, client: ClientId) -> Option<ClientShared> {
+    let data = handle.get_client_data(client).ok()?;
+    data.downcast_ref::<ClientState>()?.dashboard.as_ref().map(|owner| owner.shared.clone())
 }
 
 /// Counts what the client asks for, or ends its connection with the reason.
 /// True when the request may go on to Smithay.
 fn allowed(client: &Client, resource: &impl Resource, count: impl FnOnce(&mut Shared) -> Result<(), Over>) -> bool {
     let Some(shared) = shared_of(client) else { return true };
-    let Ok(mut shared) = shared.lock() else { return true };
-    let Err(over) = count(&mut shared) else { return true };
+    let Ok(mut counted) = shared.lock() else { return true };
+    let Err(over) = count(&mut counted.shared) else { return true };
     let plugin = client
         .get_data::<ClientState>()
         .and_then(|data| data.dashboard.as_ref().map(|owner| owner.plugin.clone()))
         .unwrap_or_default();
     tracing::warn!("Plugin {plugin}: {}; its dashboard connection is closed", over.message());
-    // wl_shm has no error for a limit; the message says which it was.
-    resource.post_error(wl_shm::Error::InvalidFd, over.message());
+    // wl_shm has no error for a limit; the message says which it was. Sent
+    // on the client's wl_shm where it still has one, since the code is that
+    // interface's; otherwise on the pool, as Smithay does with its own.
+    match counted.shm.as_ref().filter(|shm| shm.is_alive()) {
+        Some(shm) => shm.post_error(wl_shm::Error::InvalidFd, over.message()),
+        None => resource.post_error(wl_shm::Error::InvalidFd, over.message()),
+    }
     false
 }
 
@@ -159,6 +183,11 @@ impl Dispatch<WlShm, ()> for Tileception {
         handle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
+        if let Some(shared) = shared_of(client)
+            && let Ok(mut counted) = shared.lock()
+        {
+            counted.shm = Some(shm.clone());
+        }
         // Smithay refuses a size of zero or less itself.
         if let wl_shm::Request::CreatePool { size, .. } = &request
             && let Ok(size) = usize::try_from(*size)
@@ -183,10 +212,16 @@ impl Dispatch<WlShmPool, ShmPoolUserData> for Tileception {
     ) {
         let goes_on = match &request {
             wl_shm_pool::Request::CreateBuffer { .. } => allowed(client, pool, Shared::buffer),
-            wl_shm_pool::Request::Resize { size } => match usize::try_from(*size) {
-                Ok(size) => allowed(client, pool, |shared| shared.resize(size)),
-                Err(_) => true,
-            },
+            wl_shm_pool::Request::Resize { size } if *size <= 0 => {
+                // From any client: Smithay 0.7 posts this error and then
+                // goes on to unwrap a size of zero, which panics.
+                pool.post_error(wl_shm::Error::InvalidFd, "invalid wl_shm_pool size");
+                false
+            }
+            wl_shm_pool::Request::Resize { size } => {
+                let size = usize::try_from(*size).unwrap_or(usize::MAX);
+                allowed(client, pool, |shared| shared.resize(size))
+            }
             _ => true,
         };
         if goes_on {
@@ -197,10 +232,10 @@ impl Dispatch<WlShmPool, ShmPoolUserData> for Tileception {
     }
 
     fn destroyed(state: &mut Self, client: ClientId, pool: &WlShmPool, data: &ShmPoolUserData) {
-        if let Some(shared) = state.shared_of_id(client.clone())
-            && let Ok(mut shared) = shared.lock()
+        if let Some(shared) = shared_of_destroyed(pool, client.clone())
+            && let Ok(mut counted) = shared.lock()
         {
-            shared.pool_destroyed();
+            counted.shared.pool_destroyed();
         }
         <ShmState as Dispatch<WlShmPool, ShmPoolUserData, Self>>::destroyed(state, client, pool, data);
     }
@@ -222,10 +257,10 @@ impl Dispatch<WlBuffer, ShmBufferUserData> for Tileception {
     }
 
     fn destroyed(state: &mut Self, client: ClientId, buffer: &WlBuffer, data: &ShmBufferUserData) {
-        if let Some(shared) = state.shared_of_id(client.clone())
-            && let Ok(mut shared) = shared.lock()
+        if let Some(shared) = shared_of_destroyed(buffer, client.clone())
+            && let Ok(mut counted) = shared.lock()
         {
-            shared.buffer_destroyed();
+            counted.shared.buffer_destroyed();
         }
         <ShmState as Dispatch<WlBuffer, ShmBufferUserData, Self>>::destroyed(state, client, buffer, data);
     }
@@ -273,6 +308,39 @@ mod tests {
         assert_eq!(shared.buffer(), Err(Over::Buffers));
         shared.buffer_destroyed();
         assert_eq!(shared.buffer(), Ok(()));
+    }
+
+    #[test]
+    fn a_client_is_found_only_on_its_own_display() {
+        use smithay::reexports::wayland_server::Display;
+
+        use crate::dashboard_surface::Owner;
+
+        // Two displays with one client each, the first on each: their ids
+        // may be equal, since each display numbers its own clients.
+        let main: Display<()> = Display::new().unwrap();
+        let dashboard: Display<()> = Display::new().unwrap();
+        let (main_end, _main_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (dashboard_end, _dashboard_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let shared = ClientShared::default();
+        let owner = Owner { plugin: "lamp".into(), shared: shared.clone() };
+        let main_client = main.handle().insert_client(main_end, Arc::new(ClientState::default())).unwrap().id();
+        let dashboard_client = dashboard
+            .handle()
+            .insert_client(dashboard_end, Arc::new(ClientState { dashboard: Some(owner), ..ClientState::default() }))
+            .unwrap()
+            .id();
+        let main_handle = main.handle().backend_handle().clone();
+        let dashboard_handle = dashboard.handle().backend_handle().clone();
+        // Looked up on the wrong display, the main display's client would
+        // be taken for the plugin, and each buffer it destroys would come
+        // off the plugin's count.
+        assert_eq!(main_client, dashboard_client);
+        assert!(shared_on(&dashboard_handle, main_client.clone()).is_some());
+        // On its own display it is nobody's dashboard plugin.
+        assert!(shared_on(&main_handle, main_client).is_none());
+        let found = shared_on(&dashboard_handle, dashboard_client).unwrap();
+        assert!(Arc::ptr_eq(&found, &shared));
     }
 
     #[test]
