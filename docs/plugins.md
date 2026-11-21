@@ -747,8 +747,9 @@ Tileception, which applies [the Wizard's permission mode](wizard.md#plugin-tools
 and then calls the running plugin, like any other tool action. The agent never
 starts the plugin itself, and tools the plugin does not name here are refused.
 
-Mark tools that only read with the MCP annotation `"readOnlyHint": true`:
-The Wizard's Tweak mode lets them go ahead without asking. Answer with
+Mark tools that only read with the MCP annotation `"readOnlyHint": true`. The
+Wizard's Tweak mode lets bundled plugins' marked tools go ahead without asking;
+an installed plugin's tools still ask, since the mark is its own claim. Answer with
 `structuredContent`; the agent reads its `text` field when it has one, else
 the JSON. The Wizard's calls have the usual three-second deadline once allowed.
 

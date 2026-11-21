@@ -140,12 +140,13 @@ say:
 | Mode  | Plugin tool calls                                                      |
 |-------|------------------------------------------------------------------------|
 | Ask   | Every call asks, showing the plugin, the tool and its arguments        |
-| Tweak | Tools the plugin marks read-only and the bundled smart home's go ahead; the rest ask |
+| Tweak | Bundled plugins' tools marked read-only and the smart home's go ahead; the rest ask |
 | Yolo  | Every call goes ahead                                                  |
 
 Tweak treats the smart home's tools like the `tileception msg home` commands
 it already runs; a plugin installed in place of the bundled `home` plugin is
-not trusted that way. A call nobody answers within ten minutes is refused, and
+not trusted that way. Other plugins' tools ask in Tweak even when marked
+read-only: the mark is the plugin's own claim. A call nobody answers within ten minutes is refused, and
 so is one the agent stopped waiting for. While the screen is locked, plugin
 tools do not run. The agent may also ask on its own before using a tool. The
 answers go to the agent's provider like anything else the agent reads. To keep

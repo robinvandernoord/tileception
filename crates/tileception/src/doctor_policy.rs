@@ -172,12 +172,13 @@ pub struct PluginCall<'name> {
 const TWEAK_PLUGINS: [&str; 1] = ["home"];
 
 /// Whether a plugin tool goes ahead without asking: in yolo mode, and in
-/// tweak mode for tools that only read and the bundled smart home's.
-/// Ask mode asks every time.
+/// tweak mode for the bundled plugins' tools that only read and the bundled
+/// smart home's. A plugin's own `readOnlyHint` is only a hint, so another
+/// plugin's tools are asked about outside yolo mode. Ask mode asks every time.
 pub fn may_call(mode: Mode, call: PluginCall<'_>) -> bool {
     match mode {
         Mode::Yolo => true,
-        Mode::Config => call.read_only || (call.bundled && TWEAK_PLUGINS.contains(&call.plugin)),
+        Mode::Config => call.bundled && (call.read_only || TWEAK_PLUGINS.contains(&call.plugin)),
         Mode::Ask => false,
     }
 }
@@ -436,12 +437,13 @@ mod tests {
             assert!(!may_call(Mode::Ask, tool), "ask mode asks: {tool:?}");
             assert!(may_call(Mode::Yolo, tool), "yolo goes ahead: {tool:?}");
         }
-        // Tweak: what only reads, and the smart home it already switches by command.
-        assert!(
-            may_call(Mode::Config, switch_lamp) && may_call(Mode::Config, status) && may_call(Mode::Config, weather)
-        );
-        // Not a plugin that took the home plugin's name, nor other changes.
-        assert!(!may_call(Mode::Config, replaced_home));
+        // Tweak: bundled tools that only read, and the smart home it already
+        // switches by command.
+        assert!(may_call(Mode::Config, switch_lamp) && may_call(Mode::Config, status));
+        assert!(may_call(Mode::Config, call("bluetooth", true, true)));
+        // Not a plugin that took the home plugin's name, nor another plugin
+        // that says it only reads, nor other changes.
+        assert!(!may_call(Mode::Config, replaced_home) && !may_call(Mode::Config, weather));
         assert!(!may_call(Mode::Config, vault) && !may_call(Mode::Config, bluetooth));
     }
 
