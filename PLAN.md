@@ -82,6 +82,14 @@ Report testing in the conversation, the commit or the pull request instead.
 
 ### Later
 
+- The greeter and lock screen on the shared widgets, as AGENTS.md asks of
+  every button and field: the submit arrow through `Painter::button`, and
+  the visible username field and the masked password on
+  `text_input::TextInput` and `SecretField`, drawn with `text::field`, with
+  their keys (Ctrl+V in the username field included) and the pointer
+  (caret placement, selection, middle click) going through the shared
+  paths instead of the greeter's own handler.
+
 - Plugins in more places (the launcher conventions are in
   [the plugin guide](docs/plugins.md)). Decided:
   - New places are new `Place`s in the shared plugin host, like the
