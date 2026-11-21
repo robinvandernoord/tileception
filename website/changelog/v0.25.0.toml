@@ -1,0 +1,87 @@
+version = "0.25.0"
+date = 2026-11-21
+lede = "The login screen can show each person as a tile, and it has switches for larger text and high contrast. Apps can share your screen or a single window, and the lock screen can show what your notifications say."
+
+[[features]]
+area = "greeter"
+issue = 83
+title = "The login screen can show each person as a tile"
+text = "With `users_as = \"tiles\"` in `greeter.toml`, everyone who can log in gets a tile, laid out the way Tileception lays out windows. The selected person's tile is the large one with the password field. Click another tile or press Super+Tab to switch. Each tile shows the wallpaper that person's session shares, or their accent colour."
+
+[features.media]
+kind = "compare"
+before = "greeter-tiles-tabs-after.jpg"
+after = "greeter-tiles-tiles-after.jpg"
+labels = ["Tabs", "Tiles"]
+alt = "The login screen for Ada, Noor, Kai and Mira, once with a tab per person and once with a large tile for Ada and smaller tiles for the others"
+caption = "The same four people with `users_as = \"tabs\"`, the default, and with `users_as = \"tiles\"`. Ada is selected, so her tab or tile holds the password field."
+
+[[features]]
+area = "greeter"
+issue = 83
+title = "Larger text and high contrast on the login screen"
+text = "On the login screen, tap Super and type \"larger\" or \"contrast\" to switch either one on. To show both as switches, add `accessibility` to `[panels] columns` in `greeter.toml`. Larger text makes the greeter's text 1.3 times bigger. High contrast is white on black with a yellow accent. The login screen remembers both for the next boot, and they don't change anyone's session."
+
+[features.media]
+kind = "image"
+src = "greeter-access-after.jpg"
+alt = "The login screen in white and yellow on black, with an Accessibility panel where High contrast is switched on"
+caption = "The Accessibility panel with High contrast switched on."
+
+[[features]]
+area = "screencast"
+title = "Apps can share your screen or a single window"
+text = "When a browser or a video call asks to share your screen, the launcher opens with what you can share. Type to narrow the list, then press Enter to share the one chosen, or Escape to share nothing. Sharing a single window needs xdg-desktop-portal-wlr 0.8 or newer, as in Ubuntu 26.04. On Ubuntu 24.04, only whole screens can be shared. Log out and back in after updating, so the portal starts using the launcher."
+
+[[features]]
+area = "windows"
+issue = 100
+title = "Dialogs open over the window they belong to"
+text = "A dialog floats centred over its window, in that window's area on a split screen. This includes file choosers the desktop portal opens for a program and the dialogs of X11 programs. While a modal dialog is open, clicking its window focuses the dialog instead. A fullscreen window returns to the layout so you can see the dialog."
+
+[[features]]
+area = "gestures"
+issue = 77
+title = "Hold Super and swipe to move windows and dividers"
+text = "Hold Super and swipe with three fingers on the touchpad to move the focused window past its neighbour, as Super+Shift and an arrow key do. A four-finger swipe with Super moves the divider beside the focused window as far as your fingers go, and the divider stays where you let go."
+
+[[features]]
+area = "lock"
+issue = 82
+title = "The lock screen can show more of your notifications"
+text = "Tileception's own lock screen can show more than the number of new notifications. Set `notifications` in `[lock]` in `config.toml` to `none`, `count` (the default), `apps` for each app's name, icon and time, or `full` for what the notifications say. To choose per app, use the eye button on an app's card in the notification panel, or `[lock.notification_apps]`. The lock screen never shows a notification's buttons, and with Do not disturb on it shows only the count."
+
+[[features]]
+area = "plugins"
+issue = 101
+title = "Plugins can run without access to your files or the network"
+text = "A plugin with `confined = true` in the `[dashboard]` block of its manifest can read only system folders and its own installation, and write only to its own folder. It can't connect to the network or to D-Bus. To confine a plugin yourself, or lift its confinement, set `confined = true` or `false` under `[plugins.<id>.dashboard]` in `config.toml`. Confinement needs Linux 5.13 or later; on an older kernel, a plugin that asks for it does not start."
+
+[[features]]
+area = "plugins"
+issue = 103
+title = "Dashboard plugins can draw sharply at fractional scales"
+text = "Plugins that draw on the welcome screen's dashboard are now told the screen's exact scale, such as 1.5, so they can draw at full resolution. The bundled lava lamp example does. Each dashboard plugin also has a limit on how much shared memory it can use, and one that goes over is disconnected."
+
+[[features]]
+area = "plugins"
+issue = 80
+title = "The Wizard can use plugins' tools"
+text = "Plugins can offer tools to the Wizard's agent, such as the smart home's tools for listing, switching and dimming devices. Every call follows the Wizard's mode. In Ask, every call asks first. In Tweak, the smart home's tools and other bundled plugins' read-only tools run, and the rest ask. In Yolo, every call runs. To keep a plugin's tools from the Wizard, set `[plugins.<id>.doctor] enabled = false` in `config.toml`."
+
+[[fixes]]
+area = "portal"
+text = "On Ubuntu 24.04, apps now use Tileception's dark theme. Before, they often followed GNOME's colour scheme and drew light."
+
+[[fixes]]
+area = "session"
+text = "When the login doesn't provide an SSH agent, the session now uses the desktop's own agent from GNOME Keyring or OpenSSH, so apps in the session and services started at boot share the same agent."
+
+[[fixes]]
+area = "setup"
+text = "On an older installation that already uses Tileception's login screen, keeping that login screen in `tileception-setup` now sets it up to unlock the keyring when you log in. It adds a `service` line to greetd's config and leaves the rest of that file as it was."
+
+[[fixes]]
+area = "compositor"
+issue = 103
+text = "A program can no longer crash Tileception by asking to resize its shared memory to zero."

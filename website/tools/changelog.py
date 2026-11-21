@@ -58,7 +58,7 @@ RELEASE_KEYS = {"version", "date", "lede", "features", "fixes"}
 FEATURE_KEYS = {"area", "issue", "title", "text", "media"}
 FIX_KEYS = {"area", "issue", "text"}
 MEDIA_KEYS = {
-    "compare": ({"before", "after"}, {"caption", "alt"}),
+    "compare": ({"before", "after"}, {"caption", "alt", "labels"}),
     "image": ({"src"}, {"caption", "alt"}),
     "video": ({"src"}, {"poster", "caption", "alt"}),
 }
@@ -124,6 +124,12 @@ def load_release(path):
                 raise DataError(f"{spot}: {media[key]} is not in {folder.relative_to(WEBSITE)}")
         for key in ("caption", "alt") & media.keys():
             check_text(f"{spot} {key}", media[key])
+        if "labels" in media:
+            labels = media["labels"]
+            if not isinstance(labels, list) or len(labels) != 2:
+                raise DataError(f"{spot}: labels must name the before and after side, such as [\"Tabs\", \"Tiles\"]")
+            for label in labels:
+                check_text(f"{spot} labels", label)
     for index, fix in enumerate(release["fixes"]):
         spot = f"{where} fix {index + 1}"
         check_keys(spot, fix, {"area", "text"}, FIX_KEYS)
@@ -195,13 +201,15 @@ class Page:
         alt = html.escape(media.get("alt", feature["title"]), quote=True)
         kind = media["kind"]
         if kind == "compare":
+            # Two options of one release compare under their own names.
+            left, right = (html.escape(label, quote=True) for label in media.get("labels", ["Before", "After"]))
             inner = (
                 '<div class="compare" style="--split: 50%" tabindex="0" role="slider" '
-                'aria-label="Before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">'
-                f'<img src="{folder}{media["before"]}" alt="Before: {alt}" loading="lazy" />'
-                f'<div class="after-layer"><img src="{folder}{media["after"]}" alt="After: {alt}" loading="lazy" /></div>'
+                f'aria-label="{left} and {right}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">'
+                f'<img src="{folder}{media["before"]}" alt="{left}: {alt}" loading="lazy" />'
+                f'<div class="after-layer"><img src="{folder}{media["after"]}" alt="{right}: {alt}" loading="lazy" /></div>'
                 '<div class="handle" aria-hidden="true"></div>'
-                '<span class="label before">Before</span><span class="label after">After</span>'
+                f'<span class="label before">{left}</span><span class="label after">{right}</span>'
                 "</div>"
             )
         elif kind == "video":

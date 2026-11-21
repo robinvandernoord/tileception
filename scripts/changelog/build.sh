@@ -30,7 +30,11 @@ if [ -e "$tree/.git" ]; then
     git -C "$tree" checkout -q --detach "$tag"
 else
     mkdir -p "$(dirname "$tree")"
-    git -C "$root" worktree add -q --detach "$tree" "$tag" >&2
+    git -C "$root" worktree add -q --detach "$tree" "$tag" >&2 || {
+        echo "hint: if git says the worktree is missing but already registered," >&2
+        echo "hint: target/ was probably cleaned; run 'git worktree prune' and try again" >&2
+        exit 1
+    }
 fi
 # The builder settings are personal and untracked; the worktree needs its own
 # copy to count as a cargo-plane project of its own.
