@@ -81,11 +81,26 @@ echo "Installed $portals/tileception-portals.conf (screen sharing through xdg-de
 wlr_portal="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal-wlr"
 mkdir -p "$wlr_portal"
 sed "s|^chooser_cmd=tileception |chooser_cmd=$bindir/tileception |" resources/xdg-desktop-portal-wlr.conf > target/xdg-desktop-portal-wlr.conf
-if ! cmp -s target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"; then
-    install -m 644 target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"
-    portals_changed=true
+# The file is replaced only while it is as the installer last wrote it, by
+# the checksum kept here: one written or changed by someone else is theirs.
+wlr_sum="$HOME/.local/share/tileception/xdg-desktop-portal-wlr.sha256"
+wlr_ours=false
+if [ ! -e "$wlr_portal/Tileception" ] || cmp -s target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"; then
+    wlr_ours=true
+elif [ -e "$wlr_sum" ] && [ "$(sha256sum < "$wlr_portal/Tileception")" = "$(cat "$wlr_sum")" ]; then
+    wlr_ours=true
 fi
-echo "Installed $wlr_portal/Tileception (choosing what to share in the launcher)"
+if $wlr_ours; then
+    if ! cmp -s target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"; then
+        install -m 644 target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"
+        portals_changed=true
+    fi
+    mkdir -p "$(dirname "$wlr_sum")"
+    sha256sum < target/xdg-desktop-portal-wlr.conf > "$wlr_sum"
+    echo "Installed $wlr_portal/Tileception (choosing what to share in the launcher)"
+else
+    echo "Kept $wlr_portal/Tileception, which was changed or not written here: set chooser_type=dmenu and chooser_cmd=$bindir/tileception pick-source under [screencast] in it to choose what to share in the launcher"
+fi
 
 # Suspending until a set time: the unit sets the hardware clock's wake-up
 # alarm, and the polkit rule lets the person at the computer start it. Only

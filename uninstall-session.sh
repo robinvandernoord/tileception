@@ -45,12 +45,22 @@ fi
 
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal/tileception-portals.conf"
 wlr_portal="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal-wlr/Tileception"
-for f in "$bindir/tileception" "$bindir/tileception-clip-persist" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt" "$HOME/.local/share/fastfetch/logos/tileception" "$HOME/.local/share/tileception/xdg/fastfetch/config.jsonc" "$portals" "$wlr_portal"; do
+for f in "$bindir/tileception" "$bindir/tileception-clip-persist" "$bindir/tileception-session" "$bindir/tileception-power" "$bindir/tileception-screenshot" "$bindir/tileception-setup" "$HOME/.local/share/doc/tileception/clipboard-helper-NOTICES.txt" "$HOME/.local/share/fastfetch/logos/tileception" "$HOME/.local/share/tileception/xdg/fastfetch/config.jsonc" "$portals"; do
     if [ -e "$f" ]; then
         rm -f "$f"
         echo "Removed $f"
     fi
 done
+# The screen sharing portal's settings, while they are as the installer
+# wrote them (by its checksum); changed ones are someone's own.
+wlr_sum="$HOME/.local/share/tileception/xdg-desktop-portal-wlr.sha256"
+if [ -e "$wlr_portal" ] && [ -e "$wlr_sum" ] && [ "$(sha256sum < "$wlr_portal")" = "$(cat "$wlr_sum")" ]; then
+    rm -f "$wlr_portal"
+    echo "Removed $wlr_portal"
+elif [ -e "$wlr_portal" ]; then
+    echo "Kept $wlr_portal, which was changed since it was installed"
+fi
+rm -f "$wlr_sum"
 # The fastfetch config's directories, once empty.
 rmdir "$HOME/.local/share/tileception/xdg/fastfetch" "$HOME/.local/share/tileception/xdg" 2>/dev/null || true
 
