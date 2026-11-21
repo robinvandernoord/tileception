@@ -6,3 +6,6 @@ command = "/absolute/path/to/lava-lamp.py"
 
 [dashboard]
 surface = true
+# Without the user's files or the network, which the lamp does not need.
+# With it, the protocol file must be installed in /usr/share/tileception.
+# confined = true

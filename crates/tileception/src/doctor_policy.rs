@@ -157,6 +157,32 @@ fn tileception_command(command: &str) -> bool {
     false
 }
 
+/// A plugin tool that Doctor's agent calls through Tileception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PluginCall<'name> {
+    pub plugin: &'name str,
+    /// The plugin is the one bundled with Tileception, not a replacement.
+    pub bundled: bool,
+    /// The plugin says the tool only reads (`readOnlyHint`).
+    pub read_only: bool,
+}
+
+/// Bundled plugins whose tools tweak mode runs unasked, as it runs their
+/// `tileception msg` commands: the smart home's.
+const TWEAK_PLUGINS: [&str; 1] = ["home"];
+
+/// Whether a plugin tool goes ahead without asking: in yolo mode, and in
+/// tweak mode for the bundled plugins' tools that only read and the bundled
+/// smart home's. A plugin's own `readOnlyHint` is only a hint, so another
+/// plugin's tools are asked about outside yolo mode. Ask mode asks every time.
+pub fn may_call(mode: Mode, call: PluginCall<'_>) -> bool {
+    match mode {
+        Mode::Yolo => true,
+        Mode::Config => call.bundled && (call.read_only || TWEAK_PLUGINS.contains(&call.plugin)),
+        Mode::Ask => false,
+    }
+}
+
 /// Reading goes ahead inside Tileception's places, and anywhere in yolo mode.
 pub fn may_read(mode: Mode, path: &Path, scope: &Scope) -> bool {
     mode == Mode::Yolo || scope.readable(path)
@@ -396,6 +422,29 @@ mod tests {
         assert!(may_write(Mode::Ask, config, &places, &[config.to_path_buf()]));
         assert!(may_write(Mode::Config, config, &places, &[]) && !may_write(Mode::Config, other, &places, &[]));
         assert!(may_write(Mode::Yolo, other, &places, &[]));
+    }
+
+    #[test]
+    fn plugin_tools_follow_the_mode() {
+        let call = |plugin, bundled, read_only| PluginCall { plugin, bundled, read_only };
+        let switch_lamp = call("home", true, false);
+        let status = call("home", true, true);
+        let replaced_home = call("home", false, false);
+        let weather = call("weather", false, true);
+        let vault = call("vault", false, false);
+        let bluetooth = call("bluetooth", true, false);
+        for tool in [switch_lamp, status, replaced_home, weather, vault, bluetooth] {
+            assert!(!may_call(Mode::Ask, tool), "ask mode asks: {tool:?}");
+            assert!(may_call(Mode::Yolo, tool), "yolo goes ahead: {tool:?}");
+        }
+        // Tweak: bundled tools that only read, and the smart home it already
+        // switches by command.
+        assert!(may_call(Mode::Config, switch_lamp) && may_call(Mode::Config, status));
+        assert!(may_call(Mode::Config, call("bluetooth", true, true)));
+        // Not a plugin that took the home plugin's name, nor another plugin
+        // that says it only reads, nor other changes.
+        assert!(!may_call(Mode::Config, replaced_home) && !may_call(Mode::Config, weather));
+        assert!(!may_call(Mode::Config, vault) && !may_call(Mode::Config, bluetooth));
     }
 
     #[test]

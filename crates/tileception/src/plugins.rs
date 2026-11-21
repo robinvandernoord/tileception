@@ -1,6 +1,6 @@
 //! Plugins: executables speaking MCP over stdio, found through manifests and
 //! `[plugins.<id>]`. They add launcher sources and cards, panel blocks, bar
-//! chips and commands.
+//! chips, readings on the lock screen, commands and tools for Doctor's agent.
 //!
 //! The compositor owns one [`Host`]. Every plugin gets a worker thread that
 //! owns its process and all of its I/O, so a slow plugin holds up only
@@ -45,9 +45,25 @@ pub enum Place {
     Panel,
     /// `tileception msg plugin` and key bindings.
     Command,
+    /// Tools offered to Doctor's agent, called once Doctor's policy allows.
+    Doctor,
+    /// Tileception's own lock screen: readings only, so it never calls a
+    /// tool.
+    Lock,
 }
 
 impl Place {
+    /// The place a plugin's `tileception://` resource fills, for the places
+    /// that have one.
+    fn showing(uri: &str) -> Option<Place> {
+        match uri {
+            LAUNCHER => Some(Place::Launcher),
+            PANEL => Some(Place::Panel),
+            LOCK => Some(Place::Lock),
+            _ => None,
+        }
+    }
+
     /// Whether a new request cancels the place's earlier ones. The panel's
     /// clicks and commands all go through; each gets its own number.
     fn cancels(self) -> bool {
@@ -58,7 +74,7 @@ impl Place {
 /// The current request generation of every place; for places that do not
 /// cancel, the last request's number.
 #[derive(Default)]
-struct Generations([AtomicU64; 3]);
+struct Generations([AtomicU64; 5]);
 
 impl Generations {
     fn get(&self, place: Place) -> &AtomicU64 {
@@ -81,6 +97,12 @@ pub struct PluginConfig {
     /// Items on the dashboard of a cleared desk: only with this block,
     /// unless it says `enabled = false`.
     pub dashboard: Option<DashboardOptions>,
+    /// Tools for Doctor's agent: offered whenever the plugin offers them,
+    /// unless this block says `enabled = false`.
+    pub doctor: Option<DoctorOptions>,
+    /// Readings on the lock screen: only with this block, unless it says
+    /// `enabled = false`.
+    pub lock: Option<LockOptions>,
     /// Launcher prefixes from before the `[launcher]` block.
     pub prefixes: Option<Vec<String>>,
 }
@@ -97,14 +119,30 @@ impl PluginConfig {
         self.on_dashboard() && self.dashboard.as_ref().is_some_and(|dashboard| dashboard.surface == Some(true))
     }
 
+    /// Whether the plugin's process is confined. It is one process for
+    /// every place, so this holds with the dashboard switched off too.
+    pub fn confined(&self) -> bool {
+        self.dashboard.as_ref().is_some_and(|dashboard| dashboard.confined == Some(true))
+    }
+
     /// Whether the plugin's items show on the dashboard.
     pub fn on_dashboard(&self) -> bool {
         self.dashboard.as_ref().is_some_and(|dashboard| dashboard.enabled != Some(false))
     }
 
+    /// Whether the plugin's readings show on the lock screen.
+    pub fn on_lock_screen(&self) -> bool {
+        self.lock.as_ref().is_some_and(|lock| lock.enabled != Some(false))
+    }
+
     /// Whether the plugin's cards show under the launcher.
     pub fn launcher_cards(&self) -> bool {
         self.launcher.as_ref().and_then(|launcher| launcher.cards) != Some(false)
+    }
+
+    /// Whether Doctor's agent gets the plugin's tools.
+    pub fn for_doctor(&self) -> bool {
+        self.doctor.as_ref().and_then(|doctor| doctor.enabled) != Some(false)
     }
 }
 
@@ -132,6 +170,25 @@ pub struct DashboardOptions {
     /// Started with `WAYLAND_SOCKET`, a connection of its own on which it
     /// may draw its `surface` items.
     pub surface: Option<bool>,
+    /// Started confined: without the user's files, apart from a private
+    /// folder, and without network. See `confine.rs`.
+    pub confined: Option<bool>,
+}
+
+/// A plugin's `[doctor]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DoctorOptions {
+    pub enabled: Option<bool>,
+    /// Only these of the tools the plugin offers to Doctor.
+    pub tools: Option<Vec<String>>,
+}
+
+/// A plugin's `[lock]` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockOptions {
+    pub enabled: Option<bool>,
 }
 
 /// The config's `[launcher]` section, where plugins were configured before
@@ -208,6 +265,24 @@ fn overlay(base: &mut PluginConfig, overlay: PluginConfig) {
         }
         if dashboard.surface.is_some() {
             base.surface = dashboard.surface;
+        }
+        if dashboard.confined.is_some() {
+            base.confined = dashboard.confined;
+        }
+    }
+    if let Some(doctor) = overlay.doctor {
+        let base = base.doctor.get_or_insert_default();
+        if doctor.enabled.is_some() {
+            base.enabled = doctor.enabled;
+        }
+        if doctor.tools.is_some() {
+            base.tools = doctor.tools;
+        }
+    }
+    if let Some(lock) = overlay.lock {
+        let base = base.lock.get_or_insert_default();
+        if lock.enabled.is_some() {
+            base.enabled = lock.enabled;
         }
     }
 }
@@ -488,6 +563,8 @@ pub struct Described {
     pub launcher: Option<Info>,
     /// The `tileception://` resources it offers, subscribed to.
     pub resources: Vec<String>,
+    /// Its `tools/list` entries.
+    pub tools: Vec<Value>,
 }
 
 /// The resource holding a plugin's panel block.
@@ -498,6 +575,49 @@ pub const BAR: &str = "tileception://bar";
 pub const LAUNCHER: &str = "tileception://launcher";
 /// The resource holding a plugin's items on the dashboard.
 pub const DASHBOARD: &str = "tileception://dashboard";
+
+/// The resource naming the tools a plugin offers Doctor's agent.
+pub const DOCTOR: &str = "tileception://doctor";
+
+/// What a plugin offers Doctor's agent: some of its tools, by name, and
+/// what to tell the agent about them.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct DoctorOffer {
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+}
+
+/// The tools Doctor's agent gets from a plugin: its `tools/list` entries
+/// for what it offers Doctor, narrowed to the `[doctor]` block's `tools`.
+pub fn doctor_tools(listed: &[Value], offer: &DoctorOffer, options: Option<&DoctorOptions>) -> Vec<Value> {
+    let chosen = options.and_then(|options| options.tools.as_ref());
+    listed
+        .iter()
+        .filter(|tool| {
+            let Some(name) = tool["name"].as_str() else { return false };
+            offer.tools.iter().any(|offered| offered == name)
+                && chosen.is_none_or(|chosen| chosen.iter().any(|wanted| wanted == name))
+        })
+        .map(|tool| {
+            let mut tool = tool.clone();
+            // Answers go to the agent as the plugin gave them, checked by nobody.
+            if let Some(entry) = tool.as_object_mut() {
+                entry.remove("outputSchema");
+            }
+            tool
+        })
+        .collect()
+}
+
+/// Whether a `tools/list` entry says its tool only reads.
+pub fn read_only(tool: &Value) -> bool {
+    tool["annotations"]["readOnlyHint"] == true
+}
+
+/// The resource holding a plugin's readings on the lock screen.
+pub const LOCK: &str = "tileception://lock";
 
 /// What [`Host::handle`] changed.
 #[derive(Debug, Default)]
@@ -511,6 +631,8 @@ pub struct Changed {
     pub dashboard: bool,
     /// Whose dashboard items were read again; all when unset.
     pub dashboard_plugin: Option<String>,
+    /// The readings on the lock screen.
+    pub lock: bool,
     /// Other resources read anew, as (plugin, uri).
     pub resources: Vec<(String, String)>,
 }
@@ -685,8 +807,15 @@ pub struct Host {
     cards: BTreeMap<String, Vec<crate::panel::block::Card>>,
     /// Dashboard items by plugin.
     dashboards: BTreeMap<String, Vec<crate::dashboard::Item>>,
+    /// What each plugin offers Doctor's agent.
+    doctor: BTreeMap<String, DoctorOffer>,
+    /// Readings on the lock screen by plugin.
+    locks: BTreeMap<String, Vec<crate::panel::block::Reading>>,
     /// Other resources by (plugin, uri), as last read.
     resources: BTreeMap<(String, String), Value>,
+    /// Numbers for calls that are never cancelled, unique across places,
+    /// so commands and Doctor's calls can wait on the command socket by them.
+    calls: AtomicU64,
 }
 
 impl Host {
@@ -710,7 +839,10 @@ impl Host {
             bars: BTreeMap::new(),
             cards: BTreeMap::new(),
             dashboards: BTreeMap::new(),
+            doctor: BTreeMap::new(),
+            locks: BTreeMap::new(),
             resources: BTreeMap::new(),
+            calls: AtomicU64::new(0),
         };
         host.reload();
         host
@@ -757,6 +889,8 @@ impl Host {
         self.bars.clear();
         self.cards.clear();
         self.dashboards.clear();
+        self.doctor.clear();
+        self.locks.clear();
         self.resources.clear();
         let epoch = self.epoch;
         let settings = self.settings.clone();
@@ -778,11 +912,13 @@ impl Host {
             cards: reloaded,
             dashboard: reloaded,
             dashboard_plugin: None,
+            lock: reloaded,
             resources: Vec::new(),
         }
     }
 
-    /// A resource was read: panels are kept parsed, others as they are.
+    /// A resource was read: those of places and the bar are kept parsed,
+    /// others as they are.
     pub fn handle_resource(
         &mut self,
         epoch: u64,
@@ -801,59 +937,103 @@ impl Host {
                 return changed;
             }
         };
-        if uri == PANEL {
-            match serde_json::from_value::<crate::panel::block::Block>(value) {
-                Ok(block) => {
-                    self.panels.insert(plugin, block);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid panel block: {error}");
-                    self.panels.remove(&plugin);
-                }
+        match Place::showing(&uri) {
+            Some(Place::Panel) => self.read_panel(plugin, value, &mut changed),
+            Some(Place::Launcher) => self.read_cards(plugin, value, &mut changed),
+            Some(Place::Lock) => self.read_lock(plugin, value, &mut changed),
+            _ if uri == BAR => self.read_bar(plugin, value, &mut changed),
+            _ if uri == DASHBOARD => self.read_dashboard(plugin, value, &mut changed),
+            _ if uri == DOCTOR => self.read_doctor(plugin, value),
+            _ => {
+                self.resources.insert((plugin.clone(), uri.clone()), value);
+                changed.resources.push((plugin, uri));
             }
-            changed.panels = true;
-        } else if uri == BAR {
-            match serde_json::from_value::<crate::panel::block::Bar>(value) {
-                Ok(bar) => {
-                    self.bars.insert(plugin, bar);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid bar chips: {error}");
-                    self.bars.remove(&plugin);
-                }
-            }
-            changed.bar = true;
-        } else if uri == LAUNCHER {
-            match serde_json::from_value::<crate::panel::block::Launcher>(value) {
-                Ok(mut launcher) => {
-                    launcher.cards.truncate(crate::panel::block::LAUNCHER_CARDS);
-                    self.cards.insert(plugin, launcher.cards);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid launcher cards: {error}");
-                    self.cards.remove(&plugin);
-                }
-            }
-            changed.cards = true;
-        } else if uri == DASHBOARD {
-            match serde_json::from_value::<crate::dashboard::Items>(value) {
-                Ok(mut items) => {
-                    items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
-                    items.seal();
-                    self.dashboards.insert(plugin.clone(), items.items);
-                }
-                Err(error) => {
-                    tracing::warn!("Plugin {plugin}: invalid dashboard items: {error}");
-                    self.dashboards.remove(&plugin);
-                }
-            }
-            changed.dashboard = true;
-            changed.dashboard_plugin = Some(plugin);
-        } else {
-            self.resources.insert((plugin.clone(), uri.clone()), value);
-            changed.resources.push((plugin, uri));
         }
         changed
+    }
+
+    fn read_panel(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Block>(value) {
+            Ok(block) => {
+                self.panels.insert(plugin, block);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid panel block: {error}");
+                self.panels.remove(&plugin);
+            }
+        }
+        changed.panels = true;
+    }
+
+    fn read_bar(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Bar>(value) {
+            Ok(bar) => {
+                self.bars.insert(plugin, bar);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid bar chips: {error}");
+                self.bars.remove(&plugin);
+            }
+        }
+        changed.bar = true;
+    }
+
+    fn read_cards(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Launcher>(value) {
+            Ok(mut launcher) => {
+                launcher.cards.truncate(crate::panel::block::LAUNCHER_CARDS);
+                self.cards.insert(plugin, launcher.cards);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid launcher cards: {error}");
+                self.cards.remove(&plugin);
+            }
+        }
+        changed.cards = true;
+    }
+
+    fn read_dashboard(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::dashboard::Items>(value) {
+            Ok(mut items) => {
+                items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
+                items.seal();
+                self.dashboards.insert(plugin.clone(), items.items);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid dashboard items: {error}");
+                self.dashboards.remove(&plugin);
+            }
+        }
+        changed.dashboard = true;
+        changed.dashboard_plugin = Some(plugin);
+    }
+
+    fn read_doctor(&mut self, plugin: String, value: Value) {
+        match serde_json::from_value::<DoctorOffer>(value) {
+            Ok(offer) => {
+                self.doctor.insert(plugin, offer);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid Doctor tools: {error}");
+                self.doctor.remove(&plugin);
+            }
+        }
+    }
+
+    /// Readings for the lock screen. They are kept whatever the lock
+    /// screen shows, which leaves out what its privacy hides.
+    fn read_lock(&mut self, plugin: String, value: Value, changed: &mut Changed) {
+        match serde_json::from_value::<crate::panel::block::Lock>(value) {
+            Ok(mut lock) => {
+                lock.readings.truncate(crate::panel::block::LOCK_READINGS);
+                self.locks.insert(plugin, lock.readings);
+            }
+            Err(error) => {
+                tracing::warn!("Plugin {plugin}: invalid lock screen readings: {error}");
+                self.locks.remove(&plugin);
+            }
+        }
+        changed.lock = true;
     }
 
     /// Enabled plugins in the user's order, else highest priority first.
@@ -911,12 +1091,52 @@ impl Host {
         &self.dormant
     }
 
+    /// The readings on the lock screen of plugins with a `[lock]` block,
+    /// in the user's order. Launcher sources never show there: a plugin
+    /// gets there only through its `tileception://lock` resource.
+    pub fn lock_readings(&self) -> Vec<&crate::panel::block::Reading> {
+        self.arranged()
+            .into_iter()
+            .filter(|(_, config)| config.on_lock_screen())
+            .filter_map(|(plugin_id, _)| self.locks.get(plugin_id))
+            .flatten()
+            .collect()
+    }
+
     /// Puts the plugins with blocks in this order, keeping the others'
     /// places, and saves it.
     pub fn arrange_panels(&mut self, shown: &[&str]) {
         let priority: Vec<&str> = self.order.iter().map(|(plugin_id, _)| plugin_id.as_str()).collect();
         self.arrangement = crate::panel::order::rearrange(&priority, &self.arrangement, shown);
         crate::panel::order::save(&self.arrangement);
+    }
+
+    /// The plugins offering Doctor's agent tools, in priority order.
+    pub fn doctor_plugins(&self) -> Vec<&str> {
+        self.order
+            .iter()
+            .filter(|(plugin_id, config)| {
+                config.for_doctor() && self.workers.contains_key(plugin_id) && self.doctor.contains_key(plugin_id)
+            })
+            .map(|(plugin_id, _)| plugin_id.as_str())
+            .collect()
+    }
+
+    /// The tools a plugin offers Doctor's agent, and what to tell the agent
+    /// about them; `None` when it offers none.
+    pub fn doctor_offer(&self, plugin: &str) -> Option<(Vec<Value>, Option<String>)> {
+        let (_, config) = self.order.iter().find(|(plugin_id, config)| plugin_id == plugin && config.for_doctor())?;
+        let offer = self.doctor.get(plugin).filter(|_| self.workers.contains_key(plugin))?;
+        let listed = match self.infos.get(plugin) {
+            Some(Ok(described)) => described.tools.as_slice(),
+            _ => &[],
+        };
+        Some((doctor_tools(listed, offer, config.doctor.as_ref()), offer.instructions.clone()))
+    }
+
+    /// Whether the plugin is the bundled one of that name, not a replacement.
+    pub fn bundled(&self, plugin: &str) -> bool {
+        self.order.iter().any(|(plugin_id, config)| plugin_id == plugin && crate::bundled::is_bundled(plugin, config))
     }
 
     /// A resource as last read.
@@ -988,7 +1208,7 @@ impl Host {
                     continue;
                 }
                 Some(Ok(Described { launcher: Some(info), .. })) => info,
-                Some(Ok(Described { launcher: None, resources })) => {
+                Some(Ok(Described { launcher: None, resources, .. })) => {
                     if resources.is_empty() {
                         diagnostics.push(format!("Plugin {plugin_id}: offers nothing Tileception uses"));
                     }
@@ -1080,18 +1300,38 @@ impl Host {
         self.send_tool(Place::Launcher, plugin, name, arguments, terms)
     }
 
+    /// A number for a call that is never cancelled, for [`Host::tool_as`].
+    pub fn call_number(&self) -> u64 {
+        self.calls.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Calls a tool from a place that never cancels, under a number from
+    /// [`Host::call_number`]: [`Event::Action`] comes back with it.
+    pub fn tool_as(&self, place: Place, number: u64, plugin: String, name: String, arguments: Value) {
+        debug_assert!(!place.cancels());
+        self.dispatch(place, number, plugin, name, arguments.into(), Terms::default());
+    }
+
     fn send_tool(&self, place: Place, plugin: String, name: String, arguments: Arguments, terms: Terms) -> u64 {
-        let generation = if place.cancels() {
-            self.cancel(place)
-        } else {
-            self.generations.get(place).fetch_add(1, Ordering::Relaxed) + 1
-        };
+        let generation = if place.cancels() { self.cancel(place) } else { self.call_number() };
+        self.dispatch(place, generation, plugin, name, arguments, terms);
+        generation
+    }
+
+    fn dispatch(
+        &self,
+        place: Place,
+        generation: u64,
+        plugin: String,
+        name: String,
+        arguments: Arguments,
+        terms: Terms,
+    ) {
         if let Some(worker) = self.workers.get(&plugin) {
             worker.send(Request::Tool { place, generation, name, arguments, terms });
         } else {
             let _ = self.events.send(Event::Action { place, generation, result: Err("Plugin is unavailable".into()) });
         }
-        generation
     }
 }
 
@@ -1380,6 +1620,7 @@ impl Tileception {
                 self.plugin_command_reply(generation, result)
             }
             Event::DashboardClient { plugin, stream } => self.dashboard_client(plugin, stream),
+            Event::Action { place: Place::Doctor, generation, result } => self.doctor_tool_answered(generation, result),
             Event::Resource { epoch, plugin, uri, result } => {
                 let Some(plugins) = &mut self.plugins else { return };
                 let changed = plugins.handle_resource(epoch, plugin, uri, result);
@@ -1425,7 +1666,7 @@ impl Tileception {
         if changed.dashboard {
             self.dashboard_changed(changed.dashboard_plugin.as_deref());
         }
-        if changed.bar || (changed.cards && self.launcher.open) {
+        if changed.bar || (changed.cards && self.launcher.open) || (changed.lock && self.draws_lock_screen()) {
             self.schedule_render();
         }
         if !changed.resources.is_empty() && self.settings.open {
@@ -1532,7 +1773,8 @@ impl Source {
         };
         let resources = session.subscribe_all()?;
         self.resources = resources.clone();
-        Ok(Described { launcher, resources })
+        let tools = tools["tools"].as_array().cloned().unwrap_or_default();
+        Ok(Described { launcher, resources, tools })
     }
 
     /// Reads every subscribed resource.
@@ -1878,6 +2120,13 @@ impl Session {
                 }
             }
         }
+        let args = config.args.as_deref().unwrap_or_default();
+        if config.confined() {
+            let path = environment.iter().rev().find(|(key, _)| key == "PATH").and_then(|(_, value)| value.as_deref());
+            crate::confine::Allowance::for_plugin(name, command, args, path.map(std::ffi::OsStr::new))
+                .apply(&mut process)
+                .map_err(|error| format!("Plugin {name} asks to be confined: {error}"))?;
+        }
         // Its own Wayland connection, for drawing on the dashboard only.
         let mut dashboard = None;
         if config.draws_surfaces() {
@@ -1898,7 +2147,7 @@ impl Session {
             dashboard = Some((ours, theirs));
         }
         let mut child = process
-            .args(config.args.as_deref().unwrap_or_default())
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2541,11 +2790,52 @@ mod tests {
         assert!(settings.plugins["cards"].on_dashboard() && !settings.plugins["cards"].draws_surfaces());
         assert!(settings.plugins["lamp"].draws_surfaces());
         // Switched off in the config: no items and no connection either.
-        let dashboard = DashboardOptions { enabled: None, surface: Some(true) };
+        let dashboard = DashboardOptions { surface: Some(true), ..DashboardOptions::default() };
         let mut manifest = PluginConfig { dashboard: Some(dashboard), ..PluginConfig::default() };
         assert!(manifest.draws_surfaces());
         overlay(&mut manifest, settings.plugins["off"].clone());
         assert!(!manifest.on_dashboard() && !manifest.draws_surfaces());
+    }
+
+    #[test]
+    fn confinement_is_opt_in_and_the_config_decides() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain.dashboard]
+
+            [plugins.boxed.dashboard]
+            confined = true
+
+            [plugins.trusted.dashboard]
+            confined = false
+
+            [plugins.hidden.dashboard]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(!settings.plugins["plain"].confined());
+        assert!(settings.plugins["boxed"].confined());
+        let asks = || PluginConfig {
+            dashboard: Some(DashboardOptions { confined: Some(true), ..DashboardOptions::default() }),
+            ..PluginConfig::default()
+        };
+        // A manifest that asks stays confined under a config that says
+        // nothing about it, also with its dashboard items switched off.
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["plain"].clone());
+        assert!(manifest.confined());
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["hidden"].clone());
+        assert!(manifest.confined() && !manifest.on_dashboard());
+        // The user may lift it, or confine a plugin that did not ask.
+        let mut manifest = asks();
+        overlay(&mut manifest, settings.plugins["trusted"].clone());
+        assert!(!manifest.confined());
+        let mut manifest = PluginConfig::default();
+        overlay(&mut manifest, settings.plugins["boxed"].clone());
+        assert!(manifest.confined());
     }
 
     #[test]
@@ -2570,6 +2860,103 @@ mod tests {
         overlay(&mut manifest, settings.plugins["hidden"].clone());
         assert!(!manifest.launcher_cards());
         assert_eq!(manifest.launcher.unwrap().prefixes, Some(vec!["t".into()]));
+    }
+
+    #[test]
+    fn doctor_gets_the_offered_tools_unless_switched_off() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+
+            [plugins.off.doctor]
+            enabled = false
+
+            [plugins.narrow.doctor]
+            tools = ["status"]
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        assert!(settings.plugins["plain"].for_doctor() && settings.plugins["narrow"].for_doctor());
+        assert!(!settings.plugins["off"].for_doctor());
+        // The config narrows a manifest's block without switching it off.
+        let mut manifest = PluginConfig { doctor: Some(DoctorOptions::default()), ..PluginConfig::default() };
+        overlay(&mut manifest, settings.plugins["narrow"].clone());
+        assert!(manifest.for_doctor());
+        assert_eq!(manifest.doctor.as_ref().unwrap().tools, Some(vec!["status".into()]));
+        overlay(&mut manifest, settings.plugins["off"].clone());
+        assert!(!manifest.for_doctor());
+        assert_eq!(manifest.doctor.as_ref().unwrap().tools, Some(vec!["status".into()]));
+
+        let listed = [
+            json!({ "name": "launcher_search", "inputSchema": { "type": "object" } }),
+            json!({ "name": "status", "annotations": { "readOnlyHint": true }, "outputSchema": { "type": "object" } }),
+            json!({ "name": "toggle", "inputSchema": { "type": "object" } }),
+            json!({ "title": "nameless" }),
+        ];
+        let offer: DoctorOffer =
+            serde_json::from_value(json!({ "tools": ["status", "toggle", "missing"], "instructions": "Lights" }))
+                .unwrap();
+        let names = |tools: Vec<Value>| tools.iter().map(|tool| tool["name"].clone()).collect::<Vec<_>>();
+        // Only what the plugin offers Doctor, never its launcher's tools.
+        let offered = doctor_tools(&listed, &offer, None);
+        assert_eq!(names(offered.clone()), [json!("status"), json!("toggle")]);
+        assert!(offered[0].get("outputSchema").is_none());
+        assert!(read_only(&offered[0]) && !read_only(&offered[1]));
+        assert_eq!(names(doctor_tools(&listed, &offer, manifest.doctor.as_ref())), [json!("status")]);
+        assert!(doctor_tools(&listed, &DoctorOffer::default(), None).is_empty());
+    }
+
+    #[test]
+    fn the_lock_screen_is_opt_in() {
+        let file: crate::config::ConfigFile = toml::from_str(
+            r#"
+            [plugins.plain]
+            command = "plain"
+            [plugins.plain.launcher]
+            prefixes = ["p"]
+            [plugins.plain.bar]
+
+            [plugins.shown]
+            command = "shown"
+            [plugins.shown.lock]
+
+            [plugins.home.lock]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+        let settings = Settings::new(&file.plugins, &file.launcher);
+        // Not with a launcher source or bar chips: only with a [lock] block.
+        assert!(!settings.plugins["plain"].on_lock_screen());
+        assert!(settings.plugins["shown"].on_lock_screen());
+        // The bundled home manifest has the block; the config switches it off
+        // and keeps the rest of the manifest.
+        let options = crate::bundled::Options { home: Some(None), ..crate::bundled::Options::default() };
+        let mut home = crate::bundled::manifests(&options)
+            .unwrap()
+            .into_iter()
+            .find_map(|(plugin_id, config)| (plugin_id == "home").then_some(config))
+            .unwrap();
+        assert!(home.on_lock_screen() && home.in_bar());
+        let manifests = crate::bundled::manifests(&crate::bundled::Options::default()).unwrap();
+        assert!(manifests.iter().all(|(_, config)| !config.on_lock_screen()), "only home");
+        overlay(&mut home, settings.plugins["home"].clone());
+        assert!(!home.on_lock_screen() && home.in_bar());
+        assert!(home.command.is_some());
+        // A manifest of its own says the same.
+        let manifest: PluginConfig = toml::from_str("command = \"weather\"\n[lock]\n").unwrap();
+        assert!(manifest.on_lock_screen());
+        assert!(toml::from_str::<PluginConfig>("[lock]\nprefixes = [\"w\"]\n").is_err());
+    }
+
+    #[test]
+    fn lock_readings_are_the_lock_resource() {
+        assert_eq!(Place::showing(LOCK), Some(Place::Lock));
+        assert_eq!(Place::showing(PANEL), Some(Place::Panel));
+        assert_eq!(Place::showing(BAR), None);
+        assert!(!Place::Lock.cancels());
     }
 
     #[test]

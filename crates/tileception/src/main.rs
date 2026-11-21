@@ -24,12 +24,15 @@ mod colour_pick;
 mod commands;
 mod config;
 mod config_edit;
+mod confine;
 mod controls;
 mod cursor;
 mod dashboard;
+mod dashboard_shm;
 mod dashboard_surface;
 mod desk;
 mod doctor;
+mod doctor_mcp;
 mod doctor_policy;
 mod drag;
 mod duck;
@@ -46,6 +49,7 @@ mod headless;
 mod home;
 mod ics;
 mod idle;
+mod image_copy;
 mod inject;
 mod input;
 mod ipc;
@@ -76,10 +80,12 @@ mod render;
 mod rounded;
 mod rules;
 mod scale;
+mod screen_cast;
 mod screensaver;
 mod selection;
 mod settings;
 mod shapes;
+mod share_pick;
 mod shell;
 mod shortcuts_inhibit;
 mod shot;
@@ -118,6 +124,7 @@ Usage:
   tileception setup [options]
   tileception pair [<passphrase words...> | --new | --off | --show]
   tileception plugin <id>
+  tileception doctor-mcp <plugin id>
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
@@ -125,7 +132,9 @@ Starts the Tileception compositor, or with `msg` controls a running one.
 login screen again (`tileception setup --help`). `pair` shows or sets the
 passphrase that lets other computers share this mouse and keyboard
 (`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
-Tileception starts these itself.
+Tileception starts these itself. `doctor-mcp` offers a plugin's tools to
+Doctor's agent over MCP, asking the compositor before each call; Doctor
+gives it to its agent.
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -161,6 +170,7 @@ Environment:
   TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
   TILECEPTION_UPDATES        start the update manager nested or headless too
   TILECEPTION_POLKIT         be the polkit agent nested or headless too
+  TILECEPTION_PORTAL         serve the portal backend nested or headless too
   RUST_LOG                   log filter (default: info,smithay=warn)
   GREETD_SOCK                greetd's socket, set by greetd (greeter)
   TILECEPTION_GREETER_CONFIG the greeter's settings file, for tests
@@ -196,6 +206,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if argv.first().map(String::as_str) == Some("pick-source") {
+        if let Err(err) = share_pick::run() {
+            eprintln!("tileception pick-source: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if argv.first().map(String::as_str) == Some("pair") {
         if let Err(err) = handoff::pair::run(&argv[1..]) {
             eprintln!("tileception pair: {err}");
@@ -211,6 +228,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if argv.first().map(String::as_str) == Some("plugin") {
         if let Err(err) = bundled::run(&argv[1..]) {
             eprintln!("tileception plugin: {err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("doctor-mcp") {
+        if let Err(err) = doctor_mcp::run(&argv[1..]) {
+            eprintln!("tileception doctor-mcp: {err}");
             std::process::exit(1);
         }
         return Ok(());
@@ -323,6 +347,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             restart_portals();
         }
     }
+    // TILECEPTION_PORTAL serves the portal backend from a nested or headless
+    // instance, on its session bus, for tests with a portal of their own.
+    if (nested || headless) && std::env::var_os("TILECEPTION_PORTAL").is_some() {
+        state.start_portal();
+    }
     // TILECEPTION_POLKIT makes a nested or headless instance the polkit
     // agent of what it starts, for tests.
     if state.session_services || std::env::var_os("TILECEPTION_POLKIT").is_some() {
@@ -394,6 +423,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(state.recording.take());
     let _ = std::fs::remove_file(&socket);
     state.clipboard.stop();
+    // Logging out, quitting and restarting close no windows.
+    state.remember_doctor_window();
     state.stop_plugins();
     if state.restart {
         return Err(restart_in_place().into());

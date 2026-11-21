@@ -2,21 +2,43 @@
 # Starts Tileception as a login session. The display manager runs this through
 # the Tileception entry in /usr/share/wayland-sessions.
 
-# Give every application the same agent, and stop it when the session exits.
-# Keep an agent supplied by the login environment, if there is one.
+# Give every application the same agent. Keep one supplied by the login
+# environment. Otherwise use the desktop's own agent, which systemd starts for
+# the user before anyone logs in, so services started at boot share it too:
+# GNOME Keyring's (gcr), or OpenSSH's. Only without either does the session
+# start an agent of its own, which stops when the session exits.
+link="$XDG_RUNTIME_DIR/tileception-ssh-agent.sock"
+if [ -z "$SSH_AUTH_SOCK" ] && [ -z "$TILECEPTION_OWN_AGENT" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    # Several may answer: gpg-agent's often does, without keys. The first
+    # that offers keys wins, else the first that answers. The link is left
+    # from an earlier login, and so is systemd's copy of it.
+    empty=
+    for sock in "$(systemctl --user show-environment 2>/dev/null | sed -n 's/^SSH_AUTH_SOCK=//p')" \
+        "$XDG_RUNTIME_DIR/gcr/ssh" "$XDG_RUNTIME_DIR/keyring/ssh" "$XDG_RUNTIME_DIR/openssh_agent" \
+        "$(gpgconf --list-dirs agent-ssh-socket 2>/dev/null)"; do
+        [ -S "$sock" ] && [ "$sock" != "$link" ] || continue
+        # ssh-add exits with 1 for an agent without keys, 2 for none at all.
+        SSH_AUTH_SOCK="$sock" ssh-add -l >/dev/null 2>&1
+        case $? in
+            0) export SSH_AUTH_SOCK="$sock" && break ;;
+            1) [ -n "$empty" ] || empty="$sock" ;;
+        esac
+    done
+    [ -n "$SSH_AUTH_SOCK" ] || [ -z "$empty" ] || export SSH_AUTH_SOCK="$empty"
+fi
 if [ -z "$SSH_AUTH_SOCK" ] && command -v ssh-agent >/dev/null 2>&1; then
     export TILECEPTION_OWN_AGENT=1
     exec ssh-agent "$0" "$@"
 fi
 
-# That agent listens at a random path under /tmp, new at every login. What
-# outlives the session (a tmux server, a systemd user service) would keep the
-# old one, and a program that wants the path written down could not be told
-# once. So applications get a path that stays the same, linked to this
-# login's agent. The agent keeps its own socket: the one from the login
-# before lingers a few seconds and then removes what it listened on.
-if [ -n "$TILECEPTION_OWN_AGENT" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
-    link="$XDG_RUNTIME_DIR/tileception-ssh-agent.sock"
+# Whichever agent it is may listen at a path that changes with every login.
+# What outlives the session (a tmux server, a systemd user service) would keep
+# the old one, and a program that wants the path written down could not be
+# told once. So applications get a path that stays the same, linked to this
+# login's agent. An agent the session started keeps its own socket: the one
+# from the login before lingers a few seconds and then removes what it
+# listened on.
+if [ -n "$SSH_AUTH_SOCK" ] && [ "$SSH_AUTH_SOCK" != "$link" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
     ln -sfn "$SSH_AUTH_SOCK" "$link" 2>/dev/null && export SSH_AUTH_SOCK="$link"
 fi
 unset TILECEPTION_OWN_AGENT

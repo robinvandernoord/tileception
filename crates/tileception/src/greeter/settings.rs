@@ -12,7 +12,9 @@ use crate::{config::Keyboard, theme::ThemeFile};
 pub enum UsersAs {
     /// A tab per person on the login tile.
     Tabs,
-    /// A tile per person (not drawn yet: shown as tabs).
+    /// A tile per person in the login panel, laid out like windows: the
+    /// selected one in the main tile, holding the field, the others stacked
+    /// beside it, each over that person's wallpaper.
     Tiles,
 }
 
@@ -35,6 +37,8 @@ pub enum Panel {
     Session,
     /// A message from the administrator; see `[motd]`.
     Motd,
+    /// Switches for larger text and high contrast.
+    Accessibility,
 }
 
 /// The message-of-the-day panel.
@@ -115,6 +119,14 @@ pub struct Lock {
 impl Default for Lock {
     fn default() -> Self {
         Lock { show_media: true, show_notification_count: true }
+    }
+}
+
+impl Lock {
+    /// Whether the lock screen shows anything of the session beyond the
+    /// clock. Without, everything waits for unlocking, plugins' readings too.
+    pub fn shows_session(&self) -> bool {
+        self.show_media || self.show_notification_count
     }
 }
 
@@ -248,6 +260,10 @@ pub struct Memory {
     /// The keyboard layout each person picked here, such as "nl" or
     /// "us(altgr-intl)", by login. Absent: the configured keymap.
     pub layouts: BTreeMap<String, String>,
+    /// The login screen's own text drawn larger, until switched off again.
+    pub larger_text: bool,
+    /// The login screen in high contrast, until switched off again.
+    pub high_contrast: bool,
 }
 
 impl Memory {
@@ -275,11 +291,11 @@ mod tests {
 default_session = "tileception"
 hidden_sessions = ["tileception-nested"]
 hidden_users = ["backup"]
-users_as = "tabs"
+users_as = "tiles"
 clock_format = "%H:%M"
 
 [panels]
-columns = [["login"], ["clock", "session"], ["motd"]]
+columns = [["login"], ["clock", "session"], ["motd", "accessibility"]]
 ratios = [1.75, 1, 0.6]
 
 [per_user]
@@ -306,10 +322,11 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
 "##;
         let file = GreeterFile::parse(text).expect("parses");
         assert_eq!(file.hidden_users, ["backup"]);
+        assert_eq!(file.users_as, UsersAs::Tiles);
         assert_eq!(file.panels.columns[1], [Panel::Clock, Panel::Session]);
         assert_eq!(file.per_user.wallpaper_fallback, WallpaperFallback::Generated);
         assert!(file.lock.show_media && !file.lock.show_notification_count);
-        assert_eq!(file.panels.columns[2], [Panel::Motd]);
+        assert_eq!(file.panels.columns[2], [Panel::Motd, Panel::Accessibility]);
         assert_eq!(file.motd.message(), "Backups run at 22:00.\n\nCall 1234 for help.");
         assert_eq!(file.theme.wallpaper.as_deref(), Some("/usr/share/backgrounds/tide.jpg"));
     }
@@ -321,6 +338,7 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         assert_eq!(file.default_session, defaults.default_session);
         assert_eq!(file.hidden_sessions, defaults.hidden_sessions);
         assert_eq!(file.clock_format, defaults.clock_format);
+        assert_eq!(file.users_as, defaults.users_as);
         assert_eq!(file.xsession_wrapper, defaults.xsession_wrapper);
         assert_eq!(file.reduce_motion, defaults.reduce_motion);
         assert_eq!(file.panels.columns, defaults.panels.columns);
@@ -360,6 +378,7 @@ wallpaper = "/usr/share/backgrounds/tide.jpg"
         let mut memory = Memory { last_user: Some("sam".into()), ..Default::default() };
         memory.sessions.insert("sam".into(), "gnome".into());
         memory.logins.insert("sam".into(), 1_790_000_000);
+        memory.larger_text = true;
         memory.save(&path).expect("saves");
         assert_eq!(Memory::load(&path), memory);
         let _ = std::fs::remove_file(&path);

@@ -21,9 +21,12 @@ use smithay::{
         output::OutputManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::wlr_layer::WlrLayerShellState,
-        shell::xdg::{SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState},
+        shell::xdg::{
+            SurfaceCachedState, ToplevelSurface, XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState,
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
+        xdg_foreign::XdgForeignState,
         xwayland_shell::XWaylandShellState,
     },
     xwayland::{X11Surface, X11Wm},
@@ -84,6 +87,11 @@ pub struct Tileception {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_foreign_state: XdgForeignState,
+    /// Windows that have been put where a dialog of their parent goes. A
+    /// parent named again later leaves them where the user has them.
+    settled_dialogs: std::collections::HashSet<WindowId>,
+    _xdg_dialog_state: XdgDialogState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
@@ -96,6 +104,10 @@ pub struct Tileception {
     pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
     /// The window list for taskbars and switchers.
     pub toplevels: crate::toplevels::Toplevels,
+    /// Screen and window sharing through ext-image-copy-capture.
+    pub image_copy: crate::image_copy::ImageCopy,
+    /// What the screen cast portal and the share chooser tell each other.
+    pub sharing: crate::share_pick::Sharing,
     pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
     pub keyboard_shortcuts_inhibit_state: smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -116,6 +128,8 @@ pub struct Tileception {
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub dmabuf: Option<(DmabufState, DmabufGlobal)>,
+    /// What the dmabuf global tells clients, for the dashboard's display to say the same.
+    pub dmabuf_feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
     pub syncobj_state: Option<DrmSyncobjState>,
     pub cursor_status: CursorImageStatus,
     /// A frame is already asked for when the animated pointer's next picture is due.
@@ -280,8 +294,11 @@ impl Tileception {
 
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         crate::capture::init_screencopy(&display_handle);
+        crate::image_copy::init_image_copy(&display_handle);
         crate::blur::init_blur(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
+        let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
@@ -332,6 +349,9 @@ impl Tileception {
             restart: false,
             compositor_state,
             xdg_shell_state,
+            xdg_foreign_state,
+            settled_dialogs: std::collections::HashSet::new(),
+            _xdg_dialog_state: xdg_dialog_state,
             xdg_decoration_state,
             shm_state,
             output_manager_state,
@@ -365,6 +385,7 @@ impl Tileception {
             popups: PopupManager::default(),
             seat,
             dmabuf: None,
+            dmabuf_feedback: None,
             syncobj_state: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_wake_pending: false,
@@ -415,6 +436,8 @@ impl Tileception {
             builtin_locker: Default::default(),
             greeter: None,
             pending_captures: Vec::new(),
+            image_copy: Default::default(),
+            sharing: Default::default(),
             capture_cursor: None,
             theme,
             text: Default::default(),
@@ -656,13 +679,11 @@ impl Tileception {
         if self.send_child_away(window_id) {
             return;
         }
-        let parent_area = self
-            .windows
-            .get(&window_id)
-            .and_then(|window| window.toplevel())
-            .and_then(|toplevel| toplevel.parent())
-            .and_then(|parent| self.window_id(&parent))
-            .and_then(|parent| self.area_for_window(parent));
+        let parent = self.parent_window(window_id);
+        if parent.is_some() {
+            self.settled_dialogs.insert(window_id);
+        }
+        let parent_area = parent.and_then(|parent| self.area_for_window(parent));
         if let Some(area) = parent_area
             && self.context_area().as_ref() != Some(&area)
         {
@@ -688,7 +709,7 @@ impl Tileception {
         self.world.add_window(window_id, placement, now);
         self.restore_window_layout(window_id);
         if let Some([width, height]) = rule.size.filter(|_| float) {
-            self.world.size_float(window_id, f64::from(width), f64::from(height));
+            self.size_float(window_id, f64::from(width), f64::from(height));
         }
         // The Wizard's window floats where it did when it was closed.
         if let Some(rect) = self.doctor.float.filter(|_| float && self.is_doctor_window(window_id)) {
@@ -698,7 +719,7 @@ impl Tileception {
         if let Some(x11) = self.windows.get(&window_id).and_then(|placed| placed.x11_surface()) {
             let geometry = x11.geometry();
             if self.world.float_needs_size(window_id) && geometry.size.w > 0 && geometry.size.h > 0 {
-                self.world.size_float(window_id, geometry.size.w as f64, geometry.size.h as f64);
+                self.size_float(window_id, geometry.size.w as f64, geometry.size.h as f64);
             }
         }
         self.apply_layout();
@@ -712,6 +733,111 @@ impl Tileception {
         } else if rule.fullscreen {
             self.set_fullscreen(window_id, true);
         }
+    }
+
+    /// The window a dialog belongs to: its xdg-shell parent, named by the
+    /// program itself or by another one through xdg-foreign, or the window an
+    /// X11 one is transient for.
+    pub(crate) fn parent_window(&self, window_id: WindowId) -> Option<WindowId> {
+        let window = self.windows.get(&window_id)?;
+        if let Some(toplevel) = window.toplevel() {
+            return toplevel.parent().and_then(|parent| self.window_id(&parent)).filter(|parent| *parent != window_id);
+        }
+        let transient_for = window.x11_surface()?.is_transient_for()?;
+        self.windows
+            .iter()
+            .find(|(_, other)| other.x11_surface().is_some_and(|x11| x11.window_id() == transient_for))
+            .map(|(parent, _)| *parent)
+            .filter(|parent| *parent != window_id)
+    }
+
+    /// Takes the size a new floating window chose. A dialog opens centred
+    /// over the window it belongs to when that is on screen, anything else
+    /// in the middle of the screen.
+    pub(crate) fn size_float(&mut self, window_id: WindowId, width: f64, height: f64) {
+        self.world.size_float(window_id, width, height);
+        self.centre_over_parent(window_id);
+    }
+
+    fn centre_over_parent(&mut self, window_id: WindowId) {
+        let Some(parent) = self.parent_window(window_id) else { return };
+        let screen = self.world.screen();
+        let over = self
+            .world
+            .placements(self.world.target_view())
+            .into_iter()
+            .find(|placement| placement.window == parent)
+            .map(|placement| placement.rect)
+            .filter(|rect| rect.intersects(&screen));
+        if let Some(over) = over {
+            self.world.centre_float_over(window_id, over);
+        }
+    }
+
+    /// A window was given a parent, or lost it, after it opened. A portal's
+    /// dialog names the window it belongs to through xdg-foreign, which can
+    /// arrive once the dialog is already shown: it then goes to where a
+    /// dialog of that window would have opened.
+    pub fn window_parent_changed(&mut self, window_id: WindowId) {
+        let Some(parent) = self.parent_window(window_id) else {
+            // A modal dialog let go of its parent.
+            return self.apply_layout();
+        };
+        // Not placed yet: it opens beside its parent on its first commit.
+        let Some(area) = self.area_for_window(window_id) else { return };
+        // Shown on another machine, the window stays there. A parent that
+        // is shown on another machine does not draw it over either.
+        if self.handoff.windows.is_remote(window_id) || self.handoff.windows.away.contains_key(&window_id) {
+            return;
+        }
+        // Only for its first parent: after that the user may have tiled or
+        // moved it, and it stays where they have it.
+        if !self.settled_dialogs.insert(window_id) {
+            return self.apply_layout();
+        }
+        let Some(parent_area) = self.area_for_window(parent) else { return };
+        if area != parent_area && self.move_window_to_area(window_id, &parent_area, false).is_err() {
+            return;
+        }
+        if self.context_area().as_ref() != Some(&parent_area) {
+            self.with_area(&parent_area, |state| state.settle_over_parent(window_id));
+        } else {
+            self.settle_over_parent(window_id);
+        }
+        self.schedule_render();
+    }
+
+    /// Floats a window that became a dialog, over the window it belongs to.
+    fn settle_over_parent(&mut self, window_id: WindowId) {
+        if !self.world.contains_window(window_id) || self.fullscreen == Some(window_id) {
+            return;
+        }
+        if self.world.float_rect(window_id).is_none() {
+            let Some(window) = self.windows.get(&window_id) else { return };
+            let rule = crate::rules::decide(&self.config.file.rules, &app_id(window), &window_title(window));
+            if rule.float == Some(false) {
+                return;
+            }
+            let now = self.now();
+            self.world.toggle_float(window_id, now);
+        }
+        // A window still choosing its size is centred once it has.
+        if !self.world.float_needs_size(window_id) {
+            self.centre_over_parent(window_id);
+        }
+        self.apply_layout();
+    }
+
+    /// The modal dialog that keeps a window from being used, if it has one
+    /// in this layout.
+    fn modal_dialog_of(&self, window_id: WindowId) -> Option<WindowId> {
+        let modals: Vec<(WindowId, WindowId)> = self
+            .windows
+            .iter()
+            .filter(|(dialog, window)| window.toplevel().is_some_and(is_modal) && self.world.contains_window(**dialog))
+            .filter_map(|(dialog, _)| Some((*dialog, self.parent_window(*dialog)?)))
+            .collect();
+        blocking_dialog(window_id, &modals)
     }
 
     pub fn remove_window(&mut self, surface: &WlSurface) {
@@ -728,6 +854,7 @@ impl Tileception {
             return;
         }
         self.selection.windows.remove(&window_id);
+        self.settled_dialogs.remove(&window_id);
         if self.windows.remove(&window_id).is_none() {
             return;
         }
@@ -755,6 +882,17 @@ impl Tileception {
     /// they redraw during the animation. In Overview nothing is resized: the
     /// windows keep the size they have when framed and are drawn scaled.
     pub fn apply_layout(&mut self) {
+        // A window with a modal dialog open cannot be used until the dialog
+        // is answered: focusing it, however, focuses the dialog.
+        if let Some(dialog) = self.world.focus().and_then(|focus| self.modal_dialog_of(focus)) {
+            // Only the fullscreen window is drawn, and the dialog must be
+            // seen to be answered: fullscreen ends, as it does when a new
+            // window opens. That lays out again, and comes back here.
+            if let Some(full) = self.fullscreen.filter(|full| *full != dialog && self.windows.contains_key(full)) {
+                return self.set_fullscreen(full, false);
+            }
+            self.world.focus_window(dialog, self.now());
+        }
         let focus = self.world.focus();
         if !self.world.in_overview() {
             let screen = self.world.screen();
@@ -988,11 +1126,42 @@ impl Tileception {
     }
 }
 
+/// The dialog that takes the focus of `window`, given every modal dialog
+/// with its parent: the newest of the window's own, and that dialog's own
+/// modal dialog when it has one too.
+fn blocking_dialog(window: WindowId, modals: &[(WindowId, WindowId)]) -> Option<WindowId> {
+    let mut blocked = window;
+    let mut found = None;
+    // No longer than the dialogs there are, whatever the programs claim.
+    for _ in 0..modals.len() {
+        // Window ids grow, so the largest is the dialog opened last.
+        let newest = modals
+            .iter()
+            .filter(|(_, parent)| *parent == blocked)
+            .map(|(dialog, _)| *dialog)
+            .max_by_key(|dialog| dialog.0);
+        let Some(dialog) = newest else { break };
+        found = Some(dialog);
+        blocked = dialog;
+    }
+    found
+}
+
+/// Whether a window said through `xdg_dialog_v1` that it is a modal dialog.
+fn is_modal(toplevel: &ToplevelSurface) -> bool {
+    with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .is_some_and(|data| data.lock().expect("toplevel role").modal)
+    })
+}
+
 /// Dialogs and fixed-size windows float instead of tiling.
 pub(crate) fn wants_float(window: &Window) -> bool {
-    // The desktop portal's dialogs, such as its file chooser. Without
-    // xdg-foreign they cannot name the window they belong to, so they come
-    // without a parent, but they are always dialogs.
+    // The desktop portal's dialogs, such as its file chooser. They are
+    // always dialogs, also for a program that named no window of its own
+    // for them to belong to.
     if app_id(window).starts_with("xdg-desktop-portal") {
         return true;
     }
@@ -1215,6 +1384,24 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_modal_dialog_takes_its_parents_focus() {
+        let win = WindowId;
+        // Nothing modal, or modal for another window.
+        assert_eq!(blocking_dialog(win(1), &[]), None);
+        assert_eq!(blocking_dialog(win(1), &[(win(3), win(2))]), None);
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1))]), Some(win(2)));
+        // The dialog itself is not blocked.
+        assert_eq!(blocking_dialog(win(2), &[(win(2), win(1))]), None);
+        // Two on one parent: the one opened last, in whatever order they come.
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1)), (win(5), win(1))]), Some(win(5)));
+        assert_eq!(blocking_dialog(win(1), &[(win(5), win(1)), (win(2), win(1))]), Some(win(5)));
+        // A modal dialog of the dialog comes first.
+        assert_eq!(blocking_dialog(win(1), &[(win(2), win(1)), (win(3), win(2))]), Some(win(3)));
+        // Parents in a circle end somewhere instead of going round for ever.
+        assert!(blocking_dialog(win(1), &[(win(2), win(1)), (win(1), win(2))]).is_some());
+    }
 
     #[test]
     fn a_window_never_asks_for_more_than_its_slot_holds() {

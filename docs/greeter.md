@@ -74,13 +74,28 @@ Edit `/etc/tileception/greeter.toml` with sudo. The
 users and sessions, panel layout, clock, theme and keyboard layout. Settings are
 read when the greeter starts.
 
+- **People as tiles:** with `users_as = "tiles"`, everyone gets a tile of
+  their own instead of a tab, laid out the way Tileception lays out windows.
+  The selected person's is the main tile and holds the password field; the
+  others are stacked beside it (below it on a portrait screen). Click another
+  tile or press **Super+Tab** to switch. Each tile is titled with the
+  person's login name and shows the wallpaper their Tileception session
+  shares, or else their accent colour (`wallpaper_fallback`). When the stack
+  is full, it shows the people nearest the selected one.
 - **Message panel:** add `motd` to `[panels] columns` to show a message to
   everyone who logs in. Set its `title` and `text` in `[motd]`, or point `file` at
   a file such as `/etc/motd`.
+- **Accessibility:** **Larger text** and **High contrast** are in the launcher
+  (tap **Super** and type "larger" or "contrast"). Add `accessibility` to
+  `[panels] columns` to show them as switches on screen too. The greeter
+  remembers them for the next boot; they do not change anyone's session.
 - **Lock screen:** `[lock]` decides what a locked Tileception session shows before
   it is unlocked: `show_media` for the player controls and
-  `show_notification_count` for the number of new notifications. Locked sessions
-  read this table too.
+  `show_notification_count` for the number of new notifications. With both off,
+  plugins' readings such as the indoor temperature stay hidden too. Locked
+  sessions read this table too. Each person's `[lock]` in their own config can show more
+  of their notifications ([lock screen notifications](configuration.md#lock-screen-notifications)),
+  but not once `show_notification_count = false`.
 - **Reduced motion:** `reduce_motion = true` replaces movement with fades: a
   wrong password no longer shakes the field, the launcher fades in without
   sliding, and the dots hold still while the password is checked. A locked

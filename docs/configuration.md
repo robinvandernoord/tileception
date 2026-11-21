@@ -307,7 +307,8 @@ commands under `[binds]`.
 ### Plugins
 
 Plugins are executables that speak MCP over stdio. They add launcher sources,
-cards under the launcher, panel blocks, bar chips and dashboard items. The smart home, Bluetooth, `z` folders and timers are
+cards under the launcher, panel blocks, bar chips, dashboard items and readings
+on the lock screen. The smart home, Bluetooth, `z` folders and timers are
 bundled plugins. Each plugin has a `[plugins.<id>]` table:
 
 ```toml
@@ -319,7 +320,15 @@ enabled = false        # hide its bar chips
 
 [plugins.timers.launcher]
 cards = false          # hide its cards under the launcher
+
+[plugins.home.lock]
+enabled = false        # hide its indoor temperature on the lock screen
+
+[plugins.home.doctor]
+enabled = false        # keep its tools from the Wizard's agent
 ```
+
+See [the Wizard's plugin tools](wizard.md#plugin-tools) for what the agent gets.
 
 Type `plugins add owner/repo` in the launcher to install a plugin from GitHub.
 [Plugins](plugins.md) covers installing, manifests, every `[plugins.<id>]`
@@ -548,8 +557,10 @@ external mouse is plugged in; it comes back when the mouse is unplugged.
 `speed` accepts values from -1 to 1; positive values make the pointer faster.
 `swipe_distance` is the distance in pixels before a swipe binding runs and must
 be greater than zero. Swipes and pinches that move around move the view with
-your fingers, and letting go early cancels them; set `follow_fingers = false`
-to have them run all at once instead.
+your fingers, and letting go early cancels them. Swipes bound to `resize` drag
+the divider as far as your fingers go, whatever amount the binding gives; the
+amount only says which way. Set `follow_fingers = false` to have all of them
+run all at once instead, a resize then moving the divider by its amount.
 
 For physical clicks, set `click_method = "areas"` to use button areas, or
 `click_method = "clickfinger"` to choose the button by finger count. Leaving it
@@ -598,6 +609,38 @@ do not run in nested mode.
 Unless `shell.lock` is `"none"`, `lock_before_sleep` locks before suspend or
 hibernation, including sleep requested by closing the lid or by another program.
 Set it to `false` to disable that behaviour.
+
+### Lock screen notifications
+
+Tileception's own lock screen counts the notifications that came in while it
+was locked. `[lock]` decides how much more it shows, for every app and as
+exceptions per app:
+
+```toml
+[lock]
+notifications = "count"   # "none" | "count" | "apps" | "full"
+
+[lock.notification_apps]
+"org.gnome.Calendar" = "full"
+```
+
+- `none` leaves an app out, even of the count.
+- `count` only counts it. This is the default.
+- `apps` lists the app's name and icon with the time, the content hidden.
+- `full` shows what they say: the summary and body, and in popups any picture.
+
+Exceptions name an app by its desktop entry (`.desktop` may be left off) or by
+the name its notifications carry. A low default with `full` exceptions opts
+apps in; `notifications = "full"` with lower exceptions opts them out. The
+eye button on a card in the notification panel writes these exceptions.
+
+The lock screen never shows a notification's buttons or close button, so
+nothing an app offers runs before unlocking. Tileception's own notifications
+always show. With Do not disturb on, the lock screen shows only the count. When
+`show_notification_count = false` in the login screen's
+[`greeter.toml`](greeter.md#settings), it shows nothing of notifications at all,
+whatever `[lock]` says. External lockers (`shell.lock` or
+`general.lock_command`) draw only themselves.
 
 Suspend is available in the power menu by default. To disable that menu action:
 

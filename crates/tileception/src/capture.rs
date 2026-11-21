@@ -1,5 +1,7 @@
 //! Screen capture: wlr-screencopy for grim, slurp and screen sharing through
-//! xdg-desktop-portal-wlr, and `tileception msg screenshot <file.png>`.
+//! xdg-desktop-portal-wlr before 0.8, the screens shared through
+//! ext-image-copy-capture ([`crate::image_copy`]), and
+//! `tileception msg screenshot <file.png>`.
 //!
 //! Captures are queued and taken on the next frame. Shared memory buffers and
 //! PNG files are filled by rendering the scene into an off-screen texture and
@@ -49,20 +51,8 @@ use crate::{Tileception, render::OutputElement};
 /// Where a finished capture goes.
 pub enum CaptureTarget {
     File(PathBuf),
-    Screencopy {
-        frame: ZwlrScreencopyFrameV1,
-        buffer: WlBuffer,
-        damage: bool,
-        /// With the pointer drawn in (the client's `overlay_cursor`).
-        cursor: bool,
-    },
-    /// A screencopy into a GPU buffer of the whole output.
-    Dmabuf {
-        frame: ZwlrScreencopyFrameV1,
-        dmabuf: Dmabuf,
-        damage: bool,
-        cursor: bool,
-    },
+    /// A copy into a buffer of a screen sharing or screenshot program.
+    Copy(ClientCopy),
     /// The whole output without the rubber duck, for its question.
     Duck,
     /// The whole output, for the colour picker's magnifier.
@@ -101,6 +91,117 @@ pub struct PendingCapture {
     pub target: CaptureTarget,
 }
 
+/// A program's buffer to copy a screen into, through wlr-screencopy or
+/// ext-image-copy-capture.
+pub struct ClientCopy {
+    pub frame: CopyFrame,
+    pub buffer: ClientBuffer,
+    /// Wait until the screen changes before copying (wlr's
+    /// `copy_with_damage`; every ext-image-copy-capture frame).
+    pub wait_for_damage: bool,
+    /// With the pointer drawn in.
+    pub cursor: bool,
+    /// What the program was last sent, to tell it what changed since.
+    pub history: ManagerDamage,
+    pub output: smithay::output::WeakOutput,
+}
+
+/// A buffer a program gave to be filled.
+pub enum ClientBuffer {
+    Shm(WlBuffer),
+    /// A GPU buffer, rendered into directly.
+    Dmabuf(Dmabuf),
+}
+
+impl ClientBuffer {
+    /// The buffer behind a `wl_buffer`, or nothing if it is neither kind.
+    pub fn from_wl(buffer: WlBuffer) -> Option<Self> {
+        if let Ok(dmabuf) = get_dmabuf(&buffer) {
+            Some(Self::Dmabuf(dmabuf.clone()))
+        } else if with_buffer_contents(&buffer, |_, _, _| ()).is_ok() {
+            Some(Self::Shm(buffer))
+        } else {
+            None
+        }
+    }
+
+    /// Its size in pixels.
+    pub fn size(&self) -> Option<(i32, i32)> {
+        match self {
+            Self::Shm(buffer) => with_buffer_contents(buffer, |_, _, info| (info.width, info.height)).ok(),
+            Self::Dmabuf(dmabuf) => {
+                let size = dmabuf.size();
+                Some((size.w, size.h))
+            }
+        }
+    }
+
+    /// Fills the buffer with the scene, or with the part of it in `region`
+    /// for shared memory; `texture` keeps the scene rendered for the next
+    /// shared memory copy of the same frame.
+    fn fill<E: RenderElement<GlesRenderer>>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        texture: &mut Option<Result<GlesTexture, String>>,
+        scene: &Scene<E>,
+        region: Rectangle<i32, Buffer>,
+    ) -> Result<(), String> {
+        match self {
+            Self::Shm(buffer) => pixels(renderer, texture, scene, region)
+                .and_then(|rgba| copy_into_shm(buffer, region.size.w, region.size.h, &rgba)),
+            Self::Dmabuf(dmabuf) => render_scene(renderer, dmabuf, scene),
+        }
+    }
+}
+
+/// Why a copy could not be made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CopyFailure {
+    Unknown,
+    /// The buffer no longer fits what is captured, which has changed size.
+    BufferConstraints,
+    /// What is captured is gone.
+    Stopped,
+}
+
+/// A frame a program asked for, in either protocol.
+pub enum CopyFrame {
+    Wlr(ZwlrScreencopyFrameV1),
+    Ext(crate::image_copy::ExtFrame),
+}
+
+impl CopyFrame {
+    pub(crate) fn is_alive(&self) -> bool {
+        match self {
+            Self::Wlr(frame) => frame.is_alive(),
+            Self::Ext(frame) => frame.is_alive(),
+        }
+    }
+
+    pub fn fail(&self, reason: CopyFailure) {
+        match self {
+            Self::Wlr(frame) => frame.failed(),
+            Self::Ext(frame) => frame.fail(reason),
+        }
+    }
+
+    /// Tells the program its buffer is filled, and what changed in it.
+    pub(crate) fn ready(&self, damage: &[Rectangle<i32, Buffer>], size: (i32, i32)) {
+        let now: Duration = Clock::<Monotonic>::new().now().into();
+        match self {
+            Self::Wlr(frame) => {
+                frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
+                if let Some(rect) = bounding(damage) {
+                    frame.damage(rect.loc.x as u32, rect.loc.y as u32, rect.size.w as u32, rect.size.h as u32);
+                }
+                let secs = now.as_secs();
+                frame.ready((secs >> 32) as u32, secs as u32, now.subsec_nanos());
+            }
+            Self::Ext(frame) => frame.ready(bounding(damage), size, now),
+        }
+    }
+}
+
 /// What a screencopy frame was asked to capture.
 pub struct FrameData {
     region: Rectangle<i32, Buffer>,
@@ -128,6 +229,13 @@ struct DamageStream {
 }
 
 impl ManagerDamage {
+    /// Whether this screen was copied for the program before: a stream
+    /// rather than a single copy. Any region counts, so a stream whose
+    /// size changed (a new resolution) is still one.
+    fn streaming(&self, key: &DamageKey) -> bool {
+        self.0.lock().expect("screencopy damage history").iter().any(|stream| stream.key.output == key.output)
+    }
+
     fn changes(
         &self,
         key: &DamageKey,
@@ -195,7 +303,7 @@ impl Tileception {
         let pending = std::mem::take(&mut self.pending_captures);
         for capture in pending {
             match capture.target {
-                CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.failed(),
+                CaptureTarget::Copy(copy) => copy.frame.fail(CopyFailure::Stopped),
                 CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
                 CaptureTarget::Duck => {}
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
@@ -316,13 +424,14 @@ impl Tileception {
     /// Shares the displayed scene for ordinary captures. Headless builds it on demand.
     pub fn process_captures(&mut self, renderer: &mut GlesRenderer, displayed: Option<&[OutputElement]>) {
         self.pending_captures.retain(|capture| match &capture.target {
-            CaptureTarget::Screencopy { frame, .. } | CaptureTarget::Dmabuf { frame, .. } => frame.is_alive(),
+            CaptureTarget::Copy(copy) => copy.frame.is_alive(),
             _ => true,
         });
         if self.pending_captures.is_empty() {
             return;
         }
         let pending = std::mem::take(&mut self.pending_captures);
+        let locked = self.is_locked();
         let built = displayed.is_none().then(|| {
             if let Some(shapes) = self.shapes.get() {
                 shapes.next_frame(self.output.as_ref());
@@ -332,12 +441,8 @@ impl Tileception {
         let displayed = displayed.or_else(|| built.as_ref().map(|scene| scene.elements.as_slice())).unwrap_or_default();
         let scene =
             Scene { elements: displayed.iter().collect(), size: self.output_pixels(), clear: self.clear_colour() };
-        let wants_pointer = pending.iter().any(|capture| {
-            matches!(
-                capture.target,
-                CaptureTarget::Screencopy { cursor: true, .. } | CaptureTarget::Dmabuf { cursor: true, .. }
-            )
-        });
+        let wants_pointer =
+            pending.iter().any(|capture| matches!(&capture.target, CaptureTarget::Copy(copy) if copy.cursor));
         let pointer = if wants_pointer { self.capture_pointer(renderer) } else { Vec::new() };
         let pointer_scene = (!pointer.is_empty()).then(|| Scene {
             elements: pointer.iter().chain(displayed).collect(),
@@ -350,35 +455,39 @@ impl Tileception {
         let mut changes: HashMap<_, Vec<_>> = HashMap::new();
         for capture in pending {
             let region = capture.region;
-            let frame = match &capture.target {
-                CaptureTarget::Screencopy { frame, damage, cursor, .. }
-                | CaptureTarget::Dmabuf { frame, damage, cursor, .. } => Some((frame, *damage, *cursor)),
-                _ => None,
-            };
             let mut changed = &[][..];
             let mut tracking = None;
-            if let Some((frame, with_damage, cursor)) = frame {
+            if let CaptureTarget::Copy(copy) = &capture.target {
                 let full = Rectangle::from_size(scene.size.into());
-                if region.intersection(full) != Some(region)
-                    || matches!(capture.target, CaptureTarget::Dmabuf { .. }) && region != full
-                {
-                    frame.failed();
+                let fits = match &copy.buffer {
+                    ClientBuffer::Shm(_) => region.intersection(full) == Some(region),
+                    ClientBuffer::Dmabuf(_) => region == full,
+                };
+                if !fits {
+                    copy.frame.fail(CopyFailure::BufferConstraints);
                     continue;
                 }
-                let Some(data) = frame.data::<FrameData>() else { continue };
-                let key = DamageKey { output: data.output.downgrade(), cursor, region };
+                let key = DamageKey { output: copy.output.clone(), cursor: copy.cursor, region };
+                // While the screen is locked, a screen being shared sends
+                // nothing new: the lock screen may show notifications. Its
+                // frame waits, and the call keeps the last one from before.
+                // A single copy, such as a screenshot, still goes ahead.
+                if copy.wait_for_damage && locked && copy.history.streaming(&key) {
+                    self.pending_captures.push(capture);
+                    continue;
+                }
                 let coordinates = (region.loc.x, region.loc.y, region.size.w, region.size.h);
                 let damage = changes
-                    .entry((Arc::as_ptr(&data.damage.0), cursor, coordinates))
-                    .or_insert_with(|| data.damage.changes(&key, &scene, &pointer));
-                if with_damage {
+                    .entry((Arc::as_ptr(&copy.history.0), copy.cursor, coordinates))
+                    .or_insert_with(|| copy.history.changes(&key, &scene, &pointer));
+                if copy.wait_for_damage {
                     if damage.is_empty() {
                         self.pending_captures.push(capture);
                         continue;
                     }
                     changed = damage;
                 }
-                tracking = Some((data.damage.clone(), key));
+                tracking = Some((copy.history.clone(), key));
             }
             match capture.target {
                 CaptureTarget::File(path) => match pixels(renderer, &mut texture, &scene, region) {
@@ -391,19 +500,13 @@ impl Tileception {
                     }
                     Err(err) => tracing::warn!("capture failed: {err}"),
                 },
-                CaptureTarget::Screencopy { frame, buffer, cursor, .. } => {
-                    let read = if let Some(shown) = pointer_scene.as_ref().filter(|_| cursor) {
-                        pixels(renderer, &mut pointer_texture, shown, region)
+                CaptureTarget::Copy(mut copy) => {
+                    let copied = if let Some(shown) = pointer_scene.as_ref().filter(|_| copy.cursor) {
+                        copy.buffer.fill(renderer, &mut pointer_texture, shown, region)
                     } else {
-                        pixels(renderer, &mut texture, &scene, region)
+                        copy.buffer.fill(renderer, &mut texture, &scene, region)
                     };
-                    let copied = read.and_then(|rgba| copy_into_shm(&buffer, region.size.w, region.size.h, &rgba));
-                    finish_frame(&frame, changed, copied, tracking);
-                }
-                CaptureTarget::Dmabuf { frame, mut dmabuf, cursor, .. } => {
-                    let shown = pointer_scene.as_ref().filter(|_| cursor).unwrap_or(&scene);
-                    let rendered = render_scene(renderer, &mut dmabuf, shown);
-                    finish_frame(&frame, changed, rendered, tracking);
+                    finish_frame(&copy.frame, changed, copied, tracking, (region.size.w, region.size.h));
                 }
                 CaptureTarget::ColourPick => match pixels(renderer, &mut texture, &scene, region) {
                     Ok(rgba) => self.colour_pick_taken(rgba, (region.size.w, region.size.h)),
@@ -462,28 +565,44 @@ fn bounding(damage: &[Rectangle<i32, Buffer>]) -> Option<Rectangle<i32, Buffer>>
     damage.iter().copied().filter(|rect| !rect.is_empty()).reduce(|union, rect| union.merge(rect))
 }
 
-/// Tells a screencopy client that its buffer is filled, or that it failed.
+/// Tells a program that its buffer is filled, or that it failed.
 fn finish_frame(
-    frame: &ZwlrScreencopyFrameV1,
+    frame: &CopyFrame,
     damage: &[Rectangle<i32, Buffer>],
     result: Result<(), String>,
     tracking: Option<(ManagerDamage, DamageKey)>,
+    size: (i32, i32),
 ) {
     if let Err(err) = result {
         if let Some((history, key)) = tracking {
             history.forget(&key);
         }
-        tracing::warn!("screencopy: {err}");
-        frame.failed();
+        tracing::warn!("screen copy: {err}");
+        frame.fail(CopyFailure::Unknown);
         return;
     }
-    frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
-    if let Some(rect) = bounding(damage) {
-        frame.damage(rect.loc.x as u32, rect.loc.y as u32, rect.size.w as u32, rect.size.h as u32);
+    frame.ready(damage, size);
+}
+
+/// Fills a program's buffer with `elements` (a window, for a window being
+/// shared), drawn from the top left, and says what changed since the last
+/// copy that `tracker` measured. Nothing happens, and nothing is returned,
+/// when nothing changed.
+pub(crate) fn copy_elements(
+    renderer: &mut GlesRenderer,
+    buffer: &mut ClientBuffer,
+    tracker: &mut OutputDamageTracker,
+    elements: Vec<OutputElement>,
+    size: (i32, i32),
+) -> Result<Option<Vec<Rectangle<i32, Buffer>>>, String> {
+    let full = Rectangle::from_size(size.into());
+    let damage = capture_damage(tracker, 1, full, elements.iter());
+    if damage.is_empty() {
+        return Ok(None);
     }
-    let now: Duration = Clock::<Monotonic>::new().now().into();
-    let secs = now.as_secs();
-    frame.ready((secs >> 32) as u32, secs as u32, now.subsec_nanos());
+    let scene = Scene { elements, size, clear: [0.0, 0.0, 0.0, 0.0] };
+    buffer.fill(renderer, &mut None, &scene, full)?;
+    Ok(Some(damage))
 }
 
 /// Reads a region of a texture as RGBA rows, top to bottom.
@@ -647,37 +766,63 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for Tileception {
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
             _ => return,
         };
-        let target = if let Ok(dmabuf) = get_dmabuf(&buffer) {
-            if dmabuf.size() != data.region.size {
-                frame.failed();
-                return;
-            }
-            CaptureTarget::Dmabuf { frame: frame.clone(), dmabuf: dmabuf.clone(), damage, cursor: data.cursor }
-        } else if with_buffer_contents(&buffer, |_, _, _| ()).is_ok() {
-            CaptureTarget::Screencopy { frame: frame.clone(), buffer, damage, cursor: data.cursor }
-        } else {
+        let Some(buffer) = ClientBuffer::from_wl(buffer) else {
             frame.failed();
             return;
         };
-        // A stream of frames (portals, OBS) is sharing; one copy is a screenshot.
-        let sharing = damage || matches!(target, CaptureTarget::Dmabuf { .. });
-        if state.output_named(&data.output.name()).as_ref() != Some(&data.output) {
+        if matches!(buffer, ClientBuffer::Dmabuf(_)) && buffer.size() != Some((data.region.size.w, data.region.size.h))
+        {
             frame.failed();
             return;
         }
+        // A stream of frames (portals, OBS) is sharing; one copy is a screenshot.
+        let sharing = damage || matches!(buffer, ClientBuffer::Dmabuf(_));
+        let copy = ClientCopy {
+            frame: CopyFrame::Wlr(frame.clone()),
+            buffer,
+            wait_for_damage: damage,
+            cursor: data.cursor,
+            history: data.damage.clone(),
+            output: data.output.downgrade(),
+        };
+        // With damage, the copy waits for the screen to change; without, it
+        // is taken right away.
+        state.queue_copy(&data.output, data.region, copy, sharing, !damage);
+    }
+}
+
+impl Tileception {
+    /// Queues a copy of part of a screen for its next frame, or fails it
+    /// when the screen is gone. `now` draws a frame for it right away.
+    pub(crate) fn queue_copy(
+        &mut self,
+        output: &smithay::output::Output,
+        region: Rectangle<i32, Buffer>,
+        copy: ClientCopy,
+        sharing: bool,
+        now: bool,
+    ) {
+        if self.output_named(&output.name()).as_ref() != Some(output) {
+            copy.frame.fail(CopyFailure::Stopped);
+            return;
+        }
         // Headless, nobody is watching to be warned; recordings stay clean.
-        let warn = state.headless.is_none();
-        state.with_output(&data.output, |state| {
+        let warn = self.headless.is_none();
+        self.with_output(output, |state| {
             if warn {
                 state.bar.capture = Some((std::time::Instant::now(), sharing));
             }
-            state.pending_captures.push(PendingCapture { region: data.region, target });
+            state.pending_captures.push(PendingCapture { region, target: CaptureTarget::Copy(copy) });
         });
-        // With damage, the copy waits for the screen to change; without, it
-        // is taken right away.
-        if !damage {
-            state.schedule_render();
+        if now {
+            self.schedule_render();
         }
+    }
+
+    /// The whole of a connected screen, in pixels.
+    pub(crate) fn screen_region(&mut self, output: &smithay::output::Output) -> Option<Rectangle<i32, Buffer>> {
+        self.output_named(&output.name()).filter(|named| named == output)?;
+        self.with_output(output, |state| state.output_region())
     }
 }
 

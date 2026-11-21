@@ -516,6 +516,17 @@ impl World {
         }
     }
 
+    /// Centres a floating window over a rectangle, such as the window a
+    /// dialog belongs to, keeping its size and staying on screen.
+    pub fn centre_float_over(&mut self, win: WindowId, over: Rect) {
+        let screen = self.screen;
+        if let Some(float) = self.floats.get_mut(&win) {
+            let (width, height) = (float.rect.w, float.rect.h);
+            let rect = Rect::new(over.x + (over.w - width) / 2.0, over.y + (over.h - height) / 2.0, width, height);
+            float.rect = fit_on(rect, screen);
+        }
+    }
+
     /// Grows a floating window's rectangle to a size its program insists on
     /// (a dialog that grew), keeping its centre and staying on screen.
     pub fn grow_float(&mut self, win: WindowId, width: f64, height: f64) {
@@ -2023,6 +2034,26 @@ mod tests {
         world.focus_window(WindowId(1), 0.0);
         world.focus_window(WindowId(3), 0.0);
         assert_eq!(world.framed(), first_tile);
+    }
+
+    #[test]
+    fn a_float_centres_over_a_rectangle_and_stays_on_screen() {
+        let mut world = world();
+        world.add_window(WindowId(1), Placement::Float, 0.0);
+        world.size_float(WindowId(1), 200.0, 100.0);
+        let screen = world.screen();
+        let over = Rect::new(screen.x + screen.w / 2.0, screen.y, screen.w / 2.0, screen.h);
+        world.centre_float_over(WindowId(1), over);
+        let rect = world.float_rect(WindowId(1)).unwrap();
+        assert_eq!((rect.w, rect.h), (200.0, 100.0));
+        assert_eq!(rect.x + rect.w / 2.0, over.x + over.w / 2.0);
+        assert_eq!(rect.y + rect.h / 2.0, over.y + over.h / 2.0);
+        // A parent at the edge: the dialog stays wholly on the screen.
+        let corner = Rect::new(screen.right() - 40.0, screen.bottom() - 40.0, 80.0, 80.0);
+        world.centre_float_over(WindowId(1), corner);
+        let rect = world.float_rect(WindowId(1)).unwrap();
+        assert!(screen.contains_rect(&rect), "{rect:?} in {screen:?}");
+        assert_eq!((rect.w, rect.h), (200.0, 100.0));
     }
 
     #[test]

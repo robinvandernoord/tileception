@@ -360,6 +360,9 @@ pub mod glyph {
     pub const REDO: &str = r#"<path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>"#;
     pub const EYE: &str =
         r#"<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>"#;
+    /// [`EYE`] crossed out: hidden, such as an app's notifications on the
+    /// lock screen.
+    pub const EYE_OFF: &str = r#"<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/>"#;
     pub const RECORD: &str = r#"<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/>"#;
     pub const WIDTH_THIN: &str = r#"<path d="M5 12h14" stroke-width="1.5"/>"#;
     pub const WIDTH_MEDIUM: &str = r#"<path d="M5 12h14" stroke-width="3.5"/>"#;

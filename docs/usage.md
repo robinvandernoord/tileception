@@ -175,6 +175,14 @@ in a tile. Drag a tab to another tile's edge to separate it into its own tile.
 **Super+V** switches a window between floating above the layout and being tiled.
 Floating windows can be moved and resized with the same Alt-drag controls.
 
+Dialogs float by themselves. A dialog opens centred over the window it belongs
+to, in that window's area on a split screen; this includes the file chooser
+and other dialogs the desktop portal shows for a program, and the dialogs of
+X11 programs. While a dialog that
+its program marks as modal is open, focusing or clicking its window focuses
+the dialog instead, until the dialog is closed. A fullscreen window returns
+to the layout when that happens, so the dialog can be seen.
+
 ### Clearing the desk
 
 **Super+D** clears the desk of the screen: every window there, tiled and
@@ -384,6 +392,12 @@ keyboard:
 Super shortcuts, and keys that do not type such as volume and media keys, keep
 working while the panel has the keyboard.
 
+The eye button on a card in the panel decides whether that app's
+notifications show in full on Tileception's own lock screen: open when they
+do, crossed out when they don't. It writes the app's exception in
+[`[lock.notification_apps]`](configuration.md#lock-screen-notifications), so
+no config editing is needed.
+
 The panel's actions work from scripts and key bindings too:
 `tileception msg notifications clear` does what **Clear all** does, and
 `tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
@@ -471,6 +485,26 @@ Saved images go into `Screenshots` inside your configured Pictures folder,
 usually `~/Pictures/Screenshots`, and recordings into `Screencasts` inside
 your Videos folder.
 
+### Sharing your screen
+
+When a program such as a browser or a video call asks to share your screen,
+the launcher opens with what you can share: your screens and, with
+xdg-desktop-portal-wlr 0.8 or newer (Ubuntu 26.04 and later), each open
+window. Type to narrow the list, then press **Enter** to share the one
+chosen; **Escape** shares nothing. A shared window is sent on its own, at its
+own size, without what lies around or over it. With the portal 0.7 that
+Ubuntu 24.04 ships, only whole screens can be shared.
+
+Browsers based on Chromium, such as Chrome, Vivaldi and Edge, show what you
+chose in a preview before sharing it; their **Share** button then shares
+that screen or window without asking again, and **Choose a different window**
+asks again.
+
+The launcher is the portal's chooser through
+`/etc/xdg/xdg-desktop-portal-wlr/Tileception` (or, for a session installed
+from source, `~/.config/xdg-desktop-portal-wlr/Tileception`). The portal reads
+it when it starts, so log out and back in after installing or updating.
+
 ### Colour picker
 
 **Ctrl+Print**, or "Pick a colour" in the launcher, shows a magnifier next to
@@ -534,7 +568,8 @@ The block folds to one line while nothing is on and unfolds when something
 turns on; click its title to fold or unfold it yourself, or a room's name to
 fold that room. Devices that are switched off at the wall show as unreachable
 at the bottom of their room. While something is on, a chip in the bar says
-what; click it to open the block.
+what; click it to open the block. The built-in lock screen shows the indoor
+temperature in its clock tile.
 
 In the launcher, type `home` and a space to switch devices and rooms:
 `home living` switches a room, `home airco 21` sets the air conditioner and
@@ -819,9 +854,16 @@ of the Settings draft:
 | Three-finger pinch in / out     | Zoom one level out / in                        |
 | Four-finger swipe up / down     | Show the overview / zoom to the focused window |
 | Four-finger swipe left / right  | Go forward / back through previous views       |
+| **Super** + three-finger swipe  | Move the focused window that way               |
+| **Super** + four-finger swipe   | Drag the divider beside the focused window     |
 
 Swipes move the layout with your fingers, so swiping left brings the window on
-the right into focus.
+the right into focus. Letting go before a swipe has gone far enough goes back.
+
+Holding **Super** manages windows instead: a three-finger swipe moves the
+focused window past its neighbour, like **Super+Shift** and an arrow key, and a
+four-finger swipe moves the divider next to it as far as your fingers go, like
+dragging it with the pointer. The divider stays where you let go.
 
 You can also hold **Super** and pinch with two fingers to zoom out or in.
 Gestures without a Tileception binding are passed to the application, so an

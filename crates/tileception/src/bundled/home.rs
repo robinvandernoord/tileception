@@ -1,7 +1,8 @@
 //! The `home` plugin: Tuya lights, plugs, sensors and air conditioners on
 //! the LAN through `tileception-home`. It owns the device connections, so
 //! everything that controls them goes through it: the panel block, `home`
-//! in the launcher, `tileception msg home` and key bindings.
+//! in the launcher, `tileception msg home` and key bindings. The lock screen
+//! gets only the indoor temperature, to read.
 //!
 //! It follows the device file: when an import in Settings or
 //! `tileception home import` writes it, the plugin connects again. Once at
@@ -28,10 +29,10 @@ use super::{Notifier, Plugin, tool};
 use crate::{
     home::{HomeCommand, Wanted},
     panel::block::{
-        Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Notice,
-        Row, Stepper, Switch, Tint, Trend, View,
+        Bar, BarChip, Block, Card, Choice, Choices, Footer, FooterAction, Group, Item, Level, LevelLook, Line, Lock,
+        Notice, Reading, Row, Stepper, Switch, Tint, Trend, View,
     },
-    plugins::{ActionKind, BAR, PANEL},
+    plugins::{ActionKind, BAR, DOCTOR, LOCK, PANEL},
     ui::ago,
 };
 
@@ -132,6 +133,7 @@ impl HomePlugin {
             if let Some(notifier) = &notifier {
                 notifier.changed(PANEL);
                 notifier.changed(BAR);
+                notifier.changed(LOCK);
                 notifier.changed(DEVICES);
             }
         }));
@@ -424,6 +426,32 @@ impl HomePlugin {
         Bar { chips: vec![BarChip { label: parts.join(" \u{b7} "), icon, tint, action: None }] }
     }
 
+    /// The lock screen's reading: the indoor temperature, from the climate
+    /// device the card shows, else from a sensor. Nothing to act on, and no
+    /// names of devices or rooms.
+    fn lock(&mut self) -> Lock {
+        if self.problem.is_some() {
+            return Lock::default();
+        }
+        let devices = self.shown();
+        let climate =
+            self.climate(&devices).filter(|device| reachable(device)).and_then(|device| device.state.temperature);
+        let sensor = || {
+            devices
+                .iter()
+                .filter(|device| device.kind == Kind::Sensor && reachable(device))
+                .find_map(|device| device.state.temperature)
+        };
+        let Some(temperature) = climate.or_else(sensor) else { return Lock::default() };
+        Lock {
+            readings: vec![Reading {
+                title: "Indoors".into(),
+                value: degrees(temperature),
+                icon: Some("glyph:thermometer".into()),
+            }],
+        }
+    }
+
     /// Every device for Settings, with the addresses heard on the network.
     fn devices(&self) -> Value {
         let devices: Vec<Value> = self
@@ -660,6 +688,10 @@ impl Plugin for HomePlugin {
         room["inputSchema"]["properties"]["on"] = json!({ "type": "boolean" });
         let mut step = tool("step_target", "Raise or lower a climate device's target by steps", &["device"]);
         step["inputSchema"]["properties"]["steps"] = json!({ "type": "integer" });
+        let mut status = tool("status", "List the smart home devices with their state and reachability", &[]);
+        status["annotations"] = json!({ "readOnlyHint": true });
+        let mut why = tool("why", "Why a device is unreachable, and what to check", &["device"]);
+        why["annotations"] = json!({ "readOnlyHint": true });
         json!([
             tool("launcher_info", "Launcher metadata", &[]),
             tool("launcher_search", "Devices and rooms matching the words", &["prefix", "query"]),
@@ -670,6 +702,8 @@ impl Plugin for HomePlugin {
             tool("all_off", "Switch off every light and plug that is on, never climate devices", &[]),
             tool("next_climate", "Show the next climate device in the panel", &["device"]),
             tool("command", "Run a `tileception msg home` command, such as `status` or `why Lamp`", &["text"]),
+            status,
+            why,
         ])
     }
 
@@ -750,16 +784,30 @@ impl Plugin for HomePlugin {
                 if let Some(notifier) = &self.notifier {
                     notifier.changed(PANEL);
                     notifier.changed(BAR);
+                    notifier.changed(LOCK);
                 }
                 Ok(json!({ "ok": true }))
             }
             "command" => self.command(&text("text")).map(|text| json!({ "text": text })),
+            "status" => self.command("status").map(|text| json!({ "text": text })),
+            "why" => {
+                if self.service.is_none() {
+                    return Err(self.unavailable());
+                }
+                self.why(&text("device")).map(|text| json!({ "text": text }))
+            }
             _ => Err(format!("Unknown tool {name}")),
         }
     }
 
     fn resources(&self) -> Vec<(&'static str, &'static str)> {
-        vec![(PANEL, "Smart home block"), (BAR, "Smart home chip"), (DEVICES, "Smart home devices")]
+        vec![
+            (PANEL, "Smart home block"),
+            (BAR, "Smart home chip"),
+            (LOCK, "Indoor temperature on the lock screen"),
+            (DEVICES, "Smart home devices"),
+            (DOCTOR, "Smart home tools for Doctor"),
+        ]
     }
 
     fn read(&mut self, uri: &str) -> Result<Value, String> {
@@ -767,7 +815,9 @@ impl Plugin for HomePlugin {
         match uri {
             PANEL => serde_json::to_value(self.block()).map_err(|error| error.to_string()),
             BAR => serde_json::to_value(self.bar()).map_err(|error| error.to_string()),
+            LOCK => serde_json::to_value(self.lock()).map_err(|error| error.to_string()),
             DEVICES => Ok(self.devices()),
+            DOCTOR => Ok(doctor_offer()),
             _ => Err(format!("no resource {uri}")),
         }
     }
@@ -787,6 +837,7 @@ impl Plugin for HomePlugin {
                         seen = now;
                         notifier.changed(PANEL);
                         notifier.changed(BAR);
+                        notifier.changed(LOCK);
                         notifier.changed(DEVICES);
                     }
                 }
@@ -797,6 +848,16 @@ impl Plugin for HomePlugin {
 
 fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
+}
+
+/// The tools Doctor's agent gets: reading and switching devices, not the
+/// launcher's or the panel's own.
+fn doctor_offer() -> Value {
+    json!({
+        "tools": ["status", "why", "set", "toggle", "step_target", "room", "all_off"],
+        "instructions": "The user's smart home devices (Tuya lights, plugs, air conditioners and sensors). \
+            `status` lists them with their state; name devices as it does. `why` explains an unreachable one.",
+    })
 }
 
 fn tool_action(name: &str, arguments: Value) -> ActionKind {
@@ -1090,6 +1151,29 @@ mod tests {
         assert_eq!(notice.action, Some(ActionKind::Settings { page: "Smart home".into() }));
         assert!(plugin.call("toggle", &json!({ "device": "Lamp" })).is_err());
         assert!(plugin.bar().chips.is_empty());
+        assert!(plugin.lock().readings.is_empty());
+    }
+
+    #[test]
+    fn the_lock_screen_gets_only_the_indoor_temperature() {
+        let (mut plugin, _household) = simulated();
+        let mut lock = plugin.lock();
+        for _ in 0..100 {
+            if !lock.readings.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            lock = plugin.lock();
+        }
+        assert_eq!(lock.readings.len(), 1, "{lock:?}");
+        assert_eq!(lock.readings[0].title, "Indoors");
+        assert_eq!(lock.readings[0].value, "23.5\u{b0}");
+        // Read, as the compositor reads it: no device or room names, nothing
+        // to act on.
+        let value = plugin.read(LOCK).unwrap();
+        let text = value.to_string();
+        assert!(!text.contains("Airco") && !text.contains("Living room") && !text.contains("action"), "{text}");
+        assert!(plugin.resources().iter().any(|(uri, _)| *uri == LOCK));
     }
 
     #[test]

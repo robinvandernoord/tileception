@@ -946,8 +946,35 @@ impl Tileception {
         self.move_drag = Some(MoveDrag { window, grab, size, target: None, free, last: position });
     }
 
+    /// Whether a release belongs to a program that saw the press: the
+    /// pointer's grab began with this button over one of its surfaces, and
+    /// no drag of ours took the press over.
+    fn release_owed_to_program(&self, button: u32) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else { return false };
+        let program_press =
+            pointer.grab_start_data().is_some_and(|start| start.button == button && start.focus.is_some());
+        program_press
+            && self.move_drag.is_none()
+            && self.resize_drag.is_none()
+            && self.gap_drag.is_none()
+            && self.outputs.boundary_drag.is_none()
+            && self.selection.anchor.is_none()
+            && self.pending_press.is_none()
+    }
+
     pub(crate) fn on_button(&mut self, button: u32, state: ButtonState, time: u32) {
         self.tap_armed = None;
+        // A program that saw the press sees the release, even when something
+        // of ours opened over it in between. The screen share picker opens
+        // while a browser's "Entire Screen" tab is still held down; without
+        // the release the browser keeps the button down, and the next click
+        // only lets go of it.
+        if state == ButtonState::Released && !self.draws_lock_screen() && self.release_owed_to_program(button) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.button(self, &ButtonEvent { button, state, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         // Before the shell's buttons capture the press, so a click on one in
         // the panel gives the panel the keyboard too.
         if state == ButtonState::Pressed && button == BTN_LEFT {

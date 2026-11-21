@@ -485,17 +485,7 @@ impl Tileception {
     /// there, beside it. True when it went, or goes once it has drawn.
     pub(crate) fn send_child_away(&mut self, window: WindowId) -> bool {
         let Some(placed) = self.windows.get(&window).cloned() else { return false };
-        let parent = if let Some(toplevel) = placed.toplevel() {
-            toplevel.parent().and_then(|parent| self.window_id(&parent))
-        } else {
-            let transient_for = placed.x11_surface().and_then(|x11| x11.is_transient_for());
-            transient_for.and_then(|x11_id| {
-                self.windows
-                    .iter()
-                    .find(|(_, other)| other.x11_surface().is_some_and(|x11| x11.window_id() == x11_id))
-                    .map(|(window, _)| *window)
-            })
-        };
+        let parent = self.parent_window(window);
         let away = parent.and_then(|parent| self.handoff.windows.away.get(&parent));
         let Some(peer) = away.filter(|away| away.stream.is_some()).map(|away| away.peer) else { return false };
         if self.handoff.active_edge(peer).is_none() || self.is_locked() {

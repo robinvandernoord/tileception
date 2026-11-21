@@ -113,6 +113,9 @@ install -D -m 644 resources/tileception-portals.conf \
     "$root/usr/share/xdg-desktop-portal/tileception-portals.conf"
 install -D -m 644 resources/tileception.portal \
     "$root/usr/share/xdg-desktop-portal/portals/tileception.portal"
+# xdg-desktop-portal-wlr reads settings named after the desktop only from
+# /etc/xdg (and ~/.config), not from XDG_CONFIG_DIRS.
+install -D -m 644 resources/xdg-desktop-portal-wlr.conf "$root/etc/xdg/xdg-desktop-portal-wlr/Tileception"
 install -D -m 644 crates/tileception-auth/pam/tileception "$root/etc/pam.d/tileception"
 install -D -m 644 resources/greeter.toml "$root/etc/tileception/greeter.toml"
 # Suspending until a set time: the unit sets the wake-up alarm, polkit lets
@@ -206,7 +209,8 @@ Description: zoomable, nesting tiling Wayland compositor
  session on DRM/KMS, arranges X11 programs through Xwayland, and has a
  built-in launcher, notification centre, lock screen and power menu.
 EOF
-printf '%s\n' /etc/pam.d/tileception /etc/tileception/greeter.toml > "$root/DEBIAN/conffiles"
+printf '%s\n' /etc/pam.d/tileception /etc/tileception/greeter.toml /etc/xdg/xdg-desktop-portal-wlr/Tileception \
+    > "$root/DEBIAN/conffiles"
 
 # The greeter remembers the last login in a directory greetd's user owns, made
 # when greetd is there (install-greeter.sh's step, for a later greetd).

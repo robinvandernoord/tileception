@@ -60,7 +60,7 @@ greetd_pam_text() {
 }
 
 # Whether logins need greetd_pam: greetd's own service unlocks neither the
-# keyring nor KWallet (Ubuntu's does, Debian's does not), and this greetd can
+# keyring nor KWallet (this varies by distribution and release), and this greetd can
 # use another service (0.10 and later).
 needs_greetd_pam() {
     [ -e /etc/pam.d/greetd ] || return 1
@@ -117,6 +117,61 @@ ensure_greetd() {
     fi
 }
 
+# Installs the tileception-greetd PAM service, unless someone changed it.
+install_greetd_pam() {
+    tmp_pam=$(mktemp)
+    greetd_pam_text > "$tmp_pam"
+    # A service someone changed is theirs: keep it.
+    if [ ! -e "$greetd_pam" ] || grep -qs "^$greetd_pam_marker" "$greetd_pam"; then
+        $as_root install -m 644 "$tmp_pam" "$greetd_pam"
+    fi
+    rm -f "$tmp_pam"
+}
+
+# Points greetd's existing config at the tileception-greetd PAM service,
+# changing nothing else in it: the service line goes into [general], which
+# is added at the top when there is none. A config written in a way this
+# does not follow (quoted or dotted keys), or one the result of which cannot
+# be read back as TOML (which needs Python 3.11 or later), is left alone with
+# a note on what to add. The file keeps its owner and permissions.
+repair_greetd_pam() {
+    install_greetd_pam
+    manual="Add service = \"tileception-greetd\" under [general] in $greetd_config to unlock the keyring when logging in"
+    if grep -Eqs '^[[:space:]]*(\[[[:space:]]*["'"'"']|general[[:space:]]*\.|["'"'"']service["'"'"'][[:space:]]*=)' "$greetd_config"; then
+        echo "$manual" >&2
+        return
+    fi
+    tmp_config=$(mktemp)
+    # The table's header, which may have spaces and a comment: [ general ] # PAM
+    general_header='^[[:space:]]*\[[[:space:]]*general[[:space:]]*\][[:space:]]*(#.*)?$'
+    if grep -Eqs "$general_header" "$greetd_config"; then
+        awk -v header="$general_header" '
+            $0 ~ header && !done { print; print "service = \"tileception-greetd\""; done = 1; skip = 1; next }
+            /^[[:space:]]*\[/ { skip = 0 }
+            skip && /^[[:space:]]*service[[:space:]]*=/ { next }
+            { print }
+        ' "$greetd_config" > "$tmp_config"
+    else
+        printf '[general]\nservice = "tileception-greetd"\n\n' > "$tmp_config"
+        cat "$greetd_config" >> "$tmp_config"
+    fi
+    # greetd does not start with a config it cannot read: the result is only
+    # written once it reads back.
+    if ! python3 -c 'import sys
+import tomllib
+with open(sys.argv[1], "rb") as f:
+    general = tomllib.load(f).get("general", {})
+sys.exit(general.get("service") != "tileception-greetd")' "$tmp_config" 2>/dev/null; then
+        rm -f "$tmp_config"
+        echo "$manual" >&2
+        return
+    fi
+    # Copying onto the existing file keeps its owner and mode.
+    $as_root cp "$tmp_config" "$greetd_config"
+    rm -f "$tmp_config"
+    echo "Logging in unlocks the keyring (PAM service tileception-greetd)"
+}
+
 # Makes greetd run the greeter and the login screen from the next boot,
 # remembering the one it replaces. Restarting the display manager now would
 # end the graphical sessions running under it.
@@ -139,13 +194,7 @@ enable_greeter() {
     fi
     general=""
     if needs_greetd_pam; then
-        tmp_pam=$(mktemp)
-        greetd_pam_text > "$tmp_pam"
-        # A service someone changed is theirs: keep it.
-        if [ ! -e "$greetd_pam" ] || grep -qs "^$greetd_pam_marker" "$greetd_pam"; then
-            $as_root install -m 644 "$tmp_pam" "$greetd_pam"
-        fi
-        rm -f "$tmp_pam"
+        install_greetd_pam
         general="[general]
 service = \"tileception-greetd\"
 
@@ -937,6 +986,15 @@ fi
 case $greeter in
     tileception) enable_greeter ;;
     previous) restore_login_screen ;;
+    keep)
+        # Older installations may already use our greeter without the PAM
+        # service. Keeping that login screen must still repair its keyring
+        # integration, without restarting greetd or ending the session.
+        if greeter_active && needs_greetd_pam \
+            && ! grep -qs 'service *= *"tileception-greetd"' "$greetd_config"; then
+            repair_greetd_pam
+        fi
+        ;;
 esac
 
 say ""

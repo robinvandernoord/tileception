@@ -1,6 +1,14 @@
 # Tileception's own xdg-desktop-portal backend, served by the compositor while
 # it runs: light or dark and the accent colour for applications, typing for
-# them and their global shortcuts (KeePassXC's auto-type).
+# them and their global shortcuts (KeePassXC's auto-type), and screen sharing
+# passed on to xdg-desktop-portal-wlr with restore data for windows.
+#
+# UseIn puts it ahead of the GTK backend. xdg-desktop-portal 1.18 (Ubuntu
+# 24.04) asks Settings backends for the current desktop first and the rest by
+# name, whatever order tileception-portals.conf gives. Without UseIn, GTK
+# answers first with GNOME's colour scheme, usually "no preference", and
+# applications draw light under Tileception's dark theme.
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.tileception
-Interfaces=org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.RemoteDesktop;org.freedesktop.impl.portal.GlobalShortcuts;
+Interfaces=org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.RemoteDesktop;org.freedesktop.impl.portal.GlobalShortcuts;org.freedesktop.impl.portal.ScreenCast;
+UseIn=Tileception

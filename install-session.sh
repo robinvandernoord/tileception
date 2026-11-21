@@ -60,10 +60,47 @@ if ! cmp -s crates/tileception-auth/pam/tileception "$pam_service"; then
     echo "Installed the Tileception PAM authentication and account policy"
 fi
 
+# The portals read their backends and settings only when they start, so a
+# portal already running would keep the old ones: it would send screen
+# sharing straight to xdg-desktop-portal-wlr, skipping the restore data, and
+# browsers would ask what to share twice. They are restarted below when
+# anything here changed.
+portals_changed=false
+
 portals="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal"
 mkdir -p "$portals"
-install -m 644 resources/tileception-portals.conf "$portals/tileception-portals.conf"
+if ! cmp -s resources/tileception-portals.conf "$portals/tileception-portals.conf"; then
+    install -m 644 resources/tileception-portals.conf "$portals/tileception-portals.conf"
+    portals_changed=true
+fi
 echo "Installed $portals/tileception-portals.conf (screen sharing through xdg-desktop-portal-wlr)"
+
+# The screen sharing portal reads its settings for Tileception here, and asks
+# Tileception's launcher what to share. It runs outside the session, so it
+# gets the full path to the chooser.
+wlr_portal="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal-wlr"
+mkdir -p "$wlr_portal"
+sed "s|^chooser_cmd=tileception |chooser_cmd=$bindir/tileception |" resources/xdg-desktop-portal-wlr.conf > target/xdg-desktop-portal-wlr.conf
+# The file is replaced only while it is as the installer last wrote it, by
+# the checksum kept here: one written or changed by someone else is theirs.
+wlr_sum="$HOME/.local/share/tileception/xdg-desktop-portal-wlr.sha256"
+wlr_ours=false
+if [ ! -e "$wlr_portal/Tileception" ] || cmp -s target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"; then
+    wlr_ours=true
+elif [ -e "$wlr_sum" ] && [ "$(sha256sum < "$wlr_portal/Tileception")" = "$(cat "$wlr_sum")" ]; then
+    wlr_ours=true
+fi
+if $wlr_ours; then
+    if ! cmp -s target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"; then
+        install -m 644 target/xdg-desktop-portal-wlr.conf "$wlr_portal/Tileception"
+        portals_changed=true
+    fi
+    mkdir -p "$(dirname "$wlr_sum")"
+    sha256sum < target/xdg-desktop-portal-wlr.conf > "$wlr_sum"
+    echo "Installed $wlr_portal/Tileception (choosing what to share in the launcher)"
+else
+    echo "Kept $wlr_portal/Tileception, which was changed or not written here: set chooser_type=dmenu and chooser_cmd=$bindir/tileception pick-source under [screencast] in it to choose what to share in the launcher"
+fi
 
 # Suspending until a set time: the unit sets the hardware clock's wake-up
 # alarm, and the polkit rule lets the person at the computer start it. Only
@@ -93,6 +130,12 @@ portal=/usr/share/xdg-desktop-portal/portals/tileception.portal
 if ! cmp -s resources/tileception.portal "$portal"; then
     sudo install -m 644 resources/tileception.portal "$portal"
     echo "Installed $portal (light or dark for applications)"
+    portals_changed=true
+fi
+
+if $portals_changed && systemctl --user --quiet is-active xdg-desktop-portal.service 2>/dev/null; then
+    systemctl --user try-restart xdg-desktop-portal.service xdg-desktop-portal-wlr.service
+    echo "Restarted the desktop portals so they read the new settings"
 fi
 
 # Earlier builds were called Trellis: carry the config over and remove the
@@ -115,7 +158,7 @@ sed -e "s|@BINDIR@|$bindir|g" -e "/^TryExec=/d" resources/tileception.desktop.in
 if cmp -s target/tileception.desktop "$desktop"; then
     echo "The login screen entry is up to date"
 else
-    sudo install -m 644 target/tileception.desktop "$desktop"
+    sudo install -D -m 644 target/tileception.desktop "$desktop"
     echo "Added the Tileception session to the login screen"
 fi
 
