@@ -4,6 +4,26 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.25.0 (2026-11-21)
+
+### Features
+* **screencast:** let apps share screens and supported windows (26.04+)
+* **greeter:** arrange people as window-style tiles
+* **input:** manage windows with touchpad gestures
+* **session:** expand the greeter and lock screen
+* **plugins:** add dashboard isolation and agent tools
+
+### Fixes
+* **installer:** preserve user-owned portal and greetd config
+* **doctor:** restrict tweak mode to bundled plugin tools
+* **screencast:** isolate portal choices and pause streams while locked
+* **setup:** repair PAM integration for kept greeter
+* **session:** reuse the desktop SSH agent
+* **portal:** prefer Tileception settings backend
+
+### Documentation
+* **screencast:** document portal and protocol requirements
+
 ## v0.24.0 (2026-11-20)
 
 ### Feature
