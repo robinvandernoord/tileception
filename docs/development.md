@@ -229,7 +229,16 @@ such as Jitsi, start that capture twice within milliseconds. The portal
 frontend deletes a token once it is used, and xdg-desktop-portal-wlr gives
 restore data only for screens. So Tileception adds its own restore data
 (`("tileception", 1, {window|screen: id})`) and answers a second start that
-quickly follows a restored one (`unstarted`, `RETRY`).
+quickly follows a restored one, once (`unstarted`, `RETRY`). That restore
+data is transient: a program asking for persistence until revoked gets
+persist mode 1, so the choice is not given again after it restarts. The
+chooser cannot tell which request it serves, so `SelectSources` calls are
+passed on one at a time (`choosing`), and restore data left unused when one
+ends is dropped (`Message::Forget`).
+
+While the screen is locked, shared windows and screens being streamed send
+nothing new; their frames wait until unlock. Single copies such as
+screenshots still go ahead.
 
 Restore tokens are the only way to tell a browser's "Share" from "Choose a
 different window": both send identical portal requests. Heuristics based on

@@ -229,6 +229,13 @@ struct DamageStream {
 }
 
 impl ManagerDamage {
+    /// Whether this screen was copied for the program before: a stream
+    /// rather than a single copy. Any region counts, so a stream whose
+    /// size changed (a new resolution) is still one.
+    fn streaming(&self, key: &DamageKey) -> bool {
+        self.0.lock().expect("screencopy damage history").iter().any(|stream| stream.key.output == key.output)
+    }
+
     fn changes(
         &self,
         key: &DamageKey,
@@ -424,6 +431,7 @@ impl Tileception {
             return;
         }
         let pending = std::mem::take(&mut self.pending_captures);
+        let locked = self.is_locked();
         let built = displayed.is_none().then(|| {
             if let Some(shapes) = self.shapes.get() {
                 shapes.next_frame(self.output.as_ref());
@@ -460,6 +468,14 @@ impl Tileception {
                     continue;
                 }
                 let key = DamageKey { output: copy.output.clone(), cursor: copy.cursor, region };
+                // While the screen is locked, a screen being shared sends
+                // nothing new: the lock screen may show notifications. Its
+                // frame waits, and the call keeps the last one from before.
+                // A single copy, such as a screenshot, still goes ahead.
+                if copy.wait_for_damage && locked && copy.history.streaming(&key) {
+                    self.pending_captures.push(capture);
+                    continue;
+                }
                 let coordinates = (region.loc.x, region.loc.y, region.size.w, region.size.h);
                 let damage = changes
                     .entry((Arc::as_ptr(&copy.history.0), copy.cursor, coordinates))

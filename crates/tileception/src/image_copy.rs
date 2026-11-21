@@ -43,6 +43,7 @@ use smithay::{
         },
         wayland_server::{
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+            backend::ClientId,
             protocol::{wl_buffer::WlBuffer, wl_output::Transform as WlTransform, wl_shm},
         },
     },
@@ -347,7 +348,9 @@ impl Tileception {
     /// Copies each shared window that changed into the buffer waiting for
     /// it. Runs once a frame, outside any one screen's context.
     pub fn process_window_copies(&mut self, renderer: &mut GlesRenderer) {
-        if self.image_copy.windows.is_empty() {
+        // While the screen is locked, shared windows send nothing new: their
+        // frames wait, so a call shows the last frame from before the lock.
+        if self.image_copy.windows.is_empty() || self.is_locked() {
             return;
         }
         let pending = std::mem::take(&mut self.image_copy.windows);
@@ -528,6 +531,14 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, SessionData> for Tileception {
             inner.frame = Some(frame);
         }
     }
+
+    /// The session's frame holds the session and the session its frame:
+    /// letting go of the frame frees both, and the window's damage history.
+    fn destroyed(_state: &mut Self, _client: ClientId, _session: &ExtImageCopyCaptureSessionV1, data: &SessionData) {
+        let mut inner = data.inner.lock().expect("capture session");
+        inner.frame = None;
+        inner.window = None;
+    }
 }
 
 impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Tileception {
@@ -574,6 +585,17 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, FrameData> for Tileception {
             }
             Request::Destroy => {}
             _ => {}
+        }
+    }
+
+    /// A destroyed frame lets go of its buffer, and its session of it.
+    fn destroyed(_state: &mut Self, _client: ClientId, frame: &ExtImageCopyCaptureFrameV1, data: &FrameData) {
+        data.inner.lock().expect("capture frame").buffer = None;
+        if let Some(session) = data.session.data::<SessionData>() {
+            let mut inner = session.inner.lock().expect("capture session");
+            if inner.frame.as_ref() == Some(frame) {
+                inner.frame = None;
+            }
         }
     }
 }

@@ -11,7 +11,9 @@
 //!
 //! The D-Bus side runs off the compositor thread. The chooser runs inside
 //! xdg-desktop-portal-wlr's SelectSources, while that call is passed on, so
-//! what it picked is known when the call returns.
+//! what it picked is known when the call returns. The chooser cannot say
+//! which request it is for, so one SelectSources is passed on at a time:
+//! restore data and the choice then belong to that request alone.
 
 use std::{
     collections::HashMap,
@@ -41,10 +43,13 @@ const VENDOR: &str = "tileception";
 const RESTORE_VERSION: u32 = 1;
 /// Portal responses.
 const SUCCESS: u32 = 0;
+const CANCELLED: u32 = 1;
 const ENDED: u32 = 2;
 /// Source types and cursor modes, for when xdg-desktop-portal-wlr cannot be asked.
 const MONITOR: u32 = 1;
 const HIDDEN_AND_EMBEDDED: u32 = 1 | 2;
+/// Persist mode: remembered while the program runs.
+const TRANSIENT: u32 = 1;
 /// Version 4 brings restore data and persistence.
 const PERSIST_VERSION: u32 = 4;
 
@@ -55,6 +60,9 @@ type Reply = (u32, Options);
 pub enum Message {
     /// The next chooser gives this without asking.
     Restore(Target),
+    /// The request that restore data was for is over: no later chooser
+    /// gets it.
+    Forget,
 }
 
 /// A session passed on to xdg-desktop-portal-wlr.
@@ -79,6 +87,9 @@ struct Shared {
     unstarted: Arc<Mutex<HashMap<String, (Target, std::time::Instant)>>>,
     /// What the last chooser gave, written by the compositor.
     chosen: Arc<Mutex<Option<Target>>>,
+    /// Held while a SelectSources is passed on, so that a chooser's restore
+    /// data and answer cannot cross to another program's request.
+    choosing: Arc<async_lock::Mutex<()>>,
     compositor: channel::Sender<Message>,
     /// Whether xdg-desktop-portal-wlr's Closed signals are passed on yet.
     watching: Arc<AtomicBool>,
@@ -137,14 +148,17 @@ where
     connection.call_method(Some(WLR), path, Some(interface), method, body).await
 }
 
-/// A request passed on: the portal may call it off.
+/// A request passed on: the portal may call it off, also while it waits
+/// for its turn before being passed on.
 struct CastRequest {
     path: String,
+    closed: Arc<AtomicBool>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl CastRequest {
     async fn close(&self, #[zbus(connection)] connection: &zbus::Connection) {
+        self.closed.store(true, Ordering::Relaxed);
         let _ = call(connection, &self.path, REQUEST, "Close", &()).await;
     }
 }
@@ -167,8 +181,10 @@ impl CastSession {
         let _ = server.remove::<CastSession, _>(self.path.as_str()).await;
     }
 
+    /// The backend's Closed signal has no arguments; the portal adds the
+    /// details of its own.
     #[zbus(signal)]
-    async fn closed(emitter: &SignalEmitter<'_>, details: Options) -> zbus::Result<()>;
+    async fn closed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
@@ -181,6 +197,15 @@ pub struct ScreenCast {
 }
 
 impl ScreenCast {
+    /// Lets the portal call off the request at `handle` from now on;
+    /// the flag says whether it did.
+    async fn accept_close(server: &ObjectServer, handle: &OwnedObjectPath) -> Arc<AtomicBool> {
+        let closed = Arc::new(AtomicBool::new(false));
+        let request = CastRequest { path: handle.to_string(), closed: closed.clone() };
+        let _ = server.at(handle.as_str(), request).await;
+        closed
+    }
+
     /// Passes a call on to xdg-desktop-portal-wlr, letting the portal call
     /// it off through `handle` meanwhile.
     async fn pass_on<B>(
@@ -195,7 +220,8 @@ impl ScreenCast {
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
         let request = handle.as_str();
-        let _ = server.at(request, CastRequest { path: request.to_string() }).await;
+        // SelectSources registers its request before waiting for its turn.
+        let _ = server.at(request, CastRequest { path: request.to_string(), closed: Default::default() }).await;
         let reply = call(connection, PATH, SCREEN_CAST, method, body)
             .await
             .and_then(|reply| reply.body().deserialize::<Reply>());
@@ -244,11 +270,10 @@ async fn pass_on_closed(connection: &zbus::Connection, shared: &Shared) -> zbus:
     while let Some(message) = std::future::poll_fn(|context| std::pin::Pin::new(&mut stream).poll_next(context)).await {
         let Ok(message) = message else { continue };
         let Some(path) = message.header().path().map(|path| path.to_string()) else { continue };
-        let details: Options = message.body().deserialize().unwrap_or_default();
         lock(&shared.sessions).remove(&path);
         let server = connection.object_server();
         if let Ok(session) = server.interface::<_, CastSession>(path.as_str()).await {
-            let _ = CastSession::closed(session.signal_emitter(), details).await;
+            let _ = CastSession::closed(session.signal_emitter()).await;
             let _ = server.remove::<CastSession, _>(path.as_str()).await;
         }
     }
@@ -291,7 +316,21 @@ impl ScreenCast {
         #[zbus(connection)] connection: &zbus::Connection,
         #[zbus(object_server)] server: &ObjectServer,
     ) -> Reply {
-        let persist = number(&options, "persist_mode").unwrap_or(0).min(2);
+        let closed = Self::accept_close(server, &handle).await;
+        let _choosing = self.shared.choosing.lock().await;
+        if closed.load(Ordering::Relaxed) {
+            let _ = server.remove::<CastRequest, _>(handle.as_str()).await;
+            return (CANCELLED, Options::new());
+        }
+        // Choices are remembered only while the program runs (transient):
+        // enough for a browser's preview and share, without a choice made
+        // once being given again after a restart without asking.
+        let persist = number(&options, "persist_mode").unwrap_or(0).min(TRANSIENT);
+        // xdg-desktop-portal-wlr restoring a screen itself, without the
+        // chooser, grants what was asked: ask it for no more either.
+        if options.contains_key("persist_mode") {
+            options.insert("persist_mode".into(), OwnedValue::from(persist));
+        }
         // Our restore data is for the chooser; xdg-desktop-portal-wlr keeps
         // its own for screens.
         let program = crate::remote_desktop::caller(session_handle.as_str());
@@ -306,15 +345,23 @@ impl ScreenCast {
             let (target, dropped) = unstarted.remove(program.as_deref()?)?;
             (dropped.elapsed() < RETRY).then_some(target)
         };
-        if let Some(target) = ours.or_else(retried) {
-            if let Some(program) = &program {
-                lock(&self.shared.unstarted).insert(program.clone(), (target.clone(), std::time::Instant::now()));
+        // A retry is answered once: it does not make room for another.
+        let restore = match ours {
+            Some(target) => {
+                if let Some(program) = &program {
+                    lock(&self.shared.unstarted).insert(program.clone(), (target.clone(), std::time::Instant::now()));
+                }
+                Some(target)
             }
+            None => retried(),
+        };
+        if let Some(target) = restore {
             let _ = self.shared.compositor.send(Message::Restore(target));
         }
         *lock(&self.shared.chosen) = None;
         let body = (&handle, &session_handle, &app_id, &options);
         let reply = self.pass_on(connection, server, &handle, "SelectSources", &body).await;
+        let _ = self.shared.compositor.send(Message::Forget);
         let target = lock(&self.shared.chosen).take();
         if let Some(cast) = lock(&self.shared.sessions).get_mut(session_handle.as_str()) {
             cast.persist = persist;
@@ -352,6 +399,10 @@ impl ScreenCast {
             results.insert("restore_data".into(), data);
             results.insert("persist_mode".into(), OwnedValue::from(persist));
         }
+        // Whatever gave the restore data, it lasts no longer than the program.
+        if number(&results, "persist_mode").is_some_and(|granted| granted > TRANSIENT) {
+            results.insert("persist_mode".into(), OwnedValue::from(TRANSIENT));
+        }
         (code, results)
     }
 
@@ -380,16 +431,19 @@ impl Tileception {
     ) -> zbus::Result<zbus::blocking::connection::Builder<'a>> {
         let (compositor, messages) = channel::channel();
         self.loop_handle
-            .insert_source(messages, |event, _, state| {
-                if let channel::Event::Msg(Message::Restore(target)) = event {
+            .insert_source(messages, |event, _, state| match event {
+                channel::Event::Msg(Message::Restore(target)) => {
                     state.sharing.restore = Some((target, std::time::Instant::now()));
                 }
+                channel::Event::Msg(Message::Forget) => state.sharing.restore = None,
+                channel::Event::Closed => {}
             })
             .map_err(|err| zbus::Error::Failure(err.to_string()))?;
         let shared = Shared {
             sessions: Default::default(),
             unstarted: Default::default(),
             chosen: self.sharing.chosen.clone(),
+            choosing: Default::default(),
             compositor,
             watching: Default::default(),
         };
