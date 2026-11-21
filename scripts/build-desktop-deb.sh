@@ -11,6 +11,9 @@
 #   /etc/xdg/tileception-xdg-terminals.list   the terminal for Tileception
 #                                             sessions (Ghostty, else GNOME
 #                                             Terminal)
+#   /etc/xdg/tileception-mimeapps.list        what opens folders, text,
+#                                             documents, images, video,
+#                                             music and archives there
 #   /usr/bin/bat, /usr/bin/fd                 links to Ubuntu's batcat and
 #                                             fdfind (the names clash with
 #                                             bacula-console-qt and fdclone,
@@ -108,6 +111,8 @@ for suite in "$@"; do
     start "$package"
     install -D -m 644 packaging/desktop/tileception-xdg-terminals.list \
         "$root/etc/xdg/tileception-xdg-terminals.list"
+    install -D -m 644 packaging/desktop/tileception-mimeapps.list \
+        "$root/etc/xdg/tileception-mimeapps.list"
     mkdir -p "$root/usr/bin"
     ln -s batcat "$root/usr/bin/bat"
     ln -s fdfind "$root/usr/bin/fd"

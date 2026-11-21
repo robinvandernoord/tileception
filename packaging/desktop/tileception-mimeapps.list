@@ -1,0 +1,63 @@
+# What opens which kind of file in Tileception sessions, from
+# tileception-desktop: the apps packages.txt recommends. Each line names the
+# first choice, then what an older release has instead; the first installed one
+# opens the file. Your own choices (Settings → Default apps, an app's "make
+# default", ~/.config/mimeapps.list) come first. Browsers and mail are left to
+# whichever browser or mail app you make the default.
+[Default Applications]
+inode/directory=org.gnome.Nautilus.desktop;
+
+text/plain=org.gnome.TextEditor.desktop;
+text/markdown=org.gnome.TextEditor.desktop;
+text/x-log=org.gnome.TextEditor.desktop;
+application/json=org.gnome.TextEditor.desktop;
+application/xml=org.gnome.TextEditor.desktop;
+application/toml=org.gnome.TextEditor.desktop;
+application/yaml=org.gnome.TextEditor.desktop;
+application/x-yaml=org.gnome.TextEditor.desktop;
+application/x-shellscript=org.gnome.TextEditor.desktop;
+text/x-python=org.gnome.TextEditor.desktop;
+text/x-python3=org.gnome.TextEditor.desktop;
+text/rust=org.gnome.TextEditor.desktop;
+
+application/pdf=org.gnome.Papers.desktop;org.gnome.Evince.desktop;
+
+image/png=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/jpeg=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/gif=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/webp=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/avif=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/heif=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/bmp=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/tiff=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+image/svg+xml=org.gnome.Loupe.desktop;org.gnome.eog.desktop;
+
+video/mp4=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/x-matroska=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/webm=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/quicktime=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/x-msvideo=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/mpeg=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+video/ogg=org.gnome.Showtime.desktop;org.gnome.Totem.desktop;vlc.desktop;
+
+audio/mpeg=io.bassi.Amberol.desktop;vlc.desktop;
+audio/flac=io.bassi.Amberol.desktop;vlc.desktop;
+audio/x-flac=io.bassi.Amberol.desktop;vlc.desktop;
+audio/ogg=io.bassi.Amberol.desktop;vlc.desktop;
+audio/x-vorbis+ogg=io.bassi.Amberol.desktop;vlc.desktop;
+audio/x-opus+ogg=io.bassi.Amberol.desktop;vlc.desktop;
+audio/wav=io.bassi.Amberol.desktop;vlc.desktop;
+audio/x-wav=io.bassi.Amberol.desktop;vlc.desktop;
+audio/mp4=io.bassi.Amberol.desktop;vlc.desktop;
+audio/x-m4a=io.bassi.Amberol.desktop;vlc.desktop;
+audio/aac=io.bassi.Amberol.desktop;vlc.desktop;
+
+application/zip=org.gnome.FileRoller.desktop;
+application/x-7z-compressed=org.gnome.FileRoller.desktop;
+application/vnd.rar=org.gnome.FileRoller.desktop;
+application/x-tar=org.gnome.FileRoller.desktop;
+application/gzip=org.gnome.FileRoller.desktop;
+application/x-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-xz-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-zstd-compressed-tar=org.gnome.FileRoller.desktop;
+application/x-bzip2-compressed-tar=org.gnome.FileRoller.desktop;
