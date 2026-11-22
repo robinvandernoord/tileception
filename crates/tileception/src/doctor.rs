@@ -8,7 +8,7 @@
 //! (`tileception-acp`). The panel picks one, starts it, logs in when the agent
 //! asks, and shows the conversation with tool calls and permission questions.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -261,11 +261,14 @@ struct Saved {
     /// The model chosen per agent, by registry id.
     #[serde(default)]
     models: std::collections::BTreeMap<String, String>,
-    /// Programs found only by name that the user chose to use, by registry id.
+    /// Which copy of each agent runs, by registry id, where the user chose.
     #[serde(default)]
+    installations: std::collections::BTreeMap<String, Installation>,
+    /// Before `installations`: programs found only by name that the user
+    /// chose to use, and those they chose not to, by registry id.
+    #[serde(default, skip_serializing)]
     use_installed: std::collections::BTreeMap<String, PathBuf>,
-    /// Programs found only by name that the user chose not to use.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     skip_installed: std::collections::BTreeMap<String, PathBuf>,
     /// The version agents not kept by Tileception last reported, by the
     /// program's path, for those whose version cannot be read from disk.
@@ -278,6 +281,60 @@ struct Saved {
     /// none when it was tiled.
     #[serde(default)]
     float: Option<[f64; 4]>,
+}
+
+impl Saved {
+    /// The choices of copy, with those saved before there was a choice.
+    fn installations(&mut self) -> std::collections::BTreeMap<String, Installation> {
+        let mut installations = std::mem::take(&mut self.installations);
+        for (agent_id, path) in std::mem::take(&mut self.use_installed) {
+            installations.entry(agent_id).or_insert(Installation::Own(path));
+        }
+        for agent_id in std::mem::take(&mut self.skip_installed).into_keys() {
+            installations.entry(agent_id).or_insert(Installation::Wizard);
+        }
+        installations
+    }
+}
+
+/// Which copy of an agent Wizard starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Installation {
+    /// The registry's: downloaded and kept by Tileception, or run by npx
+    /// or uvx.
+    Wizard,
+    /// A copy installed on this computer, which Wizard found.
+    Own(PathBuf),
+    /// A program the user named by its path.
+    Custom(PathBuf),
+}
+
+/// How the chosen agent starts, from the config, the user's choice and
+/// what is installed.
+#[derive(Debug, Clone, PartialEq)]
+enum Effective {
+    /// The command in `[wizard.agents]`, which the picker cannot change.
+    Configured(tileception_acp::install::Program),
+    /// A program found only by its name: the user says first whether it is
+    /// the agent.
+    Ask(PathBuf),
+    Use(Installation),
+}
+
+/// A path as typed, with `~/` for the home folder.
+fn expand_home(text: &str) -> PathBuf {
+    match text.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(text),
+    }
+}
+
+/// A file that can be run, and is not a desktop app that has an agent's name.
+fn runnable_agent(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        && !tileception_acp::local::desktop_app(path)
 }
 
 /// The `[doctor]` section of the config.
@@ -300,11 +357,7 @@ impl DoctorConfig {
     /// The configured command for an agent, with `~/` expanded in the program.
     fn program(&self, agent_id: &str, env: &tileception_acp::Env) -> Option<tileception_acp::install::Program> {
         let (program, args) = self.agents.get(agent_id)?.split_first()?;
-        let command = match program.strip_prefix("~/") {
-            Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
-            None => PathBuf::from(program),
-        };
-        Some(tileception_acp::install::Program { command, args: args.to_vec(), env: env.clone() })
+        Some(tileception_acp::install::Program { command: expand_home(program), args: args.to_vec(), env: env.clone() })
     }
 }
 
@@ -313,6 +366,14 @@ impl DoctorConfig {
 struct Unconfirmed {
     agent_id: String,
     path: PathBuf,
+}
+
+/// Typing the path of a program to run as the agent, in the message field.
+struct PathEntry {
+    /// Why the last path typed was not taken.
+    error: Option<String>,
+    /// The message typed before, which comes back when the path is done.
+    draft: TextInput,
 }
 
 /// Typing a secret a login asks for, one at a time.
@@ -397,11 +458,20 @@ pub struct Doctor {
     loaded: Option<Instant>,
     /// The chosen agent's registry id.
     agent: Option<String>,
-    use_installed: std::collections::BTreeMap<String, PathBuf>,
-    skip_installed: std::collections::BTreeMap<String, PathBuf>,
+    /// Which copy of each agent runs, where the user chose.
+    installations: std::collections::BTreeMap<String, Installation>,
+    /// What each registry agent needs to run the registry's own copy, and
+    /// the version of the copy Tileception keeps, looked up with `missing`.
+    missing_download: std::collections::HashMap<String, String>,
+    kept: std::collections::HashMap<String, String>,
     versions: std::collections::BTreeMap<String, String>,
     /// Asking whether to use a program found by name before starting it.
     unconfirmed: Option<Unconfirmed>,
+    /// The path of a program to run instead is being typed.
+    path_entry: Option<PathEntry>,
+    /// The field's other text: the message while the picker shows, which
+    /// searches it instead, and the search otherwise.
+    stashed: TextInput,
     session: Option<Session>,
     /// The running agent: its version, once it says, and the program when
     /// Tileception did not install it (an installed copy or the config's).
@@ -506,8 +576,9 @@ struct Selected {
 
 impl Default for Doctor {
     fn default() -> Self {
-        let saved: Saved =
+        let mut saved: Saved =
             std::fs::read_to_string(saved_path()).ok().and_then(|text| toml::from_str(&text).ok()).unwrap_or_default();
+        let installations = saved.installations();
         Self {
             open: false,
             home: None,
@@ -525,10 +596,13 @@ impl Default for Doctor {
             loading: false,
             loaded: None,
             agent: saved.agent,
-            use_installed: saved.use_installed,
-            skip_installed: saved.skip_installed,
+            installations,
+            missing_download: Default::default(),
+            kept: Default::default(),
             versions: saved.versions,
             unconfirmed: None,
+            path_entry: None,
+            stashed: TextInput::default(),
             session: None,
             running: Running::default(),
             offered: Default::default(),
@@ -575,10 +649,71 @@ impl Default for Doctor {
     }
 }
 
+/// The registry's arguments for an agent, which every copy is started with.
+fn launch_args(agent: &Agent) -> Vec<String> {
+    match &agent.launch {
+        tileception_acp::Launch::Npx { args, .. }
+        | tileception_acp::Launch::Uvx { args, .. }
+        | tileception_acp::Launch::Binary { args, .. } => args.clone(),
+    }
+}
+
+/// The picker's agents that match `search` by name or id, in groups: those
+/// set up first, then the others installed here, then the rest of the
+/// registry, each in the registry's order.
+fn picker_groups<'a>(
+    agents: &'a [Agent],
+    search: &str,
+    set_up: impl Fn(&Agent) -> bool,
+    installed: impl Fn(&Agent) -> bool,
+) -> [(&'static str, Vec<&'a Agent>); 3] {
+    let search = search.trim().to_lowercase();
+    let mut groups = [("SET UP", Vec::new()), ("ON THIS COMPUTER", Vec::new()), ("ACP REGISTRY", Vec::new())];
+    let matching = agents.iter().filter(|agent| {
+        search.is_empty() || agent.name.to_lowercase().contains(&search) || agent.agent_id.contains(&search)
+    });
+    for agent in matching {
+        let group = if set_up(agent) {
+            0
+        } else if installed(agent) {
+            1
+        } else {
+            2
+        };
+        groups[group].1.push(agent);
+    }
+    groups
+}
+
 /// Session events carry their owner; registry events have no owner.
 type DoctorEvent = (Option<u64>, Event);
 
 impl Doctor {
+    /// Shows the picker or the conversation. The field searches the picker,
+    /// and the message typed so far waits meanwhile.
+    fn show(&mut self, view: View) {
+        if self.view == view {
+            return;
+        }
+        std::mem::swap(&mut self.input, &mut self.stashed);
+        if view == View::Picker {
+            self.input.clear();
+        }
+        self.view = view;
+        self.focus = None;
+        self.scroll = 0.0;
+    }
+
+    /// Leaves typing a path, giving the field back the message it held.
+    fn end_path_entry(&mut self) {
+        let Some(entry) = self.path_entry.take() else { return };
+        if self.view == View::Conversation {
+            self.input = entry.draft;
+        } else {
+            self.stashed = entry.draft;
+        }
+    }
+
     fn retire_questions(&mut self) {
         if self.form.take().is_some() {
             self.input.clear();
@@ -613,8 +748,11 @@ fn saved_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq)]
 enum Hit {
     Pick(String),
-    /// Whether to use the program found by name ([`Unconfirmed`]).
-    UseInstalled(bool),
+    /// Which copy of the chosen agent to run.
+    Install(Installation),
+    /// Type the path of a program to run as the chosen agent instead.
+    ChoosePath,
+    CancelPath,
     OpenPicker,
     ClosePicker,
     ReloadRegistry,
@@ -672,7 +810,9 @@ impl crate::ui::PointerAction for PointerAction {
                 }
                 state.doctor_hit(hit.clone());
             }
-            Self::Send if state.doctor.busy && !state.doctor_redirects() => state.doctor_hit(Hit::Stop),
+            Self::Send if state.doctor.busy && !state.doctor_redirects() && state.doctor.view == View::Conversation => {
+                state.doctor_hit(Hit::Stop)
+            }
             Self::Send => state.doctor_key(keysyms::KEY_Return, Mods::default()),
             Self::Text => state.doctor_select_from(point),
             Self::Field => state.doctor_field_press(point, false),
@@ -721,6 +861,14 @@ fn model_label(option: &SessionOption) -> String {
     }
 }
 
+/// The colour of a row's status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Good,
+    Quiet,
+    Warning,
+}
+
 /// A laid-out piece of the panel's middle.
 enum Block {
     Bubble {
@@ -745,7 +893,10 @@ enum Block {
         rect: Rect,
         title: String,
         detail: String,
+        /// What is wrong with it, in the warning colour.
         note: Option<String>,
+        /// How it is doing, where nothing is wrong.
+        status: Option<(String, Tone)>,
         hit: Option<Hit>,
         current: bool,
     },
@@ -962,10 +1113,10 @@ fn ask_hint(buttons: usize, focused: bool) -> String {
         return "Shift+Tab or Up to answer here, or send a message to decline it".into();
     }
     let pick = match buttons.min(9) {
-        0 | 1 => "1 picks".to_string(),
-        last => format!("1-{last} pick"),
+        0 | 1 => "1".to_string(),
+        last => format!("1-{last}"),
     };
-    format!("Enter chooses, arrows move, {pick}, Esc to the message field")
+    format!("Enter or {pick} to select, arrow keys to move, Esc to return to the message")
 }
 
 /// The one-time rejection when redirecting a turn, or cancellation.
@@ -1263,36 +1414,10 @@ impl Tileception {
     }
 
     fn render_doctor_client(&self, renderer: &mut GlesRenderer) {
-        use smithay::{
-            backend::renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
-            utils::Rectangle,
-        };
-        let Some(started) = &self.doctor.client else { return };
-        let physical =
-            ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
-        if !started.needs_frame(self.scale, physical) {
-            return;
-        }
-        let logical = (self.doctor.size.0 as i32, self.doctor.size.1 as i32);
-        let size = ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
-        let result = (|| -> Result<Vec<u8>, String> {
-            let elements = self.doctor_view_elements(renderer);
-            let mut texture: GlesTexture =
-                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
-            {
-                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-                let result = damage
-                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
-                    .map_err(|error| format!("{error:?}"))?;
-                result.sync.wait().map_err(|error| format!("{error:?}"))?;
-            }
-            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
-        })();
-        match result {
-            Ok(pixels) => started.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
-            Err(error) => tracing::warn!("could not draw the doctor's window: {error}"),
-        }
+        let Some(client) = &self.doctor.client else { return };
+        self.render_client_window(renderer, client, self.doctor.size, |state, renderer| {
+            state.doctor_view_elements(renderer)
+        });
     }
 
     /// Opens the panel and asks `question` straight away.
@@ -1381,22 +1506,178 @@ impl Tileception {
 
     /// Where the agent comes from, for the picker, when not the registry.
     fn agent_source(&self, agent: &Agent) -> Option<String> {
-        if let Some(command) = self.config.file.doctor.agents.get(&agent.agent_id) {
-            return Some(format!("From your config: {}", command.join(" ")));
-        }
-        let installed = agent.installed.as_ref()?;
-        let path = tilde(&installed.command);
-        let reported = self.doctor.versions.get(installed.command.to_string_lossy().as_ref());
-        Some(match installed.version.as_ref().or(reported) {
-            Some(version) if tileception_acp::local::older(version, &agent.version) => {
-                format!("Installed {version} (the registry has {}): {path}", agent.version)
+        let installed = |path: &Path| {
+            let found = agent.installed.as_ref().filter(|installed| installed.command == path);
+            let reported = self.doctor.versions.get(path.to_string_lossy().as_ref());
+            (tilde(path), found.and_then(|installed| installed.version.as_ref()).or(reported))
+        };
+        let newer = |version: &String| tileception_acp::local::older(version, &agent.version);
+        Some(match self.effective_installation(agent) {
+            Effective::Configured(program) => {
+                format!(
+                    "From your config: {}",
+                    std::iter::once(program.command.display().to_string())
+                        .chain(program.args)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
             }
-            Some(version) => format!("Installed {version}: {path}"),
-            None if self.doctor.skip_installed.get(&agent.agent_id) == Some(&installed.command) => {
-                return None;
-            }
-            None => format!("Installed: {path}"),
+            Effective::Ask(path) => format!("Installed: {}", tilde(&path)),
+            Effective::Use(Installation::Custom(path)) => format!("Your program: {}", tilde(&path)),
+            Effective::Use(Installation::Own(path)) => match installed(&path) {
+                (path, Some(version)) if newer(version) => {
+                    format!("Installed {version} (the registry has {}): {path}", agent.version)
+                }
+                (path, Some(version)) => format!("Installed {version}: {path}"),
+                (path, None) => format!("Installed: {path}"),
+            },
+            Effective::Use(Installation::Wizard) => match self.doctor.kept.get(&agent.agent_id) {
+                Some(version) if newer(version) => {
+                    format!("Wizard's copy {version} (the registry has {})", agent.version)
+                }
+                Some(version) => format!("Wizard's copy {version}"),
+                None => return None,
+            },
         })
+    }
+
+    /// An agent the user has set up: in the config, chosen or given a copy.
+    fn agent_set_up(&self, agent: &Agent) -> bool {
+        self.doctor.agent.as_ref() == Some(&agent.agent_id)
+            || self.config.file.doctor.agents.contains_key(&agent.agent_id)
+            || self.doctor.installations.contains_key(&agent.agent_id)
+    }
+
+    /// How an agent is doing, for its row: the chosen one's state, or a
+    /// newer version for another installed one.
+    fn agent_status(&self, agent: &Agent) -> Option<(String, Tone)> {
+        if self.doctor.agent.as_ref() == Some(&agent.agent_id) {
+            let (text, tone) = if self.doctor.unconfirmed.is_some() {
+                ("Choose a copy", Tone::Warning)
+            } else {
+                match &self.doctor.status {
+                    _ if self.doctor.session.is_none() => ("Stopped", Tone::Warning),
+                    Status::Ready => ("In use", Tone::Good),
+                    Status::Starting(_) => ("Starting", Tone::Quiet),
+                    Status::NeedsLogin(_) | Status::LoggingIn { .. } => ("Needs login", Tone::Warning),
+                    Status::Failed(_) => ("Stopped", Tone::Warning),
+                }
+            };
+            return Some((text.into(), tone));
+        }
+        let version = match self.effective_installation(agent) {
+            Effective::Use(Installation::Wizard) => self.doctor.kept.get(&agent.agent_id),
+            Effective::Use(Installation::Own(path)) => agent
+                .installed
+                .as_ref()
+                .filter(|installed| installed.command == path)
+                .and_then(|installed| installed.version.as_ref())
+                .or_else(|| self.doctor.versions.get(path.to_string_lossy().as_ref())),
+            _ => None,
+        }?;
+        tileception_acp::local::older(version, &agent.version).then(|| ("Update available".into(), Tone::Quiet))
+    }
+
+    /// Under the chosen agent in the picker: which copy of it runs, from
+    /// `area`'s top. Returns the top of what follows.
+    fn layout_installations(&self, blocks: &mut Vec<Block>, agent: &Agent, area: Rect) -> f64 {
+        let (left, width, mut top) = (area.x + 20.0, area.w - 20.0, area.y);
+        let effective = self.effective_installation(agent);
+        if let Effective::Configured(_) = effective {
+            let text = "Started by the command in your config, under [wizard.agents]. Remove it there to choose a \
+                        copy here.";
+            let height = self.measure_text(text, self.note_style(), width - 24.0).1;
+            blocks.push(Block::Note {
+                rect: Rect::new(left + 12.0, top, width - 24.0, height + 12.0),
+                text: text.into(),
+            });
+            return top + height + 12.0 + GAP;
+        }
+        let wizard = match (&agent.launch, self.doctor.kept.get(&agent.agent_id)) {
+            (tileception_acp::Launch::Binary { .. }, Some(version)) if *version == agent.version => {
+                format!("Downloaded {version}, kept up to date by Wizard")
+            }
+            (tileception_acp::Launch::Binary { .. }, Some(version)) => {
+                format!("Downloaded {version}; Wizard fetches {} when it next starts", agent.version)
+            }
+            (tileception_acp::Launch::Binary { .. }, None) => {
+                format!("Downloads {} from the ACP Registry", agent.version)
+            }
+            (tileception_acp::Launch::Npx { package, .. }, _) => format!("Runs {package} with npx"),
+            (tileception_acp::Launch::Uvx { package, .. }, _) => format!("Runs {package} with uvx"),
+        };
+        let own = match &effective {
+            Effective::Use(Installation::Own(path)) | Effective::Ask(path) => Some(path.clone()),
+            _ => agent.installed.as_ref().map(|installed| installed.command.clone()),
+        };
+        let custom = match self.doctor.installations.get(&agent.agent_id) {
+            Some(Installation::Custom(path)) => tilde(path),
+            _ => "Type the path of the program to run".into(),
+        };
+        let mut rows = vec![(
+            "Wizard's copy".to_string(),
+            wizard,
+            self.doctor.missing_download.get(&agent.agent_id).cloned(),
+            Hit::Install(Installation::Wizard),
+            effective == Effective::Use(Installation::Wizard),
+        )];
+        if let Some(path) = own {
+            let version = agent
+                .installed
+                .as_ref()
+                .filter(|installed| installed.command == path)
+                .and_then(|installed| installed.version.clone())
+                .or_else(|| self.doctor.versions.get(path.to_string_lossy().as_ref()).cloned());
+            let detail = match version {
+                Some(version) => format!("{version}: {}", tilde(&path)),
+                None => tilde(&path),
+            };
+            let current = effective == Effective::Use(Installation::Own(path.clone()));
+            rows.push(("Installed copy".into(), detail, None, Hit::Install(Installation::Own(path)), current));
+        }
+        let custom_current = matches!(effective, Effective::Use(Installation::Custom(_)));
+        rows.push(("Another program".into(), custom, None, Hit::ChoosePath, custom_current));
+        for (title, detail, missing, hit, current) in rows {
+            blocks.push(Block::Row {
+                rect: Rect::new(left, top, width, ROW_H),
+                title,
+                detail,
+                hit: missing.is_none().then_some(hit),
+                note: missing,
+                status: None,
+                current,
+            });
+            top += ROW_H + 4.0;
+        }
+        top + 4.0
+    }
+
+    /// How an agent starts: the config's command, else the copy the user
+    /// chose, else an installed copy (asking first about one found only by
+    /// name), else the registry's.
+    fn effective_installation(&self, agent: &Agent) -> Effective {
+        let env = match &agent.launch {
+            tileception_acp::Launch::Npx { env, .. }
+            | tileception_acp::Launch::Uvx { env, .. }
+            | tileception_acp::Launch::Binary { env, .. } => env,
+        };
+        if let Some(program) = self.config.file.doctor.program(&agent.agent_id, env) {
+            return Effective::Configured(program);
+        }
+        match self.doctor.installations.get(&agent.agent_id) {
+            // A copy that is gone, or a desktop app chosen before Wizard
+            // knew them, is chosen again.
+            Some(Installation::Own(path)) if !runnable_agent(path) => {}
+            Some(installation) => return Effective::Use(installation.clone()),
+            None => {}
+        }
+        match &agent.installed {
+            Some(installed) if installed.matched == tileception_acp::local::Match::Package => {
+                Effective::Use(Installation::Own(installed.command.clone()))
+            }
+            Some(installed) => Effective::Ask(installed.command.clone()),
+            None => Effective::Use(Installation::Wizard),
+        }
     }
 
     fn chosen_agent(&self) -> Option<Agent> {
@@ -1414,27 +1695,28 @@ impl Tileception {
         if agent.is_none() && test_agent.is_none() {
             return;
         }
-        let configured = agent.as_ref().and_then(|agent| {
-            let env = match &agent.launch {
-                tileception_acp::Launch::Npx { env, .. }
-                | tileception_acp::Launch::Uvx { env, .. }
-                | tileception_acp::Launch::Binary { env, .. } => env,
-            };
-            self.config.file.doctor.program(&agent.agent_id, env)
-        });
-        // A program found only by name may be another one: the user says once.
+        let mut configured = None;
         if test_agent.is_none()
-            && configured.is_none()
             && let Some(agent) = &mut agent
-            && let Some(installed) = &agent.installed
-            && installed.matched == tileception_acp::local::Match::Name
         {
-            let path = installed.command.clone();
-            if self.doctor.skip_installed.get(&agent.agent_id) == Some(&path) {
-                agent.installed = None;
-            } else if self.doctor.use_installed.get(&agent.agent_id) != Some(&path) {
-                self.doctor.unconfirmed = Some(Unconfirmed { agent_id: agent.agent_id.clone(), path });
-                return;
+            match self.effective_installation(agent) {
+                Effective::Configured(program) => configured = Some(program),
+                // A program found only by name may be another one: the user says once.
+                Effective::Ask(path) => {
+                    self.doctor.unconfirmed = Some(Unconfirmed { agent_id: agent.agent_id.clone(), path });
+                    return;
+                }
+                Effective::Use(Installation::Wizard) => agent.installed = None,
+                Effective::Use(Installation::Own(path) | Installation::Custom(path)) => {
+                    if agent.installed.as_ref().is_none_or(|installed| installed.command != path) {
+                        agent.installed = Some(tileception_acp::local::Installed {
+                            command: path,
+                            prefix: Vec::new(),
+                            version: None,
+                            matched: tileception_acp::local::Match::Name,
+                        });
+                    }
+                }
             }
         }
         self.doctor.unconfirmed = None;
@@ -1521,15 +1803,61 @@ impl Tileception {
 
     fn pick_agent(&mut self, agent_id: String) {
         if self.doctor.agent.as_ref() != Some(&agent_id) {
+            // A path being typed was for the agent before.
+            self.doctor.end_path_entry();
             self.doctor.discard_session();
             self.doctor.unconfirmed = None;
             self.doctor.busy = false;
             self.doctor.agent = Some(agent_id);
             self.save_doctor();
         }
-        self.doctor.view = View::Conversation;
-        self.doctor.scroll = 0.0;
+        self.doctor.show(View::Conversation);
         self.ensure_session();
+    }
+
+    /// Runs another copy of the chosen agent, starting it again.
+    fn choose_installation(&mut self, installation: Installation) {
+        let Some(agent_id) = self.doctor.agent.clone() else { return };
+        self.doctor.unconfirmed = None;
+        let changed = self.doctor.installations.get(&agent_id) != Some(&installation);
+        if changed {
+            self.doctor.installations.insert(agent_id, installation);
+            self.save_doctor();
+            self.doctor.discard_session();
+            self.doctor.busy = false;
+        }
+        self.doctor.show(View::Conversation);
+        self.doctor.end_path_entry();
+        self.ensure_session();
+    }
+
+    /// The path typed in the message field: the program to run as the
+    /// chosen agent, when it can run.
+    fn path_entered(&mut self) {
+        let typed = self.doctor.input.text.trim().to_string();
+        if typed.is_empty() {
+            return;
+        }
+        let path = expand_home(&typed);
+        let error = if !path.is_absolute() {
+            Some(format!("Type the whole path, starting with / or ~/, not {typed}."))
+        } else if !path.is_file() {
+            Some(format!("There is no program at {typed}."))
+        } else if tileception_acp::local::desktop_app(&path) {
+            Some(format!("{typed} is a desktop app, not an agent for the terminal."))
+        } else if !runnable_agent(&path) {
+            Some(format!("{typed} cannot be run: it is not marked as a program."))
+        } else {
+            None
+        };
+        match error {
+            Some(error) => {
+                if let Some(entry) = &mut self.doctor.path_entry {
+                    entry.error = Some(error);
+                }
+            }
+            None => self.choose_installation(Installation::Custom(path)),
+        }
     }
 
     fn send_to_doctor(&mut self, text: String) {
@@ -1575,7 +1903,7 @@ impl Tileception {
             return false;
         }
         if self.doctor.agent.is_none() && test_agent().is_none() {
-            self.doctor.view = View::Picker;
+            self.doctor.show(View::Picker);
             self.doctor.messages.push(Message::Note("Choose an agent first.".into()));
             return false;
         }
@@ -1604,7 +1932,7 @@ impl Tileception {
         if !shown.is_empty() {
             self.doctor.messages.push(Message::User(shown));
         }
-        self.doctor.view = View::Conversation;
+        self.doctor.show(View::Conversation);
         self.doctor.scroll = 0.0;
         attachments
     }
@@ -1761,12 +2089,30 @@ impl Tileception {
                 if let (Ok(agents), Some(agent_id), None) = (&result, &doctor.agent, &doctor.session)
                     && !agents.iter().any(|agent| &agent.agent_id == agent_id)
                 {
-                    doctor.view = View::Picker;
+                    doctor.show(View::Picker);
                 }
                 doctor.missing = match &result {
                     Ok(agents) => {
                         agents.iter().filter_map(|agent| Some((agent.agent_id.clone(), agent.missing()?))).collect()
                     }
+                    Err(_) => Default::default(),
+                };
+                // The registry's own copy, whatever else is installed.
+                let download = |agent: &Agent| Agent { installed: None, ..agent.clone() };
+                doctor.missing_download = match &result {
+                    Ok(agents) => agents
+                        .iter()
+                        .filter_map(|agent| Some((agent.agent_id.clone(), download(agent).missing()?)))
+                        .collect(),
+                    Err(_) => Default::default(),
+                };
+                doctor.kept = match &result {
+                    Ok(agents) => agents
+                        .iter()
+                        .filter_map(|agent| {
+                            Some((agent.agent_id.clone(), tileception_acp::install::kept_version(agent)?))
+                        })
+                        .collect(),
                     Err(_) => Default::default(),
                 };
                 doctor.registry = Some(result);
@@ -1805,7 +2151,15 @@ impl Tileception {
                     }
                     _ => {}
                 }
+                let ready = matches!(status, Status::Ready);
                 doctor.status = status;
+                // Wizard's copy may have just been downloaded or updated.
+                if ready && let Some(agent) = self.chosen_agent() {
+                    match tileception_acp::install::kept_version(&agent) {
+                        Some(version) => self.doctor.kept.insert(agent.agent_id, version),
+                        None => self.doctor.kept.remove(&agent.agent_id),
+                    };
+                }
             }
             // Late text from a turn stopped for a typed message belongs
             // before that message.
@@ -2363,8 +2717,9 @@ impl Tileception {
             agent: self.doctor.agent.clone(),
             mode: self.doctor.mode,
             models: self.doctor.models.clone(),
-            use_installed: self.doctor.use_installed.clone(),
-            skip_installed: self.doctor.skip_installed.clone(),
+            installations: self.doctor.installations.clone(),
+            use_installed: Default::default(),
+            skip_installed: Default::default(),
             versions: self.doctor.versions.clone(),
             window: self.doctor.windowed,
             float: self.doctor.float.map(|rect| [rect.x, rect.y, rect.w, rect.h]),
@@ -2485,21 +2840,25 @@ impl Tileception {
         }
         // Over to the question's buttons, or a view's rows, above the field.
         let question = focusables.iter().any(|hit| matches!(hit, Hit::Answer(..)));
-        if let Some(place) = focus_entry(sym, mods, self.doctor.input.text.is_empty(), focusables.len(), question) {
+        // The picker's list belongs to its search, so the arrows always reach it.
+        let picker = self.doctor.view == View::Picker;
+        let field_empty = picker || self.doctor.input.text.is_empty();
+        if let Some(place) = focus_entry(sym, mods, field_empty, focusables.len(), question) {
             self.doctor.focus = Some(focusables[place].clone());
             self.reveal_doctor_focus();
             return self.doctor_changed();
         }
         let redirects = self.doctor_redirects();
+        let searched = picker.then(|| self.doctor.input.text.clone());
         let input = &mut self.doctor.input;
         match sym {
             keysyms::KEY_Escape if self.doctor.secret.is_some() => {
                 self.doctor.secret = None;
                 input.clear();
             }
-            keysyms::KEY_Escape if self.doctor.view == View::Picker && self.doctor.agent.is_some() => {
-                self.doctor.view = View::Conversation;
-            }
+            keysyms::KEY_Escape if self.doctor.path_entry.is_some() && !picker => self.doctor_hit(Hit::CancelPath),
+            keysyms::KEY_Escape if picker && !input.text.is_empty() => input.clear(),
+            keysyms::KEY_Escape if picker && self.doctor.agent.is_some() => self.doctor.show(View::Conversation),
             keysyms::KEY_Escape => self.close_doctor(),
             _ if mods.ctrl
                 && matches!(sym, keysyms::KEY_c | keysyms::KEY_C)
@@ -2508,6 +2867,13 @@ impl Tileception {
             {
                 self.doctor_hit(Hit::Stop);
             }
+            // The first agent the search found.
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter if picker => {
+                if let Some(hit) = focusables.first().cloned() {
+                    self.doctor_hit(hit);
+                }
+            }
+            keysyms::KEY_Return | keysyms::KEY_KP_Enter if self.doctor.path_entry.is_some() => self.path_entered(),
             keysyms::KEY_Return | keysyms::KEY_KP_Enter if self.doctor.secret.is_some() => {
                 let value = input.text.trim().to_string();
                 input.clear();
@@ -2535,6 +2901,10 @@ impl Tileception {
                 let key = input.key(&mut self.doctor.compose, sym, mods);
                 self.field_clipboard(key.clipboard, Paste::Doctor);
             }
+        }
+        // A new search starts at the top of the list.
+        if searched.is_some_and(|before| self.doctor.view == View::Picker && before != self.doctor.input.text) {
+            self.doctor.scroll = 0.0;
         }
         self.doctor.menu_selected = 0;
         self.doctor_changed();
@@ -2640,7 +3010,7 @@ impl Tileception {
     /// A message typed while a question is open goes instead of an answer.
     fn doctor_redirects(&self) -> bool {
         let text = self.doctor.input.text.trim();
-        if self.doctor.secret.is_some() {
+        if self.doctor.secret.is_some() || self.doctor.path_entry.is_some() || self.doctor.view == View::Picker {
             return false;
         }
         if self.pending_form_question() {
@@ -3163,27 +3533,31 @@ impl Tileception {
     fn doctor_hit(&mut self, hit: Hit) {
         match hit {
             Hit::Pick(agent_id) => self.pick_agent(agent_id),
-            Hit::UseInstalled(choice) => {
-                if let Some(Unconfirmed { agent_id, path }) = self.doctor.unconfirmed.take() {
-                    let (chosen, other) = if choice {
-                        (&mut self.doctor.use_installed, &mut self.doctor.skip_installed)
-                    } else {
-                        (&mut self.doctor.skip_installed, &mut self.doctor.use_installed)
-                    };
-                    other.remove(&agent_id);
-                    chosen.insert(agent_id, path);
-                    self.save_doctor();
-                    self.ensure_session();
+            Hit::Install(installation) => self.choose_installation(installation),
+            Hit::ChoosePath => {
+                let custom = self.doctor.agent.as_ref().and_then(|agent_id| self.doctor.installations.get(agent_id));
+                let typed = match custom {
+                    Some(Installation::Custom(path)) => Some(tilde(path)),
+                    _ => None,
+                };
+                self.doctor.show(View::Conversation);
+                if self.doctor.path_entry.is_none() {
+                    let draft = std::mem::take(&mut self.doctor.input);
+                    self.doctor.path_entry = Some(PathEntry { error: None, draft });
+                }
+                self.doctor.input.clear();
+                if let Some(path) = typed {
+                    self.doctor.input.insert(&path);
                 }
             }
+            Hit::CancelPath => self.doctor.end_path_entry(),
             Hit::OpenPicker => {
-                self.doctor.view = View::Picker;
-                self.doctor.scroll = 0.0;
+                self.doctor.show(View::Picker);
                 if self.doctor.registry.as_ref().is_none_or(|registry| registry.is_err()) && !self.doctor.loading {
                     self.load_registry(false);
                 }
             }
-            Hit::ClosePicker if self.doctor.agent.is_some() => self.doctor.view = View::Conversation,
+            Hit::ClosePicker if self.doctor.agent.is_some() => self.doctor.show(View::Conversation),
             Hit::ClosePicker => {}
             Hit::ReloadRegistry => self.load_registry(true),
             Hit::Update(index) => self.update_agent(index),
@@ -3583,6 +3957,8 @@ impl Tileception {
     fn suggestions(&self) -> Vec<Suggestion> {
         let text = &self.doctor.input.text;
         if self.doctor.secret.is_some()
+            || self.doctor.path_entry.is_some()
+            || self.doctor.view == View::Picker
             || self.pending_form_question()
             || !text.starts_with('/')
             || text.contains(char::is_whitespace)
@@ -3693,6 +4069,7 @@ impl Tileception {
     /// A login, a key being typed or a login in progress is on screen.
     fn login_showing(&self) -> bool {
         self.doctor.unconfirmed.is_some()
+            || self.doctor.path_entry.is_some()
             || self.doctor.secret.is_some()
             || matches!(self.doctor.status, Status::NeedsLogin(_) | Status::LoggingIn { .. })
     }
@@ -3799,9 +4176,6 @@ impl Tileception {
             *top += height + 12.0 + GAP;
         };
         if self.doctor.view == View::Picker {
-            blocks
-                .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "CHOOSE AN AGENT".into() });
-            top += 28.0;
             match &self.doctor.registry {
                 None => push_note(&mut blocks, &mut top, "Loading the ACP Registry\u{2026}"),
                 Some(Err(error)) => {
@@ -3814,24 +4188,45 @@ impl Tileception {
                     });
                 }
                 Some(Ok(agents)) => {
-                    for agent in agents {
-                        let missing = self.doctor.missing.get(&agent.agent_id).cloned();
-                        let detail = self.agent_source(agent).unwrap_or_else(|| {
-                            if agent.description.is_empty() {
-                                agent.kind().to_string()
-                            } else {
-                                agent.description.clone()
+                    let search = self.doctor.input.text.trim();
+                    let groups = picker_groups(
+                        agents,
+                        search,
+                        |agent| self.agent_set_up(agent),
+                        |agent| agent.installed.is_some() || self.doctor.kept.contains_key(&agent.agent_id),
+                    );
+                    if groups.iter().all(|(_, agents)| agents.is_empty()) {
+                        push_note(&mut blocks, &mut top, &format!("No agent is called \u{201c}{search}\u{201d}."));
+                    }
+                    for (group, agents) in groups.into_iter().filter(|(_, agents)| !agents.is_empty()) {
+                        blocks
+                            .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: group.into() });
+                        top += 28.0;
+                        for agent in agents {
+                            let missing = self.doctor.missing.get(&agent.agent_id).cloned();
+                            let detail = self.agent_source(agent).unwrap_or_else(|| {
+                                if agent.description.is_empty() {
+                                    agent.kind().to_string()
+                                } else {
+                                    agent.description.clone()
+                                }
+                            });
+                            let current = self.doctor.agent.as_ref() == Some(&agent.agent_id);
+                            blocks.push(Block::Row {
+                                rect: Rect::new(left, top, width, ROW_H),
+                                title: agent.name.clone(),
+                                detail,
+                                note: missing.clone(),
+                                status: self.agent_status(agent),
+                                hit: missing.is_none().then(|| Hit::Pick(agent.agent_id.clone())),
+                                current,
+                            });
+                            top += ROW_H + 4.0;
+                            if current {
+                                top = self.layout_installations(&mut blocks, agent, Rect::new(left, top, width, 0.0));
                             }
-                        });
-                        blocks.push(Block::Row {
-                            rect: Rect::new(left, top, width, ROW_H),
-                            title: agent.name.clone(),
-                            detail,
-                            note: missing.clone(),
-                            hit: missing.is_none().then(|| Hit::Pick(agent.agent_id.clone())),
-                            current: self.doctor.agent.as_ref() == Some(&agent.agent_id),
-                        });
-                        top += ROW_H + 4.0;
+                        }
+                        top += GAP;
                     }
                     push_note(&mut blocks, &mut top, "From the official ACP Registry. Agents bring their own login.");
                 }
@@ -3858,7 +4253,31 @@ impl Tileception {
             });
             *top += BUTTON_H + 2.0 * GAP;
         };
-        if let Some(Unconfirmed { agent_id, path }) = &self.doctor.unconfirmed {
+        if let Some(entry) = &self.doctor.path_entry {
+            let agent = self.chosen_agent();
+            let name = agent.as_ref().map_or("the agent", |agent| agent.name.as_str());
+            blocks
+                .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "ANOTHER PROGRAM".into() });
+            top += 28.0;
+            let args = agent.as_ref().map(launch_args).unwrap_or_default();
+            let with =
+                if args.is_empty() { String::new() } else { format!(" Wizard starts it with: {}.", args.join(" ")) };
+            push_note(
+                &mut blocks,
+                &mut top,
+                &format!("Type the path of the program that runs {name} into the field below and press Enter.{with}"),
+            );
+            if let Some(error) = &entry.error {
+                push_note(&mut blocks, &mut top, error);
+            }
+            blocks.push(Block::Button {
+                rect: Rect::new(left + width / 2.0 - 56.0, top, 112.0, BUTTON_H),
+                label: "Cancel".into(),
+                hit: Some(Hit::CancelPath),
+                primary: false,
+            });
+            top += BUTTON_H + 2.0 * GAP;
+        } else if let Some(Unconfirmed { agent_id, path }) = &self.doctor.unconfirmed {
             let name = self.chosen_agent().map_or_else(|| agent_id.clone(), |agent| agent.name);
             blocks
                 .push(Block::Heading { rect: Rect::new(left + 4.0, top, width, 24.0), text: "INSTALLED AGENT".into() });
@@ -3867,16 +4286,22 @@ impl Tileception {
                 format!("{} is on this computer. Is it {name}? Another program can have the same name.", tilde(path));
             push_note(&mut blocks, &mut top, &text);
             let version = self.chosen_agent().map(|agent| agent.version).unwrap_or_default();
-            for (title, detail, choice) in [
-                ("Use the installed one".to_string(), tilde(path), true),
-                (format!("Download {name} {version}"), "From the ACP Registry, kept by Tileception".into(), false),
+            for (title, detail, hit) in [
+                ("Use the installed one".to_string(), tilde(path), Hit::Install(Installation::Own(path.clone()))),
+                (
+                    format!("Download {name} {version}"),
+                    "From the ACP Registry, kept by Tileception".into(),
+                    Hit::Install(Installation::Wizard),
+                ),
+                ("Another program".to_string(), "Type the path of the program to run".into(), Hit::ChoosePath),
             ] {
                 blocks.push(Block::Row {
                     rect: Rect::new(left, top, width, ROW_H),
                     title,
                     detail,
                     note: None,
-                    hit: Some(Hit::UseInstalled(choice)),
+                    status: None,
+                    hit: Some(hit),
                     current: false,
                 });
                 top += ROW_H + 4.0;
@@ -3917,6 +4342,7 @@ impl Tileception {
                     title: name.clone(),
                     detail,
                     note: None,
+                    status: None,
                     hit: Some(Hit::Login(method_id.clone())),
                     current: false,
                 });
@@ -3941,6 +4367,7 @@ impl Tileception {
                     title: (*example).into(),
                     detail: String::new(),
                     note: None,
+                    status: None,
                     hit: Some(Hit::Example(index)),
                     current: false,
                 });
@@ -4386,6 +4813,8 @@ impl Tileception {
         if input.text.is_empty() {
             let hint = match secret {
                 Some(label) => format!("Paste the {label}"),
+                None if self.doctor.view == View::Picker => "Search agents".into(),
+                None if self.doctor.path_entry.is_some() => "Path to the program, such as ~/.local/bin/agent".into(),
                 None if self.pending_form_question() => "Or type your answer".into(),
                 None if self.pending_ask().is_some() => "Or say what to do instead".into(),
                 None if self.doctor.busy => "Answering...".into(),
@@ -4440,8 +4869,14 @@ impl Tileception {
                 &[("Type", "Filter"), ("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Close")]
             } else if focus.as_ref().is_some_and(|hit| matches!(hit, Hit::Answer(..))) {
                 &[("Enter", "Choose"), ("\u{2190}\u{2192}", "Move"), ("Type", "Instead"), ("Esc", "Message")]
+            } else if focus.is_some() && self.doctor.view == View::Picker {
+                &[("Enter", "Choose"), ("\u{2191}\u{2193}", "Move"), ("Esc", "Search")]
             } else if focus.is_some() {
                 &[("Enter", "Choose"), ("\u{2191}\u{2193}", "Move"), ("Esc", "Message")]
+            } else if self.doctor.view == View::Picker {
+                &[("Type", "Search"), ("\u{2191}\u{2193}", "Choose"), ("Enter", "Pick"), ("Esc", "Back")]
+            } else if self.doctor.path_entry.is_some() {
+                &[("Enter", "Use"), ("Esc", "Cancel")]
             } else if self.doctor_redirects() {
                 &[("Enter", "Decline and send"), ("Shift+Tab", "Answer"), ("Esc", "Close")]
             } else if !self.suggestions().is_empty() {
@@ -4671,7 +5106,7 @@ impl Tileception {
             Block::Heading { rect, text } => {
                 painter.text(text, *rect, Style::new(theme.font_size * 0.85, theme.muted).bold());
             }
-            Block::Row { rect, title, detail, note, hit, current } => {
+            Block::Row { rect, title, detail, note, status, hit, current } => {
                 let hover = hit.is_some() && rect.contains(pointer);
                 let focused = hit.is_some() && hit.as_ref() == focus;
                 let fill = if *current {
@@ -4700,8 +5135,19 @@ impl Tileception {
                     );
                     return;
                 }
-                let note_w = note.as_ref().map_or(0.0, |note_text| {
-                    painter.measure(note_text, 200.0, Style::new(theme.font_size * 0.78, theme.warning)).0 + 12.0
+                // A status where there is no note, in its colour.
+                let badge = note.as_ref().map(|text| (text, theme.warning)).or_else(|| {
+                    status.as_ref().map(|(text, tone)| {
+                        let colour = match tone {
+                            Tone::Good => theme.accent,
+                            Tone::Quiet => theme.muted,
+                            Tone::Warning => theme.warning,
+                        };
+                        (text, colour)
+                    })
+                });
+                let note_w = badge.map_or(0.0, |(text, colour)| {
+                    painter.measure(text, 200.0, Style::new(theme.font_size * 0.78, colour)).0 + 12.0
                 });
                 painter.text(
                     title,
@@ -4713,9 +5159,9 @@ impl Tileception {
                     Rect::new(rect.x + 14.0, rect.y + 29.0, rect.w - 28.0, 18.0),
                     Style::new(theme.font_size * 0.9, theme.text.alpha(0.65)).lines(1),
                 );
-                if let Some(note) = note {
-                    let style = Style::new(theme.font_size * 0.78, theme.warning);
-                    painter.text(note, Rect::new(rect.right() - note_w - 2.0, rect.y + 8.0, note_w, 22.0), style);
+                if let Some((text, colour)) = badge {
+                    let style = Style::new(theme.font_size * 0.78, colour);
+                    painter.text(text, Rect::new(rect.right() - note_w - 2.0, rect.y + 8.0, note_w, 22.0), style);
                 }
             }
             Block::Button { rect, label, primary, hit } => {
@@ -5354,9 +5800,9 @@ mod tests {
             let hint = ask_hint(buttons, focused);
             assert!(hint.is_ascii(), "{hint}");
         }
-        assert!(ask_hint(3, true).contains("1-3 pick"));
-        assert!(ask_hint(12, true).contains("1-9 pick"));
-        assert!(ask_hint(1, true).contains("1 picks"));
+        assert!(ask_hint(3, true).contains("Enter or 1-3 to select"));
+        assert!(ask_hint(12, true).contains("Enter or 1-9 to select"));
+        assert!(ask_hint(1, true).contains("Enter or 1 to select"));
         assert!(ask_hint(2, false).contains("Shift+Tab"));
     }
 
@@ -5477,5 +5923,72 @@ mod tests {
         assert!(codex_config(Some("[]")).is_err());
         assert!(!is_opencode(Some("claude-acp")));
         assert!(!is_opencode(None));
+    }
+
+    fn registry_agent(agent_id: &str, name: &str) -> Agent {
+        Agent {
+            agent_id: agent_id.into(),
+            name: name.into(),
+            version: "1.0".into(),
+            description: String::new(),
+            icon: None,
+            launch: tileception_acp::Launch::Npx {
+                package: agent_id.into(),
+                args: Vec::new(),
+                env: Default::default(),
+            },
+            installed: None,
+        }
+    }
+
+    #[test]
+    fn picker_puts_set_up_and_installed_agents_first_and_searches_names() {
+        let agents = [
+            registry_agent("amp-acp", "Amp"),
+            registry_agent("claude-acp", "Claude Agent"),
+            registry_agent("opencode", "OpenCode"),
+            registry_agent("opencode-v2", "OpenCode V2"),
+        ];
+        let ids = |groups: [(&str, Vec<&Agent>); 3]| {
+            groups.map(|(_, agents)| agents.iter().map(|agent| agent.agent_id.as_str()).collect::<Vec<_>>().join(" "))
+        };
+        let set_up = |agent: &Agent| agent.agent_id == "opencode-v2";
+        let installed = |agent: &Agent| agent.agent_id.starts_with("opencode") || agent.agent_id == "claude-acp";
+        assert_eq!(
+            ids(picker_groups(&agents, "", set_up, installed)),
+            ["opencode-v2", "claude-acp opencode", "amp-acp"]
+        );
+        // By name or id, whatever the case.
+        assert_eq!(ids(picker_groups(&agents, " openCODE ", set_up, installed)), ["opencode-v2", "opencode", ""]);
+        assert_eq!(ids(picker_groups(&agents, "claude-acp", set_up, installed)), ["", "claude-acp", ""]);
+        assert_eq!(ids(picker_groups(&agents, "nothing", set_up, installed)), ["", "", ""]);
+    }
+
+    #[test]
+    fn earlier_answers_about_installed_copies_become_choices() {
+        let mut saved: Saved = toml::from_str(
+            "agent = \"opencode-v2\"\n\
+             [use_installed]\nopencode-v2 = \"/usr/bin/opencode\"\ngoose = \"/bin/goose\"\n\
+             [skip_installed]\ncline = \"/bin/cline\"\n\
+             [installations]\ngoose = \"wizard\"\n",
+        )
+        .unwrap();
+        let installations = saved.installations();
+        assert_eq!(installations["opencode-v2"], Installation::Own("/usr/bin/opencode".into()));
+        assert_eq!(installations["cline"], Installation::Wizard);
+        // A choice made since wins.
+        assert_eq!(installations["goose"], Installation::Wizard);
+        // Saved again, only the choices remain, and read back the same.
+        let mut again = Saved { installations: installations.clone(), ..Saved::default() };
+        let text = toml::to_string(&again).unwrap();
+        assert!(!text.contains("use_installed") && !text.contains("skip_installed"), "{text}");
+        again = toml::from_str(&text).unwrap();
+        assert_eq!(again.installations(), installations);
+        let custom = Saved {
+            installations: [("x".to_string(), Installation::Custom("/opt/x/agent".into()))].into(),
+            ..Saved::default()
+        };
+        let text = toml::to_string(&custom).unwrap();
+        assert_eq!(toml::from_str::<Saved>(&text).unwrap().installations, custom.installations);
     }
 }

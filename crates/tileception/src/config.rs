@@ -678,8 +678,9 @@ impl Tileception {
     pub fn reload_config(&mut self) -> Result<(), String> {
         let path = path();
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        // Not TOML at all: the config that is running stays.
-        let (config, problems) = Config::parse_lenient(&text)?;
+        // Not TOML at all: the config that is running stays, and an open
+        // Settings shows the file as it is, to be repaired there.
+        let (config, problems) = Config::parse_lenient(&text).inspect_err(|_| self.settings_config_changed(&text))?;
         let result = self.apply_config(config);
         // An open Settings follows the file, keeping what was edited there.
         self.settings_config_changed(&text);

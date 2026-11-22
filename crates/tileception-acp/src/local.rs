@@ -164,10 +164,36 @@ pub fn installed(launch: &Launch) -> Option<Installed> {
         Launch::Uvx { package, .. } => uv_tool(&uv_tools_dir(), package),
         Launch::Binary { cmd, .. } => {
             let name = Path::new(cmd).file_name()?.to_str()?;
-            let command = find(name)?;
+            let command = find_agent(search_path(), name)?;
             Some(Installed { command, prefix: Vec::new(), version: None, matched: Match::Name })
         }
     }
+}
+
+/// The first program named so that is not a desktop app. A desktop app
+/// often has its terminal tool's name (OpenCode's does), and started as an
+/// agent it opens a window or, without a display, stops.
+fn find_agent(dirs: &[PathBuf], program: &str) -> Option<PathBuf> {
+    if program.is_empty() || program.contains('/') {
+        return None;
+    }
+    dirs.iter().map(|dir| dir.join(program)).find(|path| executable(path) && !desktop_app(path))
+}
+
+/// Whether a program is a desktop app: an AppImage, or Electron or another
+/// Chromium shell, which keeps its `.pak` resources and sandbox helper next
+/// to the program it really runs.
+pub fn desktop_app(path: &Path) -> bool {
+    let mut head = [0u8; 11];
+    let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).unwrap_or(0);
+    // AppImages mark their ELF header: "AI" and the AppImage type.
+    if read == head.len() && head.starts_with(b"\x7fELF") && &head[8..10] == b"AI" {
+        return true;
+    }
+    let Some(dir) = std::fs::canonicalize(path).ok().and_then(|real| real.parent().map(Path::to_path_buf)) else {
+        return false;
+    };
+    ["resources.pak", "chrome-sandbox", "chrome_crashpad_handler"].iter().any(|marker| dir.join(marker).exists())
 }
 
 /// A package name without the version the registry pins it to.
@@ -430,6 +456,25 @@ mod tests {
         assert_eq!(find_in(&dirs, "opencode"), Some(dir.join("opencode")));
         assert_eq!(find_in(&dirs, "plain"), None);
         assert_eq!(find_in(&dirs, "../opencode"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn desktop_apps_are_not_agents() {
+        let dir = scratch("desktop");
+        // OpenCode Desktop: Electron, linked onto PATH under the tool's name.
+        write_program(&dir.join("app/ai.opencode"), "\x7fELF");
+        std::fs::write(dir.join("app/resources.pak"), "").expect("pak");
+        std::fs::create_dir_all(dir.join("bin")).expect("bin");
+        std::os::unix::fs::symlink(dir.join("app/ai.opencode"), dir.join("bin/opencode")).expect("link");
+        write_program(&dir.join("appimage/opencode"), "\x7fELF\x02\x01\x01\0AI\x02");
+        write_program(&dir.join("cli/opencode"), "#!/bin/sh\n");
+        assert!(desktop_app(&dir.join("bin/opencode")));
+        assert!(desktop_app(&dir.join("appimage/opencode")));
+        assert!(!desktop_app(&dir.join("cli/opencode")));
+        let dirs = [dir.join("bin"), dir.join("appimage"), dir.join("cli")];
+        assert_eq!(find_agent(&dirs, "opencode"), Some(dir.join("cli/opencode")));
+        assert_eq!(find_agent(&dirs[..2], "opencode"), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

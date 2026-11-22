@@ -704,7 +704,7 @@ impl Screen {
                 fields.push(Spec::key(
                     "passphrase",
                     "Shared passphrase",
-                    "Enter the same secret on both computers. Sharing does not listen without one.",
+                    "Use the same passphrase on both computers. Sharing stays off without one.",
                     Form::Secret,
                 ));
                 fields.push(Spec::key(

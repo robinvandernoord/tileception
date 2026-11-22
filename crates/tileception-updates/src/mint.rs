@@ -83,7 +83,7 @@ pub(crate) fn read(runner: &dyn Runner, files: &Files, unattended: automatic::Au
         match timer_matches(runner, true) {
             Ok(true) => true,
             Ok(false) => {
-                covers.push("Update Manager's switch is on but its timer needs repair; turn on to retry".into());
+                covers.push("Update Manager's timer needs repair. Turn on automatic updates here to retry.".into());
                 false
             }
             Err(error) => {

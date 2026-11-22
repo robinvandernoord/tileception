@@ -184,6 +184,12 @@ pub struct Card {
 }
 
 /// Someone's card, from AccountsService and the drop folder. Blocking.
+/// Only someone's shared wallpaper, without asking AccountsService for
+/// their colours: for reading it again at a new screen size.
+pub fn read_wallpaper(uid: u32, folder: &Path) -> Card {
+    Card { accent: None, wallpaper: trusted_wallpaper(folder, uid) }
+}
+
 pub fn read(login: &str, uid: u32, folder: &Path) -> Card {
     let accent = read_colours(login).unwrap_or_else(|error| {
         tracing::debug!("greeter card for {login}: {error}");

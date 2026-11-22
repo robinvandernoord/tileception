@@ -55,7 +55,10 @@ use crate::{Tileception, config::Mods, lock::LockState, text_input::SecretField,
 const DEMO_PASSWORD: &str = "tide";
 /// Someone's card as read: who (by index), the card, and their wallpaper
 /// decoded for the screen (RGBA, width, height).
-type FoundCard = (usize, card::Card, Option<(Vec<u8>, u32, u32)>);
+/// Someone's card, their wallpaper at the screen's size if wanted, whether
+/// only the wallpaper was read again (for a new screen size), and which
+/// read it came from.
+type FoundCard = (usize, card::Card, Option<(Vec<u8>, u32, u32)>, bool, u64);
 
 /// The greeter's log of its last run, `greeter.log` beside its memory file
 /// (normally /var/lib/tileception-greeter), started afresh each time. None
@@ -174,8 +177,18 @@ pub struct Greeter {
     switched_at: Instant,
     previous_user: usize,
     previous_accent: (Colour, Colour),
-    /// Shared wallpapers, by person, filling the screen.
-    wallpapers: HashMap<usize, MemoryRenderBuffer>,
+    /// Shared wallpapers, by person, each with its size in pixels: the
+    /// largest screen's, which a smaller screen shows the middle of.
+    wallpapers: HashMap<usize, (MemoryRenderBuffer, (i32, i32))>,
+    /// The size, in pixels, the shared wallpapers were read at: the
+    /// largest screen's. Read again when that changes.
+    wallpaper_size: (u32, u32),
+    /// The latest read of the cards: wallpapers from an earlier one, read
+    /// at a size since replaced, are not shown.
+    card_read: u64,
+    /// A read is under way: a new size waits for it to end, so sizes
+    /// passing by quickly do not each decode every wallpaper.
+    cards_busy: bool,
     /// Super went down with nothing else: letting go opens the launcher.
     super_tap: bool,
     /// Started without greetd: logging in only says what it would do.
@@ -264,6 +277,9 @@ impl Greeter {
             previous_user: user,
             previous_accent: (Colour::TRANSPARENT, Colour::TRANSPARENT),
             wallpapers: HashMap::new(),
+            wallpaper_size: (0, 0),
+            card_read: 0,
+            cards_busy: false,
             super_tap: false,
             demo: false,
             notice: None,
@@ -571,7 +587,7 @@ impl Tileception {
         self.greeter = Some(Box::new(greeter));
         self.lock = LockState::Greeter;
         self.apply_greeter_look();
-        self.read_greeter_cards(people, wallpapers);
+        self.read_greeter_cards(people, wallpapers, false);
         self.greeter_keyboard_layouts();
         self.greeter_person_keymap();
         self.force_keyboard_focus_sync();
@@ -581,26 +597,40 @@ impl Tileception {
 
     /// Reads everyone's card off the event loop: AccountsService may be slow
     /// to answer, and the login screen must not wait for it.
-    fn read_greeter_cards(&mut self, people: Vec<(usize, String, u32)>, wallpapers: bool) {
+    fn read_greeter_cards(&mut self, people: Vec<(usize, String, u32)>, wallpapers: bool, refit: bool) {
         use smithay::reexports::calloop::channel;
         let (sender, receiver) = channel::channel::<FoundCard>();
-        let inserted = self.loop_handle.insert_source(receiver, |event, _, state| {
-            if let channel::Event::Msg(found) = event {
-                state.greeter_card_read(found);
+        let inserted = self.loop_handle.insert_source(receiver, |event, _, state| match event {
+            channel::Event::Msg(found) => state.greeter_card_read(found),
+            // The read is over; a size that changed meanwhile is read next.
+            channel::Event::Closed => {
+                if let Some(greeter) = state.greeter.as_deref_mut() {
+                    greeter.cards_busy = false;
+                }
             }
         });
         if let Err(error) = inserted {
             tracing::warn!("greeter: cards not read: {error}");
             return;
         }
-        let screen = self.output_rect();
-        let size = ((screen.w * self.scale).round() as u32, (screen.h * self.scale).round() as u32);
+        // The screens may not be there yet, or change mode and scale later:
+        // read again at the new size then (greeter_refit_wallpapers).
+        let size = self.greeter_screen_pixels();
+        let mut read = 0;
+        if let Some(greeter) = self.greeter.as_deref_mut() {
+            greeter.wallpaper_size = size;
+            greeter.card_read += 1;
+            read = greeter.card_read;
+            greeter.cards_busy = true;
+        }
+        let wallpapers = wallpapers && size.0 > 0 && size.1 > 0;
         let spawned = std::thread::Builder::new().name("tileception-greeter-cards".into()).spawn(move || {
             let folder = card::folder();
             for (index, login, uid) in people {
-                let mut found = card::read(&login, uid, &folder);
+                let mut found =
+                    if refit { card::read_wallpaper(uid, &folder) } else { card::read(&login, uid, &folder) };
                 // A wallpaper but no colours: take them from the picture.
-                if found.accent.is_none() {
+                if found.accent.is_none() && !refit {
                     let small = found.wallpaper.as_deref().and_then(|file| card::decode(file, 96, 54));
                     found.accent = small.and_then(|rgba| card::accent_from(&rgba));
                 }
@@ -610,7 +640,7 @@ impl Tileception {
                     .filter(|_| wallpapers)
                     .and_then(|file| card::decode(file, size.0, size.1))
                     .map(|rgba| (rgba, size.0, size.1));
-                if sender.send((index, found, pixels)).is_err() {
+                if sender.send((index, found, pixels, refit, read)).is_err() {
                     break;
                 }
             }
@@ -620,10 +650,20 @@ impl Tileception {
         }
     }
 
-    fn greeter_card_read(&mut self, (index, found, pixels): FoundCard) {
+    fn greeter_card_read(&mut self, (index, found, pixels, refit, read): FoundCard) {
         let Some(greeter) = self.greeter.as_deref_mut() else { return };
+        // A wallpaper read at a size since replaced: a later read brings it.
+        let latest = read == greeter.card_read;
+        let pixels = pixels.filter(|_| latest);
+        // No longer shared: the picture shown from an earlier read goes too.
+        // So is one that no longer decodes when read again.
+        if latest && (found.wallpaper.is_none() || (refit && pixels.is_none())) {
+            greeter.wallpapers.remove(&index);
+        }
         let Some(account) = greeter.accounts.get_mut(index) else { return };
-        account.accent = found.accent;
+        if !refit {
+            account.accent = found.accent;
+        }
         if let Some((rgba, width, height)) = pixels {
             let buffer = MemoryRenderBuffer::from_slice(
                 &rgba,
@@ -633,9 +673,9 @@ impl Tileception {
                 smithay::utils::Transform::Normal,
                 None,
             );
-            greeter.wallpapers.insert(index, buffer);
+            greeter.wallpapers.insert(index, (buffer, (width as i32, height as i32)));
         }
-        if index == greeter.user {
+        if index == greeter.user && !refit {
             // Crossfade from the made-up accent to the shared one.
             greeter.previous_accent = (self.theme.accent, self.theme.accent_end);
             greeter.previous_user = index;
@@ -643,6 +683,43 @@ impl Tileception {
             self.apply_greeter_look();
         }
         self.schedule_render();
+    }
+
+    /// The largest screen's size in pixels, which shared wallpapers are read
+    /// at: a smaller screen shows part of it, never a corner of the screen
+    /// without it. `(0, 0)` before there is a screen.
+    fn greeter_screen_pixels(&self) -> (u32, u32) {
+        self.all_outputs()
+            .iter()
+            .filter_map(|output| {
+                // Turned on its side, a screen is as tall as its mode is wide.
+                let mode = output.current_mode()?;
+                Some(output.current_transform().transform_size(mode.size))
+            })
+            .map(|size| (size.w.max(0) as u32, size.h.max(0) as u32))
+            .fold((0, 0), |(width, height), (mode_width, mode_height)| (width.max(mode_width), height.max(mode_height)))
+    }
+
+    /// Reads shared wallpapers again when the screens' size changed since:
+    /// a screen that came up, or changed mode or scale, after the login
+    /// screen started.
+    pub(crate) fn greeter_refit_wallpapers(&mut self) {
+        let Some(greeter) = self.greeter.as_deref() else { return };
+        if !greeter.file.per_user.wallpaper || greeter.cards_busy {
+            return;
+        }
+        let size = self.greeter_screen_pixels();
+        if size == greeter.wallpaper_size || size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        let people: Vec<(usize, String, u32)> = greeter
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(index, account)| (index, account.login.clone(), account.uid))
+            .collect();
+        tracing::info!("greeter: shared wallpapers read again at {}x{}", size.0, size.1);
+        self.read_greeter_cards(people, true, true);
     }
 
     /// Publishes this session's look for the login screen, off the event loop.

@@ -135,6 +135,8 @@ pub enum Command {
     DoctorKey(u32, crate::config::Mods),
     /// Lets the rubber duck out, or puts it away.
     Duck,
+    /// Switches game mode for the focused window, or says whether it is on.
+    GameMode(crate::game::GameModeCommand),
     /// Opens a pre-filled GitHub issue in the browser, with this title.
     Feedback(String),
     /// A key pressed while the duck's question has the keyboard (not available as text).
@@ -200,6 +202,8 @@ Windows:
   cycle [next|prev]         focus the next or previous window
   float                     float the focused window above the layout, or dock it
   fullscreen                cover the screen with the focused window
+  game-mode [on|off|status] let Super keys reach the focused window (no
+                            argument toggles)
   minimize                  take the focused or selected windows out of the layout
   restore [window-id]       put the last minimized window (or this one) back
   show-minimized            slide out the strip of minimized windows for a moment
@@ -543,6 +547,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "snip" if rest.is_empty() => return Ok(Command::Capture),
         "snip" => return Err(format!("snip takes nothing, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
+        "game-mode" => return crate::game::parse(&args).map(Command::GameMode),
         "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
         "feedback" => return Ok(Command::Feedback(rest.to_string())),
         "quit" => Action::Quit,
@@ -719,6 +724,7 @@ impl Tileception {
                 return self.doctor_call_command(&token, plugin, tool, arguments);
             }
             Command::Duck => self.toggle_duck(),
+            Command::GameMode(command) => return self.game_mode_command(command),
             Command::Feedback(title) => self.send_feedback(&title),
             Command::FeedbackKey(sym, mods) => self.feedback_key(sym, mods),
             Command::DuckKey(sym, mods) => self.duck_key(sym, mods),
@@ -848,6 +854,8 @@ mod tests {
         assert_eq!(parse("do-not-disturb off"), Ok(Command::Action(Action::DoNotDisturb(Some(false)))));
         assert!(parse("do-not-disturb maybe").is_err());
         assert_eq!(parse("duck"), Ok(Command::Duck));
+        assert_eq!(parse("game-mode"), Ok(Command::GameMode(crate::game::GameModeCommand::Toggle)));
+        assert!(parse("game-mode maybe").is_err());
         assert_eq!(parse("feedback"), Ok(Command::Feedback(String::new())));
         assert_eq!(parse("feedback zoom is slow"), Ok(Command::Feedback("zoom is slow".into())));
         assert!(parse("duck duck goose").is_err());

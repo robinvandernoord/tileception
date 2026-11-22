@@ -52,6 +52,8 @@ desktop instead and sets up Tileception at the first start with a network.
   files, Text Editor, Loupe for images, Papers for documents, File Roller for
   archives, Showtime and VLC for video, Amberol for music, LibreOffice, and
   GNOME's calculator, calendar, clocks, weather, maps, disk and system tools.
+  Each is the default for its kind of file in Tileception sessions until you
+  choose another in Settings → Default apps.
 - Firefox and Vivaldi as debs from Mozilla's and Vivaldi's own repositories,
   and Thunderbird from Flathub.
 - GNOME Software for more apps, with Flathub.

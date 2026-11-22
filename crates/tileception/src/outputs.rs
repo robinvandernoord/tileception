@@ -194,6 +194,21 @@ struct Desktop {
     text: std::cell::RefCell<crate::text::Text>,
 }
 
+impl Outputs {
+    /// Keeps the captures waiting with screens not in use that `keep`
+    /// says to; returns how many it removed.
+    pub(crate) fn retain_parked_captures(&mut self, keep: impl Fn(&PendingCapture) -> bool) -> usize {
+        self.parked
+            .values_mut()
+            .map(|desktop| {
+                let before = desktop.captures.len();
+                desktop.captures.retain(&keep);
+                before - desktop.captures.len()
+            })
+            .sum()
+    }
+}
+
 impl Tileception {
     /// Includes connected but disabled monitors. Headless accepts custom modes
     /// within the same bounds as configuration validation.

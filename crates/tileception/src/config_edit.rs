@@ -245,7 +245,35 @@ pub fn apply_draft(changes: &[(&str, Option<toml::Value>, Option<toml::Value>)])
 
 /// The editable source, with its comments and section syntax intact.
 pub fn panel_text() -> Result<String, String> {
-    Ok(read(&crate::config::path())?.to_string())
+    snapshot(&crate::config::path())
+}
+
+/// The file as Settings compares it: as `read` gives it, or, when it is
+/// not TOML at all, as written, so it can still be repaired and saved.
+fn snapshot(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(snapshot_text(&text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(read(path)?.to_string()),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// A file's text as Settings keeps and compares it: under the current
+/// names (`shell.doctor` as `shell.wizard`), or as written when it is not
+/// TOML.
+pub fn snapshot_text(text: &str) -> String {
+    match text.parse::<DocumentMut>() {
+        Ok(mut doc) => {
+            use_current_names(&mut doc);
+            doc.to_string()
+        }
+        Err(_) => text.to_string(),
+    }
+}
+
+/// Whether `text` is TOML at all.
+pub fn is_toml(text: &str) -> bool {
+    text.parse::<DocumentMut>().is_ok()
 }
 
 /// Extract source items, preserving their comments and explicit values.
@@ -372,6 +400,14 @@ fn replace_root(doc: &mut DocumentMut, key: &str, value: Option<&toml::Value>) -
 
 /// Overlay controls on an editor draft, without writing to disk.
 pub fn draft_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result<String, String> {
+    let text = overlay_text(base, changes)?;
+    crate::config::Config::parse(&text)?;
+    Ok(text)
+}
+
+/// `draft_text` that keeps any mistakes the rest of the file has, to be
+/// fixed in an editor.
+pub fn overlay_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result<String, String> {
     let mut doc = parse(base)?;
     for (key, value) in changes {
         if let Some((section, name)) = key.split_once('.').map(|(section, name)| current_name(section, name)) {
@@ -398,14 +434,13 @@ pub fn draft_text(base: &str, changes: &[(&str, Option<toml::Value>)]) -> Result
             replace_root(&mut doc, key, value.as_ref())?;
         }
     }
-    crate::config::Config::parse(&doc.to_string())?;
     Ok(doc.to_string())
 }
 
 /// Full-document edits refuse concurrent changes rather than overwriting them.
 pub fn apply_document(before: &str, after: &str) -> Result<(), String> {
     let path = crate::config::path();
-    let current = read(&path)?.to_string();
+    let current = snapshot(&path)?;
     if current != before && current != after {
         return Err("config.toml changed outside Settings. Discard to reload it.".into());
     }
@@ -445,6 +480,14 @@ fn parse(text: &str) -> Result<DocumentMut, String> {
 /// Settings that were renamed are read under their old names too; anything
 /// written uses the new ones, so a file never ends up with both. `[doctor]`
 /// is now `[wizard]`, and `[shell] doctor` is `[shell] wizard`.
+/// A file's values under the current names (`shell.doctor` read as
+/// `shell.wizard`), as Settings writes them; `None` when it is not TOML.
+pub fn current_values(text: &str) -> Option<toml::Table> {
+    let mut doc: DocumentMut = text.parse().ok()?;
+    use_current_names(&mut doc);
+    toml::from_str(&doc.to_string()).ok()
+}
+
 fn use_current_names(doc: &mut DocumentMut) {
     if !doc.contains_key("wizard")
         && let Some(item) = doc.remove("doctor")
@@ -553,10 +596,18 @@ fn typed(like: Option<&Value>, text: &str, key: &str) -> Result<Value, String> {
 
 /// The section's table, made when the file has none.
 fn table<'a>(doc: &'a mut DocumentMut, section: &str) -> Result<&'a mut toml_edit::Table, String> {
-    doc.entry(section)
-        .or_insert_with(|| Item::Table(toml_edit::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| format!("[{section}] is not a table"))
+    let item = doc.entry(section).or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    // `theme = { radius = 12 }` takes a setting as `[theme]` does.
+    if let Some(inline) = item.as_inline_table() {
+        // A comment after it stays, after the section's heading.
+        let comment = inline.decor().suffix().cloned();
+        let mut converted = inline.clone().into_table();
+        if let Some(comment) = comment {
+            converted.decor_mut().set_suffix(comment);
+        }
+        *item = Item::Table(converted);
+    }
+    item.as_table_mut().ok_or_else(|| format!("[{section}] is not a table"))
 }
 
 /// Sets one value, keeping the comments around it. False when it already had it.
@@ -668,6 +719,35 @@ mod tests {
 
     fn doc(text: &str) -> DocumentMut {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn an_overlay_keeps_mistakes_for_the_editor() {
+        let base = "[general]\ngap = 12\n\n[theme]\nradius = \"big\"\n";
+        let changes = [("general.gap", Some(toml::Value::Integer(8)))];
+        assert!(draft_text(base, &changes).is_err());
+        let text = overlay_text(base, &changes).unwrap();
+        assert!(text.contains("gap = 8") && text.contains("radius = \"big\""), "{text}");
+    }
+
+    #[test]
+    fn a_setting_goes_into_an_inline_table() {
+        let changes = [("theme.radius", Some(toml::Value::Integer(14)))];
+        let text = overlay_text("theme = { radius = 12, font_size = 13 }\n", &changes).unwrap();
+        let parsed: toml::Table = toml::from_str(&text).unwrap();
+        let theme = parsed["theme"].as_table().unwrap();
+        assert_eq!((theme["radius"].as_integer(), theme["font_size"].as_integer()), (Some(14), Some(13)), "{text}");
+        // A comment after the inline table stays.
+        let text = overlay_text("theme = { radius = 12 } # keep this\n", &changes).unwrap();
+        assert!(text.contains("# keep this") && text.contains("radius = 14"), "{text}");
+        // Not a table at all: still refused, for the editor to repair.
+        assert!(overlay_text("theme = 5\n", &changes).is_err());
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_is_told_apart() {
+        assert!(is_toml("[theme]\nradius = 6\n"));
+        assert!(!is_toml("[theme\nradius = 6\n"));
     }
 
     #[test]

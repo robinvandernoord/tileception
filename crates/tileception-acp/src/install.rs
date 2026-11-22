@@ -69,6 +69,21 @@ pub fn program(agent: &Agent, report: &dyn Fn(&str)) -> Result<Program, String> 
     }
 }
 
+/// The version of the agent Tileception downloaded and keeps, if any: the
+/// one folder `program` left with the program in it.
+pub fn kept_version(agent: &Agent) -> Option<String> {
+    let Launch::Binary { cmd, .. } = &agent.launch else { return None };
+    kept_in(&crate::data_dir().join("agents").join(safe(&agent.agent_id)), cmd)
+}
+
+fn kept_in(dir: &Path, cmd: &str) -> Option<String> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let version = entry.file_name().into_string().ok()?;
+        let program = inside(&entry.path(), cmd).ok()?;
+        (!version.ends_with(".part") && program.is_file()).then_some(version)
+    })
+}
+
 /// Earlier versions of a downloaded agent, and downloads that never
 /// finished, next to the version now in `dir`.
 fn remove_other_versions(dir: &Path) {
@@ -204,6 +219,20 @@ mod tests {
         let program = program(&installed, &|_| {}).expect("installed agent");
         assert_eq!(program.command, PathBuf::from("/usr/bin/bun"));
         assert_eq!(program.args, ["--bun", "/g/x/cli.js", "-x"]);
+    }
+
+    #[test]
+    fn finds_the_kept_version() {
+        let agent = std::env::temp_dir().join(format!("tileception-acp-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&agent);
+        assert_eq!(kept_in(&agent, "./goose"), None);
+        std::fs::create_dir_all(agent.join("1.1.part")).expect("partial");
+        std::fs::write(agent.join("1.1.part/goose"), "").expect("partial program");
+        std::fs::create_dir_all(agent.join("1.0")).expect("empty version");
+        assert_eq!(kept_in(&agent, "./goose"), None);
+        std::fs::write(agent.join("1.0/goose"), "").expect("program");
+        assert_eq!(kept_in(&agent, "./goose").as_deref(), Some("1.0"));
+        let _ = std::fs::remove_dir_all(agent);
     }
 
     #[test]

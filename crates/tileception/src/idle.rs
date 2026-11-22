@@ -98,6 +98,7 @@ impl Tileception {
         };
         let inhibited = !self.is_locked()
             && (self.idle.bus_inhibitors.any()
+                || self.game_window().is_some()
                 || self.idle.inhibitors.iter().any(|surface| {
                     let mut root = surface.clone();
                     while let Some(parent) = get_parent(&root) {

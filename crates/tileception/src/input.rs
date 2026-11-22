@@ -274,6 +274,12 @@ impl Tileception {
 
     /// A key for this machine, from here or from another machine.
     pub(crate) fn deliver_key(&mut self, code: smithay::input::keyboard::Keycode, key_state: KeyState, time: u32) {
+        // Focus may have moved to a game in this same batch of events.
+        self.game_mode_refresh();
+        // Super+Caps Lock for game mode, before the keyboard state sees it.
+        if self.game_mode_chord(code, key_state == KeyState::Pressed) {
+            return;
+        }
         // The owner of another machine's window with the keyboard here learns
         // what the keys it may get are typed with, before this one changes it.
         if let Some(owner) = self.remote_keyboard_owner() {
@@ -285,6 +291,10 @@ impl Tileception {
         let keycode = code.raw();
         let mut modifier = false;
         let inhibited = self.shortcuts_inhibited();
+        let game = self.game_has_keys() && !self.panel_has_keys();
+        // The release of a key whose press Tileception kept: the program
+        // never saw it go down.
+        let kept_release = !pressed && self.kept_keys.remove(&keycode);
         let commands = keyboard.input::<Vec<Command>, _>(self, code, key_state, serial, time, |state, mods, handle| {
             let sym = handle.modified_sym().raw();
             let raw_sym = handle.raw_syms().first().map(|keysym| keysym.raw()).unwrap_or(sym);
@@ -320,6 +330,10 @@ impl Tileception {
                     }
                     return FilterResult::Intercept(Vec::new());
                 }
+                // A locker never saw the press of a key kept before it came.
+                if kept_release {
+                    return FilterResult::Intercept(Vec::new());
+                }
                 return FilterResult::Forward;
             }
             // Applications' global shortcuts, and the question for their keys,
@@ -336,6 +350,54 @@ impl Tileception {
                 state.shortcut_keys_pressed(trigger, types(sym), taken);
                 return FilterResult::Intercept(Vec::new());
             }
+            // An application's shortcut that went off before keeps its key
+            // until let go.
+            if (game || inhibited) && !pressed && state.holds_portal_key(keycode) {
+                state.portal_shortcut_key(keycode, trigger, false);
+                return FilterResult::Intercept(Vec::new());
+            }
+            if game {
+                // The game takes every key, Super ones included, except
+                // switching consoles, quitting and leaving game mode. Super
+                // on its own, or switching windows (Alt+Tab), shows how to
+                // leave.
+                let held = Mods::from_state(mods);
+                if let Some(command @ Command::Action(Action::Vt(_) | Action::Quit)) =
+                    builtin(held, sym, raw_sym, false)
+                    && pressed
+                {
+                    return FilterResult::Intercept(vec![command]);
+                }
+                let mut bound = held;
+                if state.nested && bound.alt && !bound.logo {
+                    bound.alt = false;
+                    bound.logo = true;
+                }
+                let commands = state.config.lookup(bound, raw_sym).or_else(|| state.config.lookup(bound, sym));
+                if pressed
+                    && let Some(commands) = commands
+                    && commands.iter().any(|command| matches!(command, Command::GameMode(_)))
+                {
+                    state.tap_armed = None;
+                    return FilterResult::Intercept(commands.to_vec());
+                }
+                let cycles = |commands: &[Command]| {
+                    commands.iter().any(|command| matches!(command, Command::Action(Action::Cycle(_))))
+                };
+                if pressed
+                    && (commands.is_some_and(cycles)
+                        || matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) && held.alt)
+                {
+                    state.show_game_toast();
+                }
+                if state.track_tap(pressed, raw_sym, held).is_some_and(|tap| tap.logo || (state.nested && tap.alt)) {
+                    state.show_game_toast();
+                }
+                if kept_release {
+                    return FilterResult::Intercept(Vec::new());
+                }
+                return FilterResult::Forward;
+            }
             if inhibited {
                 // The focused window takes every key (a virtual machine or a
                 // remote desktop), except switching consoles and quitting.
@@ -345,6 +407,9 @@ impl Tileception {
                     && pressed
                 {
                     return FilterResult::Intercept(vec![command]);
+                }
+                if kept_release {
+                    return FilterResult::Intercept(Vec::new());
                 }
                 return FilterResult::Forward;
             }
@@ -357,7 +422,7 @@ impl Tileception {
                 state.tap_fired = state.config.lookup(tap, TAP).map(<[Command]>::to_vec).unwrap_or_default();
             }
             if !pressed {
-                return FilterResult::Forward;
+                return if kept_release { FilterResult::Intercept(Vec::new()) } else { FilterResult::Forward };
             }
             let mut held = Mods::from_state(mods);
             // Unmodified, so Super+Shift+1 is "1" and not "!".
@@ -531,6 +596,8 @@ impl Tileception {
         });
         if commands.is_none() {
             self.key_to_owner(code, key_state);
+        } else if pressed {
+            self.kept_keys.insert(keycode);
         }
         let tapped = std::mem::take(&mut self.tap_fired);
         let mut commands = commands.unwrap_or_default();
@@ -970,6 +1037,14 @@ impl Tileception {
         // the release the browser keeps the button down, and the next click
         // only lets go of it.
         if state == ButtonState::Released && !self.draws_lock_screen() && self.release_owed_to_program(button) {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.button(self, &ButtonEvent { button, state, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
+        // A game's clicks are its own, with Super or the drag modifier held
+        // too: none of Tileception's window gestures.
+        if self.game_has_pointer() {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.button(self, &ButtonEvent { button, state, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -1433,6 +1508,10 @@ impl Tileception {
     /// Runs a binding like `Super+WheelUp`. Returns whether the scroll was
     /// taken: scrolling with a bound modifier never reaches the client.
     fn wheel_binding(&mut self, event: &AxisInput) -> bool {
+        // A game's scrolling is its own, with Super held too.
+        if self.game_has_pointer() {
+            return false;
+        }
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let mut held = Mods::from_state(&keyboard.modifier_state());
         if held == Mods::default() {

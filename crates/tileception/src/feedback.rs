@@ -924,7 +924,7 @@ impl Tileception {
                 format!("{} x {}, attached{doctor}", shot.size.0, shot.size.1)
             }
             Screenshot::Off => "Pick an area, draw on it, blur what is private".into(),
-            Screenshot::Dropped => "Removed: it showed the Wizard. Add it again".into(),
+            Screenshot::Dropped => "Screenshot removed because it included the Wizard. Add it again.".into(),
         };
         let width = (end - 8.0 - left).max(1.0);
         let half = rect.h / 2.0;

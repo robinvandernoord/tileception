@@ -39,7 +39,9 @@ mod duck;
 mod feedback;
 mod file_chooser;
 mod focus;
+mod frame_timing;
 mod frost;
+mod game;
 mod gestures;
 mod global_shortcuts;
 mod greeter;
@@ -314,6 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<Tileception> = Display::new()?;
     let mut state = Tileception::new(&mut event_loop, display, config, nested);
     state.init_idle();
+    crate::frame_timing::init(&mut state);
 
     if headless {
         headless::init(&mut event_loop, &mut state)?;
@@ -416,6 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Events for clients (keys above all) go out as soon as they are made,
     // not with the next frame.
     event_loop.run(None, &mut state, |state| {
+        state.game_mode_refresh();
         let _ = state.display_handle.flush_clients();
         state.flush_dashboard_clients();
     })?;
@@ -491,6 +495,8 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
     }
     state.start_greeter(file)?;
     event_loop.run(None, &mut state, |state| {
+        // A screen that came up, or changed mode, scale or rotation since.
+        state.greeter_refit_wallpapers();
         let _ = state.display_handle.flush_clients();
         state.flush_dashboard_clients();
     })?;

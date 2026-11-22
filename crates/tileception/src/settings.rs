@@ -17,6 +17,7 @@ mod home_page;
 mod interaction;
 mod keymap;
 mod network_page;
+mod overview;
 mod refresh;
 pub(crate) mod sections;
 
@@ -186,7 +187,7 @@ const FIELDS: &[Field] = &[
         0,
         "theme.colour_scheme",
         "Application appearance",
-        "The preference sent to applications.",
+        "Tell apps whether you prefer light or dark mode.",
         Control::Choice(&["dark", "light", "default"]),
     ),
     field(0, "theme.frost", "Frosted panels", "Translucent bar, menus and notifications.", Control::Toggle),
@@ -228,7 +229,7 @@ const FIELDS: &[Field] = &[
     field(
         1,
         "general.share_removed_space",
-        "Redistribute closed windows",
+        "Fill space left by closed windows",
         "Spread the space over the row when a window closes.",
         Control::Toggle,
     ),
@@ -287,7 +288,7 @@ const FIELDS: &[Field] = &[
         2,
         "shell.polkit",
         "Password prompt",
-        "Ask for the administrator's password when polkit wants one, or leave that to another agent.",
+        "Use Tileception's password prompt for polkit requests or let another agent handle them.",
         Control::Choice(&["builtin", "none"]),
     ),
     field(3, "keyboard.layout", "Keyboard layout", "Choose a layout and variant.", Control::Keyboard),
@@ -354,7 +355,7 @@ const FIELDS: &[Field] = &[
         4,
         "battery.power_saver_at",
         "Power saver at",
-        "Switch profiles at or below this charge.",
+        "Use Power Saver at or below this level while on battery.",
         Control::Number(0., 50., 1., "%"),
     ),
     field(
@@ -389,8 +390,8 @@ const FIELDS: &[Field] = &[
     field(
         6,
         "shell.lock",
-        "Locker",
-        "Built-in, off, or an external locker command.",
+        "Lock screen",
+        "Built-in, off, or an external lock screen command.",
         Control::Choice(&["builtin", "none"]),
     ),
     field(
@@ -404,7 +405,7 @@ const FIELDS: &[Field] = &[
         6,
         "lock.notifications",
         "Notifications when locked",
-        "On the built-in lock screen: none, a count, which apps, or what they say.",
+        "Choose what the lock screen shows: nothing, a count, app names or full notifications.",
         Control::Choice(&["none", "count", "apps", "full"]),
     ),
     field(6, "general.suspend_enabled", "Allow suspend", "Show suspend in the power menu.", Control::Toggle),
@@ -413,7 +414,7 @@ const FIELDS: &[Field] = &[
     field(
         7,
         "general.default_binds",
-        "Default shortcuts",
+        "Built-in shortcuts",
         "Include the built-in bindings; custom shortcuts override them.",
         Control::Toggle,
     ),
@@ -431,8 +432,8 @@ const FIELDS: &[Field] = &[
     field(
         0,
         "theme.wallpaper_interval",
-        "New picture",
-        "With a wallpaper folder: how often another picture is picked.",
+        "Change wallpaper every",
+        "Applies when you choose a wallpaper folder.",
         Control::Choice(&["", "15m", "30m", "1h", "3h", "1d"]),
     ),
     field(
@@ -913,9 +914,19 @@ fn level_parts(row: Rect) -> LevelParts {
     }
 }
 
+/// How the message about mistakes in config.toml starts.
+const PROBLEMS: &str = "Fix config.toml before applying";
+
+/// Why changes wait: config.toml is not TOML at all. A parse error runs
+/// over several lines, pointing at the spot; its first says enough.
+fn unreadable_message(error: &str) -> String {
+    let first = error.lines().next().unwrap_or(error).trim_end_matches(':');
+    format!("{PROBLEMS} (Edit config.toml): {first}")
+}
+
 /// Why changes wait: what is wrong in config.toml.
 fn problems_message(problems: &[crate::config::Problem]) -> String {
-    format!("Fix config.toml before applying (Edit config.toml): {}", crate::config::describe(problems))
+    format!("{PROBLEMS} (Edit config.toml): {}", crate::config::describe(problems))
 }
 
 /// What a path field's dropdown offers: the file chooser for each kind of
@@ -1114,19 +1125,43 @@ impl Settings {
     fn flag(&self, key: &str) -> bool {
         self.value(key).and_then(toml::Value::as_bool).unwrap_or(false)
     }
+
+    /// Whether the message reports mistakes in config.toml.
+    fn problems_shown(&self) -> bool {
+        self.error && self.message.starts_with(PROBLEMS)
+    }
+
+    /// Reports the mistakes in config.toml, or, when it has none, takes away
+    /// a report of earlier ones: a fixed file no longer holds Apply back.
+    fn show_problems(&mut self, problems: &[crate::config::Problem]) {
+        if !problems.is_empty() {
+            self.message = problems_message(problems);
+            self.error = true;
+        } else if self.problems_shown() {
+            self.message.clear();
+            self.error = false;
+        }
+    }
 }
 
 impl Tileception {
     fn settings_load(&mut self) -> Result<(), String> {
         let text = crate::config_edit::panel_text()?;
         // Mistakes in the file still open Settings, with what loaded; Apply
-        // waits until they are fixed (see `settings_document`).
-        let (config, problems) = crate::config::Config::parse_lenient(&text)?;
-        if !problems.is_empty() {
-            self.settings.message = problems_message(&problems);
-            self.settings.error = true;
-        }
-        let before = values(&config.file)?;
+        // waits until they are fixed (see `settings_document`). A file that
+        // is not TOML at all opens too, with the settings running now, to be
+        // repaired in the config.toml editor.
+        let before = match crate::config::Config::parse_lenient(&text) {
+            Ok((config, problems)) => {
+                self.settings.show_problems(&problems);
+                values(&config.file)?
+            }
+            Err(error) => {
+                self.settings.message = unreadable_message(&error);
+                self.settings.error = true;
+                values(&self.config.file)?
+            }
+        };
         let defaults = values(&ConfigFile::default())?;
         self.settings.draft = before.clone();
         self.settings.before = before;
@@ -1138,18 +1173,47 @@ impl Tileception {
     }
 
     fn settings_document(&self) -> Result<String, String> {
-        let (config, problems) = crate::config::Config::parse_lenient(&self.settings.document_draft)?;
+        let problems = crate::config::Config::parse_lenient(&self.settings.document_draft)?.1;
         if !problems.is_empty() {
             return Err(problems_message(&problems));
         }
-        let current = values(&config.file)?;
-        let changes: Vec<_> = FIELDS
+        let document = self.settings_document_as_is()?;
+        crate::config::Config::parse(&document)?;
+        Ok(document)
+    }
+
+    /// The whole file as the draft has it, mistakes and all: what the
+    /// config.toml editor shows, so that they can be fixed there.
+    fn settings_document_as_is(&self) -> Result<String, String> {
+        crate::config_edit::overlay_text(&self.settings.document_draft, &self.settings_pending_changes()?)
+    }
+
+    /// The settings changed with their controls but not yet in the draft
+    /// file, as (key, value).
+    pub(super) fn settings_pending_changes(&self) -> Result<Vec<(&'static str, Option<toml::Value>)>, String> {
+        // A draft that is not TOML: the controls show the settings running
+        // now, so their changes are what differs from those.
+        let current = match crate::config::Config::parse_lenient(&self.settings.document_draft) {
+            Ok((config, _)) => values(&config.file)?,
+            Err(_) => self.settings.before.clone(),
+        };
+        Ok(FIELDS
             .iter()
             .enumerate()
             .filter(|(index, _)| current[*index] != self.settings.draft[*index])
             .map(|(index, field)| (field.key, self.settings.draft[index].clone()))
-            .collect();
-        crate::config_edit::draft_text(&self.settings.document_draft, &changes)
+            .collect())
+    }
+
+    /// What the config.toml editor shows: the file with the controls'
+    /// changes laid over it, or, when the file is too broken for them to
+    /// go in (`theme = 5` under a changed `theme.radius`), the file as it is,
+    /// with `true`: the changes are laid over the repaired file afterwards.
+    pub(super) fn settings_editor_document(&self) -> (String, bool) {
+        match self.settings_document_as_is() {
+            Ok(document) => (document, false),
+            Err(_) => (self.settings.document_draft.clone(), true),
+        }
     }
 
     fn settings_after_save(&mut self) -> Result<(), String> {
@@ -1449,44 +1513,13 @@ impl Tileception {
         }
     }
 
-    /// Fill the client's shared-memory buffer. The scene then displays its
-    /// wl_surface normally, including in captures, previews and Overview.
+    /// Draws Settings' next frame through its client, which shows it like
+    /// any other window, including in captures, previews and Overview.
     fn render_settings_client(&self, renderer: &mut GlesRenderer) {
-        use smithay::{
-            backend::{
-                allocator::Fourcc,
-                renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
-            },
-            utils::{Rectangle, Transform},
-        };
         let Some(client) = &self.settings.client else { return };
-        let physical =
-            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
-        if !client.needs_frame(self.scale, physical) {
-            return;
-        }
-        let logical = (self.settings.size.0 as i32, self.settings.size.1 as i32);
-        let size =
-            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
-        let result = (|| -> Result<Vec<u8>, String> {
-            let elements = self.settings_elements(renderer);
-            let mut texture: GlesTexture =
-                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
-            {
-                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                // The elements are in physical pixels already, as on outputs.
-                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-                let result = damage
-                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
-                    .map_err(|error| format!("{error:?}"))?;
-                result.sync.wait().map_err(|error| format!("{error:?}"))?;
-            }
-            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
-        })();
-        match result {
-            Ok(pixels) => client.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
-            Err(error) => tracing::warn!("could not draw Settings client: {error}"),
-        }
+        self.render_client_window(renderer, client, self.settings.size, |state, renderer| {
+            state.settings_elements(renderer)
+        });
     }
 
     fn settings_frame(&self) -> Frame {
@@ -1547,38 +1580,8 @@ impl Tileception {
             frame.config = Some(Rect::new(content.x, body.bottom() - config_height - 12., content.w, config_height));
         }
         if self.settings.page.is_none() && self.settings.query.is_empty() {
-            let gap = 12.;
-            let col = (content.w - gap * 2.) / 3.;
             let top = frame.top;
-            let row = ((content.h - header - 40.) / 4.).clamp(150., 176.);
-            let short = (row * 0.85).max(150.);
-            let mut rects = [
-                Rect::new(content.x, top, col, row * 2. + gap),
-                Rect::new(content.x + col + gap, top, col, row),
-                Rect::new(content.x + 2. * (col + gap), top, col, row),
-                Rect::new(content.x + col + gap, top + row + gap, col * 2. + gap, row),
-                Rect::new(content.x, top + 2. * (row + gap), col, short),
-                Rect::new(content.x + col + gap, top + 2. * (row + gap), col, short),
-                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap), col, short),
-                Rect::new(content.x, top + 2. * (row + gap) + short + gap, col * 2. + gap, 150.),
-                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap) + short + gap, col, 150.),
-                Rect::new(content.x, top + 2. * (row + gap) + short + 162., content.w, 150.),
-            ];
-            if content.w < 700. {
-                let half = (content.w - gap) / 2.;
-                rects = [
-                    Rect::new(content.x, top, content.w, 300.),
-                    Rect::new(content.x, top + 312., half, 150.),
-                    Rect::new(content.x + half + gap, top + 312., half, 150.),
-                    Rect::new(content.x, top + 474., content.w, 150.),
-                    Rect::new(content.x, top + 636., half, 150.),
-                    Rect::new(content.x + half + gap, top + 636., half, 150.),
-                    Rect::new(content.x, top + 798., half, 150.),
-                    Rect::new(content.x + half + gap, top + 798., half, 150.),
-                    Rect::new(content.x, top + 960., content.w, 150.),
-                    Rect::new(content.x, top + 1122., content.w, 150.),
-                ];
-            }
+            let rects = overview::cards((content.x, top), content.w, content.h - header);
             let bottom = rects.iter().map(Rect::bottom).reduce(f64::max).unwrap_or(top);
             frame.max_scroll = (bottom - body.bottom() + 20.).max(0.);
             for (index, mut rect) in rects.into_iter().enumerate() {
@@ -2101,6 +2104,8 @@ impl Tileception {
                 self.settings.parked_editors.clear();
                 self.settings_discard_apps();
                 match self.settings_load() {
+                    // The file still has mistakes: that stays the message.
+                    Ok(()) if self.settings.problems_shown() => self.settings.focus = None,
                     Ok(()) => {
                         self.settings.message = "Draft discarded. Loaded current desktop settings.".into();
                         self.settings.error = false;
@@ -2115,14 +2120,20 @@ impl Tileception {
             Hit::Apply => {
                 if !self.settings.parked_sections.is_empty() {
                     self.settings.section = Some(self.settings.parked_sections.remove(0));
-                    self.settings.message = "Finish the saved screen draft before applying.".into();
+                    // A warning shown stays: it still holds.
+                    if !self.settings.error {
+                        self.settings.message = "Finish the saved screen draft before applying.".into();
+                    }
                     self.schedule_render();
                     return;
                 }
                 if !self.settings.parked_editors.is_empty() {
                     self.settings.editor = Some(self.settings.parked_editors.remove(0));
                     self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-                    self.settings.message = "Finish the saved editor draft before applying.".into();
+                    // A warning shown stays: it still holds.
+                    if !self.settings.error {
+                        self.settings.message = "Finish the saved editor draft before applying.".into();
+                    }
                     self.schedule_render();
                     return;
                 }
@@ -2150,6 +2161,8 @@ impl Tileception {
                         return;
                     }
                 }
+                // That read the draft of config.toml, so it has no mistakes now.
+                self.settings.show_problems(&[]);
                 let changes: Vec<_> = FIELDS
                     .iter()
                     .enumerate()
@@ -3067,7 +3080,7 @@ impl Tileception {
                 ("Status", if self.settings_home_ready() { self.settings_home_status() } else { "Not set up".into() }),
             ],
             6 => vec![
-                ("Locker", text("shell.lock", "Built-in")),
+                ("Lock screen", text("shell.lock", "Built-in")),
                 ("Suspend", if state.flag("general.suspend_enabled") { "Allowed" } else { "Hidden" }.into()),
                 ("Login screen look", switch("greeter.share")),
             ],

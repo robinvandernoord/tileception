@@ -665,9 +665,9 @@ impl Tileception {
             }
             painter.text(
                 if form.sensors || form.refresh {
-                    "Both options keep the Access Secret in your private device file, readable by you only."
+                    "Either option saves the Access Secret in your private device file."
                 } else {
-                    "The Access Secret is used for this connection only and is not kept."
+                    "The Access Secret is used once and then discarded."
                 },
                 Rect::new(layout.body.x, layout.body.y + 270., layout.body.w, 32.),
                 Style::new(11., theme.muted).lines(2),

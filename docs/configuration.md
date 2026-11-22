@@ -432,14 +432,27 @@ Use `tileception msg tree` to find application IDs for open windows.
 sets a floating window's width and height. You can also set `fullscreen = true`
 or `minimized = true` to open a window in that state.
 
+`game = true` marks a window as a game for [game mode](usage.md#game-mode),
+which then comes on by itself while the window is fullscreen or holds the
+pointer. `game = false` keeps game mode from coming on by itself for that
+window. Some games set no app ID, so match their `title` instead:
+
+```toml
+[[rules]]
+title = "Horizon"
+game = true
+```
+
 Every rule field is unset by default. A rule must specify `app_id` or `title`;
-leaving both unset is rejected. Unset `float` and `size` leave the application's
-request unchanged unless an earlier matching rule sets them. Unset `fullscreen`
-and `minimized` keep earlier matching rules' values; otherwise both are false.
-Set either explicitly to `false` to override an earlier matching rule.
+leaving both unset is rejected. Unset `float`, `size` and `game` leave the
+application's request (or Tileception's own guess) unchanged unless an earlier
+matching rule sets them. Unset `fullscreen` and `minimized` keep earlier
+matching rules' values; otherwise both are false. Set either explicitly to
+`false` to override an earlier matching rule.
 
 All matching rules apply in file order, with later values overriding earlier
-ones. Editing a rule affects newly opened windows.
+ones. Editing a rule affects newly opened windows; `game` also applies to
+windows that are already open.
 
 ## Clipboard
 

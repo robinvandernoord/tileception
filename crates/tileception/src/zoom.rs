@@ -127,7 +127,7 @@ impl Tileception {
 
     /// The presented area and where it shows, when the context screen
     /// presents one.
-    fn zoom_here(&self) -> Option<(Rect, Rect)> {
+    pub(crate) fn zoom_here(&self) -> Option<(Rect, Rect)> {
         let zoom = self.zoom.as_ref()?;
         if self.output.as_ref() != Some(&zoom.output) || self.is_locked() {
             return None;

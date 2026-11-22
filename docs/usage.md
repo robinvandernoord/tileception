@@ -244,22 +244,61 @@ Click a preview to restore the window to its previous place, or drag it out to
 choose a new position. **Super+Shift+H** restores the most recently minimized
 window.
 
+### Game mode
+
+In game mode, Tileception's own Super shortcuts step aside, so Super and
+every Super combination reach the game, including Super with the mouse wheel
+or a click, and dragging with Alt. A short notice at the top of the screen
+says when game mode comes on, and a struck-through one when it goes off.
+Alt+Tab goes to the game too, and does not switch windows. Pressing Super on
+its own, or Alt+Tab, shows the notice again.
+
+Game mode comes on by itself when you play a game, whichever launcher started
+it. The focused window must be a game and must be fullscreen or have taken the
+mouse pointer. Tileception counts a window as a game when:
+
+- it says it shows a game (the Wayland content type);
+- it runs under Wine, as Windows games do;
+- its program, or the program that started it (Steam, Lutris, Heroic, a game's
+  own launcher), has an application entry in the **Game** category.
+
+Any fullscreen window that takes the pointer and hides it, as games do for
+mouse-look, counts too. A window rule with `game = true` or `game = false`
+decides for games Tileception misses or mistakes (see
+[Window rules](configuration.md#window-rules)).
+
+Game mode stays with its game while you use another window: Super works there
+as usual, and the notice shows again when you go back to the game. Game mode
+ends when the game closes, and, if it came on by itself, when the game leaves
+fullscreen and lets go of the pointer. While it is on, the screen does not
+sleep or lock.
+
+**Super+Caps Lock** switches game mode on or off for the focused window,
+without switching Caps Lock. While a game has the keyboard, Super+Caps Lock
+always leaves game mode, whatever your key bindings say. After you switch it
+off, it does not come back by itself for that game until the game leaves
+fullscreen and lets go of the pointer, or closes. From a script or another key
+binding, use `tileception msg game-mode` (`on`, `off`, or `status`, which says
+why a window counts as a game). Switching consoles with **Ctrl+Alt+F1** to
+**F12** keeps working in game mode.
+
 ## Desktop controls
 
-| Shortcut      | Action                                |
-|---------------|---------------------------------------|
-| Super         | Open the launcher                     |
-| Super+T       | Open a terminal                       |
-| Super+B       | Open the default browser              |
-| Super+E       | Open your home folder                 |
-| Super+N       | Open notifications and sound controls |
-| Super+Enter   | Answer a popup's buttons by keyboard  |
-| Shift+Print   | Take or record an area of the screen  |
-| Ctrl+Print    | Pick a colour from the screen         |
-| Super+/       | Open Wizard                           |
-| Super+L       | Lock the screen                       |
-| Super+X       | Open the power menu                   |
-| Super+Shift+E | End the Tileception session           |
+| Shortcut        | Action                                   |
+|-----------------|------------------------------------------|
+| Super           | Open the launcher                        |
+| Super+T         | Open a terminal                          |
+| Super+B         | Open the default browser                 |
+| Super+E         | Open your home folder                    |
+| Super+N         | Open notifications and sound controls    |
+| Super+Enter     | Answer a popup's buttons by keyboard     |
+| Shift+Print     | Take or record an area of the screen     |
+| Ctrl+Print      | Pick a colour from the screen            |
+| Super+/         | Open Wizard                              |
+| Super+L         | Lock the screen                          |
+| Super+X         | Open the power menu                      |
+| Super+Caps Lock | Switch [game mode](#game-mode) on or off |
+| Super+Shift+E   | End the Tileception session              |
 
 ### Launcher and notifications
 

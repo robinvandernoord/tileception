@@ -204,7 +204,7 @@ enum Entry {
     Place(Place),
     /// `>`: the command line to run.
     Run(String),
-    /// "Ask Tileception", with the question.
+    /// "Ask the Wizard", with the question.
     Ask(String),
     /// One row of an app's details (Alt+Enter), by app id.
     Detail {
@@ -387,7 +387,7 @@ const COMMANDS: &[Builtin] = &[
     ),
     builtin("Reload configuration", "config settings refresh", glyph::RESTART, Does::Line("reload")),
     builtin("Next wallpaper", "background picture shuffle", glyph::NEXT, Does::Line("next-wallpaper")),
-    builtin("Ask Tileception", "wizard doctor help settings", glyph::CHAT, Does::Line("wizard")),
+    builtin("Wizard", "ask tileception doctor help settings", glyph::CHAT, Does::Line("wizard")),
     builtin("Rubber duck", "quack pet debugging", glyph::DUCK, Does::Line("duck")),
     builtin(
         "Send feedback",
@@ -400,12 +400,12 @@ const COMMANDS: &[Builtin] = &[
     builtin("Maximize window", "frame alone", glyph::WINDOW, Does::Line("maximize")),
     builtin("Minimize window", "hide", glyph::WINDOW, Does::Line("minimize")),
     builtin("Restore minimized window", "unminimize bring back", glyph::WINDOW, Does::Line("restore")),
-    builtin("Float or dock window", "floating tile", glyph::WINDOW, Does::Line("float")),
+    builtin("Float or tile window", "floating dock", glyph::WINDOW, Does::Line("float")),
     builtin("Fullscreen", "full screen", glyph::WINDOW, Does::Line("fullscreen")),
     builtin("Close window", "quit", glyph::CLOSE, Does::Line("close")),
     builtin("Toggle split", "stack side by side rotate", glyph::OVERVIEW, Does::Line("toggle-split")),
-    builtin("Step in", "zoom in", glyph::ZOOM_IN, Does::Line("step-in")),
-    builtin("Step out", "zoom out", glyph::ZOOM_OUT, Does::Line("step-out")),
+    builtin("Zoom in a level", "zoom in step", glyph::ZOOM_IN, Does::Line("step-in")),
+    builtin("Zoom out a level", "zoom out step", glyph::ZOOM_OUT, Does::Line("step-out")),
     builtin("Back", "previous view history", glyph::ARROW_LEFT, Does::Line("back")),
     builtin("Forward", "next view history", glyph::ARROW_RIGHT, Does::Line("forward")),
     builtin("Show desktop", "clear desk minimize all hide windows", glyph::OVERVIEW, Does::Line("desktop")),
@@ -1583,9 +1583,10 @@ impl Tileception {
     /// Why there is nothing to configure, update or remove.
     fn nothing_installed(&self) -> Entry {
         let (title, detail) = match &self.installer.busy {
-            Some(busy) => {
-                ("No plugin is installed yet".into(), format!("{busy}\u{2026} A notification says when it is done"))
-            }
+            Some(busy) => (
+                "No plugin is installed yet".into(),
+                format!("{busy}\u{2026} You'll get a notification when it finishes"),
+            ),
             None => (
                 "No plugins were installed from a repository".into(),
                 "Type plugins add owner/repo to install one".into(),
@@ -1733,7 +1734,7 @@ impl Tileception {
                 (
                     glyph::PLUG,
                     if name == *plugin_id { name } else { format!("{name} ({plugin_id})") },
-                    format!("{}{commit} \u{b7} Enter configures it", source_of(plugin_id).unwrap_or_default()),
+                    format!("{}{commit} \u{b7} Enter to configure", source_of(plugin_id).unwrap_or_default()),
                 )
             }
             Manage::Note(title, detail) => (glyph::PLUG, title.clone(), detail.clone()),
@@ -2825,7 +2826,7 @@ impl Tileception {
             Entry::Ask(question) => {
                 glyph_box(painter, glyph::CHAT, theme.accent);
                 title_style = Style::new(theme.font_size * 1.05, theme.text).bold();
-                ("Ask Tileception".into(), Some(question.clone()))
+                ("Ask the Wizard".into(), Some(question.clone()))
             }
             Entry::Detail { app, row } => {
                 let Some(app) = self.launcher.index.get(app) else { return };
@@ -3263,7 +3264,7 @@ const FOOTER_H: f64 = 44.0;
 const TIMERS: &str = "timers";
 /// Between the cards under the launcher.
 const CARD_GAP: f64 = 8.0;
-/// Rows of results at most, besides "Ask Tileception".
+/// Rows of results at most, besides "Ask the Wizard".
 const MAX_ROWS: usize = 8;
 /// Tiles per row on the welcome screen.
 const HOME_COLUMNS: usize = 4;

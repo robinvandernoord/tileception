@@ -1219,7 +1219,7 @@ impl Tileception {
                 );
                 painter.glyph(glyph::BELL, Rect::new(panel.x, mid - 32.0, panel.w, 64.0), 28, theme.muted);
                 let (headline, detail) = if !self.builtin_notifications() {
-                    ("Notifications are handled elsewhere", "Switched off or replaced in [shell]")
+                    ("Built-in notifications are off", "See Notifications in Settings")
                 } else if self.notifications.service.is_some() {
                     ("No notifications", "You're all caught up")
                 } else {

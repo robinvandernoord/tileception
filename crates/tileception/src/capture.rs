@@ -20,10 +20,10 @@ use smithay::{
     backend::{
         allocator::{Buffer as _, Fourcc, dmabuf::Dmabuf},
         renderer::{
-            Bind, ExportMem, Offscreen, TextureMapping,
+            Bind, Color32F, ExportMem, Offscreen,
             damage::OutputDamageTracker,
             element::{
-                RenderElement,
+                RenderElement, RenderElementStates,
                 utils::{Relocate, RelocateRenderElement},
             },
             gles::{GlesRenderer, GlesTexture},
@@ -50,7 +50,9 @@ use crate::{Tileception, render::OutputElement};
 
 /// Where a finished capture goes.
 pub enum CaptureTarget {
-    File(PathBuf),
+    /// A PNG file for `tileception msg screenshot`, answered by its request
+    /// number once written.
+    File { path: PathBuf, request: u64 },
     /// A copy into a buffer of a screen sharing or screenshot program.
     Copy(ClientCopy),
     /// The whole output without the rubber duck, for its question.
@@ -62,6 +64,9 @@ pub enum CaptureTarget {
     /// The recorded area, with the pointer, for the next frame of a recording.
     Recording,
 }
+
+/// How long `tileception msg screenshot` waits for the frame it is taken from.
+const SCREENSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What is on screen, ready to be rendered into each capture's buffer.
 struct Scene<E = OutputElement> {
@@ -304,7 +309,10 @@ impl Tileception {
         for capture in pending {
             match capture.target {
                 CaptureTarget::Copy(copy) => copy.frame.fail(CopyFailure::Stopped),
-                CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
+                CaptureTarget::File { path, request } => {
+                    tracing::warn!("output disconnected before capture to {}", path.display());
+                    self.reply_later(request, Err("the screen went away before the screenshot".into()));
+                }
                 CaptureTarget::Duck => {}
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
                 CaptureTarget::Shot => self.cancel_shot(),
@@ -318,10 +326,28 @@ impl Tileception {
         Rectangle::from_size(self.output_pixels().into())
     }
 
-    /// Queues a screenshot of the whole output into a PNG file.
+    /// Gives up a screenshot whose command timed out: the path may already
+    /// be in use for something else by the time a frame comes.
+    pub(crate) fn drop_screenshot(&mut self, request: u64) {
+        let other = |capture: &PendingCapture| !matches!(&capture.target, CaptureTarget::File { request: queued, .. } if *queued == request);
+        // It may wait with a screen other than the one in use now.
+        let before = self.pending_captures.len();
+        self.pending_captures.retain(other);
+        let dropped = before - self.pending_captures.len() + self.outputs.retain_parked_captures(other);
+        if dropped > 0 {
+            tracing::info!("screenshot dropped: its command timed out");
+        }
+    }
+
+    /// Takes a screenshot of the whole output into a PNG file on the next
+    /// frame, which it asks for. The command is answered once the file is
+    /// written, so what a script does next is not in it.
     pub fn screenshot(&mut self, path: PathBuf) {
         let region = self.output_region();
-        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::File(path) });
+        let request = self.ipc.next_request();
+        self.defer_reply_for(request, SCREENSHOT_WAIT, "the screen was not drawn in time for the screenshot");
+        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::File { path, request } });
+        self.schedule_render();
     }
 
     /// Queues a screenshot of the whole output for the rubber duck.
@@ -490,16 +516,18 @@ impl Tileception {
                 tracking = Some((copy.history.clone(), key));
             }
             match capture.target {
-                CaptureTarget::File(path) => match pixels(renderer, &mut texture, &scene, region) {
-                    Ok(rgba) => {
+                CaptureTarget::File { path, request } => {
+                    let written = pixels(renderer, &mut texture, &scene, region).and_then(|rgba| {
                         let (width, height) = (region.size.w as u32, region.size.h as u32);
-                        match write_png(&path, width, height, &rgba) {
-                            Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
-                            Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
-                        }
+                        write_png(&path, width, height, &rgba)
+                            .map_err(|err| format!("could not write {}: {err}", path.display()))
+                    });
+                    match &written {
+                        Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
+                        Err(err) => tracing::warn!("screenshot failed: {err}"),
                     }
-                    Err(err) => tracing::warn!("capture failed: {err}"),
-                },
+                    self.reply_later(request, written.map(|()| "ok\n".to_string()));
+                }
                 CaptureTarget::Copy(mut copy) => {
                     let copied = if let Some(shown) = pointer_scene.as_ref().filter(|_| copy.cursor) {
                         copy.buffer.fill(renderer, &mut pointer_texture, shown, region)
@@ -612,21 +640,121 @@ pub fn read_region(
     region: Rectangle<i32, Buffer>,
 ) -> Result<Vec<u8>, String> {
     let mapping = renderer.copy_texture(texture, region, Fourcc::Abgr8888).map_err(|err| err.to_string())?;
-    // GL keeps a texture's rows bottom-up; a texture we rendered into is not
-    // marked flipped, but its rows still need reversing to read top-down.
-    let flipped = !mapping.flipped();
+    // Smithay draws into a texture with its top row first, so the rows come
+    // back top-down as they are. (Its mapping reports every texture as
+    // flipped, which describes GL's convention rather than these rows.)
     let data = renderer.map_texture(&mapping).map_err(|err| err.to_string())?;
-    let row = region.size.w as usize * 4;
-    let rows = region.size.h as usize;
-    if data.len() < row * rows {
-        return Err("short read".into());
+    let length = region.size.w as usize * 4 * region.size.h as usize;
+    data.get(..length).map(<[u8]>::to_vec).ok_or_else(|| "short read".into())
+}
+
+/// A picture drawn again and again into the same buffer: each frame draws
+/// only what changed since the one before, and says where that is.
+pub struct Redraw {
+    size: (i32, i32),
+    tracker: OutputDamageTracker,
+    /// The buffer holds the frame before, so only damage needs drawing.
+    drawn: bool,
+    /// Which elements the last frame drew.
+    states: RenderElementStates,
+}
+
+impl Redraw {
+    /// For a picture of `size` pixels, drawn from elements in pixels.
+    pub fn new(size: (i32, i32)) -> Self {
+        Redraw {
+            size,
+            tracker: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            drawn: false,
+            states: RenderElementStates::default(),
+        }
     }
-    let mut out = Vec::with_capacity(row * rows);
-    for line in 0..rows {
-        let src = if flipped { rows - 1 - line } else { line };
-        out.extend_from_slice(&data[src * row..src * row + row]);
+
+    pub fn size(&self) -> (i32, i32) {
+        self.size
     }
-    Ok(out)
+
+    /// Which elements the last frame drew, and how.
+    pub fn states(&self) -> &RenderElementStates {
+        &self.states
+    }
+
+    /// The frame drawn last did not get where it was going: the next frame
+    /// draws everything again.
+    pub fn forget(&mut self) {
+        self.drawn = false;
+    }
+
+    /// Draws `elements` into `buffer`, the picture's, and waits for the GPU
+    /// to finish. Returns the parts that changed: none when nothing did.
+    pub fn draw<T, E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        buffer: &mut T,
+        elements: &[E],
+        clear: impl Into<Color32F>,
+    ) -> Result<Vec<Rectangle<i32, Buffer>>, String>
+    where
+        GlesRenderer: Bind<T>,
+        E: RenderElement<GlesRenderer>,
+    {
+        // A frame that fails leaves the buffer unknown: the next draws it all.
+        let age = usize::from(std::mem::take(&mut self.drawn));
+        let mut target = renderer.bind(buffer).map_err(|error| error.to_string())?;
+        let result = self
+            .tracker
+            .render_output(renderer, &mut target, age, elements, clear)
+            .map_err(|error| format!("{error:?}"))?;
+        let damage = result.damage.cloned().unwrap_or_default();
+        // What reads the picture next, another GPU or the CPU, needs it finished.
+        result.sync.wait().map_err(|error| format!("{error:?}"))?;
+        self.drawn = true;
+        self.states = result.states;
+        let whole = Rectangle::from_size(self.size.into());
+        Ok(damage
+            .iter()
+            .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
+            .filter_map(|rect: Rectangle<i32, Buffer>| rect.intersection(whole))
+            .collect())
+    }
+}
+
+/// Copies `rows` (as [`read_region`] gives them) into `rect` of a picture
+/// `width` pixels wide, four bytes a pixel. Returns `false`, copying
+/// nothing, when `rect` is not inside the picture or `rows` do not fill it.
+pub fn patch_rows(picture: &mut [u8], width: i32, rect: Rectangle<i32, Buffer>, rows: &[u8]) -> bool {
+    let stride = width.max(0) as usize * 4;
+    let height = picture.len().checked_div(stride).unwrap_or(0);
+    let whole = Rectangle::from_size((width.max(0), height as i32).into());
+    let row = rect.size.w.max(0) as usize * 4;
+    if !whole.contains_rect(rect) || row == 0 || rows.len() != row * rect.size.h as usize {
+        return false;
+    }
+    for (line, source) in rows.chunks_exact(row).enumerate() {
+        let start = (rect.loc.y as usize + line) * stride + rect.loc.x as usize * 4;
+        picture[start..start + row].copy_from_slice(source);
+    }
+    true
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn patch_rows_copies_inside_and_refuses_outside() {
+        // A picture of 3 by 2 pixels, one byte value per pixel.
+        let mut picture = vec![0u8; 3 * 2 * 4];
+        let rect = Rectangle::new((1, 0).into(), (2, 2).into());
+        assert!(patch_rows(&mut picture, 3, rect, &[7; 2 * 2 * 4]));
+        let pixels: Vec<u8> = picture.chunks(4).map(|pixel| pixel[0]).collect();
+        assert_eq!(pixels, [0, 7, 7, 0, 7, 7]);
+        for outside in [Rectangle::new((2, 0).into(), (2, 1).into()), Rectangle::new((-1, 0).into(), (1, 1).into())] {
+            assert!(!patch_rows(&mut picture, 3, outside, &[9; 2 * 4]));
+        }
+        assert!(!patch_rows(&mut picture, 3, rect, &[9; 4]), "too few rows");
+        assert!(picture.iter().all(|byte| *byte != 9));
+    }
 }
 
 /// Copies RGBA rows into a client's XRGB8888 shared memory buffer.
@@ -664,15 +792,22 @@ fn copy_into_shm(buffer: &WlBuffer, width: i32, height: i32, rgba: &[u8]) -> Res
 }
 
 fn write_png(path: &PathBuf, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
     let file = std::fs::File::create(path).map_err(|err| err.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    let mut out = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
     // Opaque: the scene has no meaningful alpha.
     let opaque: Vec<u8> =
         rgba.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255]).collect();
-    writer.write_image_data(&opaque).map_err(|err| err.to_string())
+    writer.write_image_data(&opaque).map_err(|err| err.to_string())?;
+    // The end of the file and what is still buffered: dropping them would
+    // hide a full disk.
+    writer.finish().map_err(|err| err.to_string())?;
+    out.flush().map_err(|err| err.to_string())?;
+    out.into_inner().map_err(|err| err.to_string())?.sync_all().map_err(|err| err.to_string())
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for Tileception {

@@ -153,7 +153,7 @@ impl Tileception {
             Style::new(18., theme.text),
         );
         painter.text(
-            "Settings has changes that are not applied yet. Discard closes without them; Cancel keeps Settings open.",
+            "Discard closes Settings and drops your changes. Cancel returns to Settings.",
             Rect::new(rect.x + 16., rect.y + 54., rect.w - 32., 60.),
             Style::new(12., theme.muted).lines(3),
         );
