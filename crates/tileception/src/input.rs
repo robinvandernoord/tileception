@@ -78,6 +78,8 @@ pub enum Action {
     ClearNotifications,
     /// Toggle Do not disturb (None), or switch it on or off.
     DoNotDisturb(Option<bool>),
+    /// Switch to a notification mode (the next one for None) until then.
+    NotificationMode(Option<crate::notification_mode::Mode>, crate::notification_mode::Until),
     /// Open or close the bar's minimap of the whole tree.
     Minimap,
     Group,
@@ -668,6 +670,7 @@ impl Tileception {
                 | Action::Notifications
                 | Action::ClearNotifications
                 | Action::DoNotDisturb(_)
+                | Action::NotificationMode(..)
         );
         if let (Some(window_id), false) = (self.fullscreen, keeps_fullscreen) {
             self.set_fullscreen(window_id, false);
@@ -730,6 +733,8 @@ impl Tileception {
             Action::ClearNotifications => self.clear_notifications(),
             Action::DoNotDisturb(None) => self.toggle_dnd(),
             Action::DoNotDisturb(Some(enabled)) => self.set_dnd(enabled),
+            Action::NotificationMode(Some(mode), until) => self.set_notification_mode(mode, until),
+            Action::NotificationMode(None, _) => self.next_notification_mode(),
             Action::Minimap => self.toggle_minimap(),
             Action::Group => {}
             Action::Minimize => {
@@ -861,7 +866,7 @@ impl Tileception {
                 return;
             }
         }
-        if self.duck_motion(point) || self.doctor_drag(point) {
+        if self.duck_motion(point) || self.doctor_drag(point) || self.mode_field_drag(point) {
             let pointer = self.seat.get_pointer().expect("seat has a pointer");
             pointer.motion(self, None, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
             pointer.frame(self);
@@ -1162,7 +1167,8 @@ impl Tileception {
         if state == ButtonState::Released && self.duck_pressed() && self.duck_button(button == BTN_LEFT, false, point) {
             return;
         }
-        if state == ButtonState::Released && button == BTN_LEFT && self.doctor_release() {
+        if state == ButtonState::Released && button == BTN_LEFT && (self.doctor_release() || self.mode_field_release())
+        {
             return;
         }
         if state == ButtonState::Pressed && button == BTN_LEFT && self.doctor_press(point) {

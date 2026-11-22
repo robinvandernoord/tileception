@@ -49,6 +49,8 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
 wayland-protocols-plasma = { version = "0.3", features = ["server"] }
 wayland-scanner = "0.31"
+# lewton decodes Vorbis under MIT/Apache, where Symphonia is MPL.
+rodio = { version = "0.23", default-features = false, features = ["playback", "lewton", "tracing"] }
 
 [dependencies.smithay]
 version = "0.7"

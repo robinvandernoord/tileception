@@ -2020,6 +2020,7 @@ impl Tileception {
                         width: arrow.w,
                         hover: arrow.contains(point) && shot.drag.is_none() || arrow_pressed,
                         open: shot.menu == Some(out),
+                        marked: false,
                     };
                     let whole = Rect::new(rect.x, rect.y, arrow.right() - rect.x, rect.h);
                     let button = if out == Out::Copy {

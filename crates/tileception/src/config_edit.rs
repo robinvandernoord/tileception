@@ -633,7 +633,6 @@ fn lock_notification_app(
     keys: &[&str],
     shown: Option<crate::lock::Shown>,
 ) -> Result<bool, String> {
-    let Some(first) = keys.first() else { return Err("no app to change".into()) };
     let value = match shown {
         Some(shown) => match toml::Value::try_from(shown).map_err(|error| error.to_string())? {
             toml::Value::String(text) => Some(text),
@@ -641,9 +640,34 @@ fn lock_notification_app(
         },
         None => None,
     };
+    app_exception(doc, "lock", "notification_apps", keys, value)
+}
+
+/// Writes an app's `[notifications.app_sounds]` sound under the first of
+/// `keys`, or removes it (`None`), removing any under the other keys.
+pub fn set_app_sound(file: &Path, keys: &[&str], sound: Option<crate::sound::AppSound>) -> Result<(), String> {
+    let mut doc = read(file)?;
+    let value = sound.map(|sound| sound.key().to_string());
+    if app_exception(&mut doc, "notifications", "app_sounds", keys, value)? || !file.exists() {
+        write(file, &doc)?;
+    }
+    Ok(())
+}
+
+/// Changes one app's entry in the table `[section.name]`, by the first of
+/// `keys`, keeping the comments around it; entries under the other keys go.
+/// False when it already was so.
+fn app_exception(
+    doc: &mut DocumentMut,
+    section: &str,
+    name: &str,
+    keys: &[&str],
+    value: Option<String>,
+) -> Result<bool, String> {
+    let Some(first) = keys.first() else { return Err("no app to change".into()) };
     let current = |doc: &DocumentMut, key: &str| {
-        doc.get("lock")
-            .and_then(|lock| lock.get("notification_apps"))
+        doc.get(section)
+            .and_then(|table| table.get(name))
             .and_then(|apps| apps.get(key))
             .and_then(Item::as_str)
             .map(str::to_string)
@@ -652,23 +676,23 @@ fn lock_notification_app(
     if current(doc, first) == value && !others {
         return Ok(false);
     }
-    if doc.get("lock").is_none() {
-        // Only `[lock.notification_apps]` needs a header.
-        let mut lock = toml_edit::Table::new();
-        lock.set_implicit(true);
-        doc.insert("lock", Item::Table(lock));
+    if doc.get(section).is_none() {
+        // Only the app table needs a header.
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(true);
+        doc.insert(section, Item::Table(table));
     }
-    let lock = doc["lock"].as_table_like_mut().ok_or("[lock] is not a table")?;
-    if lock.get("notification_apps").is_none() {
+    let table = doc[section].as_table_like_mut().ok_or_else(|| format!("[{section}] is not a table"))?;
+    if table.get(name).is_none() {
         if value.is_none() {
             return Ok(others);
         }
-        lock.insert("notification_apps", Item::Table(toml_edit::Table::new()));
+        table.insert(name, Item::Table(toml_edit::Table::new()));
     }
-    let apps = lock
-        .get_mut("notification_apps")
+    let apps = table
+        .get_mut(name)
         .and_then(Item::as_table_like_mut)
-        .ok_or("lock.notification_apps is not a table")?;
+        .ok_or_else(|| format!("{section}.{name} is not a table"))?;
     for key in keys.iter().skip(1) {
         apps.remove(key);
     }

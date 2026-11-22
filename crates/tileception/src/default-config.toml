@@ -141,6 +141,26 @@ off_after = 600
 # [lock.notification_apps]
 # "org.gnome.Calendar" = "full"
 
+[notifications]
+# The switch in the notification panel picks the mode: Sound (banners and
+# sound), Silent (banners only) or Do not disturb (no banners and no sound;
+# critical ones such as alarms still show a banner).
+#
+# The sounds in the Sound mode: "vibes", "knock" or "breath".
+sounds = "vibes"
+# How loud, in percent.
+volume = 70
+# Let the built-in alarms (Timers) ring in the Silent mode too.
+alarms_in_silent = false
+# The times "Until tomorrow morning" and "Until this evening" end.
+morning = "09:00"
+evening = "18:00"
+#
+# Another family, or "off", by desktop entry or app name. The bell button on
+# a card in the notification panel writes these for you.
+# [notifications.app_sounds]
+# "org.mozilla.Thunderbird" = "knock"
+
 [touchpad]
 # Tap to click: one finger is the left button, two the right, three the middle.
 tap = true

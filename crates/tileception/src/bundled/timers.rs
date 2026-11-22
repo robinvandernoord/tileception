@@ -722,8 +722,11 @@ fn ring(bus: &mut Option<zbus::blocking::Connection>, timer: &Timer) {
         *bus = connection.map_err(|error| eprintln!("timers: no notification bus: {error}")).ok();
     }
     let Some(session) = bus.as_ref() else { return };
-    let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
-        std::collections::HashMap::from([("urgency", zbus::zvariant::Value::U8(2))]);
+    // The alarm category has the notification ring until it is dismissed.
+    let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> = std::collections::HashMap::from([
+        ("urgency", zbus::zvariant::Value::U8(2)),
+        ("category", zbus::zvariant::Value::from(crate::notifications::ALARM_CATEGORY)),
+    ]);
     let summary = timer.rang();
     let body = timer.detail(unix_now());
     let actions: &[&str] = &[];

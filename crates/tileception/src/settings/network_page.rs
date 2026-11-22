@@ -495,7 +495,7 @@ impl Tileception {
 
         if let Some(rect) = frame.missing {
             painter.text(
-                "NetworkManager is not running, so there is nothing to set here.",
+                "Start NetworkManager to manage connections here.",
                 Rect::new(rect.x + 18., rect.y, rect.w - 36., rect.h),
                 Style::new(12., theme.muted),
             );
@@ -612,7 +612,7 @@ impl Tileception {
 
         if let Some(card) = frame.hidden {
             painter.text(
-                "Choose a network above, or type the name of one that hides it. Leave the password empty for an open network.",
+                "Choose a network above or enter the name of a hidden network. Leave the password blank for an open network.",
                 Rect::new(card.x + 18., card.y + 10., card.w - 36., 24.),
                 small,
             );

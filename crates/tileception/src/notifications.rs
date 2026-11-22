@@ -29,7 +29,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct Notifications {
-    service: Option<NotifyService>,
+    pub(crate) service: Option<NotifyService>,
     events: Option<mpsc::Receiver<Event>>,
     source: Option<smithay::reexports::calloop::RegistrationToken>,
     active: BTreeMap<u32, Arc<Notification>>,
@@ -58,6 +58,17 @@ pub struct Notifications {
     pub answering: Option<(u32, usize)>,
     /// What came in since Tileception's own lock screen showed, oldest first.
     while_locked: Vec<Arc<Notification>>,
+    /// Sound, Silent or Do not disturb, and until when.
+    pub(crate) mode: crate::notification_mode::ModeState,
+    /// Checks for the mode's end.
+    pub(crate) mode_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    pub(crate) sounds: crate::sound::Sounds,
+    /// The menu under a mode's arrow, while open.
+    pub(crate) mode_menu: Option<crate::notification_switch::ModeMenu>,
+    /// The menu of a card's bell, while open.
+    pub(crate) sound_menu: Option<crate::notification_switch::SoundMenu>,
+    /// Whether a press in the mode menu's time field is selecting.
+    pub(crate) field_drag: bool,
 }
 
 /// What Tab and Shift+Tab move between in the panel: the buttons above the
@@ -79,6 +90,9 @@ const LOCAL_CATEGORY: &str = "x-tileception.local";
 /// The category of questions waiting for an answer, which stay off a lock screen.
 const PROMPT_CATEGORY: &str = "x-tileception.prompt";
 
+/// The category of the built-in alarms (Timers), which ring until dismissed.
+pub const ALARM_CATEGORY: &str = "x-tileception.alarm";
+
 /// How many notifications Page Up and Page Down scroll the panel by.
 const PAGE: isize = 5;
 
@@ -95,7 +109,6 @@ enum NotificationKind {
 #[derive(Clone, PartialEq)]
 enum PointerAction {
     Clear,
-    Dnd,
     Close {
         identifier: u32,
         kind: NotificationKind,
@@ -117,7 +130,6 @@ impl crate::ui::PointerAction for PointerAction {
     fn activate(&self, state: &mut Tileception, _rect: Rect, _point: Point) {
         match self {
             Self::Clear => state.clear_notifications(),
-            Self::Dnd => state.toggle_dnd(),
             Self::LockScreen { desktop_entry, app_name } => {
                 state.toggle_lock_screen_app(desktop_entry.as_deref(), app_name)
             }
@@ -165,6 +177,7 @@ impl Tileception {
                 self.notifications.service = Some(service);
                 self.notifications.events = Some(events);
                 self.notifications.source = Some(token);
+                self.start_notification_mode();
             }
             Err(error) => tracing::error!("could not start notifications: {error}"),
         }
@@ -177,6 +190,9 @@ impl Tileception {
         }
         self.notifications.service = None;
         self.notifications.events = None;
+        self.stop_notification_mode();
+        self.notifications.sounds.stop_all();
+        self.close_switch_menus();
         let questions = &self.notifications.questions;
         self.notifications.active.retain(|notification_id, _| questions.contains(notification_id));
         self.notifications.history.clear();
@@ -195,6 +211,9 @@ impl Tileception {
         for event in events {
             match event {
                 Event::Shown(notification) | Event::Replaced(notification) => {
+                    if !self.notifications.active.contains_key(&notification.id) {
+                        self.notification_sound(&notification);
+                    }
                     self.notifications_appear();
                     self.notifications.thumbnails.borrow_mut().remove(&notification.id);
                     let notification = Arc::new(notification);
@@ -203,6 +222,7 @@ impl Tileception {
                 }
                 Event::Closed { id: notification_id, .. } => {
                     self.notifications.active.remove(&notification_id);
+                    self.notifications.sounds.stop(notification_id);
                 }
             }
         }
@@ -222,6 +242,9 @@ impl Tileception {
         self.notifications.home = self.outputs.active.clone();
         self.notifications.offset = 0;
         self.notifications.selected = None;
+        if !self.notifications.open {
+            self.close_switch_menus();
+        }
         if self.notifications.open {
             self.doctor.focused = false;
             self.refresh_notification_history();
@@ -230,6 +253,7 @@ impl Tileception {
     }
 
     pub fn close_notifications(&mut self) {
+        self.close_switch_menus();
         let focused = self.notifications.focused;
         self.notifications.open = false;
         self.notifications.focused = false;
@@ -260,6 +284,8 @@ impl Tileception {
         {
             return;
         }
+        let area = self.mode_switch_area();
+        self.switch_press(area, point);
         // What shell_pointer_target puts above the panel takes the press.
         let covered = self.overlay_under(point)
             || self.handoff_pointer_target(point).is_some()
@@ -279,12 +305,23 @@ impl Tileception {
     /// the arrows, the page keys, Home and End scroll it. Tab and Shift+Tab
     /// choose a button on the media or plugin cards, or a notification;
     /// Enter or Space presses the button or opens the notification, and
-    /// Backspace dismisses it. D switches Do not disturb, M mutes the sound
-    /// and Esc closes the panel.
+    /// Backspace dismisses it. D switches to the next mode, T opens how long
+    /// the mode lasts, M mutes the sound and Esc closes the panel.
     pub fn notification_panel_key(&mut self, sym: u32, mods: crate::config::Mods) {
         use smithay::input::keyboard::keysyms;
+        // An open menu has the keys; its time field takes Ctrl ones too.
+        if self.notifications.mode_menu.as_ref().is_some_and(|menu| menu.field.is_some()) && !mods.logo {
+            return self.mode_menu_key(sym, mods);
+        }
         if mods.ctrl || mods.alt || mods.logo {
             return;
+        }
+        if self.notifications.mode_menu.is_some() {
+            return self.mode_menu_key(sym, mods);
+        }
+        if self.notifications.sound_menu.is_some() && crate::text_input::plain(sym) == keysyms::KEY_Escape {
+            self.notifications.sound_menu = None;
+            return self.schedule_render();
         }
         let selected = self.selected_notification();
         let buttons = self.panel_buttons();
@@ -303,7 +340,11 @@ impl Tileception {
         match crate::text_input::plain(sym) {
             keysyms::KEY_Escape => self.close_notifications(),
             keysyms::KEY_Delete | keysyms::KEY_c | keysyms::KEY_C => self.clear_notifications(),
-            keysyms::KEY_d | keysyms::KEY_D => self.toggle_dnd(),
+            keysyms::KEY_d | keysyms::KEY_D if self.mode_switch_area().is_some() => self.next_notification_mode(),
+            keysyms::KEY_t | keysyms::KEY_T if self.mode_switch_area().is_some() => {
+                let mode = self.notifications.mode.mode;
+                self.toggle_mode_menu(mode);
+            }
             keysyms::KEY_m | keysyms::KEY_M => {
                 use crate::media::{Adjust, Control, Level};
                 let mute = Control::Level(Level::Volume, Adjust::Mute(tileception_media::Toggle::Flip));
@@ -729,15 +770,28 @@ impl Tileception {
         Some((service.history_len(), service.do_not_disturb()))
     }
 
-    pub fn toggle_dnd(&mut self) {
-        if let Some(service) = &self.notifications.service {
-            service.send(Request::SetDoNotDisturb(!service.do_not_disturb()));
+    /// Plays what a new notification sounds like in the Sound mode: by its
+    /// urgency, in its app's family. The built-in alarms ring until they are
+    /// dismissed, also in Silent when `alarms_in_silent` says so. Nothing
+    /// sounds in Do not disturb.
+    fn notification_sound(&mut self, notification: &Notification) {
+        use crate::notification_mode::Mode;
+        let config = &self.config.file.notifications;
+        let alarm = notification.category.as_deref() == Some(ALARM_CATEGORY);
+        let allowed = match self.notifications.mode.mode {
+            Mode::Sound => true,
+            Mode::Silent => alarm && config.alarms_in_silent,
+            Mode::DoNotDisturb => false,
+        };
+        if !allowed || notification.suppress_sound {
+            return;
         }
-    }
-
-    pub fn set_dnd(&mut self, enabled: bool) {
-        if let Some(service) = &self.notifications.service {
-            service.send(Request::SetDoNotDisturb(enabled));
+        let Some(family) = config.app_sound(&lock_apps(notification)).family() else { return };
+        let volume = f32::from(config.volume.min(100)) / 100.0;
+        if alarm {
+            self.notifications.sounds.ring(notification.id, family, volume);
+        } else {
+            self.notifications.sounds.play(family, crate::sound::Clip::for_urgency(notification.urgency), volume);
         }
     }
 
@@ -763,7 +817,7 @@ impl Tileception {
     }
 
     /// The history panel, against the right edge.
-    fn notification_panel(&self) -> Rect {
+    pub(crate) fn notification_panel(&self) -> Rect {
         let screen = self.beside_sliding_bar(self.usable_rect());
         let width = screen.w.clamp(1.0, PANEL_W);
         Rect::new(screen.right() - width, screen.y, width, screen.h.max(1.0))
@@ -776,8 +830,8 @@ impl Tileception {
         let below = if controls.rect.h > 0.0 { controls.rect.bottom() + 10.0 } else { panel.y + 58.0 };
         let plugins = self.panel_layout(panel.x + 12.0, below, panel.w - 24.0);
         let below = if plugins.rect.h > 0.0 { plugins.rect.bottom() + 10.0 } else { below };
-        // Without the built-in service there is no Do not disturb to switch.
-        let dnd_h = if self.builtin_notifications() { 48.0 } else { 0.0 };
+        // Without the built-in service there is no mode to switch.
+        let dnd_h = if self.builtin_notifications() { crate::notification_switch::SWITCH_H } else { 0.0 };
         let dnd = Rect::new(panel.x + 12.0, below, panel.w - 24.0, dnd_h);
         PanelControls {
             clear: Rect::new(panel.right() - 16.0 - 96.0, panel.y + 14.0, 96.0, 32.0),
@@ -858,6 +912,16 @@ impl Tileception {
         if lock_toggle.is_some() {
             header.w -= 32.0;
         }
+        // And the sound they make, while the built-in service runs.
+        let bell = (!popup
+            && self.notifications.service.is_some()
+            && notification.category.as_deref() != Some(LOCAL_CATEGORY)
+            && notification.category.as_deref() != Some(PROMPT_CATEGORY)
+            && lock_apps(&notification).iter().any(|app| !app.is_empty()))
+        .then(|| Rect::new(lock_toggle.unwrap_or(close).x - 32.0, close.y, 28.0, 28.0));
+        if bell.is_some() {
+            header.w -= 32.0;
+        }
         cursor = header.bottom() + 10.0;
         let picture = if content { self.notification_preview(&notification) } else { None };
         let preview = picture.map(|(_, image_width, image_height)| {
@@ -912,6 +976,7 @@ impl Tileception {
             header,
             close: if locked.is_some() { None } else { Some(close) },
             lock_toggle,
+            bell,
             preview,
             icon,
             summary,
@@ -921,6 +986,20 @@ impl Tileception {
             actions,
             popup,
         }
+    }
+
+    /// The bell of the card with this notification, while it is in view.
+    pub(crate) fn card_bell(&self, notification_id: u32) -> Option<Rect> {
+        if !self.notifications.open {
+            return None;
+        }
+        self.notification_cards().into_iter().find(|card| card.notification.id == notification_id)?.bell
+    }
+
+    /// Where the mode switch is, while the panel shows it.
+    pub(crate) fn mode_switch_area(&self) -> Option<Rect> {
+        (self.notifications.open && self.builtin_notifications() && self.notifications.service.is_some())
+            .then(|| self.panel_controls().dnd)
     }
 
     pub fn notifications_contain(&self, point: Point) -> bool {
@@ -942,11 +1021,18 @@ impl Tileception {
     pub(crate) fn notification_pointer_target(&self, point: Point) -> Option<crate::ui::PointerTarget> {
         use crate::ui::PointerTarget;
         if self.notifications.open {
+            // The menus go over everything else in the panel.
+            if let Some(target) = self.sound_menu_pointer_target(point) {
+                return target;
+            }
             let controls = self.panel_controls();
-            for (rect, action) in [(controls.clear, PointerAction::Clear), (controls.dnd, PointerAction::Dnd)] {
-                if rect.contains(point) && (action != PointerAction::Dnd || self.builtin_notifications()) {
-                    return Some(PointerTarget::button(rect, action));
-                }
+            if let Some(area) = self.mode_switch_area()
+                && let Some(target) = self.switch_pointer_target(area, point)
+            {
+                return target;
+            }
+            if controls.clear.contains(point) {
+                return Some(PointerTarget::button(controls.clear, PointerAction::Clear));
             }
             if let Some(target) = self.controls_pointer_target(&controls.controls, point) {
                 return Some(target);
@@ -963,6 +1049,10 @@ impl Tileception {
                     close,
                     PointerAction::Close { identifier: notification.id, kind, history: self.notifications.open },
                 ));
+            }
+            if let Some(bell) = card.bell.filter(|bell| bell.contains(point)) {
+                let apps = lock_apps(notification).map(str::to_string);
+                return Some(self.bell_target(bell, notification.id, apps));
             }
             if let Some(toggle) = card.lock_toggle.filter(|toggle| toggle.contains(point)) {
                 return Some(PointerTarget::button(
@@ -1110,7 +1200,6 @@ impl Tileception {
         }
         let theme = &self.theme;
         let pointer = Point::new(self.pointer.x, self.pointer.y);
-        let dnd = self.notifications.service.as_ref().is_some_and(|service| service.do_not_disturb());
         let mut painter = Painter::new(self, renderer);
         if self.notifications.open {
             let panel = self.notification_panel();
@@ -1153,59 +1242,8 @@ impl Tileception {
             self.draw_controls(&mut painter, &controls.controls, pointer);
             self.draw_panel_blocks(&mut painter, &controls.plugins, pointer);
 
-            if self.builtin_notifications() {
-                // Do not disturb, as a row with a switch.
-                let row = controls.dnd;
-                let hover = row.contains(pointer);
-                painter.shape(
-                    row,
-                    Shape {
-                        border_width: 1.0,
-                        border: if dnd { theme.accent.alpha(0.4) } else { theme.border },
-                        ..Shape::filled(if hover { theme.surface_raised } else { theme.surface }, theme.radius)
-                    },
-                );
-                painter.glyph(
-                    glyph::MOON,
-                    Rect::new(row.x + 8.0, row.y, 32.0, row.h),
-                    17,
-                    if dnd { theme.accent } else { theme.muted },
-                );
-                painter.text(
-                    "Do not disturb",
-                    Rect::new(row.x + 44.0, row.y + 5.0, row.w - 110.0, 20.0),
-                    Style::new(theme.font_size, theme.text),
-                );
-                let sub = if dnd { "Popups are silenced" } else { "Popups are shown" };
-                painter.text(
-                    sub,
-                    Rect::new(row.x + 44.0, row.y + 24.0, row.w - 110.0, 18.0),
-                    Style::new(theme.font_size * 0.9, theme.muted),
-                );
-                let track = Rect::new(row.right() - 56.0, row.y + (row.h - 24.0) / 2.0, 42.0, 24.0);
-                let knob_x = if dnd { track.right() - 21.0 } else { track.x + 3.0 };
-                if dnd {
-                    painter.shape(
-                        track,
-                        Shape {
-                            radius: 12.0,
-                            fill: theme.accent_fill(),
-                            glow_radius: 10.0,
-                            glow: theme.accent.alpha(0.25),
-                            ..Default::default()
-                        },
-                    );
-                } else {
-                    painter.shape(
-                        track,
-                        Shape { border_width: 1.0, border: theme.border, ..Shape::filled(theme.background, 12.0) },
-                    );
-                }
-                painter.fill(
-                    Rect::new(knob_x, track.y + 3.0, 18.0, 18.0),
-                    if dnd { theme.on_accent } else { theme.muted },
-                    9.0,
-                );
+            if let Some(area) = self.mode_switch_area() {
+                self.draw_mode_switch(&mut painter, area, pointer);
             }
             painter.fill(Rect::new(panel.x + 12.0, controls.cards_top - 10.0, panel.w - 24.0, 1.0), theme.border, 0.0);
 
@@ -1237,23 +1275,28 @@ impl Tileception {
                 );
             }
             let builtin = self.builtin_notifications();
+            let typing = self.notifications.mode_menu.as_ref().is_some_and(|menu| menu.field.is_some());
             let mut hints: Vec<(&str, &str)> = if !self.notifications_keyboard() {
                 if builtin { vec![("Esc", "Close"), ("Scroll", "Older")] } else { vec![("Esc", "Close")] }
+            } else if typing {
+                vec![("Enter", "Set"), ("Esc", "Back")]
+            } else if self.notifications.mode_menu.is_some() {
+                vec![("Enter", "Choose"), ("Esc", "Close menu")]
             } else if self.chosen_panel_button().is_some() {
                 vec![("Enter", "Press"), ("Tab", "Next"), ("Esc", "Close")]
             } else if self.selected_notification().is_some() {
                 vec![("Enter", "Open"), ("Backspace", "Dismiss"), ("Del", "Clear all"), ("Esc", "Close")]
             } else if builtin && count > 0 {
-                vec![("Del", "Clear all"), ("Tab", "Choose"), ("D", "Do not disturb"), ("M", "Mute")]
+                vec![("Del", "Clear all"), ("Tab", "Choose"), ("D", "Mode"), ("T", "How long"), ("M", "Mute")]
             } else if !self.panel_buttons().is_empty() {
                 let mut hints = vec![("Tab", "Choose")];
                 if builtin {
-                    hints.extend([("D", "Do not disturb"), ("M", "Mute")]);
+                    hints.extend([("D", "Mode"), ("T", "How long"), ("M", "Mute")]);
                 }
                 hints.push(("Esc", "Close"));
                 hints
             } else if builtin {
-                vec![("D", "Do not disturb"), ("M", "Mute"), ("Esc", "Close")]
+                vec![("D", "Mode"), ("T", "How long"), ("M", "Mute"), ("Esc", "Close")]
             } else {
                 vec![("M", "Mute"), ("Esc", "Close")]
             };
@@ -1275,6 +1318,10 @@ impl Tileception {
             self.draw_card(&mut painter, &card, pointer);
             painter.offset = (0.0, 0.0);
             painter.alpha = 1.0;
+        }
+        if let Some(area) = self.mode_switch_area() {
+            self.draw_mode_menu(&mut painter, area, pointer);
+            self.draw_sound_menu(&mut painter, pointer);
         }
         painter.finish()
     }
@@ -1326,9 +1373,14 @@ impl Tileception {
         let app = if notification.app_name.is_empty() { "Notification" } else { &notification.app_name };
         // Hovering "Show on lock screen" says in the header what a click does.
         let on_lock_screen = self.config.file.lock.shows_in_full(&lock_apps(notification));
-        let header = match card.lock_toggle {
-            Some(toggle) if toggle.contains(pointer) && on_lock_screen => format!("Hide {app} on the lock screen"),
-            Some(toggle) if toggle.contains(pointer) => format!("Show {app} on the lock screen"),
+        let sound = self.config.file.notifications.app_sound(&lock_apps(notification)).family();
+        let header = match (card.lock_toggle, card.bell) {
+            (Some(toggle), _) if toggle.contains(pointer) && on_lock_screen => format!("Hide {app} on the lock screen"),
+            (Some(toggle), _) if toggle.contains(pointer) => format!("Show {app} on the lock screen"),
+            (_, Some(bell)) if bell.contains(pointer) => match sound {
+                Some(family) => format!("{app} sounds: {}", family.name()),
+                None => format!("{app} makes no sound"),
+            },
             _ => format!("{app}  \u{00b7}  {}", ago(notification.created)),
         };
         painter.text(
@@ -1336,6 +1388,11 @@ impl Tileception {
             Rect::new(cursor_x, card.header.y, (header_right - cursor_x).max(0.0), card.header.h),
             Style::new(theme.font_size * 0.9, theme.muted).lines(1),
         );
+        if let Some(bell) = card.bell {
+            let open = self.notifications.sound_menu.as_ref().is_some_and(|menu| menu.notification == notification.id);
+            let sign = if sound.is_some() { glyph::BELL } else { glyph::BELL_OFF };
+            painter.button(bell, Button::glyph(sign, Look::Quiet).round(), bell.contains(pointer) || open);
+        }
         if let Some(toggle) = card.lock_toggle {
             // The eye says which way it is; the button stays quiet either way.
             let eye = if on_lock_screen { glyph::EYE } else { glyph::EYE_OFF };
@@ -1505,6 +1562,8 @@ struct Card {
     close: Option<Rect>,
     /// "Show on lock screen", in the panel.
     lock_toggle: Option<Rect>,
+    /// The app's sound, in the panel.
+    bell: Option<Rect>,
     preview: Option<Rect>,
     icon: Option<Rect>,
     summary: Rect,
@@ -1524,6 +1583,7 @@ impl Card {
         down(&mut self.header);
         self.close.iter_mut().for_each(down);
         self.lock_toggle.iter_mut().for_each(down);
+        self.bell.iter_mut().for_each(down);
         down(&mut self.summary);
         down(&mut self.body);
         self.preview.iter_mut().for_each(down);

@@ -271,7 +271,6 @@ enum Hit {
     Crumb(NodeId),
     Slot(usize),
     Media,
-    Dnd,
     Plugin(usize),
     Updates,
     Network,
@@ -343,7 +342,6 @@ enum ChipKind {
     Updates,
     Media,
     Capture,
-    Dnd,
     /// A plugin's chip, by its place in [`Tileception::plugin_chips`].
     Plugin(usize),
     Network,
@@ -782,9 +780,6 @@ impl Tileception {
             let label = if sharing { "Sharing screen" } else { "Screen captured" };
             chips.push((ChipKind::Capture, label.to_string()));
         }
-        if self.notification_status().is_some_and(|(_, dnd)| dnd) {
-            chips.push((ChipKind::Dnd, "Do not disturb".to_string()));
-        }
         if let Some(player) = self.media.snapshot.media.active() {
             let label = match (player.title.trim(), player.artist.trim()) {
                 ("", _) => player.identity.clone(),
@@ -854,7 +849,6 @@ impl Tileception {
                 match chip.kind {
                     ChipKind::Updates => Hit::Updates,
                     ChipKind::Media => Hit::Media,
-                    ChipKind::Dnd => Hit::Dnd,
                     ChipKind::Plugin(index) => Hit::Plugin(index),
                     ChipKind::Network => Hit::Network,
                     ChipKind::Event => Hit::Event,
@@ -1038,7 +1032,6 @@ impl Tileception {
                     tracing::warn!("{error}");
                 }
             }
-            Hit::Dnd => self.toggle_dnd(),
             Hit::Plugin(index) => self.plugin_chip_clicked(index),
             Hit::Updates => self.toggle_updates_popover(),
             Hit::Network => self.toggle_network(),
@@ -1462,7 +1455,7 @@ impl Tileception {
             }
             let lit = match (chip.kind, hit) {
                 (ChipKind::Updates, hit) => hit == Some(Hit::Updates) || self.updates.popover.zoom.open,
-                (ChipKind::Media, Some(Hit::Media)) | (ChipKind::Dnd, Some(Hit::Dnd)) => true,
+                (ChipKind::Media, Some(Hit::Media)) => true,
                 (ChipKind::Network, _) if self.network.zoom.open => true,
                 (ChipKind::Network, Some(Hit::Network)) => true,
                 (ChipKind::Event, Some(Hit::Event)) => true,
@@ -1490,7 +1483,6 @@ impl Tileception {
                 ),
                 ChipKind::Network => (glyph::WIFI_DISABLED, theme.muted),
                 ChipKind::Capture => (SCREEN, theme.danger),
-                ChipKind::Dnd => (glyph::MOON, theme.warning),
                 ChipKind::Event => (glyph::CALENDAR, theme.accent),
             };
             painter.shape(
@@ -1519,7 +1511,10 @@ impl Tileception {
         hover_fill(painter, layout.notifications, bell_lit);
         let dnd = self.notification_status().is_some_and(|(_, dnd)| dnd);
         let bell = Rect::new(layout.notifications.x + 2.0, layout.notifications.y, 24.0, layout.notifications.h);
-        painter.glyph(glyph::BELL, bell, ICON, if dnd { theme.muted } else { theme.text.alpha(0.86) });
+        // The mode's own icon: a bell, a struck bell or the moon.
+        let sign =
+            if self.notifications.service.is_some() { self.notification_mode().mode.glyph() } else { glyph::BELL };
+        painter.glyph(sign, bell, ICON, if dnd { theme.muted } else { theme.text.alpha(0.86) });
         if let Some((count, _)) = self.notification_status().filter(|(unread, _)| *unread > 0) {
             let label = count.to_string();
             let width = self.badge_width(&label);
@@ -1539,6 +1534,12 @@ impl Tileception {
         }
 
         // Tooltips and previews open towards the layout.
+        if hit == Some(Hit::Notifications) && !self.notifications.open && self.notifications.service.is_some() {
+            let count = self.notification_status().map_or(0, |(count, _)| count);
+            let (title, body) = self.mode_tooltip(count);
+            let left = (layout.notifications.right() - 320.0).max(bar.x + 6.0);
+            self.bar_tooltip(painter, left, bar, &title, &body);
+        }
         if hit == Some(Hit::Launcher) {
             self.bar_tooltip(painter, layout.launcher.x, bar, "Launcher", "Search apps and commands (Super)");
         }

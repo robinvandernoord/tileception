@@ -303,6 +303,8 @@ pub mod glyph {
     pub const POWER: &str = r#"<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>"#;
     pub const SEARCH: &str = r#"<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>"#;
     pub const BELL: &str = r#"<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/>"#;
+    pub const BELL_OFF: &str =
+        r#"<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0M3 3l18 18"/>"#;
     pub const CLOSE: &str = r#"<path d="M18 6L6 18M6 6l12 12"/>"#;
     pub const DOWNLOAD: &str = r#"<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>"#;
     pub const COPY: &str = r#"<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/>"#;
@@ -721,6 +723,9 @@ pub enum Look {
     Warning,
     /// Bare until the pointer is over it, for buttons inside a row or card.
     Quiet,
+    /// The one chosen of a set side by side, such as a segment of a switch:
+    /// tinted with the accent, its icon in the accent.
+    Chosen,
 }
 
 /// A button: what it shows and the state it is in. [`Painter::button`] turns
@@ -753,6 +758,8 @@ pub struct Split {
     pub hover: bool,
     /// Whether what the arrow opens is open.
     pub open: bool,
+    /// A dot on the arrow: a choice made there is in effect.
+    pub marked: bool,
 }
 
 impl<'a> Button<'a> {
@@ -1127,13 +1134,21 @@ impl<'a> Painter<'a> {
         let radius = if round { rect.h as f32 / 2.0 } else { theme.radius };
         let outlined = |fill: Colour| Shape { border_width: 1.0, border: theme.border, ..Shape::filled(fill, radius) };
         let (shape, colour) = match (look, enabled) {
-            (Look::Quiet, false) => (None, theme.muted.alpha(0.5)),
+            (Look::Quiet | Look::Chosen, false) => (None, theme.muted.alpha(0.5)),
             (_, false) => (Some(outlined(Colour::TRANSPARENT)), theme.muted),
             (Look::Primary, true) => {
                 let (shape, colour) = accent_button(theme, radius, hover);
                 (Some(shape), colour)
             }
             (Look::Quiet, true) => (hover.then(|| Shape::filled(theme.surface_raised, radius)), theme.text),
+            (Look::Chosen, true) => (
+                Some(Shape {
+                    border_width: 1.0,
+                    border: theme.accent.alpha(0.6),
+                    ..Shape::filled(theme.accent.alpha(if hover { 0.24 } else { 0.18 }), radius)
+                }),
+                theme.text,
+            ),
             (Look::Plain | Look::Warning, true) => (
                 Some(outlined(if hover { theme.border } else { theme.surface_raised })),
                 if look == Look::Warning { theme.warning } else { theme.text },
@@ -1155,6 +1170,7 @@ impl<'a> Painter<'a> {
             self.shape(rect, shape);
         }
         let primary = look == Look::Primary;
+        let ink = if look == Look::Chosen && enabled { theme.accent } else { colour };
         match (glyph, swatch) {
             (_, Some(fill)) => {
                 let side = (rect.w.min(rect.h) * 0.5).round();
@@ -1170,10 +1186,10 @@ impl<'a> Painter<'a> {
                 let (text_w, _) = self.measure(label, main.w, style);
                 let (icon, space) = (15.0, 6.0);
                 let left = main.x + ((main.w - icon - space - text_w) / 2.0).max(4.0);
-                self.glyph(glyph, Rect::new(left, main.y, icon, main.h), 15, colour);
+                self.glyph(glyph, Rect::new(left, main.y, icon, main.h), 15, ink);
                 self.text(label, Rect::new(left + icon + space, main.y, text_w + 2.0, main.h), style);
             }
-            (Some(glyph), None) => self.glyph(glyph, rect, if primary { 14 } else { 15 }, colour),
+            (Some(glyph), None) => self.glyph(glyph, rect, if primary { 14 } else { 15 }, ink),
             (None, None) => {
                 let main = Rect::new(rect.x, rect.y, rect.w - split.map_or(0.0, |split| split.width), rect.h);
                 let style = Style::new(theme.font_size * 0.88, colour).weight(if primary { 600 } else { 500 });
@@ -1200,6 +1216,9 @@ impl<'a> Painter<'a> {
             }
             self.fill(Rect::new(arrow.x, arrow.y + 7.0, 1.0, arrow.h - 14.0), colour.alpha(0.35), 0.0);
             self.glyph(glyph::CHEVRON_DOWN, arrow, 13, colour);
+            if split.marked {
+                self.fill(Rect::new(arrow.right() - 9.0, arrow.y + 7.0, 5.0, 5.0), theme.accent, 2.5);
+            }
         }
     }
 

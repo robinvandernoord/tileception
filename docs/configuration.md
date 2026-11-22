@@ -353,6 +353,40 @@ See [System tray](usage.md#system-tray) for icon actions and overflow controls.
 
 ### Notifications
 
+Set notification sounds, the morning and evening times and sounds per app on
+the **Notifications** page in Settings, where each family's sounds can be
+played to hear them, or in `config.toml`.
+
+```toml
+[notifications]
+sounds = "vibes"
+volume = 70
+alarms_in_silent = false
+morning = "09:00"
+evening = "18:00"
+
+# Optional sound choices for individual apps
+[notifications.app_sounds]
+"org.mozilla.Thunderbird" = "knock"
+```
+
+`sounds` selects Vibes (`"vibes"`, the default), Knock (`"knock"`) or
+Breath (`"breath"`). Each family has a sound for low, normal and critical
+urgency, plus a looping alarm for Timers. `volume` runs from 0 to 100 percent.
+Set `alarms_in_silent = true` to let Timers alarms ring in Silent mode.
+`morning` and `evening` set the times used by the panel's morning and evening
+presets.
+
+In `[notifications.app_sounds]`, use the app's desktop entry or the name its
+notifications carry. Pick a sound family or use `"off"` to silence that app.
+The bell button on a notification card saves the choice here.
+
+The [notification panel](usage.md#launcher-and-notifications) sets the current
+mode. Tileception saves it in `$XDG_STATE_HOME/tileception/notification-mode.toml`
+(`~/.local/state/tileception/notification-mode.toml` by default).
+
+#### Replacement notification services
+
 A replacement notification service needs both a daemon and a command to open
 its interface. For example, with swaync installed:
 
@@ -367,8 +401,8 @@ notifications = "swaync-client -t"
 Saving this stops Tileception's notification service. Log out and back in (or
 run `tileception msg restart`) to start swaync through autostart. Super+N then opens swaync's interface.
 
-With `notifications = "none"`, Tileception's notification service is disabled,
-but Super+N still opens the built-in sound controls.
+Set `notifications = "none"` under `[shell]` to disable Tileception's
+notification service and keep the built-in sound controls on Super+N.
 
 ### Calendar events
 
