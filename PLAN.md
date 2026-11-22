@@ -62,23 +62,58 @@ Report testing in the conversation, the commit or the pull request instead.
 ### Next
 
 - The premade Tileception ISO (`iso/`, `.github/workflows/iso.yml`, the
-  download page), the rest. Decided:
-  - On Ubuntu 26.04, `tileception-desktop`'s recommendation of `nautilus`
-    pulls in GNOME Shell, GDM and Ubuntu's GNOME session: Nautilus
-    recommends `xdg-desktop-portal-gnome` there, which recommends
-    `gnome-shell`. (On 24.04 Nautilus takes any portal backend, and
-    `xdg-desktop-portal-gtk` is one.) The ISO, which starts from Ubuntu's
-    minimal desktop, purges them either way; for
-    `apt install tileception-desktop` elsewhere, still to decide: another
-    file manager (Thunar brings no desktop with it; Nemo and Caja bring
-    parts of Cinnamon and MATE), or Nautilus left out of the
-    recommendations.
+  download page):
+  - Nautilus stays the file manager on the ISO, which starts from Ubuntu's
+    minimal desktop and purges GNOME Shell afterwards. For
+    `apt install tileception-desktop` elsewhere on Ubuntu 26.04, Nautilus
+    pulls in the whole GNOME desktop: it recommends
+    `xdg-desktop-portal-gnome`, which depends on `gnome-shell` (Mutter,
+    GNOME Settings, Evolution Data Server), which recommends GDM, Ubuntu's
+    GNOME session and GNOME's control centre. GDM then competes with
+    greetd for the login screen. None of the other GNOME defaults in
+    `packaging/desktop/packages.txt` brings GNOME Shell. (On 24.04 Nautilus
+    takes any portal backend, and `xdg-desktop-portal-gtk` is one.) Still
+    to decide, after trying them: Thunar (brings no desktop), Nemo or Caja
+    (bring parts of Cinnamon and MATE), or Nautilus left out of
+    `tileception-desktop`'s recommendations with the ISO installing it
+    itself.
   - The arm64 ISOs are built but not installed in CI: GitHub's arm64
     runners have no KVM. Try one on an arm64 machine before trusting it.
   - Before release, what someone trying the ISO in a VM meets first: the
     VMware absolute mouse (the kernel's "VirtualPS/2 VMware VMMouse", which
     QEMU offers through its default `vmport` on x86, and VMware itself)
     moves nothing.
+- Looser plugin management commands, in the launcher and in
+  `tileception msg`. Decided:
+  - `plugin` and `plugins` both manage plugins, with aliases for each verb:
+    `add` and `install`; `remove`, `uninstall` and `delete`; `update` and
+    `upgrade`; `list`; `configure`. These words are reserved and cannot be
+    plugin ids, so `plugin <id> <tool>` still calls a plugin's tool.
+  - Hints and docs keep showing one form, `plugins add owner/repo`.
+  - Key hints in rows read "Press Enter to …". The rows' wording, in
+    `launcher.rs`:
+    - "Type plugins add owner/repo, such as …" becomes "Type plugins add
+      owner/repo".
+    - "Wait for it to finish; a notification says when" (twice) and "A
+      notification says when it is done" become "You'll get a notification
+      when it finishes", with the busy step (`{busy}…`) as the title.
+    - "Finding its commit and reading its pyproject.toml from GitHub"
+      becomes "Getting plugin details from GitHub".
+    - "Reads its pyproject.toml from GitHub; nothing is installed yet"
+      becomes "Press Enter to preview the plugin".
+    - "runs its code as you" becomes "Runs with your permissions".
+    - "Runs its setup · {source}" becomes "Press Enter to run setup again".
+    - "From {source}" on an update row becomes "Checks {source} for
+      updates".
+    - "{source} at {commit} · Enter configures it" becomes "{source} at
+      {commit}. Press Enter to configure".
+    - "Runs its uninstall, then removes the package and the manifest
+      installing made" becomes "Runs the plugin's uninstall step, then
+      removes the package".
+    - "No installed plugin starts with {argument}" becomes "No installed
+      plugin ID starts with "{argument}"".
+    - "No plugins were installed from a repository" becomes "No plugins
+      installed from GitHub".
 
 ### Later
 
@@ -89,40 +124,22 @@ Report testing in the conversation, the commit or the pull request instead.
   their keys (Ctrl+V in the username field included) and the pointer
   (caret placement, selection, middle click) going through the shared
   paths instead of the greeter's own handler.
-
-- Plugins in more places (the launcher conventions are in
-  [the plugin guide](docs/plugins.md)). Decided:
-  - New places are new `Place`s in the shared plugin host, like the
-    launcher, the panel and commands. Each place's content is a
-    `tileception://` resource the host subscribes to, as the panel's is.
-  - Each place gets a manifest block with the user's options for it, next
-    to `[launcher]`; the plugin itself reports over MCP what it offers
-    there. Config overrides use the same blocks.
-  - The instant pure launcher sources (calculations, conversions, times,
-    colours, characters) and those needing compositor state (apps, windows,
-    commands, app details, `>`, the colour picker) stay built in, as do the
-    capture, Do not disturb and media chips.
-  - The bundled smart home plugin goes into the remaining places first:
-  - `tileception msg home` stays as a shorthand for the home plugin's
-    `command` tool until key bindings in existing configs have moved to
-    `tileception msg plugin home ...`.
-  - Not on the welcome screen or the login screen, not for events (window
-    opened, screen added), and not for layout, input or placement.
-- Plugins from GitHub releases for `plugins add`, beside the Python packages
-  it installs with uv: a repository without `pyproject.toml` whose latest
-  release has an archive for this architecture, downloaded and checked like
-  Doctor's binary agents (`tileception-acp/src/install.rs`), with the same
-  standard subcommands. Update replaces the archive with the newest release.
 - Optional: a tiny local tool-calling model (Cactus Needle or similar) to
   map free text in the launcher onto actions such as timers, with the
-  rule-based parsing kept as the default.
+  rule-based parsing kept as the default. Switching it on downloads the
+  model; nothing ships in a package.
 - Feedback from inside Tileception for people without a GitHub account: a
-  small relay (OVH host or a serverless function) holding a GitHub App's
-  key, which files the issue as the App's bot. The key never ships in
-  Tileception. The relay needs rate limiting, a length cap and a spam check,
-  and new issues should wait in triage before they show publicly.
-- Doctor's window, the rest: a tiled window comes back as a new tile,
-  without its place in the layout.
+  small relay holding a GitHub App's key, which files the issue as the App's
+  bot. The key never ships in Tileception. The relay needs rate limiting, a
+  length cap and a spam check. Decided:
+  - The relay is self-hosted, run with docker-compose.
+  - People write it in the existing "Send feedback" dialog
+    (`feedback.rs`), which gets a way to send through the relay beside
+    opening the issue in the browser.
+  - Issues are filed right away and are public at once, with a label
+    marking them as sent through the relay. Spam is closed afterwards.
+  - A screenshot attached in the dialog goes to the relay too, which
+    stores it and links it in the issue body, so nobody pastes it by hand.
 - Game mode: Tileception's own Super bindings step aside while a game has
   the keyboard, so Super and Super combinations reach the game. Decided:
   - Super+Caps Lock toggles it (check that the binding can see Caps Lock
@@ -130,10 +147,10 @@ Report testing in the conversation, the commit or the pull request instead.
   - It also switches on by itself when a game starts. To find out: what
     marks a game reliably (fullscreen plus Steam's `steam_app_*` app ids,
     Proton and Wine, gamescope, Lutris and Heroic, or a per-app rule).
-  - A small overlay says game mode is on, and how to leave it, when it
-    switches on.
-  - Still open: what Super does while it is on (nothing at all, a long hold
-    that still reaches Tileception, or one reserved combination).
+  - When it switches on, a small toast at the top centre says game mode is
+    on and that Super+Caps Lock leaves it, then fades out.
+  - While it is on, Super and its combinations all reach the game. Super
+    pressed on its own also shows the same toast again.
   - Gaming on Tileception in general, to look into before building: VRR
     and tearing (`wp_tearing_control`), direct scanout of a fullscreen
     game's buffers, Xwayland games and their pointer grabs, gamescope
@@ -148,13 +165,13 @@ Report testing in the conversation, the commit or the pull request instead.
     frost (no blur redone behind it every frame) and keeps the screen
     awake. A game's content type is also a hint for game mode switching on
     by itself.
+
+### Maybe someday
+
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
   addressed by `cid` = node id over one shared gateway connection, with
   reports routed by `cid`.
-
-### Maybe someday
-
 - Slow-resizing clients (Electron, Xwayland) are drawn stretched until they
   commit the new size; pad a buffer smaller than its slot instead, and scale
   down one that is larger (never crop it). Only if it shows up in practice.
@@ -184,7 +201,19 @@ Report testing in the conversation, the commit or the pull request instead.
   waits on each, and installing there from here.
 - The update manager in the Super+X power menu, such as a "Restart and
   install" action; updates stay in the update manager.
-- Picking Doctor's agent during `tileception-setup`.
+- Picking the Wizard's agent during `tileception-setup`.
+- Plugins on the welcome screen or the login screen, for events (window
+  opened, screen added), or for layout, input or placement. The instant
+  launcher sources (calculations, conversions, times, colours, characters),
+  those needing compositor state (apps, windows, commands, app details, `>`,
+  the colour picker) and the capture, Do not disturb and media chips stay
+  built in.
+- Retiring `tileception msg home`; it stays as a shorthand for the home
+  plugin's `command` tool, beside `tileception msg plugin home ...`.
+- Plugins installed from GitHub release archives; `plugins add` installs
+  Python packages with uv(env) only.
+- Putting a tiled Wizard window back in its old place in the layout when it
+  opens again; like any new window, it comes back as a new tile.
 - Bindings that repeat while held, pass through to the app or work while
   locked (beyond the media keys); click-to-kill.
 - Input methods (text-input and input-method protocols).
