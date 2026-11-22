@@ -186,7 +186,11 @@ Tileception's launcher.
 Headless instances run Xwayland too, so X11 programs can be tried the same way.
 Start programs inside an instance with `tileception msg spawn <command line>`,
 drive them with `pointer`, `click`, `press`, `release`, `key` and `type`, and
-check the result with `screenshot <file.png>`.
+check the result with `screenshot <file.png>`. A screenshot is taken from the
+next frame drawn after the command, and `screenshot` answers once the file is
+written, so it shows the effect of the commands before it and none after. A
+program that reacts to input still needs time to draw its answer before the
+screenshot.
 
 ### Screen sharing
 

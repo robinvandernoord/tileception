@@ -50,7 +50,9 @@ use crate::{Tileception, render::OutputElement};
 
 /// Where a finished capture goes.
 pub enum CaptureTarget {
-    File(PathBuf),
+    /// A PNG file for `tileception msg screenshot`, answered by its request
+    /// number once written.
+    File { path: PathBuf, request: u64 },
     /// A copy into a buffer of a screen sharing or screenshot program.
     Copy(ClientCopy),
     /// The whole output without the rubber duck, for its question.
@@ -62,6 +64,9 @@ pub enum CaptureTarget {
     /// The recorded area, with the pointer, for the next frame of a recording.
     Recording,
 }
+
+/// How long `tileception msg screenshot` waits for the frame it is taken from.
+const SCREENSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What is on screen, ready to be rendered into each capture's buffer.
 struct Scene<E = OutputElement> {
@@ -304,7 +309,10 @@ impl Tileception {
         for capture in pending {
             match capture.target {
                 CaptureTarget::Copy(copy) => copy.frame.fail(CopyFailure::Stopped),
-                CaptureTarget::File(path) => tracing::warn!("output disconnected before capture to {}", path.display()),
+                CaptureTarget::File { path, request } => {
+                    tracing::warn!("output disconnected before capture to {}", path.display());
+                    self.reply_later(request, Err("the screen went away before the screenshot".into()));
+                }
                 CaptureTarget::Duck => {}
                 CaptureTarget::ColourPick => self.cancel_colour_pick(),
                 CaptureTarget::Shot => self.cancel_shot(),
@@ -318,10 +326,15 @@ impl Tileception {
         Rectangle::from_size(self.output_pixels().into())
     }
 
-    /// Queues a screenshot of the whole output into a PNG file.
+    /// Takes a screenshot of the whole output into a PNG file on the next
+    /// frame, which it asks for. The command is answered once the file is
+    /// written, so what a script does next is not in it.
     pub fn screenshot(&mut self, path: PathBuf) {
         let region = self.output_region();
-        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::File(path) });
+        let request = self.ipc.next_request();
+        self.defer_reply_for(request, SCREENSHOT_WAIT, "the screen was not drawn in time for the screenshot");
+        self.pending_captures.push(PendingCapture { region, target: CaptureTarget::File { path, request } });
+        self.schedule_render();
     }
 
     /// Queues a screenshot of the whole output for the rubber duck.
@@ -490,16 +503,18 @@ impl Tileception {
                 tracking = Some((copy.history.clone(), key));
             }
             match capture.target {
-                CaptureTarget::File(path) => match pixels(renderer, &mut texture, &scene, region) {
-                    Ok(rgba) => {
+                CaptureTarget::File { path, request } => {
+                    let written = pixels(renderer, &mut texture, &scene, region).and_then(|rgba| {
                         let (width, height) = (region.size.w as u32, region.size.h as u32);
-                        match write_png(&path, width, height, &rgba) {
-                            Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
-                            Err(err) => tracing::warn!("could not write {}: {err}", path.display()),
-                        }
+                        write_png(&path, width, height, &rgba)
+                            .map_err(|err| format!("could not write {}: {err}", path.display()))
+                    });
+                    match &written {
+                        Ok(()) => tracing::info!("screenshot saved to {}", path.display()),
+                        Err(err) => tracing::warn!("screenshot failed: {err}"),
                     }
-                    Err(err) => tracing::warn!("capture failed: {err}"),
-                },
+                    self.reply_later(request, written.map(|()| "ok\n".to_string()));
+                }
                 CaptureTarget::Copy(mut copy) => {
                     let copied = if let Some(shown) = pointer_scene.as_ref().filter(|_| copy.cursor) {
                         copy.buffer.fill(renderer, &mut pointer_texture, shown, region)
