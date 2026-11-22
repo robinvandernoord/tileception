@@ -223,6 +223,7 @@ impl Tileception {
             Kind::Battery => {
                 "Choose the focused border colour at each charge threshold. The lowest matching threshold wins."
             }
+            Kind::AppSounds => "Choose a sound set or mute an app. Other apps use the default sound set.",
         };
         if screen.kind != Kind::Displays || layout.panel.w >= 900. {
             painter.text(
@@ -556,13 +557,21 @@ impl Tileception {
                     Kind::Battery => {
                         ("No battery colours", "Add a charge level to colour the focused border below it.")
                     }
+                    Kind::AppSounds => (
+                        "No app-specific sounds yet",
+                        "Add an app here or click the bell next to one of its notifications in the notification panel.",
+                    ),
                     _ => ("Nothing here yet", "Use Add to create the first entry."),
                 }
             } else {
                 ("Nothing selected", "Choose an entry from the list to edit it.")
             };
-            let left = if screen.rows.is_empty() { layout.list.x } else { layout.body.x };
-            let block = Rect::new(left, layout.body.y + 12., (layout.panel.right() - left - 24.).max(1.), 80.);
+            let (left, top) = if screen.rows.is_empty() {
+                (layout.list.x, layout.list.y.max(layout.body.y))
+            } else {
+                (layout.body.x, layout.body.y)
+            };
+            let block = Rect::new(left, top + 12., (layout.panel.right() - left - 24.).max(1.), 80.);
             painter.text(title, Rect::new(block.x, block.y, block.w, 26.), Style::new(15., theme.text).weight(500));
             painter.text(text, Rect::new(block.x, block.y + 28., block.w, 40.), Style::new(12., theme.muted).lines(2));
         }

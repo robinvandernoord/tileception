@@ -179,6 +179,8 @@ pub enum Paste {
     Network,
     /// Text being typed onto an area screenshot.
     Shot,
+    /// The time typed in the notification mode menu.
+    NotificationMode,
 }
 
 /// One row of results.
@@ -783,6 +785,9 @@ impl Tileception {
             (Paste::Duck, Clip::Text(text)) if self.duck.typing() => self.duck_insert_paste(&text),
             (Paste::Shot, Clip::Text(text)) if self.shot_typing() => self.shot_insert_paste(&text),
             (Paste::Network, Clip::Text(text)) if self.network_typing() => self.network_insert_paste(&text),
+            (Paste::NotificationMode, Clip::Text(text)) if self.mode_field_typing() => {
+                self.mode_field_insert_paste(&text)
+            }
             (Paste::Feedback(epoch, title), Clip::Text(text)) => self.feedback_insert_paste(epoch, title, &text),
             _ => return,
         }
@@ -1281,6 +1286,7 @@ impl Tileception {
             | Paste::Duck
             | Paste::Prompt(..)
             | Paste::Network
+            | Paste::NotificationMode
             | Paste::Shot => false,
         };
         if let Some(clip) = owned.as_ref().filter(|clip| !matches!(clip, Clip::Remote(_))) {

@@ -13,6 +13,7 @@ libseat-dev       # device access and switching consoles without root
 libdrm-dev        # driving the display (DRM/KMS)
 libxkbcommon-dev  # keyboard layouts
 libpam0g-dev      # checking the password on the lock screen (tileception-auth)
+libasound2-dev    # playing notification sounds (rodio, through ALSA)
 
 [runtime]
 xwayland                # X11 programs

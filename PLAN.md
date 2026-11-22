@@ -114,6 +114,10 @@ Report testing in the conversation, the commit or the pull request instead.
       plugin ID starts with "{argument}"".
     - "No plugins were installed from a repository" becomes "No plugins
       installed from GitHub".
+- The Wizard's agent list ("On this computer", `doctor.rs`): agents the
+  Wizard installed itself can be uninstalled from there, for example after
+  installing one by accident. Their rows say "Managed installation" (with
+  the version) instead of "Wizard's copy".
 
 ### Later
 

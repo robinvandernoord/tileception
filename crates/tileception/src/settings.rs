@@ -17,6 +17,7 @@ mod home_page;
 mod interaction;
 mod keymap;
 mod network_page;
+mod notifications_page;
 mod overview;
 mod refresh;
 pub(crate) mod sections;
@@ -86,7 +87,7 @@ const CATEGORIES: &[Category] = &[
     Category {
         title: "Power & battery",
         summary: "Idle, locking & battery",
-        description: "Idle time, screen locking and battery care.",
+        description: "Screen locking, idle timeouts and battery settings.",
         icon: glyph::POWER,
     },
     Category {
@@ -128,8 +129,14 @@ const CATEGORIES: &[Category] = &[
     Category {
         title: network_page::TITLE,
         summary: "Wi-Fi, saved & hidden networks",
-        description: "Connections, saved Wi-Fi networks and hidden networks. Changes here apply at once.",
+        description: "Join or manage Wi-Fi networks. Changes apply immediately.",
         icon: glyph::WIFI,
+    },
+    Category {
+        title: notifications_page::TITLE,
+        summary: "Sound settings & mode end times",
+        description: "Switch notification modes in the notification panel.",
+        icon: glyph::BELL,
     },
 ];
 
@@ -164,8 +171,8 @@ const FIELDS: &[Field] = &[
     field(
         0,
         "theme.accent_end",
-        "Accent end",
-        "Where the focused window's border ends. The same colour makes it solid.",
+        "Second accent colour",
+        "Set both accent colours to the same value for a solid border.",
         Control::Colour,
     ),
     field(
@@ -195,7 +202,7 @@ const FIELDS: &[Field] = &[
         0,
         "theme.buttons",
         "Button style",
-        "How the main button of a panel shows the accent.",
+        "How primary buttons use the accent colour.",
         Control::Choice(&["halo", "gradient", "flat"]),
     ),
     field(
@@ -237,7 +244,7 @@ const FIELDS: &[Field] = &[
         1,
         "general.restore_layout",
         "Restore window positions",
-        "Remember positions as apps reopen. Experimental; one output. Does not start apps.",
+        "Restore positions when you reopen apps. Experimental, for one display.",
         Control::Toggle,
     ),
     field(
@@ -259,7 +266,7 @@ const FIELDS: &[Field] = &[
         11,
         "shell.bar_network",
         "Network chip",
-        "Wi-Fi and wired status in the bar; click it to join a network.",
+        "Show connection status in the bar. Click it to join a network.",
         Control::Toggle,
     ),
     field(
@@ -276,6 +283,48 @@ const FIELDS: &[Field] = &[
         "Notifications",
         "Built-in notifications or your external command.",
         Control::Choice(&["builtin", "none"]),
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.sounds",
+        "Notification sounds",
+        "Default sound set for apps in Sound mode.",
+        Control::Choice(&["vibes", "knock", "breath"]),
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.volume",
+        "Volume",
+        "Applies to notifications and timer alarms.",
+        Control::Number(0., 100., 5., "%"),
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.alarms_in_silent",
+        "Timer alarms in Silent mode",
+        "Let alarms ring while regular notifications stay quiet.",
+        Control::Toggle,
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.morning",
+        "Morning",
+        "End time for the morning option in the mode menu, e.g. 09:00.",
+        Control::Text,
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.evening",
+        "Evening",
+        "End time for the evening option in the mode menu, e.g. 18:00.",
+        Control::Text,
+    ),
+    field(
+        notifications_page::PAGE,
+        "notifications.app_sounds",
+        "Per-app sounds",
+        "Choose different sounds or turn them off for individual apps.",
+        Control::Section,
     ),
     field(
         2,
@@ -327,7 +376,7 @@ const FIELDS: &[Field] = &[
         3,
         "touchpad.follow_fingers",
         "Gestures follow your fingers",
-        "Swipes and pinches move the view as you go; let go early to cancel.",
+        "Swipes and pinches move the view as you go. Let go early to cancel.",
         Control::Toggle,
     ),
     field(
@@ -369,7 +418,7 @@ const FIELDS: &[Field] = &[
         4,
         "battery.hibernate_at",
         "Hibernate at",
-        "Once per discharge. Zero disables hibernation.",
+        "Hibernate once when the battery drops to this level. Set to 0 to disable.",
         Control::Number(0., 20., 1., "%"),
     ),
     field(4, "battery.alerts", "Low battery alerts", "Notifications at 20, 15 and 10 percent.", Control::Toggle),
@@ -542,7 +591,7 @@ const FIELDS: &[Field] = &[
         8,
         "outputs",
         "Displays",
-        "Arrange monitors, how the pointer crosses between them, scaling and screen areas.",
+        "Arrange and scale displays. Set screen areas and how the pointer crosses edges.",
         Control::Section,
     ),
     field(
@@ -606,6 +655,8 @@ enum Hit {
     Reference,
     AdvancedAppearance,
     ReviewChanges,
+    /// Notifications: hear a family's sound, or stop it.
+    SoundPreview(crate::sound::Family, crate::sound::Clip),
 }
 
 #[derive(Default)]
@@ -680,6 +731,8 @@ pub struct Settings {
     display_preview: Option<display_preview::Preview>,
     /// Closing asks what to do with unapplied changes; the focused choice.
     close_confirm: Option<closing::Choice>,
+    /// The sound being previewed on the Notifications page, since when.
+    sound_preview: Option<(crate::sound::Family, crate::sound::Clip, std::time::Instant)>,
 }
 
 fn values(file: &ConfigFile) -> Result<Vec<Option<toml::Value>>, String> {
@@ -734,6 +787,8 @@ fn group(key: &str) -> &'static str {
         | "shell.polkit"
         | "shell.power_menu"
         | "duck.size" => "Panels",
+        "notifications.morning" | "notifications.evening" => "Mode end times",
+        key if key.starts_with("notifications.") => "Sounds",
         "shell.media" => "Media keys",
         "shell.lock" | "general.lock_command" | "lock.notifications" => "Lock screen",
         "general.suspend_enabled" | "general.welcome" | "greeter.share" => "Session",
@@ -755,6 +810,8 @@ const GROUPS: &[&str] = &[
     "",
     "Bar",
     "Panels",
+    "Mode end times",
+    "Sounds",
     "Media keys",
     "Keyboard",
     "Touchpad",
@@ -858,6 +915,8 @@ struct Frame {
     apps: Option<defaults_page::AppsFrame>,
     /// The Network page's cards.
     network: Option<network_page::NetworkFrame>,
+    /// The Notifications page's family cards.
+    sounds: Option<notifications_page::SoundsFrame>,
     /// The battery colour thresholds, under their row on Power & battery.
     levels: Vec<(Rect, usize)>,
     max_scroll: f64,
@@ -1569,6 +1628,7 @@ impl Tileception {
             groups: Vec::new(),
             advanced: None,
             home: None,
+            sounds: None,
             apps: None,
             network: None,
             levels: Vec::new(),
@@ -1673,6 +1733,12 @@ impl Tileception {
                 offset += gap + network.height + 20.;
                 frame.network = Some(network);
             }
+            if self.settings.page == Some(notifications_page::PAGE) && self.settings.query.is_empty() {
+                let gap = if rows.is_empty() { 0. } else { 20. };
+                let sounds = self.settings_sounds_layout(content.x, offset + gap, row_width);
+                offset += gap + sounds.height + 20.;
+                frame.sounds = Some(sounds);
+            }
             frame.max_scroll = (offset - viewport(&frame).h + 20.).max(0.);
             let scroll = self.settings.scroll.min(frame.max_scroll);
             let shift = scroll_top - scroll;
@@ -1687,6 +1753,9 @@ impl Tileception {
             }
             if let Some(network) = &mut frame.network {
                 network.shift(shift);
+            }
+            if let Some(sounds) = &mut frame.sounds {
+                sounds.shift(shift);
             }
             let area = viewport(&frame);
             if let Some(top) = advanced_at {
@@ -1748,6 +1817,15 @@ impl Tileception {
                 if apps.toggle.y >= area.y && apps.toggle.bottom() <= area.bottom() {
                     hits.push((apps.toggle, Hit::AppsAll));
                 }
+                frame.hits.extend(hits);
+            }
+            if let Some(sounds) = &frame.sounds {
+                let hits: Vec<_> = sounds
+                    .buttons
+                    .iter()
+                    .filter(|(rect, _)| rect.y >= area.y && rect.bottom() <= area.bottom())
+                    .copied()
+                    .collect();
                 frame.hits.extend(hits);
             }
             if let Some(network) = &frame.network {
@@ -2033,6 +2111,7 @@ impl Tileception {
                 self.settings_choose_app(entry, choice);
                 self.settings.focus = Some(Hit::AppDefault(entry));
             }
+            Hit::SoundPreview(family, clip) => self.settings_preview_sound(family, clip),
             Hit::AppsAll => {
                 self.settings.apps_all = !self.settings.apps_all;
                 self.settings_load_apps();
@@ -2561,7 +2640,7 @@ impl Tileception {
                 count => format!("{count} settings match \"{}\".", state.query),
             }
         } else if state.page == Some(5) && !state.home_ready {
-            "Not set up yet: follow the three steps below.".into()
+            "Follow the steps below to connect your devices.".into()
         } else if state.page == Some(5) {
             self.settings_home_status()
         } else {
@@ -2601,6 +2680,9 @@ impl Tileception {
             }
             if let Some(network) = &frame.network {
                 self.settings_draw_network_page(painter, network, pointer);
+            }
+            if let Some(sounds) = &frame.sounds {
+                self.settings_draw_sounds(painter, sounds);
             }
         });
         for (rect, hit) in &frame.hits {
@@ -2764,6 +2846,12 @@ impl Tileception {
                     };
                     painter.glyph(icon, Rect::new(rect.right() - 28., rect.y, 20., rect.h), 13, theme.muted);
                 }
+                Hit::SoundPreview(family, clip) => {
+                    let playing = self.settings_previewing(family, clip);
+                    let sign = if playing { glyph::STOP } else { glyph::PLAY };
+                    let button = Button::plain(notifications_page::clip_label(clip)).icon(sign);
+                    painter.button(*rect, button.focused(focused), hovered);
+                }
                 Hit::ReviewChanges if state.section.is_some() => {}
                 Hit::ReviewChanges => {
                     if hovered || state.review_changes {
@@ -2803,6 +2891,7 @@ impl Tileception {
                         | Hit::Apply
                         | Hit::Discard
                         | Hit::ResetSection
+                        | Hit::SoundPreview(..)
                 )
             {
                 painter

@@ -12,6 +12,7 @@ pub(super) enum Kind {
     Arguments,
     Rules,
     Battery,
+    AppSounds,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -140,6 +141,7 @@ impl Screen {
             "launch_args" => Kind::Arguments,
             "rules" => Kind::Rules,
             "battery.levels" => Kind::Battery,
+            "notifications.app_sounds" => Kind::AppSounds,
             _ => return Err("Unsupported settings screen".into()),
         };
         let original = crate::config_edit::section_text(source, key)?;
@@ -555,6 +557,15 @@ impl Screen {
                 "Run once when the session starts. Shell syntax is supported.",
                 Form::Text,
             )),
+            Kind::AppSounds => {
+                name("App", "Enter the app name or its desktop entry ID, e.g. org.mozilla.Thunderbird.");
+                fields.push(Spec::key(
+                    "",
+                    "Sound",
+                    "Applies to this app in Sound mode.",
+                    Spec::choice(&[("Vibes", "vibes"), ("Knock", "knock"), ("Breath", "breath"), ("Off", "off")]),
+                ));
+            }
             Kind::Arguments => {
                 name("Application", "Desktop file name, for example firefox.desktop.");
                 array_fields(&mut fields, &row.value, "", "Argument", Form::Text);
@@ -838,6 +849,7 @@ impl Screen {
         let (name, value) = match self.kind {
             Kind::Startup => (String::new(), string("")),
             Kind::Arguments => (String::new(), Value::Array(vec![string("")])),
+            Kind::AppSounds => (String::new(), string("off")),
             Kind::Shortcuts => (String::new(), string("launcher")),
             Kind::Battery => (
                 String::new(),
@@ -946,7 +958,7 @@ impl Screen {
             if self.shadowed(index) {
                 continue;
             }
-            if matches!(self.kind, Kind::Displays | Kind::Touch | Kind::Arguments | Kind::Shortcuts) {
+            if matches!(self.kind, Kind::Displays | Kind::Touch | Kind::Arguments | Kind::Shortcuts | Kind::AppSounds) {
                 if row.name.trim().is_empty() {
                     return Err("Each entry needs a name.".into());
                 }

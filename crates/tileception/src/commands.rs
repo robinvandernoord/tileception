@@ -236,6 +236,9 @@ Shell:
   answer-notification       give the newest popup with buttons the keyboard:
                             arrows or numbers and Enter choose, Esc gives it back
   do-not-disturb [on|off]    toggle do not disturb, or switch it on or off
+  notification-mode [sound|silent|dnd] [for|until <time>]
+                            switch the notification mode (the next one when
+                            left out), such as: dnd for 1h, silent until 18:00
   lock                      lock the screen (see lock_command)
   unlock                    end a lock whatever the locker does (from a console)
   power-menu                lock, log out, suspend, restart or power off
@@ -604,6 +607,26 @@ pub fn parse(line: &str) -> Result<Command, String> {
             Some("off") => Action::DoNotDisturb(Some(false)),
             Some(other) => return Err(format!("do-not-disturb takes on, off or toggle, not {other:?}")),
         },
+        "notification-mode" => {
+            use crate::notification_mode::{Mode, Until};
+            let mode = match args.first().copied() {
+                None | Some("next") => None,
+                Some(name) => Some(
+                    Mode::parse(name)
+                        .ok_or_else(|| format!("notification-mode takes sound, silent, dnd or next, not {name:?}"))?,
+                ),
+            };
+            let until = match args.get(1..).unwrap_or_default() {
+                [] => Until::Off,
+                ["for" | "until", time @ ..] if mode.is_some() && !time.is_empty() => {
+                    let time = time.join(" ");
+                    Until::parse(&time)
+                        .ok_or_else(|| format!("cannot read {time:?} as a time, such as 45m or 18:00"))?
+                }
+                _ => return Err("notification-mode takes a mode, then \"for\" or \"until\" and a time".into()),
+            };
+            Action::NotificationMode(mode, until)
+        }
         "minimap" => Action::Minimap,
         "group" => Action::Group,
         "minimize" => Action::Minimize,
@@ -852,6 +875,20 @@ mod tests {
         assert_eq!(parse("do-not-disturb"), Ok(Command::Action(Action::DoNotDisturb(None))));
         assert_eq!(parse("do-not-disturb on"), Ok(Command::Action(Action::DoNotDisturb(Some(true)))));
         assert_eq!(parse("do-not-disturb off"), Ok(Command::Action(Action::DoNotDisturb(Some(false)))));
+        {
+            use crate::notification_mode::{Mode, Until};
+            assert_eq!(parse("notification-mode"), Ok(Command::Action(Action::NotificationMode(None, Until::Off))));
+            assert_eq!(
+                parse("notification-mode dnd for 1h"),
+                Ok(Command::Action(Action::NotificationMode(Some(Mode::DoNotDisturb), Until::After(60))))
+            );
+            assert_eq!(
+                parse("notification-mode silent until restart"),
+                Ok(Command::Action(Action::NotificationMode(Some(Mode::Silent), Until::Restart)))
+            );
+            assert!(parse("notification-mode loud").is_err());
+            assert!(parse("notification-mode next for 1h").is_err());
+        }
         assert!(parse("do-not-disturb maybe").is_err());
         assert_eq!(parse("duck"), Ok(Command::Duck));
         assert_eq!(parse("game-mode"), Ok(Command::GameMode(crate::game::GameModeCommand::Toggle)));

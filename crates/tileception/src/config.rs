@@ -40,6 +40,8 @@ pub struct ConfigFile {
     pub idle: crate::idle::IdleConfig,
     /// What Tileception's own lock screen shows of notifications.
     pub lock: crate::lock::LockConfig,
+    /// Notification sounds and the times the mode menu offers.
+    pub notifications: crate::notification_mode::NotificationsConfig,
     pub media: crate::media::MediaConfig,
     pub battery: crate::battery::BatteryConfig,
     pub updates: crate::updates::UpdatesConfig,

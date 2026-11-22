@@ -340,15 +340,16 @@ or pm, is the next three o'clock, morning or afternoon; write `03:00` or
 Plain sentences work too, without `timer` in front: "set a timer for 10
 minutes", "10 minute timer for tea", "set an alarm at 7", "remind me at 3 to
 call the dentist", "remind me to stretch in 20 minutes" or "wake me up at
-6:30". The first row says what Enter will start and when it rings.
+6:30". The first row says what Enter will start and when it is due.
 
 Each timer shows as a card under the launcher whenever it is open, with the
 time left, a bar for how far it is, and buttons to add a minute, pause or
 resume, and stop. `timer` and a space also lists the timers, where **Enter**
 offers the same actions. When the time is up, a notification says so and stays
 until you dismiss it; the card stays for ten minutes, or until its tick is
-clicked. An alarm or reminder rings with its name, and has no pause. Timers keep running while Tileception restarts, and one that ended
-meanwhile rings as soon as it is back. There can be 16 timers of up to a day;
+clicked. Alarms and reminders have no pause. Timers keep running while
+Tileception restarts. If one ends during a restart, its notification arrives
+when Tileception is back. There can be 16 timers of up to a day;
 the launcher shows the cards of the four that end first.
 
 Scripts and key bindings use the same tools:
@@ -408,8 +409,27 @@ the arrow keys or **Tab** and press **Enter**. **Escape**, or **Super+Enter**
 again, gives the keyboard back without answering.
 
 **Super+N** opens notification history and sound controls, and your smart home
-devices once [set up](#smart-home). Use the panel's **Do not disturb** control
-to silence ordinary notification popups.
+devices once [set up](#smart-home). Use the switch in the panel to choose how
+notifications arrive.
+
+- **Sound** shows banners and plays notification sounds.
+- **Silent** (the default) shows banners with sound off. Turn on **Alarms still
+  ring** in the Silent menu to hear alarms from Timers.
+- **Do not disturb** silences notifications and hides ordinary banners.
+  Critical notifications, including Timers alarms, still show a banner.
+
+Click the arrow on a mode to choose how long it lasts. **Until you turn it
+off** keeps it across restarts. You can also choose **1 hour**, the next
+evening or morning, or **Until restart**. Choose **Other time...** to type a
+time such as `45m`, `1h30`, `18:00`, `6pm`, `tomorrow 9`, `evening` or
+`restart`. When a temporary mode ends, the last mode chosen without an end
+time comes back. Below the switch, the panel describes the current mode and
+shows its end, such as **until 18:00**. Click the **x** to keep the mode and
+remove its end.
+
+The bar shows a bell for Sound, a crossed-out bell for Silent or a moon for
+Do not disturb, with a badge for the notification count. Click the icon to
+open the panel. Hover over it to see the mode, when it ends and the count.
 
 The panel takes the keyboard when it opens, and again when you click in it; a
 click elsewhere gives the keyboard back to your windows. While it has the
@@ -424,12 +444,19 @@ keyboard:
 | **Tab** / **Shift+Tab**     | Choose the next or previous button or notification: the media card's and the plugin cards' buttons come first |
 | **Enter** or **Space**      | Press the chosen button, or open the chosen notification, as a click would |
 | **Backspace**               | Dismiss the chosen notification                |
-| **D**                       | Switch Do not disturb                          |
+| **D**                       | Switch to the next notification mode           |
+| **T**                       | Open the duration menu for the current mode    |
 | **M**                       | Mute or unmute the sound                       |
 | **Escape**                  | Close the panel                                |
 
 Super shortcuts, and keys that do not type such as volume and media keys, keep
 working while the panel has the keyboard.
+
+The bell button on each card sets the sound for that app. Choose **Like other
+apps** for the default family, pick Vibes, Knock or Breath, or choose **Off**.
+The panel saves the choice in [`[notifications.app_sounds]`](configuration.md#notifications).
+Apps that send the `suppress-sound` hint stay quiet. When a Timers alarm
+sounds, it repeats until you dismiss the notification, for up to two minutes.
 
 The eye button on a card in the panel decides whether that app's
 notifications show in full on Tileception's own lock screen: open when they
@@ -437,10 +464,18 @@ do, crossed out when they don't. It writes the app's exception in
 [`[lock.notification_apps]`](configuration.md#lock-screen-notifications), so
 no config editing is needed.
 
-The panel's actions work from scripts and key bindings too:
-`tileception msg notifications clear` does what **Clear all** does, and
-`tileception msg do-not-disturb on` (or `off`, or nothing to toggle) switches
-Do not disturb.
+The panel's actions work from scripts and key bindings too.
+`tileception msg notifications clear` does what **Clear all** does.
+`tileception msg notification-mode` cycles modes, as does
+`tileception msg notification-mode next`. Choose `sound`, `silent` or `dnd`
+to set a mode directly. Add `for <time>` or `until <time>` after the mode to
+set an end, as in `tileception msg notification-mode dnd for 1h` or
+`tileception msg notification-mode silent until 18:00`.
+
+`tileception msg do-not-disturb on` still turns on Do not disturb. With no
+argument it toggles. Use `tileception msg do-not-disturb off` to leave
+Do not disturb. A temporary Do not disturb returns to the previous mode.
+An indefinite Do not disturb returns to Silent.
 
 In nested mode, notifications and media controls are handled by your host
 desktop by default.

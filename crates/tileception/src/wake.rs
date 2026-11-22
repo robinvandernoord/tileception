@@ -63,7 +63,7 @@ pub fn parse(text: &str) -> Option<Wake> {
 }
 
 /// "7:30", "0730", "7.30", "7h30", "7 30", "7u30", "7am", "7:30 p.m.", "24:00".
-fn clock(text: &str) -> Option<(u32, u32)> {
+pub(crate) fn clock(text: &str) -> Option<(u32, u32)> {
     let compact: String = text.chars().filter(|character| !matches!(character, '.' | ' ')).collect();
     let (text, half) = if let Some(rest) = compact.strip_suffix("am").or_else(|| compact.strip_suffix('a')) {
         (rest.to_string(), Some(false))
@@ -101,7 +101,7 @@ fn clock(text: &str) -> Option<(u32, u32)> {
 }
 
 /// "8h", "8h30", "8h30m", "8 hours 30 minutes", "1.5h", "1:30", "90m", "8".
-fn duration(text: &str) -> Option<u32> {
+pub(crate) fn duration(text: &str) -> Option<u32> {
     if let Some((hours, minutes)) = text.split_once(':') {
         let (hours, minutes): (u32, u32) = (hours.trim().parse().ok()?, minutes.trim().parse().ok()?);
         return (minutes < 60).then_some(hours * 60 + minutes).filter(|total| *total > 0);
@@ -163,7 +163,7 @@ pub(crate) fn at_clock(now: i64, hour: u32, minute: u32, days: i32) -> Option<i6
 }
 
 #[allow(unsafe_code, reason = "local time comes from libc's localtime_r")]
-fn local(timestamp: i64) -> Option<libc::tm> {
+pub(crate) fn local(timestamp: i64) -> Option<libc::tm> {
     let mut datetime = std::mem::MaybeUninit::<libc::tm>::uninit();
     // SAFETY: localtime_r reads `timestamp` and fills the caller-owned `datetime`.
     if unsafe { libc::localtime_r(&(timestamp as libc::time_t), datetime.as_mut_ptr()) }.is_null() {
