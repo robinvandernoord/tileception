@@ -372,6 +372,8 @@ struct Unconfirmed {
 struct PathEntry {
     /// Why the last path typed was not taken.
     error: Option<String>,
+    /// The message typed before, which comes back when the path is done.
+    draft: TextInput,
 }
 
 /// Typing a secret a login asks for, one at a time.
@@ -700,6 +702,16 @@ impl Doctor {
         self.view = view;
         self.focus = None;
         self.scroll = 0.0;
+    }
+
+    /// Leaves typing a path, giving the field back the message it held.
+    fn end_path_entry(&mut self) {
+        let Some(entry) = self.path_entry.take() else { return };
+        if self.view == View::Conversation {
+            self.input = entry.draft;
+        } else {
+            self.stashed = entry.draft;
+        }
     }
 
     fn retire_questions(&mut self) {
@@ -1791,6 +1803,8 @@ impl Tileception {
 
     fn pick_agent(&mut self, agent_id: String) {
         if self.doctor.agent.as_ref() != Some(&agent_id) {
+            // A path being typed was for the agent before.
+            self.doctor.end_path_entry();
             self.doctor.discard_session();
             self.doctor.unconfirmed = None;
             self.doctor.busy = false;
@@ -1805,7 +1819,6 @@ impl Tileception {
     fn choose_installation(&mut self, installation: Installation) {
         let Some(agent_id) = self.doctor.agent.clone() else { return };
         self.doctor.unconfirmed = None;
-        self.doctor.path_entry = None;
         let changed = self.doctor.installations.get(&agent_id) != Some(&installation);
         if changed {
             self.doctor.installations.insert(agent_id, installation);
@@ -1814,6 +1827,7 @@ impl Tileception {
             self.doctor.busy = false;
         }
         self.doctor.show(View::Conversation);
+        self.doctor.end_path_entry();
         self.ensure_session();
     }
 
@@ -1837,11 +1851,12 @@ impl Tileception {
             None
         };
         match error {
-            Some(error) => self.doctor.path_entry = Some(PathEntry { error: Some(error) }),
-            None => {
-                self.doctor.input.clear();
-                self.choose_installation(Installation::Custom(path));
+            Some(error) => {
+                if let Some(entry) = &mut self.doctor.path_entry {
+                    entry.error = Some(error);
+                }
             }
+            None => self.choose_installation(Installation::Custom(path)),
         }
     }
 
@@ -3526,16 +3541,16 @@ impl Tileception {
                     _ => None,
                 };
                 self.doctor.show(View::Conversation);
-                self.doctor.path_entry = Some(PathEntry { error: None });
+                if self.doctor.path_entry.is_none() {
+                    let draft = std::mem::take(&mut self.doctor.input);
+                    self.doctor.path_entry = Some(PathEntry { error: None, draft });
+                }
+                self.doctor.input.clear();
                 if let Some(path) = typed {
-                    self.doctor.input.clear();
                     self.doctor.input.insert(&path);
                 }
             }
-            Hit::CancelPath => {
-                self.doctor.path_entry = None;
-                self.doctor.input.clear();
-            }
+            Hit::CancelPath => self.doctor.end_path_entry(),
             Hit::OpenPicker => {
                 self.doctor.show(View::Picker);
                 if self.doctor.registry.as_ref().is_none_or(|registry| registry.is_err()) && !self.doctor.loading {
