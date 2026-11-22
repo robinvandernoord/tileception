@@ -620,49 +620,99 @@ pub fn read_region(
     data.get(..length).map(<[u8]>::to_vec).ok_or_else(|| "short read".into())
 }
 
-/// Draws `elements` into `buffer`, which holds the frame before when `age`
-/// is 1 (0: nothing yet), and waits for the GPU to finish. Returns the parts
-/// of the picture, `size` pixels, that changed: none when nothing did.
-pub fn draw_changed<T, E>(
-    renderer: &mut GlesRenderer,
-    buffer: &mut T,
+/// A picture drawn again and again into the same buffer: each frame draws
+/// only what changed since the one before, and says where that is.
+pub struct Redraw {
     size: (i32, i32),
-    tracker: &mut OutputDamageTracker,
-    age: usize,
-    elements: &[E],
-    clear: impl Into<Color32F>,
-) -> Result<Vec<Rectangle<i32, Buffer>>, String>
-where
-    GlesRenderer: Bind<T>,
-    E: RenderElement<GlesRenderer>,
-{
-    let mut target = renderer.bind(buffer).map_err(|error| error.to_string())?;
-    let result =
-        tracker.render_output(renderer, &mut target, age, elements, clear).map_err(|error| format!("{error:?}"))?;
-    let damage = result.damage.cloned().unwrap_or_default();
-    // What reads the picture next, another GPU or the CPU, needs it finished.
-    result.sync.wait().map_err(|error| format!("{error:?}"))?;
-    let whole = Rectangle::from_size(size.into());
-    Ok(damage
-        .iter()
-        .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
-        .filter_map(|rect: Rectangle<i32, Buffer>| rect.intersection(whole))
-        .collect())
+    tracker: OutputDamageTracker,
+    /// The buffer holds the frame before, so only damage needs drawing.
+    drawn: bool,
+}
+
+impl Redraw {
+    /// For a picture of `size` pixels, drawn from elements in pixels.
+    pub fn new(size: (i32, i32)) -> Self {
+        Redraw { size, tracker: OutputDamageTracker::new(size, 1.0, Transform::Normal), drawn: false }
+    }
+
+    pub fn size(&self) -> (i32, i32) {
+        self.size
+    }
+
+    /// The frame drawn last did not get where it was going: the next frame
+    /// draws everything again.
+    pub fn forget(&mut self) {
+        self.drawn = false;
+    }
+
+    /// Draws `elements` into `buffer`, the picture's, and waits for the GPU
+    /// to finish. Returns the parts that changed: none when nothing did.
+    pub fn draw<T, E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        buffer: &mut T,
+        elements: &[E],
+        clear: impl Into<Color32F>,
+    ) -> Result<Vec<Rectangle<i32, Buffer>>, String>
+    where
+        GlesRenderer: Bind<T>,
+        E: RenderElement<GlesRenderer>,
+    {
+        // A frame that fails leaves the buffer unknown: the next draws it all.
+        let age = usize::from(std::mem::take(&mut self.drawn));
+        let mut target = renderer.bind(buffer).map_err(|error| error.to_string())?;
+        let result = self
+            .tracker
+            .render_output(renderer, &mut target, age, elements, clear)
+            .map_err(|error| format!("{error:?}"))?;
+        let damage = result.damage.cloned().unwrap_or_default();
+        // What reads the picture next, another GPU or the CPU, needs it finished.
+        result.sync.wait().map_err(|error| format!("{error:?}"))?;
+        self.drawn = true;
+        let whole = Rectangle::from_size(self.size.into());
+        Ok(damage
+            .iter()
+            .map(|rect| Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into()))
+            .filter_map(|rect: Rectangle<i32, Buffer>| rect.intersection(whole))
+            .collect())
+    }
 }
 
 /// Copies `rows` (as [`read_region`] gives them) into `rect` of a picture
-/// `width` pixels wide, four bytes a pixel.
-pub fn patch_rows(picture: &mut [u8], width: i32, rect: Rectangle<i32, Buffer>, rows: &[u8]) {
+/// `width` pixels wide, four bytes a pixel. Returns `false`, copying
+/// nothing, when `rect` is not inside the picture or `rows` do not fill it.
+pub fn patch_rows(picture: &mut [u8], width: i32, rect: Rectangle<i32, Buffer>, rows: &[u8]) -> bool {
     let stride = width.max(0) as usize * 4;
+    let height = picture.len().checked_div(stride).unwrap_or(0);
+    let whole = Rectangle::from_size((width.max(0), height as i32).into());
     let row = rect.size.w.max(0) as usize * 4;
-    if row == 0 {
-        return;
+    if !whole.contains_rect(rect) || row == 0 || rows.len() != row * rect.size.h as usize {
+        return false;
     }
-    for (line, source) in rows.chunks_exact(row).take(rect.size.h.max(0) as usize).enumerate() {
-        let start = (rect.loc.y.max(0) as usize + line) * stride + rect.loc.x.max(0) as usize * 4;
-        if let Some(target) = picture.get_mut(start..start + row) {
-            target.copy_from_slice(source);
+    for (line, source) in rows.chunks_exact(row).enumerate() {
+        let start = (rect.loc.y as usize + line) * stride + rect.loc.x as usize * 4;
+        picture[start..start + row].copy_from_slice(source);
+    }
+    true
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    #[test]
+    fn patch_rows_copies_inside_and_refuses_outside() {
+        // A picture of 3 by 2 pixels, one byte value per pixel.
+        let mut picture = vec![0u8; 3 * 2 * 4];
+        let rect = Rectangle::new((1, 0).into(), (2, 2).into());
+        assert!(patch_rows(&mut picture, 3, rect, &[7; 2 * 2 * 4]));
+        let pixels: Vec<u8> = picture.chunks(4).map(|pixel| pixel[0]).collect();
+        assert_eq!(pixels, [0, 7, 7, 0, 7, 7]);
+        for outside in [Rectangle::new((2, 0).into(), (2, 1).into()), Rectangle::new((-1, 0).into(), (1, 1).into())] {
+            assert!(!patch_rows(&mut picture, 3, outside, &[9; 2 * 4]));
         }
+        assert!(!patch_rows(&mut picture, 3, rect, &[9; 4]), "too few rows");
+        assert!(picture.iter().all(|byte| *byte != 9));
     }
 }
 

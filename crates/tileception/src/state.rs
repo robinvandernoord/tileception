@@ -207,10 +207,6 @@ pub struct Tileception {
     pub theme: crate::theme::Theme,
     pub text: std::cell::RefCell<crate::text::Text>,
     pub shapes: std::cell::OnceCell<crate::shapes::Shapes>,
-    /// The shapes of the built-in window whose picture is being drawn, while
-    /// it is: see `Tileception::render_client_window`. Shapes go there
-    /// rather than to the output's frames.
-    pub drawing_into: std::cell::RefCell<Option<crate::shapes::Frames>>,
     /// The rounded corner shader for tiled windows; `None` if it did not compile.
     pub rounded: std::cell::OnceCell<Option<smithay::backend::renderer::gles::GlesTexProgram>>,
     /// Blurred backdrops for frosted panels.
@@ -446,7 +442,6 @@ impl Tileception {
             theme,
             text: Default::default(),
             shapes: Default::default(),
-            drawing_into: Default::default(),
             rounded: Default::default(),
             frost: Default::default(),
             blur_managers: Default::default(),

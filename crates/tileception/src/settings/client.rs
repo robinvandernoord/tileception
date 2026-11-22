@@ -18,7 +18,6 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             Offscreen,
-            damage::OutputDamageTracker,
             gles::{GlesRenderer, GlesTexture},
         },
     },
@@ -46,11 +45,11 @@ use wayland_protocols::{
     xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
 };
 
-use smithay::utils::{Buffer as BufferCoords, Rectangle, Transform};
+use smithay::utils::{Buffer as BufferCoords, Rectangle};
 
 use super::{Mods, Point, Tileception};
 use crate::{
-    capture::{draw_changed, read_region},
+    capture::{Redraw, read_region},
     render::OutputElement,
 };
 
@@ -107,11 +106,8 @@ struct Frame {
 /// What a window's last frame left behind on the compositor's side, so that
 /// the next frame redraws and reads back only what changed since.
 struct Canvas {
-    size: (i32, i32),
     texture: GlesTexture,
-    damage: OutputDamageTracker,
-    /// The texture holds the frame before, so only damage needs drawing.
-    drawn: bool,
+    redraw: Redraw,
 }
 
 enum Request {
@@ -281,17 +277,14 @@ fn draw(
     clear: [f32; 4],
 ) -> Result<Vec<Part>, String> {
     let canvas = match canvas {
-        Some(canvas) if canvas.size == size => canvas,
+        Some(canvas) if canvas.redraw.size() == size => canvas,
         _ => {
             let texture = renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
             // The elements are in physical pixels already, as on outputs.
-            let damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-            canvas.insert(Canvas { size, texture, damage, drawn: false })
+            canvas.insert(Canvas { texture, redraw: Redraw::new(size) })
         }
     };
-    let age = usize::from(std::mem::take(&mut canvas.drawn));
-    let changed = draw_changed(renderer, &mut canvas.texture, size, &mut canvas.damage, age, elements, clear)?;
-    canvas.drawn = true;
+    let changed = canvas.redraw.draw(renderer, &mut canvas.texture, elements, clear)?;
     changed
         .into_iter()
         .map(|rect| {
@@ -322,17 +315,10 @@ impl Tileception {
         if !client.needs_frame(self.scale, physical) {
             return;
         }
-        /// Puts back the shapes drawn into before, also if `build` panics.
-        struct Restore<'state>(&'state RefCell<Option<crate::shapes::Frames>>, Option<crate::shapes::Frames>);
-        impl<'state> Drop for Restore<'state> {
-            fn drop(&mut self) {
-                *self.0.borrow_mut() = self.1.take();
-            }
-        }
-        client.shapes.next();
-        let restore = Restore(&self.drawing_into, self.drawing_into.replace(Some(client.shapes.clone())));
-        let elements = build(self, renderer);
-        drop(restore);
+        let elements = match self.shapes(renderer) {
+            Some(shapes) => shapes.drawing_into(&client.shapes, || build(self, renderer)),
+            None => build(self, renderer),
+        };
         if let Err(error) = client.render(renderer, &elements, physical, self.theme.background.0) {
             tracing::warn!("could not draw the {} window: {error}", client.kind.title().0);
         }
@@ -501,12 +487,11 @@ impl App {
             self.changed = vec![whole];
         }
         for (rect, rows) in frame.parts {
-            if !whole.contains_rect(rect) || rows.len() != rect.size.w as usize * rect.size.h as usize * 4 {
-                tracing::warn!("{}x{} picture: part {rect:?} does not fit", width, height);
-                continue;
+            if crate::capture::patch_rows(&mut self.picture, width, rect, &rows) {
+                self.changed.push(rect);
+            } else {
+                tracing::warn!("{width}x{height} picture: part {rect:?} does not fit");
             }
-            crate::capture::patch_rows(&mut self.picture, width, rect, &rows);
-            self.changed.push(rect);
         }
     }
 

@@ -13,7 +13,6 @@ use smithay::{
         drm::DrmDeviceFd,
         renderer::{
             Bind, ImportDma, ImportMem, Offscreen,
-            damage::OutputDamageTracker,
             element::{
                 Kind,
                 texture::{TextureRenderBuffer, TextureRenderElement},
@@ -25,19 +24,16 @@ use smithay::{
 };
 
 use crate::{
-    capture::{draw_changed, patch_rows},
+    capture::{Redraw, patch_rows},
     render::OutputElement,
 };
 
 pub struct Mirror {
-    size: Size<i32, Physical>,
     /// What changed since the last frame, on the primary renderer.
-    damage: OutputDamageTracker,
+    redraw: Redraw,
     /// The frame on the secondary GPU.
     shown: TextureRenderBuffer<GlesTexture>,
     handover: Handover,
-    /// The primary's buffer holds the last frame, so only damage needs drawing.
-    drawn: bool,
 }
 
 enum Handover {
@@ -64,16 +60,14 @@ impl Mirror {
         };
         let full = Rectangle::from_size((size.w, size.h).into());
         Ok(Self {
-            size,
-            damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            redraw: Redraw::new((size.w, size.h)),
             shown: TextureRenderBuffer::from_texture(secondary, texture, 1, Transform::Normal, Some(vec![full])),
             handover,
-            drawn: false,
         })
     }
 
     pub fn size(&self) -> (i32, i32) {
-        (self.size.w, self.size.h)
+        self.redraw.size()
     }
 
     /// Draws what changed of `elements` and hands it to the secondary GPU,
@@ -85,26 +79,37 @@ impl Mirror {
         elements: &[OutputElement],
         clear: [f32; 4],
     ) -> Result<OutputElement, String> {
-        let age = usize::from(std::mem::take(&mut self.drawn));
-        let size = (self.size.w, self.size.h);
-        let full = Rectangle::from_size(size.into());
+        let (width, height) = self.redraw.size();
+        let full = Rectangle::from_size((width, height).into());
         match &mut self.handover {
             Handover::Shared(dmabuf) => {
-                let damage = draw_changed(primary, dmabuf, size, &mut self.damage, age, elements, clear)?;
-                self.shown.render().draw(|_| Ok::<_, String>(damage))?;
+                let damage = self.redraw.draw(primary, dmabuf, elements, clear)?;
+                if let Err(error) = self.shown.render().draw(|_| Ok::<_, String>(damage)) {
+                    self.redraw.forget();
+                    return Err(error);
+                }
             }
             Handover::Memory { texture, pixels } => {
-                let damage = draw_changed(primary, texture, size, &mut self.damage, age, elements, clear)?;
+                let damage = self.redraw.draw(primary, texture, elements, clear)?;
                 for rect in damage {
-                    let rows = crate::capture::read_region(primary, texture, rect)?;
-                    patch_rows(pixels, self.size.w, rect, &rows);
-                    self.shown
-                        .update_from_memory(secondary, pixels, rect, Some(vec![full]))
-                        .map_err(|error| error.to_string())?;
+                    let handed = crate::capture::read_region(primary, texture, rect)
+                        .and_then(|rows| {
+                            patch_rows(pixels, width, rect, &rows)
+                                .then_some(())
+                                .ok_or_else(|| format!("{rect:?} is not inside the {width}x{height} frame"))
+                        })
+                        .and_then(|()| {
+                            self.shown
+                                .update_from_memory(secondary, pixels, rect, Some(vec![full]))
+                                .map_err(|error| error.to_string())
+                        });
+                    if let Err(error) = handed {
+                        self.redraw.forget();
+                        return Err(error);
+                    }
                 }
             }
         }
-        self.drawn = true;
         Ok(OutputElement::Texture(TextureRenderElement::from_texture_render_buffer(
             (0.0, 0.0),
             &self.shown,

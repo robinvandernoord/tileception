@@ -27,6 +27,10 @@ const TWO: [Span; 10] = [(2, 1), (1, 1), (1, 1), (2, 1), (1, 1), (1, 1), (1, 1),
 /// Rows of the two-column grid, and of the three-column one below its
 /// first two.
 const ROW: f64 = 150.;
+/// The first two rows of three columns are a quarter of the height to show
+/// the cards in, less this for the gaps between them, and at most `TALL`.
+const BETWEEN_ROWS: f64 = 40.;
+const TALL: f64 = 176.;
 
 /// The cards of an Overview `width` wide, whose top is at `origin`, with
 /// about `height` to show them in: the first two rows of three columns
@@ -35,7 +39,7 @@ pub(super) fn cards(origin: (f64, f64), width: f64, height: f64) -> Vec<Rect> {
     let (columns, rows, spans): (usize, Vec<f64>, &[Span]) = if width < NARROW {
         (2, vec![2. * ROW, ROW, ROW, ROW, ROW, ROW, ROW], &TWO)
     } else {
-        let top = ((height - 40.) / 4.).clamp(ROW, 176.);
+        let top = ((height - BETWEEN_ROWS) / 4.).clamp(ROW, TALL);
         (3, vec![top, top, ROW, ROW, ROW], &WIDE)
     };
     let mut layout = Layout::new(origin);
@@ -93,6 +97,18 @@ mod tests {
             }
             let last = cards[cards.len() - 1];
             assert!(near(last.w, width), "the last card spans the width: {last:?}");
+        }
+    }
+
+    #[test]
+    fn rows_have_their_heights() {
+        let heights = |width, height| cards((0., 0.), width, height).iter().map(|card| card.h).collect::<Vec<_>>();
+        let two = heights(600., 700.);
+        assert!(near(two[0], 2. * ROW) && two[1..].iter().all(|card| near(*card, ROW)), "{two:?}");
+        for (height, top) in [(400., ROW), (700., (700. - BETWEEN_ROWS) / 4.), (2000., TALL)] {
+            let three = heights(1100., height);
+            assert!(near(three[1], top) && near(three[3], top), "at height {height}: {three:?}");
+            assert!(three[4..].iter().all(|card| near(*card, ROW)), "at height {height}: {three:?}");
         }
     }
 

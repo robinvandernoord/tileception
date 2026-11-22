@@ -144,6 +144,9 @@ pub struct Shapes {
     scale: f64,
     reused: Frames,
     outputs: Rc<RefCell<HashMap<WeakOutput, Frames>>>,
+    /// While a built-in window's picture is drawn, its frames, which take
+    /// the shapes made for an output: see [`Shapes::drawing_into`].
+    window: Rc<RefCell<Option<Frames>>>,
 }
 
 /// Where a shape is and how it looks, as exact bits: the same key draws the
@@ -192,7 +195,13 @@ impl Shapes {
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
         let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|err| err.to_string())?;
-        Ok(Shapes { program, scale: 1.0, reused: Default::default(), outputs: Default::default() })
+        Ok(Shapes {
+            program,
+            scale: 1.0,
+            reused: Default::default(),
+            outputs: Default::default(),
+            window: Default::default(),
+        })
     }
 
     /// Starts a frame of `output` (or of the one picture without one).
@@ -204,13 +213,26 @@ impl Shapes {
         self.outputs.borrow_mut().remove(&output.downgrade());
     }
 
+    /// Shapes for `output`, drawn at `scale`; for the window's frames
+    /// instead while [`Shapes::drawing_into`] draws one.
     pub fn on_output(&self, output: Option<&Output>, scale: f64) -> Shapes {
-        self.with_frames(&self.for_output(output), scale)
+        let frames = self.window.borrow().clone().unwrap_or_else(|| self.for_output(output));
+        Shapes { scale, reused: frames, ..self.clone() }
     }
 
-    /// Shapes kept in `frames`, drawn at `scale`.
-    pub fn with_frames(&self, frames: &Frames, scale: f64) -> Shapes {
-        Shapes { scale, reused: frames.clone(), ..self.clone() }
+    /// Starts a frame of `frames`, a built-in window's, and runs `draw` with
+    /// every shape made for an output kept there instead.
+    pub fn drawing_into<T>(&self, frames: &Frames, draw: impl FnOnce() -> T) -> T {
+        /// Puts back the frames drawn into before, also if `draw` panics.
+        struct Restore<'shapes>(&'shapes RefCell<Option<Frames>>, Option<Frames>);
+        impl<'shapes> Drop for Restore<'shapes> {
+            fn drop(&mut self) {
+                *self.0.borrow_mut() = self.1.take();
+            }
+        }
+        frames.next();
+        let _restore = Restore(&self.window, self.window.replace(Some(frames.clone())));
+        draw()
     }
 
     fn for_output(&self, output: Option<&Output>) -> Frames {
