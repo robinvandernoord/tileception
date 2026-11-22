@@ -140,31 +140,36 @@ Report testing in the conversation, the commit or the pull request instead.
     marking them as sent through the relay. Spam is closed afterwards.
   - A screenshot attached in the dialog goes to the relay too, which
     stores it and links it in the issue body, so nobody pastes it by hand.
-- Game mode: Tileception's own Super bindings step aside while a game has
-  the keyboard, so Super and Super combinations reach the game. Decided:
-  - Super+Caps Lock toggles it (check that the binding can see Caps Lock
-    with Super held, and that Caps Lock itself is not toggled as well).
-  - It also switches on by itself when a game starts. To find out: what
-    marks a game reliably (fullscreen plus Steam's `steam_app_*` app ids,
-    Proton and Wine, gamescope, Lutris and Heroic, or a per-app rule).
-  - When it switches on, a small toast at the top centre says game mode is
-    on and that Super+Caps Lock leaves it, then fades out.
-  - While it is on, Super and its combinations all reach the game. Super
-    pressed on its own also shows the same toast again.
-  - Gaming on Tileception in general, to look into before building: VRR
-    and tearing (`wp_tearing_control`), direct scanout of a fullscreen
-    game's buffers, Xwayland games and their pointer grabs, gamescope
-    nested in Tileception, Steam and its overlay, controllers, Feral
-    GameMode, and the keyboard-shortcuts-inhibit protocol that Tileception
-    already honours (how it relates to game mode).
-  - Smoother frames for games and video: `wp_presentation` (when a frame
-    reached the screen), `wp_fifo_v1` (Mesa's Vulkan FIFO present mode uses
-    it) and `wp_commit_timing_v1` (a commit shown no earlier than a set
-    time). Smithay has all three.
-  - `wp_content_type_v1`: a window that says it is a game or video skips
-    frost (no blur redone behind it every frame) and keeps the screen
-    awake. A game's content type is also a hint for game mode switching on
-    by itself.
+- Game mode, more ways to recognise a game: game engine libraries in the
+  process (SDL, Unity, OpenAL, FMOD), Feral GameMode's D-Bus registrations,
+  and X11 games' `_NET_WM_BYPASS_COMPOSITOR` hint (smithay's xwm does not
+  track it). To check with other launchers: whether their games keep
+  the launcher as an ancestor process (Lutris, Heroic, Bottles, and Flatpak
+  launchers in their own pid namespace), and whether Bottles files itself
+  under `Game`.
+- Gaming on Tileception:
+  - Needing real hardware: VRR with an automatic policy (fullscreen and
+    active), tearing (`wp_tearing_control`, which smithay lacks), direct
+    scanout of a fullscreen game's buffers (a scanout tranche in dmabuf
+    feedback), gamescope nested in Tileception, Steam's overlay,
+    controllers.
+  - `zwp_xwayland_keyboard_grab_v1`, with an active grab counted as
+    holding every key, so X11 games that grab the keyboard get Super
+    without game mode.
+  - `wp_commit_timing_v1` (a commit shown no earlier than a set time), which
+    smithay has.
+  - Frames that change nothing wait a refresh plus a millisecond before
+    their feedback and fifo barriers are let go, from a timer that reads the
+    vblank counter; a one-shot vblank event would let fifo programs go
+    sooner (smithay drops plain vblank events, so this needs smithay or
+    the DRM fd's events).
+  - Presentation feedback while an area is presented (zoom) counts every
+    window on the screen, not only those in the area.
+- Recover a screen whose page flip never completes (a driver bug or a GPU
+  hang): it stays waiting for the flip and draws nothing more. After a
+  timeout, give up on that frame, discard the presentation feedback it
+  carries, and draw again, ignoring the late flip event should it still
+  come.
 
 ### Maybe someday
 
