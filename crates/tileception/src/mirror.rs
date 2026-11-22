@@ -14,6 +14,7 @@ use smithay::{
         renderer::{
             Bind, ImportDma, ImportMem, Offscreen,
             damage::OutputDamageTracker,
+            element::RenderElementStates,
             element::{
                 Kind,
                 texture::{TextureRenderBuffer, TextureRenderElement},
@@ -35,6 +36,9 @@ pub struct Mirror {
     handover: Handover,
     /// The primary's buffer holds the last frame, so only damage needs drawing.
     drawn: bool,
+    /// Which surfaces the last frame drew, for presentation feedback: the
+    /// secondary GPU's frame is one picture of them.
+    pub states: RenderElementStates,
 }
 
 enum Handover {
@@ -66,6 +70,7 @@ impl Mirror {
             shown: TextureRenderBuffer::from_texture(secondary, texture, 1, Transform::Normal, Some(vec![full])),
             handover,
             drawn: false,
+            states: RenderElementStates::default(),
         })
     }
 
@@ -86,12 +91,14 @@ impl Mirror {
         let full = Rectangle::from_size(self.size);
         match &mut self.handover {
             Handover::Shared(dmabuf) => {
-                let damage = draw(primary, dmabuf, &mut self.damage, age, elements, clear)?;
+                let (damage, states) = draw(primary, dmabuf, &mut self.damage, age, elements, clear)?;
+                self.states = states;
                 let damage = damage.iter().filter_map(|rect| rect.intersection(full)).map(buffer_rect).collect();
                 self.shown.render().draw(|_| Ok::<_, String>(damage))?;
             }
             Handover::Memory { texture, pixels } => {
-                let damage = draw(primary, texture, &mut self.damage, age, elements, clear)?;
+                let (damage, states) = draw(primary, texture, &mut self.damage, age, elements, clear)?;
+                self.states = states;
                 let stride = self.size.w as usize * 4;
                 for rect in damage.iter().filter_map(|rect| rect.intersection(full)).map(buffer_rect) {
                     let rows = crate::capture::read_region(primary, texture, rect)?;
@@ -172,7 +179,7 @@ fn draw<T>(
     age: usize,
     elements: &[OutputElement],
     clear: [f32; 4],
-) -> Result<Vec<Rectangle<i32, Physical>>, String>
+) -> Result<(Vec<Rectangle<i32, Physical>>, RenderElementStates), String>
 where
     GlesRenderer: Bind<T>,
 {
@@ -182,7 +189,7 @@ where
     let damage = result.damage.cloned().unwrap_or_default();
     // The secondary GPU reads the frame next, so the primary must finish it.
     result.sync.wait().map_err(|error| format!("{error:?}"))?;
-    Ok(damage)
+    Ok((damage, result.states))
 }
 
 fn buffer_rect(rect: Rectangle<i32, Physical>) -> Rectangle<i32, Buffer> {

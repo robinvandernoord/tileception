@@ -190,6 +190,9 @@ pub struct Tileception {
     pub terminal: String,
     pub ipc_socket: Option<std::path::PathBuf>,
     pub(crate) keyboard_focus: Option<WindowId>,
+    /// Keys held down whose press Tileception kept (a binding, a panel), so
+    /// their release is not given to the program either.
+    pub(crate) kept_keys: std::collections::HashSet<u32>,
     keyboard_dirty: bool,
     pub layer_shell_state: WlrLayerShellState,
     /// A layer surface (launcher, lock screen) holding the keyboard.
@@ -262,6 +265,8 @@ pub struct Tileception {
     pub tray: crate::tray::Tray,
     pub persistence: crate::persistence::Persistence,
     pub idle: crate::idle::Idle,
+    pub game: crate::game::GameMode,
+    pub fifo: crate::frame_timing::Fifo,
     pub battery: crate::battery::Battery,
     pub updates: crate::updates::Updates,
     /// The password prompt, for polkit or the update manager's `sudo`.
@@ -479,6 +484,9 @@ impl Tileception {
             tray: Default::default(),
             persistence: crate::persistence::Persistence::load(),
             idle: Default::default(),
+            game: Default::default(),
+            kept_keys: Default::default(),
+            fifo: Default::default(),
             battery: Default::default(),
             updates: Default::default(),
             password_prompt: None,

@@ -64,16 +64,24 @@ pub fn init(
             let scene = state.frame_elements(renderer, now);
             state.process_captures(renderer, Some(&scene));
             elements.extend(scene);
-            {
+            let feedback = {
                 let Ok((renderer, mut framebuffer)) = backend.bind() else { return };
                 let clear = state.clear_colour();
-                if let Err(err) = damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, clear) {
-                    tracing::warn!("render failed: {err:?}");
+                match damage_tracker.render_output(renderer, &mut framebuffer, 0, &elements, clear) {
+                    Ok(result) => state.presentation_feedback(Some(&result.states)),
+                    Err(err) => {
+                        tracing::warn!("render failed: {err:?}");
+                        None
+                    }
                 }
-            }
+            };
             if let Err(err) = backend.submit(Some(&[damage])) {
                 tracing::warn!("submit failed: {err:?}");
+            } else if let Some(feedback) = feedback {
+                // The host desktop does not say when it showed the frame.
+                crate::frame_timing::presented_now(feedback, crate::frame_timing::refresh_of(&output));
             }
+            state.release_all_fifo();
 
             let elapsed = state.start.elapsed();
             // Minimized windows are hidden: no frames, so they need not draw.

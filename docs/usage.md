@@ -244,22 +244,57 @@ Click a preview to restore the window to its previous place, or drag it out to
 choose a new position. **Super+Shift+H** restores the most recently minimized
 window.
 
+### Game mode
+
+In game mode, Tileception's own Super shortcuts step aside, so Super and
+every Super combination reach the game. A short notice at the top of the screen
+says when game mode comes on. Pressing Super on its own shows it again.
+
+Game mode comes on by itself when you play a game, whichever launcher started
+it. The focused window must be a game and must be fullscreen or have taken the
+mouse pointer. Tileception counts a window as a game when:
+
+- it says it shows a game (the Wayland content type);
+- it runs under Wine, as Windows games do;
+- its program, or the program that started it (Steam, Lutris, Heroic, a game's
+  own launcher), has an application entry in the **Game** category.
+
+Any fullscreen window that takes the pointer and hides it, as games do for
+mouse-look, counts too. A window rule with `game = true` or `game = false`
+decides for games Tileception misses or mistakes (see
+[Window rules](configuration.md#window-rules)).
+
+Game mode ends when the game loses the keyboard, for example when you click
+another window. If it came on by itself, it also ends when the game leaves
+fullscreen and lets go of the pointer. While it is on, the screen does not
+sleep or lock.
+
+**Super+Caps Lock** switches game mode on or off for the focused window,
+without switching Caps Lock. While a game has the keyboard, Super+Caps Lock
+always leaves game mode, whatever your key bindings say. After you switch it
+off this way, it does not come
+back by itself until the game has lost the keyboard or left fullscreen. From a
+script or another key binding, use `tileception msg game-mode` (`on`, `off`,
+or `status`, which says why a window counts as a game). Switching consoles with
+**Ctrl+Alt+F1** to **F12** keeps working in game mode.
+
 ## Desktop controls
 
-| Shortcut      | Action                                |
-|---------------|---------------------------------------|
-| Super         | Open the launcher                     |
-| Super+T       | Open a terminal                       |
-| Super+B       | Open the default browser              |
-| Super+E       | Open your home folder                 |
-| Super+N       | Open notifications and sound controls |
-| Super+Enter   | Answer a popup's buttons by keyboard  |
-| Shift+Print   | Take or record an area of the screen  |
-| Ctrl+Print    | Pick a colour from the screen         |
-| Super+/       | Open Wizard                           |
-| Super+L       | Lock the screen                       |
-| Super+X       | Open the power menu                   |
-| Super+Shift+E | End the Tileception session           |
+| Shortcut        | Action                                   |
+|-----------------|------------------------------------------|
+| Super           | Open the launcher                        |
+| Super+T         | Open a terminal                          |
+| Super+B         | Open the default browser                 |
+| Super+E         | Open your home folder                    |
+| Super+N         | Open notifications and sound controls    |
+| Super+Enter     | Answer a popup's buttons by keyboard     |
+| Shift+Print     | Take or record an area of the screen     |
+| Ctrl+Print      | Pick a colour from the screen            |
+| Super+/         | Open Wizard                              |
+| Super+L         | Lock the screen                          |
+| Super+X         | Open the power menu                      |
+| Super+Caps Lock | Switch [game mode](#game-mode) on or off |
+| Super+Shift+E   | End the Tileception session              |
 
 ### Launcher and notifications
 

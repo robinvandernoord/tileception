@@ -488,6 +488,7 @@ repeat_rate = 30
 #   next-tab, prev-tab    in the focused tile
 #   float                 float the focused window above the layout, or dock it
 #   fullscreen            cover the whole screen with the focused window
+#   game-mode [on|off]    let Super keys reach the focused game (alone: toggle)
 #   lock                  lock the screen (see lock_command)
 #   power-menu            lock, log out, suspend, restart or power off
 #   wizard [ask <text>]   the panel for asking about your setup (or doctor)
@@ -521,6 +522,7 @@ repeat_rate = 30
 "Super+slash" = "wizard"
 "Super+comma" = "settings"
 "Super+G" = "group"
+"Super+Caps_Lock" = "game-mode"
 "Super+Shift+E" = "quit"
 "Super+Escape" = ["reload", "spawn notify-send 'Tileception' 'Configuration reloaded'"]
 

@@ -570,6 +570,11 @@ impl Tileception {
         self.next_shortcut_question();
     }
 
+    /// Whether this key, held down, set off an application's shortcut.
+    pub(crate) fn holds_portal_key(&self, keycode: u32) -> bool {
+        self.shortcuts.pressed.contains_key(&keycode)
+    }
+
     /// A key press or release outside questions: true when it set off an
     /// application's shortcut, which then keeps the key.
     pub fn portal_shortcut_key(&mut self, keycode: u32, trigger: Trigger, pressed: bool) -> bool {

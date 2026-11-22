@@ -67,6 +67,7 @@ impl CompositorHandler for Tileception {
         let scale = self.scale;
         with_states(surface, |states| crate::scale::send_scale_state(surface, states, scale));
         add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+            crate::frame_timing::note_superseding_commit(surface);
             let mut acquire = None;
             let dmabuf = with_states(surface, |data| {
                 acquire.clone_from(&data.cached_state.get::<DrmSyncobjCachedState>().pending().acquire_point);
@@ -114,6 +115,8 @@ impl CompositorHandler for Tileception {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        crate::frame_timing::apply_superseded_feedback(surface);
+        self.track_fifo_barrier(surface);
         if let Some(area) = self.area_for_surface(surface)
             && self.context_area().as_ref() != Some(&area)
         {

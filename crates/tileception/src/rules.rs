@@ -17,6 +17,9 @@ pub struct WindowRule {
     pub fullscreen: Option<bool>,
     /// Open minimized, in the strip at the bottom edge.
     pub minimized: Option<bool>,
+    /// Whether the window is a game, for game mode coming on by itself:
+    /// true for one Tileception does not recognise, false to keep it off.
+    pub game: Option<bool>,
 }
 
 /// What the matching rules decide together.
@@ -26,6 +29,7 @@ pub struct Decision {
     pub size: Option<[u32; 2]>,
     pub fullscreen: bool,
     pub minimized: bool,
+    pub game: Option<bool>,
 }
 
 impl WindowRule {
@@ -46,6 +50,7 @@ pub fn decide(rules: &[WindowRule], app_id: &str, title: &str) -> Decision {
         decision.size = rule.size.or(decision.size);
         decision.fullscreen = rule.fullscreen.unwrap_or(decision.fullscreen);
         decision.minimized = rule.minimized.unwrap_or(decision.minimized);
+        decision.game = rule.game.or(decision.game);
     }
     decision
 }

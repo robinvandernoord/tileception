@@ -218,8 +218,13 @@ impl Tileception {
             }
             Inject::Motion(right, down) => {
                 if !self.forward_message(tileception_handoff::Message::Motion { right, down }) {
-                    let pos = self.zoom_relative((right, down).into());
-                    self.inject_motion(pos.x, pos.y, time);
+                    let delta = (right, down).into();
+                    let pos = self.zoom_relative(delta);
+                    // Like a mouse: a lock holds the pointer still, and
+                    // programs that read raw motion get it either way.
+                    if let Some(pos) = self.constrained_motion(delta, delta, u64::from(time) * 1000, pos) {
+                        self.inject_motion(pos.x, pos.y, time);
+                    }
                 }
             }
             Inject::Click { position, button } => {
@@ -304,6 +309,7 @@ impl Tileception {
         }
         let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
         self.on_motion(pos, time);
+        self.activate_constraint_under();
     }
 
     /// Holds `held` and presses `key`, then lets go of both after `millis`

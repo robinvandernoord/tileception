@@ -155,6 +155,11 @@ impl Tileception {
                 state.update_bar();
                 state.process_special_captures(&mut headless.renderer);
                 state.process_captures(&mut headless.renderer, None);
+                // Nothing reaches a screen here: what would be shown counts as
+                // shown at every tick.
+                if let Some(feedback) = state.presentation_feedback(None) {
+                    crate::frame_timing::presented_now(feedback, crate::frame_timing::refresh_of(output));
+                }
                 for (_, window) in state.windows.iter().filter(|(window_id, _)| state.screen_shows(**window_id)) {
                     window.send_frame(output, elapsed, Some(Duration::ZERO), |_, _| Some(output.clone()));
                 }
@@ -162,6 +167,7 @@ impl Tileception {
             });
         }
         self.headless = Some(headless);
+        self.release_all_fifo();
         self.after_frame();
     }
 }
