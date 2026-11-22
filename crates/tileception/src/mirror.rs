@@ -24,7 +24,10 @@ use smithay::{
     utils::{Buffer, Physical, Rectangle, Size, Transform},
 };
 
-use crate::render::OutputElement;
+use crate::{
+    capture::{draw_changed, patch_rows},
+    render::OutputElement,
+};
 
 pub struct Mirror {
     size: Size<i32, Physical>,
@@ -83,25 +86,20 @@ impl Mirror {
         clear: [f32; 4],
     ) -> Result<OutputElement, String> {
         let age = usize::from(std::mem::take(&mut self.drawn));
-        let full = Rectangle::from_size(self.size);
+        let size = (self.size.w, self.size.h);
+        let full = Rectangle::from_size(size.into());
         match &mut self.handover {
             Handover::Shared(dmabuf) => {
-                let damage = draw(primary, dmabuf, &mut self.damage, age, elements, clear)?;
-                let damage = damage.iter().filter_map(|rect| rect.intersection(full)).map(buffer_rect).collect();
+                let damage = draw_changed(primary, dmabuf, size, &mut self.damage, age, elements, clear)?;
                 self.shown.render().draw(|_| Ok::<_, String>(damage))?;
             }
             Handover::Memory { texture, pixels } => {
-                let damage = draw(primary, texture, &mut self.damage, age, elements, clear)?;
-                let stride = self.size.w as usize * 4;
-                for rect in damage.iter().filter_map(|rect| rect.intersection(full)).map(buffer_rect) {
+                let damage = draw_changed(primary, texture, size, &mut self.damage, age, elements, clear)?;
+                for rect in damage {
                     let rows = crate::capture::read_region(primary, texture, rect)?;
-                    let width = rect.size.w as usize * 4;
-                    for (line, row) in rows.chunks_exact(width).enumerate() {
-                        let start = (rect.loc.y as usize + line) * stride + rect.loc.x as usize * 4;
-                        pixels[start..start + width].copy_from_slice(row);
-                    }
+                    patch_rows(pixels, self.size.w, rect, &rows);
                     self.shown
-                        .update_from_memory(secondary, pixels, rect, Some(vec![buffer_rect(full)]))
+                        .update_from_memory(secondary, pixels, rect, Some(vec![full]))
                         .map_err(|error| error.to_string())?;
                 }
             }
@@ -162,29 +160,4 @@ fn memory(
     let shown =
         secondary.import_memory(&pixels, Fourcc::Abgr8888, buffer_size, false).map_err(|error| error.to_string())?;
     Ok((Handover::Memory { texture, pixels }, shown))
-}
-
-/// Draws what changed since the buffer's last frame, returning where.
-fn draw<T>(
-    primary: &mut GlesRenderer,
-    buffer: &mut T,
-    tracker: &mut OutputDamageTracker,
-    age: usize,
-    elements: &[OutputElement],
-    clear: [f32; 4],
-) -> Result<Vec<Rectangle<i32, Physical>>, String>
-where
-    GlesRenderer: Bind<T>,
-{
-    let mut target = primary.bind(buffer).map_err(|error| error.to_string())?;
-    let result =
-        tracker.render_output(primary, &mut target, age, elements, clear).map_err(|error| format!("{error:?}"))?;
-    let damage = result.damage.cloned().unwrap_or_default();
-    // The secondary GPU reads the frame next, so the primary must finish it.
-    result.sync.wait().map_err(|error| format!("{error:?}"))?;
-    Ok(damage)
-}
-
-fn buffer_rect(rect: Rectangle<i32, Physical>) -> Rectangle<i32, Buffer> {
-    Rectangle::new((rect.loc.x, rect.loc.y).into(), (rect.size.w, rect.size.h).into())
 }

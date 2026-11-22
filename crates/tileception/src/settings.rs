@@ -1449,44 +1449,13 @@ impl Tileception {
         }
     }
 
-    /// Fill the client's shared-memory buffer. The scene then displays its
-    /// wl_surface normally, including in captures, previews and Overview.
+    /// Draws Settings' next frame through its client, which shows it like
+    /// any other window, including in captures, previews and Overview.
     fn render_settings_client(&self, renderer: &mut GlesRenderer) {
-        use smithay::{
-            backend::{
-                allocator::Fourcc,
-                renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
-            },
-            utils::{Rectangle, Transform},
-        };
         let Some(client) = &self.settings.client else { return };
-        let physical =
-            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
-        if !client.needs_frame(self.scale, physical) {
-            return;
-        }
-        let logical = (self.settings.size.0 as i32, self.settings.size.1 as i32);
-        let size =
-            ((self.settings.size.0 * self.scale).round() as i32, (self.settings.size.1 * self.scale).round() as i32);
-        let result = (|| -> Result<Vec<u8>, String> {
-            let elements = self.settings_elements(renderer);
-            let mut texture: GlesTexture =
-                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
-            {
-                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                // The elements are in physical pixels already, as on outputs.
-                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-                let result = damage
-                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
-                    .map_err(|error| format!("{error:?}"))?;
-                result.sync.wait().map_err(|error| format!("{error:?}"))?;
-            }
-            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
-        })();
-        match result {
-            Ok(pixels) => client.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
-            Err(error) => tracing::warn!("could not draw Settings client: {error}"),
-        }
+        self.render_client_window(renderer, client, self.settings.size, |state, renderer| {
+            state.settings_elements(renderer)
+        });
     }
 
     fn settings_frame(&self) -> Frame {

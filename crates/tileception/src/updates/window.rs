@@ -614,39 +614,11 @@ impl Tileception {
     }
 
     fn render_updates_client(&self, renderer: &mut GlesRenderer) {
-        use smithay::{
-            backend::{
-                allocator::Fourcc,
-                renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
-            },
-            utils::{Rectangle, Transform},
-        };
         let window = &self.updates.window;
         let Some(client) = &window.client else { return };
-        let physical = ((window.size.0 * self.scale).round() as i32, (window.size.1 * self.scale).round() as i32);
-        if !client.needs_frame(self.scale, physical) {
-            return;
-        }
-        let logical = (window.size.0 as i32, window.size.1 as i32);
-        let size = ((window.size.0 * self.scale).round() as i32, (window.size.1 * self.scale).round() as i32);
-        let result = (|| -> Result<Vec<u8>, String> {
-            let elements = self.updates_window_elements(renderer);
-            let mut texture: GlesTexture =
-                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
-            {
-                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-                let result = damage
-                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
-                    .map_err(|error| format!("{error:?}"))?;
-                result.sync.wait().map_err(|error| format!("{error:?}"))?;
-            }
-            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
-        })();
-        match result {
-            Ok(pixels) => client.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
-            Err(error) => tracing::warn!("could not draw the Updates window: {error}"),
-        }
+        self.render_client_window(renderer, client, window.size, |state, renderer| {
+            state.updates_window_elements(renderer)
+        });
     }
 
     fn updates_rows(&self) -> Vec<Row> {

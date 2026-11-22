@@ -575,7 +575,10 @@ impl Tileception {
                 }
             }
         }
-        self.shapes.get().map(|shapes| shapes.on_output(self.output.as_ref(), self.scale))
+        self.shapes.get().map(|shapes| match self.drawing_into.borrow().as_ref() {
+            Some(frames) => shapes.with_frames(frames, self.scale),
+            None => shapes.on_output(self.output.as_ref(), self.scale),
+        })
     }
 
     /// A window's frame: a hairline border, and the accent with a glow when
