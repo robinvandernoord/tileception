@@ -15,7 +15,7 @@ You can only write this release's files: `website/changelog/v{version}.toml`
 and the scenes in `target/changelog/scenes/v{version}/`. Other releases'
 entries, pictures and scenes stay as they are. You can run `git log`,
 `git show`, `git tag`, `git diff`, `gh issue view`,
-`scripts/changelog/shoot.sh`, `python3 website/tools/changelog.py`, `ls`, and
+`scripts/changelog/shoot.sh`, `uv run website/tools/changelog.py`, `ls`, and
 `rm` for a scene in `target/changelog/scenes/v{version}/`.
 Other commands are refused, so don't try them; run each command on its own,
 without pipes.
@@ -71,6 +71,7 @@ Use only these. Never add a fact they don't support; leave the claim out instead
 - Plain ASCII punctuation only: no em or en dashes, no curly quotes, no ellipsis
   character. The page generator refuses them.
 - Put file names, settings and commands in backticks; the page shows them as code.
+- Use inline Markdown for emphasis, such as `*game mode*`.
 - To point at a button by its icon, write its glyph as `:zoom-in:`; the page
   draws the icon there. Only the glyphs in `GLYPHS` in
   `website/tools/changelog.py` work; add one there to use another.
@@ -170,7 +171,7 @@ change can be seen. If a scene fails or its picture is wrong, fix the scene
 and run it again. After three tries, delete the scene with `rm` and leave that
 feature without media; its pictures are removed afterwards. A missing picture is better than a misleading one.
 
-Then add the media to the TOML, run `python3 website/tools/changelog.py` and
+Then add the media to the TOML, run `uv run website/tools/changelog.py` and
 fix whatever it reports. End with a short report: what you wrote, which
 scenes you kept or dropped and why, and any claim you left out for lack of a
 source.

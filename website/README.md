@@ -45,11 +45,12 @@ Colours have meanings: red is tile, yellow is nest, blue is zoom.
 
 `/changelog/` shows what changed in each release, with screenshots. Each
 release has a `changelog/v<version>.toml`; `scripts/changelog/prompt.md`
-describes its fields and how the entries are written. After changing the data,
-the template or `areas.toml`, regenerate the page:
+describes its fields and how the entries are written. Install `uv` to run the
+generator. After changing the data, the template or `areas.toml`, regenerate the
+page:
 
 ```sh
-python3 website/tools/changelog.py
+uv run website/tools/changelog.py
 ```
 
 `check.sh` fails when the page is out of date, when a picture is missing, and

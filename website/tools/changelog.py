@@ -1,13 +1,16 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["markdown-it-py==4.0.0"]
+# ///
 """Writes public/changelog/index.html from website/changelog/v*.toml.
 
-    python3 website/tools/changelog.py           write the page
-    python3 website/tools/changelog.py --check   fail if the page is out of date
+    uv run website/tools/changelog.py           write the page
+    uv run website/tools/changelog.py --check   fail if the page is out of date
 
 Each release's TOML holds what changed in it (see scripts/changelog/prompt.md
 for the fields); its images live in public/changelog/v<version>/. The page
-template is tools/changelog.html. Only the standard library is used, so CI
-needs nothing installed.
+template is tools/changelog.html.
 """
 
 import argparse
@@ -16,6 +19,8 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+
+from markdown_it import MarkdownIt
 
 WEBSITE = Path(__file__).resolve().parent.parent
 DATA = WEBSITE / "changelog"
@@ -156,22 +161,51 @@ def icon(name):
     )
 
 
-PROSE = re.compile(
-    r"`([^`]+)`|(?<![\w*])\*([^*`\n]+)\*(?![\w*])|:(" + "|".join(map(re.escape, GLYPHS)) + r"):"
-)
+GLYPH_PATTERN = re.compile(r":(" + "|".join(map(re.escape, GLYPHS)) + r"):")
 
 
-def prose(text):
-    """Escapes text and renders `code`, *emphasis* and :name: glyphs."""
+def parse_glyph(state, silent):
+    match = GLYPH_PATTERN.match(state.src, state.pos, state.posMax)
+    if match is None:
+        return False
+    if not silent:
+        state.push("glyph", "", 0).content = match.group(1)
+    state.pos = match.end()
+    return True
 
-    def piece(match):
-        if match.group(1) is not None:
-            return f"<code>{match.group(1)}</code>"
-        if match.group(2) is not None:
-            return f"<em>{match.group(2)}</em>"
-        return icon(match.group(3))
 
-    return PROSE.sub(piece, html.escape(text, quote=False))
+def render_glyph(tokens, index, options, env):
+    return icon(tokens[index].content)
+
+
+def render_link(renderer, tokens, index, options, env):
+    token = tokens[index]
+    if token.attrGet("href").lower().startswith(("http://", "https://")):
+        token.attrSet("target", "_blank")
+        token.attrSet("rel", "noopener")
+    return renderer.renderToken(tokens, index, options, env)
+
+
+MARKDOWN = MarkdownIt("commonmark", {"html": False})
+MARKDOWN.inline.ruler.before("text", "glyph", parse_glyph)
+MARKDOWN.renderer.rules["glyph"] = render_glyph
+MARKDOWN.add_render_rule("link_open", render_link)
+prose = MARKDOWN.renderInline
+
+
+def plain_text(tokens):
+    """Collects the text of inline Markdown for link previews."""
+    parts = []
+    for token in tokens:
+        if token.type in {"text", "code_inline"}:
+            parts.append(token.content)
+        elif token.type == "glyph":
+            parts.append(GLYPHS[token.content][0])
+        elif token.type in {"softbreak", "hardbreak"}:
+            parts.append(" ")
+        elif token.children:
+            parts.append(plain_text(token.children))
+    return "".join(parts)
 
 
 class Page:
@@ -328,7 +362,7 @@ def preview(release):
         if name.endswith((".mp4", ".webm")):
             image = f"{SITE}/og.png"
     title = f"What's new in Tileception {release['version']}"
-    description = PROSE.sub(lambda match: match.group(1) or match.group(2) or match.group(), release["lede"]) or DESCRIPTION
+    description = plain_text(MARKDOWN.parseInline(release["lede"])) or DESCRIPTION
     tags = [
         ("property", "og:type", "website"),
         ("property", "og:site_name", "Tileception"),
@@ -368,7 +402,7 @@ def main():
         sys.exit(f"changelog: {error}")
     if arguments.check:
         if not PAGE.is_file() or PAGE.read_text(encoding="utf-8") != output:
-            sys.exit("changelog: public/changelog/index.html is out of date; run python3 website/tools/changelog.py")
+            sys.exit("changelog: public/changelog/index.html is out of date; run uv run website/tools/changelog.py")
         return
     PAGE.parent.mkdir(parents=True, exist_ok=True)
     PAGE.write_text(output, encoding="utf-8")

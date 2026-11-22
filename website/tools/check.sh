@@ -61,7 +61,7 @@ sh -n install
 [ "$(readlink setup)" = ../../resources/tileception-setup ] \
   || fail "setup must be a symlink to ../../resources/tileception-setup"
 sh -n setup
-python3 ../tools/changelog.py --check
+uv run ../tools/changelog.py --check
 # The download page is made at deploy from the ISOs' manifest; it must render.
 sample=$(mktemp)
 python3 ../tools/downloads.py --manifest ../tools/downloads-sample.json --out "$sample" >/dev/null

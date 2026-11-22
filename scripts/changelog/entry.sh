@@ -22,6 +22,7 @@ toml=website/changelog/v$version.toml
 
 git rev-parse -q --verify "refs/tags/v$version" >/dev/null || { echo "no tag v$version" >&2; exit 1; }
 command -v claude >/dev/null || { echo "claude (Claude Code) is missing" >&2; exit 1; }
+command -v uv >/dev/null || { echo "uv is missing" >&2; exit 1; }
 if [ -e "$toml" ] && [ -z "${FORCE:-}" ]; then
     echo "$toml exists; FORCE=1 writes it again" >&2
     exit 1
@@ -51,7 +52,7 @@ allowed=(
     "Bash(git log *)" "Bash(git show *)" "Bash(git tag *)" "Bash(git diff *)"
     "Bash(gh issue view *)"
     "Bash(scripts/changelog/shoot.sh $version *)"
-    "Bash(python3 website/tools/changelog.py)"
+    "Bash(uv run website/tools/changelog.py)"
     "Bash(ls *)"
     "Bash(rm target/changelog/scenes/v$version/*)"
 )
@@ -69,7 +70,7 @@ for picture in website/public/changelog/v"$version"/*; do
     [ -e "$picture" ] || continue
     grep -q "\"$(basename "$picture")\"" "$toml" 2>/dev/null || rm "$picture"
 done
-python3 website/tools/changelog.py
+uv run website/tools/changelog.py
 echo
 echo "Review before committing:"
 git status --short -- website/changelog website/public/changelog
