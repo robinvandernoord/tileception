@@ -415,9 +415,9 @@ impl Tileception {
         if greeter.file.per_user.wallpaper && !greeter.cards() {
             let fade = ease_out(greeter.switched_at.elapsed().as_secs_f64() / CROSSFADE) as f32;
             let mut layer = |person: usize, alpha: f32| {
-                if let Some(wallpaper) = greeter.wallpapers.get(&person).filter(|_| alpha > 0.0) {
+                if let Some((wallpaper, size)) = greeter.wallpapers.get(&person).filter(|_| alpha > 0.0) {
                     painter.alpha = alpha;
-                    painter.image(wallpaper, (screen.x, screen.y));
+                    painter.image(wallpaper, centred(screen, self.scale, *size));
                     painter.fill(screen, Colour([0.0, 0.0, 0.0, 0.3]), 0.0);
                 }
             };
@@ -743,8 +743,13 @@ impl Tileception {
             let lit = active && focused;
             draw_frame(painter, *rect, lit, own);
             if !contrast {
-                let shared = greeter.wallpapers.get(person).filter(|_| greeter.file.per_user.wallpaper);
-                let system = self.wallpaper.as_ref().map(|wallpaper| &wallpaper.buffer);
+                let shared = greeter
+                    .wallpapers
+                    .get(person)
+                    .filter(|_| greeter.file.per_user.wallpaper)
+                    .map(|(wallpaper, size)| (wallpaper, centred(scene.screen, self.scale, *size)));
+                let system =
+                    self.wallpaper.as_ref().map(|wallpaper| (&wallpaper.buffer, (scene.screen.x, scene.screen.y)));
                 let fallback = wallpaper_fallback(greeter);
                 let picture = match (shared, fallback) {
                     (Some(wallpaper), _) => Some(wallpaper),
@@ -752,8 +757,8 @@ impl Tileception {
                     (None, WallpaperFallback::Generated | WallpaperFallback::Flat) => None,
                 };
                 match picture {
-                    Some(picture) => {
-                        painter.clipped(*rect, |clipped| clipped.image(picture, (scene.screen.x, scene.screen.y)));
+                    Some((picture, position)) => {
+                        painter.clipped(*rect, |clipped| clipped.image(picture, position));
                         let shade = if active { 0.55 } else { 0.65 };
                         painter.fill(*rect, Colour([0.0, 0.0, 0.0, shade]), theme.radius);
                     }
@@ -1291,6 +1296,13 @@ impl Tileception {
 fn palette_first(greeter: &Greeter) -> usize {
     let selected = greeter.palette.as_ref().map_or(0, |palette| palette.selected);
     (selected + 1).saturating_sub(PALETTE_ROWS)
+}
+
+/// Where a picture of `size` pixels goes to show its middle on `screen`, at
+/// `scale` pixels per point.
+fn centred(screen: Rect, scale: f64, (width, height): (i32, i32)) -> (f64, f64) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    (screen.x + (screen.w - f64::from(width) / scale) / 2.0, screen.y + (screen.h - f64::from(height) / scale) / 2.0)
 }
 
 /// What shows where nobody's shared wallpaper does: with per-user looks

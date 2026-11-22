@@ -177,8 +177,9 @@ pub struct Greeter {
     switched_at: Instant,
     previous_user: usize,
     previous_accent: (Colour, Colour),
-    /// Shared wallpapers, by person, filling the screen.
-    wallpapers: HashMap<usize, MemoryRenderBuffer>,
+    /// Shared wallpapers, by person, each with its size in pixels: the
+    /// largest screen's, which a smaller screen shows the middle of.
+    wallpapers: HashMap<usize, (MemoryRenderBuffer, (i32, i32))>,
     /// The size, in pixels, the shared wallpapers were read at: the
     /// largest screen's. Read again when that changes.
     wallpaper_size: (u32, u32),
@@ -672,7 +673,7 @@ impl Tileception {
                 smithay::utils::Transform::Normal,
                 None,
             );
-            greeter.wallpapers.insert(index, buffer);
+            greeter.wallpapers.insert(index, (buffer, (width as i32, height as i32)));
         }
         if index == greeter.user && !refit {
             // Crossfade from the made-up accent to the shared one.
