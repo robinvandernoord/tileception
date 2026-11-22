@@ -4,6 +4,30 @@ The release notes with screenshots are on [tileception.space/changelog](https://
 
 <!-- next-version-placeholder -->
 
+## v0.26.0 (2026-11-22)
+
+### Features
+* **notifications:** add notification modes and sounds
+* **game-mode:** add game mode and frame presentation timing
+* **wizard:** improve agent discovery and copy selection
+
+### Fixes
+* **screenshot:** wait for captured frame to be written
+* **greeter:** center shared wallpapers on smaller screens
+* **game-mode:** handle window switching while gaming
+* **doctor:** restore message drafts after path entry
+* **settings:** reconcile stale editor drafts after undo
+* **screenshot:** drop captures after command timeouts
+* **scanout:** report presentation feedback across queued frames
+* **greeter:** refit shared wallpapers to screen size
+* **settings:** keep invalid config files editable
+* **copy:** clarify interface labels and guidance
+* **packaging:** set default apps for Tileception sessions
+
+### Performance
+* **settings:** lay out overview cards with a responsive grid
+* **windows:** redraw built-in windows by damaged regions
+
 ## v0.25.0 (2026-11-21)
 
 ### Features
