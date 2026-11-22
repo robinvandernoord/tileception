@@ -4,7 +4,10 @@
 //! Independent scanout devices per GPU, with one primary compositor renderer.
 //! Outputs on other GPUs show frames it draws; see `mirror`.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 use crate::frame_timing::FrameDone;
 use crate::{Tileception, cursor::Cursor, mirror::Mirror};
@@ -135,7 +138,10 @@ struct Lit {
     /// Frames that changed nothing, waiting for the refresh that shows what
     /// was committed for them.
     unchanged: Vec<Unchanged>,
-    next_unchanged: u64,
+    /// Feedback of frames that changed nothing, with the vblank counter
+    /// each was made at, waiting for the queued frame's flip: what was
+    /// committed for them showed if a refresh came before it.
+    flipping: Vec<(OutputPresentationFeedback, u32)>,
 }
 
 /// A frame that changed nothing on screen: its feedback and fifo batch
@@ -148,6 +154,10 @@ struct Unchanged {
     /// The screen's vblank counter when the frame was made.
     after: u32,
 }
+
+/// Numbers for frames that changed nothing, unique across screens and the
+/// screens that replace them, so a timer finds only its own frame.
+static NEXT_UNCHANGED: AtomicU64 = AtomicU64::new(1);
 
 /// How many times a frame that changed nothing looks for its refresh
 /// before giving up on it (a screen that stopped refreshing).
@@ -175,21 +185,77 @@ fn unchanged_wait(output: &Output) -> Duration {
     period + Duration::from_millis(1)
 }
 
+/// Reports what was committed for a frame that changed nothing as shown at
+/// the first refresh after `after`, given the screen's `latest` vblank.
+fn present_unchanged(
+    mut feedback: OutputPresentationFeedback,
+    after: u32,
+    (sequence, time): (u32, Duration),
+    refresh: smithay::wayland::presentation::Refresh,
+) {
+    // The first refresh after the frame, should several have passed.
+    let later = sequence.wrapping_sub(after).saturating_sub(1);
+    let time = match refresh {
+        smithay::wayland::presentation::Refresh::Fixed(period) => time.saturating_sub(period * later),
+        _ => time,
+    };
+    // The kernel's answer says not whether the time was measured, and an
+    // earlier refresh's is worked out.
+    let flags = wp_presentation_feedback::Kind::Vsync;
+    feedback.presented::<_, Monotonic>(time, refresh, u64::from(after.wrapping_add(1)), flags);
+}
+
+/// The vblank in `latest` when it came after the counter `after`.
+fn refreshed_since(latest: Option<(u32, Duration)>, after: u32) -> Option<(u32, Duration)> {
+    latest.filter(|(sequence, _)| sequence.wrapping_sub(after) as i32 > 0)
+}
+
 impl Lit {
-    /// A newer frame or a new mode takes the refresh the frames that
-    /// changed nothing were waiting for: their feedback is discarded (it
-    /// cannot be told apart from the newer content's), and their fifo
-    /// batches are returned, to go with that frame.
-    fn drop_unchanged(&mut self) -> Vec<u64> {
-        self.unchanged
-            .drain(..)
-            .filter_map(|unchanged| {
-                if let Some(mut feedback) = unchanged.feedback {
-                    feedback.discarded();
+    /// A frame is being queued: frames that changed nothing stop waiting
+    /// for a refresh of their own. One whose refresh already came by
+    /// `latest` (the screen's vblank now) is reported shown; the others
+    /// wait for the queued frame's flip ([`Lit::flipped`]). Returns their
+    /// fifo batches, to go with that frame, and those waiting.
+    fn take_unchanged(
+        &mut self,
+        latest: Option<(u32, Duration)>,
+    ) -> (Vec<u64>, Vec<(OutputPresentationFeedback, u32)>) {
+        let refresh = crate::frame_timing::refresh_of(&self.output);
+        let mut fifo = Vec::new();
+        let mut waiting = Vec::new();
+        for unchanged in self.unchanged.drain(..) {
+            if let Some(feedback) = unchanged.feedback {
+                match refreshed_since(latest, unchanged.after) {
+                    Some(vblank) => present_unchanged(feedback, unchanged.after, vblank, refresh),
+                    None => waiting.push((feedback, unchanged.after)),
                 }
-                unchanged.fifo
-            })
-            .collect()
+            }
+            fifo.extend(unchanged.fifo);
+        }
+        (fifo, waiting)
+    }
+
+    /// The queued frame flipped at `vblank` (counter and time), or is gone
+    /// (`None`): feedback waiting for it is reported shown at the refresh
+    /// after it was made, when that came before the flip, or discarded.
+    fn flipped(&mut self, vblank: Option<(u32, Duration)>) {
+        let refresh = crate::frame_timing::refresh_of(&self.output);
+        for (mut feedback, after) in self.flipping.drain(..) {
+            match vblank.filter(|(sequence, _)| sequence.wrapping_sub(after) as i32 > 1) {
+                Some(vblank) => present_unchanged(feedback, after, vblank, refresh),
+                None => feedback.discarded(),
+            }
+        }
+    }
+
+    /// The screen goes off, sleeps or wakes, or changes mode, or the session
+    /// pauses or resumes: frames waiting for its refresh
+    /// give up, their feedback discarded and their fifo batches left to
+    /// the watchdog.
+    fn drop_unchanged(&mut self) {
+        let (_, waiting) = self.take_unchanged(None);
+        self.flipping.extend(waiting);
+        self.flipped(None);
     }
 }
 
@@ -404,6 +470,7 @@ pub fn init(
                     for lit in &mut gpu.surfaces {
                         lit.frame_pending = false;
                         lit.in_flight.clear();
+                        lit.drop_unchanged();
                     }
                 }
                 udev.render_pending = false;
@@ -423,6 +490,7 @@ pub fn init(
                     for lit in &mut gpu.surfaces {
                         lit.frame_pending = false;
                         lit.in_flight.clear();
+                        lit.drop_unchanged();
                         lit.drm_output.with_compositor(|compositor| {
                             // A pre-suspend page flip may never deliver its vblank. Drop
                             // both Smithay's queued frames and the stale scanout state.
@@ -529,6 +597,9 @@ impl Tileception {
             }
             lit.frame_pending = false;
             lit.in_flight.clear();
+            // The flip that frame waited for may never come, and a refresh
+            // after waking shows nothing from before.
+            lit.drop_unchanged();
         }
         success
     }
@@ -678,7 +749,7 @@ impl Tileception {
             lock_shown: false,
             mirror: None,
             unchanged: Vec::new(),
-            next_unchanged: 0,
+            flipping: Vec::new(),
         });
     }
 
@@ -736,6 +807,7 @@ impl Tileception {
                 lit.drm_output.reset_buffers();
                 lit.frame_pending = false;
                 lit.in_flight.clear();
+                lit.drop_unchanged();
                 lit.mirror = None;
             }
             lit.enabled = true;
@@ -800,6 +872,11 @@ impl Tileception {
         // these buffers back.
         lit.in_flight.clear();
         lit.lock_shown = lit.lock_queued;
+        let flip = match metadata {
+            Some(DrmEventMetadata { time: DrmEventTime::Monotonic(time), sequence }) => Some((sequence, time)),
+            _ => None,
+        };
+        lit.flipped(flip);
         let fifo = match lit.drm_output.frame_submitted() {
             Ok(Some(done)) => {
                 if let Some(mut feedback) = done.feedback {
@@ -869,7 +946,7 @@ impl Tileception {
         let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { return };
         let Some(index) = lit.unchanged.iter().position(|unchanged| unchanged.token == token) else { return };
         let after = lit.unchanged[index].after;
-        let refreshed = latest.filter(|(sequence, _)| sequence.wrapping_sub(after) as i32 > 0);
+        let refreshed = refreshed_since(latest, after);
         if refreshed.is_none() && showing && lit.enabled && tries < UNCHANGED_TRIES {
             let wait = unchanged_wait(&lit.output);
             let retry = self.loop_handle.insert_source(Timer::from_duration(wait), move |_, _, state| {
@@ -884,18 +961,7 @@ impl Tileception {
         let refresh = crate::frame_timing::refresh_of(&lit.output);
         if let Some(mut feedback) = unchanged.feedback {
             match refreshed.filter(|_| showing && lit.enabled) {
-                Some((sequence, time)) => {
-                    // The first refresh after the frame, should several have passed.
-                    let later = sequence.wrapping_sub(after).saturating_sub(1);
-                    let time = match refresh {
-                        smithay::wayland::presentation::Refresh::Fixed(period) => time.saturating_sub(period * later),
-                        _ => time,
-                    };
-                    // The kernel's answer says not whether the time was
-                    // measured, and an earlier refresh's is worked out.
-                    let flags = wp_presentation_feedback::Kind::Vsync;
-                    feedback.presented::<_, Monotonic>(time, refresh, u64::from(after.wrapping_add(1)), flags);
-                }
+                Some(vblank) => present_unchanged(feedback, after, vblank, refresh),
                 None => feedback.discarded(),
             }
         }
@@ -982,15 +1048,26 @@ impl Tileception {
                             let feedback = state.presentation_feedback(states);
                             let batch = state.take_fifo_barriers();
                             let mut fifo: Vec<u64> = state.fifo_in_flight(batch).into_iter().collect();
-                            fifo.extend(lit.drop_unchanged());
-                            let done = FrameDone { feedback, fifo: fifo.clone() };
                             // If KMS cannot wait on the render fence, finish GPU work
                             // before scanout rather than displaying an unfinished frame.
-                            if result.needs_sync()
-                                && let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
-                                && let Err(err) = element.sync.wait()
-                            {
-                                tracing::warn!("render sync: {err:?}");
+                            let unfinished = match &result.primary_element {
+                                PrimaryPlaneElement::Swapchain(element) if result.needs_sync() => element
+                                    .sync
+                                    .wait()
+                                    .inspect_err(|err| tracing::warn!("render sync: {err:?}"))
+                                    .is_err(),
+                                _ => false,
+                            };
+                            // Looked at once that wait is over, as the
+                            // screen may have refreshed during it.
+                            let latest =
+                                if lit.unchanged.is_empty() { None } else { latest_vblank(&gpu.manager, lit.crtc) };
+                            let (unchanged_fifo, waiting) = lit.take_unchanged(latest);
+                            fifo.extend(unchanged_fifo);
+                            lit.flipping.extend(waiting);
+                            let done = FrameDone { feedback, fifo: fifo.clone() };
+                            if unfinished {
+                                lit.flipped(None);
                                 release_now.extend(fifo);
                             } else {
                                 match lit.drm_output.queue_frame(done) {
@@ -1002,6 +1079,7 @@ impl Tileception {
                                     }
                                     Err(err) => {
                                         tracing::warn!("queue frame: {err}");
+                                        lit.flipped(None);
                                         release_now.extend(fifo);
                                     }
                                 }
@@ -1030,8 +1108,7 @@ impl Tileception {
                                         release_now.extend(fifo);
                                     }
                                     Some((after, _)) => {
-                                        lit.next_unchanged += 1;
-                                        let token = lit.next_unchanged;
+                                        let token = NEXT_UNCHANGED.fetch_add(1, Ordering::Relaxed);
                                         lit.unchanged.push(Unchanged { token, feedback, fifo, after });
                                         let crtc = lit.crtc;
                                         let timer = Timer::from_duration(unchanged_wait(&lit.output));

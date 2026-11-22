@@ -126,7 +126,8 @@ pub fn presented_now(mut feedback: OutputPresentationFeedback, refresh: Refresh)
     feedback.presented::<_, Monotonic>(now, refresh, 0, wp_presentation_feedback::Kind::empty());
 }
 
-/// A commit that brings new content without asking for feedback replaces
+/// A commit that brings new content (or removes it) without asking for
+/// feedback replaces
 /// content that may still hold feedback: that content was never shown, so
 /// its feedback is discarded. (Smithay keeps it, and it would be reported
 /// with the new content.)
@@ -138,13 +139,14 @@ pub fn presented_now(mut feedback: OutputPresentationFeedback, refresh: Refresh)
 /// really replaced.
 pub fn note_superseding_commit(surface: &WlSurface) {
     with_states(surface, |states| {
-        let new_buffer = matches!(
+        // A new buffer or none: either way, the one before is not shown.
+        let replaced = matches!(
             states.cached_state.get::<SurfaceAttributes>().pending().buffer,
-            Some(BufferAssignment::NewBuffer(_))
+            Some(BufferAssignment::NewBuffer(_) | BufferAssignment::Removed)
         );
         let has_feedback = !states.cached_state.get::<PresentationFeedbackCachedState>().pending().callbacks.is_empty();
         *states.cached_state.get::<Supersedes>().pending() =
-            Supersedes { discard: new_buffer && !has_feedback, has_feedback };
+            Supersedes { discard: replaced && !has_feedback, has_feedback };
     });
 }
 
