@@ -495,6 +495,8 @@ fn run_greeter(nested: bool, headless: bool) -> Result<(), Box<dyn std::error::E
     }
     state.start_greeter(file)?;
     event_loop.run(None, &mut state, |state| {
+        // A screen that came up, or changed mode, scale or rotation since.
+        state.greeter_refit_wallpapers();
         let _ = state.display_handle.flush_clients();
         state.flush_dashboard_clients();
     })?;
