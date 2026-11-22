@@ -1,0 +1,58 @@
+version = "0.26.0"
+date = 2026-11-22
+lede = "Notifications now have three modes (Sound, Silent and Do not disturb) and can play sounds. The new *game mode* passes Super shortcuts and Alt+Tab to the game."
+
+[[features]]
+area = "notifications"
+title = "Notifications have three modes: Sound, Silent and Do not disturb"
+text = "Choose the mode with the switch in the notification panel (Super+N). Silent, the default, shows banners without sound. Do not disturb hides ordinary banners, but critical notifications, such as Timers alarms, still show a banner. Click the arrow on a mode to make it last an hour, until the evening or morning, or until a time you type. The bar's icon shows the current mode: a bell, a crossed-out bell or a moon."
+
+[features.media]
+kind = "compare"
+before = "notifications-before.jpg"
+after = "notifications-after.jpg"
+alt = "The notification panel with one Calendar notification, once with a Do not disturb switch and once with buttons for Sound, Silent and Do not disturb"
+caption = "The notification panel in 0.25.0, with its Do not disturb switch, and in 0.26.0, with Silent chosen. The arrow beside each mode sets how long it lasts."
+
+[[features]]
+area = "notifications"
+title = "Notifications can play sounds"
+text = "In Sound mode, notifications play a sound from one of three sets: Vibes, Knock or Breath. Open Notifications in Settings to preview the sounds, choose a set and adjust the volume. The bell button on a notification card gives that app its own set, or turns its sound off. A Timers alarm repeats until you dismiss it, for up to two minutes."
+
+[[features]]
+area = "game-mode"
+title = "Game mode passes Super shortcuts to the game"
+text = "In game mode, Super, every Super combination and Alt+Tab go to the game instead of Tileception, and the screen does not sleep or lock. Game mode turns on automatically when the focused game is fullscreen or has captured the mouse pointer. Press Super+Caps Lock to switch it yourself. For a game Tileception does not recognise, add a window rule with `game = true`. With `game = false`, game mode does not come on by itself for that window."
+
+[features.media]
+kind = "image"
+src = "game-mode-after.jpg"
+alt = "A notice at the top of the screen reading Game mode on, Super+Caps Lock to turn off"
+caption = "The notice at the top of the screen when game mode comes on. When it goes off, a struck-through notice shows."
+
+[[features]]
+area = "wizard"
+title = "The Wizard lists your agents first and lets you choose which copy runs"
+text = "The Wizard's agent list now starts with the agents you have set up, then the ones installed on your computer, then the rest of the registry. Each agent shows its state, such as In use, Needs login or Update available, and you can type to search the list. Under the chosen agent, pick Wizard's copy, the copy installed on your computer, or another program you name by its path. Desktop apps that share an agent's name, such as OpenCode Desktop, are no longer taken for the agent."
+
+[[features]]
+area = "settings"
+title = "The Settings overview adjusts to the window's size"
+text = "The cards on the Overview page in Settings now fit the window: three columns of equal width, or two when the page is narrow. In a taller window, the top rows grow a little."
+
+[[features]]
+area = "screenshot"
+title = "`tileception msg screenshot` answers once the picture is saved"
+text = "`tileception msg screenshot <file.png>` captures the next frame and returns after it writes the file. In a script, the screenshot reflects earlier commands and is ready for the next step."
+
+[[fixes]]
+area = "greeter"
+text = "Shared wallpapers now fill each display even if it turns on or changes resolution after the login screen appears. Any display smaller than the largest one shows the centre of the image."
+
+[[fixes]]
+area = "settings"
+text = "The Edit config.toml button in Settings now opens `config.toml` even when the file has mistakes, so you can fix it there and save it."
+
+[[fixes]]
+area = "packaging"
+text = "On computers installed from the Tileception ISO, folders, text, images, documents, video, music and archives now open in the apps that came with it, until you choose others on the Default apps page in Settings."

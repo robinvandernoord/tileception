@@ -156,16 +156,20 @@ def icon(name):
     )
 
 
-PROSE = re.compile(r"`([^`]+)`|:(" + "|".join(map(re.escape, GLYPHS)) + r"):")
+PROSE = re.compile(
+    r"`([^`]+)`|(?<![\w*])\*([^*`\n]+)\*(?![\w*])|:(" + "|".join(map(re.escape, GLYPHS)) + r"):"
+)
 
 
 def prose(text):
-    """Escapes text, turning `code` into <code> and :name: into that glyph."""
+    """Escapes text and renders `code`, *emphasis* and :name: glyphs."""
 
     def piece(match):
         if match.group(1) is not None:
             return f"<code>{match.group(1)}</code>"
-        return icon(match.group(2))
+        if match.group(2) is not None:
+            return f"<em>{match.group(2)}</em>"
+        return icon(match.group(3))
 
     return PROSE.sub(piece, html.escape(text, quote=False))
 
@@ -324,7 +328,7 @@ def preview(release):
         if name.endswith((".mp4", ".webm")):
             image = f"{SITE}/og.png"
     title = f"What's new in Tileception {release['version']}"
-    description = re.sub(r"`([^`]+)`", r"\1", release["lede"]) or DESCRIPTION
+    description = PROSE.sub(lambda match: match.group(1) or match.group(2) or match.group(), release["lede"]) or DESCRIPTION
     tags = [
         ("property", "og:type", "website"),
         ("property", "og:site_name", "Tileception"),
