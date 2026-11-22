@@ -122,6 +122,7 @@ fn serve(state: &mut Tileception, stream: UnixStream) -> std::io::Result<()> {
         let timer = Timer::from_duration(wait);
         let _ = state.loop_handle.insert_source(timer, move |_, _, state| {
             state.reply_later(request, Err(late.into()));
+            state.drop_screenshot(request);
             TimeoutAction::Drop
         });
         return Ok(());

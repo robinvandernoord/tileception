@@ -326,6 +326,19 @@ impl Tileception {
         Rectangle::from_size(self.output_pixels().into())
     }
 
+    /// Gives up a screenshot whose command timed out: the path may already
+    /// be in use for something else by the time a frame comes.
+    pub(crate) fn drop_screenshot(&mut self, request: u64) {
+        let other = |capture: &PendingCapture| !matches!(&capture.target, CaptureTarget::File { request: queued, .. } if *queued == request);
+        // It may wait with a screen other than the one in use now.
+        let before = self.pending_captures.len();
+        self.pending_captures.retain(other);
+        let dropped = before - self.pending_captures.len() + self.outputs.retain_parked_captures(other);
+        if dropped > 0 {
+            tracing::info!("screenshot dropped: its command timed out");
+        }
+    }
+
     /// Takes a screenshot of the whole output into a PNG file on the next
     /// frame, which it asks for. The command is answered once the file is
     /// written, so what a script does next is not in it.
@@ -779,15 +792,22 @@ fn copy_into_shm(buffer: &WlBuffer, width: i32, height: i32, rgba: &[u8]) -> Res
 }
 
 fn write_png(path: &PathBuf, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
     let file = std::fs::File::create(path).map_err(|err| err.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    let mut out = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|err| err.to_string())?;
     // Opaque: the scene has no meaningful alpha.
     let opaque: Vec<u8> =
         rgba.as_chunks::<4>().0.iter().flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255]).collect();
-    writer.write_image_data(&opaque).map_err(|err| err.to_string())
+    writer.write_image_data(&opaque).map_err(|err| err.to_string())?;
+    // The end of the file and what is still buffered: dropping them would
+    // hide a full disk.
+    writer.finish().map_err(|err| err.to_string())?;
+    out.flush().map_err(|err| err.to_string())?;
+    out.into_inner().map_err(|err| err.to_string())?.sync_all().map_err(|err| err.to_string())
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for Tileception {
