@@ -1,4 +1,22 @@
-# Building and checking Tileception
+# Tileception contributor instructions
+
+## Commit types and releases
+
+- Use `feat` and `fix` only for changes users experience in an installed
+  Tileception release. Before proposing either type, say what changes for
+  someone updating through APT. Both types appear in the changelog and can
+  trigger a version bump.
+- Use `build` for changes to how Tileception is built or packaged, including
+  build dependencies and the CI steps that run those builds. A broken build
+  step still takes `build`, for example `build(ci): install build dependencies`.
+- Use `chore` for internal maintenance, including website tooling, generated
+  website pages, website CI and release automation. For example,
+  `chore(website): render changelog entries with Markdown`.
+- Use `docs` for user documentation such as `docs/` and the README. Vommit
+  includes `docs` in the changelog. Use `chore(plan)` for `PLAN.md` and
+  `chore(agents)` for `AGENTS.md`.
+
+## Building and checking Tileception
 
 Use [cargo-plane](https://github.com/robinvandernoord/cargo-plane) for Cargo
 development commands so the same workflow works locally and on a remote builder.
@@ -136,15 +154,6 @@ decisions about how. Never use it for progress or status: no "done",
 on what was or was not tried. Report those in the conversation, commit or pull
 request. When you finish a roadmap item, remove it from PLAN.md, keeping only
 any part still to come; the code and documentation describe what exists.
-
-Commit changes to PLAN.md (and to this file) as `chore(plan): ...` or
-`chore(agents): ...`, never `docs(...)`. Vommit puts `docs` commits in the
-changelog, and these files mean nothing to users; `chore` is left out. Keep
-`docs` for user-facing documentation such as `docs/` and the README.
-Use `feat` and `fix` only for user-facing changes: both appear in the changelog
-and can trigger version bumps. Use `chore` for release infrastructure,
-packaging, website plumbing, and other internal changes that should not appear
-there.
 
 ## Buttons
 
