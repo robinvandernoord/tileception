@@ -17,6 +17,7 @@ mod home_page;
 mod interaction;
 mod keymap;
 mod network_page;
+mod overview;
 mod refresh;
 pub(crate) mod sections;
 
@@ -1516,38 +1517,8 @@ impl Tileception {
             frame.config = Some(Rect::new(content.x, body.bottom() - config_height - 12., content.w, config_height));
         }
         if self.settings.page.is_none() && self.settings.query.is_empty() {
-            let gap = 12.;
-            let col = (content.w - gap * 2.) / 3.;
             let top = frame.top;
-            let row = ((content.h - header - 40.) / 4.).clamp(150., 176.);
-            let short = (row * 0.85).max(150.);
-            let mut rects = [
-                Rect::new(content.x, top, col, row * 2. + gap),
-                Rect::new(content.x + col + gap, top, col, row),
-                Rect::new(content.x + 2. * (col + gap), top, col, row),
-                Rect::new(content.x + col + gap, top + row + gap, col * 2. + gap, row),
-                Rect::new(content.x, top + 2. * (row + gap), col, short),
-                Rect::new(content.x + col + gap, top + 2. * (row + gap), col, short),
-                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap), col, short),
-                Rect::new(content.x, top + 2. * (row + gap) + short + gap, col * 2. + gap, 150.),
-                Rect::new(content.x + 2. * (col + gap), top + 2. * (row + gap) + short + gap, col, 150.),
-                Rect::new(content.x, top + 2. * (row + gap) + short + 162., content.w, 150.),
-            ];
-            if content.w < 700. {
-                let half = (content.w - gap) / 2.;
-                rects = [
-                    Rect::new(content.x, top, content.w, 300.),
-                    Rect::new(content.x, top + 312., half, 150.),
-                    Rect::new(content.x + half + gap, top + 312., half, 150.),
-                    Rect::new(content.x, top + 474., content.w, 150.),
-                    Rect::new(content.x, top + 636., half, 150.),
-                    Rect::new(content.x + half + gap, top + 636., half, 150.),
-                    Rect::new(content.x, top + 798., half, 150.),
-                    Rect::new(content.x + half + gap, top + 798., half, 150.),
-                    Rect::new(content.x, top + 960., content.w, 150.),
-                    Rect::new(content.x, top + 1122., content.w, 150.),
-                ];
-            }
+            let rects = overview::cards((content.x, top), content.w, content.h - header);
             let bottom = rects.iter().map(Rect::bottom).reduce(f64::max).unwrap_or(top);
             frame.max_scroll = (bottom - body.bottom() + 20.).max(0.);
             for (index, mut rect) in rects.into_iter().enumerate() {
