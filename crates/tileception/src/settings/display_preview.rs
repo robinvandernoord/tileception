@@ -84,9 +84,7 @@ impl Tileception {
                 (format!("Could not restore displays: {error}"), true)
             }
             _ if timed_out => (
-                "The changes were not kept within 15 seconds, so the displays went back. Your changes are \
-                 still here: Apply to try again."
-                    .into(),
+                "The 15-second preview ended. Your edits are still in Settings. Click Apply to try again.".into(),
                 false,
             ),
             _ => (
@@ -108,8 +106,7 @@ impl Tileception {
         };
         match result {
             Ok(()) => {
-                self.settings.message =
-                    "The displays went back. Your changes are still here: Apply to try again.".into();
+                self.settings.message = "Display layout restored. Click Apply to try your edits again.".into();
                 self.settings.error = false;
             }
             Err(error) => {

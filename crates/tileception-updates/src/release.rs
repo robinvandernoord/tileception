@@ -276,7 +276,7 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
         Some(free) => check(
             "Not enough disk space",
             format!(
-                "{} free, about {} needed. Old kernels are a quick win.",
+                "{} free, about {} needed. Remove old kernels to free space.",
                 crate::human_size(free),
                 crate::human_size(NEEDED)
             ),
@@ -296,7 +296,7 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
     if readiness.restart {
         list.push(check(
             "Restart first",
-            "Earlier updates wait for a restart. Upgrade from the freshly started system.".into(),
+            "Restart to finish installing updates, then start the upgrade.".into(),
             State::Attention,
         ));
     }
@@ -305,11 +305,7 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
     } else {
         let count = readiness.third_party.len();
         check(
-            &format!(
-                "{count} other source{} get{} switched off",
-                if count == 1 { "" } else { "s" },
-                if count == 1 { "s" } else { "" }
-            ),
+            &format!("{count} third-party source{} will be disabled", if count == 1 { "" } else { "s" }),
             format!("{}. Switch them on again here afterwards.", readiness.third_party.join(", ")),
             State::Notice,
         )
@@ -409,7 +405,7 @@ mod tests {
         let list = checks(&readiness);
         assert!(!ready(&list));
         assert_eq!(list[1].detail, "12 waiting, 3 for security");
-        assert_eq!(list[2].title, "1 other source gets switched off");
+        assert_eq!(list[2].title, "1 third-party source will be disabled");
         assert_eq!(list[2].state, State::Notice);
         readiness.pending = 0;
         readiness.security = 0;

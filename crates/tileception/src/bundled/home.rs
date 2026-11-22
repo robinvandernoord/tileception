@@ -806,7 +806,7 @@ impl Plugin for HomePlugin {
             (BAR, "Smart home chip"),
             (LOCK, "Indoor temperature on the lock screen"),
             (DEVICES, "Smart home devices"),
-            (DOCTOR, "Smart home tools for Doctor"),
+            (DOCTOR, "Smart home tools for the Wizard"),
         ]
     }
 

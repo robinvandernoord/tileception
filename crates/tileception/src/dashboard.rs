@@ -673,7 +673,7 @@ impl Tileception {
         let dormant = self.plugins.as_ref().map(crate::plugins::Host::dashboard_dormant).unwrap_or_default();
         offers.extend(dormant.iter().map(|(plugin, running)| Offer {
             title: plugin.clone(),
-            detail: if *running { "Plugin: show its items" } else { "Plugin, off: switch it on" },
+            detail: if *running { "Show plugin items" } else { "Enable plugin and show items" },
             click: Click::SwitchOn(plugin.clone(), !running),
         }));
         offers

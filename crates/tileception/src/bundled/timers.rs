@@ -460,7 +460,7 @@ fn start_row(ask: Ask, label: &str, said: Said, now: i64) -> Value {
             json!({ "duration": format!("{seconds}s"), "label": label, "reminder": true }),
         ),
         Ask::Length(_) => (
-            format!("Start a timer of {}", spoken(seconds)),
+            format!("Set a timer for {}", spoken(seconds)),
             named(format!("Rings at {}", clock(ends))),
             json!({ "duration": format!("{seconds}s"), "label": label }),
         ),
@@ -1054,7 +1054,7 @@ mod tests {
 
         let rows = crate::plugins::parse_rows(timers.rows("5m", 1030)).unwrap();
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0].title, "Start a timer of 5 minutes");
+        assert_eq!(rows[0].title, "Set a timer for 5 minutes");
         assert_eq!(
             rows[0].actions[0].kind,
             crate::plugins::ActionKind::Tool {

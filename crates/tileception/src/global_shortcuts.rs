@@ -465,8 +465,8 @@ impl Tileception {
         };
         let summary = format!("{}: {}", session.name, shortcut.description);
         let body = match shortcut.trigger {
-            Some(trigger) => format!("Press new keys for this shortcut, now {}. Escape keeps them.", trigger.label()),
-            None => "Press the keys for this shortcut, such as Ctrl+Alt+A. Escape leaves it unset.".into(),
+            Some(trigger) => format!("Current shortcut is {}. Press new keys or Esc to keep it.", trigger.label()),
+            None => "Press the shortcut keys, such as Ctrl+Alt+A. Press Esc to skip.".into(),
         };
         let desktop_entry = session.desktop_entry.clone();
         let actions = vec![("skip".to_string(), "Skip".to_string())];

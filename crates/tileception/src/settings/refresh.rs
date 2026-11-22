@@ -183,7 +183,7 @@ impl Tileception {
             self.settings.error = true;
         } else if !kept.is_empty() {
             self.settings.message = format!(
-                "config.toml changed on disk. Your edits to {} are kept; Apply saves them over the file's.",
+                "config.toml changed on disk. Apply replaces the file's values for {} with your edits.",
                 listing(&kept)
             );
             self.settings.error = false;

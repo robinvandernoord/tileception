@@ -632,7 +632,7 @@ impl Tileception {
                 let text_w = (rect.w - if field == 0 { 20. } else { 76. }) as f32;
                 let (shown, cursor, anchor) = self.settings_network_shown(field);
                 if shown.is_empty() && !typing {
-                    let hint = if field == 0 { "As the network is called" } else { "Optional" };
+                    let hint = if field == 0 { "Exact network name" } else { "Optional" };
                     painter.text(
                         hint,
                         Rect::new(rect.x + 10., rect.y, f64::from(text_w), rect.h),

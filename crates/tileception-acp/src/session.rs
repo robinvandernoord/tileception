@@ -430,7 +430,8 @@ impl Worker {
         }
         if self.required_mode.as_ref().is_some_and(|(option_id, _)| self.failed_settings.contains(option_id)) {
             (self.emit)(Event::Note(
-                "Message not sent: the agent rejected its permission mode. Retry the message to sync it again, or restart the agent.".into(),
+                "Message not sent. The agent rejected the permission mode. Resend your message or restart the agent."
+                    .into(),
             ));
             (self.emit)(Event::TurnEnded("error".into()));
             return Ok(());

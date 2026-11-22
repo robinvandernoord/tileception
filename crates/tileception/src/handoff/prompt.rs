@@ -233,9 +233,7 @@ impl Tileception {
         let text_w = layout.close.x - 8.0 - text_x;
         let name = &entry.name;
         let (title, body) = match card {
-            Card::Place => {
-                (format!("Share with {name}"), format!("Drag this card to the edge of the screen where {name} is."))
-            }
+            Card::Place => (format!("Share with {name}"), format!("Drag this card to the screen edge nearest {name}.")),
             Card::Waiting => {
                 (format!("Waiting for {name}"), format!("Sharing starts once {name} has placed this machine."))
             }

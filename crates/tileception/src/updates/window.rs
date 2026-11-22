@@ -121,11 +121,11 @@ enum Sheet {
 impl Sheet {
     fn title(self) -> &'static str {
         match self {
-            Sheet::Queue => "What the queue would do",
-            Sheet::Install => "What installing would do",
-            Sheet::InstallRestart => "What installing before restarting would do",
+            Sheet::Queue => "Kernel changes preview",
+            Sheet::Install => "Install preview",
+            Sheet::InstallRestart => "Install and restart preview",
             Sheet::Autoremove => "Clean-up preview",
-            Sheet::Repair => "What a repair would do",
+            Sheet::Repair => "Repair preview",
             Sheet::Log => "The last task",
             Sheet::Notes => "Release notes",
         }
@@ -657,7 +657,7 @@ impl Tileception {
             if preview.is_empty() {
                 let waiting = match updates.window.sheet {
                     Sheet::Notes => "Reading the release notes...",
-                    _ => "Asking apt-get what this would do...",
+                    _ => "Preparing preview...",
                 };
                 rows.push(Row::Text(waiting.into()));
             }
@@ -714,7 +714,7 @@ impl Tileception {
                 }
                 let muted = updates.skipped.len() + snapshot.held.len();
                 if muted > 0 {
-                    rows.push(Row::Heading("Skipped and held".into(), "wait until you let them through".into()));
+                    rows.push(Row::Heading("Skipped and held".into(), "Not installed until you allow them".into()));
                     rows.extend((0..muted).map(Row::Muted));
                 }
             }

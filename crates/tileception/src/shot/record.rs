@@ -570,7 +570,7 @@ impl Tileception {
             }
         }
         if !lost.is_empty() {
-            let body = format!("The {} could not be recorded, so it is left out", lost.join(" and the "));
+            let body = format!("Couldn't record the {}", lost.join(" and the "));
             self.notify_locally("Recording without sound", &body, Urgency::Normal);
             self.schedule_render();
         }

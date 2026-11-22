@@ -1101,10 +1101,10 @@ fn ask_hint(buttons: usize, focused: bool) -> String {
         return "Shift+Tab or Up to answer here, or send a message to decline it".into();
     }
     let pick = match buttons.min(9) {
-        0 | 1 => "1 picks".to_string(),
-        last => format!("1-{last} pick"),
+        0 | 1 => "1".to_string(),
+        last => format!("1-{last}"),
     };
-    format!("Enter chooses, arrows move, {pick}, Esc to the message field")
+    format!("Enter or {pick} to select, arrow keys to move, Esc to return to the message")
 }
 
 /// The one-time rejection when redirecting a turn, or cancellation.
@@ -5811,9 +5811,9 @@ mod tests {
             let hint = ask_hint(buttons, focused);
             assert!(hint.is_ascii(), "{hint}");
         }
-        assert!(ask_hint(3, true).contains("1-3 pick"));
-        assert!(ask_hint(12, true).contains("1-9 pick"));
-        assert!(ask_hint(1, true).contains("1 picks"));
+        assert!(ask_hint(3, true).contains("Enter or 1-3 to select"));
+        assert!(ask_hint(12, true).contains("Enter or 1-9 to select"));
+        assert!(ask_hint(1, true).contains("Enter or 1 to select"));
         assert!(ask_hint(2, false).contains("Shift+Tab"));
     }
 

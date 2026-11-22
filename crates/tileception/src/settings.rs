@@ -186,7 +186,7 @@ const FIELDS: &[Field] = &[
         0,
         "theme.colour_scheme",
         "Application appearance",
-        "The preference sent to applications.",
+        "Tell apps whether you prefer light or dark mode.",
         Control::Choice(&["dark", "light", "default"]),
     ),
     field(0, "theme.frost", "Frosted panels", "Translucent bar, menus and notifications.", Control::Toggle),
@@ -228,7 +228,7 @@ const FIELDS: &[Field] = &[
     field(
         1,
         "general.share_removed_space",
-        "Redistribute closed windows",
+        "Fill space left by closed windows",
         "Spread the space over the row when a window closes.",
         Control::Toggle,
     ),
@@ -287,7 +287,7 @@ const FIELDS: &[Field] = &[
         2,
         "shell.polkit",
         "Password prompt",
-        "Ask for the administrator's password when polkit wants one, or leave that to another agent.",
+        "Use Tileception's password prompt for polkit requests or let another agent handle them.",
         Control::Choice(&["builtin", "none"]),
     ),
     field(3, "keyboard.layout", "Keyboard layout", "Choose a layout and variant.", Control::Keyboard),
@@ -354,7 +354,7 @@ const FIELDS: &[Field] = &[
         4,
         "battery.power_saver_at",
         "Power saver at",
-        "Switch profiles at or below this charge.",
+        "Use Power Saver at or below this level while on battery.",
         Control::Number(0., 50., 1., "%"),
     ),
     field(
@@ -389,8 +389,8 @@ const FIELDS: &[Field] = &[
     field(
         6,
         "shell.lock",
-        "Locker",
-        "Built-in, off, or an external locker command.",
+        "Lock screen",
+        "Built-in, off, or an external lock screen command.",
         Control::Choice(&["builtin", "none"]),
     ),
     field(
@@ -404,7 +404,7 @@ const FIELDS: &[Field] = &[
         6,
         "lock.notifications",
         "Notifications when locked",
-        "On the built-in lock screen: none, a count, which apps, or what they say.",
+        "Choose what the lock screen shows: nothing, a count, app names or full notifications.",
         Control::Choice(&["none", "count", "apps", "full"]),
     ),
     field(6, "general.suspend_enabled", "Allow suspend", "Show suspend in the power menu.", Control::Toggle),
@@ -413,7 +413,7 @@ const FIELDS: &[Field] = &[
     field(
         7,
         "general.default_binds",
-        "Default shortcuts",
+        "Built-in shortcuts",
         "Include the built-in bindings; custom shortcuts override them.",
         Control::Toggle,
     ),
@@ -431,8 +431,8 @@ const FIELDS: &[Field] = &[
     field(
         0,
         "theme.wallpaper_interval",
-        "New picture",
-        "With a wallpaper folder: how often another picture is picked.",
+        "Change wallpaper every",
+        "Applies when you choose a wallpaper folder.",
         Control::Choice(&["", "15m", "30m", "1h", "3h", "1d"]),
     ),
     field(
@@ -3067,7 +3067,7 @@ impl Tileception {
                 ("Status", if self.settings_home_ready() { self.settings_home_status() } else { "Not set up".into() }),
             ],
             6 => vec![
-                ("Locker", text("shell.lock", "Built-in")),
+                ("Lock screen", text("shell.lock", "Built-in")),
                 ("Suspend", if state.flag("general.suspend_enabled") { "Allowed" } else { "Hidden" }.into()),
                 ("Login screen look", switch("greeter.share")),
             ],
