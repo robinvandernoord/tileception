@@ -15,6 +15,16 @@ bindings.
 2. Follow the sign-in options offered by that agent.
 3. Make a request, such as "Please reduce the gaps between windows to 8 pixels."
 
+The agent list opens with the agents you have set up: the one in use, any
+you chose a copy for and any in `[wizard.agents]`. Agents installed on your
+computer come next, then the rest of the registry. Each agent shows where it
+comes from and how it is doing: **In use**, **Starting**, **Needs login** or
+**Stopped** for the chosen agent, **Update available** for an installed one
+that is older than the registry's. Type to search the list by name; the arrow
+keys move through it, and **Enter** picks the first agent found. Click the
+agent's name at the top of the panel, or type `/agent`, to open the list from
+a conversation.
+
 The panel shows any missing tools before you select an agent. Depending on its
 distribution, an agent may need Bun (`bunx`) or Node.js (`npx`), uv (`uvx`),
 or tools for downloading and extracting a binary. Wizard starts or downloads
@@ -39,10 +49,25 @@ sets it, so folders that installers add in `~/.bashrc` (like
 `~/.bun/bin` and `~/.cargo/bin`. The agent then runs with that `PATH` too.
 
 A program found only by its name may be a different program with the same
-name, so the first time Wizard asks whether to use it or download the agent.
-It remembers the answer for that program's path. To run a particular program
-for an agent, set its command under `[wizard.agents]` in the config (see
-[Configuration](configuration.md#wizard)).
+name, so the first time Wizard asks whether to use it, download the agent or
+run another program. Desktop apps are passed over, even when they have an
+agent's name: OpenCode Desktop, for example, is not the `opencode` agent.
+
+### Which copy runs
+
+Under the chosen agent, the list offers each copy it can run:
+
+- **Wizard's copy**, which Wizard downloads and keeps, or runs with `bunx`,
+  `npx` or `uvx`;
+- **Installed copy**, the one Wizard found on your computer;
+- **Another program**, any program you name by its path, such as
+  `~/.local/bin/opencode`. Wizard starts it with the registry's arguments
+  for that agent.
+
+Choosing a copy starts the agent again with it, in a new conversation, and
+Wizard remembers the choice for that agent. A command set under
+`[wizard.agents]` in the config (see [Configuration](configuration.md#wizard))
+takes precedence; remove it there to choose in the list.
 
 ### Updates
 
