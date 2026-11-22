@@ -142,8 +142,11 @@ impl Shape {
 pub struct Shapes {
     program: GlesPixelProgram,
     scale: f64,
-    reused: Rc<RefCell<Reused>>,
-    outputs: Rc<RefCell<HashMap<WeakOutput, Rc<RefCell<Reused>>>>>,
+    reused: Frames,
+    outputs: Rc<RefCell<HashMap<WeakOutput, Frames>>>,
+    /// While a built-in window's picture is drawn, its frames, which take
+    /// the shapes made for an output: see [`Shapes::drawing_into`].
+    window: Rc<RefCell<Option<Frames>>>,
 }
 
 /// Where a shape is and how it looks, as exact bits: the same key draws the
@@ -158,6 +161,20 @@ type Key = ([i32; 4], [u32; 33]);
 struct Reused {
     previous: HashMap<Key, Vec<PixelShaderElement>>,
     current: HashMap<Key, Vec<PixelShaderElement>>,
+}
+
+/// The shapes of one picture's frames, which keep their elements from one
+/// frame to the next: an output's, or a built-in window's that the window
+/// owns (see `settings::client`).
+#[derive(Debug, Clone, Default)]
+pub struct Frames(Rc<RefCell<Reused>>);
+
+impl Frames {
+    /// Starts a frame: shapes drawn in the last one can be drawn again as they were.
+    pub fn next(&self) {
+        let mut reused = self.0.borrow_mut();
+        reused.previous = std::mem::take(&mut reused.current);
+    }
 }
 
 impl Shapes {
@@ -178,25 +195,47 @@ impl Shapes {
         ]
         .map(|(name, type_)| UniformName::new(name, type_));
         let program = renderer.compile_custom_pixel_shader(SHADER, &uniforms).map_err(|err| err.to_string())?;
-        Ok(Shapes { program, scale: 1.0, reused: Default::default(), outputs: Default::default() })
+        Ok(Shapes {
+            program,
+            scale: 1.0,
+            reused: Default::default(),
+            outputs: Default::default(),
+            window: Default::default(),
+        })
     }
 
-    /// Starts a frame: shapes drawn in the last one can be drawn again as they were.
+    /// Starts a frame of `output` (or of the one picture without one).
     pub fn next_frame(&self, output: Option<&Output>) {
-        let cache = self.for_output(output);
-        let mut reused = cache.borrow_mut();
-        reused.previous = std::mem::take(&mut reused.current);
+        self.for_output(output).next();
     }
 
     pub fn remove_output(&self, output: &Output) {
         self.outputs.borrow_mut().remove(&output.downgrade());
     }
 
+    /// Shapes for `output`, drawn at `scale`; for the window's frames
+    /// instead while [`Shapes::drawing_into`] draws one.
     pub fn on_output(&self, output: Option<&Output>, scale: f64) -> Shapes {
-        Shapes { scale, reused: self.for_output(output), ..self.clone() }
+        let frames = self.window.borrow().clone().unwrap_or_else(|| self.for_output(output));
+        Shapes { scale, reused: frames, ..self.clone() }
     }
 
-    fn for_output(&self, output: Option<&Output>) -> Rc<RefCell<Reused>> {
+    /// Starts a frame of `frames`, a built-in window's, and runs `draw` with
+    /// every shape made for an output kept there instead.
+    pub fn drawing_into<T>(&self, frames: &Frames, draw: impl FnOnce() -> T) -> T {
+        /// Puts back the frames drawn into before, also if `draw` panics.
+        struct Restore<'shapes>(&'shapes RefCell<Option<Frames>>, Option<Frames>);
+        impl<'shapes> Drop for Restore<'shapes> {
+            fn drop(&mut self) {
+                *self.0.borrow_mut() = self.1.take();
+            }
+        }
+        frames.next();
+        let _restore = Restore(&self.window, self.window.replace(Some(frames.clone())));
+        draw()
+    }
+
+    fn for_output(&self, output: Option<&Output>) -> Frames {
         match output {
             Some(output) => self.outputs.borrow_mut().entry(output.downgrade()).or_default().clone(),
             None => self.reused.clone(),
@@ -270,7 +309,7 @@ impl Shapes {
         };
         // The same shape twice in a frame takes the last frame's second one,
         // so no two elements share an id.
-        let mut reused = self.reused.borrow_mut();
+        let mut reused = self.reused.0.borrow_mut();
         let element =
             reused.previous.get_mut(&key).filter(|elements| !elements.is_empty()).map(|elements| elements.remove(0));
         let element = element.unwrap_or_else(make);

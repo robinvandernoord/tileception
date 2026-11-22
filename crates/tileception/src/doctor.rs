@@ -1402,36 +1402,10 @@ impl Tileception {
     }
 
     fn render_doctor_client(&self, renderer: &mut GlesRenderer) {
-        use smithay::{
-            backend::renderer::{Bind, Offscreen, damage::OutputDamageTracker, gles::GlesTexture},
-            utils::Rectangle,
-        };
-        let Some(started) = &self.doctor.client else { return };
-        let physical =
-            ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
-        if !started.needs_frame(self.scale, physical) {
-            return;
-        }
-        let logical = (self.doctor.size.0 as i32, self.doctor.size.1 as i32);
-        let size = ((self.doctor.size.0 * self.scale).round() as i32, (self.doctor.size.1 * self.scale).round() as i32);
-        let result = (|| -> Result<Vec<u8>, String> {
-            let elements = self.doctor_view_elements(renderer);
-            let mut texture: GlesTexture =
-                renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
-            {
-                let mut target = renderer.bind(&mut texture).map_err(|error| error.to_string())?;
-                let mut damage = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-                let result = damage
-                    .render_output(renderer, &mut target, 0, &elements, self.theme.background.0)
-                    .map_err(|error| format!("{error:?}"))?;
-                result.sync.wait().map_err(|error| format!("{error:?}"))?;
-            }
-            crate::capture::read_region(renderer, &texture, Rectangle::from_size(size.into()))
-        })();
-        match result {
-            Ok(pixels) => started.frame(client::Frame { pixels, width: size.0, height: size.1, logical }),
-            Err(error) => tracing::warn!("could not draw the doctor's window: {error}"),
-        }
+        let Some(client) = &self.doctor.client else { return };
+        self.render_client_window(renderer, client, self.doctor.size, |state, renderer| {
+            state.doctor_view_elements(renderer)
+        });
     }
 
     /// Opens the panel and asks `question` straight away.

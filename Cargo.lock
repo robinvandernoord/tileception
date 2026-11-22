@@ -3333,6 +3333,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "taffy"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31f7bd2d97198df05186f93a3a3c306845f40e8b3c22bf9279cdd7e5cf5fea7d"
+dependencies = [
+ "serde",
+ "slotmap",
+ "smallvec",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3421,6 +3432,7 @@ dependencies = [
  "serde_json",
  "smithay",
  "smithay-drm-extras",
+ "taffy",
  "tileception-acp",
  "tileception-apps",
  "tileception-auth",

@@ -975,7 +975,7 @@ impl Tileception {
                             // A picture made on the primary GPU holds the
                             // surfaces its own pass drew.
                             let states = if secondary {
-                                lit.mirror.as_ref().map(|mirror| &mirror.states)
+                                lit.mirror.as_ref().map(|mirror| mirror.states())
                             } else {
                                 Some(&result.states)
                             };
@@ -1011,7 +1011,7 @@ impl Tileception {
                             // Nothing changed on screen: what was committed is
                             // already shown.
                             let states = if secondary {
-                                lit.mirror.as_ref().map(|mirror| &mirror.states)
+                                lit.mirror.as_ref().map(|mirror| mirror.states())
                             } else {
                                 Some(&result.states)
                             };

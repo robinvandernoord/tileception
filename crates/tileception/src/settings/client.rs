@@ -2,9 +2,8 @@
 //! compositor; buffers and input travel through the regular Wayland protocols.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     fs::File,
-    hash::{Hash, Hasher},
     io::{Read, Write},
     os::{
         fd::AsFd,
@@ -15,6 +14,13 @@ use std::{
 };
 
 use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            Offscreen,
+            gles::{GlesRenderer, GlesTexture},
+        },
+    },
     input::keyboard::xkb,
     reexports::{
         calloop::{RegistrationToken, channel},
@@ -39,7 +45,13 @@ use wayland_protocols::{
     xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
 };
 
-use super::{Mods, Point};
+use smithay::utils::{Buffer as BufferCoords, Rectangle};
+
+use super::{Mods, Point, Tileception};
+use crate::{
+    capture::{Redraw, read_region},
+    render::OutputElement,
+};
 
 pub(crate) enum Event {
     Resize(i32, i32),
@@ -80,11 +92,22 @@ impl Kind {
     }
 }
 
-pub(crate) struct Frame {
-    pub pixels: Vec<u8>,
-    pub width: i32,
-    pub height: i32,
-    pub logical: (i32, i32),
+/// A part of a window's picture that changed, with its rows as native-endian
+/// ARGB8888.
+type Part = (Rectangle<i32, BufferCoords>, Vec<u8>);
+
+/// What changed in a window's picture since the frame before.
+struct Frame {
+    /// The whole picture's size in physical pixels.
+    size: (i32, i32),
+    parts: Vec<Part>,
+}
+
+/// What a window's last frame left behind on the compositor's side, so that
+/// the next frame redraws and reads back only what changed since.
+struct Canvas {
+    texture: GlesTexture,
+    redraw: Redraw,
 }
 
 enum Request {
@@ -97,7 +120,10 @@ pub(crate) struct Client {
     requests: mpsc::Sender<Request>,
     wake: Mutex<UnixStream>,
     pub client_id: smithay::reexports::wayland_server::backend::ClientId,
-    last_frame: Cell<Option<u64>>,
+    kind: Kind,
+    canvas: RefCell<Option<Canvas>>,
+    /// The shapes of this window's frames, apart from any output's.
+    shapes: crate::shapes::Frames,
     dirty: Cell<bool>,
     last_draw: Cell<Option<(Instant, f64)>>,
     /// The size of the frame drawn last, in physical pixels.
@@ -148,7 +174,9 @@ impl Client {
             requests,
             wake: Mutex::new(wake),
             client_id: client.id(),
-            last_frame: Cell::new(None),
+            kind,
+            canvas: RefCell::new(None),
+            shapes: Default::default(),
             dirty: Cell::new(true),
             last_draw: Cell::new(None),
             last_size: Cell::new(None),
@@ -193,16 +221,27 @@ impl Client {
         }
     }
 
-    pub fn frame(&self, frame: Frame) {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        frame.logical.hash(&mut hash);
-        frame.width.hash(&mut hash);
-        frame.height.hash(&mut hash);
-        frame.pixels.hash(&mut hash);
-        let hash = hash.finish();
-        if self.last_frame.replace(Some(hash)) != Some(hash) {
-            self.request(Request::Frame(frame));
+    /// Draws `elements` as the window's next frame of `size` physical
+    /// pixels and sends the client what changed. A frame that changed
+    /// nothing costs no reading back and sends nothing.
+    fn render(
+        &self,
+        renderer: &mut GlesRenderer,
+        elements: &[OutputElement],
+        size: (i32, i32),
+        clear: [f32; 4],
+    ) -> Result<(), String> {
+        let mut canvas = self.canvas.borrow_mut();
+        let result = draw(renderer, &mut canvas, elements, size, clear);
+        if result.is_err() {
+            // What the texture holds is unknown: start again from nothing.
+            *canvas = None;
         }
+        let parts = result?;
+        if !parts.is_empty() {
+            self.request(Request::Frame(Frame { size, parts }));
+        }
+        Ok(())
     }
 
     pub fn start_move(&self) {
@@ -228,6 +267,64 @@ impl Client {
     }
 }
 
+/// Renders into `canvas`, made anew when the size changed, and reads back
+/// each part that changed as ARGB8888.
+fn draw(
+    renderer: &mut GlesRenderer,
+    canvas: &mut Option<Canvas>,
+    elements: &[OutputElement],
+    size: (i32, i32),
+    clear: [f32; 4],
+) -> Result<Vec<Part>, String> {
+    let canvas = match canvas {
+        Some(canvas) if canvas.redraw.size() == size => canvas,
+        _ => {
+            let texture = renderer.create_buffer(Fourcc::Abgr8888, size.into()).map_err(|error| error.to_string())?;
+            // The elements are in physical pixels already, as on outputs.
+            canvas.insert(Canvas { texture, redraw: Redraw::new(size) })
+        }
+    };
+    let changed = canvas.redraw.draw(renderer, &mut canvas.texture, elements, clear)?;
+    changed
+        .into_iter()
+        .map(|rect| {
+            let mut rows = read_region(renderer, &canvas.texture, rect)?;
+            // RGBA into native-endian ARGB8888, as the client's buffer holds it.
+            for pixel in rows.as_chunks_mut::<4>().0 {
+                let [red, green, blue, alpha] = *pixel;
+                *pixel = u32::from_be_bytes([alpha, red, green, blue]).to_ne_bytes();
+            }
+            Ok((rect, rows))
+        })
+        .collect()
+}
+
+impl Tileception {
+    /// Draws a built-in window's next frame through its `client` when it
+    /// needs one: `size` logical pixels of what `build` gives. Its shapes are
+    /// kept from the window's own last frame rather than an output's, so a
+    /// shape that did not change keeps its element and is not drawn again.
+    pub(crate) fn render_client_window(
+        &self,
+        renderer: &mut GlesRenderer,
+        client: &Client,
+        size: (f64, f64),
+        build: impl FnOnce(&Self, &mut GlesRenderer) -> Vec<OutputElement>,
+    ) {
+        let physical = ((size.0 * self.scale).round() as i32, (size.1 * self.scale).round() as i32);
+        if !client.needs_frame(self.scale, physical) {
+            return;
+        }
+        let elements = match self.shapes(renderer) {
+            Some(shapes) => shapes.drawing_into(&client.shapes, || build(self, renderer)),
+            None => build(self, renderer),
+        };
+        if let Err(error) = client.render(renderer, &elements, physical, self.theme.background.0) {
+            tracing::warn!("could not draw the {} window: {error}", client.kind.title().0);
+        }
+    }
+}
+
 struct App {
     events: channel::Sender<Event>,
     surface: wl_surface::WlSurface,
@@ -249,6 +346,13 @@ struct App {
     /// a sharp frame at that size.
     shown_size: (i32, i32),
     resized: Option<Instant>,
+    /// The whole picture as native-endian ARGB8888, `picture_size` physical
+    /// pixels, with each frame's changed region copied in.
+    picture: Vec<u8>,
+    picture_size: (i32, i32),
+    /// What changed in the picture since it was last shown: only that is
+    /// damaged, so the compositor uploads only that.
+    changed: Vec<Rectangle<i32, BufferCoords>>,
 }
 
 /// How long a window's size holds still before a resize counts as done.
@@ -304,14 +408,16 @@ fn run(
         configured: false,
         shown_size: (size.0 as i32, size.1 as i32),
         resized: None,
+        picture: Vec::new(),
+        picture_size: (0, 0),
+        changed: Vec::new(),
     };
-    let mut pending = None;
     wake.set_nonblocking(true).map_err(|error| error.to_string())?;
     loop {
         queue.dispatch_pending(&mut app).map_err(|error| error.to_string())?;
         loop {
             match requests.try_recv() {
-                Ok(Request::Frame(frame)) => pending = Some(frame),
+                Ok(Request::Frame(frame)) => app.patch(frame),
                 Ok(Request::Move) => app.toplevel._move(&app.seat, app.serial),
                 Ok(Request::Cursor(shape)) => {
                     app.cursor_shape = shape;
@@ -325,13 +431,11 @@ fn run(
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         }
-        // The newest frame is shown even when the window has been resized
+        // The newest picture is shown even when the window has been resized
         // since: stretched to fit, it follows the pointer until a sharp one
         // arrives.
-        if app.configured
-            && let Some(frame) = pending.take()
-        {
-            app.draw(frame, &queue_handle)?;
+        if app.configured && !app.changed.is_empty() {
+            app.draw(&queue_handle)?;
         }
         // A resize that has held still asks for a sharp frame.
         if app.resized.is_some_and(|resized| resized.elapsed() >= SETTLED) {
@@ -372,31 +476,46 @@ fn run(
 }
 
 impl App {
-    fn draw(&mut self, mut frame: Frame, queue_handle: &QueueHandle<Self>) -> Result<(), String> {
-        // Convert RGBA into native-endian ARGB8888.
-        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
-            let [red, green, blue, alpha] = *pixel;
-            *pixel = u32::from_be_bytes([alpha, red, green, blue]).to_ne_bytes();
+    /// Copies a frame's changed parts into the picture, which starts again,
+    /// empty, at a new size.
+    fn patch(&mut self, frame: Frame) {
+        let (width, height) = (frame.size.0.max(0), frame.size.1.max(0));
+        let whole = Rectangle::from_size((width, height).into());
+        if self.picture_size != (width, height) {
+            self.picture_size = (width, height);
+            self.picture = vec![0; width as usize * height as usize * 4];
+            self.changed = vec![whole];
+        }
+        for (rect, rows) in frame.parts {
+            if crate::capture::patch_rows(&mut self.picture, width, rect, &rows) {
+                self.changed.push(rect);
+            } else {
+                tracing::warn!("{width}x{height} picture: part {rect:?} does not fit");
+            }
+        }
+    }
+
+    /// Shows the picture, damaging what changed since it was last shown.
+    fn draw(&mut self, queue_handle: &QueueHandle<Self>) -> Result<(), String> {
+        let (width, height) = self.picture_size;
+        if width == 0 || height == 0 {
+            return Ok(());
         }
         let descriptor =
             memfd_create(c"tileception-settings", MemfdFlags::CLOEXEC).map_err(|error| error.to_string())?;
         let mut file = File::from(descriptor);
-        file.write_all(&frame.pixels).map_err(|error| error.to_string())?;
-        let pool = self.shm.create_pool(file.as_fd(), frame.pixels.len() as i32, queue_handle, ());
-        let buffer = pool.create_buffer(
-            0,
-            frame.width,
-            frame.height,
-            frame.width * 4,
-            wl_shm::Format::Argb8888,
-            queue_handle,
-            (),
-        );
+        file.write_all(&self.picture).map_err(|error| error.to_string())?;
+        let pool = self.shm.create_pool(file.as_fd(), self.picture.len() as i32, queue_handle, ());
+        let buffer = pool.create_buffer(0, width, height, width * 4, wl_shm::Format::Argb8888, queue_handle, ());
         // Drawn for another size, it is stretched to the window's.
         self.viewport.set_destination(self.size.0, self.size.1);
         self.shell.set_window_geometry(0, 0, self.size.0, self.size.1);
         self.surface.attach(Some(&buffer), 0, 0);
-        self.surface.damage_buffer(0, 0, frame.width, frame.height);
+        // The compositor keeps the texture it made from the last buffer and
+        // uploads only what is damaged into it.
+        for rect in self.changed.drain(..) {
+            self.surface.damage_buffer(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+        }
         self.surface.commit();
         pool.destroy();
         Ok(())
