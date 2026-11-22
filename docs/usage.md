@@ -248,9 +248,10 @@ window.
 
 In game mode, Tileception's own Super shortcuts step aside, so Super and
 every Super combination reach the game, including Super with the mouse wheel
-or a click, and dragging with Alt. A short notice at the top of the screen says
-when game mode comes on, and a struck-through one when it goes off. Pressing
-Super on its own shows the notice again.
+or a click, and dragging with Alt. A short notice at the top of the screen
+says when game mode comes on, and a struck-through one when it goes off.
+Alt+Tab goes to the game too, and does not switch windows. Pressing Super on
+its own, or Alt+Tab, shows the notice again.
 
 Game mode comes on by itself when you play a game, whichever launcher started
 it. The focused window must be a game and must be fullscreen or have taken the

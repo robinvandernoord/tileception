@@ -359,7 +359,8 @@ impl Tileception {
             if game {
                 // The game takes every key, Super ones included, except
                 // switching consoles, quitting and leaving game mode. Super
-                // on its own shows how to leave.
+                // on its own, or switching windows (Alt+Tab), shows how to
+                // leave.
                 let held = Mods::from_state(mods);
                 if let Some(command @ Command::Action(Action::Vt(_) | Action::Quit)) =
                     builtin(held, sym, raw_sym, false)
@@ -372,13 +373,22 @@ impl Tileception {
                     bound.alt = false;
                     bound.logo = true;
                 }
+                let commands = state.config.lookup(bound, raw_sym).or_else(|| state.config.lookup(bound, sym));
                 if pressed
-                    && let Some(commands) =
-                        state.config.lookup(bound, raw_sym).or_else(|| state.config.lookup(bound, sym))
+                    && let Some(commands) = commands
                     && commands.iter().any(|command| matches!(command, Command::GameMode(_)))
                 {
                     state.tap_armed = None;
                     return FilterResult::Intercept(commands.to_vec());
+                }
+                let cycles = |commands: &[Command]| {
+                    commands.iter().any(|command| matches!(command, Command::Action(Action::Cycle(_))))
+                };
+                if pressed
+                    && (commands.is_some_and(cycles)
+                        || matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) && held.alt)
+                {
+                    state.show_game_toast();
                 }
                 if state.track_tap(pressed, raw_sym, held).is_some_and(|tap| tap.logo || (state.nested && tap.alt)) {
                     state.show_game_toast();

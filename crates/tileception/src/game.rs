@@ -75,14 +75,18 @@ struct Active {
     window: WindowId,
     /// Switched on with the command rather than by itself.
     manual: bool,
+    /// The game was fullscreen when it last had the keyboard: if it leaves
+    /// fullscreen while another window has it, it stopped playing.
+    fullscreen: bool,
 }
 
 #[derive(Default)]
 pub struct GameMode {
     active: Option<Active>,
-    /// A window game mode was switched off for, which it does not come back
-    /// for by itself until that window loses the keyboard or stops playing.
-    declined: Option<WindowId>,
+    /// Windows game mode was switched off for, which it does not come back
+    /// for by itself until that window stops playing or closes; each with
+    /// whether it was fullscreen when it last had the keyboard.
+    declined: HashMap<WindowId, bool>,
     /// Why each window's process is a game (`None`: it is not), worked out
     /// once per app id: a window that changes it is looked at again.
     identities: HashMap<WindowId, (String, Option<String>)>,
@@ -195,8 +199,9 @@ impl Tileception {
             return;
         }
         tracing::info!(window = window.0, manual, "game mode on");
-        self.game.active = Some(Active { window, manual });
-        self.game.declined = None;
+        let fullscreen = self.play(window).fullscreen;
+        self.game.active = Some(Active { window, manual, fullscreen });
+        self.game.declined.remove(&window);
         self.game.game_focused = self.keyboard_window() == Some(window);
         self.show_game_toast();
     }
@@ -207,7 +212,8 @@ impl Tileception {
         let Some(active) = self.game.active.take() else { return };
         tracing::info!(window = active.window.0, "game mode off");
         if declined {
-            self.game.declined = Some(active.window);
+            let fullscreen = self.fullscreen_on_its_screen(active.window);
+            self.game.declined.insert(active.window, fullscreen);
         }
         self.game.toast = Some((Instant::now(), false));
         self.schedule_render();
@@ -320,26 +326,48 @@ impl Tileception {
         }
         self.game.last_seen = Some(seen);
         self.game.last_check = Some(now);
+        if let Some(active) = self.game.active.as_mut()
+            && focused == Some(active.window)
+        {
+            active.fullscreen = seen.1.fullscreen;
+        }
         if let Some(active) = self.game.active {
             let has_keys = focused == Some(active.window);
-            if !self.windows.contains_key(&active.window)
-                || (has_keys && !active.manual && !self.window_playing(active.window))
-            {
+            // Without the keyboard, a game cannot hold the pointer, so only
+            // leaving fullscreen tells that it stopped.
+            let stopped = if has_keys {
+                !self.window_playing(active.window)
+            } else {
+                active.fullscreen && !self.fullscreen_on_its_screen(active.window)
+            };
+            if !self.windows.contains_key(&active.window) || (!active.manual && stopped) {
                 self.leave_game_mode(false);
             } else if has_keys && !self.game.game_focused {
                 self.show_game_toast();
             }
             self.game.game_focused = has_keys;
         }
-        if let Some(declined) = self.game.declined
-            && (!self.windows.contains_key(&declined) || (focused == Some(declined) && !self.window_playing(declined)))
-        {
-            self.game.declined = None;
+        if !self.game.declined.is_empty() {
+            let declined = std::mem::take(&mut self.game.declined);
+            // As with game mode itself: without the keyboard, only leaving
+            // fullscreen tells that a game stopped.
+            self.game.declined = declined
+                .into_iter()
+                .filter_map(|(window, fullscreen)| {
+                    if !self.windows.contains_key(&window) {
+                        None
+                    } else if focused == Some(window) {
+                        self.window_playing(window).then_some((window, seen.1.fullscreen))
+                    } else {
+                        (!fullscreen || self.fullscreen_on_its_screen(window)).then_some((window, fullscreen))
+                    }
+                })
+                .collect();
         }
         // Another game that is played takes game mode over.
         if let Some(window) = focused
             && self.game.active.is_none_or(|active| active.window != window)
-            && self.game.declined != Some(window)
+            && !self.game.declined.contains_key(&window)
             && self.window_playing(window)
         {
             self.game.active = None;
@@ -361,6 +389,13 @@ impl Tileception {
         }
         let Some(game) = self.is_game(window) else { return false };
         play.playing(game)
+    }
+
+    /// Whether `window` is fullscreen on the screen (or area) it is on,
+    /// which need not be the one in use.
+    fn fullscreen_on_its_screen(&mut self, window: WindowId) -> bool {
+        let Some(area) = self.area_for_window(window) else { return false };
+        self.with_area(&area, |state| state.fullscreen == Some(window)).unwrap_or(false)
     }
 
     fn play(&self, window: WindowId) -> Play {
