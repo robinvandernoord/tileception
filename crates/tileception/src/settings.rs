@@ -913,9 +913,19 @@ fn level_parts(row: Rect) -> LevelParts {
     }
 }
 
+/// How the message about mistakes in config.toml starts.
+const PROBLEMS: &str = "Fix config.toml before applying";
+
+/// Why changes wait: config.toml is not TOML at all. A parse error runs
+/// over several lines, pointing at the spot; its first says enough.
+fn unreadable_message(error: &str) -> String {
+    let first = error.lines().next().unwrap_or(error).trim_end_matches(':');
+    format!("{PROBLEMS} (Edit config.toml): {first}")
+}
+
 /// Why changes wait: what is wrong in config.toml.
 fn problems_message(problems: &[crate::config::Problem]) -> String {
-    format!("Fix config.toml before applying (Edit config.toml): {}", crate::config::describe(problems))
+    format!("{PROBLEMS} (Edit config.toml): {}", crate::config::describe(problems))
 }
 
 /// What a path field's dropdown offers: the file chooser for each kind of
@@ -1114,19 +1124,43 @@ impl Settings {
     fn flag(&self, key: &str) -> bool {
         self.value(key).and_then(toml::Value::as_bool).unwrap_or(false)
     }
+
+    /// Whether the message reports mistakes in config.toml.
+    fn problems_shown(&self) -> bool {
+        self.error && self.message.starts_with(PROBLEMS)
+    }
+
+    /// Reports the mistakes in config.toml, or, when it has none, takes away
+    /// a report of earlier ones: a fixed file no longer holds Apply back.
+    fn show_problems(&mut self, problems: &[crate::config::Problem]) {
+        if !problems.is_empty() {
+            self.message = problems_message(problems);
+            self.error = true;
+        } else if self.problems_shown() {
+            self.message.clear();
+            self.error = false;
+        }
+    }
 }
 
 impl Tileception {
     fn settings_load(&mut self) -> Result<(), String> {
         let text = crate::config_edit::panel_text()?;
         // Mistakes in the file still open Settings, with what loaded; Apply
-        // waits until they are fixed (see `settings_document`).
-        let (config, problems) = crate::config::Config::parse_lenient(&text)?;
-        if !problems.is_empty() {
-            self.settings.message = problems_message(&problems);
-            self.settings.error = true;
-        }
-        let before = values(&config.file)?;
+        // waits until they are fixed (see `settings_document`). A file that
+        // is not TOML at all opens too, with the settings running now, to be
+        // repaired in the config.toml editor.
+        let before = match crate::config::Config::parse_lenient(&text) {
+            Ok((config, problems)) => {
+                self.settings.show_problems(&problems);
+                values(&config.file)?
+            }
+            Err(error) => {
+                self.settings.message = unreadable_message(&error);
+                self.settings.error = true;
+                values(&self.config.file)?
+            }
+        };
         let defaults = values(&ConfigFile::default())?;
         self.settings.draft = before.clone();
         self.settings.before = before;
@@ -1138,18 +1172,47 @@ impl Tileception {
     }
 
     fn settings_document(&self) -> Result<String, String> {
-        let (config, problems) = crate::config::Config::parse_lenient(&self.settings.document_draft)?;
+        let problems = crate::config::Config::parse_lenient(&self.settings.document_draft)?.1;
         if !problems.is_empty() {
             return Err(problems_message(&problems));
         }
-        let current = values(&config.file)?;
-        let changes: Vec<_> = FIELDS
+        let document = self.settings_document_as_is()?;
+        crate::config::Config::parse(&document)?;
+        Ok(document)
+    }
+
+    /// The whole file as the draft has it, mistakes and all: what the
+    /// config.toml editor shows, so that they can be fixed there.
+    fn settings_document_as_is(&self) -> Result<String, String> {
+        crate::config_edit::overlay_text(&self.settings.document_draft, &self.settings_pending_changes()?)
+    }
+
+    /// The settings changed with their controls but not yet in the draft
+    /// file, as (key, value).
+    pub(super) fn settings_pending_changes(&self) -> Result<Vec<(&'static str, Option<toml::Value>)>, String> {
+        // A draft that is not TOML: the controls show the settings running
+        // now, so their changes are what differs from those.
+        let current = match crate::config::Config::parse_lenient(&self.settings.document_draft) {
+            Ok((config, _)) => values(&config.file)?,
+            Err(_) => self.settings.before.clone(),
+        };
+        Ok(FIELDS
             .iter()
             .enumerate()
             .filter(|(index, _)| current[*index] != self.settings.draft[*index])
             .map(|(index, field)| (field.key, self.settings.draft[index].clone()))
-            .collect();
-        crate::config_edit::draft_text(&self.settings.document_draft, &changes)
+            .collect())
+    }
+
+    /// What the config.toml editor shows: the file with the controls'
+    /// changes laid over it, or, when the file is too broken for them to
+    /// go in (`theme = 5` under a changed `theme.radius`), the file as it is,
+    /// with `true`: the changes are laid over the repaired file afterwards.
+    pub(super) fn settings_editor_document(&self) -> (String, bool) {
+        match self.settings_document_as_is() {
+            Ok(document) => (document, false),
+            Err(_) => (self.settings.document_draft.clone(), true),
+        }
     }
 
     fn settings_after_save(&mut self) -> Result<(), String> {
@@ -2101,6 +2164,8 @@ impl Tileception {
                 self.settings.parked_editors.clear();
                 self.settings_discard_apps();
                 match self.settings_load() {
+                    // The file still has mistakes: that stays the message.
+                    Ok(()) if self.settings.problems_shown() => self.settings.focus = None,
                     Ok(()) => {
                         self.settings.message = "Draft discarded. Loaded current desktop settings.".into();
                         self.settings.error = false;
@@ -2150,6 +2215,8 @@ impl Tileception {
                         return;
                     }
                 }
+                // That read the draft of config.toml, so it has no mistakes now.
+                self.settings.show_problems(&[]);
                 let changes: Vec<_> = FIELDS
                     .iter()
                     .enumerate()

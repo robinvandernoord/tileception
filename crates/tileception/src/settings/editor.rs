@@ -53,6 +53,12 @@ pub(super) struct Editor {
     reference: bool,
     scroll_remainder: f64,
     original: String,
+    /// The whole file opened without the controls' pending changes, as they
+    /// could not go into it: they are laid over the repaired file.
+    pending_apart: bool,
+    /// Told that the controls' changes do not fit this text (and which):
+    /// using the draft again with the same text and changes drops them.
+    drop_asked: Option<String>,
 }
 
 impl Editor {
@@ -146,8 +152,16 @@ impl Tileception {
             self.schedule_render();
             return;
         }
+        let mut pending_apart = false;
         let result = (|| {
-            let document = self.settings_document()?;
+            // The whole file opens with its mistakes, to fix them here.
+            let document = if field.is_none() {
+                let (document, apart) = self.settings_editor_document();
+                pending_apart = apart;
+                document
+            } else {
+                self.settings_document()?
+            };
             let text = if reference {
                 crate::config::DEFAULT.into()
             } else if let Some(index) = field {
@@ -173,6 +187,8 @@ impl Tileception {
                     stale: false,
                     reference,
                     scroll_remainder: 0.,
+                    pending_apart: pending_apart && !reference,
+                    drop_asked: None,
                 });
                 self.settings.dropdown = None;
             }
@@ -187,7 +203,7 @@ impl Tileception {
     /// Brings the open and parked editors up to date after config.toml
     /// changed on disk. Returns the editors whose edits were kept over it.
     pub(super) fn settings_editors_refreshed(&mut self) -> Vec<&'static str> {
-        let Ok(document) = self.settings_document() else { return Vec::new() };
+        let (document, apart) = self.settings_editor_document();
         let mut kept = Vec::new();
         for editor in self.settings.editor.iter_mut().chain(&mut self.settings.parked_editors) {
             if editor.reference {
@@ -202,6 +218,10 @@ impl Tileception {
             };
             if editor.field.is_none() {
                 editor.follow_file(&source);
+                // On the new text, the controls' changes are in it or not.
+                if !editor.stale {
+                    editor.pending_apart = apart;
+                }
                 continue;
             }
             if source == editor.original {
@@ -251,14 +271,20 @@ impl Tileception {
             self.settings.editor = None;
             return;
         }
+        let mut pending_dropped = Vec::new();
         let result = (|| {
-            if editor.input.text == editor.original {
-                return Ok(());
+            // Nothing changed, nothing repaired: a warning about the file
+            // stays. A whole file shown with the controls' changes in it is
+            // a change, though, that may repair the file.
+            let shown_is_draft = editor.field.is_some() || editor.original == self.settings.document_draft;
+            if editor.input.text == editor.original && shown_is_draft {
+                return Ok(false);
             }
             if editor.stale {
                 return Err(STALE.into());
             }
-            let current = self.settings_document()?;
+            let current =
+                if editor.field.is_none() { self.settings_editor_document().0 } else { self.settings_document()? };
             let current_excerpt = if let Some(index) = editor.field {
                 crate::config_edit::section_text(&current, FIELDS[index].key)?
             } else {
@@ -280,19 +306,91 @@ impl Tileception {
                 self.settings.draft = values(&config.file)?;
                 self.settings.document_draft = document;
             } else {
-                let config = crate::config::Config::parse(&editor.input.text)?;
+                let mut text = editor.input.text.clone();
+                // A text that is not TOML says so first.
+                if !crate::config_edit::is_toml(&text) {
+                    crate::config::Config::parse(&text)?;
+                }
+                // The controls' changes, kept apart from a file they could
+                // not go into, go into the repaired one. Asked now: a control
+                // may have changed while the editor was kept for later.
+                let (_, pending_apart) = self.settings_editor_document();
+                editor.pending_apart = pending_apart;
+                if pending_apart {
+                    let mut pending = self.settings_pending_changes()?;
+                    // A value written in the text wins over a control's;
+                    // where both set one and differ, ask first.
+                    // Under the names the overlay writes, `shell.doctor` too.
+                    let written = crate::config_edit::current_values(&text).unwrap_or_default();
+                    let mut differing = Vec::new();
+                    let pending_values = format!("{:?}", pending);
+                    pending.retain(|(key, value)| match text_value(&written, key) {
+                        None => true,
+                        Some(here) => {
+                            if !same_value(&here, value.as_ref())
+                                && let Some(field) = FIELDS.iter().find(|field| field.key == *key)
+                            {
+                                differing.push(field.label);
+                            }
+                            false
+                        }
+                    });
+                    if !differing.is_empty() {
+                        // Asked again when the text or the controls' values change.
+                        let asked = format!("{text}\u{0}written:{}\u{0}{pending_values}", differing.join(","));
+                        if editor.drop_asked.as_ref() != Some(&asked) {
+                            editor.drop_asked = Some(asked);
+                            return Err(format!(
+                                "{} is set differently here than in Settings. Try again to keep what is written here.",
+                                differing.join(", ")
+                            ));
+                        }
+                    }
+                    match crate::config_edit::overlay_text(&text, &pending) {
+                        Ok(merged) => text = merged,
+                        Err(_) if !pending.is_empty() => {
+                            let labels: Vec<&str> = pending
+                                .iter()
+                                .filter_map(|(key, _)| FIELDS.iter().find(|field| field.key == *key))
+                                .map(|field| field.label)
+                                .collect();
+                            let asked = format!("{text}\u{0}{}", labels.join(","));
+                            if editor.drop_asked.as_ref() != Some(&asked) {
+                                editor.drop_asked = Some(asked);
+                                return Err(format!(
+                                    "Your changes to {} do not fit this text. Change it so they fit, or try again to drop them.",
+                                    labels.join(", ")
+                                ));
+                            }
+                            pending_dropped = labels;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                let config = crate::config::Config::parse(&text)?;
                 self.settings.draft = values(&config.file)?;
-                self.settings.document_draft = editor.input.text.clone();
+                self.settings.document_draft = text;
             }
-            Ok::<_, String>(())
+            Ok::<_, String>(true)
         })();
         match result {
-            Ok(()) => {
+            Ok(false) => {
+                self.settings.editor = None;
+                if apply {
+                    self.settings_activate(Hit::Apply, None);
+                }
+            }
+            Ok(true) => {
                 self.settings.editor = None;
                 self.settings.message.clear();
                 self.settings.error = false;
-                if apply {
-                    self.settings_activate(Hit::Apply, None);
+                if pending_dropped.is_empty() {
+                    if apply {
+                        self.settings_activate(Hit::Apply, None);
+                    }
+                } else {
+                    // Not applied: the dropped changes are seen first.
+                    self.settings.message = format!("Dropped your changes to {}.", pending_dropped.join(", "));
                 }
             }
             Err(error) => {
@@ -385,10 +483,12 @@ impl Tileception {
         // The keypad's arrows move between lines too.
         let sym = crate::text_input::plain(sym);
         if sym == keysyms::KEY_Escape {
-            if let Some(editor) = self.settings.editor.take()
+            if let Some(mut editor) = self.settings.editor.take()
                 && !editor.reference
                 && editor.input.text != editor.original
             {
+                // Kept for later, the controls may change: ask again then.
+                editor.drop_asked = None;
                 self.settings.parked_editors.push(editor);
                 self.settings.message.clear();
             }
@@ -530,9 +630,45 @@ impl Tileception {
     }
 }
 
+/// A setting's value as `text` writes it (`theme.font_size`, or a whole
+/// section such as `binds`).
+fn text_value(text: &toml::Table, key: &str) -> Option<toml::Value> {
+    match key.split_once('.') {
+        Some((section, name)) => text.get(section)?.get(name).cloned(),
+        None => text.get(key).cloned(),
+    }
+}
+
+/// Whether a written value is the control's, `13` and `13.0` alike.
+fn same_value(written: &toml::Value, control: Option<&toml::Value>) -> bool {
+    let Some(control) = control else { return false };
+    match (
+        written.as_float().or(written.as_integer().map(|int| int as f64)),
+        control.as_float().or(control.as_integer().map(|int| int as f64)),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => written == control,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn written_values_are_found_and_compared() {
+        let written: toml::Table =
+            toml::from_str("[theme]\nfont_size = 23.0\n[general]\ngap = 8\n").expect("written text parses");
+        assert_eq!(text_value(&written, "theme.font_size"), Some(toml::Value::Float(23.0)));
+        assert_eq!(text_value(&written, "theme.radius"), None);
+        assert!(same_value(&toml::Value::Integer(8), Some(&toml::Value::Float(8.0))));
+        assert!(!same_value(&toml::Value::Float(23.0), Some(&toml::Value::Float(19.0))));
+        assert!(!same_value(&toml::Value::Float(23.0), None));
+        // The old spelling counts as the setting Settings writes.
+        let legacy = crate::config_edit::current_values("[shell]\ndoctor = \"builtin\"\n").expect("parses");
+        assert_eq!(text_value(&legacy, "shell.wizard"), Some(toml::Value::String("builtin".into())));
+        assert_eq!(crate::config_edit::current_values("[shell"), None);
+    }
 
     fn whole_file(original: &str, text: &str) -> Editor {
         Editor {
@@ -546,6 +682,8 @@ mod tests {
             reference: false,
             scroll_remainder: 0.,
             original: original.into(),
+            pending_apart: false,
+            drop_asked: None,
         }
     }
 

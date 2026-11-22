@@ -123,6 +123,58 @@ fn listing(labels: &[&str]) -> String {
     }
 }
 
+/// What a change to config.toml on disk did to Settings.
+struct Change<'a> {
+    /// The staged whole-file draft cannot take the change.
+    stale: bool,
+    /// Edits in the config.toml editor cannot take it.
+    editor_stale: bool,
+    /// What is wrong in the file as the draft now has it.
+    problems: &'a [crate::config::Problem],
+    /// Edited settings that the file changed too.
+    kept: &'a [&'a str],
+    /// Settings shows new values from the file.
+    reloaded: bool,
+}
+
+/// What Settings says after config.toml changed on disk: a message and
+/// whether it is an error, or None to keep the message it shows.
+/// `problems_shown` is whether that message reports mistakes in the file,
+/// which a fixed file takes away.
+/// The warning that Apply will refuse a draft that cannot take a change on
+/// disk; it goes when the file is back as the draft was made on.
+const STALE_DRAFT: &str = "config.toml changed on disk, and your draft of the whole file cannot take the change, so \
+                           Apply will refuse. Discard reloads the file.";
+
+fn notice(change: &Change<'_>, problems_shown: bool) -> Option<(String, bool)> {
+    if change.stale {
+        Some((STALE_DRAFT.into(), true))
+    } else if change.editor_stale {
+        Some((
+            "config.toml changed on disk, and your edits in the config.toml editor cannot take the change, so Apply \
+             will refuse them. Discard reloads the file."
+                .into(),
+            true,
+        ))
+    } else if !change.problems.is_empty() {
+        Some((problems_message(change.problems), true))
+    } else if !change.kept.is_empty() {
+        Some((
+            format!(
+                "config.toml changed on disk. Apply replaces the file's values for {} with your edits.",
+                listing(change.kept)
+            ),
+            false,
+        ))
+    } else if change.reloaded {
+        Some(("config.toml changed on disk. Settings shows its new values.".into(), false))
+    } else if problems_shown {
+        Some(("config.toml changed on disk, and nothing in it is wrong now.".into(), false))
+    } else {
+        None
+    }
+}
+
 impl Tileception {
     /// The compositor read config.toml again; `text` is what it read. Edits
     /// Settings made itself are already in its snapshot, so they change
@@ -131,12 +183,51 @@ impl Tileception {
         if !self.settings.open || self.settings.before.is_empty() {
             return;
         }
-        // A file that is not TOML leaves everything as it is; one with
-        // mistakes gives what loaded, and Apply reports the mistakes.
-        let Ok(disk) = crate::config::Config::parse_lenient(text).and_then(|(config, _)| values(&config.file)) else {
-            return;
+        // As Settings read the file itself, and as saving compares it.
+        let normalized = crate::config_edit::snapshot_text(text);
+        let text = normalized.as_str();
+        // A file with mistakes gives what loaded, and Apply reports them. One
+        // that is not TOML keeps the settings shown; an untouched draft
+        // follows it, for the config.toml editor to repair, and an edited one
+        // keeps its baseline (stale: Apply would write over the change).
+        let disk = match crate::config::Config::parse_lenient(text).and_then(|(config, _)| values(&config.file)) {
+            Ok(disk) => disk,
+            Err(error) => {
+                let settings = &mut self.settings;
+                let stale = if settings.document_draft == settings.document_before {
+                    text.clone_into(&mut settings.document_draft);
+                    text.clone_into(&mut settings.document_before);
+                    false
+                } else {
+                    true
+                };
+                self.settings_editors_refreshed();
+                let change = Change {
+                    stale,
+                    editor_stale: self.settings_editor_stale(),
+                    problems: &[],
+                    kept: &[],
+                    reloaded: false,
+                };
+                let (message, error) = match notice(&change, false) {
+                    Some(notice) => notice,
+                    None => (super::unreadable_message(&error), true),
+                };
+                self.settings.message = message;
+                self.settings.error = error;
+                self.invalidate_settings_client();
+                self.schedule_render();
+                return;
+            }
         };
         if text == self.settings.document_before && disk == self.settings.before {
+            // Back as the draft was made on: Apply no longer refuses it.
+            if self.settings.error && self.settings.message == STALE_DRAFT {
+                self.settings.message.clear();
+                self.settings.error = false;
+                self.invalidate_settings_client();
+                self.schedule_render();
+            }
             return;
         }
         let settings = &mut self.settings;
@@ -165,31 +256,35 @@ impl Tileception {
         }
         let reloaded = settings.before != disk;
         settings.before = disk;
-        let stale = !merge_document(&mut settings.document_before, &mut settings.document_draft, text);
+        let stale = if crate::config_edit::is_toml(&settings.document_before) {
+            !merge_document(&mut settings.document_before, &mut settings.document_draft, text)
+        } else {
+            // The file was not TOML and is now: nothing to merge with. An
+            // untouched draft follows it; a repair made here meanwhile keeps
+            // the old file as its baseline and cannot be applied over the new
+            // one (stale), so the repair on disk is not written over.
+            if settings.document_draft == settings.document_before {
+                text.clone_into(&mut settings.document_draft);
+                text.clone_into(&mut settings.document_before);
+                false
+            } else {
+                true
+            }
+        };
         kept.extend(self.sections_refreshed());
         kept.extend(self.settings_editors_refreshed());
         kept.sort_unstable();
         kept.dedup();
         self.settings.home_cloud_labels = [self.settings_home_cloud_label(true), self.settings_home_cloud_label(false)];
-        if stale {
-            self.settings.message = "config.toml changed on disk, and your draft of the whole file cannot take the \
-                                     change, so Apply will refuse. Discard reloads the file."
-                .into();
-            self.settings.error = true;
-        } else if self.settings_editor_stale() {
-            self.settings.message = "config.toml changed on disk, and your edits in the config.toml editor cannot \
-                                     take the change, so Apply will refuse them. Discard reloads the file."
-                .into();
-            self.settings.error = true;
-        } else if !kept.is_empty() {
-            self.settings.message = format!(
-                "config.toml changed on disk. Apply replaces the file's values for {} with your edits.",
-                listing(&kept)
-            );
-            self.settings.error = false;
-        } else if reloaded {
-            self.settings.message = "config.toml changed on disk. Settings shows its new values.".into();
-            self.settings.error = false;
+        // Apply checks the draft, which now follows the file.
+        let problems = crate::config::Config::parse_lenient(&self.settings.document_draft)
+            .map(|(_, problems)| problems)
+            .unwrap_or_default();
+        let change =
+            Change { stale, editor_stale: self.settings_editor_stale(), problems: &problems, kept: &kept, reloaded };
+        if let Some((message, error)) = notice(&change, self.settings.problems_shown()) {
+            self.settings.message = message;
+            self.settings.error = error;
         }
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.invalidate_settings_client();
@@ -307,6 +402,59 @@ mod tests {
         assert!(same_toml("[a]\nb = 1\n", "\n[a]\nb = 1 # one\n"));
         assert!(!same_toml("[a]\nb = 1\n", "[a]\nb = 2\n"));
         assert!(!same_toml("[a\n", "[a]\n"));
+    }
+
+    fn problems(text: &str) -> Vec<crate::config::Problem> {
+        crate::config::Config::parse_lenient(text).unwrap().1
+    }
+
+    fn change<'a>(problems: &'a [crate::config::Problem], kept: &'a [&'a str], reloaded: bool) -> Change<'a> {
+        Change { stale: false, editor_stale: false, problems, kept, reloaded }
+    }
+
+    #[test]
+    fn a_fixed_file_takes_its_error_away() {
+        let wrong = problems("[theme]\nradius = \"big\"\n");
+        assert!(!wrong.is_empty());
+        let mut settings = Settings::default();
+        settings.show_problems(&wrong);
+        assert!(settings.error && settings.problems_shown(), "{}", settings.message);
+
+        // The bad line was removed: no value changed, and nothing else
+        // would replace the message.
+        let (message, error) = notice(&change(&[], &[], false), settings.problems_shown()).unwrap();
+        assert!(!error && !message.starts_with(PROBLEMS), "{message}");
+        // A fix that changed a value says so, which is no error either.
+        let (message, error) = notice(&change(&[], &[], true), true).unwrap();
+        assert!(!error && message.contains("new values"), "{message}");
+        // Without an error about mistakes, an unchanged file says nothing.
+        assert!(notice(&change(&[], &[], false), false).is_none());
+    }
+
+    #[test]
+    fn a_file_with_mistakes_reports_them() {
+        let wrong = problems("[theme]\nradius = \"big\"\n");
+        for (kept, reloaded) in [(&[][..], false), (&[][..], true), (&["Scale"][..], true)] {
+            let (message, error) = notice(&change(&wrong, kept, reloaded), false).unwrap();
+            assert!(error && message.starts_with(PROBLEMS) && message.contains("theme.radius"), "{message}");
+        }
+        // A draft that cannot follow the file says that first.
+        let stale = Change { stale: true, ..change(&wrong, &[], true) };
+        let (message, error) = notice(&stale, true).unwrap();
+        assert!(error && message.contains("Discard reloads the file"), "{message}");
+    }
+
+    #[test]
+    fn loading_a_fixed_file_clears_only_its_own_error() {
+        let mut settings = Settings::default();
+        settings.show_problems(&problems("[theme]\nradius = \"big\"\n"));
+        settings.show_problems(&[]);
+        assert!(!settings.error && settings.message.is_empty());
+        // Another error is not about the file, and stays.
+        settings.message = "Could not open the file chooser.".into();
+        settings.error = true;
+        settings.show_problems(&[]);
+        assert!(settings.error && !settings.message.is_empty());
     }
 
     #[test]
