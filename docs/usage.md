@@ -247,8 +247,10 @@ window.
 ### Game mode
 
 In game mode, Tileception's own Super shortcuts step aside, so Super and
-every Super combination reach the game. A short notice at the top of the screen
-says when game mode comes on. Pressing Super on its own shows it again.
+every Super combination reach the game, including Super with the mouse wheel
+or a click, and dragging with Alt. A short notice at the top of the screen says
+when game mode comes on, and a struck-through one when it goes off. Pressing
+Super on its own shows the notice again.
 
 Game mode comes on by itself when you play a game, whichever launcher started
 it. The focused window must be a game and must be fullscreen or have taken the
@@ -264,19 +266,20 @@ mouse-look, counts too. A window rule with `game = true` or `game = false`
 decides for games Tileception misses or mistakes (see
 [Window rules](configuration.md#window-rules)).
 
-Game mode ends when the game loses the keyboard, for example when you click
-another window. If it came on by itself, it also ends when the game leaves
+Game mode stays with its game while you use another window: Super works there
+as usual, and the notice shows again when you go back to the game. Game mode
+ends when the game closes, and, if it came on by itself, when the game leaves
 fullscreen and lets go of the pointer. While it is on, the screen does not
 sleep or lock.
 
 **Super+Caps Lock** switches game mode on or off for the focused window,
 without switching Caps Lock. While a game has the keyboard, Super+Caps Lock
 always leaves game mode, whatever your key bindings say. After you switch it
-off this way, it does not come
-back by itself until the game has lost the keyboard or left fullscreen. From a
-script or another key binding, use `tileception msg game-mode` (`on`, `off`,
-or `status`, which says why a window counts as a game). Switching consoles with
-**Ctrl+Alt+F1** to **F12** keeps working in game mode.
+off, it does not come back by itself for that game until the game leaves
+fullscreen and lets go of the pointer, or closes. From a script or another key
+binding, use `tileception msg game-mode` (`on`, `off`, or `status`, which says
+why a window counts as a game). Switching consoles with **Ctrl+Alt+F1** to
+**F12** keeps working in game mode.
 
 ## Desktop controls
 

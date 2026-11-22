@@ -1032,6 +1032,14 @@ impl Tileception {
             pointer.frame(self);
             return;
         }
+        // A game's clicks are its own, with Super or the drag modifier held
+        // too: none of Tileception's window gestures.
+        if self.game_has_pointer() {
+            let pointer = self.seat.get_pointer().expect("seat has a pointer");
+            pointer.button(self, &ButtonEvent { button, state, serial: SERIAL_COUNTER.next_serial(), time });
+            pointer.frame(self);
+            return;
+        }
         // Before the shell's buttons capture the press, so a click on one in
         // the panel gives the panel the keyboard too.
         if state == ButtonState::Pressed && button == BTN_LEFT {
@@ -1490,6 +1498,10 @@ impl Tileception {
     /// Runs a binding like `Super+WheelUp`. Returns whether the scroll was
     /// taken: scrolling with a bound modifier never reaches the client.
     fn wheel_binding(&mut self, event: &AxisInput) -> bool {
+        // A game's scrolling is its own, with Super held too.
+        if self.game_has_pointer() {
+            return false;
+        }
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let mut held = Mods::from_state(&keyboard.modifier_state());
         if held == Mods::default() {

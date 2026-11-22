@@ -86,7 +86,11 @@ pub struct GameMode {
     /// Why each window's process is a game (`None`: it is not), worked out
     /// once per app id: a window that changes it is looked at again.
     identities: HashMap<WindowId, (String, Option<String>)>,
-    toast: Option<Instant>,
+    /// When the toast was shown, and whether it says game mode is on.
+    toast: Option<(Instant, bool)>,
+    /// The game had the keyboard at the last look, so the toast shows again
+    /// when it gets it back.
+    game_focused: bool,
     /// What the last look saw (the focused window and what it was doing),
     /// and when: the rules and the process are asked again only when that
     /// changes, or after a second.
@@ -152,21 +156,23 @@ impl Tileception {
     }
 
     pub(crate) fn game_mode_command(&mut self, command: GameModeCommand) -> Result<String, String> {
+        // The focused window is the one meant, when game mode is on for
+        // another one that does not have the keyboard.
+        let on_focused = self.game.active.is_some_and(|active| self.keyboard_window() == Some(active.window));
         match command {
             GameModeCommand::Status => return Ok(self.game_mode_status()),
-            GameModeCommand::On
-                if self.game.active.is_some_and(|active| self.keyboard_window() == Some(active.window)) =>
-            {
+            GameModeCommand::On if on_focused => {
                 // Taken over from coming on by itself: it now stays on until
-                // switched off or the game loses the keyboard.
+                // switched off or the game closes.
                 if let Some(active) = self.game.active.as_mut() {
                     active.manual = true;
                 }
             }
-            GameModeCommand::Toggle if self.game.active.is_some() => self.leave_game_mode(true),
+            GameModeCommand::Toggle if on_focused => self.leave_game_mode(true),
             GameModeCommand::Off => self.leave_game_mode(true),
             GameModeCommand::Toggle | GameModeCommand::On => {
                 let window = self.keyboard_window().ok_or("game-mode: no window has the keyboard")?;
+                self.game.active = None;
                 self.enter_game_mode(window, true);
             }
         }
@@ -191,6 +197,7 @@ impl Tileception {
         tracing::info!(window = window.0, manual, "game mode on");
         self.game.active = Some(Active { window, manual });
         self.game.declined = None;
+        self.game.game_focused = self.keyboard_window() == Some(window);
         self.show_game_toast();
     }
 
@@ -202,7 +209,7 @@ impl Tileception {
         if declined {
             self.game.declined = Some(active.window);
         }
-        self.game.toast = None;
+        self.game.toast = Some((Instant::now(), false));
         self.schedule_render();
     }
 
@@ -275,17 +282,35 @@ impl Tileception {
         if self.nested { "Alt+Caps Lock" } else { "Super+Caps Lock" }
     }
 
-    /// Super pressed on its own while game mode is on, and switching it on.
+    /// Super pressed on its own while game mode is on, switching it on, and
+    /// coming back to the game.
     pub(crate) fn show_game_toast(&mut self) {
-        self.game.toast = Some(Instant::now());
+        self.game.toast = Some((Instant::now(), true));
         self.schedule_render();
     }
 
-    /// Follows the focused window into and out of game mode. Called after
-    /// every batch of events, so it looks closer only when the focused
-    /// window or what it is doing changed, or after [`RECHECK`]; and asks a
-    /// window's rules and process only while it is fullscreen or holds the
-    /// pointer.
+    /// Whether the pointer is over the game while it has the keyboard: its
+    /// clicks and scrolling are the game's too, with Super held or not.
+    pub(crate) fn game_has_pointer(&self) -> bool {
+        if !self.game_has_keys() {
+            return false;
+        }
+        let focus = self.seat.get_pointer().and_then(|pointer| pointer.current_focus());
+        let surface = focus.and_then(|focus| focus.wl_surface().map(|surface| surface.into_owned()));
+        surface.and_then(|surface| self.window_of_surface(&surface)) == self.game_window()
+    }
+
+    /// Follows the focused window into and out of game mode. Game mode stays
+    /// with its game while another window has the keyboard (Super works
+    /// there as usual) and shows its toast again when the game gets it
+    /// back. It ends when the game closes, or, having come on by itself,
+    /// when the game stops playing while it has the keyboard. Switched off,
+    /// it stays off for that game until it stops playing or closes.
+    ///
+    /// Called after every batch of events, so it looks closer only when the
+    /// focused window or what it is doing changed, or after [`RECHECK`]; and
+    /// asks a window's rules and process only while it is fullscreen or
+    /// holds the pointer.
     pub(crate) fn game_mode_refresh(&mut self) {
         let focused = self.keyboard_window();
         let seen = (focused, focused.map(|window| self.play(window)).unwrap_or_default());
@@ -295,20 +320,29 @@ impl Tileception {
         }
         self.game.last_seen = Some(seen);
         self.game.last_check = Some(now);
-        if let Some(active) = self.game.active
-            && (focused != Some(active.window) || (!active.manual && !self.window_playing(active.window)))
-        {
-            self.leave_game_mode(false);
+        if let Some(active) = self.game.active {
+            let has_keys = focused == Some(active.window);
+            if !self.windows.contains_key(&active.window)
+                || (has_keys && !active.manual && !self.window_playing(active.window))
+            {
+                self.leave_game_mode(false);
+            } else if has_keys && !self.game.game_focused {
+                self.show_game_toast();
+            }
+            self.game.game_focused = has_keys;
         }
         if let Some(declined) = self.game.declined
-            && (focused != Some(declined) || !self.window_playing(declined))
+            && (!self.windows.contains_key(&declined) || (focused == Some(declined) && !self.window_playing(declined)))
         {
             self.game.declined = None;
         }
-        if self.game.active.is_none()
-            && let Some(window) = focused.filter(|window| self.game.declined != Some(*window))
+        // Another game that is played takes game mode over.
+        if let Some(window) = focused
+            && self.game.active.is_none_or(|active| active.window != window)
+            && self.game.declined != Some(window)
             && self.window_playing(window)
         {
+            self.game.active = None;
             self.enter_game_mode(window, false);
         }
         if self.game.identities.len() > self.windows.len() {
@@ -381,9 +415,11 @@ impl Tileception {
         }
     }
 
-    /// The toast at the top centre saying game mode is on and how to leave it.
+    /// The toast at the top centre saying game mode is on and how to leave
+    /// it, or that it is off: a struck-through, quiet gamepad then, so the
+    /// two are told apart at a glance.
     pub fn game_toast_elements(&self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
-        let Some(shown) = self.game.toast.filter(|_| self.game.active.is_some()) else { return Vec::new() };
+        let Some((shown, turned_on)) = self.game.toast else { return Vec::new() };
         let now = Instant::now();
         let until = shown + TOAST;
         if now >= until + Duration::from_secs_f64(FADE_OUT) {
@@ -402,16 +438,26 @@ impl Tileception {
         painter.offset = (0.0, (appear - 1.0) * 12.0);
         painter.popup(card);
         let icon = Rect::new(card.x + 14.0, card.y + (card.h - 36.0) / 2.0, 36.0, 36.0);
-        painter.fill(icon, theme.surface_raised, 18.0);
-        painter.glyph(glyph::GAMEPAD, icon, 18, theme.accent);
+        if turned_on {
+            painter.fill(icon, theme.accent.alpha(0.18), 18.0);
+            painter.glyph(glyph::GAMEPAD, icon, 18, theme.accent);
+        } else {
+            painter.fill(icon, theme.surface_raised, 18.0);
+            painter.glyph(glyph::GAMEPAD_OFF, icon, 18, theme.muted);
+        }
         let text_x = icon.right() + 14.0;
         let text_w = card.right() - 16.0 - text_x;
         painter.text(
-            "Game mode on",
+            if turned_on { "Game mode on" } else { "Game mode off" },
             Rect::new(text_x, card.y + 11.0, text_w, 22.0),
             Style::new(theme.font_size, theme.text).bold(),
         );
-        let keys = format!("{} leaves it", self.game_exit_label());
+        let keys = if turned_on {
+            format!("{} to turn off", self.game_exit_label())
+        } else {
+            let mods = if self.nested { "Alt" } else { "Super" };
+            format!("{mods} shortcuts work again")
+        };
         painter.text(
             &keys,
             Rect::new(text_x, card.y + 33.0, text_w, 20.0),
