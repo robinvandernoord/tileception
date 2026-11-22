@@ -1363,9 +1363,108 @@ impl crate::Tileception {
     }
 }
 
+/// Boxes laid out by Taffy (flexbox and grid): a panel describes its parts
+/// by how they sit together, rather than working out each offset by hand.
+/// [`Layout::compute`] then gives where each part ended up on screen.
+pub struct Layout {
+    tree: taffy::TaffyTree<()>,
+    /// Where the root's top left corner goes.
+    origin: (f64, f64),
+}
+
+/// Taffy fails only for a node of another tree.
+const OWN_NODE: &str = "a node of this layout";
+
+impl Layout {
+    pub fn new(origin: (f64, f64)) -> Self {
+        let mut tree = taffy::TaffyTree::new();
+        // Fractional positions, as elsewhere: drawing rounds them to pixels.
+        tree.disable_rounding();
+        Layout { tree, origin }
+    }
+
+    /// A box with nothing in it.
+    pub fn leaf(&mut self, style: taffy::Style) -> taffy::NodeId {
+        self.tree.new_leaf(style).expect(OWN_NODE)
+    }
+
+    /// A box holding `children`, in order.
+    pub fn node(&mut self, style: taffy::Style, children: &[taffy::NodeId]) -> taffy::NodeId {
+        self.tree.new_with_children(style, children).expect(OWN_NODE)
+    }
+
+    /// Lays out the boxes under `root`, which gives its own size.
+    pub fn compute(mut self, root: taffy::NodeId) -> Placed {
+        use taffy::style_helpers::TaffyMaxContent;
+        self.tree.compute_layout(root, taffy::Size::MAX_CONTENT).expect(OWN_NODE);
+        Placed { tree: self.tree, origin: self.origin }
+    }
+}
+
+/// Boxes of a [`Layout`] in their places.
+pub struct Placed {
+    tree: taffy::TaffyTree<()>,
+    origin: (f64, f64),
+}
+
+impl Placed {
+    /// Where `node` is on screen. Taffy places each box within its parent,
+    /// so this adds up the offsets of every box above it.
+    pub fn rect(&self, node: taffy::NodeId) -> Rect {
+        let layout = self.tree.layout(node).expect(OWN_NODE);
+        let (mut x_pos, mut y_pos) = (f64::from(layout.location.x), f64::from(layout.location.y));
+        let mut parent = self.tree.parent(node);
+        while let Some(above) = parent {
+            let above_layout = self.tree.layout(above).expect(OWN_NODE);
+            x_pos += f64::from(above_layout.location.x);
+            y_pos += f64::from(above_layout.location.y);
+            parent = self.tree.parent(above);
+        }
+        Rect::new(
+            self.origin.0 + x_pos,
+            self.origin.1 + y_pos,
+            f64::from(layout.size.width),
+            f64::from(layout.size.height),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, fs, path::Path};
+
+    /// Boxes inside boxes come back where they are on screen, not within
+    /// their parent.
+    #[test]
+    fn layout_rects_are_absolute() {
+        use super::Layout;
+        use taffy::prelude::{FlexDirection, JustifyContent, Size, length};
+        use tileception_core::Rect;
+        let mut layout = Layout::new((100., 50.));
+        let button = || taffy::Style { size: Size { width: length(110.), height: length(34.) }, ..Default::default() };
+        let cancel = layout.leaf(button());
+        let confirm = layout.leaf(button());
+        let message = layout.leaf(taffy::Style { flex_grow: 1., ..Default::default() });
+        let buttons = layout.node(
+            taffy::Style { justify_content: JustifyContent::END, gap: length(8.), ..Default::default() },
+            &[cancel, confirm],
+        );
+        let root = layout.node(
+            taffy::Style {
+                flex_direction: FlexDirection::Column,
+                size: Size { width: length(400.), height: length(200.) },
+                padding: length(16.),
+                gap: length(8.),
+                ..Default::default()
+            },
+            &[message, buttons],
+        );
+        let placed = layout.compute(root);
+        assert_eq!(placed.rect(root), Rect::new(100., 50., 400., 200.));
+        assert_eq!(placed.rect(message), Rect::new(116., 66., 368., 126.));
+        assert_eq!(placed.rect(confirm), Rect::new(374., 200., 110., 34.));
+        assert_eq!(placed.rect(cancel), Rect::new(256., 200., 110., 34.));
+    }
 
     /// The accent gradient written out by hand is how a button ends up
     /// looking unlike the others. These are the marks that keep it; anything
