@@ -1,6 +1,6 @@
 # Tileception: common tasks. `make` on its own lists them.
 
-.PHONY: help tools codespace deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release changelog
+.PHONY: help tools codespace container deps check-deps build clean test fmt lint install uninstall setup install-greeter uninstall-greeter try-greeter nested video deb deb-docker release changelog
 
 # The binary bootstrap installs here, including when CARGO_HOME is customised.
 export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
@@ -8,6 +8,8 @@ export PATH := $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)/bin:$(PATH)
 help:
 	@echo "make tools       install cargo-plane via binstall (no source builds)"
 	@echo "make codespace   set up a Codespace and install remote build dependencies"
+	@echo "make container   set up a build container on an SSH host (CONTAINER_HOST=name)"
+	@echo "                 with the build dependencies in its image"
 	@echo "make deps        install local dependencies and Rust components"
 	@echo "make check-deps  report missing local system packages"
 	@echo "make build       build the compositor (release)"
@@ -51,6 +53,24 @@ codespace: tools
 	cargo plane --remote codespace exec sh -c 'set -eu; sudo apt-get update; sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y $$(scripts/deps.sh list build) dbus-daemon; scripts/deps.sh check build'
 	@echo "Codespace server is fully prepared and ready to build Tileception."
 
+# A Docker or Podman build container on your own SSH host. The build
+# dependencies go into its image, so they survive the container being
+# recreated; changing the list rebuilds the image and keeps the build volumes.
+# CONTAINER_HOST defaults to the host already configured for the container
+# remote. CONTAINER_ARGS passes more options, e.g. CONTAINER_ARGS="--image debian:12".
+CONTAINER_HOST ?= $(shell awk '/^\[/ { in_section = ($$0 == "[remotes.container]") } in_section && $$1 == "host" { gsub(/"/, "", $$3); print $$3 }' .cargo/plane.toml 2>/dev/null)
+CONTAINER_ARGS ?=
+
+container: tools
+	@if [ -z "$(CONTAINER_HOST)" ]; then \
+		echo "No build host configured yet; run: make container CONTAINER_HOST=<ssh host>" >&2; \
+		exit 1; \
+	fi
+	cargo plane --remote container setup container $(CONTAINER_HOST) -y \
+		--packages "$$(scripts/deps.sh list build | paste -sd, -),dbus-daemon" $(CONTAINER_ARGS)
+	cargo plane --remote container exec scripts/deps.sh check build
+	@echo "Build container is fully prepared and ready to build Tileception."
+
 deps: tools
 	@if command -v rustup >/dev/null 2>&1; then \
 		rustup component add rustfmt clippy; \
@@ -91,6 +111,7 @@ lint: tools
 
 install: tools
 	@scripts/deps.sh check build runtime
+	cargo plane exec scripts/deps.sh check build
 	RESTART=$(RESTART) ./install-session.sh $(SETUP_ARGS)
 
 setup:
