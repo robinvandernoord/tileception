@@ -2120,14 +2120,20 @@ impl Tileception {
             Hit::Apply => {
                 if !self.settings.parked_sections.is_empty() {
                     self.settings.section = Some(self.settings.parked_sections.remove(0));
-                    self.settings.message = "Finish the saved screen draft before applying.".into();
+                    // A warning shown stays: it still holds.
+                    if !self.settings.error {
+                        self.settings.message = "Finish the saved screen draft before applying.".into();
+                    }
                     self.schedule_render();
                     return;
                 }
                 if !self.settings.parked_editors.is_empty() {
                     self.settings.editor = Some(self.settings.parked_editors.remove(0));
                     self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
-                    self.settings.message = "Finish the saved editor draft before applying.".into();
+                    // A warning shown stays: it still holds.
+                    if !self.settings.error {
+                        self.settings.message = "Finish the saved editor draft before applying.".into();
+                    }
                     self.schedule_render();
                     return;
                 }

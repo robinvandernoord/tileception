@@ -59,12 +59,23 @@ pub(super) struct Editor {
     /// Told that the controls' changes do not fit this text (and which):
     /// using the draft again with the same text and changes drops them.
     drop_asked: Option<String>,
+    /// While stale: the file's text on disk, which the editor takes up
+    /// once its edits are undone.
+    disk: Option<String>,
 }
 
 impl Editor {
     /// The text changed: what was wrong with it may be no longer.
     fn changed(&mut self) {
         self.error.clear();
+        // Undone back to the text the edits were made on: nothing is left to
+        // keep from the file on disk.
+        if self.stale
+            && self.input.text == self.original
+            && let Some(disk) = self.disk.take()
+        {
+            self.follow_file(&disk);
+        }
     }
 
     /// Brings the whole-file editor onto config.toml's new text. It goes over
@@ -72,6 +83,7 @@ impl Editor {
     /// they cannot be, kept for copying while applying them is refused.
     fn follow_file(&mut self, source: &str) {
         if source == self.original {
+            self.disk = None;
             if self.stale {
                 // Back to the text the edits were made on.
                 self.stale = false;
@@ -80,20 +92,27 @@ impl Editor {
             }
             return;
         }
-        let mut text = std::mem::take(&mut self.input.text);
+        let mut text = self.input.text.clone();
         let edited = text != self.original;
         if super::refresh::merge_document(&mut self.original, &mut text, source) {
             self.stale = false;
+            self.disk = None;
             self.error.clear();
             if edited {
                 self.notice = "config.toml changed on disk. Your edits here were carried onto it.".into();
+            } else if self.notice == STALE {
+                self.notice.clear();
+            }
+            if text != self.input.text {
+                super::refresh::replace_input(&mut self.input, text);
             }
         } else {
+            // The edits stay as typed, and so does what Ctrl+Z undoes.
             self.stale = true;
+            self.disk = Some(source.to_owned());
             STALE.clone_into(&mut self.error);
             STALE.clone_into(&mut self.notice);
         }
-        super::refresh::replace_input(&mut self.input, text);
     }
 
     fn keep_caret(&mut self, visible: usize, columns: usize) {
@@ -189,6 +208,7 @@ impl Tileception {
                     scroll_remainder: 0.,
                     pending_apart: pending_apart && !reference,
                     drop_asked: None,
+                    disk: None,
                 });
                 self.settings.dropdown = None;
             }
@@ -468,6 +488,7 @@ impl Tileception {
             if let Some(editor) = self.settings.editor.as_mut() {
                 editor.keep_caret(visible, columns);
             }
+            self.settings_editor_caught_up();
         } else if self.settings.editor.is_none() {
             if self.settings.editing.is_some() {
                 self.settings.input.paste(text);
@@ -541,6 +562,7 @@ impl Tileception {
                 }
             }
         }
+        self.settings_editor_caught_up();
         let Some(editor) = self.settings.editor.as_mut() else { return };
         editor.keep_caret(visible, columns);
         self.schedule_render();
@@ -684,7 +706,22 @@ mod tests {
             original: original.into(),
             pending_apart: false,
             drop_asked: None,
+            disk: None,
         }
+    }
+
+    #[test]
+    fn undoing_the_edits_of_a_stale_editor_takes_up_the_file() {
+        let before = "[theme]\nradius = 4\n";
+        let disk = "[theme]\nradius = 4\n\n[plugins.demo]\ncommand = \"/bin/true\"\n";
+        let mut editor = whole_file(before, "[theme]\nradius = 4\n# note\n");
+        editor.follow_file(disk);
+        assert!(editor.stale);
+        before.clone_into(&mut editor.input.text);
+        editor.changed();
+        assert!(!editor.stale);
+        assert_eq!(editor.input.text, disk);
+        assert!(editor.error.is_empty() && editor.notice.is_empty());
     }
 
     #[test]

@@ -146,16 +146,16 @@ struct Change<'a> {
 const STALE_DRAFT: &str = "config.toml changed on disk, and your draft of the whole file cannot take the change, so \
                            Apply will refuse. Discard reloads the file.";
 
+/// The warning that Apply will refuse edits in the config.toml editor that
+/// cannot take a change on disk; it goes when no editor holds such edits.
+const EDITOR_STALE: &str = "config.toml changed on disk, and your edits in the config.toml editor cannot take the \
+                            change, so Apply will refuse them. Discard reloads the file.";
+
 fn notice(change: &Change<'_>, problems_shown: bool) -> Option<(String, bool)> {
     if change.stale {
         Some((STALE_DRAFT.into(), true))
     } else if change.editor_stale {
-        Some((
-            "config.toml changed on disk, and your edits in the config.toml editor cannot take the change, so Apply \
-             will refuse them. Discard reloads the file."
-                .into(),
-            true,
-        ))
+        Some((EDITOR_STALE.into(), true))
     } else if !change.problems.is_empty() {
         Some((problems_message(change.problems), true))
     } else if !change.kept.is_empty() {
@@ -172,6 +172,27 @@ fn notice(change: &Change<'_>, problems_shown: bool) -> Option<(String, bool)> {
         Some(("config.toml changed on disk, and nothing in it is wrong now.".into(), false))
     } else {
         None
+    }
+}
+
+impl Tileception {
+    /// Takes the warning about the config.toml editor's edits away once no
+    /// editor holds edits that cannot take the file on disk, as after
+    /// undoing them.
+    pub(super) fn settings_editor_caught_up(&mut self) {
+        if self.settings.error && self.settings.message == EDITOR_STALE && !self.settings_editor_stale() {
+            self.settings.message.clear();
+            self.settings.error = false;
+            // What that warning stood in front of: mistakes in the file.
+            match crate::config::Config::parse_lenient(&self.settings.document_draft) {
+                Ok((_, problems)) => self.settings.show_problems(&problems),
+                Err(error) => {
+                    self.settings.message = super::unreadable_message(&error);
+                    self.settings.error = true;
+                }
+            }
+            self.invalidate_settings_client();
+        }
     }
 }
 
@@ -285,6 +306,10 @@ impl Tileception {
         if let Some((message, error)) = notice(&change, self.settings.problems_shown()) {
             self.settings.message = message;
             self.settings.error = error;
+        } else if self.settings.error && [STALE_DRAFT, EDITOR_STALE].contains(&self.settings.message.as_str()) {
+            // The conflict it warned of is over: Apply no longer refuses.
+            self.settings.message.clear();
+            self.settings.error = false;
         }
         self.settings.editor_epoch = self.settings.editor_epoch.wrapping_add(1);
         self.invalidate_settings_client();
