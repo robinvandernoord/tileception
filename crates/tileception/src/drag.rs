@@ -63,6 +63,9 @@ pub struct LocalDrag {
     icon_offset: Point<i32, Logical>,
     /// Filled in from the background once the program said what it drags.
     described: Arc<Mutex<Option<DragPreview>>>,
+    /// The dragged files' URIs, once the program listed them; `msg drag`
+    /// prints them.
+    files: Arc<Mutex<Vec<String>>>,
     pub card: Option<Card>,
 }
 
@@ -102,10 +105,12 @@ impl Tileception {
             source.as_ref().and_then(|source| with_source_metadata(source, |meta| meta.mime_types.clone()).ok());
         let mime_types = mime_types.unwrap_or_default();
         let described = Arc::new(Mutex::new(None));
+        let files = Arc::new(Mutex::new(Vec::new()));
         if let Some(source) = &source {
-            describe(source, &mime_types, described.clone());
+            describe(source, &mime_types, described.clone(), files.clone());
         }
-        self.drag = Some(LocalDrag { source, mime_types, icon, icon_offset: Point::default(), described, card: None });
+        self.drag =
+            Some(LocalDrag { source, mime_types, icon, icon_offset: Point::default(), described, files, card: None });
         // Started by another machine's pointer in a window shown there.
         self.drag_out_of_away();
         self.schedule_render();
@@ -116,6 +121,26 @@ impl Tileception {
         self.drag = None;
         self.handoff_drag_ended();
         self.schedule_render();
+    }
+
+    /// What `msg drag` prints: whether a program's drag is under way, where
+    /// the pointer is, the modifier keys held, and a `uri` line for each
+    /// dragged file once the program listed them. For programs that act on
+    /// a drag as it happens: Wayland itself shows a drag only to the window
+    /// under the pointer.
+    pub fn drag_status(&self) -> String {
+        let mut out = format!("dragging {}\n", if self.drag.is_some() { "yes" } else { "no" });
+        out.push_str(&format!("pointer {:.1},{:.1}\n", self.pointer.x, self.pointer.y));
+        if let Some(held) = self.seat.get_keyboard().map(|keyboard| keyboard.modifier_state()) {
+            let names = [("shift", held.shift), ("ctrl", held.ctrl), ("alt", held.alt), ("super", held.logo)];
+            let names: Vec<&str> = names.into_iter().filter(|(_, down)| *down).map(|(name, _)| name).collect();
+            out.push_str(&format!("mods {}\n", names.join(" ")));
+        }
+        let files = self.drag.as_ref().and_then(|drag| drag.files.lock().ok().map(|files| files.clone()));
+        for uri in files.unwrap_or_default() {
+            out.push_str(&format!("uri {uri}\n"));
+        }
+        out
     }
 
     /// A drag icon moved itself by attaching with an offset.
@@ -214,7 +239,12 @@ fn thumbnail_size(preview: &DragPreview) -> (f64, f64) {
 
 /// Asks the dragging program for its list of files or its text, and works
 /// out the preview from it in the background.
-fn describe(source: &WlDataSource, mime_types: &[String], into: Arc<Mutex<Option<DragPreview>>>) {
+fn describe(
+    source: &WlDataSource,
+    mime_types: &[String],
+    into: Arc<Mutex<Option<DragPreview>>>,
+    files_into: Arc<Mutex<Vec<String>>>,
+) {
     let has = |wanted: &str| mime_types.iter().any(|mime| mime == wanted);
     let wanted = if has("text/uri-list") {
         Some("text/uri-list")
@@ -243,7 +273,11 @@ fn describe(source: &WlDataSource, mime_types: &[String], into: Arc<Mutex<Option
         let mut bytes = Vec::new();
         let _ = reader.take(DESCRIBE_LIMIT).read_to_end(&mut bytes);
         let text = String::from_utf8_lossy(&bytes);
-        let preview = if files { preview_of_uris(&parse_uri_list(&text)) } else { preview_of_text(&text) };
+        let uris = if files { parse_uri_list(&text) } else { Vec::new() };
+        let preview = if files { preview_of_uris(&uris) } else { preview_of_text(&text) };
+        if let Ok(mut listed) = files_into.lock() {
+            *listed = uris;
+        }
         if let Ok(mut described) = into.lock() {
             *described = Some(preview);
         }
