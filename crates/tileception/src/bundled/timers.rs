@@ -105,10 +105,10 @@ impl Timers {
     fn start(&mut self, seconds: u64, label: &str, alarm: bool, now: i64) -> Result<&Timer, String> {
         // A local calendar day can exceed 24 hours when clocks go back.
         if seconds == 0 || (!alarm && seconds > LONGEST) {
-            return Err("A timer runs from a second to a day".into());
+            return Err("Timers must be between 1 second and 24 hours".into());
         }
         if self.timers.len() >= MOST {
-            return Err(format!("There are {MOST} timers already; stop one first"));
+            return Err(format!("Maximum of {MOST} timers reached; stop one first"));
         }
         self.next += 1;
         let ends = now + i64::try_from(seconds).unwrap_or(i64::MAX);
@@ -119,7 +119,7 @@ impl Timers {
             alarm,
             phase: Phase::Running(ends),
         });
-        self.timers.last().ok_or_else(|| "The timer was not kept".into())
+        self.timers.last().ok_or_else(|| "Could not create timer".into())
     }
 
     /// The timer with this id, or the only one called this.
@@ -175,7 +175,7 @@ impl Timers {
             Some((ask, label)) => rows.push(start_row(ask, &label, Said::Timer, now)),
             None => rows.push(json!({
                 "title": if query.trim().is_empty() { "Start a timer" } else { "How long, or at what time?" },
-                "detail": "Such as 10m tea, 1h30m, 2:30, or at 15:30 call the dentist",
+                "detail": "e.g. 10m tea, 1h30m, 2:30, or at 15:30 call the dentist",
                 "icon": "glyph:clock",
             })),
         }
@@ -773,7 +773,7 @@ impl Plugin for TimersPlugin {
             "launcher_info" => {
                 return Ok(json!({
                     "name": "Timers",
-                    "description": "Count down and say when the time is up",
+                    "description": "Countdown timers, alarms, and reminders",
                     "icon": "glyph:clock",
                     "prefixes": ["timer"],
                 }));
@@ -787,7 +787,7 @@ impl Plugin for TimersPlugin {
                     (None, None) => String::new(),
                 };
                 let (ask, rest) =
-                    parse(&asked).ok_or("Say how long, such as 10m, 1h30m or 2:30, or at what time, such as 15:30")?;
+                    parse(&asked).ok_or("Specify a duration (e.g. 10m, 1h30m, 2:30) or a time (e.g. 15:30)")?;
                 let label = arguments["label"].as_str().map_or(rest, String::from);
                 let alarm = matches!(ask, Ask::Time(_)) || arguments["reminder"].as_bool() == Some(true);
                 let timer = timers.start(ask.seconds(now), &label, alarm, now)?;
@@ -797,7 +797,7 @@ impl Plugin for TimersPlugin {
                 let timer = timers.find(&arguments["timer"])?;
                 timer.phase = match timer.phase {
                     Phase::Running(_) if timer.alarm => {
-                        return Err(format!("{} is set for a time; stop it instead", timer.name()));
+                        return Err(format!("{} is an alarm and can't be paused; stop it instead", timer.name()));
                     }
                     Phase::Running(_) => Phase::Paused(timer.left(now)),
                     Phase::Paused(left) => Phase::Running(now + i64::try_from(left).unwrap_or(0)),
@@ -810,7 +810,7 @@ impl Plugin for TimersPlugin {
                 let timer = timers.find(&arguments["timer"])?;
                 let left = timer.left(now) + more;
                 if left > LONGEST {
-                    return Err("A timer runs for a day at most".into());
+                    return Err("Timers can't be longer than 24 hours".into());
                 }
                 timer.phase = match timer.phase {
                     Phase::Running(_) => Phase::Running(now + i64::try_from(left).unwrap_or(0)),

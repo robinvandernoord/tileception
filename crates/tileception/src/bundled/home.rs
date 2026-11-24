@@ -652,9 +652,9 @@ impl HomePlugin {
             Reach::Online => format!("{} is online ({}).", device.name, device_detail(&device)),
             Reach::Connecting => format!("{} is still connecting; give it a moment.", device.name),
             Reach::Unreachable { since, why } => format!(
-                "{} has been unreachable for {} ({why}). Check that it is powered on and on this network; its \
-                 address is followed from the announcements it broadcasts. A checksum or handshake error means \
-                 the stored local key is wrong: run `tileception home import` again to fetch fresh keys.",
+                "{} has been unreachable for {} ({why}). Make sure it's powered on and on this network (its \
+                 address updates automatically from network broadcasts). A checksum or handshake error means \
+                 the stored local key is outdated \u{2014} run `tileception home import` to refresh keys.",
                 device.name,
                 ago(*since)
             ),

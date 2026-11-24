@@ -340,7 +340,7 @@ impl Tileception {
                 )
             } else {
                 let homes = if homes > 1 { format!(" in {homes} homes") } else { String::new() };
-                format!("{} devices{homes}; {answering} answer right now.", listed.len())
+                format!("{} devices{homes}; {answering} online.", listed.len())
             };
             frame.cards.push(Card {
                 rect: Rect::new(left, start, width, cursor - start),
@@ -369,8 +369,8 @@ impl Tileception {
                     rect: Rect::new(left, start, width, cursor - start),
                     step: None,
                     title: "History",
-                    subtitle: "Which readings the panel draws over the last six hours, for devices that report both \
-                               temperature and humidity."
+                    subtitle: "Choose which 6-hour history graph to show for devices that report both temperature and \
+                               humidity."
                         .into(),
                     done: false,
                 });

@@ -36,7 +36,7 @@ impl Plugin for Folders {
     fn tools(&self) -> Value {
         json!([
             tool("launcher_info", "Launcher metadata", &[]),
-            tool("launcher_search", "Often visited folders matching the words", &["prefix", "query"]),
+            tool("launcher_search", "Frequently visited folders matching the words", &["prefix", "query"]),
         ])
     }
 
@@ -44,7 +44,7 @@ impl Plugin for Folders {
         match name {
             "launcher_info" => Ok(json!({
                 "name": "Folders",
-                "description": "Often visited folders from z and zoxide",
+                "description": "Frequently visited folders from z and zoxide",
                 "icon": "glyph:folder",
                 "prefixes": ["z"],
             })),

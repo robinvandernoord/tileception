@@ -433,7 +433,7 @@ const FIELDS: &[Field] = &[
         5,
         "home.devices",
         "Device file",
-        "Empty uses the standard home-devices.json path.",
+        "Leave empty to use the default home-devices.json path.",
         Control::Path(&[crate::file_chooser::Pick::File]),
     ),
     field(
@@ -475,7 +475,7 @@ const FIELDS: &[Field] = &[
         0,
         "theme.wallpaper",
         "Wallpaper",
-        "A picture, or a folder to pick one from. Empty uses the background colour.",
+        "Image or folder path. Leave empty to use the background colour.",
         Control::Path(&[crate::file_chooser::Pick::Picture, crate::file_chooser::Pick::Folder]),
     ),
     field(
@@ -550,12 +550,12 @@ const FIELDS: &[Field] = &[
     field(2, "duck.size", "Rubber duck size", "1 is the normal size.", Control::Number(0.5, 4., 0.25, "x")),
     field(3, "keyboard.variant", "Keyboard variant", "XKB variant, such as altgr-intl.", Control::Text),
     field(3, "keyboard.options", "Keyboard options", "XKB options, such as compose:ralt.", Control::Text),
-    field(3, "keyboard.model", "Keyboard model", "Empty uses the default XKB model.", Control::Text),
+    field(3, "keyboard.model", "Keyboard model", "Leave empty to use the default XKB model.", Control::Text),
     field(
         3,
         "touchpad.click_method",
         "Touchpad click method",
-        "Empty uses the device default.",
+        "Leave empty to use the device default.",
         Control::Choice(&["areas", "clickfinger"]),
     ),
     field(
@@ -831,9 +831,9 @@ fn choice_label(key: &str, value: &str) -> String {
     match (key, value) {
         (_, "builtin") => "Built-in".into(),
         ("lock.notifications", "none") => "Nothing".into(),
-        ("lock.notifications", "count") => "A count".into(),
-        ("lock.notifications", "apps") => "Which apps".into(),
-        ("lock.notifications", "full") => "What they say".into(),
+        ("lock.notifications", "count") => "Count only".into(),
+        ("lock.notifications", "apps") => "App names".into(),
+        ("lock.notifications", "full") => "Full content".into(),
         (_, "none") => "Off".into(),
         ("theme.colour_scheme", "default") => "Each app decides".into(),
         ("theme.wallpaper_interval", "") => "Once per session".into(),

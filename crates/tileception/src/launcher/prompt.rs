@@ -327,7 +327,7 @@ impl Tileception {
             let notice = value.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
             match view.prompt.step_index(step_id) {
                 Some(index) => self.prompt_enter_step(index, notice),
-                None => view.error = format!("The plugin asked for a step it does not have: {step_id}"),
+                None => view.error = format!("Plugin requested an unknown step: {step_id}"),
             }
             return;
         }
@@ -343,7 +343,7 @@ impl Tileception {
                     }
                     self.launcher_action(Some(plugin), kind);
                 }
-                _ => view.error = "The plugin answered with an action the launcher cannot run".into(),
+                _ => view.error = "Plugin returned an unsupported action".into(),
             }
             return;
         }

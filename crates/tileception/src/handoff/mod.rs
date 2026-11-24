@@ -405,10 +405,10 @@ impl Tileception {
         match event {
             Event::Incompatible { address, name, protocol } => {
                 if self.handoff.incompatible.insert(name.clone(), protocol) != Some(protocol) {
-                    let summary = format!("{name} runs a different Tileception");
+                    let summary = format!("{name} is running a different Tileception version");
                     let body = format!(
-                        "It speaks handoff protocol {protocol} and this computer {}, so they cannot share. \
-                         Update both to the same version.",
+                        "It uses handoff protocol {protocol}, while this computer uses {}. Update both machines \
+                         to the same version to share.",
                         tileception_handoff::PROTOCOL
                     );
                     tracing::warn!("handoff: {name} at {address} speaks protocol {protocol}");

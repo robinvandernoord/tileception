@@ -140,7 +140,7 @@ fn saved_detail(snapshot: &Snapshot, ssid: &[u8], autoconnect: bool) -> String {
         Some(_) => "In range",
         None => "Not in range",
     };
-    let joins = if autoconnect { "joins by itself" } else { "joins only when you choose it" };
+    let joins = if autoconnect { "connects automatically" } else { "manual connection only" };
     format!("{state}, {joins}")
 }
 
@@ -507,7 +507,7 @@ impl Tileception {
             let top = row.y + (ROW - 42.) / 2.;
             painter.text("Wi-Fi", Rect::new(row.x + 18., top, row.w - 120., 21.), title);
             let state = match () {
-                _ if !snapshot.wifi_hardware => "Off: a hardware switch or airplane mode",
+                _ if !snapshot.wifi_hardware => "Off (disabled by hardware switch or airplane mode)",
                 _ if snapshot.wifi_enabled => "On",
                 _ => "Off",
             };
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     fn saved_rows_say_whether_they_join_by_themselves() {
         let snapshot = Snapshot::default();
-        assert_eq!(saved_detail(&snapshot, b"Home", true), "Not in range, joins by itself");
-        assert_eq!(saved_detail(&snapshot, b"Home", false), "Not in range, joins only when you choose it");
+        assert_eq!(saved_detail(&snapshot, b"Home", true), "Not in range, connects automatically");
+        assert_eq!(saved_detail(&snapshot, b"Home", false), "Not in range, manual connection only");
     }
 }

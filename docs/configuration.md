@@ -416,13 +416,11 @@ sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
 # refresh_minutes = 15
 ```
 
-Next to the clock, a chip names the event on now and when it ends, such as
-"until 14:30 Review", or else the next event today and when it starts, such
-as "15:00 Standup". Of events on at the same time, it names the one that
-started last, such as a meeting within a longer block, and of those the one
-ending first. When it ends, the chip moves on to what is on then, or to the
-next event. All-day events, and timed ones lasting a day or more, stay out
-of the chip, which would otherwise name them all day. Clicking it, or the
+Next to the clock, a chip shows the current event and its end time, such as
+"until 14:30 Review", or today's next upcoming event, such as "15:00 Standup".
+For overlapping events, it shows the one that started most recently (breaking
+ties by earliest end time), then advances when it ends. All-day events and
+events lasting 24 hours or longer are excluded from the chip. Clicking it, or the
 clock, opens the calendar, which lists today's events and those of the coming
 week that have not ended. A dot marks each day with events, from a year back
 to a year ahead; clicking a day lists its events instead, and clicking it
@@ -674,7 +672,7 @@ notifications = "count"   # "none" | "count" | "apps" | "full"
 - `none` leaves an app out, even of the count.
 - `count` only counts it. This is the default.
 - `apps` lists the app's name and icon with the time, the content hidden.
-- `full` shows what they say: the summary and body, and in popups any picture.
+- `full` shows the full notification: summary, body, and any popup image.
 
 Exceptions name an app by its desktop entry (`.desktop` may be left off) or by
 the name its notifications carry. A low default with `full` exceptions opts
@@ -718,8 +716,8 @@ Tileception refreshes the package lists, as `apt-get update` does. That
 needs no password and is left out on a metered connection and below 30% on
 battery; **Check** in the Updates window refreshes them at once.
 
-`remind_after_days` holds the notification back until updates have waited
-that many days; `0` says so at once. `remind_security_only = true` notifies
+`remind_after_days` delays notifications until updates have been pending for
+that many days (`0` notifies immediately). `remind_security_only = true` notifies
 for security updates only. The chip in the bar shows every update either way.
 The notification never comes over a fullscreen window or during Do not
 disturb: it follows within a minute of leaving those.

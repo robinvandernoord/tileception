@@ -209,8 +209,8 @@ impl Problem {
         match self {
             Problem::NotRunning => "The Bluetooth service is not running. Start it with `systemctl start bluetooth`.",
             Problem::NoAdapter => "No Bluetooth adapter found.",
-            Problem::HardBlocked => "Switched off by a hardware switch or key.",
-            Problem::SoftBlocked => "Blocked by rfkill. Click to unblock it and switch it on.",
+            Problem::HardBlocked => "Disabled by a hardware switch or key.",
+            Problem::SoftBlocked => "Blocked by rfkill. Click to unblock and turn on.",
             Problem::Off => "Bluetooth is off. Click to switch it on.",
         }
     }
@@ -384,7 +384,7 @@ impl BluetoothPlugin {
     /// Answers the code shown: it matches, or it does not.
     fn answer(&self, accept: bool) -> Result<Value, String> {
         if !self.shared().prompt.as_ref().is_some_and(|prompt| prompt.confirm) {
-            return Err("no code is waiting for an answer".into());
+            return Err("no pairing code is waiting for confirmation".into());
         }
         let answers = self.answers.as_ref().ok_or_else(|| self.unavailable())?;
         answers.try_send(accept).map_err(|_| "Bluetooth stopped".to_string())?;
@@ -559,7 +559,7 @@ impl BluetoothPlugin {
                 for device in state.paired().into_iter().filter(|device| matches(&device.name)) {
                     rows.push(json!({
                         "title": format!("Forget {}", device.name),
-                        "detail": "Unpair it; pair it again to use it",
+                        "detail": "Unpair device (you'll need to pair again to use it)",
                         "icon": device_icon(&device.icon),
                         "actions": [{ "title": "Forget", "type": "tool", "name": "forget",
                                       "arguments": { "device": device.path } }],
@@ -956,11 +956,11 @@ impl Agent {
     fn release(&self) {}
 
     fn request_pin_code(&self, _device: OwnedObjectPath) -> Result<String, AgentError> {
-        Err(self.cannot("It asks for a PIN code. Pair it with `bluetoothctl` instead."))
+        Err(self.cannot("This device requires a PIN code. Pair it with `bluetoothctl` instead."))
     }
 
     fn request_passkey(&self, _device: OwnedObjectPath) -> Result<u32, AgentError> {
-        Err(self.cannot("It asks for a code to be typed here. Pair it with `bluetoothctl` instead."))
+        Err(self.cannot("This device requires entering a passkey here. Pair it with `bluetoothctl` instead."))
     }
 
     fn display_pin_code(&self, device: OwnedObjectPath, pincode: String) {
@@ -1391,23 +1391,23 @@ fn reason(error: &zbus::Error) -> Option<String> {
         "org.bluez.Error.AuthenticationRejected" | "org.bluez.Error.AuthenticationCanceled" => {
             "Pairing was declined or cancelled.".into()
         }
-        "org.bluez.Error.AuthenticationFailed" => {
-            "The codes did not match, or it is not in pairing mode any more.".into()
+        "org.bluez.Error.AuthenticationFailed" => "The codes didn't match, or the device left pairing mode.".into(),
+        "org.bluez.Error.AuthenticationTimeout" => "Device didn't respond in time. Is it in pairing mode?".into(),
+        "org.bluez.Error.ConnectionAttemptFailed" => {
+            "Device didn't respond. Make sure it's turned on and nearby.".into()
         }
-        "org.bluez.Error.AuthenticationTimeout" => "It did not answer in time. Is it in pairing mode?".into(),
-        "org.bluez.Error.ConnectionAttemptFailed" => "It did not answer. Is it switched on and nearby?".into(),
         "org.bluez.Error.NotReady" => "Bluetooth is off.".into(),
         "org.bluez.Error.DoesNotExist" => "It is no longer paired.".into(),
         "org.bluez.Error.Blocked" => "Bluetooth is blocked by rfkill.".into(),
         _ if detail.contains("page-timeout") || detail.contains("abort-by-local") || detail.contains("timeout") => {
-            "It did not answer. Is it switched on and nearby?".into()
+            "Device didn't respond. Make sure it's turned on and nearby.".into()
         }
         _ if detail.contains("profile-unavailable") => {
-            "None of its services is available. For audio, is the sound server (PipeWire) running?".into()
+            "No device services are available. For audio, check that PipeWire is running.".into()
         }
         _ if detail.contains("refused") => "It refused the connection. Try pairing it again.".into(),
-        _ if !detail.is_empty() => format!("BlueZ said: {detail}"),
-        _ => format!("BlueZ said: {name}"),
+        _ if !detail.is_empty() => format!("Bluetooth error: {detail}"),
+        _ => format!("Bluetooth error: {name}"),
     };
     Some(text)
 }
@@ -1813,12 +1813,12 @@ mod tests {
         assert_eq!(reason(&error("org.bluez.Error.AlreadyConnected", "")), None);
         assert_eq!(
             reason(&error("org.bluez.Error.Failed", "br-connection-page-timeout")).unwrap(),
-            "It did not answer. Is it switched on and nearby?"
+            "Device didn't respond. Make sure it's turned on and nearby."
         );
         assert!(
             reason(&error("org.bluez.Error.Failed", "br-connection-profile-unavailable")).unwrap().contains("PipeWire")
         );
-        assert_eq!(reason(&error("org.bluez.Error.Failed", "odd")).unwrap(), "BlueZ said: odd");
+        assert_eq!(reason(&error("org.bluez.Error.Failed", "odd")).unwrap(), "Bluetooth error: odd");
     }
 
     #[test]
@@ -2384,7 +2384,7 @@ mod tests {
         // Switching it on brings the headphones back; the speaker does not answer.
         plugin.call("power", &json!({ "on": true })).unwrap();
         wait_for("headphones reconnected", || status(&mut plugin).contains("Headphones [00:11:22:33:44:55] connected"));
-        wait_for("a notification", || noted("Could not reconnect Speaker: It did not answer"));
+        wait_for("a notification", || noted("Could not reconnect Speaker: Device didn't respond"));
 
         // By hand: a failure says so, and a device disconnected by hand stays so.
         plugin.call("toggle", &json!({ "device": "speaker" })).unwrap();
