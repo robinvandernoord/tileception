@@ -539,8 +539,8 @@ impl Tileception {
         let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|rendered| rendered.width)
+            .styled_size(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
+            .map(|(width, _)| width)
             .unwrap_or(0.0)
     }
 
@@ -1272,15 +1272,17 @@ impl Tileception {
             .collect()
     }
 
-    /// The bar with its popovers, and apart, its hover tooltips.
-    pub(crate) fn bar_elements(
+    /// The bar with its popovers, the tray popover (when `include_tray`), and
+    /// apart, their hover tooltips. Shares one `bar_layout()` pass.
+    pub(crate) fn bar_and_tray_elements(
         &self,
         renderer: &mut GlesRenderer,
         feedback: Option<&crate::capture::FeedbackCapture>,
-    ) -> (Vec<OutputElement>, Vec<OutputElement>) {
+        include_tray: bool,
+    ) -> (Vec<OutputElement>, Vec<OutputElement>, Vec<OutputElement>) {
         let mode = self.bar_mode();
         if matches!(mode, Mode::Off | Mode::Covered) || self.is_locked() {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         }
         let theme = &self.theme;
         let mut painter = Painter::new(self, renderer);
@@ -1319,22 +1321,22 @@ impl Tileception {
             let chip = self.network_anchor_in(layout.as_ref());
             painter.tooltip(|painter| self.draw_network_card(painter, chip, level));
         }
-        painter.finish_with_tooltips()
-    }
-
-    /// Tray popovers float above the shell panels, below overlay clients.
-    /// Its tooltips come apart, like the bar's.
-    pub fn tray_elements(&self, renderer: &mut GlesRenderer) -> (Vec<OutputElement>, Vec<OutputElement>) {
-        if matches!(self.bar_mode(), Mode::Off | Mode::Covered) || self.is_locked() {
-            return (Vec::new(), Vec::new());
-        }
-        let Some(layout) = self.bar_layout() else {
-            return (Vec::new(), Vec::new());
+        let (bar, mut tooltips) = painter.finish_with_tooltips();
+        let tray = if include_tray
+            && let Some(layout) = &layout
+            && (self.tray.open
+                || layout.tray.iter().any(|(_, rect)| rect.contains(Point::new(self.pointer.x, self.pointer.y))))
+        {
+            let mut tray_painter = Painter::new(self, renderer);
+            let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
+            self.draw_tray_popup(&mut tray_painter, &layout.tray, anchor);
+            let (tray, tray_tooltips) = tray_painter.finish_with_tooltips();
+            tooltips.extend(tray_tooltips);
+            tray
+        } else {
+            Vec::new()
         };
-        let mut painter = Painter::new(self, renderer);
-        let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);
-        self.draw_tray_popup(&mut painter, &layout.tray, anchor);
-        painter.finish_with_tooltips()
+        (bar, tray, tooltips)
     }
 
     pub(crate) fn tray_pointer_anchor(&self) -> Option<Rect> {
@@ -1706,8 +1708,8 @@ impl Tileception {
         let theme = &self.theme;
         self.text
             .borrow_mut()
-            .styled(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
-            .map(|rendered| rendered.height)
+            .styled_size(text, &theme.font, style.size, style.colour, max.max(1.0) as f32, style.weight, style.lines)
+            .map(|(_, height)| height)
             .unwrap_or(0.0)
     }
 

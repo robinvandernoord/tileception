@@ -172,8 +172,9 @@ pub struct Frames(Rc<RefCell<Reused>>);
 impl Frames {
     /// Starts a frame: shapes drawn in the last one can be drawn again as they were.
     pub fn next(&self) {
-        let mut reused = self.0.borrow_mut();
-        reused.previous = std::mem::take(&mut reused.current);
+        let reused = &mut *self.0.borrow_mut();
+        std::mem::swap(&mut reused.previous, &mut reused.current);
+        reused.current.clear();
     }
 }
 
