@@ -270,10 +270,10 @@ impl Tileception {
                 }
             } else if !output.name().starts_with("headless") && !output.modes().contains(&mode) {
                 if allow_fallback
-                    && let Some(fallback) = output
-                        .preferred_mode()
-                        .or(output.current_mode())
-                        .filter(|candidate| output.modes().contains(candidate))
+                    && let Some(fallback) = [output.preferred_mode(), output.current_mode()]
+                        .into_iter()
+                        .flatten()
+                        .find(|candidate| output.modes().contains(candidate))
                 {
                     tracing::warn!(
                         output = %output.name(),
@@ -1864,22 +1864,18 @@ fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId
     }
 }
 
-fn rects_overlap(first_pos: [i32; 2], first_size: [i32; 2], second_pos: [i32; 2], second_size: [i32; 2]) -> bool {
-    first_pos[0] < second_pos[0].saturating_add(second_size[0])
-        && second_pos[0] < first_pos[0].saturating_add(first_size[0])
-        && first_pos[1] < second_pos[1].saturating_add(second_size[1])
-        && second_pos[1] < first_pos[1].saturating_add(first_size[1])
+fn rects_overlap(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
+    first_pos[0] < second_pos[0] + second_size[0]
+        && second_pos[0] < first_pos[0] + first_size[0]
+        && first_pos[1] < second_pos[1] + second_size[1]
+        && second_pos[1] < first_pos[1] + first_size[1]
 }
 
-fn rects_touch(first_pos: [i32; 2], first_size: [i32; 2], second_pos: [i32; 2], second_size: [i32; 2]) -> bool {
-    let horiz_touch = first_pos[0].saturating_add(first_size[0]) == second_pos[0]
-        || second_pos[0].saturating_add(second_size[0]) == first_pos[0];
-    let vert_overlap = first_pos[1] < second_pos[1].saturating_add(second_size[1])
-        && second_pos[1] < first_pos[1].saturating_add(first_size[1]);
-    let vert_touch = first_pos[1].saturating_add(first_size[1]) == second_pos[1]
-        || second_pos[1].saturating_add(second_size[1]) == first_pos[1];
-    let horiz_overlap = first_pos[0] < second_pos[0].saturating_add(second_size[0])
-        && second_pos[0] < first_pos[0].saturating_add(first_size[0]);
+fn rects_touch(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
+    let horiz_touch = first_pos[0] + first_size[0] == second_pos[0] || second_pos[0] + second_size[0] == first_pos[0];
+    let vert_overlap = first_pos[1] < second_pos[1] + second_size[1] && second_pos[1] < first_pos[1] + first_size[1];
+    let vert_touch = first_pos[1] + first_size[1] == second_pos[1] || second_pos[1] + second_size[1] == first_pos[1];
+    let horiz_overlap = first_pos[0] < second_pos[0] + second_size[0] && second_pos[0] < first_pos[0] + first_size[0];
     (horiz_touch && vert_overlap) || (vert_touch && horiz_overlap)
 }
 
@@ -1891,52 +1887,102 @@ fn rects_touch(first_pos: [i32; 2], first_size: [i32; 2], second_pos: [i32; 2], 
 ///   unplugged neighbours are repaired into a single touching layout, and
 /// - the bounding box starts at (0, 0) so Xwayland output and window
 ///   coordinates stay non-negative.
-fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
+pub(crate) fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
+    let positions = arranged_positions_raw(outputs);
+    let Some(min_x) = positions.iter().map(|position| position[0]).min() else {
+        return Vec::new();
+    };
+    let Some(min_y) = positions.iter().map(|position| position[1]).min() else {
+        return Vec::new();
+    };
+    positions
+        .into_iter()
+        .map(|position| {
+            [
+                (position[0] - min_x).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                (position[1] - min_y).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            ]
+        })
+        .collect()
+}
+
+/// Same overlap and gap repair as [`arranged_positions`], without shifting the
+/// bounding box to `(0, 0)` — used by the Settings display map so connected
+/// monitors stay in the same coordinate frame as saved offline monitors.
+pub(crate) fn arranged_positions_unshifted(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
+    arranged_positions_raw(outputs)
+        .into_iter()
+        .map(|position| {
+            [
+                position[0].clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                position[1].clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            ]
+        })
+        .collect()
+}
+
+fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64; 2]> {
     if outputs.is_empty() {
         return Vec::new();
     }
-    let mut positions = vec![[0, 0]; outputs.len()];
-    let mut right = 0i32;
+    let count = outputs.len();
+    let sizes: Vec<[i64; 2]> =
+        outputs.iter().map(|&(_, size)| [i64::from(size[0].max(1)), i64::from(size[1].max(1))]).collect();
+    let mut positions = vec![[0i64, 0i64]; count];
+    let mut right = 0i64;
     let mut has_configured = false;
-    for (index, &(configured, size)) in outputs.iter().enumerate() {
+    for (index, &(configured, _)) in outputs.iter().enumerate() {
         if let Some(position) = configured {
-            positions[index] = position;
-            let edge = position[0].saturating_add(size[0]);
+            positions[index] = [i64::from(position[0]), i64::from(position[1])];
+            let edge = positions[index][0] + sizes[index][0];
             right = if has_configured { right.max(edge) } else { edge };
             has_configured = true;
         }
     }
-    for (index, &(configured, size)) in outputs.iter().enumerate() {
+    for (index, &(configured, _)) in outputs.iter().enumerate() {
         if configured.is_none() {
             positions[index] = [right, 0];
-            right = right.saturating_add(size[0]);
+            right += sizes[index][0];
         }
     }
 
-    // Separate any overlapping pairs along the shortest axis of overlap.
-    let count = outputs.len();
+    // Separate any overlapping pairs along the shortest non-overlapping axis;
+    // if every adjacent shift still overlaps another monitor (which could
+    // otherwise cycle), move the second monitor past the rightmost edge.
     for _ in 0..count.saturating_mul(count).max(1) {
         let mut separated = false;
         'pairs: for first in 0..count {
             for second in first + 1..count {
-                let first_size = outputs[first].1;
-                let second_size = outputs[second].1;
+                let first_size = sizes[first];
+                let second_size = sizes[second];
                 if !rects_overlap(positions[first], first_size, positions[second], second_size) {
                     continue;
                 }
-                let shift_right =
-                    positions[first][0].saturating_add(first_size[0]).saturating_sub(positions[second][0]);
-                let shift_left =
-                    positions[first][0].saturating_sub(positions[second][0].saturating_add(second_size[0]));
-                let shift_down = positions[first][1].saturating_add(first_size[1]).saturating_sub(positions[second][1]);
-                let shift_up = positions[first][1].saturating_sub(positions[second][1].saturating_add(second_size[1]));
+                let shift_right = positions[first][0] + first_size[0] - positions[second][0];
+                let shift_left = positions[first][0] - (positions[second][0] + second_size[0]);
+                let shift_down = positions[first][1] + first_size[1] - positions[second][1];
+                let shift_up = positions[first][1] - (positions[second][1] + second_size[1]);
                 let candidates = [[shift_right, 0], [shift_left, 0], [0, shift_down], [0, shift_up]];
+                let overlap_free = |shift: &[i64; 2]| {
+                    let moved = [positions[second][0] + shift[0], positions[second][1] + shift[1]];
+                    (0..count)
+                        .filter(|&other| other != second)
+                        .all(|other| !rects_overlap(moved, second_size, positions[other], sizes[other]))
+                };
                 let best = candidates
                     .into_iter()
+                    .filter(overlap_free)
                     .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
-                    .unwrap_or([shift_right, 0]);
-                positions[second][0] = positions[second][0].saturating_add(best[0]);
-                positions[second][1] = positions[second][1].saturating_add(best[1]);
+                    .unwrap_or_else(|| {
+                        let max_right = (0..count)
+                            .filter(|&other| other != second)
+                            .map(|other| positions[other][0] + sizes[other][0])
+                            .max()
+                            .unwrap_or(0);
+                        [max_right - positions[second][0], 0]
+                    });
+                positions[second][0] += best[0];
+                positions[second][1] += best[1];
                 separated = true;
                 break 'pairs;
             }
@@ -1953,7 +1999,7 @@ fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]>
     queue.push_back(0);
     while let Some(current) = queue.pop_front() {
         for next in 0..count {
-            if !visited[next] && rects_touch(positions[current], outputs[current].1, positions[next], outputs[next].1) {
+            if !visited[next] && rects_touch(positions[current], sizes[current], positions[next], sizes[next]) {
                 visited[next] = true;
                 queue.push_back(next);
             }
@@ -1967,7 +2013,7 @@ fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]>
             for next in 0..count {
                 if !visited[next]
                     && !island[next]
-                    && rects_touch(positions[current], outputs[current].1, positions[next], outputs[next].1)
+                    && rects_touch(positions[current], sizes[current], positions[next], sizes[next])
                 {
                     island[next] = true;
                     queue.push_back(next);
@@ -1979,16 +2025,16 @@ fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]>
         for anchor in (0..count).filter(|&index| visited[index]) {
             for &member in &island_indices {
                 let anchor_pos = positions[anchor];
-                let anchor_size = outputs[anchor].1;
+                let anchor_size = sizes[anchor];
                 let member_pos = positions[member];
-                let member_size = outputs[member].1;
-                let gap_x = (member_pos[0] - anchor_pos[0].saturating_add(anchor_size[0]))
-                    .max(anchor_pos[0] - member_pos[0].saturating_add(member_size[0]))
+                let member_size = sizes[member];
+                let gap_x = (member_pos[0] - (anchor_pos[0] + anchor_size[0]))
+                    .max(anchor_pos[0] - (member_pos[0] + member_size[0]))
                     .max(0);
-                let gap_y = (member_pos[1] - anchor_pos[1].saturating_add(anchor_size[1]))
-                    .max(anchor_pos[1] - member_pos[1].saturating_add(member_size[1]))
+                let gap_y = (member_pos[1] - (anchor_pos[1] + anchor_size[1]))
+                    .max(anchor_pos[1] - (member_pos[1] + member_size[1]))
                     .max(0);
-                let distance = i64::from(gap_x) + i64::from(gap_y);
+                let distance = gap_x + gap_y;
                 if best_pair.is_none_or(|(best_dist, _, _)| distance < best_dist) {
                     best_pair = Some((distance, anchor, member));
                 }
@@ -1996,51 +2042,56 @@ fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]>
         }
         if let Some((_, anchor, member)) = best_pair {
             let anchor_pos = positions[anchor];
-            let anchor_size = outputs[anchor].1;
+            let anchor_size = sizes[anchor];
             let member_pos = positions[member];
-            let member_size = outputs[member].1;
-            let shift = if member_pos[0] >= anchor_pos[0].saturating_add(anchor_size[0]) {
-                let shift_x = anchor_pos[0].saturating_add(anchor_size[0]).saturating_sub(member_pos[0]);
-                let vert_overlap = member_pos[1] < anchor_pos[1].saturating_add(anchor_size[1])
-                    && anchor_pos[1] < member_pos[1].saturating_add(member_size[1]);
-                let shift_y = if vert_overlap { 0 } else { anchor_pos[1].saturating_sub(member_pos[1]) };
+            let member_size = sizes[member];
+            let shift = if member_pos[0] >= anchor_pos[0] + anchor_size[0] {
+                let shift_x = anchor_pos[0] + anchor_size[0] - member_pos[0];
+                let vert_overlap =
+                    member_pos[1] < anchor_pos[1] + anchor_size[1] && anchor_pos[1] < member_pos[1] + member_size[1];
+                let shift_y = if vert_overlap { 0 } else { anchor_pos[1] - member_pos[1] };
                 [shift_x, shift_y]
-            } else if anchor_pos[0] >= member_pos[0].saturating_add(member_size[0]) {
-                let shift_x = anchor_pos[0].saturating_sub(member_pos[0].saturating_add(member_size[0]));
-                let vert_overlap = member_pos[1] < anchor_pos[1].saturating_add(anchor_size[1])
-                    && anchor_pos[1] < member_pos[1].saturating_add(member_size[1]);
-                let shift_y = if vert_overlap { 0 } else { anchor_pos[1].saturating_sub(member_pos[1]) };
+            } else if anchor_pos[0] >= member_pos[0] + member_size[0] {
+                let shift_x = anchor_pos[0] - (member_pos[0] + member_size[0]);
+                let vert_overlap =
+                    member_pos[1] < anchor_pos[1] + anchor_size[1] && anchor_pos[1] < member_pos[1] + member_size[1];
+                let shift_y = if vert_overlap { 0 } else { anchor_pos[1] - member_pos[1] };
                 [shift_x, shift_y]
-            } else if member_pos[1] >= anchor_pos[1].saturating_add(anchor_size[1]) {
-                [0, anchor_pos[1].saturating_add(anchor_size[1]).saturating_sub(member_pos[1])]
+            } else if member_pos[1] >= anchor_pos[1] + anchor_size[1] {
+                [0, anchor_pos[1] + anchor_size[1] - member_pos[1]]
             } else {
-                [0, anchor_pos[1].saturating_sub(member_pos[1].saturating_add(member_size[1]))]
+                [0, anchor_pos[1] - (member_pos[1] + member_size[1])]
             };
             let collides = island_indices.iter().any(|&member_idx| {
-                let moved = [
-                    positions[member_idx][0].saturating_add(shift[0]),
-                    positions[member_idx][1].saturating_add(shift[1]),
-                ];
+                let moved = [positions[member_idx][0] + shift[0], positions[member_idx][1] + shift[1]];
                 (0..count)
                     .filter(|&index| visited[index])
-                    .any(|other| rects_overlap(moved, outputs[member_idx].1, positions[other], outputs[other].1))
+                    .any(|other| rects_overlap(moved, sizes[member_idx], positions[other], sizes[other]))
             });
             let final_shift = if collides {
-                let visited_right = (0..count)
+                // Attach the island's leftmost member to the right edge of the
+                // rightmost visited monitor, aligned to that monitor's top so
+                // they are guaranteed to share an edge without overlapping any
+                // visited monitor.
+                let rightmost = (0..count)
                     .filter(|&index| visited[index])
-                    .map(|index| positions[index][0].saturating_add(outputs[index].1[0]))
-                    .max()
-                    .unwrap_or(0);
-                let island_left = island_indices.iter().map(|&index| positions[index][0]).min().unwrap_or(0);
-                let anchor_top = positions[anchor][1];
-                let island_top = island_indices.iter().map(|&index| positions[index][1]).min().unwrap_or(0);
-                [visited_right.saturating_sub(island_left), anchor_top.saturating_sub(island_top)]
+                    .max_by_key(|&index| (positions[index][0] + sizes[index][0], -positions[index][1]))
+                    .unwrap_or(anchor);
+                let leftmost_member = island_indices
+                    .iter()
+                    .copied()
+                    .min_by_key(|&index| (positions[index][0], positions[index][1]))
+                    .unwrap_or(member);
+                [
+                    positions[rightmost][0] + sizes[rightmost][0] - positions[leftmost_member][0],
+                    positions[rightmost][1] - positions[leftmost_member][1],
+                ]
             } else {
                 shift
             };
             for &member_idx in &island_indices {
-                positions[member_idx][0] = positions[member_idx][0].saturating_add(final_shift[0]);
-                positions[member_idx][1] = positions[member_idx][1].saturating_add(final_shift[1]);
+                positions[member_idx][0] += final_shift[0];
+                positions[member_idx][1] += final_shift[1];
                 visited[member_idx] = true;
             }
         } else {
@@ -2050,16 +2101,6 @@ fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]>
         }
     }
 
-    let Some(min_x) = positions.iter().map(|position| position[0]).min() else {
-        return positions;
-    };
-    let Some(min_y) = positions.iter().map(|position| position[1]).min() else {
-        return positions;
-    };
-    for position in &mut positions {
-        position[0] = position[0].saturating_sub(min_x);
-        position[1] = position[1].saturating_sub(min_y);
-    }
     positions
 }
 
@@ -2107,6 +2148,68 @@ mod tests {
             arranged_positions(&[(Some([0, 0]), [1920, 1080]), (Some([0, 1600]), [1920, 1080])]),
             vec![[0, 0], [0, 1080]]
         );
+    }
+
+    #[test]
+    fn arranged_positions_collision_fallback_and_multi_island_stay_connected() {
+        let assert_connected_no_overlap = |specs: &[(Option<[i32; 2]>, [i32; 2])]| {
+            let pos = arranged_positions(specs);
+            assert_eq!(pos.len(), specs.len());
+            let sizes: Vec<[i64; 2]> =
+                specs.iter().map(|&(_, size)| [i64::from(size[0]), i64::from(size[1])]).collect();
+            let pos64: Vec<[i64; 2]> = pos.iter().map(|&point| [i64::from(point[0]), i64::from(point[1])]).collect();
+            for first in 0..pos.len() {
+                assert!(pos[first][0] >= 0 && pos[first][1] >= 0);
+                for second in first + 1..pos.len() {
+                    assert!(
+                        !rects_overlap(pos64[first], sizes[first], pos64[second], sizes[second]),
+                        "overlap {first} vs {second}: {pos:?}"
+                    );
+                }
+            }
+            let mut seen = vec![false; pos.len()];
+            let mut queue = std::collections::VecDeque::from([0usize]);
+            seen[0] = true;
+            while let Some(cur) = queue.pop_front() {
+                for next in 0..pos.len() {
+                    if !seen[next] && rects_touch(pos64[cur], sizes[cur], pos64[next], sizes[next]) {
+                        seen[next] = true;
+                        queue.push_back(next);
+                    }
+                }
+            }
+            assert!(seen.iter().all(|&visited| visited), "disconnected layout: {pos:?}");
+        };
+
+        // Staircase + colliding island: fallback must attach to the rightmost visited monitor's edge.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [100, 100]),
+            (Some([0, 100]), [200, 100]),
+            (Some([0, 200]), [300, 100]),
+            (Some([110, -160]), [40, 150]),
+        ]);
+
+        // Three disconnected islands plus a stacked pair and a side screen.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [1920, 1080]),
+            (Some([0, 1080]), [1920, 1080]),
+            (Some([5000, 200]), [1280, 800]),
+            (Some([-4000, -1000]), [2560, 1440]),
+        ]);
+
+        // Extreme i32 coordinates must not overflow or panic.
+        assert_connected_no_overlap(&[
+            (Some([i32::MIN / 2, i32::MIN / 2]), [1920, 1080]),
+            (Some([i32::MAX / 2, i32::MAX / 2]), [1920, 1080]),
+        ]);
+
+        // Boxed-in overlapping monitor must not cycle between left/right neighbours.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [100, 100]),
+            (Some([150, 0]), [100, 100]),
+            (Some([75, 0]), [100, 100]),
+            (Some([0, -100]), [250, 100]),
+        ]);
     }
 
     #[test]

@@ -138,7 +138,7 @@ setup (`tileception setup --help`). `pair` shows or sets the passphrase
 that lets other computers share this mouse and keyboard
 (`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
 Tileception starts these itself. `doctor-mcp` exposes a plugin's tools to
-the Wizard's agent over MCP, confirming each call with the compositor
+Doctor's agent over MCP, confirming each call with the compositor
 (started automatically).
 A command after `--` is started once the compositor is up.
 

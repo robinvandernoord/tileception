@@ -31,8 +31,12 @@ impl Screen {
             return Ok(());
         }
         let rects = self.display_rects();
+        let is_connected = |index: usize| self.monitors.iter().any(|monitor| monitor.name == self.rows[index].name);
         for (position, (index, rect)) in rects.iter().enumerate() {
             for (other, candidate) in &rects[position + 1..] {
+                if is_connected(*index) != is_connected(*other) {
+                    continue;
+                }
                 if overlaps(*rect, *candidate) {
                     return Err(format!(
                         "{} overlaps {}. Drag a display to a free edge, or use Automatic layout.",
@@ -57,69 +61,95 @@ impl Screen {
                 self.rows[*index].name.clone(),
             )
         });
-        let row_metrics = |index: usize| {
-            let row = &self.rows[index];
-            let monitor = self.monitors.iter().find(|monitor| monitor.name == row.name);
-            let setting = if row.inherited && !row.changed() {
-                self.rows
-                    .iter()
-                    .find(|row| row.name == "*")
-                    .and_then(|row| row.value.get("scale"))
-                    .or_else(|| row.value.get("scale"))
-            } else {
-                row.value.get("scale")
-            };
-            let initial =
-                self.initial.iter().find(|(name, _)| *name == row.name).and_then(|(_, value)| value.get("scale"));
-            let scale = if monitor.is_some() && setting == initial {
-                monitor.map_or(1., |monitor| monitor.scale)
-            } else {
-                setting
-                    .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|value| value as f64)))
-                    .filter(|value| value.is_finite() && *value >= 0.5 && *value <= 4.)
-                    .map(crate::scale::tidy)
-                    .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
-            };
-            let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
-            let mode = setting.mode.parse().ok().flatten();
-            let size = mode.map_or_else(
-                || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
-                |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),
-            );
-            let transform: smithay::utils::Transform = setting.transform.into();
-            let size = transform.transform_size(smithay::utils::Size::<f64, smithay::utils::Physical>::from(size));
-            let width = size.w / scale;
-            let height = size.h / scale;
-            let configured = row.value.get("position").and_then(toml::Value::as_array).and_then(|position| {
-                Some(Point::new(position.first()?.as_integer()? as f64, position.get(1)?.as_integer()? as f64))
-            });
-            (monitor.is_some(), configured, width, height)
-        };
-        // Start unconfigured connected monitors after any explicitly positioned
-        // connected monitor so a new DP-*/HDMI-* never overlaps eDP-1 at (0, 0).
-        let mut next: f64 = indices
-            .iter()
-            .filter_map(|&index| {
-                let (connected, configured, width, _) = row_metrics(index);
-                connected.then_some(configured.map(|position| position.x + width)).flatten()
-            })
-            .reduce(f64::max)
-            .unwrap_or(0.);
-        let mut offline = None;
-        indices
+        struct RowMetrics {
+            index: usize,
+            connected: bool,
+            configured: Option<[i32; 2]>,
+            width: f64,
+            height: f64,
+        }
+        let metrics: Vec<RowMetrics> = indices
             .into_iter()
             .map(|index| {
-                let (connected, configured, width, height) = row_metrics(index);
-                let position =
-                    configured.unwrap_or(Point::new(if connected { next } else { offline.unwrap_or(next + 160.) }, 0.));
-                if connected {
-                    next = next.max(position.x + width);
+                let row = &self.rows[index];
+                let monitor = self.monitors.iter().find(|monitor| monitor.name == row.name);
+                let setting = if row.inherited && !row.changed() {
+                    self.rows
+                        .iter()
+                        .find(|row| row.name == "*")
+                        .and_then(|row| row.value.get("scale"))
+                        .or_else(|| row.value.get("scale"))
                 } else {
-                    offline = Some(position.x + width);
-                }
-                (index, Rect::new(position.x, position.y, width, height))
+                    row.value.get("scale")
+                };
+                let initial =
+                    self.initial.iter().find(|(name, _)| *name == row.name).and_then(|(_, value)| value.get("scale"));
+                let scale = if monitor.is_some() && setting == initial {
+                    monitor.map_or(1., |monitor| monitor.scale)
+                } else {
+                    setting
+                        .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|value| value as f64)))
+                        .filter(|value| value.is_finite() && *value >= 0.5 && *value <= 4.)
+                        .map(crate::scale::tidy)
+                        .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
+                };
+                let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
+                let mode = setting.mode.parse().ok().flatten();
+                let size = mode.map_or_else(
+                    || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
+                    |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),
+                );
+                let transform: smithay::utils::Transform = setting.transform.into();
+                let size = transform.transform_size(smithay::utils::Size::<f64, smithay::utils::Physical>::from(size));
+                let width = (size.w / scale).round().max(1.);
+                let height = (size.h / scale).round().max(1.);
+                let configured = row.value.get("position").and_then(toml::Value::as_array).and_then(|position| {
+                    let pos_x = position.first()?.as_integer()?.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                    let pos_y = position.get(1)?.as_integer()?.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                    Some([pos_x, pos_y])
+                });
+                RowMetrics { index, connected: monitor.is_some(), configured, width, height }
             })
-            .collect()
+            .collect();
+
+        // Lay out connected monitors with the same overlap/gap repair the
+        // compositor applies at runtime, keeping their saved coordinate frame
+        // so dragging does not collide with remembered offline monitors.
+        let connected_specs: Vec<(Option<[i32; 2]>, [i32; 2])> = metrics
+            .iter()
+            .filter(|row| row.connected)
+            .map(|row| (row.configured, [row.width as i32, row.height as i32]))
+            .collect();
+        let connected_positions = crate::outputs::arranged_positions_unshifted(&connected_specs);
+        let mut connected_iter = connected_positions.into_iter();
+        let mut connected_rects = Vec::new();
+        let mut connected_right = 0.0f64;
+        for row in metrics.iter().filter(|row| row.connected) {
+            let pos = connected_iter.next().unwrap_or([0, 0]);
+            let rect = Rect::new(f64::from(pos[0]), f64::from(pos[1]), row.width, row.height);
+            connected_right = connected_right.max(rect.right());
+            connected_rects.push((row.index, rect));
+        }
+        // Place offline monitors before connected ones so connected displays
+        // always draw on top and win hit-testing; move any offline monitor
+        // whose saved spot overlaps a connected display into the staging strip.
+        let mut offline_next = connected_right + 160.;
+        let mut result = Vec::with_capacity(metrics.len());
+        for row in metrics.iter().filter(|row| !row.connected) {
+            let candidate =
+                row.configured.map(|pos| Rect::new(f64::from(pos[0]), f64::from(pos[1]), row.width, row.height));
+            let rect = match candidate {
+                Some(rect) if !connected_rects.iter().any(|(_, connected)| overlaps(rect, *connected)) => rect,
+                _ => {
+                    let rect = Rect::new(offline_next, 0., row.width, row.height);
+                    offline_next = rect.right() + 40.;
+                    rect
+                }
+            };
+            result.push((row.index, rect));
+        }
+        result.extend(connected_rects);
+        result
     }
 
     /// The arrangement represents proportional edge crossing with equal
@@ -315,9 +345,12 @@ impl Tileception {
         let top = (point.y - drag.origin.y) / drag.factor - drag.grab.y;
         let dragged = drag.row;
         let equal = drag.equal;
+        let is_connected = |index: usize| screen.monitors.iter().any(|monitor| monitor.name == screen.rows[index].name);
+        let dragged_connected = is_connected(dragged);
+        let relevant = |index: usize| index != dragged && (!dragged_connected || is_connected(index));
         let mut candidates = Vec::new();
         for (index, rect) in &rects {
-            if *index == drag.row {
+            if !relevant(*index) {
                 continue;
             }
             let Some((_, real)) = drag.actual.iter().find(|(candidate, _)| candidate == index) else { continue };
@@ -341,8 +374,8 @@ impl Tileception {
                     Rect::new(real.x + offset_x, real.bottom(), actual.w, actual.h),
                 ),
             ] {
-                if rects.iter().any(|(other, rect)| *other != dragged && overlaps(shown, *rect))
-                    || drag.actual.iter().any(|(other, rect)| *other != dragged && overlaps(saved, *rect))
+                if rects.iter().any(|(other, rect)| relevant(*other) && overlaps(shown, *rect))
+                    || drag.actual.iter().any(|(other, rect)| relevant(*other) && overlaps(saved, *rect))
                 {
                     continue;
                 }

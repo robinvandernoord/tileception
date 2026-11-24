@@ -380,22 +380,22 @@ fn blend(pixels: &mut [u8], width: i32, height: i32, (x_pos, y_pos): (i32, i32),
         return;
     }
     let offset = ((y_pos * width + x_pos) * 4) as usize;
-    let alpha_u16 = u16::from(src_alpha);
-    let src = [
-        ((u16::from(colour.r()) * alpha_u16 + 127) / 255) as u8,
-        ((u16::from(colour.g()) * alpha_u16 + 127) / 255) as u8,
-        ((u16::from(colour.b()) * alpha_u16 + 127) / 255) as u8,
-        src_alpha,
-    ];
+    let alpha_u32 = u32::from(src_alpha);
     if src_alpha == 255 || pixels[offset + 3] == 0 {
-        pixels[offset..offset + 4].copy_from_slice(&src);
+        pixels[offset] = ((u32::from(colour.r()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 1] = ((u32::from(colour.g()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 2] = ((u32::from(colour.b()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 3] = src_alpha;
         return;
     }
-    let inv_alpha = 255 - alpha_u16;
-    for channel in 0..4 {
-        let blended = u16::from(src[channel]) + (u16::from(pixels[offset + channel]) * inv_alpha + 127) / 255;
+    let inv_alpha = 255 - alpha_u32;
+    let src_rgb = [u32::from(colour.r()), u32::from(colour.g()), u32::from(colour.b())];
+    for channel in 0..3 {
+        let blended = (src_rgb[channel] * alpha_u32 + u32::from(pixels[offset + channel]) * inv_alpha + 127) / 255;
         pixels[offset + channel] = blended.min(255) as u8;
     }
+    let blended_alpha = alpha_u32 + (u32::from(pixels[offset + 3]) * inv_alpha + 127) / 255;
+    pixels[offset + 3] = blended_alpha.min(255) as u8;
 }
 
 /// The first `chars` characters of `spans`, ended in "...".
@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(buf, [100, 50, 25, 128]);
         // Translucent over existing pixel.
         blend(&mut buf, 1, 1, (0, 0), Color::rgba(0, 200, 100, 128));
-        assert_eq!(buf, [50, 125, 62, 192]);
+        assert_eq!(buf, [50, 125, 63, 192]);
         // Opaque source replaces destination.
         blend(&mut buf, 1, 1, (0, 0), Color::rgba(10, 20, 30, 255));
         assert_eq!(buf, [10, 20, 30, 255]);

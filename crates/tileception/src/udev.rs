@@ -94,6 +94,9 @@ const ASKED_FRAMES: u32 = 3;
 const DUE_FLOOR: Duration = Duration::from_millis(4);
 /// How often a still screen is looked at for changes nothing asked to draw.
 const STILL_POLL: Duration = Duration::from_millis(100);
+/// How long after waking from suspend to wait for an in-flight page flip before
+/// treating that output's scanout as stuck and resetting it.
+const WAKE_STALE_FLIP: Duration = Duration::from_millis(500);
 
 pub struct Udev {
     pub session: LibSeatSession,
@@ -129,6 +132,9 @@ struct Lit {
     output: Output,
     drm_output: Surface,
     frame_pending: bool,
+    /// Monotonic counter incremented each time a frame is queued or completed,
+    /// so wake recovery only resets outputs whose flip genuinely never arrived.
+    flip_seq: u64,
     /// Vblank pacing timer waiting until just before this output's next refresh.
     render_timer: Option<RegistrationToken>,
     /// Client buffers held until scanout completes. See `frame_buffers`.
@@ -481,7 +487,10 @@ pub fn init(
                     for lit in &mut gpu.surfaces {
                         lit.cancel_render_timer(&state.loop_handle);
                         lit.frame_pending = false;
+                        lit.flip_seq = lit.flip_seq.wrapping_add(1);
                         lit.in_flight.clear();
+                        lit.lock_queued = false;
+                        lit.lock_shown = false;
                         lit.drop_unchanged();
                     }
                 }
@@ -505,7 +514,10 @@ pub fn init(
                     for lit in &mut gpu.surfaces {
                         lit.cancel_render_timer(&state.loop_handle);
                         lit.frame_pending = false;
+                        lit.flip_seq = lit.flip_seq.wrapping_add(1);
                         lit.in_flight.clear();
+                        lit.lock_queued = false;
+                        lit.lock_shown = false;
                         lit.drop_unchanged();
                         lit.drm_output.with_compositor(|compositor| {
                             // A pre-suspend page flip may never deliver its vblank. Drop
@@ -576,38 +588,69 @@ impl Tileception {
         }
     }
 
-    /// Recovers DRM scanout state after waking from suspend: unlike a VT
-    /// switch, suspend/resume often skips libseat's `ActivateSession`, so a
-    /// pre-suspend page flip that never delivered its vblank would otherwise
-    /// leave `frame_pending` stuck forever.
+    /// Recovers DRM state after waking from suspend: scans connectors for any
+    /// dock/display changes and arms a short watchdog for any output that still
+    /// has an in-flight page flip, resetting only outputs whose vblank never
+    /// arrives instead of blanking healthy displays on every wake.
     pub fn wake_udev(&mut self) {
+        let Some(udev) = self.udev.as_ref() else { return };
+        if !udev.session.is_active() {
+            return;
+        }
+        let pending: Vec<(DrmNode, crtc::Handle, u64)> = udev
+            .gpus
+            .iter()
+            .flat_map(|gpu| {
+                gpu.surfaces
+                    .iter()
+                    .filter(|lit| lit.enabled && lit.frame_pending)
+                    .map(move |lit| (gpu.node, lit.crtc, lit.flip_seq))
+            })
+            .collect();
+        if !pending.is_empty() {
+            let _ = self.loop_handle.insert_source(Timer::from_duration(WAKE_STALE_FLIP), move |_, _, state| {
+                state.recover_stuck_flips(&pending);
+                TimeoutAction::Drop
+            });
+        }
+        self.scan_connectors();
+        self.schedule_render();
+    }
+
+    fn recover_stuck_flips(&mut self, expected: &[(DrmNode, crtc::Handle, u64)]) {
         let Some(udev) = self.udev.as_mut() else { return };
         if !udev.session.is_active() {
             return;
         }
-        if let Some(poll) = udev.poll.take() {
-            self.loop_handle.remove(poll);
-        }
-        udev.render_pending = false;
-        for gpu in &mut udev.gpus {
-            for lit in &mut gpu.surfaces {
-                lit.cancel_render_timer(&self.loop_handle);
-                lit.frame_pending = false;
-                lit.in_flight.clear();
-                lit.drop_unchanged();
-                lit.drm_output.with_compositor(|compositor| {
-                    if let Err(err) = compositor.clear() {
-                        tracing::error!("could not clear stale scanout after wake: {err}");
-                    }
-                    compositor.reset_buffers();
-                    if let Err(err) = compositor.reset_state() {
-                        tracing::error!("could not reset output after wake: {err}");
-                    }
-                });
+        let mut recovered = false;
+        for &(node, crtc, seq) in expected {
+            let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { continue };
+            let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { continue };
+            if !lit.enabled || !lit.frame_pending || lit.flip_seq != seq {
+                continue;
             }
+            tracing::warn!(output = %lit.output.name(), "page flip stuck after wake; resetting scanout");
+            lit.cancel_render_timer(&self.loop_handle);
+            lit.frame_pending = false;
+            lit.flip_seq = lit.flip_seq.wrapping_add(1);
+            lit.in_flight.clear();
+            lit.lock_queued = false;
+            lit.lock_shown = false;
+            lit.drop_unchanged();
+            lit.drm_output.with_compositor(|compositor| {
+                if let Err(err) = compositor.clear() {
+                    tracing::error!("could not clear stale scanout after wake: {err}");
+                }
+                compositor.reset_buffers();
+                if let Err(err) = compositor.reset_state() {
+                    tracing::error!("could not reset output after wake: {err}");
+                }
+            });
+            recovered = true;
         }
-        self.scan_connectors();
-        self.schedule_render();
+        if recovered {
+            self.schedule_render();
+        }
     }
 
     fn remove_gpu(&mut self, device_id: libc::dev_t) {
@@ -654,7 +697,10 @@ impl Tileception {
             }
             lit.cancel_render_timer(&self.loop_handle);
             lit.frame_pending = false;
+            lit.flip_seq = lit.flip_seq.wrapping_add(1);
             lit.in_flight.clear();
+            lit.lock_queued = false;
+            lit.lock_shown = false;
             // The flip that frame waited for may never come, and a refresh
             // after waking shows nothing from before.
             lit.drop_unchanged();
@@ -663,15 +709,16 @@ impl Tileception {
     }
 
     fn scan_connectors(&mut self) {
-        let Some(mut udev) = self.udev.take() else { return };
         // Scanning without DRM master updates DrmScanner's cache while
         // `initialize_output` fails, leaving newly attached displays dark
         // when the session resumes.
-        if !udev.session.is_active() {
-            self.udev = Some(udev);
+        if !self.udev.as_ref().is_some_and(|udev| udev.session.is_active()) {
             return;
         }
+        // Revert any active display preview while `self.udev` is still
+        // installed so `configure_drm_output` restores KMS mode/enable state.
         self.cancel_output_preview();
+        let Some(mut udev) = self.udev.take() else { return };
         for gpu in &mut udev.gpus {
             let events = match gpu.scanner.scan_connectors(gpu.manager.device()) {
                 Ok(events) => events.into_iter().collect::<Vec<_>>(),
@@ -811,6 +858,7 @@ impl Tileception {
             output,
             drm_output,
             frame_pending: false,
+            flip_seq: 0,
             render_timer: None,
             in_flight: Vec::new(),
             lock_queued: false,
@@ -840,7 +888,10 @@ impl Tileception {
                 lit.enabled = false;
                 lit.cancel_render_timer(&self.loop_handle);
                 lit.frame_pending = false;
+                lit.flip_seq = lit.flip_seq.wrapping_add(1);
                 lit.in_flight.clear();
+                lit.lock_queued = false;
+                lit.lock_shown = false;
                 // Their fifo batches go with the watchdog.
                 lit.drop_unchanged();
                 return Ok(());
@@ -873,10 +924,22 @@ impl Tileception {
                 })
             });
             if !lit.enabled || mode_changed || output.current_transform() != transform {
+                // Only clear `frame_pending` when Smithay's pending flip is also
+                // retired (output was disabled or we clear it on a mode change).
+                // On a transform-only change, let any in-flight flip complete
+                // naturally so Smithay and Tileception stay in sync.
+                if mode_changed && lit.enabled {
+                    let _ = lit.drm_output.with_compositor(|compositor| compositor.clear());
+                }
                 lit.drm_output.reset_buffers();
                 lit.cancel_render_timer(&self.loop_handle);
-                lit.frame_pending = false;
-                lit.in_flight.clear();
+                if !lit.enabled || mode_changed {
+                    lit.frame_pending = false;
+                    lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                    lit.in_flight.clear();
+                }
+                lit.lock_queued = false;
+                lit.lock_shown = false;
                 lit.drop_unchanged();
                 lit.mirror = None;
             }
@@ -941,7 +1004,14 @@ impl Tileception {
         let Some(udev) = self.udev.as_mut() else { return };
         let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { return };
         let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { return };
+        if !lit.frame_pending {
+            // Still retire any pending flip inside Smithay so `queue_frame`
+            // never stalls behind an already-completed flip.
+            let _ = lit.drm_output.frame_submitted();
+            return;
+        }
         lit.frame_pending = false;
+        lit.flip_seq = lit.flip_seq.wrapping_add(1);
         // The flip waited for the frame's GPU work, so clients may have
         // these buffers back.
         lit.in_flight.clear();
@@ -1160,6 +1230,7 @@ impl Tileception {
                                     Ok(()) => {
                                         queued = true;
                                         lit.frame_pending = true;
+                                        lit.flip_seq = lit.flip_seq.wrapping_add(1);
                                         lit.lock_queued = state.is_locked();
                                         lit.in_flight = state.frame_buffers(&lit.output);
                                     }
@@ -1174,6 +1245,9 @@ impl Tileception {
                         Ok(result) => {
                             // Nothing changed on screen: what was committed is
                             // already shown.
+                            let locked = state.is_locked();
+                            lit.lock_queued = locked;
+                            lit.lock_shown = locked;
                             let states = if secondary {
                                 lit.mirror.as_ref().map(|mirror| mirror.states())
                             } else {
@@ -1266,13 +1340,15 @@ impl Tileception {
                 })
                 .ok();
         }
+        let all_locked_shown = self.is_locked()
+            && udev.gpus.iter().flat_map(|gpu| &gpu.surfaces).filter(|lit| lit.enabled).all(|lit| lit.lock_shown);
         self.udev = Some(udev);
         // Let go once the renderer is back, so the commits they free are
         // drawn in the next frame.
         for frame in release_now {
             self.release_fifo_frame(frame);
         }
-        self.sleep_frame_queued(queued);
+        self.sleep_frame_queued(queued || !all_locked_shown);
         self.after_frame();
     }
 
