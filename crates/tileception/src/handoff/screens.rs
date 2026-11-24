@@ -66,7 +66,7 @@ impl Tileception {
     }
 
     /// The stand-ins in a row, right of this machine's own screens.
-    fn arrange_peer_screens(&mut self) {
+    pub(crate) fn arrange_peer_screens(&mut self) {
         let bounds = self.desktop_bounds();
         let mut left = bounds.right().round() as i32;
         for screen in self.handoff.windows.screens.0.values() {

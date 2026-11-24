@@ -17,7 +17,7 @@ use smithay::{
     output::{Mode, Output},
     reexports::calloop::timer::{TimeoutAction, Timer},
     reexports::wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
-    utils::{Logical, Point, Transform},
+    utils::{Logical, Point, Rectangle, Transform},
     wayland::seat::WaylandFocus,
 };
 use tileception_core::{Placement, Rect, WindowId, World};
@@ -1355,19 +1355,45 @@ impl Tileception {
     }
 
     /// Connector-name order by default; explicit positions are logical pixels.
+    /// Shifts active outputs together so the layout starts at (0, 0), keeping
+    /// Xwayland output and window coordinates non-negative.
     pub fn arrange_outputs(&mut self) {
-        let mut right = 0;
-        for output in self.all_outputs() {
-            let configured = self.config.file.outputs.get(&output.name()).and_then(|entry| entry.position);
-            let position = configured.unwrap_or([right, 0]);
-            output.change_current_state(None, None, None, Some((position[0], position[1]).into()));
-            let width = output.current_mode().map_or(0, |mode| {
-                (f64::from(output.current_transform().transform_size(mode.size).w)
-                    / output.current_scale().fractional_scale())
-                .round() as i32
-            });
-            right = right.max(position[0].saturating_add(width));
+        let outputs = self.all_outputs();
+        let specs: Vec<(Option<[i32; 2]>, i32)> = outputs
+            .iter()
+            .map(|output| {
+                let configured = self.config.file.outputs.get(&output.name()).and_then(|entry| entry.position);
+                let width = output.current_mode().map_or(0, |mode| {
+                    (f64::from(output.current_transform().transform_size(mode.size).w)
+                        / output.current_scale().fractional_scale())
+                    .round() as i32
+                });
+                (configured, width)
+            })
+            .collect();
+        let positions = arranged_positions(&specs);
+        let mut moved = Vec::new();
+        for (output, position) in outputs.into_iter().zip(positions) {
+            let location = Point::from((position[0], position[1]));
+            if output.current_location() != location {
+                output.change_current_state(None, None, None, Some(location));
+                moved.push(output);
+            }
         }
+        for output in moved {
+            self.with_output(&output, |state| {
+                if let Some(window_id) = state.fullscreen
+                    && let Some(x11) = state.windows.get(&window_id).and_then(|window| window.x11_surface())
+                {
+                    let size = crate::state::slot_size(&state.output_rect());
+                    let _ = x11.configure(Rectangle::new(state.x11_origin(), size));
+                }
+                for index in 0..state.area_count() {
+                    state.with_local_area(index, Tileception::apply_layout);
+                }
+            });
+        }
+        self.arrange_peer_screens();
         // Linked machines learn how much of their edge is left.
         self.share_edges();
     }
@@ -1816,10 +1842,50 @@ fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId
     }
 }
 
+/// Computes normalized logical origins for active outputs so the bounding box
+/// starts at (0, 0). Xwayland's X11 screen starts at the origin and clamps
+/// pointers to non-negative coordinates, so a negative output origin (or an
+/// offset left behind when another monitor is unplugged) pushes the top or left
+/// of X11 windows off-screen in X.
+fn arranged_positions(outputs: &[(Option<[i32; 2]>, i32)]) -> Vec<[i32; 2]> {
+    let mut right = 0i32;
+    let mut positions = Vec::with_capacity(outputs.len());
+    for &(configured, width) in outputs {
+        let position = configured.unwrap_or([right, 0]);
+        positions.push(position);
+        right = right.max(position[0].saturating_add(width));
+    }
+    let Some(min_x) = positions.iter().map(|position| position[0]).min() else {
+        return positions;
+    };
+    let Some(min_y) = positions.iter().map(|position| position[1]).min() else {
+        return positions;
+    };
+    for position in &mut positions {
+        position[0] = position[0].saturating_sub(min_x);
+        position[1] = position[1].saturating_sub(min_y);
+    }
+    positions
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arranged_positions_normalize_negative_and_disconnected_offsets() {
+        assert_eq!(arranged_positions(&[]), Vec::<[i32; 2]>::new());
+        // Automatic horizontal row stays anchored at (0, 0).
+        assert_eq!(arranged_positions(&[(None, 1920), (None, 2560)]), vec![[0, 0], [1920, 0]]);
+        // A monitor placed above the primary with a negative Y shifts the pair down to Y >= 0.
+        assert_eq!(arranged_positions(&[(Some([0, -1440]), 2560), (Some([0, 0]), 2560)]), vec![[0, 0], [0, 1440]]);
+        // A lone monitor whose saved position was negative or offset returns to (0, 0).
+        assert_eq!(arranged_positions(&[(Some([0, -750]), 2560)]), vec![[0, 0]]);
+        assert_eq!(arranged_positions(&[(Some([2560, 1440]), 2560)]), vec![[0, 0]]);
+        // Mixing a negative explicit position with an automatic neighbour preserves their relative layout.
+        assert_eq!(arranged_positions(&[(Some([-2560, -200]), 2560), (None, 2560)]), vec![[0, 0], [2560, 200]]);
+    }
 
     #[test]
     fn slices_cover_the_room_on_whole_pixels() {
