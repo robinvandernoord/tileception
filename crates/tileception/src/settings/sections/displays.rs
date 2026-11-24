@@ -131,22 +131,30 @@ impl Screen {
             connected_rects.push((row.index, rect));
         }
         // Place offline monitors before connected ones so connected displays
-        // always draw on top and win hit-testing; move any offline monitor
-        // whose saved spot overlaps a connected display into the staging strip.
-        let mut offline_next = connected_right + 160.;
-        let mut result = Vec::with_capacity(metrics.len());
+        // always draw on top and win hit-testing; stage any offline monitor
+        // whose saved spot overlaps a connected display past both connected and
+        // kept offline monitors so staging never creates synthetic overlaps.
+        let mut kept_offline = Vec::new();
+        let mut staged_offline = Vec::new();
+        let mut max_right = connected_right;
         for row in metrics.iter().filter(|row| !row.connected) {
             let candidate =
                 row.configured.map(|pos| Rect::new(f64::from(pos[0]), f64::from(pos[1]), row.width, row.height));
-            let rect = match candidate {
-                Some(rect) if !connected_rects.iter().any(|(_, connected)| overlaps(rect, *connected)) => rect,
-                _ => {
-                    let rect = Rect::new(offline_next, 0., row.width, row.height);
-                    offline_next = rect.right() + 40.;
-                    rect
+            match candidate {
+                Some(rect) if !connected_rects.iter().any(|(_, connected)| overlaps(rect, *connected)) => {
+                    max_right = max_right.max(rect.right());
+                    kept_offline.push((row.index, rect));
                 }
-            };
-            result.push((row.index, rect));
+                _ => staged_offline.push((row.index, row.width, row.height)),
+            }
+        }
+        let mut offline_next = max_right + 160.;
+        let mut result = Vec::with_capacity(metrics.len());
+        result.extend(kept_offline);
+        for (index, width, height) in staged_offline {
+            let rect = Rect::new(offline_next, 0., width, height);
+            offline_next = rect.right() + 40.;
+            result.push((index, rect));
         }
         result.extend(connected_rects);
         result

@@ -79,20 +79,19 @@ impl Tileception {
             }
             left += screen.size.0;
         }
-        // Keep handed-off X11 windows and their open menus/tooltips aligned
-        // with their peer's stand-in so popup capture and hit-testing stay accurate.
+        // Keep handed-off X11 toplevel windows aligned with their peer's
+        // stand-in so new menus/tooltips placed relative to them still map to
+        // that peer. Override-redirect popups cannot be repositioned by the WM.
         for (peer, delta) in moved {
-            let mut x11_surfaces = Vec::new();
-            for (window_id, away) in &self.handoff.windows.away {
-                if away.peer != peer {
-                    continue;
-                }
-                if let Some(x11) = self.windows.get(window_id).and_then(|placed| placed.x11_surface()) {
-                    x11_surfaces.push(x11.clone());
-                }
-                x11_surfaces.extend(self.handoff.windows.overlays_of(*window_id));
-            }
-            for x11 in x11_surfaces {
+            let x11_windows: Vec<_> = self
+                .handoff
+                .windows
+                .away
+                .iter()
+                .filter(|(_, away)| away.peer == peer)
+                .filter_map(|(window_id, _)| self.windows.get(window_id)?.x11_surface().cloned())
+                .collect();
+            for x11 in x11_windows {
                 let geom = x11.geometry();
                 let _ = x11.configure(smithay::utils::Rectangle::new(geom.loc + delta, geom.size));
             }

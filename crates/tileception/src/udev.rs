@@ -925,15 +925,24 @@ impl Tileception {
             });
             if !lit.enabled || mode_changed || output.current_transform() != transform {
                 // Only clear `frame_pending` when Smithay's pending flip is also
-                // retired (output was disabled or we clear it on a mode change).
-                // On a transform-only change, let any in-flight flip complete
-                // naturally so Smithay and Tileception stay in sync.
-                if mode_changed && lit.enabled {
-                    let _ = lit.drm_output.with_compositor(|compositor| compositor.clear());
-                }
+                // retired (output was disabled or `compositor.clear()` succeeds
+                // on a mode change). On a transform-only change or a failed
+                // clear, let any in-flight flip complete naturally so Smithay
+                // and Tileception stay in sync.
+                let cleared = if mode_changed && lit.enabled {
+                    match lit.drm_output.with_compositor(|compositor| compositor.clear()) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!(output = %output.name(), "could not clear scanout on mode change: {err}");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
                 lit.drm_output.reset_buffers();
                 lit.cancel_render_timer(&self.loop_handle);
-                if !lit.enabled || mode_changed {
+                if !lit.enabled || cleared {
                     lit.frame_pending = false;
                     lit.flip_seq = lit.flip_seq.wrapping_add(1);
                     lit.in_flight.clear();
