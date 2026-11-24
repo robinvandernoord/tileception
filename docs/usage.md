@@ -800,7 +800,8 @@ hand stays as it is. Linux Mint has no such file and no switch.
 
 Below that, the page shows the current Ubuntu mirror. Click **Test** to
 benchmark your current mirror, the main archive, and Ubuntu mirrors for your
-country, sorting them fastest-first by download speed, latency, and sync delay.
+country, sorting reachable mirrors fastest-first by download speed and showing
+latency and sync delay alongside each one.
 **Use** switches to one: it rewrites the Ubuntu entries of the
 package sources, leaving the security pocket alone, and refreshes the lists.
 On Linux Mint these are in `official-package-repositories.list`, beside Mint's
