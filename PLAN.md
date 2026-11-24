@@ -173,9 +173,29 @@ Report testing in the conversation, the commit or the pull request instead.
   hang): it stays waiting for the flip and draws nothing more. After a
   timeout, give up on that frame, discard the presentation feedback it
   carries, and draw again, ignoring the late flip event should it still
-  come.
+  come. Also reset DRM buffers and state on `queue_frame` errors so a
+  transient modeset or hotplug race recovers automatically.
+- Multi-screen laptop resilience:
+  - Match `DrmScanEvent::Disconnected` by connector handle when `crtc` is
+    `None`, and log `Connected { crtc: None }` so USB-C/MST dock hotplug
+    edge cases do not leave ghost outputs or fail silently.
+  - Keep the sleep inhibitor held until every enabled output has shown a
+    lock frame, rather than releasing it when one output renders empty while
+    another still has a pre-lock flip pending.
+  - On hybrid-GPU laptops, avoid importing primary-GPU client cursor and
+    drag-icon dmabufs directly onto a secondary GPU renderer (fall back to
+    the named cursor or primary-rendered cursor), and cache loaded xcursor
+    themes per output scale instead of reloading from disk on mixed-scale
+    crossings.
+  - Handle laptop lid-switch events (`InputEvent::SwitchToggle`) with a
+    clear policy for disabling the internal panel while docked versus
+    suspending.
 
 ### Maybe someday
+
+- Key `[outputs]` entries by display identity (EDID make/model/serial) in
+  addition to connector name, so plugging different monitors into the same
+  laptop port keeps separate layout and scale settings.
 
 - Smart home gateway support (Zigbee and Bluetooth sub-devices), once a
   compatible Tuya gateway is available to try it with. Sub-devices need to be
