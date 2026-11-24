@@ -45,7 +45,6 @@ impl Screen {
     }
 
     pub(super) fn display_rects(&self) -> Vec<(usize, Rect)> {
-        let mut next = 0.;
         let mut indices: Vec<_> = (0..self.rows.len())
             .filter(|index| {
                 self.rows[*index].name != "*"
@@ -58,49 +57,62 @@ impl Screen {
                 self.rows[*index].name.clone(),
             )
         });
+        let row_metrics = |index: usize| {
+            let row = &self.rows[index];
+            let monitor = self.monitors.iter().find(|monitor| monitor.name == row.name);
+            let setting = if row.inherited && !row.changed() {
+                self.rows
+                    .iter()
+                    .find(|row| row.name == "*")
+                    .and_then(|row| row.value.get("scale"))
+                    .or_else(|| row.value.get("scale"))
+            } else {
+                row.value.get("scale")
+            };
+            let initial =
+                self.initial.iter().find(|(name, _)| *name == row.name).and_then(|(_, value)| value.get("scale"));
+            let scale = if monitor.is_some() && setting == initial {
+                monitor.map_or(1., |monitor| monitor.scale)
+            } else {
+                setting
+                    .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|value| value as f64)))
+                    .filter(|value| value.is_finite() && *value >= 0.5 && *value <= 4.)
+                    .map(crate::scale::tidy)
+                    .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
+            };
+            let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
+            let mode = setting.mode.parse().ok().flatten();
+            let size = mode.map_or_else(
+                || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
+                |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),
+            );
+            let transform: smithay::utils::Transform = setting.transform.into();
+            let size = transform.transform_size(smithay::utils::Size::<f64, smithay::utils::Physical>::from(size));
+            let width = size.w / scale;
+            let height = size.h / scale;
+            let configured = row.value.get("position").and_then(toml::Value::as_array).and_then(|position| {
+                Some(Point::new(position.first()?.as_integer()? as f64, position.get(1)?.as_integer()? as f64))
+            });
+            (monitor.is_some(), configured, width, height)
+        };
+        // Start unconfigured connected monitors after any explicitly positioned
+        // connected monitor so a new DP-*/HDMI-* never overlaps eDP-1 at (0, 0).
+        let mut next: f64 = indices
+            .iter()
+            .filter_map(|&index| {
+                let (connected, configured, width, _) = row_metrics(index);
+                connected.then_some(configured.map(|position| position.x + width)).flatten()
+            })
+            .reduce(f64::max)
+            .unwrap_or(0.);
         let mut offline = None;
         indices
             .into_iter()
             .map(|index| {
-                let row = &self.rows[index];
-                let monitor = self.monitors.iter().find(|monitor| monitor.name == row.name);
-                let setting = if row.inherited && !row.changed() {
-                    self.rows
-                        .iter()
-                        .find(|row| row.name == "*")
-                        .and_then(|row| row.value.get("scale"))
-                        .or_else(|| row.value.get("scale"))
-                } else {
-                    row.value.get("scale")
-                };
-                let initial =
-                    self.initial.iter().find(|(name, _)| *name == row.name).and_then(|(_, value)| value.get("scale"));
-                let scale = if monitor.is_some() && setting == initial {
-                    monitor.map_or(1., |monitor| monitor.scale)
-                } else {
-                    setting
-                        .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|value| value as f64)))
-                        .filter(|value| value.is_finite() && *value >= 0.5 && *value <= 4.)
-                        .map(crate::scale::tidy)
-                        .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
-                };
-                let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
-                let mode = setting.mode.parse().ok().flatten();
-                let size = mode.map_or_else(
-                    || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
-                    |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),
-                );
-                let transform: smithay::utils::Transform = setting.transform.into();
-                let size = transform.transform_size(smithay::utils::Size::<f64, smithay::utils::Physical>::from(size));
-                let width = size.w / scale;
-                let height = size.h / scale;
-                let configured = row.value.get("position").and_then(toml::Value::as_array);
-                let position = configured
-                    .and_then(|position| {
-                        Some(Point::new(position.first()?.as_integer()? as f64, position.get(1)?.as_integer()? as f64))
-                    })
-                    .unwrap_or(Point::new(if monitor.is_some() { next } else { offline.unwrap_or(next + 160.) }, 0.));
-                if monitor.is_some() {
+                let (connected, configured, width, height) = row_metrics(index);
+                let position =
+                    configured.unwrap_or(Point::new(if connected { next } else { offline.unwrap_or(next + 160.) }, 0.));
+                if connected {
                     next = next.max(position.x + width);
                 } else {
                     offline = Some(position.x + width);
@@ -345,9 +357,14 @@ impl Tileception {
         if let Some(drag) = &mut screen.map_drag {
             drag.position = Point::new(left, top);
         }
-        // Freeze automatically arranged neighbours when switching to a manual layout.
+        // Freeze automatically arranged connected neighbours when switching to
+        // a manual layout, without persisting synthetic offline gaps.
         let selected = screen.selected;
         for (index, rect) in actual_rects {
+            let connected = screen.monitors.iter().any(|monitor| monitor.name == screen.rows[index].name);
+            if index != dragged && !connected {
+                continue;
+            }
             screen.selected = Some(index);
             let position = if index == dragged { [actual_left, actual_top] } else { [rect.x, rect.y] };
             screen.write(
