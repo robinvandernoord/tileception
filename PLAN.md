@@ -190,6 +190,23 @@ Report testing in the conversation, the commit or the pull request instead.
   - Handle laptop lid-switch events (`InputEvent::SwitchToggle`) with a
     clear policy for disabling the internal panel while docked versus
     suspending.
+- Rendering and idle performance:
+  - Report `opaque_regions` on opaque `Shape` elements (`shapes.rs`), opaque
+    `Backdrop` elements (`frost.rs`), and opaque wallpapers (`wallpaper.rs`),
+    inset by any corner radius, so Smithay's damage tracker and renderer can
+    cull occluded surfaces and skip unnecessary clears.
+  - Replace the 10 Hz `STILL_POLL` timer in `udev.rs` with event-driven wake
+    timers (clock minute ticks, fades, toasts/OSD, capture linger) so an idle
+    desktop does not wake up and rebuild the scene graph 10 times a second.
+  - Reduce text and icon cache overhead: compute `ink` and `glyph_boxes` in
+    `text.rs` only for callers that need them, use borrowed keys for cache
+    lookups instead of allocating `String`s on hits, and replace full-cache
+    `.clear()` eviction in `Text`, `Icons` and `Glyphs` with two-generation or
+    LRU eviction so hitting the cap does not cause a re-rasterisation and
+    damage spike.
+  - Gate `update_toplevels` (`toplevels.rs`) on a dirty flag set when windows
+    open, close, change output, or update their title/app id, rather than
+    scanning and allocating `String`s for every open window after every frame.
 
 ### Maybe someday
 
