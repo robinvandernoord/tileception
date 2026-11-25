@@ -1872,45 +1872,46 @@ fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId
 }
 
 fn rects_overlap(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
-    first_pos[0] < second_pos[0] + second_size[0]
-        && second_pos[0] < first_pos[0] + first_size[0]
-        && first_pos[1] < second_pos[1] + second_size[1]
-        && second_pos[1] < first_pos[1] + first_size[1]
+    spans_overlap(first_pos[0], first_size[0], second_pos[0], second_size[0])
+        && spans_overlap(first_pos[1], first_size[1], second_pos[1], second_size[1])
 }
 
 fn rects_touch(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
-    let horiz_touch = first_pos[0] + first_size[0] == second_pos[0] || second_pos[0] + second_size[0] == first_pos[0];
-    let vert_overlap = first_pos[1] < second_pos[1] + second_size[1] && second_pos[1] < first_pos[1] + first_size[1];
-    let vert_touch = first_pos[1] + first_size[1] == second_pos[1] || second_pos[1] + second_size[1] == first_pos[1];
-    let horiz_overlap = first_pos[0] < second_pos[0] + second_size[0] && second_pos[0] < first_pos[0] + first_size[0];
-    (horiz_touch && vert_overlap) || (vert_touch && horiz_overlap)
+    let meet = |axis: usize| {
+        first_pos[axis] + first_size[axis] == second_pos[axis]
+            || second_pos[axis] + second_size[axis] == first_pos[axis]
+    };
+    (meet(0) && spans_overlap(first_pos[1], first_size[1], second_pos[1], second_size[1]))
+        || (meet(1) && spans_overlap(first_pos[0], first_size[0], second_pos[0], second_size[0]))
 }
 
-/// Computes normalized logical origins for active outputs so that:
-/// - outputs with explicit positions are placed before unconfigured ones (so a
-///   new `DP-*`/`HDMI-*` connector sorting before `eDP-1` never lands on top of
-///   `eDP-1`'s saved origin),
-/// - any overlaps or disconnected gaps left by scale/mode/rotation changes or
-///   unplugged neighbours are repaired into a single touching layout, and
-/// - the bounding box starts at (0, 0) so Xwayland output and window
-///   coordinates stay non-negative.
+fn spans_overlap(first: i64, first_len: i64, second: i64, second_len: i64) -> bool {
+    first < second + second_len && second < first + first_len
+}
+
 fn clamp_i32(value: i64) -> i32 {
     value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
+/// Logical origins for active outputs, shifted so the layout starts at
+/// (0, 0) and Xwayland output and window coordinates stay non-negative.
+/// See [`arranged_positions_unshifted`] for how they are chosen.
 pub(crate) fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
     let positions = arranged_positions_raw(outputs);
-    if positions.is_empty() {
-        return Vec::new();
-    }
     let min_x = positions.iter().map(|position| position[0]).min().unwrap_or(0);
     let min_y = positions.iter().map(|position| position[1]).min().unwrap_or(0);
     positions.into_iter().map(|position| [clamp_i32(position[0] - min_x), clamp_i32(position[1] - min_y)]).collect()
 }
 
-/// Same overlap and gap repair as [`arranged_positions`], without shifting the
-/// bounding box to `(0, 0)` — used by the Settings display map so connected
-/// monitors stay in the same coordinate frame as saved offline monitors.
+/// Logical origins for active outputs, in the saved coordinate frame, so the
+/// Settings display map can show them beside saved offline monitors.
+///
+/// Outputs without a saved position go to the right of those with one, as a
+/// new connector must never land on a saved screen. A saved layout is kept
+/// as it is when no screens overlap and they all touch. A scale, mode or
+/// rotation change, or an unplugged neighbour, can break that; the screens
+/// are then packed in their saved order, as a stack if they were stacked and
+/// a row otherwise.
 pub(crate) fn arranged_positions_unshifted(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
     arranged_positions_raw(outputs)
         .into_iter()
@@ -1919,297 +1920,93 @@ pub(crate) fn arranged_positions_unshifted(outputs: &[(Option<[i32; 2]>, [i32; 2
 }
 
 fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64; 2]> {
-    if outputs.is_empty() {
-        return Vec::new();
-    }
     let sizes: Vec<[i64; 2]> =
         outputs.iter().map(|&(_, size)| [i64::from(size[0].max(1)), i64::from(size[1].max(1))]).collect();
     let mut positions = place_unconfigured(outputs, &sizes);
-    separate_overlaps(&mut positions, &sizes);
-    join_islands(&mut positions, &sizes);
+    if !layout_is_sound(&positions, &sizes) {
+        pack_in_order(&mut positions, &sizes);
+    }
     positions
 }
 
 fn place_unconfigured(outputs: &[(Option<[i32; 2]>, [i32; 2])], sizes: &[[i64; 2]]) -> Vec<[i64; 2]> {
-    let mut positions = vec![[0i64, 0i64]; outputs.len()];
-    let mut right = 0i64;
-    let mut has_configured = false;
-    for (index, &(configured, _)) in outputs.iter().enumerate() {
-        if let Some(position) = configured {
-            positions[index] = [i64::from(position[0]), i64::from(position[1])];
-            let edge = positions[index][0] + sizes[index][0];
-            right = if has_configured { right.max(edge) } else { edge };
-            has_configured = true;
-        }
-    }
-    for (index, &(configured, _)) in outputs.iter().enumerate() {
-        if configured.is_none() {
-            positions[index] = [right, 0];
-            right += sizes[index][0];
-        }
-    }
-    positions
+    let configured = |index: usize| outputs[index].0.map(|position| [i64::from(position[0]), i64::from(position[1])]);
+    // Beside the saved screen reaching furthest right, top-aligned with it,
+    // so the new screen shares an edge with it whatever the saved layout.
+    let [mut right, top] = (0..outputs.len())
+        .filter_map(|index| configured(index).map(|position| [position[0] + sizes[index][0], position[1]]))
+        .max_by_key(|&[right, top]| (right, std::cmp::Reverse(top)))
+        .unwrap_or([0, 0]);
+    (0..outputs.len())
+        .map(|index| {
+            configured(index).unwrap_or_else(|| {
+                let position = [right, top];
+                right += sizes[index][0];
+                position
+            })
+        })
+        .collect()
 }
 
-/// Pushes `second` past `first` along `(axis, sign)` and cascades the push to
-/// any neighbours on the same side that are overlapped or overtaken along that
-/// axis, preserving row/column order even across large resizes.
-fn cascade_push(
-    positions: &[[i64; 2]],
-    sizes: &[[i64; 2]],
-    first: usize,
-    second: usize,
-    axis: usize,
-    sign: i8,
-) -> Option<Vec<[i64; 2]>> {
+/// No two screens overlap, and every screen can be reached from the first
+/// by crossing shared edges.
+fn layout_is_sound(positions: &[[i64; 2]], sizes: &[[i64; 2]]) -> bool {
     let count = positions.len();
-    let perp = 1 - axis;
-    let initial_shift = if sign > 0 {
-        positions[first][axis] + sizes[first][axis] - positions[second][axis]
-    } else {
-        positions[first][axis] - (positions[second][axis] + sizes[second][axis])
-    };
-    let mut test_pos = positions.to_vec();
-    let mut pushed = vec![false; count];
-    let mut queue = std::collections::VecDeque::from([second]);
-    test_pos[second][axis] += initial_shift;
-    pushed[second] = true;
-    let max_steps = count.saturating_mul(count).max(1);
-    let mut steps = 0usize;
-    while let Some(cur) = queue.pop_front() {
-        for other in 0..count {
-            if other == cur || other == first {
-                continue;
+    for first in 0..count {
+        for second in first + 1..count {
+            if rects_overlap(positions[first], sizes[first], positions[second], sizes[second]) {
+                return false;
             }
-            let perp_overlap = test_pos[cur][perp] < test_pos[other][perp] + sizes[other][perp]
-                && test_pos[other][perp] < test_pos[cur][perp] + sizes[cur][perp];
-            if !perp_overlap {
-                continue;
-            }
-            let same_side = if sign > 0 {
-                positions[other][axis] >= positions[cur][axis]
-            } else {
-                positions[other][axis] <= positions[cur][axis]
-            };
-            if !same_side {
-                if rects_overlap(test_pos[cur], sizes[cur], test_pos[other], sizes[other]) {
-                    return None;
-                }
-                continue;
-            }
-            let delta = if sign > 0 {
-                let shift = test_pos[cur][axis] + sizes[cur][axis] - test_pos[other][axis];
-                if shift <= 0 {
-                    continue;
-                }
-                shift
-            } else {
-                let shift = test_pos[cur][axis] - (test_pos[other][axis] + sizes[other][axis]);
-                if shift >= 0 {
-                    continue;
-                }
-                shift
-            };
-            steps += 1;
-            if steps > max_steps {
-                return None;
-            }
-            test_pos[other][axis] += delta;
-            pushed[other] = true;
-            queue.push_back(other);
         }
     }
-    let clean = (0..count).filter(|&idx| pushed[idx]).all(|idx| {
-        (0..count)
-            .filter(|&other| other != idx)
-            .all(|other| !rects_overlap(test_pos[idx], sizes[idx], test_pos[other], sizes[other]))
-    });
-    clean.then_some(test_pos)
-}
-
-/// Separates any overlapping pairs along the configured side when possible
-/// (cascading pushes to neighbours on the same axis), falling back to the
-/// shortest non-overlapping shift or moving past the rightmost edge.
-fn separate_overlaps(positions: &mut Vec<[i64; 2]>, sizes: &[[i64; 2]]) {
-    let count = positions.len();
-    for _ in 0..count.saturating_mul(count).max(1) {
-        let mut order: Vec<usize> = (0..count).collect();
-        order.sort_by_key(|&index| (positions[index][0], positions[index][1], index));
-        let mut separated = false;
-        'pairs: for first_pos in 0..count {
-            let first = order[first_pos];
-            for &second in &order[first_pos + 1..] {
-                let first_size = sizes[first];
-                let second_size = sizes[second];
-                if !rects_overlap(positions[first], first_size, positions[second], second_size) {
-                    continue;
-                }
-                // Preserve the configured side when a monitor grows into its
-                // neighbour (for example 1080p -> 4K in a side-by-side pair)
-                // instead of flipping it above or below along a shorter edge.
-                // Compare relative offsets normalized by the pair's combined
-                // extent so the axis choice is symmetric in connector order
-                // and wide offset vertical stacks still stay vertical.
-                let delta_x = positions[second][0] - positions[first][0];
-                let delta_y = positions[second][1] - positions[first][1];
-                let preferred_dir = if delta_x != 0 || delta_y != 0 {
-                    let pair_w = u128::from(first_size[0].unsigned_abs()) + u128::from(second_size[0].unsigned_abs());
-                    let pair_h = u128::from(first_size[1].unsigned_abs()) + u128::from(second_size[1].unsigned_abs());
-                    let norm_x = u128::from(delta_x.unsigned_abs()) * pair_h;
-                    let norm_y = u128::from(delta_y.unsigned_abs()) * pair_w;
-                    if norm_x >= norm_y {
-                        Some((0usize, if delta_x > 0 { 1i8 } else { -1i8 }))
-                    } else {
-                        Some((1usize, if delta_y > 0 { 1i8 } else { -1i8 }))
-                    }
-                } else {
-                    None
-                };
-                if let Some(cascaded) =
-                    preferred_dir.and_then(|(axis, sign)| cascade_push(positions, sizes, first, second, axis, sign))
-                {
-                    *positions = cascaded;
-                } else {
-                    let shift_right = positions[first][0] + first_size[0] - positions[second][0];
-                    let shift_left = positions[first][0] - (positions[second][0] + second_size[0]);
-                    let shift_down = positions[first][1] + first_size[1] - positions[second][1];
-                    let shift_up = positions[first][1] - (positions[second][1] + second_size[1]);
-                    let candidates = [[shift_right, 0], [shift_left, 0], [0, shift_down], [0, shift_up]];
-                    let overlap_free = |shift: &[i64; 2]| {
-                        let moved = [positions[second][0] + shift[0], positions[second][1] + shift[1]];
-                        (0..count)
-                            .filter(|&other| other != second)
-                            .all(|other| !rects_overlap(moved, second_size, positions[other], sizes[other]))
-                    };
-                    let best = candidates
-                        .into_iter()
-                        .filter(&overlap_free)
-                        .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
-                        .unwrap_or_else(|| {
-                            let max_right = (0..count)
-                                .filter(|&other| other != second)
-                                .map(|other| positions[other][0] + sizes[other][0])
-                                .max()
-                                .unwrap_or(0);
-                            [max_right - positions[second][0], 0]
-                        });
-                    positions[second][0] += best[0];
-                    positions[second][1] += best[1];
-                }
-                separated = true;
-                break 'pairs;
-            }
-        }
-        if !separated {
-            break;
-        }
+    let mut reached = vec![false; count];
+    let mut queue: Vec<usize> = Vec::new();
+    if count > 0 {
+        reached[0] = true;
+        queue.push(0);
     }
-}
-
-/// Closes gaps between disconnected islands so pointer crossing never stalls.
-fn join_islands(positions: &mut [[i64; 2]], sizes: &[[i64; 2]]) {
-    let count = positions.len();
-    let mut visited = vec![false; count];
-    let mut queue = std::collections::VecDeque::new();
-    visited[0] = true;
-    queue.push_back(0);
-    while let Some(current) = queue.pop_front() {
+    while let Some(current) = queue.pop() {
         for next in 0..count {
-            if !visited[next] && rects_touch(positions[current], sizes[current], positions[next], sizes[next]) {
-                visited[next] = true;
-                queue.push_back(next);
+            if !reached[next] && rects_touch(positions[current], sizes[current], positions[next], sizes[next]) {
+                reached[next] = true;
+                queue.push(next);
             }
         }
     }
-    while let Some(seed) = visited.iter().position(|seen| !*seen) {
-        let mut island = vec![false; count];
-        island[seed] = true;
-        queue.push_back(seed);
-        while let Some(current) = queue.pop_front() {
-            for next in 0..count {
-                if !visited[next]
-                    && !island[next]
-                    && rects_touch(positions[current], sizes[current], positions[next], sizes[next])
-                {
-                    island[next] = true;
-                    queue.push_back(next);
-                }
-            }
+    reached.into_iter().all(|reached| reached)
+}
+
+/// Places the screens edge to edge in their current order: top to bottom
+/// when every pair is one above the other, left to right otherwise. The
+/// first screen stays put, and each next one keeps its other coordinate as
+/// far as it still shares an edge with the one before it.
+fn pack_in_order(positions: &mut [[i64; 2]], sizes: &[[i64; 2]]) {
+    let count = positions.len();
+    // A pair is one above the other when they share columns but not rows.
+    // When they share both (they overlap) or neither (diagonal), it is how
+    // far apart their saved corners are relative to their sizes that tells:
+    // the corners are what a size change leaves where it was.
+    let below = |first: usize, second: usize| {
+        let shared = |axis: usize| {
+            spans_overlap(positions[first][axis], sizes[first][axis], positions[second][axis], sizes[second][axis])
+        };
+        if shared(0) != shared(1) {
+            return shared(0);
         }
-        let island_indices: Vec<usize> = (0..count).filter(|&index| island[index]).collect();
-        let mut best_pair = None;
-        for anchor in (0..count).filter(|&index| visited[index]) {
-            for &member in &island_indices {
-                let anchor_pos = positions[anchor];
-                let anchor_size = sizes[anchor];
-                let member_pos = positions[member];
-                let member_size = sizes[member];
-                let gap_x = (member_pos[0] - (anchor_pos[0] + anchor_size[0]))
-                    .max(anchor_pos[0] - (member_pos[0] + member_size[0]))
-                    .max(0);
-                let gap_y = (member_pos[1] - (anchor_pos[1] + anchor_size[1]))
-                    .max(anchor_pos[1] - (member_pos[1] + member_size[1]))
-                    .max(0);
-                let distance = gap_x + gap_y;
-                if best_pair.is_none_or(|(best_dist, _, _)| distance < best_dist) {
-                    best_pair = Some((distance, anchor, member));
-                }
-            }
-        }
-        if let Some((_, anchor, member)) = best_pair {
-            let anchor_pos = positions[anchor];
-            let anchor_size = sizes[anchor];
-            let member_pos = positions[member];
-            let member_size = sizes[member];
-            let vert_overlap =
-                member_pos[1] < anchor_pos[1] + anchor_size[1] && anchor_pos[1] < member_pos[1] + member_size[1];
-            let shift_y_for_horizontal = if vert_overlap { 0 } else { anchor_pos[1] - member_pos[1] };
-            let shift = if member_pos[0] >= anchor_pos[0] + anchor_size[0] {
-                [anchor_pos[0] + anchor_size[0] - member_pos[0], shift_y_for_horizontal]
-            } else if anchor_pos[0] >= member_pos[0] + member_size[0] {
-                [anchor_pos[0] - (member_pos[0] + member_size[0]), shift_y_for_horizontal]
-            } else if member_pos[1] >= anchor_pos[1] + anchor_size[1] {
-                [0, anchor_pos[1] + anchor_size[1] - member_pos[1]]
-            } else {
-                [0, anchor_pos[1] - (member_pos[1] + member_size[1])]
-            };
-            let collides = island_indices.iter().any(|&member_idx| {
-                let moved = [positions[member_idx][0] + shift[0], positions[member_idx][1] + shift[1]];
-                (0..count)
-                    .filter(|&index| visited[index])
-                    .any(|other| rects_overlap(moved, sizes[member_idx], positions[other], sizes[other]))
-            });
-            let final_shift = if collides {
-                // Attach the island's leftmost member to the right edge of the
-                // rightmost visited monitor, aligned to that monitor's top so
-                // they are guaranteed to share an edge without overlapping any
-                // visited monitor.
-                let rightmost = (0..count)
-                    .filter(|&index| visited[index])
-                    .max_by_key(|&index| (positions[index][0] + sizes[index][0], -positions[index][1]))
-                    .unwrap_or(anchor);
-                let leftmost_member = island_indices
-                    .iter()
-                    .copied()
-                    .min_by_key(|&index| (positions[index][0], positions[index][1]))
-                    .unwrap_or(member);
-                [
-                    positions[rightmost][0] + sizes[rightmost][0] - positions[leftmost_member][0],
-                    positions[rightmost][1] - positions[leftmost_member][1],
-                ]
-            } else {
-                shift
-            };
-            for &member_idx in &island_indices {
-                positions[member_idx][0] += final_shift[0];
-                positions[member_idx][1] += final_shift[1];
-                visited[member_idx] = true;
-            }
-        } else {
-            for &member_idx in &island_indices {
-                visited[member_idx] = true;
-            }
-        }
+        let apart = |axis: usize| i128::from((positions[second][axis] - positions[first][axis]).abs());
+        let extent = |axis: usize| i128::from(sizes[first][axis] + sizes[second][axis]);
+        apart(1) * extent(0) > apart(0) * extent(1)
+    };
+    let stacked = count > 1 && (0..count).all(|first| (first + 1..count).all(|second| below(first, second)));
+    let (along, across) = if stacked { (1, 0) } else { (0, 1) };
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&index| (positions[index][along], positions[index][across], index));
+    for pair in order.windows(2) {
+        let (previous, current) = (pair[0], pair[1]);
+        positions[current][along] = positions[previous][along] + sizes[previous][along];
+        let lowest = positions[previous][across] - sizes[current][across] + 1;
+        let highest = positions[previous][across] + sizes[previous][across] - 1;
+        positions[current][across] = positions[current][across].clamp(lowest, highest);
     }
 }
 
@@ -2231,10 +2028,10 @@ mod tests {
         // A lone monitor whose saved position was negative or offset returns to (0, 0).
         assert_eq!(arranged_positions(&[(Some([0, -750]), [2560, 1440])]), vec![[0, 0]]);
         assert_eq!(arranged_positions(&[(Some([2560, 1440]), [2560, 1440])]), vec![[0, 0]]);
-        // Mixing a negative explicit position with an automatic neighbour preserves their relative layout.
+        // An automatic neighbour of a negative explicit position sits beside it, top-aligned.
         assert_eq!(
             arranged_positions(&[(Some([-2560, -200]), [2560, 1440]), (None, [2560, 1440])]),
-            vec![[0, 0], [2560, 200]]
+            vec![[0, 0], [2560, 0]]
         );
     }
 
@@ -2252,7 +2049,7 @@ mod tests {
             arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1920, 0]), [1920, 1080])]),
             vec![[0, 0], [3840, 0]]
         );
-        // Same in a three-monitor horizontal row: both neighbours cascade right instead of jumping above.
+        // Same in a three-monitor horizontal row: both neighbours move right instead of jumping above.
         assert_eq!(
             arranged_positions(&[
                 (Some([0, 0]), [3840, 2160]),
@@ -2312,6 +2109,18 @@ mod tests {
             arranged_positions(&[(Some([0, 0]), [1280, 800]), (Some([3840, 0]), [1920, 1080])]),
             vec![[0, 0], [1280, 0]]
         );
+        // A screen plugged in beside a stack joins the screen reaching furthest
+        // right, leaving the stack as it was.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [1920, 1080]), (Some([0, 1080]), [2560, 1440]), (None, [1920, 1080])]),
+            vec![[0, 0], [0, 1080], [2560, 1080]]
+        );
+        // Scaling up the top screen of an offset stack leaves a gap below it,
+        // which closes upwards, keeping the portrait screen's offset.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [2048, 1152]), (Some([1480, 1440]), [1080, 1920])]),
+            vec![[0, 0], [1480, 1152]]
+        );
         // Vertical stack gap closes vertically.
         assert_eq!(
             arranged_positions(&[(Some([0, 0]), [1920, 1080]), (Some([0, 1600]), [1920, 1080])]),
@@ -2320,7 +2129,7 @@ mod tests {
     }
 
     #[test]
-    fn arranged_positions_collision_fallback_and_multi_island_stay_connected() {
+    fn arranged_positions_repair_any_broken_layout_into_one_touching_group() {
         let assert_connected_no_overlap = |specs: &[(Option<[i32; 2]>, [i32; 2])]| {
             let pos = arranged_positions(specs);
             assert_eq!(pos.len(), specs.len());
@@ -2350,7 +2159,7 @@ mod tests {
             assert!(seen.iter().all(|&visited| visited), "disconnected layout: {pos:?}");
         };
 
-        // Staircase + colliding island: fallback must attach to the rightmost visited monitor's edge.
+        // A stack with a screen floating apart above it.
         assert_connected_no_overlap(&[
             (Some([0, 0]), [100, 100]),
             (Some([0, 100]), [200, 100]),
@@ -2372,7 +2181,7 @@ mod tests {
             (Some([i32::MAX / 2, i32::MAX / 2]), [1920, 1080]),
         ]);
 
-        // Boxed-in overlapping monitor must not cycle between left/right neighbours.
+        // A screen overlapping both of its neighbours and the one above them.
         assert_connected_no_overlap(&[
             (Some([0, 0]), [100, 100]),
             (Some([150, 0]), [100, 100]),

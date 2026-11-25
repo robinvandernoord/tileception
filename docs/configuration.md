@@ -173,7 +173,10 @@ working configuration when the requested configuration cannot be applied.
 
 `position` is the top-left corner in global logical pixels. Without explicit
 positions, enabled monitors form a horizontal row using their rotated sizes
-and scales. Disabled connected monitors remain available for re-enabling.
+and scales. When saved positions make monitors overlap or leave one apart, for
+example after a scale or resolution change, the monitors are placed edge to
+edge in their saved order instead: stacked if they were stacked, otherwise in
+a row. Disabled connected monitors remain available for re-enabling.
 Disabling every connected monitor is rejected.
 
 Display changes made through Settings preview at runtime before saving.
