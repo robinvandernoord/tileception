@@ -1324,8 +1324,7 @@ impl Tileception {
         let (bar, mut tooltips) = painter.finish_with_tooltips();
         let tray = if include_tray
             && let Some(layout) = &layout
-            && (self.tray.open
-                || layout.tray.iter().any(|(_, rect)| rect.contains(Point::new(self.pointer.x, self.pointer.y))))
+            && self.tray_wants_drawing(&layout.tray)
         {
             let mut tray_painter = Painter::new(self, renderer);
             let anchor = layout.tray.last().map(|(_, rect)| *rect).unwrap_or(layout.clock);

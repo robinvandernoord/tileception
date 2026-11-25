@@ -471,6 +471,14 @@ impl Tileception {
         }
     }
 
+    pub(crate) fn tray_wants_drawing(&self, slots: &[(Slot, Rect)]) -> bool {
+        if self.tray.open {
+            return true;
+        }
+        let pointer = Point::new(self.pointer.x, self.pointer.y);
+        slots.iter().any(|(slot, rect)| matches!(slot, Slot::Item(_)) && rect.contains(pointer))
+    }
+
     pub fn draw_tray_popup(&self, painter: &mut Painter, slots: &[(Slot, Rect)], anchor: Rect) {
         if !self.tray.open {
             let pointer = Point::new(self.pointer.x, self.pointer.y);

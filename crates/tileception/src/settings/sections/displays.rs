@@ -26,15 +26,18 @@ pub(super) struct Drag {
 }
 
 impl Screen {
+    fn is_connected(&self, index: usize) -> bool {
+        self.monitors.iter().any(|monitor| monitor.name == self.rows[index].name)
+    }
+
     pub(super) fn validate_displays(&self) -> Result<(), String> {
         if self.kind != Kind::Displays {
             return Ok(());
         }
         let rects = self.display_rects();
-        let is_connected = |index: usize| self.monitors.iter().any(|monitor| monitor.name == self.rows[index].name);
         for (position, (index, rect)) in rects.iter().enumerate() {
             for (other, candidate) in &rects[position + 1..] {
-                if is_connected(*index) != is_connected(*other) {
+                if self.is_connected(*index) != self.is_connected(*other) {
                     continue;
                 }
                 if overlaps(*rect, *candidate) {
@@ -55,12 +58,7 @@ impl Screen {
                     && self.rows[*index].value.get("enabled").and_then(toml::Value::as_bool) != Some(false)
             })
             .collect();
-        indices.sort_by_key(|index| {
-            (
-                !self.monitors.iter().any(|monitor| monitor.name == self.rows[*index].name),
-                self.rows[*index].name.clone(),
-            )
-        });
+        indices.sort_by_key(|index| (!self.is_connected(*index), self.rows[*index].name.clone()));
         struct RowMetrics {
             index: usize,
             connected: bool,
@@ -359,9 +357,8 @@ impl Tileception {
         let top = (point.y - drag.origin.y) / drag.factor - drag.grab.y;
         let dragged = drag.row;
         let equal = drag.equal;
-        let is_connected = |index: usize| screen.monitors.iter().any(|monitor| monitor.name == screen.rows[index].name);
-        let dragged_connected = is_connected(dragged);
-        let relevant = |index: usize| index != dragged && (!dragged_connected || is_connected(index));
+        let dragged_connected = screen.is_connected(dragged);
+        let relevant = |index: usize| index != dragged && (!dragged_connected || screen.is_connected(index));
         let mut candidates = Vec::new();
         for (index, rect) in &rects {
             if !relevant(*index) {
@@ -408,8 +405,7 @@ impl Tileception {
         // a manual layout, without persisting synthetic offline gaps.
         let selected = screen.selected;
         for (index, rect) in actual_rects {
-            let connected = screen.monitors.iter().any(|monitor| monitor.name == screen.rows[index].name);
-            if index != dragged && !connected {
+            if index != dragged && !screen.is_connected(index) {
                 continue;
             }
             screen.selected = Some(index);
