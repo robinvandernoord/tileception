@@ -61,7 +61,8 @@ use smithay::{
 };
 use smithay::{
     desktop::utils::OutputPresentationFeedback,
-    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback, utils::Monotonic,
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
+    utils::{Clock, Monotonic},
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -97,6 +98,21 @@ const STILL_POLL: Duration = Duration::from_millis(100);
 /// How long after waking from suspend to wait for an in-flight page flip before
 /// treating that output's scanout as stuck and resetting it.
 const WAKE_STALE_FLIP: Duration = Duration::from_millis(500);
+/// Maximum retries when clearing a stuck post-wake scanout fails transiently.
+const WAKE_CLEAR_RETRIES: u8 = 3;
+
+fn monotonic_now() -> Duration {
+    Clock::<Monotonic>::new().now().into()
+}
+
+fn wake_retry_delay(attempt: u8) -> Duration {
+    WAKE_STALE_FLIP.saturating_mul(1u32 << attempt.min(3))
+}
+
+fn is_retired_vblank(retired_before: Option<Duration>, metadata: Option<&DrmEventMetadata>) -> bool {
+    let Some(cutoff) = retired_before else { return false };
+    matches!(metadata, Some(DrmEventMetadata { time: DrmEventTime::Monotonic(time), .. }) if *time <= cutoff)
+}
 
 pub struct Udev {
     pub session: LibSeatSession,
@@ -135,6 +151,10 @@ struct Lit {
     /// Monotonic counter incremented each time a frame is queued or completed,
     /// so wake recovery only resets outputs whose flip genuinely never arrived.
     flip_seq: u64,
+    /// Monotonic timestamp recorded when `compositor.clear()` retires an
+    /// in-flight flip, so a late DRM vblank event from before the reset cannot
+    /// prematurely complete a replacement frame.
+    retired_flip_before: Option<Duration>,
     /// Vblank pacing timer waiting until just before this output's next refresh.
     render_timer: Option<RegistrationToken>,
     /// Client buffers held until scanout completes. See `frame_buffers`.
@@ -530,6 +550,7 @@ pub fn init(
                                 tracing::error!("could not reset resumed output: {err}");
                             }
                         });
+                        lit.retired_flip_before = Some(monotonic_now());
                     }
                 }
             }
@@ -609,7 +630,7 @@ impl Tileception {
             .collect();
         if !pending.is_empty() {
             let _ = self.loop_handle.insert_source(Timer::from_duration(WAKE_STALE_FLIP), move |_, _, state| {
-                state.recover_stuck_flips(&pending);
+                state.recover_stuck_flips(&pending, 0);
                 TimeoutAction::Drop
             });
         }
@@ -617,19 +638,20 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn recover_stuck_flips(&mut self, expected: &[(DrmNode, crtc::Handle, u64)]) {
+    fn recover_stuck_flips(&mut self, expected: &[(DrmNode, crtc::Handle, u64)], attempt: u8) {
         let Some(udev) = self.udev.as_mut() else { return };
         if !udev.session.is_active() {
             return;
         }
         let mut recovered = false;
+        let mut retry = Vec::new();
         for &(node, crtc, seq) in expected {
             let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { continue };
             let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { continue };
             if !lit.enabled || !lit.frame_pending || lit.flip_seq != seq {
                 continue;
             }
-            tracing::warn!(output = %lit.output.name(), "page flip stuck after wake; resetting scanout");
+            tracing::warn!(output = %lit.output.name(), attempt, "page flip stuck after wake; resetting scanout");
             let cleared = lit.drm_output.with_compositor(|compositor| {
                 let cleared = match compositor.clear() {
                     Ok(()) => true,
@@ -646,6 +668,7 @@ impl Tileception {
             });
             lit.cancel_render_timer(&self.loop_handle);
             if cleared {
+                lit.retired_flip_before = Some(monotonic_now());
                 lit.frame_pending = false;
                 lit.flip_seq = lit.flip_seq.wrapping_add(1);
                 lit.in_flight.clear();
@@ -653,7 +676,22 @@ impl Tileception {
                 lit.lock_shown = false;
                 lit.drop_unchanged();
                 recovered = true;
+            } else if attempt < WAKE_CLEAR_RETRIES {
+                retry.push((node, crtc, seq));
+            } else {
+                tracing::error!(
+                    output = %lit.output.name(),
+                    "could not recover stuck scanout after {} attempts",
+                    attempt + 1
+                );
             }
+        }
+        if !retry.is_empty() {
+            let delay = wake_retry_delay(attempt);
+            let _ = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
+                state.recover_stuck_flips(&retry, attempt + 1);
+                TimeoutAction::Drop
+            });
         }
         if recovered {
             self.schedule_render();
@@ -694,10 +732,13 @@ impl Tileception {
             if !lit.enabled {
                 continue;
             }
+            let had_pending = lit.frame_pending;
             if asleep {
                 if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
                     tracing::warn!("could not power down {}: {error}", lit.output.name());
                     success = false;
+                } else if had_pending {
+                    lit.retired_flip_before = Some(monotonic_now());
                 }
             } else {
                 lit.drm_output.reset_buffers();
@@ -866,6 +907,7 @@ impl Tileception {
             drm_output,
             frame_pending: false,
             flip_seq: 0,
+            retired_flip_before: None,
             render_timer: None,
             in_flight: Vec::new(),
             lock_queued: false,
@@ -889,9 +931,13 @@ impl Tileception {
         for gpu in &mut udev.gpus {
             let Some(lit) = gpu.surfaces.iter_mut().find(|lit| &lit.output == output) else { continue };
             if !enabled {
+                let had_pending = lit.frame_pending;
                 lit.drm_output
                     .with_compositor(|compositor| compositor.clear())
                     .map_err(|error| format!("could not disable {}: {error}", output.name()))?;
+                if had_pending {
+                    lit.retired_flip_before = Some(monotonic_now());
+                }
                 lit.enabled = false;
                 lit.cancel_render_timer(&self.loop_handle);
                 lit.frame_pending = false;
@@ -931,25 +977,13 @@ impl Tileception {
                 })
             });
             if !lit.enabled || mode_changed || output.current_transform() != transform {
-                // Only clear `frame_pending` when Smithay's pending flip is also
-                // retired (output was disabled or `compositor.clear()` succeeds
-                // on a mode change). On a transform-only change or a failed
-                // clear, let any in-flight flip complete naturally so Smithay
-                // and Tileception stay in sync.
-                let cleared = if mode_changed && lit.enabled {
-                    match lit.drm_output.with_compositor(|compositor| compositor.clear()) {
-                        Ok(()) => true,
-                        Err(err) => {
-                            tracing::warn!(output = %output.name(), "could not clear scanout on mode change: {err}");
-                            false
-                        }
-                    }
-                } else {
-                    false
-                };
+                // `use_mode` updates the pending mode and swapchain without
+                // retiring an in-flight page flip. Keep `frame_pending` intact
+                // when already enabled so the old flip completes naturally
+                // instead of blanking or racing a retired vblank event.
                 lit.drm_output.reset_buffers();
                 lit.cancel_render_timer(&self.loop_handle);
-                if !lit.enabled || cleared {
+                if !lit.enabled {
                     lit.frame_pending = false;
                     lit.flip_seq = lit.flip_seq.wrapping_add(1);
                     lit.in_flight.clear();
@@ -1020,6 +1054,9 @@ impl Tileception {
         let Some(udev) = self.udev.as_mut() else { return };
         let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { return };
         let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { return };
+        if is_retired_vblank(lit.retired_flip_before.take(), metadata.as_ref()) {
+            return;
+        }
         if !lit.frame_pending {
             // Still retire any pending flip inside Smithay so `queue_frame`
             // never stalls behind an already-completed flip.
@@ -1386,5 +1423,33 @@ impl Tileception {
         {
             tracing::warn!("could not switch to VT {vt_number}: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retired_vblank_ignores_events_at_or_before_clear_cutoff() {
+        let cutoff = Some(Duration::from_secs(10));
+        let before = DrmEventMetadata { sequence: 1, time: DrmEventTime::Monotonic(Duration::from_secs(9)) };
+        let exact = DrmEventMetadata { sequence: 2, time: DrmEventTime::Monotonic(Duration::from_secs(10)) };
+        let after = DrmEventMetadata { sequence: 3, time: DrmEventTime::Monotonic(Duration::from_millis(10_001)) };
+
+        assert!(is_retired_vblank(cutoff, Some(&before)));
+        assert!(is_retired_vblank(cutoff, Some(&exact)));
+        assert!(!is_retired_vblank(cutoff, Some(&after)));
+        assert!(!is_retired_vblank(cutoff, None));
+        assert!(!is_retired_vblank(None, Some(&before)));
+    }
+
+    #[test]
+    fn wake_retry_delay_backs_off_boundedly() {
+        assert_eq!(wake_retry_delay(0), Duration::from_millis(500));
+        assert_eq!(wake_retry_delay(1), Duration::from_millis(1000));
+        assert_eq!(wake_retry_delay(2), Duration::from_millis(2000));
+        assert_eq!(wake_retry_delay(3), Duration::from_millis(4000));
+        assert_eq!(wake_retry_delay(10), Duration::from_millis(4000));
     }
 }
