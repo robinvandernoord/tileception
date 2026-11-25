@@ -6,7 +6,7 @@
 
 use std::{
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::frame_timing::FrameDone;
@@ -109,9 +109,44 @@ fn wake_retry_delay(attempt: u8) -> Duration {
     WAKE_STALE_FLIP.saturating_mul(1u32 << attempt.min(3))
 }
 
-fn is_retired_vblank(retired_before: Option<Duration>, metadata: Option<&DrmEventMetadata>) -> bool {
-    let Some(cutoff) = retired_before else { return false };
-    matches!(metadata, Some(DrmEventMetadata { time: DrmEventTime::Monotonic(time), .. }) if *time <= cutoff)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlipCutoff {
+    monotonic: Duration,
+    realtime: SystemTime,
+}
+
+impl FlipCutoff {
+    fn now() -> Self {
+        Self { monotonic: monotonic_now(), realtime: SystemTime::now() }
+    }
+}
+
+/// Drops vblank events timestamped at or before the scanout reset cutoff in
+/// either clock domain, and clears the cutoff once a post-reset event arrives
+/// (or if the realtime wall clock stepped backwards).
+fn retire_vblank_cutoff(
+    retired_before: &mut Option<FlipCutoff>,
+    metadata: Option<&DrmEventMetadata>,
+    now_realtime: SystemTime,
+) -> bool {
+    let Some(cutoff) = *retired_before else { return false };
+    match metadata.map(|meta| meta.time) {
+        Some(DrmEventTime::Monotonic(time)) if time <= cutoff.monotonic => true,
+        Some(DrmEventTime::Realtime(time)) if now_realtime >= cutoff.realtime && time <= cutoff.realtime => true,
+        Some(DrmEventTime::Monotonic(_) | DrmEventTime::Realtime(_)) => {
+            *retired_before = None;
+            false
+        }
+        None => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StuckFlip {
+    node: DrmNode,
+    crtc: crtc::Handle,
+    surface_id: u64,
+    flip_seq: u64,
 }
 
 pub struct Udev {
@@ -140,6 +175,9 @@ struct Gpu {
 }
 
 struct Lit {
+    /// Unique surface generation so timers never mistake a newly connected
+    /// output on the same CRTC for a retired one.
+    surface_id: u64,
     connector: connector::Handle,
     modes: Vec<smithay::reexports::drm::control::Mode>,
     mode: WlMode,
@@ -151,10 +189,10 @@ struct Lit {
     /// Monotonic counter incremented each time a frame is queued or completed,
     /// so wake recovery only resets outputs whose flip genuinely never arrived.
     flip_seq: u64,
-    /// Monotonic timestamp recorded when `compositor.clear()` retires an
-    /// in-flight flip, so a late DRM vblank event from before the reset cannot
-    /// prematurely complete a replacement frame.
-    retired_flip_before: Option<Duration>,
+    /// Timestamps recorded when `compositor.clear()` retires an in-flight flip,
+    /// so a late DRM vblank event from before the reset cannot prematurely
+    /// complete a replacement frame.
+    retired_flip_before: Option<FlipCutoff>,
     /// Vblank pacing timer waiting until just before this output's next refresh.
     render_timer: Option<RegistrationToken>,
     /// Client buffers held until scanout completes. See `frame_buffers`.
@@ -186,6 +224,7 @@ struct Unchanged {
 /// Numbers for frames that changed nothing, unique across screens and the
 /// screens that replace them, so a timer finds only its own frame.
 static NEXT_UNCHANGED: AtomicU64 = AtomicU64::new(1);
+static NEXT_SURFACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// How many times a frame that changed nothing looks for its refresh
 /// before giving up on it (a screen that stopped refreshing).
@@ -522,39 +561,65 @@ pub fn init(
             if libinput.resume().is_err() {
                 tracing::error!("libinput could not resume");
             }
+            // Clear idle-off state before resetting scanout so `set_asleep(false)`
+            // cannot overwrite `frame_pending` or `flip_seq` on a failed clear retry.
+            state.idle_activity();
+            let mut retry_clear = Vec::new();
             if let Some(udev) = state.udev.as_mut() {
                 if let Some(poll) = udev.poll.take() {
                     state.loop_handle.remove(poll);
                 }
-                udev.render_pending = false;
                 for gpu in &mut udev.gpus {
                     if let Err(err) = gpu.manager.activate(false) {
                         tracing::error!("drm could not resume: {err}");
                     }
                     for lit in &mut gpu.surfaces {
                         lit.cancel_render_timer(&state.loop_handle);
-                        lit.frame_pending = false;
-                        lit.flip_seq = lit.flip_seq.wrapping_add(1);
-                        lit.in_flight.clear();
-                        lit.lock_queued = false;
-                        lit.lock_shown = false;
-                        lit.drop_unchanged();
-                        lit.drm_output.with_compositor(|compositor| {
+                        let cleared = lit.drm_output.with_compositor(|compositor| {
                             // A pre-suspend page flip may never deliver its vblank. Drop
                             // both Smithay's queued frames and the stale scanout state.
-                            if let Err(err) = compositor.clear() {
-                                tracing::error!("could not clear stale scanout: {err}");
-                            }
+                            let cleared = match compositor.clear() {
+                                Ok(()) => true,
+                                Err(err) => {
+                                    tracing::error!("could not clear stale scanout: {err}");
+                                    false
+                                }
+                            };
                             compositor.reset_buffers();
                             if let Err(err) = compositor.reset_state() {
                                 tracing::error!("could not reset resumed output: {err}");
                             }
+                            cleared
                         });
-                        lit.retired_flip_before = Some(monotonic_now());
+                        if cleared {
+                            lit.retired_flip_before = Some(FlipCutoff::now());
+                            lit.frame_pending = false;
+                            lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                            lit.in_flight.clear();
+                            lit.lock_queued = false;
+                            lit.lock_shown = false;
+                            lit.drop_unchanged();
+                        } else if lit.enabled {
+                            // Hold off queuing a replacement frame behind a stale
+                            // scanout until `clear()` succeeds on retry.
+                            lit.frame_pending = true;
+                            lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                            retry_clear.push(StuckFlip {
+                                node: gpu.node,
+                                crtc: lit.crtc,
+                                surface_id: lit.surface_id,
+                                flip_seq: lit.flip_seq,
+                            });
+                        }
                     }
                 }
             }
-            state.idle_activity();
+            if !retry_clear.is_empty() {
+                let _ = state.loop_handle.insert_source(Timer::from_duration(WAKE_STALE_FLIP), move |_, _, state| {
+                    state.recover_stuck_flips(&retry_clear, 0);
+                    TimeoutAction::Drop
+                });
+            }
             state.discover_gpus();
             state.scan_connectors();
             state.schedule_render();
@@ -618,14 +683,16 @@ impl Tileception {
         if !udev.session.is_active() {
             return;
         }
-        let pending: Vec<(DrmNode, crtc::Handle, u64)> = udev
+        let pending: Vec<StuckFlip> = udev
             .gpus
             .iter()
             .flat_map(|gpu| {
-                gpu.surfaces
-                    .iter()
-                    .filter(|lit| lit.enabled && lit.frame_pending)
-                    .map(move |lit| (gpu.node, lit.crtc, lit.flip_seq))
+                gpu.surfaces.iter().filter(|lit| lit.enabled && lit.frame_pending).map(move |lit| StuckFlip {
+                    node: gpu.node,
+                    crtc: lit.crtc,
+                    surface_id: lit.surface_id,
+                    flip_seq: lit.flip_seq,
+                })
             })
             .collect();
         if !pending.is_empty() {
@@ -638,17 +705,21 @@ impl Tileception {
         self.schedule_render();
     }
 
-    fn recover_stuck_flips(&mut self, expected: &[(DrmNode, crtc::Handle, u64)], attempt: u8) {
+    fn recover_stuck_flips(&mut self, expected: &[StuckFlip], attempt: u8) {
         let Some(udev) = self.udev.as_mut() else { return };
         if !udev.session.is_active() {
             return;
         }
         let mut recovered = false;
         let mut retry = Vec::new();
-        for &(node, crtc, seq) in expected {
-            let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { continue };
-            let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { continue };
-            if !lit.enabled || !lit.frame_pending || lit.flip_seq != seq {
+        for &target in expected {
+            let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == target.node) else { continue };
+            let Some(lit) =
+                gpu.surfaces.iter_mut().find(|lit| lit.crtc == target.crtc && lit.surface_id == target.surface_id)
+            else {
+                continue;
+            };
+            if !lit.enabled || !lit.frame_pending || lit.flip_seq != target.flip_seq {
                 continue;
             }
             tracing::warn!(output = %lit.output.name(), attempt, "page flip stuck after wake; resetting scanout");
@@ -668,7 +739,7 @@ impl Tileception {
             });
             lit.cancel_render_timer(&self.loop_handle);
             if cleared {
-                lit.retired_flip_before = Some(monotonic_now());
+                lit.retired_flip_before = Some(FlipCutoff::now());
                 lit.frame_pending = false;
                 lit.flip_seq = lit.flip_seq.wrapping_add(1);
                 lit.in_flight.clear();
@@ -677,13 +748,22 @@ impl Tileception {
                 lit.drop_unchanged();
                 recovered = true;
             } else if attempt < WAKE_CLEAR_RETRIES {
-                retry.push((node, crtc, seq));
+                retry.push(target);
             } else {
                 tracing::error!(
                     output = %lit.output.name(),
-                    "could not recover stuck scanout after {} attempts",
+                    "could not recover stuck scanout after {} attempts; releasing hold",
                     attempt + 1
                 );
+                // Release the hold once retries are exhausted so a permanently
+                // failing `clear()` does not freeze the output indefinitely.
+                lit.frame_pending = false;
+                lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                lit.in_flight.clear();
+                lit.lock_queued = false;
+                lit.lock_shown = false;
+                lit.drop_unchanged();
+                recovered = true;
             }
         }
         if !retry.is_empty() {
@@ -738,7 +818,7 @@ impl Tileception {
                     tracing::warn!("could not power down {}: {error}", lit.output.name());
                     success = false;
                 } else if had_pending {
-                    lit.retired_flip_before = Some(monotonic_now());
+                    lit.retired_flip_before = Some(FlipCutoff::now());
                 }
             } else {
                 lit.drm_output.reset_buffers();
@@ -898,6 +978,7 @@ impl Tileception {
         self.advertise_output(&output);
         self.add_output(output.clone());
         surfaces.push(Lit {
+            surface_id: NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             connector: connector.handle(),
             modes: connector.modes().to_vec(),
             mode: wl_mode,
@@ -936,7 +1017,7 @@ impl Tileception {
                     .with_compositor(|compositor| compositor.clear())
                     .map_err(|error| format!("could not disable {}: {error}", output.name()))?;
                 if had_pending {
-                    lit.retired_flip_before = Some(monotonic_now());
+                    lit.retired_flip_before = Some(FlipCutoff::now());
                 }
                 lit.enabled = false;
                 lit.cancel_render_timer(&self.loop_handle);
@@ -1054,7 +1135,7 @@ impl Tileception {
         let Some(udev) = self.udev.as_mut() else { return };
         let Some(gpu) = udev.gpus.iter_mut().find(|gpu| gpu.node == node) else { return };
         let Some(lit) = gpu.surfaces.iter_mut().find(|lit| lit.crtc == crtc) else { return };
-        if is_retired_vblank(lit.retired_flip_before.take(), metadata.as_ref()) {
+        if retire_vblank_cutoff(&mut lit.retired_flip_before, metadata.as_ref(), SystemTime::now()) {
             return;
         }
         if !lit.frame_pending {
@@ -1432,16 +1513,45 @@ mod tests {
 
     #[test]
     fn retired_vblank_ignores_events_at_or_before_clear_cutoff() {
-        let cutoff = Some(Duration::from_secs(10));
+        let base_realtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let initial = FlipCutoff { monotonic: Duration::from_secs(10), realtime: base_realtime };
+
         let before = DrmEventMetadata { sequence: 1, time: DrmEventTime::Monotonic(Duration::from_secs(9)) };
         let exact = DrmEventMetadata { sequence: 2, time: DrmEventTime::Monotonic(Duration::from_secs(10)) };
         let after = DrmEventMetadata { sequence: 3, time: DrmEventTime::Monotonic(Duration::from_millis(10_001)) };
 
-        assert!(is_retired_vblank(cutoff, Some(&before)));
-        assert!(is_retired_vblank(cutoff, Some(&exact)));
-        assert!(!is_retired_vblank(cutoff, Some(&after)));
-        assert!(!is_retired_vblank(cutoff, None));
-        assert!(!is_retired_vblank(None, Some(&before)));
+        // Stale events and untimestamped events keep the cutoff armed until a post-cutoff event arrives.
+        let now_rt = base_realtime + Duration::from_secs(1);
+        let mut cutoff = Some(initial);
+        assert!(retire_vblank_cutoff(&mut cutoff, Some(&before), now_rt));
+        assert_eq!(cutoff, Some(initial));
+        assert!(retire_vblank_cutoff(&mut cutoff, Some(&exact), now_rt));
+        assert_eq!(cutoff, Some(initial));
+        assert!(!retire_vblank_cutoff(&mut cutoff, None, now_rt));
+        assert_eq!(cutoff, Some(initial));
+        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&after), now_rt));
+        assert_eq!(cutoff, None);
+        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&before), now_rt));
+
+        // Realtime clock domain is handled symmetrically.
+        let rt_before =
+            DrmEventMetadata { sequence: 4, time: DrmEventTime::Realtime(base_realtime - Duration::from_secs(1)) };
+        let rt_exact = DrmEventMetadata { sequence: 5, time: DrmEventTime::Realtime(base_realtime) };
+        let rt_after =
+            DrmEventMetadata { sequence: 6, time: DrmEventTime::Realtime(base_realtime + Duration::from_millis(1)) };
+        let mut cutoff = Some(initial);
+        assert!(retire_vblank_cutoff(&mut cutoff, Some(&rt_before), now_rt));
+        assert_eq!(cutoff, Some(initial));
+        assert!(retire_vblank_cutoff(&mut cutoff, Some(&rt_exact), now_rt));
+        assert_eq!(cutoff, Some(initial));
+        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&rt_after), now_rt));
+        assert_eq!(cutoff, None);
+
+        // A backward wall-clock step clears the realtime cutoff instead of stalling completion.
+        let stepped_back = base_realtime - Duration::from_secs(5);
+        let mut cutoff = Some(initial);
+        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&rt_before), stepped_back));
+        assert_eq!(cutoff, None);
     }
 
     #[test]

@@ -1969,10 +1969,35 @@ fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64;
                         .filter(|&other| other != second)
                         .all(|other| !rects_overlap(moved, second_size, positions[other], sizes[other]))
                 };
-                let best = candidates
-                    .into_iter()
-                    .filter(overlap_free)
-                    .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
+                // Preserve the configured side when a monitor grows into its
+                // neighbour (for example 1080p -> 4K in a side-by-side pair)
+                // instead of flipping it above or below along a shorter edge.
+                // Compare relative offsets normalized by the pair's combined
+                // extent so the axis choice is symmetric in connector order
+                // and wide offset vertical stacks still stay vertical.
+                let delta_x = positions[second][0] - positions[first][0];
+                let delta_y = positions[second][1] - positions[first][1];
+                let preferred = if delta_x != 0 || delta_y != 0 {
+                    let pair_w = u128::from(first_size[0].unsigned_abs()) + u128::from(second_size[0].unsigned_abs());
+                    let pair_h = u128::from(first_size[1].unsigned_abs()) + u128::from(second_size[1].unsigned_abs());
+                    let norm_x = u128::from(delta_x.unsigned_abs()) * pair_h;
+                    let norm_y = u128::from(delta_y.unsigned_abs()) * pair_w;
+                    if norm_x >= norm_y {
+                        Some(if delta_x > 0 { [shift_right, 0] } else { [shift_left, 0] })
+                    } else {
+                        Some(if delta_y > 0 { [0, shift_down] } else { [0, shift_up] })
+                    }
+                } else {
+                    None
+                };
+                let best = preferred
+                    .filter(&overlap_free)
+                    .or_else(|| {
+                        candidates
+                            .into_iter()
+                            .filter(&overlap_free)
+                            .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
+                    })
                     .unwrap_or_else(|| {
                         let max_right = (0..count)
                             .filter(|&other| other != second)
@@ -2137,6 +2162,30 @@ mod tests {
         assert_eq!(
             arranged_positions(&[(Some([0, 0]), [1707, 1067]), (Some([1280, 0]), [2560, 1440])]),
             vec![[0, 0], [1707, 0]]
+        );
+        // Growing a 1080p left screen to 4K keeps its side-by-side neighbour to the right rather than moving it above.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1920, 0]), [1920, 1080])]),
+            vec![[0, 0], [3840, 0]]
+        );
+        // Same when the right monitor sorts first and the left monitor grows.
+        assert_eq!(
+            arranged_positions(&[(Some([1920, 0]), [1920, 1080]), (Some([0, 0]), [3840, 2160])]),
+            vec![[3840, 0], [0, 0]]
+        );
+        // Growing the top monitor in a vertical stack keeps the bottom monitor underneath.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([0, 1080]), [1920, 1080])]),
+            vec![[0, 0], [0, 2160]]
+        );
+        // Same for a horizontally offset vertical stack where delta_x > delta_y, in either connector order.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1600, 1080]), [1920, 1440])]),
+            vec![[0, 0], [1600, 2160]]
+        );
+        assert_eq!(
+            arranged_positions(&[(Some([1600, 1080]), [1920, 1440]), (Some([0, 0]), [3840, 2160])]),
+            vec![[1600, 2160], [0, 0]]
         );
         // Decreasing logical width or unplugging a middle screen pulls the separated neighbour left.
         assert_eq!(
