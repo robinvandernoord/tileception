@@ -5,7 +5,7 @@ pub(super) struct Monitor {
     pub name: String,
     pub width: f64,
     pub height: f64,
-    pub scale: f64,
+    pub scale: Option<f64>,
     pub auto_scale: f64,
     pub modes: Vec<smithay::output::Mode>,
 }
@@ -84,8 +84,10 @@ impl Screen {
                 };
                 let initial =
                     self.initial.iter().find(|(name, _)| *name == row.name).and_then(|(_, value)| value.get("scale"));
-                let scale = if monitor.is_some() && setting == initial {
-                    monitor.map_or(1., |monitor| monitor.scale)
+                let scale = if let Some(active_scale) = monitor.and_then(|monitor| monitor.scale)
+                    && setting == initial
+                {
+                    active_scale
                 } else {
                     setting
                         .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|value| value as f64)))
@@ -287,7 +289,7 @@ impl Tileception {
                 name: monitor.name.clone(),
                 width: mode.size.w as f64,
                 height: mode.size.h as f64,
-                scale: output.as_ref().map_or(1., |output| output.current_scale().fractional_scale()),
+                scale: output.as_ref().map(|output| output.current_scale().fractional_scale()),
                 auto_scale: physical
                     .map_or(1., |physical| crate::scale::guess((physical.w, physical.h), (mode.size.w, mode.size.h))),
                 modes,

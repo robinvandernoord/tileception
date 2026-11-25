@@ -1957,9 +1957,12 @@ fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64;
     // if every adjacent shift still overlaps another monitor (which could
     // otherwise cycle), move the second monitor past the rightmost edge.
     for _ in 0..count.saturating_mul(count).max(1) {
+        let mut order: Vec<usize> = (0..count).collect();
+        order.sort_by_key(|&index| (positions[index][0], positions[index][1], index));
         let mut separated = false;
-        'pairs: for first in 0..count {
-            for second in first + 1..count {
+        'pairs: for first_pos in 0..count {
+            let first = order[first_pos];
+            for &second in &order[first_pos + 1..] {
                 let first_size = sizes[first];
                 let second_size = sizes[second];
                 if !rects_overlap(positions[first], first_size, positions[second], second_size) {
@@ -2020,6 +2023,20 @@ fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64;
                             }
                             if !rects_overlap(test_pos[cur], sizes[cur], test_pos[other], sizes[other]) {
                                 continue;
+                            }
+                            let same_side = if shift[0] > 0 {
+                                positions[other][0] >= positions[cur][0]
+                            } else if shift[0] < 0 {
+                                positions[other][0] <= positions[cur][0]
+                            } else if shift[1] > 0 {
+                                positions[other][1] >= positions[cur][1]
+                            } else if shift[1] < 0 {
+                                positions[other][1] <= positions[cur][1]
+                            } else {
+                                false
+                            };
+                            if !same_side {
+                                return None;
                             }
                             let delta = if shift[0] > 0 {
                                 let shift_x = test_pos[cur][0] + sizes[cur][0] - test_pos[other][0];
@@ -2254,6 +2271,15 @@ mod tests {
             ]),
             vec![[5760, 0], [3840, 0], [0, 0]]
         );
+        // Growing the left monitor past both neighbours preserves left-middle-right order in any connector order.
+        let wide_left_specs =
+            [(Some([0, 0]), [5120, 2160]), (Some([1920, 0]), [1920, 1080]), (Some([3840, 0]), [1920, 1080])];
+        let expected_x = [0, 5120, 7040];
+        for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let input: Vec<_> = perm.into_iter().map(|idx| wide_left_specs[idx]).collect();
+            let expected: Vec<_> = perm.into_iter().map(|idx| [expected_x[idx], 0]).collect();
+            assert_eq!(arranged_positions(&input), expected, "permutation {perm:?}");
+        }
         // Same when the right monitor sorts first and the left monitor grows.
         assert_eq!(
             arranged_positions(&[(Some([1920, 0]), [1920, 1080]), (Some([0, 0]), [3840, 2160])]),

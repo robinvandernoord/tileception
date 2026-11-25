@@ -190,6 +190,9 @@ struct Lit {
     /// Monotonic counter incremented each time a frame is queued or completed,
     /// so wake recovery only resets outputs whose flip genuinely never arrived.
     flip_seq: u64,
+    /// `flip_seq` currently watched by an active post-wake retry timer, so
+    /// repeated `wake_udev` calls do not stack duplicate retry chains.
+    wake_retry_seq: Option<u64>,
     /// Timestamps recorded when `compositor.clear()` retires an in-flight flip,
     /// so a late DRM vblank event from before the reset cannot prematurely
     /// complete a replacement frame.
@@ -548,6 +551,7 @@ pub fn init(
                         lit.cancel_render_timer(&state.loop_handle);
                         lit.frame_pending = false;
                         lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                        lit.wake_retry_seq = None;
                         lit.in_flight.clear();
                         lit.lock_queued = false;
                         lit.lock_shown = false;
@@ -596,6 +600,7 @@ pub fn init(
                             lit.retired_flip_before = Some(FlipCutoff::now());
                             lit.frame_pending = false;
                             lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                            lit.wake_retry_seq = None;
                             lit.in_flight.clear();
                             lit.lock_queued = false;
                             lit.lock_shown = false;
@@ -605,6 +610,7 @@ pub fn init(
                             // scanout until `clear()` succeeds on retry.
                             lit.frame_pending = true;
                             lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                            lit.wake_retry_seq = Some(lit.flip_seq);
                             retry_clear.push(StuckFlip {
                                 node: gpu.node,
                                 crtc: lit.crtc,
@@ -680,22 +686,25 @@ impl Tileception {
     /// has an in-flight page flip, resetting only outputs whose vblank never
     /// arrives instead of blanking healthy displays on every wake.
     pub fn wake_udev(&mut self) {
-        let Some(udev) = self.udev.as_ref() else { return };
+        let Some(udev) = self.udev.as_mut() else { return };
         if !udev.session.is_active() {
             return;
         }
-        let pending: Vec<StuckFlip> = udev
-            .gpus
-            .iter()
-            .flat_map(|gpu| {
-                gpu.surfaces.iter().filter(|lit| lit.enabled && lit.frame_pending).map(move |lit| StuckFlip {
-                    node: gpu.node,
-                    crtc: lit.crtc,
-                    surface_id: lit.surface_id,
-                    flip_seq: lit.flip_seq,
-                })
-            })
-            .collect();
+        let mut pending = Vec::new();
+        for gpu in &mut udev.gpus {
+            let node = gpu.node;
+            for lit in &mut gpu.surfaces {
+                if lit.enabled && lit.frame_pending && lit.wake_retry_seq != Some(lit.flip_seq) {
+                    lit.wake_retry_seq = Some(lit.flip_seq);
+                    pending.push(StuckFlip {
+                        node,
+                        crtc: lit.crtc,
+                        surface_id: lit.surface_id,
+                        flip_seq: lit.flip_seq,
+                    });
+                }
+            }
+        }
         if !pending.is_empty() {
             let _ = self.loop_handle.insert_source(Timer::from_duration(WAKE_STALE_FLIP), move |_, _, state| {
                 state.recover_stuck_flips(&pending, 0);
@@ -755,6 +764,7 @@ impl Tileception {
                 lit.retired_flip_before = Some(FlipCutoff::now());
                 lit.frame_pending = false;
                 lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                lit.wake_retry_seq = None;
                 lit.in_flight.clear();
                 lit.lock_queued = false;
                 lit.lock_shown = false;
@@ -824,25 +834,36 @@ impl Tileception {
                 continue;
             }
             let had_pending = lit.frame_pending;
-            if asleep {
-                if let Err(error) = lit.drm_output.with_compositor(|compositor| compositor.clear()) {
-                    tracing::warn!("could not power down {}: {error}", lit.output.name());
-                    success = false;
-                } else if had_pending {
-                    lit.retired_flip_before = Some(FlipCutoff::now());
+            let cleared = if asleep {
+                match lit.drm_output.with_compositor(|compositor| compositor.clear()) {
+                    Ok(()) => {
+                        if had_pending {
+                            lit.retired_flip_before = Some(FlipCutoff::now());
+                        }
+                        true
+                    }
+                    Err(error) => {
+                        tracing::warn!("could not power down {}: {error}", lit.output.name());
+                        success = false;
+                        false
+                    }
                 }
             } else {
                 lit.drm_output.reset_buffers();
-            }
+                true
+            };
             lit.cancel_render_timer(&self.loop_handle);
-            lit.frame_pending = false;
-            lit.flip_seq = lit.flip_seq.wrapping_add(1);
-            lit.in_flight.clear();
-            lit.lock_queued = false;
-            lit.lock_shown = false;
-            // The flip that frame waited for may never come, and a refresh
-            // after waking shows nothing from before.
-            lit.drop_unchanged();
+            if cleared {
+                lit.frame_pending = false;
+                lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                lit.wake_retry_seq = None;
+                lit.in_flight.clear();
+                lit.lock_queued = false;
+                lit.lock_shown = false;
+                // The flip that frame waited for may never come, and a refresh
+                // after waking shows nothing from before.
+                lit.drop_unchanged();
+            }
         }
         success
     }
@@ -999,6 +1020,7 @@ impl Tileception {
             drm_output,
             frame_pending: false,
             flip_seq: 0,
+            wake_retry_seq: None,
             retired_flip_before: None,
             render_timer: None,
             in_flight: Vec::new(),
