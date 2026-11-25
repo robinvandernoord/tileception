@@ -630,23 +630,30 @@ impl Tileception {
                 continue;
             }
             tracing::warn!(output = %lit.output.name(), "page flip stuck after wake; resetting scanout");
-            lit.cancel_render_timer(&self.loop_handle);
-            lit.frame_pending = false;
-            lit.flip_seq = lit.flip_seq.wrapping_add(1);
-            lit.in_flight.clear();
-            lit.lock_queued = false;
-            lit.lock_shown = false;
-            lit.drop_unchanged();
-            lit.drm_output.with_compositor(|compositor| {
-                if let Err(err) = compositor.clear() {
-                    tracing::error!("could not clear stale scanout after wake: {err}");
-                }
+            let cleared = lit.drm_output.with_compositor(|compositor| {
+                let cleared = match compositor.clear() {
+                    Ok(()) => true,
+                    Err(err) => {
+                        tracing::error!("could not clear stale scanout after wake: {err}");
+                        false
+                    }
+                };
                 compositor.reset_buffers();
                 if let Err(err) = compositor.reset_state() {
                     tracing::error!("could not reset output after wake: {err}");
                 }
+                cleared
             });
-            recovered = true;
+            lit.cancel_render_timer(&self.loop_handle);
+            if cleared {
+                lit.frame_pending = false;
+                lit.flip_seq = lit.flip_seq.wrapping_add(1);
+                lit.in_flight.clear();
+                lit.lock_queued = false;
+                lit.lock_shown = false;
+                lit.drop_unchanged();
+                recovered = true;
+            }
         }
         if recovered {
             self.schedule_render();
@@ -1016,7 +1023,18 @@ impl Tileception {
         if !lit.frame_pending {
             // Still retire any pending flip inside Smithay so `queue_frame`
             // never stalls behind an already-completed flip.
-            let _ = lit.drm_output.frame_submitted();
+            let fifo = match lit.drm_output.frame_submitted() {
+                Ok(Some(done)) => {
+                    if let Some(mut feedback) = done.feedback {
+                        feedback.discarded();
+                    }
+                    done.fifo
+                }
+                Ok(None) | Err(_) => Vec::new(),
+            };
+            for frame in fifo {
+                self.release_fifo_frame(frame);
+            }
             return;
         }
         lit.frame_pending = false;
