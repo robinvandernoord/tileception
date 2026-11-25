@@ -179,9 +179,6 @@ Report testing in the conversation, the commit or the pull request instead.
   - Match `DrmScanEvent::Disconnected` by connector handle when `crtc` is
     `None`, and log `Connected { crtc: None }` so USB-C/MST dock hotplug
     edge cases do not leave ghost outputs or fail silently.
-  - Keep the sleep inhibitor held until every enabled output has shown a
-    lock frame, rather than releasing it when one output renders empty while
-    another still has a pre-lock flip pending.
   - On hybrid-GPU laptops, avoid importing primary-GPU client cursor and
     drag-icon dmabufs directly onto a secondary GPU renderer (fall back to
     the named cursor or primary-rendered cursor), and cache loaded xcursor
