@@ -180,7 +180,7 @@ pub fn carve(text: &str, grid: &Grid, area: Rect) -> Option<Vec<bool>> {
     let first_col = left + (across - width * size) / 2;
     let first_row = top + (down - 7 * size) / 2;
     let mut cells = vec![false; grid.cols * grid.rows];
-    let mut at = 0;
+    let mut offset = 0;
     for (char_width, rows) in characters {
         for (row, bits) in rows.iter().enumerate() {
             for col in 0..usize::from(char_width) {
@@ -190,13 +190,13 @@ pub fn carve(text: &str, grid: &Grid, area: Rect) -> Option<Vec<bool>> {
                 for down in 0..size {
                     for across in 0..size {
                         let grid_row = first_row + row * size + down;
-                        let grid_col = first_col + (at + col) * size + across;
+                        let grid_col = first_col + (offset + col) * size + across;
                         cells[grid_row * grid.cols + grid_col] = true;
                     }
                 }
             }
         }
-        at += usize::from(char_width) + 1;
+        offset += usize::from(char_width) + 1;
     }
     Some(cells)
 }
@@ -227,10 +227,10 @@ mod tests {
     #[test]
     fn some_of_the_screen_is_lit_and_most_is_dark() {
         let rows = 50;
-        for at in [0.0, 2.5, 7.5, 61.0] {
-            let lit: usize = (0..86).map(|col| column(col, rows, at).iter().flatten().count()).sum();
+        for seconds in [0.0, 2.5, 7.5, 61.0] {
+            let lit: usize = (0..86).map(|col| column(col, rows, seconds).iter().flatten().count()).sum();
             let share = lit as f64 / (86 * rows) as f64;
-            assert!((0.05..0.45).contains(&share), "{share} lit at {at}");
+            assert!((0.05..0.45).contains(&share), "{share} lit at {seconds}");
         }
     }
 
@@ -275,12 +275,14 @@ mod tests {
         let grid = Grid::new(Rect::new(0.0, 0.0, 1920.0, 1080.0));
         let area = Rect::new(0.0, 34.0, 1920.0, 500.0);
         let cells = carve("12:34", &grid, area).unwrap();
-        let on: Vec<(usize, usize)> = (0..cells.len())
+        let carved: Vec<(usize, usize)> = (0..cells.len())
             .filter(|index| cells[*index])
             .map(|index| (index % grid.cols, index / grid.cols))
             .collect();
-        let (left, right) = (on.iter().map(|cell| cell.0).min().unwrap(), on.iter().map(|cell| cell.0).max().unwrap());
-        let (top, bottom) = (on.iter().map(|cell| cell.1).min().unwrap(), on.iter().map(|cell| cell.1).max().unwrap());
+        let (left, right) =
+            (carved.iter().map(|cell| cell.0).min().unwrap(), carved.iter().map(|cell| cell.0).max().unwrap());
+        let (top, bottom) =
+            (carved.iter().map(|cell| cell.1).min().unwrap(), carved.iter().map(|cell| cell.1).max().unwrap());
         // Seven rows of the font at two cells each, inside the area and
         // about as far from either side.
         assert_eq!(bottom - top + 1, 14);
