@@ -5,9 +5,8 @@
 //! Outputs on other GPUs show frames it draws; see `mirror`.
 
 use std::{
-    collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crate::frame_timing::FrameDone;
@@ -62,8 +61,7 @@ use smithay::{
 };
 use smithay::{
     desktop::utils::OutputPresentationFeedback,
-    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
-    utils::{Clock, Monotonic},
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback, utils::Monotonic,
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 
@@ -96,92 +94,6 @@ const ASKED_FRAMES: u32 = 3;
 const DUE_FLOOR: Duration = Duration::from_millis(4);
 /// How often a still screen is looked at for changes nothing asked to draw.
 const STILL_POLL: Duration = Duration::from_millis(100);
-/// How long after waking from suspend to wait for an in-flight page flip before
-/// treating that output's scanout as stuck and resetting it.
-const WAKE_STALE_FLIP: Duration = Duration::from_millis(500);
-/// How long after `initialize_output` or `use_mode` to wait for an in-flight
-/// page flip before assuming Smithay's bandwidth fallback committed
-/// synchronously without generating a vblank event.
-const BANDWIDTH_FALLBACK_STALE_FLIP: Duration = Duration::from_millis(100);
-/// Initial retry attempts logged at warning/error level before switching to
-/// quiet capped-backoff retries while a post-wake scanout stays stuck.
-const WAKE_CLEAR_RETRIES: u8 = 3;
-
-fn monotonic_now() -> Duration {
-    Clock::<Monotonic>::new().now().into()
-}
-
-fn wake_retry_delay(attempt: u8) -> Duration {
-    WAKE_STALE_FLIP.saturating_mul(1u32 << attempt.min(3))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FlipCutoff {
-    monotonic: Duration,
-    realtime: SystemTime,
-}
-
-impl FlipCutoff {
-    fn now() -> Self {
-        Self { monotonic: monotonic_now(), realtime: SystemTime::now() }
-    }
-}
-
-/// Drops vblank events timestamped at or before the scanout reset cutoff in
-/// either clock domain, and clears the cutoff once a post-reset event arrives
-/// (or if the realtime wall clock stepped backwards).
-fn retire_vblank_cutoff(
-    retired_before: &mut Option<FlipCutoff>,
-    metadata: Option<&DrmEventMetadata>,
-    now_realtime: SystemTime,
-) -> bool {
-    let Some(cutoff) = *retired_before else { return false };
-    match metadata.map(|meta| meta.time) {
-        Some(DrmEventTime::Monotonic(time)) if time <= cutoff.monotonic => true,
-        Some(DrmEventTime::Realtime(time)) if now_realtime >= cutoff.realtime && time <= cutoff.realtime => true,
-        Some(DrmEventTime::Monotonic(_) | DrmEventTime::Realtime(_)) => {
-            *retired_before = None;
-            false
-        }
-        None => false,
-    }
-}
-
-/// Returns the cutoff to keep on a CRTC when its surface disconnects, so a
-/// late page-flip event from the old surface cannot complete a replacement
-/// surface's first frame on the same CRTC.
-fn disconnect_flip_cutoff(
-    frame_pending: bool,
-    existing: Option<FlipCutoff>,
-    now: impl FnOnce() -> FlipCutoff,
-) -> Option<FlipCutoff> {
-    if frame_pending { Some(now()) } else { existing }
-}
-
-fn schedule_stuck_flip_retry(
-    handle: &LoopHandle<'static, Tileception>,
-    targets: Vec<StuckFlip>,
-    delay: Duration,
-    attempt: u8,
-) {
-    if targets.is_empty() {
-        return;
-    }
-    if let Err(error) = handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
-        state.recover_stuck_flips(&targets, attempt);
-        TimeoutAction::Drop
-    }) {
-        tracing::error!("could not schedule stuck-flip recovery timer: {error}");
-    }
-}
-
-#[derive(Clone, Copy)]
-struct StuckFlip {
-    node: DrmNode,
-    crtc: crtc::Handle,
-    surface_id: u64,
-    flip_seq: u64,
-}
 
 pub struct Udev {
     pub session: LibSeatSession,
@@ -212,18 +124,12 @@ struct Gpu {
     manager: OutputManager,
     scanner: DrmScanner,
     surfaces: Vec<Lit>,
-    /// Cutoffs carried across disconnect/reconnect on the same CRTC so a stale
-    /// vblank from a retired surface never completes its replacement's frame.
-    retired_flips: HashMap<crtc::Handle, FlipCutoff>,
     _drm_token: RegistrationToken,
     /// Secondary GPUs upload completed primary-renderer frames for scanout.
     renderer: Option<GlesRenderer>,
 }
 
 struct Lit {
-    /// Unique surface generation so timers never mistake a newly connected
-    /// output on the same CRTC for a retired one.
-    surface_id: u64,
     connector: connector::Handle,
     modes: Vec<smithay::reexports::drm::control::Mode>,
     mode: WlMode,
@@ -232,16 +138,6 @@ struct Lit {
     output: Output,
     drm_output: Surface,
     frame_pending: bool,
-    /// Monotonic counter incremented each time a frame is queued or completed,
-    /// so wake recovery only resets outputs whose flip genuinely never arrived.
-    flip_seq: u64,
-    /// `flip_seq` currently watched by an active post-wake retry timer, so
-    /// repeated `wake_udev` calls do not stack duplicate retry chains.
-    wake_retry_seq: Option<u64>,
-    /// Timestamps recorded when `compositor.clear()` retires an in-flight flip,
-    /// so a late DRM vblank event from before the reset cannot prematurely
-    /// complete a replacement frame.
-    retired_flip_before: Option<FlipCutoff>,
     /// Vblank pacing timer waiting until just before this output's next refresh.
     render_timer: Option<RegistrationToken>,
     /// Client buffers held until scanout completes. See `frame_buffers`.
@@ -273,7 +169,6 @@ struct Unchanged {
 /// Numbers for frames that changed nothing, unique across screens and the
 /// screens that replace them, so a timer finds only its own frame.
 static NEXT_UNCHANGED: AtomicU64 = AtomicU64::new(1);
-static NEXT_SURFACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// How many times a frame that changed nothing looks for its refresh
 /// before giving up on it (a screen that stopped refreshing).
@@ -380,57 +275,31 @@ impl Lit {
         }
     }
 
-    /// Retires any pending scanout state on this surface after pause, sleep,
-    /// disable, or a successful `clear()`.
-    fn retire_frame(&mut self, handle: &LoopHandle<'static, Tileception>, cutoff: Option<FlipCutoff>) {
+    /// Forgets the frame this screen waits for, and what was kept for it,
+    /// after a pause, sleep, disable or a scanout reset.
+    fn retire_frame(&mut self, handle: &LoopHandle<'static, Tileception>) {
         self.cancel_render_timer(handle);
-        if let Some(cutoff) = cutoff {
-            self.retired_flip_before = Some(cutoff);
-        }
         self.frame_pending = false;
-        self.flip_seq = self.flip_seq.wrapping_add(1);
-        self.wake_retry_seq = None;
         self.in_flight.clear();
         self.lock_queued = false;
         self.lock_shown = false;
         self.drop_unchanged();
     }
 
-    /// Drops Smithay's queued/stale scanout state after resume or a stuck flip.
-    fn reset_scanout(&mut self, loud: bool, context: &str) -> bool {
+    /// Drops Smithay's queued and stale scanout state, then the frame this
+    /// screen waited for: a page flip from before a suspend may never
+    /// complete. The screen may blank for a frame.
+    fn reset_scanout(&mut self, handle: &LoopHandle<'static, Tileception>, context: &str) {
         self.drm_output.with_compositor(|compositor| {
-            let cleared = match compositor.clear() {
-                Ok(()) => true,
-                Err(err) => {
-                    if loud {
-                        tracing::error!("could not clear stale scanout {context}: {err}");
-                    } else {
-                        tracing::debug!("still could not clear stale scanout {context}: {err}");
-                    }
-                    false
-                }
-            };
+            if let Err(err) = compositor.clear() {
+                tracing::error!("could not clear stale scanout {context}: {err}");
+            }
             compositor.reset_buffers();
             if let Err(err) = compositor.reset_state() {
-                if loud {
-                    tracing::error!("could not reset output {context}: {err}");
-                } else {
-                    tracing::debug!("still could not reset output {context}: {err}");
-                }
+                tracing::error!("could not reset output {context}: {err}");
             }
-            cleared
-        })
-    }
-
-    /// Marks this surface's current pending flip for watchdog recovery if it is
-    /// not already being watched.
-    fn watch_pending_flip(&mut self, node: DrmNode) -> Option<StuckFlip> {
-        if self.enabled && self.frame_pending && self.wake_retry_seq != Some(self.flip_seq) {
-            self.wake_retry_seq = Some(self.flip_seq);
-            Some(StuckFlip { node, crtc: self.crtc, surface_id: self.surface_id, flip_seq: self.flip_seq })
-        } else {
-            None
-        }
+        });
+        self.retire_frame(handle);
     }
 }
 
@@ -501,7 +370,6 @@ impl Gpu {
                 manager,
                 scanner: DrmScanner::new(),
                 surfaces: Vec::new(),
-                retired_flips: HashMap::new(),
                 _drm_token: token,
                 renderer: None,
             },
@@ -647,7 +515,7 @@ pub fn init(
                 for gpu in &mut udev.gpus {
                     gpu.manager.pause();
                     for lit in &mut gpu.surfaces {
-                        lit.retire_frame(&state.loop_handle, None);
+                        lit.retire_frame(&state.loop_handle);
                     }
                 }
                 udev.render_pending = false;
@@ -658,10 +526,6 @@ pub fn init(
             if libinput.resume().is_err() {
                 tracing::error!("libinput could not resume");
             }
-            // Clear idle-off state before resetting scanout so `set_output_sleep(false)`
-            // cannot overwrite `frame_pending` or `flip_seq` on a failed clear retry.
-            state.idle_activity();
-            let mut retry_clear = Vec::new();
             if let Some(udev) = state.udev.as_mut() {
                 if let Some(poll) = udev.poll.take() {
                     state.loop_handle.remove(poll);
@@ -671,29 +535,11 @@ pub fn init(
                         tracing::error!("drm could not resume: {err}");
                     }
                     for lit in &mut gpu.surfaces {
-                        // A pre-suspend page flip may never deliver its vblank. Drop
-                        // both Smithay's queued frames and the stale scanout state.
-                        let cleared = lit.reset_scanout(true, "after resume");
-                        if cleared {
-                            lit.retire_frame(&state.loop_handle, Some(FlipCutoff::now()));
-                        } else if lit.enabled {
-                            // Hold off queuing a replacement frame behind a stale
-                            // scanout until `clear()` succeeds on retry.
-                            lit.cancel_render_timer(&state.loop_handle);
-                            lit.frame_pending = true;
-                            lit.flip_seq = lit.flip_seq.wrapping_add(1);
-                            lit.wake_retry_seq = Some(lit.flip_seq);
-                            retry_clear.push(StuckFlip {
-                                node: gpu.node,
-                                crtc: lit.crtc,
-                                surface_id: lit.surface_id,
-                                flip_seq: lit.flip_seq,
-                            });
-                        }
+                        lit.reset_scanout(&state.loop_handle, "after resume");
                     }
                 }
             }
-            schedule_stuck_flip_retry(&state.loop_handle, retry_clear, WAKE_STALE_FLIP, 0);
+            state.idle_activity();
             state.discover_gpus();
             state.scan_connectors();
             state.schedule_render();
@@ -748,75 +594,25 @@ impl Tileception {
         }
     }
 
-    /// Recovers DRM state after waking from suspend: scans connectors for any
-    /// dock/display changes and arms a short watchdog for any output that still
-    /// has an in-flight page flip, resetting only outputs whose vblank never
-    /// arrives instead of blanking healthy displays on every wake.
+    /// Recovers DRM state after waking from suspend. Unlike a VT switch,
+    /// suspend often skips libseat's `ActivateSession`, and a page flip from
+    /// before it may never complete, so every screen drops its scanout state
+    /// and draws afresh. Displays docked or undocked meanwhile are scanned.
     pub fn wake_udev(&mut self) {
         let Some(udev) = self.udev.as_mut() else { return };
         if !udev.session.is_active() {
             return;
         }
-        let mut pending = Vec::new();
+        if let Some(poll) = udev.poll.take() {
+            self.loop_handle.remove(poll);
+        }
         for gpu in &mut udev.gpus {
-            let node = gpu.node;
             for lit in &mut gpu.surfaces {
-                if let Some(target) = lit.watch_pending_flip(node) {
-                    pending.push(target);
-                }
+                lit.reset_scanout(&self.loop_handle, "after wake");
             }
         }
-        schedule_stuck_flip_retry(&self.loop_handle, pending, WAKE_STALE_FLIP, 0);
         self.scan_connectors();
         self.schedule_render();
-    }
-
-    fn recover_stuck_flips(&mut self, expected: &[StuckFlip], attempt: u8) {
-        let Some(udev) = self.udev.as_mut() else { return };
-        if !udev.session.is_active() {
-            return;
-        }
-        let mut recovered = false;
-        let mut retry = Vec::new();
-        for &target in expected {
-            let Some(lit) = udev.lit_mut(target.node, target.crtc).filter(|lit| lit.surface_id == target.surface_id)
-            else {
-                continue;
-            };
-            if !lit.enabled || !lit.frame_pending || lit.flip_seq != target.flip_seq {
-                continue;
-            }
-            let loud = attempt <= WAKE_CLEAR_RETRIES;
-            if loud {
-                tracing::warn!(output = %lit.output.name(), attempt, "page flip stuck after wake; resetting scanout");
-            } else {
-                tracing::debug!(output = %lit.output.name(), attempt, "retrying stuck post-wake scanout reset");
-            }
-            let cleared = lit.reset_scanout(loud, "after wake");
-            if cleared {
-                lit.retire_frame(&self.loop_handle, Some(FlipCutoff::now()));
-                recovered = true;
-            } else {
-                lit.cancel_render_timer(&self.loop_handle);
-                if attempt == WAKE_CLEAR_RETRIES {
-                    tracing::error!(
-                        output = %lit.output.name(),
-                        "could not clear stuck scanout after {} attempts; keeping retry watchdog active",
-                        attempt + 1
-                    );
-                }
-                // Keep `frame_pending` set and keep retrying at the capped
-                // backoff until `clear()` succeeds, a late vblank arrives, or
-                // the output/session changes. Clearing `frame_pending` while
-                // Smithay still holds the old pending frame would queue a new
-                // frame behind it and leave the output stuck with no watchdog.
-                retry.push(target);
-            }
-        }
-        schedule_stuck_flip_retry(&self.loop_handle, retry, wake_retry_delay(attempt), attempt.saturating_add(1));
-        if recovered {
-            self.schedule_render();
-        }
     }
 
     fn remove_gpu(&mut self, device_id: libc::dev_t) {
@@ -853,7 +649,6 @@ impl Tileception {
             if !lit.enabled {
                 continue;
             }
-            let had_pending = lit.frame_pending;
             let cleared = if asleep {
                 match lit.drm_output.with_compositor(|compositor| compositor.clear()) {
                     Ok(()) => true,
@@ -868,10 +663,9 @@ impl Tileception {
                 true
             };
             if cleared {
-                let cutoff = (asleep && had_pending).then(FlipCutoff::now);
                 // The flip that frame waited for may never come, and a refresh
                 // after waking shows nothing from before.
-                lit.retire_frame(&self.loop_handle, cutoff);
+                lit.retire_frame(&self.loop_handle);
             }
         }
         success
@@ -901,25 +695,12 @@ impl Tileception {
                     DrmScanEvent::Connected { connector, crtc: Some(crtc) } => {
                         if !gpu.surfaces.iter().any(|lit| lit.crtc == crtc) {
                             let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
-                            self.light(
-                                gpu.node,
-                                &mut gpu.manager,
-                                renderer,
-                                &mut gpu.surfaces,
-                                &mut gpu.retired_flips,
-                                connector,
-                                crtc,
-                            );
+                            self.light(&mut gpu.manager, renderer, &mut gpu.surfaces, connector, crtc);
                         }
                     }
                     DrmScanEvent::Disconnected { crtc: Some(crtc), .. } => {
                         if let Some(index) = gpu.surfaces.iter().position(|lit| lit.crtc == crtc) {
                             let mut lit = gpu.surfaces.remove(index);
-                            if let Some(cutoff) =
-                                disconnect_flip_cutoff(lit.frame_pending, lit.retired_flip_before, FlipCutoff::now)
-                            {
-                                gpu.retired_flips.insert(crtc, cutoff);
-                            }
                             lit.cancel_render_timer(&self.loop_handle);
                             lit.drop_unchanged();
                             self.remove_output(&lit.output);
@@ -960,14 +741,11 @@ impl Tileception {
         self.schedule_render();
     }
 
-    #[allow(clippy::too_many_arguments, reason = "internal DRM hotplug helper borrowing fields of Gpu")]
     fn light(
         &mut self,
-        node: DrmNode,
         manager: &mut OutputManager,
         renderer: &mut GlesRenderer,
         surfaces: &mut Vec<Lit>,
-        retired_flips: &mut HashMap<crtc::Handle, FlipCutoff>,
         connector: connector::Info,
         crtc: crtc::Handle,
     ) {
@@ -1009,7 +787,7 @@ impl Tileception {
             planes.overlay.clear();
         }
 
-        let init_result = manager.initialize_output::<_, crate::render::OutputElement>(
+        let drm_output = match manager.initialize_output::<_, crate::render::OutputElement>(
             crtc,
             mode,
             &[connector.handle()],
@@ -1023,14 +801,7 @@ impl Tileception {
             Some(planes),
             renderer,
             &DrmOutputRenderElements::default(),
-        );
-        // Smithay's bandwidth fallback inside `initialize_output` can commit
-        // frames synchronously on existing CRTCs on this GPU (even on `Err`),
-        // dropping their pending frames without generating a vblank event.
-        // Watch any existing pending flips so they recover if no vblank comes.
-        let watch: Vec<StuckFlip> = surfaces.iter_mut().filter_map(|lit| lit.watch_pending_flip(node)).collect();
-        schedule_stuck_flip_retry(&self.loop_handle, watch, BANDWIDTH_FALLBACK_STALE_FLIP, 0);
-        let drm_output = match init_result {
+        ) {
             Ok(initialized) => initialized,
             Err(err) => {
                 tracing::error!("could not light {name}: {err}");
@@ -1042,7 +813,6 @@ impl Tileception {
         self.advertise_output(&output);
         self.add_output(output.clone());
         surfaces.push(Lit {
-            surface_id: NEXT_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             connector: connector.handle(),
             modes: connector.modes().to_vec(),
             mode: wl_mode,
@@ -1051,9 +821,6 @@ impl Tileception {
             output,
             drm_output,
             frame_pending: false,
-            flip_seq: 0,
-            wake_retry_seq: None,
-            retired_flip_before: retired_flips.remove(&crtc),
             render_timer: None,
             in_flight: Vec::new(),
             lock_queued: false,
@@ -1075,47 +842,36 @@ impl Tileception {
     ) -> Result<(), String> {
         let Some(udev) = self.udev.as_mut() else { return Ok(()) };
         for gpu in &mut udev.gpus {
-            let Some(index) = gpu.surfaces.iter().position(|lit| &lit.output == output) else { continue };
+            let Some(lit) = gpu.surfaces.iter_mut().find(|lit| &lit.output == output) else { continue };
             if !enabled {
-                let lit = &mut gpu.surfaces[index];
-                let cutoff = lit.frame_pending.then(FlipCutoff::now);
                 lit.drm_output
                     .with_compositor(|compositor| compositor.clear())
                     .map_err(|error| format!("could not disable {}: {error}", output.name()))?;
                 lit.enabled = false;
                 // Their fifo batches go with the watchdog.
-                lit.retire_frame(&self.loop_handle, cutoff);
+                lit.retire_frame(&self.loop_handle);
                 return Ok(());
             }
-            let drm_mode = gpu.surfaces[index]
+            let drm_mode = lit
                 .modes
                 .iter()
                 .find(|candidate| WlMode::from(**candidate) == mode)
                 .copied()
                 .ok_or_else(|| format!("{} does not advertise the requested mode", output.name()))?;
-            let mode_changed = gpu.surfaces[index].mode != mode;
+            let mode_changed = lit.mode != mode;
             if mode_changed {
                 let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
-                let mode_result = gpu.surfaces[index].drm_output.use_mode::<_, crate::render::OutputElement>(
-                    drm_mode,
-                    renderer,
-                    &DrmOutputRenderElements::default(),
-                );
-                // Smithay's bandwidth fallback inside `use_mode` can commit
-                // frames synchronously on every CRTC on this GPU (even on
-                // `Err`), dropping their pending frames without a vblank event.
-                // Watch all pending flips on this GPU so none stay stranded.
-                let node = gpu.node;
-                let watch: Vec<StuckFlip> =
-                    gpu.surfaces.iter_mut().filter_map(|surface| surface.watch_pending_flip(node)).collect();
-                schedule_stuck_flip_retry(&self.loop_handle, watch, BANDWIDTH_FALLBACK_STALE_FLIP, 0);
-                mode_result.map_err(|error| format!("could not set mode on {}: {error}", output.name()))?;
-                let lit = &mut gpu.surfaces[index];
+                lit.drm_output
+                    .use_mode::<_, crate::render::OutputElement>(
+                        drm_mode,
+                        renderer,
+                        &DrmOutputRenderElements::default(),
+                    )
+                    .map_err(|error| format!("could not set mode on {}: {error}", output.name()))?;
                 lit.mode = mode;
                 // Frames waiting for a refresh of the old mode give up.
                 lit.drop_unchanged();
             }
-            let lit = &mut gpu.surfaces[index];
             lit.drm_output.with_compositor(|compositor| {
                 compositor.set_output_mode_source(smithay::output::OutputModeSource::Static {
                     size: mode.size,
@@ -1124,14 +880,15 @@ impl Tileception {
                 })
             });
             if !lit.enabled || mode_changed || output.current_transform() != transform {
-                // `use_mode` usually updates the pending mode and swapchain
-                // without retiring an in-flight page flip, while the watchdog
-                // above recovers if Smithay's bandwidth fallback committed
-                // synchronously. Keep `frame_pending` intact when already
-                // enabled so a normal in-flight flip completes cleanly.
+                // An enabled screen keeps waiting for a page flip in flight:
+                // the kernel delivers its event whatever `use_mode` does. When
+                // the mode fails its test, Smithay lowers bandwidth by
+                // committing frames that ask for no event of their own and
+                // forget the pending frame; the flip's event still arrives,
+                // and `frame_submitted` then simply has nothing to report.
                 lit.drm_output.reset_buffers();
                 if !lit.enabled {
-                    lit.retire_frame(&self.loop_handle, None);
+                    lit.retire_frame(&self.loop_handle);
                 } else {
                     lit.cancel_render_timer(&self.loop_handle);
                     lit.lock_queued = false;
@@ -1200,9 +957,6 @@ impl Tileception {
     fn on_vblank(&mut self, node: DrmNode, crtc: crtc::Handle, metadata: Option<DrmEventMetadata>) {
         let Some(udev) = self.udev.as_mut() else { return };
         let Some(lit) = udev.lit_mut(node, crtc) else { return };
-        if retire_vblank_cutoff(&mut lit.retired_flip_before, metadata.as_ref(), SystemTime::now()) {
-            return;
-        }
         if !lit.frame_pending {
             // Still retire any pending flip inside Smithay so `queue_frame`
             // never stalls behind an already-completed flip.
@@ -1221,7 +975,6 @@ impl Tileception {
             return;
         }
         lit.frame_pending = false;
-        lit.flip_seq = lit.flip_seq.wrapping_add(1);
         // The flip waited for the frame's GPU work, so clients may have
         // these buffers back.
         lit.in_flight.clear();
@@ -1438,7 +1191,6 @@ impl Tileception {
                                     Ok(()) => {
                                         queued = true;
                                         lit.frame_pending = true;
-                                        lit.flip_seq = lit.flip_seq.wrapping_add(1);
                                         lit.lock_queued = state.is_locked();
                                         lit.in_flight = state.frame_buffers(&lit.output);
                                     }
@@ -1567,92 +1319,5 @@ impl Tileception {
         {
             tracing::warn!("could not switch to VT {vt_number}: {err}");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retired_vblank_ignores_events_at_or_before_clear_cutoff() {
-        let base_realtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let initial = FlipCutoff { monotonic: Duration::from_secs(10), realtime: base_realtime };
-
-        let before = DrmEventMetadata { sequence: 1, time: DrmEventTime::Monotonic(Duration::from_secs(9)) };
-        let exact = DrmEventMetadata { sequence: 2, time: DrmEventTime::Monotonic(Duration::from_secs(10)) };
-        let after = DrmEventMetadata { sequence: 3, time: DrmEventTime::Monotonic(Duration::from_millis(10_001)) };
-
-        // Stale events and untimestamped events keep the cutoff armed until a post-cutoff event arrives.
-        let now_rt = base_realtime + Duration::from_secs(1);
-        let mut cutoff = Some(initial);
-        assert!(retire_vblank_cutoff(&mut cutoff, Some(&before), now_rt));
-        assert_eq!(cutoff, Some(initial));
-        assert!(retire_vblank_cutoff(&mut cutoff, Some(&exact), now_rt));
-        assert_eq!(cutoff, Some(initial));
-        assert!(!retire_vblank_cutoff(&mut cutoff, None, now_rt));
-        assert_eq!(cutoff, Some(initial));
-        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&after), now_rt));
-        assert_eq!(cutoff, None);
-        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&before), now_rt));
-
-        // Realtime clock domain is handled symmetrically.
-        let rt_before =
-            DrmEventMetadata { sequence: 4, time: DrmEventTime::Realtime(base_realtime - Duration::from_secs(1)) };
-        let rt_exact = DrmEventMetadata { sequence: 5, time: DrmEventTime::Realtime(base_realtime) };
-        let rt_after =
-            DrmEventMetadata { sequence: 6, time: DrmEventTime::Realtime(base_realtime + Duration::from_millis(1)) };
-        let mut cutoff = Some(initial);
-        assert!(retire_vblank_cutoff(&mut cutoff, Some(&rt_before), now_rt));
-        assert_eq!(cutoff, Some(initial));
-        assert!(retire_vblank_cutoff(&mut cutoff, Some(&rt_exact), now_rt));
-        assert_eq!(cutoff, Some(initial));
-        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&rt_after), now_rt));
-        assert_eq!(cutoff, None);
-
-        // A backward wall-clock step clears the realtime cutoff instead of stalling completion.
-        let stepped_back = base_realtime - Duration::from_secs(5);
-        let mut cutoff = Some(initial);
-        assert!(!retire_vblank_cutoff(&mut cutoff, Some(&rt_before), stepped_back));
-        assert_eq!(cutoff, None);
-    }
-
-    #[test]
-    fn disconnect_cutoff_protects_replacement_surface_from_stale_vblank() {
-        let base_realtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let disconnect_time = FlipCutoff { monotonic: Duration::from_secs(20), realtime: base_realtime };
-
-        // Disconnecting an idle surface with no prior cutoff leaves no cutoff.
-        assert_eq!(disconnect_flip_cutoff(false, None, || disconnect_time), None);
-
-        // Disconnecting a surface with an existing cutoff preserves it.
-        let prior = FlipCutoff { monotonic: Duration::from_secs(18), realtime: base_realtime - Duration::from_secs(2) };
-        assert_eq!(disconnect_flip_cutoff(false, Some(prior), || disconnect_time), Some(prior));
-
-        // Disconnecting a surface with an in-flight flip records a fresh cutoff
-        // that drops the old flip's late vblank on the replacement surface,
-        // then allows the replacement surface's first real vblank through.
-        let mut replacement_cutoff = disconnect_flip_cutoff(true, Some(prior), || disconnect_time);
-        assert_eq!(replacement_cutoff, Some(disconnect_time));
-
-        let stale_old_vblank =
-            DrmEventMetadata { sequence: 10, time: DrmEventTime::Monotonic(Duration::from_secs(19)) };
-        let replacement_vblank =
-            DrmEventMetadata { sequence: 11, time: DrmEventTime::Monotonic(Duration::from_millis(20_016)) };
-        let now_rt = base_realtime + Duration::from_millis(16);
-
-        assert!(retire_vblank_cutoff(&mut replacement_cutoff, Some(&stale_old_vblank), now_rt));
-        assert_eq!(replacement_cutoff, Some(disconnect_time));
-        assert!(!retire_vblank_cutoff(&mut replacement_cutoff, Some(&replacement_vblank), now_rt));
-        assert_eq!(replacement_cutoff, None);
-    }
-
-    #[test]
-    fn wake_retry_delay_backs_off_boundedly() {
-        assert_eq!(wake_retry_delay(0), Duration::from_millis(500));
-        assert_eq!(wake_retry_delay(1), Duration::from_millis(1000));
-        assert_eq!(wake_retry_delay(2), Duration::from_millis(2000));
-        assert_eq!(wake_retry_delay(3), Duration::from_millis(4000));
-        assert_eq!(wake_retry_delay(10), Duration::from_millis(4000));
     }
 }
