@@ -43,6 +43,20 @@ pub struct LockConfig {
     pub notifications: Shown,
     /// Exceptions, by desktop entry (`.desktop` may be left off) or app name.
     pub notification_apps: std::collections::BTreeMap<String, Shown>,
+    /// What is behind the lock screen's tiles.
+    pub backdrop: Backdrop,
+}
+
+/// `[lock] backdrop`: what Tileception's own lock screen shows behind its tiles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backdrop {
+    /// The `[theme]` wallpaper, dimmed.
+    #[default]
+    Wallpaper,
+    /// Digital rain in the accent colours, with the clock drawn in it and
+    /// the tiles below.
+    Rain,
 }
 
 impl LockConfig {
@@ -241,6 +255,13 @@ mod tests {
 
     const CALENDAR: &[&str] = &["org.gnome.Calendar", "Calendar"];
     const CHAT: &[&str] = &["chat", "Chat"];
+
+    #[test]
+    fn the_backdrop_is_the_wallpaper_unless_rain_is_asked_for() {
+        assert_eq!(LockConfig::default().backdrop, Backdrop::Wallpaper);
+        assert_eq!(config("backdrop = \"rain\"").backdrop, Backdrop::Rain);
+        assert!(toml::from_str::<LockConfig>("backdrop = \"snow\"").is_err());
+    }
 
     #[test]
     fn the_default_is_a_count_for_everyone() {

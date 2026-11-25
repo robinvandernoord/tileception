@@ -84,6 +84,15 @@ pub fn neighbour(placed: &[(Panel, Rect)], from: Panel, dir: Dir) -> Option<Pane
         .map(|(panel, _)| *panel)
 }
 
+/// A lock screen with rain: the area for the clock drawn in the rain, and
+/// the band along the bottom where the tiles go, no wider than they need.
+pub fn rain_lock(area: Rect) -> (Rect, Rect) {
+    let height = (area.h * 0.5).max(area.h.min(400.0));
+    let width = area.w.min(1120.0);
+    let band = Rect::new(area.x + (area.w - width) / 2.0, area.bottom() - height, width, height);
+    (Rect::new(area.x, area.y, area.w, area.h - height), band)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +121,18 @@ mod tests {
         let (login, clock) = (rect(&placed, Panel::Login), rect(&placed, Panel::Clock));
         assert_eq!(login.w, 600.0 - 24.0);
         assert!(clock.y > login.bottom());
+    }
+
+    #[test]
+    fn rain_leaves_the_top_to_the_clock() {
+        let area = Rect::new(0.0, 34.0, 1920.0, 1046.0);
+        let (clock, band) = rain_lock(area);
+        assert_eq!((clock.y, clock.bottom()), (34.0, band.y));
+        assert_eq!((band.w, band.bottom()), (1120.0, 1080.0));
+        assert_eq!(band.x, 400.0);
+        // A short screen still gets tiles tall enough to type in.
+        let (clock, band) = rain_lock(Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!((band.h, band.w, clock.h), (400.0, 800.0, 200.0));
     }
 
     #[test]

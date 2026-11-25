@@ -689,6 +689,22 @@ always show. With Do not disturb on, the lock screen shows only the count. When
 whatever `[lock]` says. External lockers (`shell.lock` or
 `general.lock_command`) draw only themselves.
 
+### Lock screen backdrop
+
+Behind its tiles, Tileception's own lock screen shows the `[theme]` wallpaper,
+dimmed. For digital rain instead:
+
+```toml
+[lock]
+backdrop = "rain"   # "wallpaper" | "rain"
+```
+
+Tile glyphs then fall in your accent colours, the clock is drawn in the rain as
+large tiles, and the password and notification tiles move to a band along the
+bottom. A wrong password turns the rain the danger colour for a moment. With
+`animation_ms = 0`, or `reduce_motion` in the login screen's `greeter.toml`,
+the rain holds still.
+
 Suspend is available in the power menu by default. To disable that menu action:
 
 ```toml
