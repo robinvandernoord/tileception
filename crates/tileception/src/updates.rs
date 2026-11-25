@@ -2026,12 +2026,20 @@ fn write_log(log: &Log) {
     }
 }
 
+fn resolve_log_title(title: &str) -> &'static str {
+    let title = match title {
+        "Changing which releases are offered" => "Changing release upgrade track",
+        other => other,
+    };
+    Task::TITLES.iter().copied().find(|known| *known == title).unwrap_or("Changing kernels")
+}
+
 fn read_log() -> Option<Log> {
     let text =
         std::fs::read_to_string(state_file("updates-last.log")).ok().filter(|text| text.len() <= LOG_LIMIT * 2)?;
     let (first, text) = text.split_once('\n')?;
     let (title, state) = first.split_once('\t')?;
-    let title = Task::TITLES.iter().copied().find(|known| *known == title).unwrap_or("Changing kernels");
+    let title = resolve_log_title(title);
     Some(Log { title, succeeded: state == "ok", text: text.to_string() })
 }
 
@@ -2368,5 +2376,13 @@ mod tests {
         updates.snapshot.restart = false;
         updates.offer = release::Offer::Release("26.04 LTS".into());
         assert_eq!(updates.chip(), Some(("26.04 LTS".into(), Tone::Accent)));
+    }
+
+    #[test]
+    fn kept_log_recognizes_renamed_release_track_title() {
+        assert_eq!(resolve_log_title("Changing which releases are offered"), "Changing release upgrade track");
+        assert_eq!(resolve_log_title("Changing release upgrade track"), "Changing release upgrade track");
+        assert_eq!(resolve_log_title("Installing updates"), "Installing updates");
+        assert_eq!(resolve_log_title("Unknown legacy title"), "Changing kernels");
     }
 }

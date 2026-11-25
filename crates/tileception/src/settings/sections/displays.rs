@@ -94,7 +94,11 @@ impl Screen {
                         .unwrap_or_else(|| monitor.map_or(1., |monitor| monitor.auto_scale))
                 };
                 let setting: crate::scale::OutputConfig = row.value.clone().try_into().unwrap_or_default();
-                let mode = setting.mode.parse().ok().flatten();
+                let mode = setting.mode.parse().ok().flatten().filter(|mode| {
+                    monitor.is_none_or(|monitor| {
+                        monitor.name.starts_with("headless") || monitor.modes.is_empty() || monitor.modes.contains(mode)
+                    })
+                });
                 let size = mode.map_or_else(
                     || (monitor.map_or(1280., |monitor| monitor.width), monitor.map_or(720., |monitor| monitor.height)),
                     |mode| (f64::from(mode.size.w), f64::from(mode.size.h)),

@@ -269,7 +269,14 @@ impl Tileception {
                     return Err("nested backend does not support output mode, transform or enable changes".into());
                 }
             } else if !output.name().starts_with("headless") && !output.modes().contains(&mode) {
-                if allow_fallback
+                let unchanged_mode = self
+                    .config
+                    .file
+                    .outputs
+                    .get(&output.name())
+                    .or_else(|| self.config.file.outputs.get("*"))
+                    .is_some_and(|saved| saved.mode == setting.mode);
+                if (allow_fallback || unchanged_mode)
                     && let Some(fallback) = [output.preferred_mode(), output.current_mode()]
                         .into_iter()
                         .flatten()
@@ -1990,24 +1997,85 @@ fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64;
                 } else {
                     None
                 };
-                let best = preferred
-                    .filter(&overlap_free)
-                    .or_else(|| {
-                        candidates
-                            .into_iter()
-                            .filter(&overlap_free)
-                            .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
-                    })
-                    .unwrap_or_else(|| {
-                        let max_right = (0..count)
-                            .filter(|&other| other != second)
-                            .map(|other| positions[other][0] + sizes[other][0])
-                            .max()
-                            .unwrap_or(0);
-                        [max_right - positions[second][0], 0]
+                // If the preferred shift collides with further monitors along
+                // the same axis (for example growing the left screen in a
+                // 3-monitor row), try cascading the push along that direction
+                // so the row stays intact instead of jumping perpendicular.
+                let cascaded = preferred.and_then(|shift| {
+                    if overlap_free(&shift) {
+                        return None;
+                    }
+                    let mut test_pos = positions.clone();
+                    let mut pushed = vec![false; count];
+                    let mut queue = std::collections::VecDeque::from([second]);
+                    test_pos[second][0] += shift[0];
+                    test_pos[second][1] += shift[1];
+                    pushed[second] = true;
+                    let max_steps = count.saturating_mul(count).max(1);
+                    let mut steps = 0usize;
+                    while let Some(cur) = queue.pop_front() {
+                        for other in 0..count {
+                            if other == cur || other == first {
+                                continue;
+                            }
+                            if !rects_overlap(test_pos[cur], sizes[cur], test_pos[other], sizes[other]) {
+                                continue;
+                            }
+                            let delta = if shift[0] > 0 {
+                                let shift_x = test_pos[cur][0] + sizes[cur][0] - test_pos[other][0];
+                                (shift_x > 0).then_some([shift_x, 0])
+                            } else if shift[0] < 0 {
+                                let shift_x = test_pos[cur][0] - (test_pos[other][0] + sizes[other][0]);
+                                (shift_x < 0).then_some([shift_x, 0])
+                            } else if shift[1] > 0 {
+                                let shift_y = test_pos[cur][1] + sizes[cur][1] - test_pos[other][1];
+                                (shift_y > 0).then_some([0, shift_y])
+                            } else if shift[1] < 0 {
+                                let shift_y = test_pos[cur][1] - (test_pos[other][1] + sizes[other][1]);
+                                (shift_y < 0).then_some([0, shift_y])
+                            } else {
+                                None
+                            };
+                            let delta = delta?;
+                            steps += 1;
+                            if steps > max_steps {
+                                return None;
+                            }
+                            test_pos[other][0] += delta[0];
+                            test_pos[other][1] += delta[1];
+                            pushed[other] = true;
+                            queue.push_back(other);
+                        }
+                    }
+                    let clean = (0..count).filter(|&idx| pushed[idx]).all(|idx| {
+                        (0..count)
+                            .filter(|&other| other != idx)
+                            .all(|other| !rects_overlap(test_pos[idx], sizes[idx], test_pos[other], sizes[other]))
                     });
-                positions[second][0] += best[0];
-                positions[second][1] += best[1];
+                    clean.then_some(test_pos)
+                });
+                if let Some(cascaded) = cascaded {
+                    positions = cascaded;
+                } else {
+                    let best = preferred
+                        .filter(&overlap_free)
+                        .or_else(|| {
+                            candidates
+                                .into_iter()
+                                .filter(&overlap_free)
+                                .min_by_key(|shift| shift[0].unsigned_abs().saturating_add(shift[1].unsigned_abs()))
+                        })
+                        .unwrap_or_else(|| {
+                            let max_right = (0..count)
+                                .filter(|&other| other != second)
+                                .map(|other| positions[other][0] + sizes[other][0])
+                                .max()
+                                .unwrap_or(0);
+                            [max_right - positions[second][0], 0]
+                        });
+                    positions[second][0] += best[0];
+                    positions[second][1] += best[1];
+                }
                 separated = true;
                 break 'pairs;
             }
@@ -2167,6 +2235,24 @@ mod tests {
         assert_eq!(
             arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1920, 0]), [1920, 1080])]),
             vec![[0, 0], [3840, 0]]
+        );
+        // Same in a three-monitor horizontal row: both neighbours cascade right instead of jumping above.
+        assert_eq!(
+            arranged_positions(&[
+                (Some([0, 0]), [3840, 2160]),
+                (Some([1920, 0]), [1920, 1080]),
+                (Some([3840, 0]), [1920, 1080]),
+            ]),
+            vec![[0, 0], [3840, 0], [5760, 0]]
+        );
+        // Same when the three monitors are ordered right-to-left.
+        assert_eq!(
+            arranged_positions(&[
+                (Some([3840, 0]), [1920, 1080]),
+                (Some([1920, 0]), [1920, 1080]),
+                (Some([0, 0]), [3840, 2160]),
+            ]),
+            vec![[5760, 0], [3840, 0], [0, 0]]
         );
         // Same when the right monitor sorts first and the left monitor grows.
         assert_eq!(

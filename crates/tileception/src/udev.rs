@@ -98,7 +98,8 @@ const STILL_POLL: Duration = Duration::from_millis(100);
 /// How long after waking from suspend to wait for an in-flight page flip before
 /// treating that output's scanout as stuck and resetting it.
 const WAKE_STALE_FLIP: Duration = Duration::from_millis(500);
-/// Maximum retries when clearing a stuck post-wake scanout fails transiently.
+/// Initial retry attempts logged at warning/error level before switching to
+/// quiet capped-backoff retries while a post-wake scanout stays stuck.
 const WAKE_CLEAR_RETRIES: u8 = 3;
 
 fn monotonic_now() -> Duration {
@@ -722,18 +723,30 @@ impl Tileception {
             if !lit.enabled || !lit.frame_pending || lit.flip_seq != target.flip_seq {
                 continue;
             }
-            tracing::warn!(output = %lit.output.name(), attempt, "page flip stuck after wake; resetting scanout");
+            if attempt <= WAKE_CLEAR_RETRIES {
+                tracing::warn!(output = %lit.output.name(), attempt, "page flip stuck after wake; resetting scanout");
+            } else {
+                tracing::debug!(output = %lit.output.name(), attempt, "retrying stuck post-wake scanout reset");
+            }
             let cleared = lit.drm_output.with_compositor(|compositor| {
                 let cleared = match compositor.clear() {
                     Ok(()) => true,
                     Err(err) => {
-                        tracing::error!("could not clear stale scanout after wake: {err}");
+                        if attempt <= WAKE_CLEAR_RETRIES {
+                            tracing::error!("could not clear stale scanout after wake: {err}");
+                        } else {
+                            tracing::debug!("still could not clear stale scanout after wake: {err}");
+                        }
                         false
                     }
                 };
                 compositor.reset_buffers();
                 if let Err(err) = compositor.reset_state() {
-                    tracing::error!("could not reset output after wake: {err}");
+                    if attempt <= WAKE_CLEAR_RETRIES {
+                        tracing::error!("could not reset output after wake: {err}");
+                    } else {
+                        tracing::debug!("still could not reset output after wake: {err}");
+                    }
                 }
                 cleared
             });
@@ -747,29 +760,27 @@ impl Tileception {
                 lit.lock_shown = false;
                 lit.drop_unchanged();
                 recovered = true;
-            } else if attempt < WAKE_CLEAR_RETRIES {
-                retry.push(target);
             } else {
-                tracing::error!(
-                    output = %lit.output.name(),
-                    "could not recover stuck scanout after {} attempts; releasing hold",
-                    attempt + 1
-                );
-                // Release the hold once retries are exhausted so a permanently
-                // failing `clear()` does not freeze the output indefinitely.
-                lit.frame_pending = false;
-                lit.flip_seq = lit.flip_seq.wrapping_add(1);
-                lit.in_flight.clear();
-                lit.lock_queued = false;
-                lit.lock_shown = false;
-                lit.drop_unchanged();
-                recovered = true;
+                if attempt == WAKE_CLEAR_RETRIES {
+                    tracing::error!(
+                        output = %lit.output.name(),
+                        "could not clear stuck scanout after {} attempts; keeping retry watchdog active",
+                        attempt + 1
+                    );
+                }
+                // Keep `frame_pending` set and keep retrying at the capped
+                // backoff until `clear()` succeeds, a late vblank arrives, or
+                // the output/session changes. Clearing `frame_pending` while
+                // Smithay still holds the old pending frame would queue a new
+                // frame behind it and leave the output stuck with no watchdog.
+                retry.push(target);
             }
         }
         if !retry.is_empty() {
             let delay = wake_retry_delay(attempt);
+            let next_attempt = attempt.saturating_add(1);
             let _ = self.loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
-                state.recover_stuck_flips(&retry, attempt + 1);
+                state.recover_stuck_flips(&retry, next_attempt);
                 TimeoutAction::Drop
             });
         }
