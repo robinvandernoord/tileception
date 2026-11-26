@@ -753,7 +753,7 @@ impl Tileception {
         } else if screen.kind == Kind::Displays && !self.settings.message.is_empty() {
             self.settings.message.as_str()
         } else if screen.kind == Kind::Displays {
-            "Apply tries the changes first: keep them within 15 seconds or they go back."
+            "Apply previews changes for 15 seconds before reverting automatically."
         } else {
             "Back keeps your changes as a draft. Apply saves them."
         };

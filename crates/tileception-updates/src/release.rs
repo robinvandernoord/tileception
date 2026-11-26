@@ -282,7 +282,7 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
             ),
             State::Attention,
         ),
-        None => check("Disk space", "Could not be read; about 9 GB is needed.".into(), State::Attention),
+        None => check("Disk space", "Could not check free space; about 9 GB is needed.".into(), State::Attention),
     });
     list.push(if readiness.pending == 0 {
         check("Up to date", "Every current update is installed.".into(), State::Ready)
@@ -306,7 +306,7 @@ pub fn checks(readiness: &Readiness) -> Vec<Check> {
         let count = readiness.third_party.len();
         check(
             &format!("{count} third-party source{} will be disabled", if count == 1 { "" } else { "s" }),
-            format!("{}. Switch them on again here afterwards.", readiness.third_party.join(", ")),
+            format!("{}. You can re-enable them here after the upgrade.", readiness.third_party.join(", ")),
             State::Notice,
         )
     });

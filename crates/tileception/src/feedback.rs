@@ -896,7 +896,7 @@ impl Tileception {
         if rows.len() > visible {
             let last = (scroll + visible).min(rows.len());
             painter.text(
-                &format!("Lines {} to {last} of {}. Up and Down scroll.", scroll + 1, rows.len()),
+                &format!("Lines {}\u{2013}{last} of {} \u{00b7} Up/Down to scroll", scroll + 1, rows.len()),
                 Rect::new(layout.preview.x, layout.preview.bottom() + 2.0, layout.preview.w, 18.0),
                 Style::new(theme.font_size * 0.8, theme.muted),
             );
@@ -923,7 +923,7 @@ impl Tileception {
                 let doctor = if shot.includes_wizard { ", with the Wizard" } else { "" };
                 format!("{} x {}, attached{doctor}", shot.size.0, shot.size.1)
             }
-            Screenshot::Off => "Pick an area, draw on it, blur what is private".into(),
+            Screenshot::Off => "Capture an area, annotate, or blur private details".into(),
             Screenshot::Dropped => "Screenshot removed because it included the Wizard. Add it again.".into(),
         };
         let width = (end - 8.0 - left).max(1.0);

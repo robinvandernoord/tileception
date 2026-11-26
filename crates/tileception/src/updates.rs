@@ -284,9 +284,9 @@ impl Mirrors {
     pub(crate) fn warning(&self) -> Option<String> {
         let (mirror, reference) = self.check.as_ref()?;
         match &mirror.error {
-            Some(error) => Some(format!("The mirror in use cannot be reached: {error}")),
+            Some(error) => Some(format!("Current mirror cannot be reached: {error}")),
             None if mirror.stale(*reference) => {
-                Some(format!("The mirror in use is {}.", mirrors::describe_lag(mirror.lag(*reference))))
+                Some(format!("Current mirror is {}.", mirrors::describe_lag(mirror.lag(*reference))))
             }
             None => None,
         }
@@ -905,7 +905,7 @@ impl Tileception {
         // A wrong password is asked for again. The task is still part of its
         // install: what follows it, and the log so far, wait for the answer.
         if matches!(result, Err(Failure::Password)) {
-            return self.updates_ask_password(task, Some("That password did not work.".into()));
+            return self.updates_ask_password(task, Some("Incorrect password.".into()));
         }
         // An install of several sources is a chain of tasks with one log.
         // The next part follows a success; a failure ends the chain.
@@ -954,17 +954,17 @@ impl Tileception {
                     Task::Repair => "Packages repaired.".to_string(),
                     Task::Flatpak { .. } | Task::Snap(_) | Task::Uvenv(_) => "Updates installed.".to_string(),
                     Task::Firmware(_) => {
-                        "Firmware updated. Some devices finish when the computer restarts.".to_string()
+                        "Firmware updated. Some devices will finish updating after a restart.".to_string()
                     }
-                    Task::Hold { hold: true, .. } => "Held at their version.".to_string(),
-                    Task::Hold { hold: false, .. } => "Released: they update again.".to_string(),
+                    Task::Hold { hold: true, .. } => "Packages held at current version.".to_string(),
+                    Task::Hold { hold: false, .. } => "Packages released and will update normally.".to_string(),
                     Task::Automatic(true) => "Automatic updates are on.".to_string(),
                     Task::Automatic(false) => "Automatic updates are off.".to_string(),
                     Task::Mirror(url) => format!("Now using {url}."),
-                    Task::Sources(sources) if sources.len() == 1 => "The source is switched on.".to_string(),
-                    Task::Sources(sources) => format!("{} sources are switched on.", sources.len()),
-                    Task::Track(release::Track::Normal) => "Every release is offered.".to_string(),
-                    Task::Track(_) => "Only LTS releases are offered.".to_string(),
+                    Task::Sources(sources) if sources.len() == 1 => "Source enabled.".to_string(),
+                    Task::Sources(sources) => format!("{} sources enabled.", sources.len()),
+                    Task::Track(release::Track::Normal) => "All releases enabled.".to_string(),
+                    Task::Track(_) => "LTS releases only.".to_string(),
                 };
                 if task.changes_packages() {
                     self.notify_locally("Updates", &message, Urgency::Low);
@@ -984,7 +984,7 @@ impl Tileception {
             Err(Failure::Failed(reason)) => {
                 tracing::warn!("{}: {reason}", task.title());
                 let reason = match after {
-                    Some(action) => format!("{reason} {} was called off.", action.label()),
+                    Some(action) => format!("{reason} {} was cancelled.", action.label()),
                     None => reason,
                 };
                 self.notify_locally(&format!("{} failed", task.title()), &reason, Urgency::Critical);
@@ -1220,7 +1220,7 @@ impl Tileception {
             }
             UpdatesCommand::Repair => {
                 if !self.updates.repairable() {
-                    return Err("apt has not asked for a repair".into());
+                    return Err("No package repair is needed".into());
                 }
                 self.updates_start(Task::Repair)?;
             }
@@ -1329,9 +1329,9 @@ impl Tileception {
         }
         match mirrors.test_progress() {
             Some((done, total)) => {
-                text.push_str(&format!("testing the mirrors: {done} of {total} done; ask again in a moment\n"));
+                text.push_str(&format!("testing mirrors: {done} of {total} done; check again in a moment\n"));
             }
-            None if mirrors.testing => text.push_str("finding the mirrors near you; ask again in a moment\n"),
+            None if mirrors.testing => text.push_str("finding nearby mirrors; check again in a moment\n"),
             None => {}
         }
         for mirror in &mirrors.candidates {
@@ -1376,12 +1376,12 @@ impl Tileception {
             text.push_str(&format!("clean-up: {summary}\n"));
         }
         if updates.repairable() {
-            text.push_str("apt asks for a repair: `updates repair`\n");
+            text.push_str("package repair needed: run `updates repair`\n");
         }
         if updates.holds_power() {
             match updates.power_after() {
-                Some(action) => text.push_str(&format!("{} follows when the task ends\n", action.label())),
-                None => text.push_str("restart, power off, suspend and log out wait for the task\n"),
+                Some(action) => text.push_str(&format!("{} will run after this task finishes\n", action.label())),
+                None => text.push_str("restart, power off, suspend and log out are delayed until this task finishes\n"),
             }
         }
         let plan = &updates.snapshot.plan;
@@ -1585,7 +1585,7 @@ fn notes(update: &apt::Update) -> String {
     match result {
         Ok(text) if text.trim().is_empty() => "No release notes were found.".into(),
         Ok(text) => text,
-        Err(error) => format!("The release notes could not be read: {error}"),
+        Err(error) => format!("Could not load release notes: {error}"),
     }
 }
 
@@ -1924,11 +1924,13 @@ fn perform(
     }
     let Some(helper) = helper() else {
         return Some(Err(Failure::Failed(
-            "Changing packages needs tileception-updates-helper, which is not installed.".into(),
+            "Managing packages requires tileception-updates-helper, which is not installed.".into(),
         )));
     };
     if !on_path("sudo") {
-        return Some(Err(Failure::Failed("Changing packages needs polkit with an agent, or sudo.".into())));
+        return Some(Err(Failure::Failed(
+            "Managing packages requires polkit (with an authentication agent) or sudo.".into(),
+        )));
     }
     let mut command = Process::new("sudo");
     match password {
@@ -2024,12 +2026,20 @@ fn write_log(log: &Log) {
     }
 }
 
+fn resolve_log_title(title: &str) -> &'static str {
+    let title = match title {
+        "Changing which releases are offered" => "Changing release upgrade track",
+        other => other,
+    };
+    Task::TITLES.iter().copied().find(|known| *known == title).unwrap_or("Changing kernels")
+}
+
 fn read_log() -> Option<Log> {
     let text =
         std::fs::read_to_string(state_file("updates-last.log")).ok().filter(|text| text.len() <= LOG_LIMIT * 2)?;
     let (first, text) = text.split_once('\n')?;
     let (title, state) = first.split_once('\t')?;
-    let title = Task::TITLES.iter().copied().find(|known| *known == title).unwrap_or("Changing kernels");
+    let title = resolve_log_title(title);
     Some(Log { title, succeeded: state == "ok", text: text.to_string() })
 }
 
@@ -2366,5 +2376,13 @@ mod tests {
         updates.snapshot.restart = false;
         updates.offer = release::Offer::Release("26.04 LTS".into());
         assert_eq!(updates.chip(), Some(("26.04 LTS".into(), Tone::Accent)));
+    }
+
+    #[test]
+    fn kept_log_recognizes_renamed_release_track_title() {
+        assert_eq!(resolve_log_title("Changing which releases are offered"), "Changing release upgrade track");
+        assert_eq!(resolve_log_title("Changing release upgrade track"), "Changing release upgrade track");
+        assert_eq!(resolve_log_title("Installing updates"), "Installing updates");
+        assert_eq!(resolve_log_title("Unknown legacy title"), "Changing kernels");
     }
 }

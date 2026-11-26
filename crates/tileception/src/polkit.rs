@@ -336,7 +336,7 @@ fn said(line: &str) -> Said {
 
 /// Lets polkit's helper check a password for one authentication.
 fn converse(user: &str, cookie: &str, password: &str, stop: Arc<Mutex<HelperStop>>) -> Verdict {
-    const WRONG: &str = "That password did not work.";
+    const WRONG: &str = "Incorrect password.";
     // A line break would end the password early and answer the next question.
     if password.contains(['\n', '\r']) {
         return Verdict::Rejected(WRONG.into());
@@ -362,7 +362,7 @@ fn converse(user: &str, cookie: &str, password: &str, stop: Arc<Mutex<HelperStop
             // A second question is not about this password: a new one, or a code.
             Said::Secret | Said::Open => {
                 return Verdict::Broken(
-                    "This account asks for more than a password, which Tileception cannot enter.".into(),
+                    "This account requires additional authentication that Tileception doesn't support.".into(),
                 );
             }
             Said::Note(_) | Said::Unknown => {}
@@ -547,7 +547,7 @@ mod tests {
     fn a_password_cannot_answer_twice() {
         assert_eq!(
             converse("nobody", "cookie", "one\ntwo", Arc::new(Mutex::new(HelperStop::default()))),
-            Verdict::Rejected("That password did not work.".into())
+            Verdict::Rejected("Incorrect password.".into())
         );
     }
 

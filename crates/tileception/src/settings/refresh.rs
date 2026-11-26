@@ -143,13 +143,13 @@ struct Change<'a> {
 /// which a fixed file takes away.
 /// The warning that Apply will refuse a draft that cannot take a change on
 /// disk; it goes when the file is back as the draft was made on.
-const STALE_DRAFT: &str = "config.toml changed on disk, and your draft of the whole file cannot take the change, so \
-                           Apply will refuse. Discard reloads the file.";
+const STALE_DRAFT: &str = "config.toml changed on disk and conflicts with your draft, so it can't be applied. Click \
+                           Discard to reload the file.";
 
 /// The warning that Apply will refuse edits in the config.toml editor that
 /// cannot take a change on disk; it goes when no editor holds such edits.
-const EDITOR_STALE: &str = "config.toml changed on disk, and your edits in the config.toml editor cannot take the \
-                            change, so Apply will refuse them. Discard reloads the file.";
+const EDITOR_STALE: &str = "config.toml changed on disk and conflicts with your edits in the config.toml editor, so \
+                            they can't be applied. Click Discard to reload the file.";
 
 fn notice(change: &Change<'_>, problems_shown: bool) -> Option<(String, bool)> {
     if change.stale {
@@ -169,7 +169,7 @@ fn notice(change: &Change<'_>, problems_shown: bool) -> Option<(String, bool)> {
     } else if change.reloaded {
         Some(("config.toml changed on disk. Settings shows its new values.".into(), false))
     } else if problems_shown {
-        Some(("config.toml changed on disk, and nothing in it is wrong now.".into(), false))
+        Some(("config.toml changed on disk and is now valid.".into(), false))
     } else {
         None
     }
@@ -466,7 +466,7 @@ mod tests {
         // A draft that cannot follow the file says that first.
         let stale = Change { stale: true, ..change(&wrong, &[], true) };
         let (message, error) = notice(&stale, true).unwrap();
-        assert!(error && message.contains("Discard reloads the file"), "{message}");
+        assert!(error && message.contains("Discard to reload the file"), "{message}");
     }
 
     #[test]

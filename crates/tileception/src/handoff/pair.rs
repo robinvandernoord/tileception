@@ -107,8 +107,8 @@ fn show(file: &Path, offer: bool) -> Result<(), String> {
             println!("  tileception pair {phrase}");
         }
         (true, None) => println!("Handoff is on but has no passphrase, so nothing connects: tileception pair --new"),
-        (false, Some(_)) => println!("Handoff is off. tileception pair turns it on with the same passphrase."),
-        (false, None) => println!("Handoff is off. tileception pair turns it on."),
+        (false, Some(_)) => println!("Handoff is off. Run `tileception pair` to turn it on with the same passphrase."),
+        (false, None) => println!("Handoff is off. Run `tileception pair` to turn it on."),
     }
     if !active {
         return Ok(());
@@ -121,8 +121,8 @@ fn show(file: &Path, offer: bool) -> Result<(), String> {
     let machines: Vec<&str> = reply.lines().filter(|line| !line.starts_with("listening on")).collect();
     println!();
     if machines.is_empty() {
-        println!("No other computer is connected yet. Once one is, drag its card to the");
-        println!("screen edge where it stands; Ctrl+Super+Escape brings input back.");
+        println!("No other computer is connected yet. Once one connects, drag its card to the");
+        println!("screen edge nearest it; press Ctrl+Super+Escape to bring input back.");
     } else {
         println!("Computers:");
         for machine in &machines {
@@ -143,10 +143,12 @@ fn show(file: &Path, offer: bool) -> Result<(), String> {
     for (machine, count) in waiting(&machines) {
         let windows = if count == 1 { "1 window".to_string() } else { format!("{count} windows") };
         println!();
-        if offer && ask(&format!("{windows} wait for {machine}, which went away. Bring them back here?"))? {
+        if offer && ask(&format!("{windows} still on {machine} (disconnected). Bring them back here?"))? {
             command(&["handoff", "reclaim", machine])?;
         } else {
-            println!("{windows} wait for {machine}; to bring them back: tileception msg handoff reclaim {machine}");
+            println!(
+                "{windows} still on {machine}; to bring them back, run: tileception msg handoff reclaim {machine}"
+            );
         }
     }
     Ok(())
