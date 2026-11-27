@@ -45,10 +45,10 @@ use crate::{Tileception, state::ClientState};
 /// commit, 4096 by 4096 pixels of four bytes.
 pub const POOL_BYTES: usize = 4096 * 4096 * 4;
 /// The pool objects a client may have at once. A plugin has at most six
-/// items; one pool for each buffer of each, three buffers deep, is 18.
+/// surfaces; one pool for each buffer of each, three buffers deep, is 18.
 pub const POOLS: usize = 24;
 /// The buffers a client may have at once, shared memory and dmabuf
-/// together: the same six items three buffers deep, with as many again for
+/// together: the same six surfaces three buffers deep, with as many again for
 /// subsurfaces and for the old buffers that linger while an item changes
 /// size.
 pub const BUFFERS: usize = 48;

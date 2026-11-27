@@ -509,8 +509,8 @@ impl Dispatch<tileception_dashboard_v1::TileceptionDashboardV1, ()> for Tilecept
             return;
         }
         let mine = state.dashboard_surfaces.items.keys().filter(|(plugin, _)| *plugin == owner.plugin).count();
-        if mine >= crate::dashboard::PLUGIN_ITEMS {
-            resource.post_error(tileception_dashboard_v1::Error::TooMany, "a plugin has at most six items");
+        if mine >= crate::dashboard::PLUGIN_FRAMES {
+            resource.post_error(tileception_dashboard_v1::Error::TooMany, "a plugin has at most six surfaces");
             return;
         }
         let key = (owner.plugin, item);
