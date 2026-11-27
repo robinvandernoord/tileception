@@ -31,6 +31,23 @@ Modifiers are `Super`, `Alt`, `Ctrl` and `Shift`. Keys use XKB names such as
 `WheelDown`, `WheelLeft` or `WheelRight`. Super on its own is also a valid binding.
 In a nested window, Alt stands in for Super in your bindings too.
 
+A wheel binding keeps that direction of scrolling from the window, while the
+other direction still scrolls it. `send-key` and `send-scroll` turn the wheel
+into a key or into a longer scroll for the window. The window doesn't see the
+held modifiers, so Shift doesn't extend a selection and Alt doesn't go back in
+a browser:
+
+```toml
+[binds]
+"Alt+WheelDown" = "send-key Page_Down"
+"Alt+WheelUp" = "send-key Page_Up"
+"Ctrl+Shift+WheelDown" = "send-scroll 5"
+"Ctrl+Shift+WheelUp" = "send-scroll -5"
+```
+
+Many programs scroll sideways with Shift and the wheel, so binding
+`Shift+WheelDown` takes that away from them.
+
 Your bindings add to or override the defaults. To use only the bindings listed
 in your file, set:
 
@@ -246,6 +263,37 @@ puts everything back into one layout. Widths dragged by hand (see
 
 While any screen is split, `general.restore_layout` does not save or restore
 layouts.
+
+## Mirroring a screen
+
+For a presentation on a projector, TV or second monitor, a screen can show
+another one instead of a desktop of its own:
+
+```toml
+[outputs."HDMI-A-1"]
+mirror = "eDP-1"
+```
+
+The mirror shows everything on the other screen, including the pointer, the
+bar and the lock screen. Each screen keeps its own mode, by default its best
+resolution, and the picture is scaled to fit the mirror with its shape kept,
+centred between black bars where the shapes differ. Mirror the smaller screen
+from the larger one, so the larger one is used at full resolution and the
+smaller one shows it scaled down; mirroring the other way enlarges the
+smaller desktop instead.
+
+A mirror has no desktop: windows on it move to the other screens, programs
+do not see it (so it is not offered for screen sharing), and the pointer
+never moves onto it. `tileception msg outputs` lists it as mirroring its
+source, and `tileception msg screenshot --output HDMI-A-1 file.png` saves
+what it shows. The screen it mirrors must not mirror another itself, and
+`"*"` neither mirrors nor is mirrored. While the source is disabled or
+unplugged, the mirror is a desktop of its own again, as a newly connected
+screen would be. A touchscreen mapped to a mirror touches what it shows: a
+touch lands on the same spot of the source, and one on the black bars lands
+on the nearest edge of the picture.
+In **Settings > Displays**, choose **Mirror** for the screen that shows the
+other one.
 
 ## Desktop components
 

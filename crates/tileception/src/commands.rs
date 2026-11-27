@@ -33,6 +33,8 @@ pub enum Command {
     Drop(f64, f64),
     /// Saves what is on screen to a PNG file.
     Screenshot(std::path::PathBuf),
+    /// Saves what one screen shows to a PNG file, a mirror too.
+    ScreenshotOutput(String, std::path::PathBuf),
     /// Puts a PNG file on the clipboard.
     CopyImage(std::path::PathBuf),
     /// Puts text on the clipboard.
@@ -154,6 +156,10 @@ pub enum Command {
     Handoff(crate::handoff::HandoffCommand),
     /// Pending updates, kernels and release upgrades.
     Updates(crate::updates::UpdatesCommand),
+    /// Presses and lets go of a key for the window with the keyboard.
+    SendKey(String),
+    /// Scrolls the window under the pointer by wheel notches.
+    SendScroll(f64),
     /// A key pressed in the password prompt or the Updates window (not available as text).
     UpdatesKey(u32, crate::config::Mods),
 }
@@ -189,6 +195,8 @@ Inspecting:
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
   screenshot <file.png>     save what is on screen
+  screenshot --output <name> <file.png>
+                            save what one screen shows, a mirror too
 
 Windows:
   terminal                  open the terminal beside the focused window
@@ -212,6 +220,10 @@ Windows:
   next-tab                  next tab in the focused tile
   prev-tab                  previous tab in the focused tile
   drop <x> <y>              drop the focused window at a screen point, like a drag
+  send-key <key>            press a key for the focused window without the
+                            held modifiers, such as send-key Page_Down
+  send-scroll <notches>     scroll the window under the pointer by wheel
+                            notches (down when positive), without modifiers
 
 Views:
   overview                  show everything (Esc or a click leaves)
@@ -249,8 +261,8 @@ Shell:
   snip                      pick an area to copy, save, draw on or record;
                             while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
-  next-wallpaper            another picture from the wallpaper folder
                             (also: color-scheme)
+  next-wallpaper            another picture from the wallpaper folder
   wizard                    open or close the Wizard (also: doctor)
   wizard ask <question>     ask the Wizard about your setup
   wizard use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
@@ -396,6 +408,8 @@ pub fn parse(line: &str) -> Result<Command, String> {
             });
         }
         "show-minimized" => return Ok(Command::ShowMinimized),
+        "send-key" => return crate::send::parse_key(rest).map(Command::SendKey),
+        "send-scroll" => return crate::send::parse_scroll(rest).map(Command::SendScroll),
         "handoff" => return crate::handoff::parse(&args).map(Command::Handoff),
         "reload" => return Ok(Command::ReloadConfig),
         "next-wallpaper" => return Ok(Command::NextWallpaper),
@@ -517,6 +531,14 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "screenshot" => {
             if rest.is_empty() {
                 return Err("screenshot needs a file name".into());
+            }
+            if let Some(named) = rest.strip_prefix("--output") {
+                let (name, path) = named.trim_start().split_once(char::is_whitespace).unwrap_or((named.trim(), ""));
+                let path = path.trim();
+                if name.is_empty() || path.is_empty() {
+                    return Err("screenshot --output needs a screen and a file name".into());
+                }
+                return Ok(Command::ScreenshotOutput(name.into(), path.into()));
             }
             return Ok(Command::Screenshot(rest.into()));
         }
@@ -663,6 +685,7 @@ impl Tileception {
                     | Command::Tree
                     | Command::Outputs
                     | Command::Screenshot(_)
+                    | Command::ScreenshotOutput(..)
                     | Command::ReloadConfig
                     | Command::Action(Action::Vt(_))
                     | Command::Media(_)
@@ -696,7 +719,10 @@ impl Tileception {
                 self.force_keyboard_focus_sync();
             }
             Command::ShowMinimized => self.peek_minimized(),
+            Command::SendKey(key) => self.send_key(&key)?,
+            Command::SendScroll(notches) => self.send_scroll(notches),
             Command::Screenshot(path) => self.screenshot(path),
+            Command::ScreenshotOutput(name, path) => self.screenshot_output(&name, path)?,
             Command::CopyImage(path) => self.copy_image(&path)?,
             Command::CopyText(text) => self.copy_text(text),
             Command::PickSource(choices) => return self.pick_source(&choices),
@@ -835,6 +861,12 @@ mod tests {
         assert_eq!(parse("go 3"), Ok(Command::Action(Action::RecallView(3))));
         assert_eq!(parse("copy-image /tmp/a b.png"), Ok(Command::CopyImage("/tmp/a b.png".into())));
         assert!(parse("copy-image").is_err());
+        assert_eq!(parse("screenshot /tmp/a.png"), Ok(Command::Screenshot("/tmp/a.png".into())));
+        assert_eq!(
+            parse("screenshot --output HDMI-A-1 /tmp/a b.png"),
+            Ok(Command::ScreenshotOutput("HDMI-A-1".into(), "/tmp/a b.png".into()))
+        );
+        assert!(parse("screenshot --output HDMI-A-1").is_err());
         assert_eq!(parse("move left"), Ok(Command::Action(Action::Move(Dir::Left))));
         assert_eq!(parse("spawn firefox --new-window"), Ok(Command::Spawn("firefox --new-window".into())));
         assert_eq!(parse("drop 10 20.5"), Ok(Command::Drop(10.0, 20.5)));

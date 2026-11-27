@@ -113,12 +113,26 @@ impl Tileception {
         {
             self.touch.devices.push(name.clone());
         }
+        // A touchscreen on a mirror touches what the mirror shows.
+        let mut via_mirror = None;
         if let Some(mapping) = touchscreen.as_ref().and_then(|name| self.config.file.touchscreens.get(name)) {
             // An explicitly mapped touchscreen never falls through to another
             // screen when its display is disconnected.
-            let Some(output) = self.output_named(&mapping.output) else { return };
+            let output = match self.output_named(&mapping.output) {
+                Some(output) => output,
+                None => {
+                    let Some(mirror) = self.outputs.connected_named(&mapping.output) else { return };
+                    let Some(source) = self.mirror_source(&mirror).cloned() else { return };
+                    via_mirror = Some(mirror);
+                    source
+                }
+            };
             self.activate_output(&output);
         }
+        let touch_position = |state: &Self, position| match &via_mirror {
+            Some(mirror) => state.mirror_touch_position(mirror, position),
+            None => state.absolute_output_position(position),
+        };
         // The pointer, hover states and whatever the input changes.
         self.schedule_render();
         if matches!(
@@ -227,14 +241,14 @@ impl Tileception {
                 if self.output.is_none() {
                     return;
                 }
-                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
+                let pos = self.zoom_absolute(touch_position(self, event.position_transformed((1, 1).into())));
                 self.touch_down(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchMotion { event } => {
                 if self.output.is_none() {
                     return;
                 }
-                let pos = self.zoom_absolute(self.absolute_output_position(event.position_transformed((1, 1).into())));
+                let pos = self.zoom_absolute(touch_position(self, event.position_transformed((1, 1).into())));
                 self.touch_motion(event.slot(), pos, event.time_msec());
             }
             InputEvent::TouchUp { event } => self.touch_up(event.slot(), event.time_msec()),
@@ -1514,7 +1528,9 @@ impl Tileception {
     }
 
     /// Runs a binding like `Super+WheelUp`. Returns whether the scroll was
-    /// taken: scrolling with a bound modifier never reaches the client.
+    /// taken: scrolling along an axis with a binding for the held modifiers
+    /// never reaches the client, but the other axis still does, so binding
+    /// `Shift+WheelDown` leaves a tilt wheel's Shift scrolling alone.
     fn wheel_binding(&mut self, event: &AxisInput) -> bool {
         // A game's scrolling is its own, with Super held too.
         if self.game_has_pointer() {
@@ -1530,8 +1546,26 @@ impl Tileception {
             held.logo = true;
         }
         let bound = |keysym| self.config.lookup(held, keysym).is_some();
-        if ![WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT].into_iter().any(bound) {
+        let vertical = bound(WHEEL_UP) || bound(WHEEL_DOWN);
+        let horizontal = bound(WHEEL_LEFT) || bound(WHEEL_RIGHT);
+        if !vertical && !horizontal {
             return false;
+        }
+        let moves = |axis| event.amount(axis).or_else(|| event.amount_v120(axis)).is_some_and(|value| value != 0.0);
+        let (taken_horizontal, taken_vertical) =
+            (horizontal && moves(Axis::Horizontal), vertical && moves(Axis::Vertical));
+        if !taken_horizontal && !taken_vertical {
+            return false;
+        }
+        // The axis without a binding scrolls the client as usual.
+        if moves(Axis::Horizontal) != taken_horizontal || moves(Axis::Vertical) != taken_vertical {
+            self.deliver_axis(&AxisInput {
+                horizontal: event.horizontal.filter(|_| !taken_horizontal),
+                horizontal_v120: event.horizontal_v120.filter(|_| !taken_horizontal),
+                vertical: event.vertical.filter(|_| !taken_vertical),
+                vertical_v120: event.vertical_v120.filter(|_| !taken_vertical),
+                ..*event
+            });
         }
         // A binding acts where the pointer is, as a click there would.
         self.activate_area_under_pointer();
@@ -1546,8 +1580,12 @@ impl Tileception {
                 .map(|v120| v120 / 120.0)
                 .unwrap_or_else(|| event.amount(axis).unwrap_or(0.0) / 50.0)
         };
-        self.wheel_accum.0 += notch(Axis::Horizontal);
-        self.wheel_accum.1 += notch(Axis::Vertical);
+        if taken_horizontal {
+            self.wheel_accum.0 += notch(Axis::Horizontal);
+        }
+        if taken_vertical {
+            self.wheel_accum.1 += notch(Axis::Vertical);
+        }
         let mut keys = Vec::new();
         while self.wheel_accum.1 <= -1.0 {
             self.wheel_accum.1 += 1.0;
@@ -1717,6 +1755,7 @@ pub(crate) struct ClientMotion {
 }
 
 /// One scroll step, from a local pointer or from another machine.
+#[derive(Clone, Copy)]
 pub(crate) struct AxisInput {
     pub source: AxisSource,
     pub time: u32,
