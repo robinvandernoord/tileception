@@ -388,9 +388,9 @@ const COMMANDS: [(&str, &str, &str); 8] = [
     ("help", "", "Show these commands"),
     ("clear", "", "Start a new conversation"),
     ("model", "[name]", "Choose the agent's model"),
-    ("mode", "[ask|tweak|yolo]", "What the agent may do without asking"),
+    ("mode", "[ask|tweak|yolo]", "Set what the agent can do without asking"),
     ("agent", "[id]", "Choose another agent"),
-    ("restart", "", "Restart the agent, as after logging in elsewhere"),
+    ("restart", "", "Restart the agent (e.g. after logging in elsewhere)"),
     ("image", "<file>", "Send a picture with the next message"),
     ("report", "[title]", "Report a problem on GitHub"),
 ];
@@ -1494,8 +1494,7 @@ impl Tileception {
             return;
         }
         *done = true;
-        let note =
-            format!("Updating {name} to {latest}. It starts a new conversation and no longer remembers this one.");
+        let note = format!("Updating {name} to {latest}. This starts a new conversation.");
         self.doctor.messages.push(Message::Note(note));
         self.doctor.discard_session();
         self.doctor.busy = false;
@@ -1584,8 +1583,7 @@ impl Tileception {
         let (left, width, mut top) = (area.x + 20.0, area.w - 20.0, area.y);
         let effective = self.effective_installation(agent);
         if let Effective::Configured(_) = effective {
-            let text = "Started by the command in your config, under [wizard.agents]. Remove it there to choose a \
-                        copy here.";
+            let text = "Configured under [wizard.agents]. Remove that entry to choose a copy here.";
             let height = self.measure_text(text, self.note_style(), width - 24.0).1;
             blocks.push(Block::Note {
                 rect: Rect::new(left + 12.0, top, width - 24.0, height + 12.0),
@@ -1598,7 +1596,7 @@ impl Tileception {
                 format!("Downloaded {version}, kept up to date by Wizard")
             }
             (tileception_acp::Launch::Binary { .. }, Some(version)) => {
-                format!("Downloaded {version}; Wizard fetches {} when it next starts", agent.version)
+                format!("Downloaded {version}; updates to {} on next start", agent.version)
             }
             (tileception_acp::Launch::Binary { .. }, None) => {
                 format!("Downloads {} from the ACP Registry", agent.version)
@@ -1846,7 +1844,7 @@ impl Tileception {
         } else if tileception_acp::local::desktop_app(&path) {
             Some(format!("{typed} is a desktop app, not an agent for the terminal."))
         } else if !runnable_agent(&path) {
-            Some(format!("{typed} cannot be run: it is not marked as a program."))
+            Some(format!("{typed} is not executable."))
         } else {
             None
         };
@@ -2042,7 +2040,7 @@ impl Tileception {
     /// A pasted or opened picture, made ready to send on another thread.
     pub fn doctor_attach(&mut self, bytes: Arc<[u8]>) {
         if self.doctor.attachments.len() >= MAX_ATTACHMENTS {
-            let note = format!("At most {MAX_ATTACHMENTS} pictures go with one message.");
+            let note = format!("You can attach up to {MAX_ATTACHMENTS} pictures per message.");
             self.doctor.messages.push(Message::Note(note));
             return;
         }
@@ -2419,7 +2417,9 @@ impl Tileception {
         }
         // Allowing after the agent gave up must not do it anyway.
         if !self.reply_awaited(request) {
-            self.doctor.messages.push(Message::Note("The agent no longer waits for this; nothing was done.".into()));
+            self.doctor
+                .messages
+                .push(Message::Note("The agent is no longer waiting for this; nothing was done.".into()));
             return;
         }
         match &self.plugins {
@@ -2691,7 +2691,7 @@ impl Tileception {
                 session.send(Request::RestartEnv(env));
             }
             self.doctor.messages.push(Message::Note(
-                "OpenCode restarted for the new permission mode; a new conversation starts with your next message."
+                "OpenCode restarted for the new permission mode. Your next message will start a new conversation."
                     .into(),
             ));
         } else {
@@ -3774,7 +3774,7 @@ impl Tileception {
                         text += &format!("\n/{}  {}", command.name, command.description);
                     }
                 }
-                text += "\n\nTab fills in a command, Enter runs it. Ctrl+V pastes text or a picture.";
+                text += "\n\nTab to complete a command, Enter to run it. Ctrl+V to paste text or a picture.";
                 self.doctor.messages.push(Message::Info(text));
             }
             "clear" => self.clear_doctor(),
@@ -3809,7 +3809,7 @@ impl Tileception {
                     });
                 match found {
                     Some(agent_id) => self.pick_agent(agent_id),
-                    None => note(self, format!("There is no agent {arg} in the ACP Registry. /agent lists them.")),
+                    None => note(self, format!("No agent named {arg} in the ACP Registry. Use /agent to list them.")),
                 }
             }
             "image" if arg.is_empty() => note(self, "Which picture? /image ~/Pictures/screenshot.png".into()),
@@ -3835,7 +3835,7 @@ impl Tileception {
                 }
             }
             _ if self.doctor.commands.iter().any(|command| command.name == name) => return false,
-            _ => note(self, format!("There is no command /{name}. /help lists them.")),
+            _ => note(self, format!("Unknown command /{name}. Use /help to list commands.")),
         }
         self.doctor.scroll = 0.0;
         self.doctor_changed();
@@ -3870,7 +3870,7 @@ impl Tileception {
     fn model_command(&mut self, arg: &str) {
         let Some(option) = self.doctor.options.iter().find(|option| option.is_model()).cloned() else {
             let text = if self.doctor.session.is_some() {
-                "This agent offers no choice of model here."
+                "This agent doesn't let you choose a model."
             } else {
                 "The agent is not running yet: ask it something first."
             };
@@ -4196,7 +4196,7 @@ impl Tileception {
                         |agent| agent.installed.is_some() || self.doctor.kept.contains_key(&agent.agent_id),
                     );
                     if groups.iter().all(|(_, agents)| agents.is_empty()) {
-                        push_note(&mut blocks, &mut top, &format!("No agent is called \u{201c}{search}\u{201d}."));
+                        push_note(&mut blocks, &mut top, &format!("No agent matches \u{201c}{search}\u{201d}."));
                     }
                     for (group, agents) in groups.into_iter().filter(|(_, agents)| !agents.is_empty()) {
                         blocks
@@ -4404,8 +4404,8 @@ impl Tileception {
                     let text = match outside {
                         None if *done => format!("{name} {latest} is available; this was {running}."),
                         None => format!(
-                            "{name} {latest} is available; this is {running}. Wizard updates it when the agent next \
-                             starts, or now with the button."
+                            "{name} {latest} is available (currently {running}). Updates on next start, or click \
+                             Update now."
                         ),
                         Some(Outside::Installed(path)) => format!(
                             "{name} {latest} is available; this is {running}, from {}. You installed that copy \
@@ -4523,7 +4523,7 @@ impl Tileception {
                                     push_note(
                                         &mut blocks,
                                         &mut top,
-                                        "Enter submits your answer, Shift+Tab or Up moves to the buttons",
+                                        "Enter to submit, Shift+Tab or Up to move to the buttons",
                                     );
                                 } else {
                                     push_note(&mut blocks, &mut top, &ask_hint(choices.len().max(1), focused));
@@ -5541,9 +5541,9 @@ fn doctor_mode_warning(doctor: &Doctor) -> Option<&str> {
         Some((option, target)) if option.current != target => Some("Agent permission mode is not confirmed yet"),
         Some(_) => None,
         None if doctor.mode == Mode::Yolo => {
-            Some("Agent offers no known full-access mode; its restrictions may remain")
+            Some("No known full-access mode for this agent; restrictions may still apply")
         }
-        None => Some("Agent offers no known ask-first mode; its own tools may act without asking"),
+        None => Some("No known ask-first mode for this agent; its tools may run without asking"),
     }
 }
 

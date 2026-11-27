@@ -75,7 +75,7 @@ impl Task {
             Task::Automatic(false) => "Turning off automatic updates",
             Task::Mirror(_) => "Changing the mirror",
             Task::Sources(_) => "Switching sources on",
-            Task::Track(_) => "Changing which releases are offered",
+            Task::Track(_) => "Changing release upgrade track",
         }
     }
 
@@ -97,7 +97,7 @@ impl Task {
         "Turning off automatic updates",
         "Changing the mirror",
         "Switching sources on",
-        "Changing which releases are offered",
+        "Changing release upgrade track",
     ];
 
     /// Whether the task needs root. A user's own Flatpaks and uvenv tools
@@ -205,7 +205,7 @@ impl Task {
             }
             // Backend-specific changes are handled by `run`.
             Task::Automatic(_) => Vec::new(),
-            Task::Track(release::Track::Never) => return Err("offers are switched off in the file itself".into()),
+            Task::Track(release::Track::Never) => return Err("release upgrades are disabled in the config file".into()),
             Task::Track(_) => Vec::new(),
             Task::Mirror(url) => {
                 if !mirrors::valid(url) {
@@ -315,7 +315,7 @@ impl Task {
                     match (name.strip_prefix('+'), name.strip_prefix('-')) {
                         (Some(name), _) => install.push(name.to_string()),
                         (_, Some(name)) => remove.push(name.to_string()),
-                        _ => return Err(format!("{name:?} says neither install (+) nor remove (-)")),
+                        _ => return Err(format!("{name:?} must start with + (install) or - (remove)")),
                     }
                 }
                 Task::Kernels { install, remove, purge: *mode == "purge" }
@@ -542,7 +542,7 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
                 && *enable
                 && retirement_attempted
             {
-                line(&format!("Putting {} back", automatic::CONFIG));
+                line(&format!("Restoring {}", automatic::CONFIG));
                 let restored = match previous {
                     Some(text) if std::fs::read_to_string(&config).ok().as_ref() == Some(&text) => Ok(()),
                     Some(text) => replace_source(&config, &text),
@@ -667,9 +667,9 @@ pub fn run(task: &Task, line: &mut dyn FnMut(&str)) -> Result<(), String> {
     if let Err(error) = &result {
         let mut failures = Vec::new();
         for (path, text) in restore.into_iter().rev() {
-            line(&format!("Putting {path} back"));
+            line(&format!("Restoring {path}"));
             if let Err(error) = put_back(&files.path(&path), text.as_deref()) {
-                line(&format!("W: could not put {path} back: {error}"));
+                line(&format!("W: could not restore {path}: {error}"));
                 failures.push(error);
             }
         }

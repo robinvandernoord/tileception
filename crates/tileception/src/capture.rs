@@ -66,13 +66,13 @@ pub enum CaptureTarget {
 }
 
 /// How long `tileception msg screenshot` waits for the frame it is taken from.
-const SCREENSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const SCREENSHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What is on screen, ready to be rendered into each capture's buffer.
-struct Scene<E = OutputElement> {
-    elements: Vec<E>,
-    size: (i32, i32),
-    clear: [f32; 4],
+pub(crate) struct Scene<E = OutputElement> {
+    pub(crate) elements: Vec<E>,
+    pub(crate) size: (i32, i32),
+    pub(crate) clear: [f32; 4],
 }
 
 /// The Wizard policy for a feedback still, and whether it was drawn into it.
@@ -333,7 +333,9 @@ impl Tileception {
         // It may wait with a screen other than the one in use now.
         let before = self.pending_captures.len();
         self.pending_captures.retain(other);
-        let dropped = before - self.pending_captures.len() + self.outputs.retain_parked_captures(other);
+        let dropped = before - self.pending_captures.len()
+            + self.outputs.retain_parked_captures(other)
+            + self.outputs.mirroring.drop_capture(request);
         if dropped > 0 {
             tracing::info!("screenshot dropped: its command timed out");
         }
@@ -358,7 +360,7 @@ impl Tileception {
     }
 
     /// What is on screen now, ready to render into a capture.
-    fn scene(&mut self, renderer: &mut GlesRenderer, feedback: Option<&FeedbackCapture>) -> Scene {
+    pub(crate) fn scene(&mut self, renderer: &mut GlesRenderer, feedback: Option<&FeedbackCapture>) -> Scene {
         self.update_settings_client(renderer);
         self.update_updates_client(renderer);
         self.update_doctor_client(renderer);
@@ -386,7 +388,7 @@ impl Tileception {
         Scene { elements, ..scene }
     }
 
-    fn capture_pointer(&mut self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
+    pub(crate) fn capture_pointer(&mut self, renderer: &mut GlesRenderer) -> Vec<OutputElement> {
         if !self.is_active_output() {
             return Vec::new();
         }
@@ -566,7 +568,7 @@ where
 
 /// Reads a region of the scene as RGBA rows, rendering it into `texture` the
 /// first time.
-fn pixels<E: RenderElement<GlesRenderer>>(
+pub(crate) fn pixels<E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     texture: &mut Option<Result<GlesTexture, String>>,
     scene: &Scene<E>,
@@ -791,7 +793,7 @@ fn copy_into_shm(buffer: &WlBuffer, width: i32, height: i32, rgba: &[u8]) -> Res
     .map_err(|err| format!("{err:?}"))?
 }
 
-fn write_png(path: &PathBuf, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+pub(crate) fn write_png(path: &PathBuf, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
     let file = std::fs::File::create(path).map_err(|err| err.to_string())?;
     let mut out = std::io::BufWriter::new(file);

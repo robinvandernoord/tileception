@@ -1030,7 +1030,7 @@ impl Tileception {
             let busy = self.installer.busy.as_ref().map(|busy| {
                 Entry::Manage(Manage::Note(
                     format!("{busy}\u{2026}"),
-                    "Wait for it to finish; a notification says when".into(),
+                    "Wait for it to finish; you'll get a notification when it's done".into(),
                 ))
             });
             let manage = std::iter::once(Manage::Add)
@@ -1683,7 +1683,7 @@ impl Tileception {
                 Ok(_) if installer.busy.is_some() => (
                     glyph::CLOCK,
                     format!("{}\u{2026}", installer.busy.as_deref().unwrap_or_default()),
-                    "Wait for it to finish; a notification says when".into(),
+                    "Wait for it to finish; you'll get a notification when it's done".into(),
                 ),
                 Ok(source) if installer.looking.as_ref() == Some(&source) => (
                     glyph::GLOBE,
@@ -1747,7 +1747,7 @@ impl Tileception {
             Manage::Remove(plugin_id) => (
                 glyph::CLOSE,
                 format!("Remove {}", self.plugin_name(plugin_id)),
-                "Runs its uninstall, then removes the package and the manifest installing made".into(),
+                "Runs the plugin's uninstall script, then removes the package and manifest".into(),
             ),
         }
     }
@@ -1899,7 +1899,7 @@ impl Tileception {
                     updates.snapshot.system.pretty.split_whitespace().next().unwrap_or_default(),
                     updates.release().unwrap_or_default()
                 ),
-                "Shows what to look at first".into(),
+                "Review upgrade notes first".into(),
             ),
             UpdateRow::Restart => {
                 (glyph::RESTART, "Restart to finish updates".into(), "Opens the power menu to confirm".into())
@@ -2797,7 +2797,7 @@ impl Tileception {
             }
             Entry::Run(line) => {
                 glyph_box(painter, glyph::TERMINAL, theme.accent);
-                (format!("Run {line}"), Some("Shows the output here; Ctrl+Enter runs it in a terminal".into()))
+                (format!("Run {line}"), Some("Shows output here; Ctrl+Enter to run in a terminal".into()))
             }
             Entry::Plugin { row, .. } => {
                 let fallback = self
@@ -2842,18 +2842,18 @@ impl Tileception {
                     Detail::Command => {
                         let command = self.app_command(app);
                         copied = self.launcher.just_copied(&command);
-                        (glyph::TERMINAL, command, "The command it runs; Enter copies it".to_string())
+                        (glyph::TERMINAL, command, "Command \u{b7} Enter to copy".to_string())
                     }
                     Detail::File => {
                         copied = self.launcher.just_copied(&app.source.to_string_lossy());
-                        (glyph::FILE, source, format!("{}; Enter copies the path", entry_origin(&app.source)))
+                        (glyph::FILE, source, format!("{} \u{b7} Enter to copy path", entry_origin(&app.source)))
                     }
                     Detail::Open => (glyph::FILE, "Open the desktop file".into(), "In the text editor".into()),
                     Detail::EditCopy => {
                         let copy = tileception_apps::user_applications_dir()
                             .map(|dir| tilde(&dir.join(&app.id), &home))
                             .unwrap_or_default();
-                        (glyph::COPY, "Edit a copy".into(), format!("As {copy}, which takes precedence"))
+                        (glyph::COPY, "Edit a copy".into(), format!("Saves to {copy} (overrides the system entry)"))
                     }
                     Detail::Folder => (glyph::FOLDER, "Show in folder".into(), source),
                 };
@@ -3342,12 +3342,12 @@ fn usage_path() -> PathBuf {
 fn plugin_action_detail(kind: &crate::plugins::ActionKind) -> String {
     use crate::plugins::ActionKind;
     match kind {
-        ActionKind::Copy { sensitive: true, .. } => "Copies it, hidden from clipboard managers".into(),
+        ActionKind::Copy { sensitive: true, .. } => "Copies secretly (hidden from clipboard managers)".into(),
         ActionKind::Copy { text, .. } => format!("Copies \"{text}\""),
         ActionKind::Open { target } => format!("Opens {target}"),
         ActionKind::Run { command, args } if args.is_empty() => format!("Runs {command}"),
         ActionKind::Run { command, args } => format!("Runs {command} {}", args.join(" ")),
-        ActionKind::Tool { .. } => "Asks the plugin to do it".into(),
+        ActionKind::Tool { .. } => "Runs in the plugin".into(),
         ActionKind::Terminal { directory } => format!("Opens a terminal in {directory}"),
         ActionKind::Settings { page } => format!("Opens {page} in Settings"),
         ActionKind::Prompt { prompt } => prompt.title.clone(),

@@ -41,9 +41,9 @@ impl Mode {
 
     pub fn description(self) -> &'static str {
         match self {
-            Mode::Ask => "Every change is shown and confirmed first",
-            Mode::Config => "Tweaks to Tileception's own settings go ahead; the rest asks",
-            Mode::Yolo => "Nothing asks; backups and undo still apply",
+            Mode::Ask => "Confirm every change before it runs",
+            Mode::Config => "Applies Tileception settings automatically; asks for everything else",
+            Mode::Yolo => "Runs everything without asking; backups and undo still apply",
         }
     }
 

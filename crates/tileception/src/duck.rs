@@ -1329,7 +1329,7 @@ impl Tileception {
             painter.fill(Rect::new(rect.x, line.bottom() + 2.0, rect.w, 1.0), theme.accent.alpha(0.6), 0.0);
             let hints = Rect::new(rect.x, line.bottom() + 4.0, rect.w, rect.h - line.h - 4.0);
             painter.text(
-                "I can see your screen \u{00b7} Enter asks, Esc closes",
+                "I can see your screen \u{00b7} Enter to ask, Esc to close",
                 hints,
                 Style::new(theme.font_size * 0.8, theme.muted),
             );

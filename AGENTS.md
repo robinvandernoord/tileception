@@ -3,9 +3,8 @@
 ## Commit types and releases
 
 - Use `feat` and `fix` only for changes users experience in an installed
-  Tileception release. Before proposing either type, say what changes for
-  someone updating through APT. Both types appear in the changelog and can
-  trigger a version bump.
+  Tileception release. Both types appear in the changelog and can trigger a
+  version bump.
 - Use `build` for changes to how Tileception is built or packaged, including
   build dependencies and the CI steps that run those builds. A broken build
   step still takes `build`, for example `build(ci): install build dependencies`.

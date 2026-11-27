@@ -71,6 +71,7 @@ impl Tileception {
                 tracing::info!("woke from sleep");
                 self.release_sleep();
                 self.refresh_battery();
+                self.wake_udev();
             }
         }
     }

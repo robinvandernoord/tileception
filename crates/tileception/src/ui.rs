@@ -932,6 +932,16 @@ impl<'a> Painter<'a> {
         self.shape(rect, Shape::filled(colour, radius));
     }
 
+    /// A plain rectangle, without rounding or a border: cheaper than
+    /// [`Painter::fill`] where thousands are drawn, as in the greeter's rain.
+    pub fn solid(&mut self, rect: Rect, colour: Colour) {
+        if self.alpha <= 0.0 {
+            return;
+        }
+        let rect = self.shifted(rect);
+        self.layers.push(crate::render::solid(&rect, colour.alpha(self.alpha).0, self.state.scale));
+    }
+
     /// A panel background: with frost on, translucent over a blur of what
     /// is behind it.
     pub fn frosted(&mut self, rect: Rect, shape: Shape) {
@@ -1087,8 +1097,7 @@ impl<'a> Painter<'a> {
         self.state
             .text
             .borrow_mut()
-            .styled(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
-            .map(|rendered| (rendered.width, rendered.height))
+            .styled_size(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
             .unwrap_or((0.0, 0.0))
     }
 

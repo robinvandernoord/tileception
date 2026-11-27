@@ -4,7 +4,7 @@
 use smithay::backend::renderer::{element::memory::MemoryRenderBuffer, gles::GlesRenderer};
 use tileception_core::{Point, Rect};
 
-use super::{Action, Auth, Greeter, access::Aid, settings::Panel, settings::WallpaperFallback};
+use super::{Action, Auth, Greeter, access::Aid, rain, settings::Panel, settings::WallpaperFallback};
 use crate::{
     Tileception,
     render::OutputElement,
@@ -35,6 +35,8 @@ const CARD_MIN: f64 = 110.0;
 const SHAKE: f64 = 0.45;
 /// How long a change of person takes to crossfade, in seconds.
 const CROSSFADE: f64 = 0.3;
+/// How long the rain stays the danger colour after a wrong password, in seconds.
+const RAIN_ALARM: f64 = 0.9;
 /// Tileception's logo, the website's favicon at twice the size with rounded
 /// corners; shown for its sessions when no other login screen's badge is
 /// installed.
@@ -402,12 +404,13 @@ impl Tileception {
                 painter.shape(corner(screen.right() - screen.w * 0.1, screen.y + screen.h * 0.18), glow(accent.1));
             }
             WallpaperFallback::System => {
-                if let Some(wallpaper) = &self.wallpaper {
+                if let Some(wallpaper) = &self.wallpaper.picture {
                     painter.image(&wallpaper.buffer, (screen.x, screen.y));
                     painter.fill(screen, Colour([0.0, 0.0, 0.0, 0.35]), 0.0);
                 }
             }
             WallpaperFallback::Flat => {}
+            WallpaperFallback::Rain => self.greeter_draw_rain(painter, greeter, screen, accent),
         }
         // Shared wallpapers over that: the newly selected person's fades in,
         // over the one before when the person changed. People shown as
@@ -426,6 +429,59 @@ impl Tileception {
             }
             layer(greeter.user, fade);
             painter.alpha = 1.0;
+        }
+    }
+
+    /// Streams of tile glyphs, from the accent at the head to its end colour
+    /// in the tail, briefly the danger colour after a wrong password. Locked,
+    /// the clock is drawn in it above the tiles, as tiles of its own.
+    fn greeter_draw_rain(&self, painter: &mut Painter, greeter: &Greeter, screen: Rect, accent: (Colour, Colour)) {
+        let theme = &self.theme;
+        let grid = rain::Grid::new(screen);
+        let moment = rain::moment(self.start.elapsed().as_secs_f64(), greeter.file.reduce_motion);
+        let alarm = greeter
+            .failed_at
+            .map_or(0.0, |failed_at| 1.0 - failed_at.elapsed().as_secs_f64() / RAIN_ALARM)
+            .clamp(0.0, 1.0) as f32;
+        let (head, tail) = (accent.0.mix(theme.danger, alarm), accent.1.mix(theme.danger, alarm));
+        let white = Colour([1.0; 4]);
+        let clock = if greeter.rain_clock() {
+            let area =
+                super::layout::rain_lock(Rect::new(screen.x, screen.y + BAR_H, screen.w, (screen.h - BAR_H).max(0.0)))
+                    .0;
+            rain::carve(&local_time(&greeter.file.clock_format), &grid, area)
+                .or_else(|| rain::carve(&local_time("%H:%M"), &grid, area))
+        } else {
+            None
+        };
+        // Quieter behind the clock, so it stands out.
+        let strength: f32 = if clock.is_some() { 0.55 } else { 1.0 };
+        for col in 0..grid.cols {
+            let cells = rain::column(col, grid.rows, moment);
+            for (row, lit) in cells.into_iter().enumerate() {
+                let cell = grid.rect(col, row);
+                if clock.as_ref().is_some_and(|carved| carved[row * grid.cols + col]) {
+                    // The clock's tiles, with the rain passing over them.
+                    let inset = (grid.cell * 0.05).max(1.0);
+                    let tile = Rect::new(cell.x + inset, cell.y + inset, cell.w - 2.0 * inset, cell.h - 2.0 * inset);
+                    painter.solid(tile, head.mix(white, 0.1).alpha(0.82));
+                    if let Some(lit) = lit.filter(|lit| lit.bright > 0.4) {
+                        for part in rain::quadrants(lit.glyph, cell) {
+                            painter.solid(part, head.mix(white, 0.75).alpha(lit.bright));
+                        }
+                    }
+                    continue;
+                }
+                let Some(lit) = lit else { continue };
+                let colour = if lit.head {
+                    head.mix(white, 0.7).alpha(strength.max(0.8))
+                } else {
+                    tail.mix(head, lit.bright).alpha((0.12 + 0.8 * lit.bright) * strength)
+                };
+                for part in rain::quadrants(lit.glyph, cell) {
+                    painter.solid(part, colour);
+                }
+            }
         }
     }
 
@@ -748,13 +804,16 @@ impl Tileception {
                     .get(person)
                     .filter(|_| greeter.file.per_user.wallpaper)
                     .map(|(wallpaper, size)| (wallpaper, centred(scene.screen, self.scale, *size)));
-                let system =
-                    self.wallpaper.as_ref().map(|wallpaper| (&wallpaper.buffer, (scene.screen.x, scene.screen.y)));
+                let system = self
+                    .wallpaper
+                    .picture
+                    .as_ref()
+                    .map(|wallpaper| (&wallpaper.buffer, (scene.screen.x, scene.screen.y)));
                 let fallback = wallpaper_fallback(greeter);
                 let picture = match (shared, fallback) {
                     (Some(wallpaper), _) => Some(wallpaper),
                     (None, WallpaperFallback::System) => system,
-                    (None, WallpaperFallback::Generated | WallpaperFallback::Flat) => None,
+                    (None, WallpaperFallback::Generated | WallpaperFallback::Flat | WallpaperFallback::Rain) => None,
                 };
                 match picture {
                     Some((picture, position)) => {

@@ -32,8 +32,13 @@ use crate::{
     ui::{Align, Button, Look, Painter, Style, glyph},
 };
 
-/// The most items one plugin puts on the dashboard.
-pub const PLUGIN_ITEMS: usize = 6;
+/// The most pictures and surfaces, together, one plugin puts on the
+/// dashboard. Each can hold tens of megabytes: a picture decodes up to
+/// [`PICTURE_SIDE`] square and is read again on every update, and a surface
+/// keeps several such buffers in shared memory, whose per-plugin limits in
+/// `dashboard_shm` are sized from this number. Cards are only text and
+/// buttons, so they have no limit; what does not fit is left out.
+pub const PLUGIN_FRAMES: usize = 6;
 /// Space around and between the columns.
 const MARGIN: f64 = 24.0;
 /// The widest a column gets, and the narrowest worth showing.
@@ -102,6 +107,19 @@ impl Picture {
 }
 
 impl Items {
+    /// Keeps every card and the first [`PLUGIN_FRAMES`] pictures and
+    /// surfaces.
+    pub fn limit(&mut self) {
+        let mut frames = 0;
+        self.items.retain(|item| {
+            if matches!(item, Item::Card(_)) {
+                return true;
+            }
+            frames += 1;
+            frames <= PLUGIN_FRAMES
+        });
+    }
+
     /// Seals every picture; see [`Picture::seal`].
     pub fn seal(&mut self) {
         for item in &mut self.items {
@@ -666,7 +684,7 @@ impl Tileception {
                     "notifications" => "Notifications".to_string(),
                     _ => titles.get(key).cloned().unwrap_or_else(|| key.clone()),
                 },
-                detail: "Removed: bring it back",
+                detail: "Hidden \u{2014} click to restore",
                 click: Click::Restore(key.clone()),
             })
             .collect();
@@ -782,7 +800,7 @@ impl Tileception {
                 self.schedule_render();
                 Ok("ok".to_string())
             }
-            _ => Err("dashboard takes nothing, hide <item> or show <item>|all".to_string()),
+            _ => Err("dashboard takes no arguments, hide <item> or show <item>|all".to_string()),
         }
     }
 
@@ -1263,6 +1281,23 @@ mod tests {
         // A file from before items could be removed still reads.
         let old: Stored = toml::from_str("[spots.notifications]\nx = 0.0\ny = 0.0\n").unwrap();
         assert!(old.hidden.is_empty());
+    }
+
+    #[test]
+    fn cards_have_no_limit_but_pictures_and_surfaces_do() {
+        let mut items = Items { items: Vec::new() };
+        for _ in 0..PLUGIN_FRAMES {
+            items.items.push(Item::Image(Picture::default()));
+        }
+        items.items.push(Item::Surface(Surface::default()));
+        for _ in 0..20 {
+            items.items.push(Item::Card(Box::default()));
+        }
+        items.limit();
+        let count = |pick: fn(&Item) -> bool| items.items.iter().filter(|item| pick(item)).count();
+        assert_eq!(count(|item| matches!(item, Item::Card(_))), 20);
+        assert_eq!(count(|item| matches!(item, Item::Image(_))), PLUGIN_FRAMES);
+        assert_eq!(count(|item| matches!(item, Item::Surface(_))), 0);
     }
 
     #[test]

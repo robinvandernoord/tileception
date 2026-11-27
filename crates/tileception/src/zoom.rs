@@ -13,7 +13,7 @@ use smithay::{
             Bind, Offscreen,
             damage::OutputDamageTracker,
             element::{
-                Kind,
+                Kind, RenderElement,
                 texture::{TextureRenderBuffer, TextureRenderElement},
             },
             gles::{GlesRenderer, GlesTexture},
@@ -36,17 +36,18 @@ pub struct Zoom {
     frame: Option<Frame>,
 }
 
-/// The screen at full size, drawn again only where it changed.
-struct Frame {
-    size: Size<i32, Physical>,
+/// The screen at full size, drawn again only where it changed. Mirrored
+/// screens show one too (see `mirroring`).
+pub(crate) struct Frame {
+    pub(crate) size: Size<i32, Physical>,
     damage: OutputDamageTracker,
-    buffer: TextureRenderBuffer<GlesTexture>,
+    pub(crate) buffer: TextureRenderBuffer<GlesTexture>,
     /// The buffer holds the last frame, so only damage needs drawing.
     drawn: bool,
 }
 
 impl Frame {
-    fn new(renderer: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<Self, String> {
+    pub(crate) fn new(renderer: &mut GlesRenderer, size: Size<i32, Physical>) -> Result<Self, String> {
         let texture: GlesTexture = renderer
             .create_buffer(Fourcc::Abgr8888, Size::<i32, Buffer>::from((size.w, size.h)))
             .map_err(|error| error.to_string())?;
@@ -59,7 +60,12 @@ impl Frame {
         })
     }
 
-    fn draw(&mut self, renderer: &mut GlesRenderer, elements: &[OutputElement], clear: [f32; 4]) -> Result<(), String> {
+    pub(crate) fn draw<E: RenderElement<GlesRenderer>>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        elements: &[E],
+        clear: [f32; 4],
+    ) -> Result<(), String> {
         let age = usize::from(std::mem::take(&mut self.drawn));
         let full = Rectangle::from_size(self.size);
         let tracker = &mut self.damage;
@@ -83,7 +89,7 @@ impl Frame {
 }
 
 /// Where an area of `screen` shows when it is enlarged to fit, centred.
-fn shown(screen: Rect, area: Rect) -> Rect {
+pub(crate) fn shown(screen: Rect, area: Rect) -> Rect {
     let factor = (screen.w / area.w).min(screen.h / area.h);
     let (width, height) = (area.w * factor, area.h * factor);
     Rect::new(screen.x + (screen.w - width) / 2.0, screen.y + (screen.h - height) / 2.0, width, height)

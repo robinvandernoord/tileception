@@ -63,12 +63,12 @@ uvenv install --python '>=3.14' 'tileception-2fas[security-key] @ git+https://gi
 
 Each plugin gets its own environment in `~/.local/uvenv/venvs`, with its
 script linked into `~/.local/bin`, and uv downloads a suitable Python when the
-system has none. If another program already has the script's name there,
-installing stops and says so. Plugins installed before Tileception used
+system has none. If a program with the same name already exists there,
+installation stops with an error. Plugins installed before Tileception used
 uvenv move to it at their next update. The plugin then sets itself up without asking anything
-(`install --non-interactive`) and plugins are reloaded. A notification says
-when it is done; while it runs, `plugins` in the launcher shows the current
-step. If the plugin still needs something from you, such as an API key or a
+(`install --non-interactive`) and plugins are reloaded. You'll get a
+notification when it finishes; while it runs, typing `plugins` in the launcher
+shows the current step. If the plugin still needs something from you, such as an API key or a
 login, Tileception asks for it: in the launcher when the plugin offers a setup
 prompt, otherwise in a terminal that runs its `configure` step. Plugins are
 reloaded again when setup ends.
@@ -257,8 +257,9 @@ tileception msg plugins reload
 If `~/.local/bin` is not on the compositor's `PATH`, put the executable's
 absolute path in the manifest's `command`.
 
-Open the launcher and type `echo hello`. Enter shows the row's actions; choose
-one with Up/Down and Enter, or go back to the results with Escape. "Call
+Open the launcher and type `echo hello`. Press **Enter** to see the row's
+actions, pick one with **Up**/**Down** and **Enter**, or press **Escape** to
+return to the results. "Call
 remember tool" keeps the text on a [card under the launcher](#launcher-cards),
 with buttons to copy and forget it. "Try a prompt" opens a [prompt](#prompts)
 that pretends to wait for a security key, then asks for a name and a secret
@@ -336,9 +337,9 @@ A row needs a `title`. Its optional fields:
 
 - `detail`: a second line.
 - `icon`: overrides the source's icon; without either, a generic icon shows.
-- `actions`: what Enter does. One action runs directly; several open a list
-  to choose from. A row without actions is informational.
-- `completion`: what Tab puts in the search field.
+- `actions`: runs when you press **Enter** (a single action runs directly;
+  multiple actions open a picker). Rows without actions are informational.
+- `completion`: text inserted into the search field when you press **Tab**.
 - `alternate`: an action for Ctrl+Enter.
 
 The footer shows Tab and Ctrl+Enter when a row has them. Tileception keeps up
@@ -417,7 +418,7 @@ the plugin keeps running and may skip the answer.
 The tool's answer decides what happens next:
 
 - `isError: true`: the step shows the error and empties its secret fields.
-  Enter retries a wait.
+  Press **Enter** to retry a wait step.
 - `{"step":"<id>","text":"..."}`: switches to that step and shows the text.
 - `{"action":{...}}`: closes the prompt and runs a `copy`, `open`, `run`,
   `terminal` or `settings` action, as if chosen from the row.
@@ -568,7 +569,7 @@ and behind the windows while Super+D is held. [Using
 Tileception](usage.md#the-dashboard) describes how users arrange, remove and
 add items.
 
-Plugins with a `[dashboard]` block put up to six items each on it from the
+Plugins with a `[dashboard]` block put items on it from the
 `tileception://dashboard` resource:
 
 ```json
@@ -588,6 +589,12 @@ Plugins with a `[dashboard]` block put up to six items each on it from the
   `action`.
 - `surface` is drawn by the plugin itself; see [Dashboard
   surfaces](#dashboard-surfaces).
+
+A plugin can list as many cards as it likes. Images and surfaces are limited
+to six per plugin, together, and later ones are left out: each holds a
+picture of up to 4096 pixels a side in memory, so the limit keeps one plugin
+from taking a large share of it. A seventh surface's `get_item` is a
+`too_many` protocol error.
 
 `size` sets the height of an image or surface: `small`, `medium` or `large`.
 Every item is as wide as a dashboard column. Tileception frames images and
@@ -857,9 +864,9 @@ with the current setting. The prompt's tools run in the plugin's `serve`
 process, which saves what the fields send.
 
 The tool answers like any prompt step: an error stays on the step and
-`{"step": ...}` moves to another. Any other answer finishes setup: the
-launcher closes, plugins reload and a notification says the plugin is set
-up. Escape cancels setup.
+`{"step": ...}` moves to another. Any other response finishes setup: the
+launcher closes, plugins reload, and you'll get a notification that the plugin
+is ready. Escape cancels setup.
 
 Start with a `fields` step rather than a `wait`, since the plugin has only
 just started when the prompt opens. Ask only what fits in fields, and keep

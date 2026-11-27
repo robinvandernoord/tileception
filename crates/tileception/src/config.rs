@@ -35,6 +35,8 @@ pub struct ConfigFile {
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub touchpad: crate::gestures::TouchpadConfig,
+    /// The mouse pointer.
+    pub pointer: crate::shake::PointerConfig,
     /// Exact touchscreen device names mapped to output connector names.
     pub touchscreens: BTreeMap<String, crate::touch::TouchscreenConfig>,
     pub idle: crate::idle::IdleConfig,
@@ -721,9 +723,10 @@ impl Tileception {
                 self.announce_blur();
             }
             self.update_appearance();
-            self.text.borrow_mut().clear();
-            self.wallpaper = None;
-            self.wallpaper_failed = None;
+            // Text is drawn in the theme's fonts and colours on every screen.
+            for output in self.all_outputs() {
+                self.with_output(&output, |state| state.text.borrow_mut().clear());
+            }
             self.rotate_wallpaper(false);
         }
         let old = std::mem::replace(&mut self.config, config).file;

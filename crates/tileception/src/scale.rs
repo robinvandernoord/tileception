@@ -34,6 +34,9 @@ pub struct OutputConfig {
     pub position: Option<[i32; 2]>,
     /// Side-by-side areas, each with its own tree and camera.
     pub split: Option<SplitSetting>,
+    /// Shows this other screen instead of a desktop of its own, scaled to
+    /// fit. Ignored while that screen is disabled or not connected.
+    pub mirror: Option<String>,
 }
 
 impl Default for OutputConfig {
@@ -45,6 +48,7 @@ impl Default for OutputConfig {
             scale: Default::default(),
             position: None,
             split: None,
+            mirror: None,
         }
     }
 }
@@ -205,6 +209,22 @@ pub fn validate(outputs: &std::collections::BTreeMap<String, OutputConfig>) -> R
         {
             return Err(format!("[outputs.{name:?}] scale must be from {MIN_SCALE} to {MAX_SCALE}, not {scale}"));
         }
+        if let Some(source) = &output.mirror {
+            if name == "*" {
+                return Err("[outputs.\"*\"] cannot mirror; name the screen that shows the other".into());
+            }
+            if source.trim().is_empty() || source == "*" {
+                return Err(format!("[outputs.{name:?}] mirror must name another screen, not {source:?}"));
+            }
+            if source == name {
+                return Err(format!("[outputs.{name:?}] cannot mirror itself"));
+            }
+            if outputs.get(source).is_some_and(|other| other.mirror.is_some()) {
+                return Err(format!(
+                    "[outputs.{name:?}] mirrors {source:?}, which mirrors another screen itself; mirror that one instead"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -288,9 +308,6 @@ impl Tileception {
             self.text.borrow_mut().set_scale(scale as f32);
             self.glyphs.set_scale(scale);
             self.launcher.icons.set_scale(scale);
-            // Drawn for the old scale.
-            self.wallpaper = None;
-            self.wallpaper_failed = None;
         }
         let screen = self.output_rect();
         // Laid out once, below, in the room the bars leave.
@@ -429,6 +446,25 @@ mod tests {
         assert!(parse("[DP-2]\nsplit = []").is_err());
         assert!(parse("[\"*\"]\nsplit = 2").is_err());
         assert!(parse("[DP-2]\nsplit = 1").is_ok());
+    }
+
+    #[test]
+    fn mirrors_name_another_screen_that_mirrors_nothing() {
+        let parse = |text: &str| -> Result<(), String> {
+            let outputs: std::collections::BTreeMap<String, OutputConfig> =
+                toml::from_str(text).map_err(|err| err.to_string())?;
+            validate(&outputs)
+        };
+        assert!(parse("[HDMI-A-1]\nmirror = \"eDP-1\"").is_ok());
+        // The source may be absent or disabled: the screen is then a desktop.
+        assert!(parse("[HDMI-A-1]\nmirror = \"eDP-1\"\n[eDP-1]\nenabled = false").is_ok());
+        assert!(parse("[HDMI-A-1]\nmirror = \"HDMI-A-1\"").is_err());
+        assert!(parse("[HDMI-A-1]\nmirror = \"*\"").is_err());
+        assert!(parse("[HDMI-A-1]\nmirror = \"\"").is_err());
+        assert!(parse("[\"*\"]\nmirror = \"eDP-1\"").is_err());
+        assert!(parse("[HDMI-A-1]\nmirror = \"DP-1\"\n[DP-1]\nmirror = \"eDP-1\"").is_err());
+        assert!(parse("[HDMI-A-1]\nmirror = \"DP-1\"\n[DP-1]\nmirror = \"HDMI-A-1\"").is_err());
+        assert!(parse("[HDMI-A-1]\nmirror = 3").is_err());
     }
 
     #[test]

@@ -468,7 +468,7 @@ impl Tileception {
 }
 
 /// Device coordinates describe the untransformed panel; the result is output-local.
-fn map_absolute_position(
+pub(crate) fn map_absolute_position(
     position: Point<f64, Logical>,
     displayed_size: Size<f64, Logical>,
     transform: Transform,

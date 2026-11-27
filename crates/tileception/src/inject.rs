@@ -308,6 +308,7 @@ impl Tileception {
             return;
         }
         let pos: Point<f64, Logical> = self.desktop_motion((x_pos, y_pos).into());
+        self.shake_motion(pos);
         self.on_motion(pos, time);
         self.activate_constraint_under();
     }

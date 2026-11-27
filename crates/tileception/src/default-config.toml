@@ -128,6 +128,11 @@ off_after = 600
 # lock_before_sleep = true
 
 [lock]
+# Behind the lock screen's tiles: "wallpaper" (the [theme] wallpaper, dimmed)
+# or "rain" (tile glyphs falling in the accent colours, with the clock drawn
+# in them and the tiles in a band along the bottom).
+# backdrop = "wallpaper"
+#
 # Notifications on Tileception's own lock screen (other lockers draw only
 # themselves): "none", "count" (how many came in), "apps" (which apps, with
 # the content hidden) or "full" (what they say, without their buttons).
@@ -184,6 +189,10 @@ swipe_distance = 60
 # to resize drag the divider as far as your fingers go, and it stays where
 # you let go. false runs each gesture all at once when it has gone far enough.
 follow_fingers = true
+
+[pointer]
+# Shake the mouse to make the pointer grow.
+shake_to_find = false
 
 [greeter]
 # Show your accent colours and wallpaper on the Tileception login screen
@@ -385,6 +394,16 @@ tray_max_icons = 3
 # split = 2                     # two equal areas, or relative widths:
 #                               # split = [0.6, 0.4]
 #
+# For a presentation, a projector or TV can show another screen instead of
+# a desktop of its own: the whole picture, pointer included, as large as it
+# fits, with black bars where the shapes differ. Each screen keeps its own
+# best resolution, so mirror the smaller screen from the larger one. The
+# pointer and programs never go onto the mirror. While the other screen is
+# disabled or unplugged, the mirror is a desktop of its own again.
+#
+# [outputs."HDMI-A-1"]
+# mirror = "eDP-1"
+#
 # [outputs."*"]
 # scale = 1
 
@@ -522,6 +541,10 @@ repeat_rate = 30
 #   media <what>          the last-played player: play-pause, play, pause,
 #                         next, previous, stop; plain "media" prints status
 #   desktop               clear the desk, or bring back what it cleared
+#   send-key <key>        press a key for the focused window without the held
+#                         modifiers, e.g. "Alt+WheelDown" = "send-key Page_Down"
+#   send-scroll <n>       scroll the window under the pointer by n wheel
+#                         notches (down when positive), without modifiers
 #   colour-scheme <s>     tell apps to use dark, light or default styles,
 #                         until this file is next loaded
 #   reload                reload this file

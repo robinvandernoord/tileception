@@ -703,7 +703,7 @@ impl Tileception {
             }
             let sound = sound_row(index);
             let text = match sound {
-                None => format!("Like other apps ({})", config.sounds.name()),
+                None => format!("Default ({})", config.sounds.name()),
                 Some(AppSound::Off) => "Off".to_string(),
                 Some(sound) => sound.family().map_or("", Family::name).to_string(),
             };

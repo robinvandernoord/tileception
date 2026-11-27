@@ -77,6 +77,27 @@ pub enum FadeIn {
     Since(std::time::Instant),
 }
 
+/// What an area draws, topmost layer first. On a split screen each layer of
+/// every area goes above the next layer of any area, so a floating window
+/// that reaches over the area beside its own stays above that area's tiles.
+#[derive(Default)]
+pub(crate) struct AreaLayers {
+    /// Menus and tooltips of the area's windows.
+    pub popups: Vec<OutputElement>,
+    /// Floating windows, not cut to the area.
+    pub floats: Vec<OutputElement>,
+    /// Tiles, tabs and their backgrounds, cut to the area.
+    pub tiles: Vec<OutputElement>,
+}
+
+impl AreaLayers {
+    fn extend(&mut self, other: AreaLayers) {
+        self.popups.extend(other.popups);
+        self.floats.extend(other.floats);
+        self.tiles.extend(other.tiles);
+    }
+}
+
 /// How one window is drawn this frame.
 #[derive(Debug, Clone, Copy)]
 pub struct Drawn {
@@ -105,7 +126,6 @@ impl Tileception {
         let view = self.world.view(now);
         let moving = self.world.is_animating(now);
         let overview = self.world.in_overview();
-        let screen = self.world.screen();
         let focus = self.world.focus().filter(|_| self.is_active_output());
 
         if let Some(window_id) = self.fullscreen
@@ -147,7 +167,8 @@ impl Tileception {
         let dragged = self.move_drag.filter(|drag| !drag.free).map(|drag| drag.window);
         let mut out = Vec::new();
         for placement in self.world.placements(view) {
-            if !placement.rect.intersects(&screen) || Some(placement.window) == dragged {
+            // Floating windows may hang over the areas beside their own.
+            if !placement.rect.intersects(&self.world.room_for(placement.role)) || Some(placement.window) == dragged {
                 continue;
             }
             let Some(geo) = self.window_geometry(placement.window) else { continue };
@@ -226,25 +247,25 @@ impl Tileception {
         elements
     }
 
-    /// The windows of a split screen's other areas, each cut to its area,
-    /// for `render_elements`.
+    /// The windows of a split screen's other areas, their tiles each cut to
+    /// its area, for `render_elements`.
     pub(crate) fn other_area_elements(
         &mut self,
         renderer: &mut GlesRenderer,
         now: f64,
         feedback: Option<&crate::capture::FeedbackCapture>,
-    ) -> Vec<OutputElement> {
+    ) -> AreaLayers {
+        let mut layers = AreaLayers::default();
         if self.is_locked() || self.fullscreen.is_some() {
-            return Vec::new();
+            return layers;
         }
         let current = self.area_index();
-        let mut elements = Vec::new();
         for index in (0..self.area_count()).filter(|index| *index != current) {
-            elements.extend(
+            layers.extend(
                 self.with_local_area(index, |state| state.area_elements(renderer, now, feedback)).unwrap_or_default(),
             );
         }
-        elements
+        layers
     }
 
     /// The whole frame but the wallpaper; `others` are the other areas'
@@ -254,7 +275,7 @@ impl Tileception {
         &self,
         renderer: &mut GlesRenderer,
         now: f64,
-        others: Vec<OutputElement>,
+        others: AreaLayers,
         feedback: Option<&crate::capture::FeedbackCapture>,
     ) -> (Vec<OutputElement>, usize) {
         if self.is_locked() {
@@ -299,14 +320,7 @@ impl Tileception {
         // (calendar, map, updates, network), go over every panel, so one stays
         // readable beside the open notifications or the Wizard. The lock screen, the volume card and
         // the prompts above stay over them.
-        let (bar, mut tooltips) = self.bar_elements(renderer, feedback);
-        let tray = if active {
-            let (tray, tray_tooltips) = self.tray_elements(renderer);
-            tooltips.extend(tray_tooltips);
-            tray
-        } else {
-            Vec::new()
-        };
+        let (bar, tray, tooltips) = self.bar_and_tray_elements(renderer, feedback, active);
         elements.extend(tooltips);
         if active {
             elements.extend(tray);
@@ -390,22 +404,30 @@ impl Tileception {
             }
         }
 
-        elements.extend(self.area_elements(renderer, now, feedback));
-        elements.extend(others);
+        // This area's layers over the other areas' same layers.
+        let own = self.area_elements(renderer, now, feedback);
+        elements.extend(own.popups);
+        elements.extend(others.popups);
+        elements.extend(own.floats);
+        elements.extend(others.floats);
+        elements.extend(own.tiles);
+        elements.extend(others.tiles);
 
         // Bottommost: desktop widgets and wallpaper.
         elements.extend(self.layer_elements(renderer, &[Layer::Bottom, Layer::Background]));
         (elements, scene)
     }
 
-    /// The context area's windows, tabs and tiles, topmost first: cut to the
-    /// area on a split screen, so its neighbours slide out under the next area.
+    /// The context area's windows, tabs and tiles, topmost first. On a split
+    /// screen tiles and their menus are cut to the area, so its neighbours
+    /// slide out under the next area; floating windows and their menus are
+    /// not, so they can reach over the next area.
     fn area_elements(
         &self,
         renderer: &mut GlesRenderer,
         now: f64,
         feedback: Option<&crate::capture::FeedbackCapture>,
-    ) -> Vec<OutputElement> {
+    ) -> AreaLayers {
         let shapes = self.shapes(renderer);
         let theme = &self.theme;
         let drawn_windows = self.drawn_windows(now);
@@ -447,12 +469,15 @@ impl Tileception {
                     elements.extend(faded);
                 }
             }
-            return match self.area_clip() {
+            let tiles = match self.area_clip() {
                 Some(clip) => clip_elements(elements, &clip, self.scale),
                 None => elements,
             };
+            return AreaLayers { tiles, ..AreaLayers::default() };
         }
         let mut popups = Vec::new();
+        let mut float_popups = Vec::new();
+        let mut floats = Vec::new();
         let area = self.area_clip();
         for drawn in &drawn_windows {
             if !self.draw_capture_window(drawn.window_id, feedback) {
@@ -463,10 +488,12 @@ impl Tileception {
                 // frame of the guest colour.
                 let focused = Some(drawn.window_id) == focus;
                 let floating = drawn.role == WindowRole::Floating;
-                push_shape(&mut elements, shapes.as_ref(), &drawn.content, self.guest_frame(focused, !floating));
+                let (layer, menus) =
+                    if floating { (&mut floats, &mut float_popups) } else { (&mut elements, &mut popups) };
+                push_shape(layer, shapes.as_ref(), &drawn.content, self.guest_frame(focused, !floating));
                 let shown = (drawn.content.w / drawn.scale.0, drawn.content.h / drawn.scale.1);
-                popups.extend(self.remote_popup_elements(renderer, drawn.window_id, &drawn.content, drawn.scale));
-                elements.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
+                menus.extend(self.remote_popup_elements(renderer, drawn.window_id, &drawn.content, drawn.scale));
+                layer.extend(self.remote_elements(renderer, drawn.window_id, &drawn.content, shown, 1.0));
                 continue;
             }
             let Some(window) = self.windows.get(&drawn.window_id) else { continue };
@@ -482,21 +509,17 @@ impl Tileception {
                     Rect::new(drawn.content.x, strip.rect.y, drawn.content.w, drawn.content.bottom() - strip.rect.y);
             }
             let surfaces = if drawn.live {
-                popups.extend(popup_elements(renderer, window, drawn, self.scale));
+                let menus = if floating { &mut float_popups } else { &mut popups };
+                menus.extend(popup_elements(renderer, window, drawn, self.scale));
                 live_faded(renderer, window, drawn, self.scale, 1.0, round.as_ref())
             } else {
                 self.picture_rounded(renderer, drawn.window_id, &drawn.content, 1.0, round.as_ref())
             };
-            let mask_corners = !floating
-                && (round.is_none() || plain_touches_corners(&surfaces, &frame_rect, area, theme.radius, self.scale));
-            push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, mask_corners));
-            let surfaces = match &area {
-                Some(clip) => clip_elements(surfaces, clip, self.scale),
-                None => surfaces,
-            };
-            self.blur_window(window, drawn, area, &surfaces);
-            elements.extend(surfaces);
             if floating {
+                // Not cut to the area: it may reach over the next one.
+                push_shape(&mut floats, shapes.as_ref(), &frame_rect, self.frame(focused, false));
+                self.blur_window(window, drawn, None, &surfaces);
+                floats.extend(surfaces);
                 // Floating windows cast a soft shadow onto the layout.
                 let shadow = Shape {
                     radius: theme.radius,
@@ -504,11 +527,19 @@ impl Tileception {
                     glow: Colour([0.0, 0.0, 0.0, 0.4]),
                     ..Default::default()
                 };
-                push_shape(&mut elements, shapes.as_ref(), &drawn.content, shadow);
+                push_shape(&mut floats, shapes.as_ref(), &drawn.content, shadow);
+                continue;
             }
+            let mask_corners =
+                round.is_none() || plain_touches_corners(&surfaces, &frame_rect, area, theme.radius, self.scale);
+            push_shape(&mut elements, shapes.as_ref(), &frame_rect, self.frame(focused, mask_corners));
+            let surfaces = match &area {
+                Some(clip) => clip_elements(surfaces, clip, self.scale),
+                None => surfaces,
+            };
+            self.blur_window(window, drawn, area, &surfaces);
+            elements.extend(surfaces);
         }
-
-        elements.splice(0..0, popups);
 
         for strip in &strips {
             elements.extend(self.tab_strip_elements(renderer, shapes.as_ref(), strip, focus));
@@ -547,10 +578,12 @@ impl Tileception {
             }
         }
 
-        match area {
-            Some(clip) => clip_elements(elements, &clip, self.scale),
+        let clip = |elements: Vec<OutputElement>| match &area {
+            Some(clip) => clip_elements(elements, clip, self.scale),
             None => elements,
-        }
+        };
+        float_popups.extend(clip(popups));
+        AreaLayers { popups: float_popups, floats, tiles: clip(elements) }
     }
 
     /// A feedback still can exclude the Wizard's window and every preview of it.
@@ -725,6 +758,10 @@ impl Tileception {
         let scale = self.scale;
         if cursor.scale != scale {
             *cursor = Cursor::load(scale);
+        }
+        // Grown by shaking the mouse, or bursting.
+        if let Some(elements) = self.shaken_pointer(renderer, cursor, pos) {
+            return elements;
         }
         let mut next_frame = None;
         let status =

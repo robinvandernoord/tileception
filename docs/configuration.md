@@ -31,6 +31,23 @@ Modifiers are `Super`, `Alt`, `Ctrl` and `Shift`. Keys use XKB names such as
 `WheelDown`, `WheelLeft` or `WheelRight`. Super on its own is also a valid binding.
 In a nested window, Alt stands in for Super in your bindings too.
 
+A wheel binding keeps that direction of scrolling from the window, while the
+other direction still scrolls it. `send-key` and `send-scroll` turn the wheel
+into a key or into a longer scroll for the window. The window doesn't see the
+held modifiers, so Shift doesn't extend a selection and Alt doesn't go back in
+a browser:
+
+```toml
+[binds]
+"Alt+WheelDown" = "send-key Page_Down"
+"Alt+WheelUp" = "send-key Page_Up"
+"Ctrl+Shift+WheelDown" = "send-scroll 5"
+"Ctrl+Shift+WheelUp" = "send-scroll -5"
+```
+
+Many programs scroll sideways with Shift and the wheel, so binding
+`Shift+WheelDown` takes that away from them.
+
 Your bindings add to or override the defaults. To use only the bindings listed
 in your file, set:
 
@@ -173,7 +190,10 @@ working configuration when the requested configuration cannot be applied.
 
 `position` is the top-left corner in global logical pixels. Without explicit
 positions, enabled monitors form a horizontal row using their rotated sizes
-and scales. Disabled connected monitors remain available for re-enabling.
+and scales. When saved positions make monitors overlap or leave one apart, for
+example after a scale or resolution change, the monitors are placed edge to
+edge in their saved order instead: stacked if they were stacked, otherwise in
+a row. Disabled connected monitors remain available for re-enabling.
 Disabling every connected monitor is rejected.
 
 Display changes made through Settings preview at runtime before saving.
@@ -246,6 +266,37 @@ puts everything back into one layout. Widths dragged by hand (see
 
 While any screen is split, `general.restore_layout` does not save or restore
 layouts.
+
+## Mirroring a screen
+
+For a presentation on a projector, TV or second monitor, a screen can show
+another one instead of a desktop of its own:
+
+```toml
+[outputs."HDMI-A-1"]
+mirror = "eDP-1"
+```
+
+The mirror shows everything on the other screen, including the pointer, the
+bar and the lock screen. Each screen keeps its own mode, by default its best
+resolution, and the picture is scaled to fit the mirror with its shape kept,
+centred between black bars where the shapes differ. Mirror the smaller screen
+from the larger one, so the larger one is used at full resolution and the
+smaller one shows it scaled down; mirroring the other way enlarges the
+smaller desktop instead.
+
+A mirror has no desktop: windows on it move to the other screens, programs
+do not see it (so it is not offered for screen sharing), and the pointer
+never moves onto it. `tileception msg outputs` lists it as mirroring its
+source, and `tileception msg screenshot --output HDMI-A-1 file.png` saves
+what it shows. The screen it mirrors must not mirror another itself, and
+`"*"` neither mirrors nor is mirrored. While the source is disabled or
+unplugged, the mirror is a desktop of its own again, as a newly connected
+screen would be. A touchscreen mapped to a mirror touches what it shows: a
+touch lands on the same spot of the source, and one on the black bars lands
+on the nearest edge of the picture.
+In **Settings > Displays**, choose **Mirror** for the screen that shows the
+other one.
 
 ## Desktop components
 
@@ -416,13 +467,11 @@ sources = ["~/Calendars/family.ics", "https://example.org/team.ics"]
 # refresh_minutes = 15
 ```
 
-Next to the clock, a chip names the event on now and when it ends, such as
-"until 14:30 Review", or else the next event today and when it starts, such
-as "15:00 Standup". Of events on at the same time, it names the one that
-started last, such as a meeting within a longer block, and of those the one
-ending first. When it ends, the chip moves on to what is on then, or to the
-next event. All-day events, and timed ones lasting a day or more, stay out
-of the chip, which would otherwise name them all day. Clicking it, or the
+Next to the clock, a chip shows the current event and its end time, such as
+"until 14:30 Review", or today's next upcoming event, such as "15:00 Standup".
+For overlapping events, it shows the one that started most recently (breaking
+ties by earliest end time), then advances when it ends. All-day events and
+events lasting 24 hours or longer are excluded from the chip. Clicking it, or the
 clock, opens the calendar, which lists today's events and those of the coming
 week that have not ended. A dot marks each day with events, from a year back
 to a year ahead; clicking a day lists its events instead, and clicking it
@@ -552,7 +601,7 @@ with the same name in your user autostart directory and set `Hidden=true` under
 XDG autostart entries are skipped in nested instances. Avoid adding a program
 to `general.autostart` if an XDG entry already starts it.
 
-## Keyboard and touchpad
+## Keyboard, touchpad and pointer
 
 ### Keyboard
 
@@ -628,6 +677,15 @@ with a four-finger upward swipe:
 See [Gestures](usage.md#gestures) for the default touchpad and touchscreen
 controls and the commented default config for more binding names.
 
+### Shake to find the pointer
+
+Shake the mouse to make the pointer grow. Off by default.
+
+```toml
+[pointer]
+shake_to_find = true
+```
+
 ## Power and battery
 
 ### Idle timers and locking
@@ -674,7 +732,7 @@ notifications = "count"   # "none" | "count" | "apps" | "full"
 - `none` leaves an app out, even of the count.
 - `count` only counts it. This is the default.
 - `apps` lists the app's name and icon with the time, the content hidden.
-- `full` shows what they say: the summary and body, and in popups any picture.
+- `full` shows the full notification: summary, body, and any popup image.
 
 Exceptions name an app by its desktop entry (`.desktop` may be left off) or by
 the name its notifications carry. A low default with `full` exceptions opts
@@ -688,6 +746,22 @@ always show. With Do not disturb on, the lock screen shows only the count. When
 [`greeter.toml`](greeter.md#settings), it shows nothing of notifications at all,
 whatever `[lock]` says. External lockers (`shell.lock` or
 `general.lock_command`) draw only themselves.
+
+### Lock screen backdrop
+
+Behind its tiles, Tileception's own lock screen shows the `[theme]` wallpaper,
+dimmed. For digital rain instead:
+
+```toml
+[lock]
+backdrop = "rain"   # "wallpaper" | "rain"
+```
+
+Tile glyphs then fall in your accent colours, the clock is drawn in the rain as
+large tiles, and the password and notification tiles move to a band along the
+bottom. A wrong password turns the rain the danger colour for a moment. With
+`animation_ms = 0`, or `reduce_motion` in the login screen's `greeter.toml`,
+the rain holds still.
 
 Suspend is available in the power menu by default. To disable that menu action:
 
@@ -718,8 +792,8 @@ Tileception refreshes the package lists, as `apt-get update` does. That
 needs no password and is left out on a metered connection and below 30% on
 battery; **Check** in the Updates window refreshes them at once.
 
-`remind_after_days` holds the notification back until updates have waited
-that many days; `0` says so at once. `remind_security_only = true` notifies
+`remind_after_days` delays notifications until updates have been pending for
+that many days (`0` notifies immediately). `remind_security_only = true` notifies
 for security updates only. The chip in the bar shows every update either way.
 The notification never comes over a fullscreen window or during Do not
 disturb: it follows within a minute of leaving those.

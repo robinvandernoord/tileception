@@ -6,9 +6,9 @@ already have, use the [packages](installation.md#packages) instead.
 
 Download it from [tileception.space/download](https://tileception.space/download/).
 There is one per supported Ubuntu release, for PCs (amd64) and ARM computers
-(arm64). The ISOs hold none of Tileception
-itself: the installer downloads the current release, so the computer needs
-internet while installing.
+(arm64). The ISOs don't include Tileception
+itself—the installer downloads the latest release, so you'll need an
+internet connection during installation.
 
 ## Write it to a USB stick
 
@@ -36,14 +36,15 @@ Tileception**. The live session is Ubuntu's usual desktop; Tileception comes
 with the installed system.
 
 The installer asks for your language, keyboard, network, disk, account and
-time zone, as Ubuntu's does. Everything else is decided by the ISO. After
-Ubuntu's part it spends a few more minutes downloading Tileception and the
-apps; the progress bar can stand still meanwhile. When it asks you to remove
+time zone, as Ubuntu's does. Everything else is decided by the ISO. After the
+base Ubuntu installation finishes, the installer spends a few minutes
+downloading Tileception and the included apps; the progress bar may appear
+stalled during this step. When it asks you to remove
 the installation medium, take out the stick and press **Enter**.
 
-The installed system starts at Tileception's login screen. Installed without
-a network, the system starts with Ubuntu's
-desktop instead and sets up Tileception at the first start with a network.
+The installed system starts at Tileception's login screen. If installed offline,
+the system boots into the standard Ubuntu desktop and installs Tileception on
+the first boot with an internet connection.
 
 ## What you get
 

@@ -1379,7 +1379,7 @@ impl Tileception {
             (Some(toggle), _) if toggle.contains(pointer) => format!("Show {app} on the lock screen"),
             (_, Some(bell)) if bell.contains(pointer) => match sound {
                 Some(family) => format!("{app} sounds: {}", family.name()),
-                None => format!("{app} makes no sound"),
+                None => format!("{app} sounds: Off"),
             },
             _ => format!("{app}  \u{00b7}  {}", ago(notification.created)),
         };

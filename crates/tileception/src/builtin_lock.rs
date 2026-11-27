@@ -100,7 +100,8 @@ impl Tileception {
         self.notifications_locked();
         // Without animations in the session, the lock screen holds still too.
         let still = self.world.settings.animation <= 0.0;
-        let mut screen = Greeter::lock(&login, still);
+        let rain = self.config.file.lock.backdrop == crate::lock::Backdrop::Rain;
+        let mut screen = Greeter::lock(&login, still, rain);
         if unavailable {
             screen.notice = Some(UNAVAILABLE.into());
         }

@@ -119,11 +119,10 @@ pub fn init(
                 model: "Headless".into(),
             },
         );
-        state.advertise_output(&output);
         let mode = Mode { size: (width, height).into(), refresh: 60_000 };
         output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
         output.set_preferred(mode);
-        state.add_output(output.clone());
+        state.connect_output(output.clone());
         outputs.push(output);
     }
     state.headless = Some(Box::new(Headless { renderer, outputs }));
@@ -147,6 +146,8 @@ impl Tileception {
         let elapsed = self.start.elapsed();
         self.process_streams(&mut headless.renderer);
         self.process_window_copies(&mut headless.renderer);
+        // Mirrors have no desktop: the loop below passes them by.
+        self.process_headless_mirrors(&mut headless.renderer);
         for output in &headless.outputs {
             if self.output_named(&output.name()).is_none() {
                 continue;

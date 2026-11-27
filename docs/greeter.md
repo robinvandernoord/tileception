@@ -82,6 +82,14 @@ read when the greeter starts.
   person's login name and shows the wallpaper their Tileception session
   shares, or else their accent colour (`wallpaper_fallback`). When the stack
   is full, it shows the people nearest the selected one.
+- **Rain:** `wallpaper_fallback = "rain"` in `[per_user]` puts falling tile
+  glyphs behind the tiles, coloured from the selected person's accent: the
+  accent at the head of each stream, its end colour in the tail. They turn the
+  danger colour for a moment after a wrong password. A shared wallpaper still
+  covers the rain, so set `wallpaper = false` to show it for everyone. With
+  reduced motion it holds still, and high contrast leaves it out. A locked
+  session can have rain too, with `backdrop = "rain"` in its
+  [`[lock]`](configuration.md#lock-screen-backdrop).
 - **Message panel:** add `motd` to `[panels] columns` to show a message to
   everyone who logs in. Set its `title` and `text` in `[motd]`, or point `file` at
   a file such as `/etc/motd`.

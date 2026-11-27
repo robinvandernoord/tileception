@@ -995,7 +995,7 @@ impl Host {
     fn read_dashboard(&mut self, plugin: String, value: Value, changed: &mut Changed) {
         match serde_json::from_value::<crate::dashboard::Items>(value) {
             Ok(mut items) => {
-                items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
+                items.limit();
                 items.seal();
                 self.dashboards.insert(plugin.clone(), items.items);
             }
@@ -1210,7 +1210,7 @@ impl Host {
                 Some(Ok(Described { launcher: Some(info), .. })) => info,
                 Some(Ok(Described { launcher: None, resources, .. })) => {
                     if resources.is_empty() {
-                        diagnostics.push(format!("Plugin {plugin_id}: offers nothing Tileception uses"));
+                        diagnostics.push(format!("Plugin {plugin_id}: provides no supported capabilities"));
                     }
                     continue;
                 }
@@ -1550,13 +1550,13 @@ impl Tileception {
         }
         if let Some(script) = missing_script(&command, &args) {
             return Err(format!(
-                "{script} is a relative path that Tileception does not find; give the script's absolute path"
+                "{script} is a relative path and could not be found; provide the script's absolute path"
             ));
         }
         let plugin_id = match plugin_id {
             Some(plugin_id) => plugin_id,
             None => id_for(&command, &args)
-                .ok_or_else(|| format!("cannot make a plugin id from {command}; give one with --id"))?,
+                .ok_or_else(|| format!("cannot derive a plugin ID from {command}; specify one with --id"))?,
         };
         if !valid_id(&plugin_id) {
             return Err(format!("{plugin_id:?} is not a plugin id: use lowercase letters, digits, - and _"));
@@ -2125,7 +2125,7 @@ impl Session {
             let path = environment.iter().rev().find(|(key, _)| key == "PATH").and_then(|(_, value)| value.as_deref());
             crate::confine::Allowance::for_plugin(name, command, args, path.map(std::ffi::OsStr::new))
                 .apply(&mut process)
-                .map_err(|error| format!("Plugin {name} asks to be confined: {error}"))?;
+                .map_err(|error| format!("Plugin {name} requires sandboxing: {error}"))?;
         }
         // Its own Wayland connection, for drawing on the dashboard only.
         let mut dashboard = None;

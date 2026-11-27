@@ -66,15 +66,35 @@ impl Tileception {
     }
 
     /// The stand-ins in a row, right of this machine's own screens.
-    fn arrange_peer_screens(&mut self) {
+    pub(crate) fn arrange_peer_screens(&mut self) {
         let bounds = self.desktop_bounds();
         let mut left = bounds.right().round() as i32;
-        for screen in self.handoff.windows.screens.0.values() {
+        let mut moved: Vec<(PeerId, Point<i32, Logical>)> = Vec::new();
+        for (&peer, screen) in &self.handoff.windows.screens.0 {
             let location = Point::from((left, 0));
-            if screen.output.current_location() != location {
+            let previous = screen.output.current_location();
+            if previous != location {
                 screen.output.change_current_state(None, None, None, Some(location));
+                moved.push((peer, location - previous));
             }
             left += screen.size.0;
+        }
+        // Keep handed-off X11 toplevel windows aligned with their peer's
+        // stand-in so new menus/tooltips placed relative to them still map to
+        // that peer. Override-redirect popups cannot be repositioned by the WM.
+        for (peer, delta) in moved {
+            let x11_windows: Vec<_> = self
+                .handoff
+                .windows
+                .away
+                .iter()
+                .filter(|(_, away)| away.peer == peer)
+                .filter_map(|(window_id, _)| self.windows.get(window_id)?.x11_surface().cloned())
+                .collect();
+            for x11 in x11_windows {
+                let geom = x11.geometry();
+                let _ = x11.configure(smithay::utils::Rectangle::new(geom.loc + delta, geom.size));
+            }
         }
     }
 
