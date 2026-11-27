@@ -17,10 +17,10 @@ bindings.
 
 The agent list opens with the agents you have set up: the one in use, any
 you chose a copy for and any in `[wizard.agents]`. Agents installed on your
-computer come next, then the rest of the registry. Each agent shows where it
-comes from and how it is doing: **In use**, **Starting**, **Needs login** or
-**Stopped** for the chosen agent, **Update available** for an installed one
-that is older than the registry's. Type to search the list by name; the arrow
+computer come next, then the rest of the registry. Each agent shows its source
+and status: **In use**, **Starting**, **Needs login**, or **Stopped** for the
+active agent, and **Update available** if a newer version is in the registry.
+Type to search the list by name; the arrow
 keys move through it, and **Enter** picks the first agent found. Click the
 agent's name at the top of the panel, or type `/agent`, to open the list from
 a conversation.
@@ -72,9 +72,9 @@ takes precedence; remove it there to choose in the list.
 ### Updates
 
 Wizard keeps agents it downloaded or starts with `bunx`, `npx` or `uvx` at the
-registry's version. When the registry has a newer version than the running
-agent, Wizard says so in the conversation: **Update now** restarts the agent on
-the new version, which starts a new conversation. Otherwise the update arrives
+registry's version. When a newer version is available in the registry, Wizard
+shows an update notice in the conversation. Click **Update now** to restart on
+the new version (starting a new conversation). Otherwise the update arrives
 the next time the agent starts.
 
 Wizard does not update agents you installed yourself or set in the config. It
@@ -171,8 +171,9 @@ say:
 Tweak treats the smart home's tools like the `tileception msg home` commands
 it already runs; a plugin installed in place of the bundled `home` plugin is
 not trusted that way. Other plugins' tools ask in Tweak even when marked
-read-only: the mark is the plugin's own claim. A call nobody answers within ten minutes is refused, and
-so is one the agent stopped waiting for. While the screen is locked, plugin
+read-only: the mark is the plugin's own claim. Unanswered tool calls time out
+and are denied after ten minutes, or sooner if the agent cancels the request.
+While the screen is locked, plugin
 tools do not run. The agent may also ask on its own before using a tool. The
 answers go to the agent's provider like anything else the agent reads. To keep
 a plugin's tools from the Wizard, set `[plugins.<id>.doctor] enabled = false`

@@ -469,7 +469,7 @@ impl Aside {
             }
             let stored = aside.folder.join(index.to_string());
             if let Err(error) = std::fs::rename(&path, &stored) {
-                let error = format!("Could not set {} aside: {error}", path.display());
+                let error = format!("Could not back up {}: {error}", path.display());
                 aside.restore()?;
                 return Err(error);
             }
@@ -563,7 +563,7 @@ fn remove_manifest(installed: &Installed, manifest: &Path) -> Result<Option<Stri
     let ours = installed.wrote_manifest
         || std::fs::read_to_string(manifest).is_ok_and(|text| text == minimal_manifest(&installed.command));
     if !ours {
-        return Ok(Some(format!("kept {}, which was there before it was installed", manifest.display())));
+        return Ok(Some(format!("kept existing {} from before installation", manifest.display())));
     }
     std::fs::remove_file(manifest).map_err(|error| format!("{}: {error}", manifest.display()))?;
     Ok(None)
@@ -801,7 +801,7 @@ impl Runner {
     /// The program a plugin's package is installed and removed with.
     fn find(&self, tool: Tool) -> Result<PathBuf, String> {
         tileception_acp::local::find(tool.program()).ok_or_else(|| match tool {
-            Tool::Uvenv => "Plugins are installed and removed with uvenv, which is not installed: run tileception setup to install it, \
+            Tool::Uvenv => "uvenv is required to install and remove plugins. Run `tileception setup` to install it, \
                             or see https://github.com/robinvandernoord/uvenv"
                 .into(),
             Tool::UvTool => "This plugin was installed with uv, which is not installed anymore".into(),
@@ -825,14 +825,14 @@ impl Runner {
                     Ok(listing) => (listing, Transport::Ssh),
                     Err(_) => {
                         return Err(format!(
-                            "{} is private or does not exist: a private repository is reached over ssh, \
-                             with a key that `ssh -T git@github.com` uses without asking (in your ssh agent)",
+                            "{} is private or does not exist. Private repositories require an SSH key loaded \
+                             in your ssh-agent (verify with `ssh -T git@github.com`).",
                             source.repository()
                         ));
                     }
                 }
             }
-            Err(error) => return Err(format!("Could not ask GitHub about {}: {error}", source.repository())),
+            Err(error) => return Err(format!("Could not reach GitHub for {}: {error}", source.repository())),
         };
         if let Some(commit) = given {
             return Ok((commit, transport));
@@ -859,7 +859,7 @@ impl Runner {
         let mut args = vec!["ls-remote", "--", url.as_str()];
         args.extend(patterns.iter().map(String::as_str));
         let output = run(self.git(&args, transport), QUICK_TIMEOUT)
-            .map_err(|error| format!("Could not ask GitHub about {} ({error})", source.repository()))?;
+            .map_err(|error| format!("Could not reach GitHub for {} ({error})", source.repository()))?;
         Ok(if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -1016,7 +1016,7 @@ impl Runner {
         // back if installing fails.
         let aside = match &before {
             Some(installed) => {
-                self.step(format!("Setting {} aside until its replacement is installed", installed.package));
+                self.step(format!("Backing up {} before installing the update", installed.package));
                 let folder = data_dir().join("set-aside").join(&package.plugin_id);
                 Some(Aside::take(folder, self.old_paths(&uvenv, installed))?)
             }
@@ -1034,7 +1034,7 @@ impl Runner {
             );
             return Err(match aside.map_or(Ok(()), Aside::restore) {
                 Ok(()) => error,
-                Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
+                Err(stuck) => format!("{error}; could not restore the previous version: {stuck}"),
             });
         }
         self.step(format!("Installing {} at {} with uvenv", package.name, short(&lookup.commit)));
@@ -1093,7 +1093,7 @@ impl Runner {
             record.save()?;
             return Err(match restored {
                 Ok(()) => error,
-                Err(stuck) => format!("{error}; the installed version could not be put back: {stuck}"),
+                Err(stuck) => format!("{error}; could not restore the previous version: {stuck}"),
             });
         }
         if let Some(aside) = aside {
@@ -1115,7 +1115,7 @@ impl Runner {
         record.plugins.get_mut(&package.plugin_id).expect("installation was recorded").commit =
             Some(lookup.commit.clone());
         record.save()?;
-        self.step(format!("Asking {} whether it is configured", package.script));
+        self.step(format!("Checking if {} is configured", package.script));
         let status = self.status(&command);
         let configure =
             (!status.configured).then(|| Configure { plugin_id: package.plugin_id.clone(), setup: status.setup });
@@ -1360,7 +1360,7 @@ impl Tileception {
     /// Starts a job unless one runs already.
     fn start_job(&mut self, busy: String, job: Job) -> Result<(), String> {
         if let Some(running) = &self.installer.busy {
-            return Err(format!("Wait for this first: {running}"));
+            return Err(format!("Another plugin operation is already in progress: {running}"));
         }
         let sender = self.installer.sender.clone().ok_or("The plugin installer is not running")?;
         let environment = self
@@ -1437,7 +1437,7 @@ impl Tileception {
         let busy = format!("Installing {} at {}", lookup.package.name, short(&lookup.commit));
         self.start_job(busy.clone(), Job::Install(source, Box::new(lookup)))?;
         self.notify_locally("Plugins", &format!("{busy}\u{2026}"), tileception_notify::Urgency::Low);
-        Ok(format!("{busy}; a notification follows when it is done\n"))
+        Ok(format!("{busy}. You'll get a notification when it finishes.\n"))
     }
 
     /// `tileception msg plugins add`: looks the repository up and installs
@@ -1446,7 +1446,7 @@ impl Tileception {
         let source = Source::parse(text)?;
         let busy = format!("Installing {source}");
         self.start_job(busy.clone(), Job::Add(source))?;
-        Ok(format!("{busy}; a notification follows when it is done\n"))
+        Ok(format!("{busy}. You'll get a notification when it finishes.\n"))
     }
 
     /// Updates the named plugins, or every installed one.
@@ -1460,7 +1460,7 @@ impl Tileception {
         };
         let busy = format!("Updating {}", ids.join(", "));
         self.start_job(busy.clone(), Job::Update(ids))?;
-        Ok(format!("{busy}; a notification follows when it is done\n"))
+        Ok(format!("{busy}. You'll get a notification when it finishes.\n"))
     }
 
     pub(crate) fn plugin_remove(&mut self, plugin_id: &str) -> Result<String, String> {
@@ -1469,7 +1469,7 @@ impl Tileception {
         }
         let busy = format!("Removing {plugin_id}");
         self.start_job(busy.clone(), Job::Remove(plugin_id.to_string()))?;
-        Ok(format!("{busy}; a notification follows when it is done\n"))
+        Ok(format!("{busy}. You'll get a notification when it finishes.\n"))
     }
 
     /// Sets a plugin up again: asks its `status` for a setup prompt in the

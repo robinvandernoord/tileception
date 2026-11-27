@@ -494,7 +494,7 @@ impl Control {
             Control::Zoom => "Present the area full-screen  Z",
             Control::Attach => "Attach to feedback  Enter",
             Control::Doctor => "Ask the Wizard  D",
-            Control::Cancel if shot.feedback.is_some() => "Back to the feedback  Esc",
+            Control::Cancel if shot.feedback.is_some() => "Back to feedback  Esc",
             Control::Cancel => "Cancel  Esc",
             Control::Save => "Save  Ctrl+S",
             Control::Copy => "Copy  Enter",
@@ -1441,7 +1441,7 @@ impl Tileception {
                 let Some(path) = stamped(&screenshots_dir(), "screenshot", export.format.extension()) else {
                     self.notify_locally(
                         "Screenshot not saved",
-                        "The Screenshots folder could not be made",
+                        "Could not create the Screenshots folder",
                         Urgency::Normal,
                     );
                     return;
@@ -1933,7 +1933,7 @@ impl Tileception {
     fn shot_hint(&self, painter: &mut Painter<'_>, screen: Rect) {
         let feedback = self.shot.as_ref().is_some_and(|shot| shot.feedback.is_some());
         let hints: &[(&str, &str)] = if feedback {
-            &[("Drag", "an area"), ("Click", "a window"), ("Esc", "back to the feedback")]
+            &[("Drag", "an area"), ("Click", "a window"), ("Esc", "back to feedback")]
         } else {
             &[("Drag", "an area"), ("Click", "a window"), ("F", "live screen"), ("Esc", "cancel")]
         };

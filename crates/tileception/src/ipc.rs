@@ -69,7 +69,7 @@ impl Tileception {
     /// The command being handled is answered by [`Tileception::reply_later`]
     /// with this number.
     pub(crate) fn defer_reply(&mut self, request: u64) {
-        self.defer_reply_for(request, PLUGIN_WAIT, "the plugin did not answer");
+        self.defer_reply_for(request, PLUGIN_WAIT, "plugin did not respond");
     }
 
     /// Like [`Tileception::defer_reply`], waiting up to `wait` and then
@@ -224,8 +224,8 @@ fn only_socket() -> std::io::Result<PathBuf> {
     let dir = socket_path("x").parent().map(PathBuf::from).unwrap_or_default();
     match &sockets_in(&dir)?[..] {
         [one] => Ok(one.clone()),
-        [] => Err(std::io::Error::other("no running Tileception found")),
-        _ => Err(std::io::Error::other("several Tileceptions are running; set TILECEPTION_SOCKET")),
+        [] => Err(std::io::Error::other("no running Tileception instance found")),
+        _ => Err(std::io::Error::other("multiple Tileception instances are running; set TILECEPTION_SOCKET")),
     }
 }
 

@@ -174,7 +174,7 @@ Inspecting:
   outputs                   list screens, positions, scales and the active screen
   focus-output <name>       direct input and desktop bindings to this screen
   move-output <name>        move the focused/selected windows to this screen
-  battery                   print the charge and the border colour it gives
+  battery                   print battery charge and its border colour
   bluetooth                 list Bluetooth adapters and paired devices
   bluetooth on|off          switch Bluetooth on or off
   bluetooth connect <name>  connect a paired device (also: disconnect)
@@ -188,7 +188,7 @@ Inspecting:
   tray debug [n]            add one debug entry, or set n debug entries (0 clears)
   volume                    print outputs, inputs, levels and the media player
   media                     print the last-played player's status
-  screenshot <file.png>     save what is on screen
+  screenshot <file.png>     save a screenshot
 
 Windows:
   terminal                  open the terminal beside the focused window
@@ -214,15 +214,15 @@ Windows:
   drop <x> <y>              drop the focused window at a screen point, like a drag
 
 Views:
-  overview                  show everything (Esc or a click leaves)
+  overview                  show overview of all windows (Esc or click to exit)
   step-in [pointer]         zoom one level in, toward the focus or the pointer
   step-out                  zoom one level out
-  maximize                  frame the focused window on its own (again: back)
-  back                      the previous space you framed
-  forward                   the next space you framed
+  maximize                  maximize the focused window (run again to restore)
+  back                      go to the previous view
+  forward                   go to the next view
   save <1-9>                save the current view in a slot
   go <1-9>                  go to a saved view
-  desktop                   clear the desk, or bring back what it cleared
+  desktop                   hide all windows, or restore them
   minimap                   open or close the map of the whole tree in the bar
   network                   open or close the network card in the bar
   network wifi [on|off]     switch Wi-Fi on or off (toggles without on or off)
@@ -233,14 +233,14 @@ Shell:
   settings                  open or close Settings (asks about unapplied changes)
   notifications             open the notification list
   notifications clear       clear the history and dismiss every popup
-  answer-notification       give the newest popup with buttons the keyboard:
-                            arrows or numbers and Enter choose, Esc gives it back
+  answer-notification       focus the newest actionable notification with the
+                            keyboard (arrows/numbers + Enter to pick, Esc to cancel)
   do-not-disturb [on|off]    toggle do not disturb, or switch it on or off
   notification-mode [sound|silent|dnd] [for|until <time>]
-                            switch the notification mode (the next one when
-                            left out), such as: dnd for 1h, silent until 18:00
+                            set notification mode (or cycle to the next if
+                            omitted), e.g. dnd for 1h, silent until 18:00
   lock                      lock the screen (see lock_command)
-  unlock                    end a lock whatever the locker does (from a console)
+  unlock                    force-unlock the session (for use from a console)
   power-menu                lock, log out, suspend, restart or power off
   copy-image <file.png>     put a PNG on the clipboard
   copy-text <text>          put text on the clipboard
@@ -249,12 +249,12 @@ Shell:
   snip                      pick an area to copy, save, draw on or record;
                             while recording, stop
   colour-scheme <s>         dark, light or default, until the config is reloaded
-  next-wallpaper            another picture from the wallpaper folder
+  next-wallpaper            switch to the next wallpaper in the folder
                             (also: color-scheme)
   wizard                    open or close the Wizard (also: doctor)
   wizard ask <question>     ask the Wizard about your setup
   wizard use <agent>        pick its agent by ACP Registry id (e.g. claude-acp)
-  wizard mode <mode>        what it may do unasked: ask, config or yolo
+  wizard mode <mode>        set permission mode: ask, config, or yolo
   duck                      let the rubber duck out, or put it away
   feedback [title]          preview and confirm a new GitHub feedback issue
                             then edit in the browser (needs a GitHub account)
@@ -267,7 +267,7 @@ Shell:
   handoff resume            share again after a lock paused it
   handoff home              bring input back (also Ctrl+Super+Escape)
   handoff reclaim [machine] bring this machine's windows back from others
-  updates                   list pending updates and what else waits
+  updates                   list pending updates and other maintenance tasks
   updates check             refresh the package lists (asks for your password)
   updates install [security|package...]
                             install every update, the security updates or
@@ -278,15 +278,15 @@ Shell:
   updates kernels           list kernels: running, fallback, old, available
   updates clean             remove old kernels and leftover kernel packages
   updates autoremove        remove packages that are no longer needed
-  updates repair            finish what dpkg left half done and settle broken
-                            dependencies, when apt asks for it
-  updates log               print what the last task's programs printed
+  updates repair            finish interrupted dpkg operations and fix broken
+                            dependencies
+  updates log               print the output log from the last update task
   updates upgrade           start the release upgrade in a terminal
   reload                    reload config.toml
   vt <n>                    switch to virtual terminal n
   quit                      end the session
-  restart                   start Tileception again as installed now, in the
-                            same session; open windows close
+  restart                   restart Tileception in the current session
+                            (closes open windows)
 
 Sound, light and media:
   volume up|down [n]        change the output volume by n percent (or the step)
@@ -327,19 +327,20 @@ Plugins:
                             arguments and print its answer, such as
                             plugin home toggle {\"device\": \"Lamp\"}
 
-Pretend input (headless or nested only):
+Simulated input (headless or nested only):
   pointer <x> <y>           move the pointer
-  motion <dx> <dy>          move it by this much, like a mouse (crosses to
-                            machines linked with handoff)
+  motion <dx> <dy>          move pointer relatively by dx, dy (crosses to
+                            handoff-linked machines)
   click [x y] [left|right|middle]
-  press [left|right|middle] hold a button down (drags), and let go with
+  press [left|right|middle] press and hold a mouse button (for dragging); pair
+                            with release
   release [left|right|middle]
-  scroll <notches>          turn the mouse wheel, below 0 for up
-  key <combo> [hold <ms>]   press a key, such as Return or Super+slash; with
-                            hold, let go after that many milliseconds
+  scroll <notches>          scroll the mouse wheel (negative scrolls up)
+  key <combo> [hold <ms>]   press a key (e.g. Return or Super+slash),
+                            optionally holding for <ms>
   keydown <key>             hold a key down (keydown Alt, then press and
                             motion: an Alt+drag)
-  keyup <key>               let a held key go
+  keyup <key>               release a held key
   type <text>               type text
   gesture <name>            such as Swipe3Left, Super+Pinch2In or TouchEdgeTop
   touch <x> <y> [x2 y2]     tap, or drag to the second point
@@ -426,7 +427,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 ["wifi", "on"] => Ok(Command::Network(NetworkCommand::Wifi(Some(true)))),
                 ["wifi", "off"] => Ok(Command::Network(NetworkCommand::Wifi(Some(false)))),
                 ["disconnect"] => Ok(Command::Network(NetworkCommand::Disconnect)),
-                _ => Err("network takes nothing, status, wifi [on|off] or disconnect".into()),
+                _ => Err("network takes no arguments, status, wifi [on|off] or disconnect".into()),
             };
         }
         "caches" => return Ok(Command::Caches),
@@ -497,7 +498,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
                 "ask" => Ok(Command::Doctor(Some(tail.to_string()))),
                 "" => Ok(Command::Doctor(None)),
                 _ => Err(format!(
-                    "wizard takes nothing, \"ask <question>\", \"use <agent>\" or \"mode <mode>\", not {rest:?}"
+                    "wizard takes no arguments, \"ask <question>\", \"use <agent>\" or \"mode <mode>\", not {rest:?}"
                 )),
             };
         }
@@ -544,14 +545,14 @@ pub fn parse(line: &str) -> Result<Command, String> {
             return Ok(Command::Drop(x_pos, y_pos));
         }
         "answer-notification" if rest.is_empty() => return Ok(Command::AnswerNotification),
-        "answer-notification" => return Err(format!("answer-notification takes nothing, not {rest:?}")),
+        "answer-notification" => return Err(format!("answer-notification takes no arguments, not {rest:?}")),
         "pick-colour" | "pick-color" if rest.is_empty() => return Ok(Command::PickColour),
-        "pick-colour" | "pick-color" => return Err(format!("pick-colour takes nothing, not {rest:?}")),
+        "pick-colour" | "pick-color" => return Err(format!("pick-colour takes no arguments, not {rest:?}")),
         "snip" if rest.is_empty() => return Ok(Command::Capture),
-        "snip" => return Err(format!("snip takes nothing, not {rest:?}")),
+        "snip" => return Err(format!("snip takes no arguments, not {rest:?}")),
         "duck" if rest.is_empty() => return Ok(Command::Duck),
         "game-mode" => return crate::game::parse(&args).map(Command::GameMode),
-        "duck" => return Err(format!("duck takes nothing, not {rest:?}")),
+        "duck" => return Err(format!("duck takes no arguments, not {rest:?}")),
         "feedback" => return Ok(Command::Feedback(rest.to_string())),
         "quit" => Action::Quit,
         "restart" => Action::Restart,
@@ -561,7 +562,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "step-in" => match args.first().copied() {
             None => Action::StepIn,
             Some("pointer") => Action::StepInPointer,
-            Some(other) => return Err(format!("step-in takes nothing or \"pointer\", not {other:?}")),
+            Some(other) => return Err(format!("step-in takes no arguments or \"pointer\", not {other:?}")),
         },
         "cycle" => match args.first().copied() {
             None | Some("next") => Action::Cycle(true),
@@ -599,7 +600,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "notifications" => match args.first().copied() {
             None => Action::Notifications,
             Some("clear") => Action::ClearNotifications,
-            Some(other) => return Err(format!("notifications takes nothing or \"clear\", not {other:?}")),
+            Some(other) => return Err(format!("notifications takes no arguments or \"clear\", not {other:?}")),
         },
         "do-not-disturb" => match args.first().copied() {
             None | Some("toggle") => Action::DoNotDisturb(None),
@@ -633,7 +634,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "restore" => match args.first() {
             None => Action::Restore(None),
             Some(id_text) => Action::Restore(Some(tileception_core::WindowId(
-                id_text.parse().map_err(|_| "restore takes nothing or a window id".to_string())?,
+                id_text.parse().map_err(|_| "restore takes no arguments or a window id".to_string())?,
             ))),
         },
         "next-tab" => Action::NextTab,
@@ -827,7 +828,7 @@ mod tests {
         assert_eq!(parse("plugin"), Err("plugin needs a plugin id and a tool".into()));
         assert_eq!(parse("plugin home"), Err("plugin needs a tool after the plugin id".into()));
         assert_eq!(parse("wizard use"), Err("wizard use needs an agent id from the ACP Registry".into()));
-        assert_eq!(parse("restore x"), Err("restore takes nothing or a window id".into()));
+        assert_eq!(parse("restore x"), Err("restore takes no arguments or a window id".into()));
     }
 
     #[test]

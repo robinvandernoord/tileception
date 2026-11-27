@@ -412,7 +412,11 @@ impl Tileception {
         let recordings = super::cache_dir().join("recordings");
         forget_old_recordings(&recordings);
         let Some(path) = super::stamped(&recordings, "recording", "mp4") else {
-            self.notify_locally("Recording failed", "No room for the recording in the cache folder", Urgency::Normal);
+            self.notify_locally(
+                "Recording failed",
+                "Could not create a recording file in the cache folder",
+                Urgency::Normal,
+            );
             return;
         };
         let base = SystemTime::now() - SOUND_LEAD;
@@ -797,7 +801,7 @@ impl Tileception {
         }
         if untold || (!mixed && usable) {
             let body = if mixed {
-                "Part of the sound could not be recorded and is left out"
+                "Some audio couldn't be recorded and was omitted"
             } else if usable {
                 "The sound could not be mixed in, so the video is silent"
             } else {
@@ -846,7 +850,11 @@ impl Tileception {
             }
             Keep::CopyMp4(path) => {
                 if !path.exists() {
-                    self.notify_locally("Recording not copied", "The recording is gone", Urgency::Normal);
+                    self.notify_locally(
+                        "Recording not copied",
+                        "The recording file is no longer available",
+                        Urgency::Normal,
+                    );
                     return;
                 }
                 self.copy_recording(&path, None);
@@ -896,7 +904,7 @@ impl Tileception {
                 return;
             }
         };
-        self.notify_locally("Making a GIF", "It is copied in a moment", Urgency::Low);
+        self.notify_locally("Making a GIF", "It will be copied in a moment", Urgency::Low);
         let polled =
             self.loop_handle.insert_source(Timer::from_duration(POLL), move |_, _, state| match child.try_wait() {
                 Ok(None) => TimeoutAction::ToDuration(POLL),
