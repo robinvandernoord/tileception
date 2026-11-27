@@ -182,6 +182,7 @@ impl Tileception {
                     return;
                 }
                 let pos = self.desktop_motion(pos);
+                self.shake_motion(pos);
                 self.on_motion(pos, event.time_msec());
                 self.activate_constraint_under();
             }
@@ -193,6 +194,7 @@ impl Tileception {
                         return;
                     }
                     let pos = self.desktop_motion(pos);
+                    self.shake_motion(pos);
                     self.on_motion(pos, event.time_msec());
                     self.activate_constraint_under();
                 }

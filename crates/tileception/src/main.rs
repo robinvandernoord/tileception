@@ -88,6 +88,7 @@ mod screen_cast;
 mod screensaver;
 mod selection;
 mod settings;
+mod shake;
 mod shapes;
 mod share_pick;
 mod shell;

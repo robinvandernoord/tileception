@@ -726,6 +726,10 @@ impl Tileception {
         if cursor.scale != scale {
             *cursor = Cursor::load(scale);
         }
+        // Grown by shaking the mouse, or bursting.
+        if let Some(elements) = self.shaken_pointer(renderer, cursor, pos) {
+            return elements;
+        }
         let mut next_frame = None;
         let status =
             self.shell_pointer_cursor().map(CursorImageStatus::Named).unwrap_or_else(|| self.cursor_status.clone());

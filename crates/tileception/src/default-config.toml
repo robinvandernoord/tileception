@@ -185,6 +185,10 @@ swipe_distance = 60
 # you let go. false runs each gesture all at once when it has gone far enough.
 follow_fingers = true
 
+[pointer]
+# Shake the mouse to make the pointer grow.
+shake_to_find = false
+
 [greeter]
 # Show your accent colours and wallpaper on the Tileception login screen
 # (tileception --greeter). Off takes them back the next time this config loads.

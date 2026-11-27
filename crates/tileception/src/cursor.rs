@@ -61,6 +61,8 @@ pub struct Cursor {
     shapes: HashMap<CursorIcon, Option<Frames>>,
     /// When animations started, so every animated shape runs on one clock.
     started: Instant,
+    /// The arrow at the largest size the theme has, for drawing it enlarged.
+    big: Option<Frame>,
 }
 
 impl Cursor {
@@ -79,7 +81,23 @@ impl Cursor {
                 },
                 |(frame, _)| frame,
             );
-        Cursor { arrow, scale, theme, size, shapes: HashMap::new(), started: Instant::now() }
+        Cursor { arrow, scale, theme, size, shapes: HashMap::new(), started: Instant::now(), big: None }
+    }
+
+    /// The theme's arrow at its normal size.
+    pub fn arrow(&self) -> &Frame {
+        &self.arrow
+    }
+
+    /// The theme's arrow at the largest size it has, loaded on first use, so
+    /// it stays sharp for longer when drawn enlarged.
+    pub fn big_arrow(&mut self) -> &Frame {
+        let (theme, arrow) = (&self.theme, &self.arrow);
+        self.big.get_or_insert_with(|| {
+            load_theme(theme, 1024, &["left_ptr", "default"])
+                .and_then(|frames| frames.into_iter().next())
+                .map_or_else(|| arrow.clone(), |(frame, _)| frame)
+        })
     }
 
     /// The picture for a shape a program asked for, loaded on first use; the

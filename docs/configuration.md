@@ -552,7 +552,7 @@ with the same name in your user autostart directory and set `Hidden=true` under
 XDG autostart entries are skipped in nested instances. Avoid adding a program
 to `general.autostart` if an XDG entry already starts it.
 
-## Keyboard and touchpad
+## Keyboard, touchpad and pointer
 
 ### Keyboard
 
@@ -627,6 +627,15 @@ with a four-finger upward swipe:
 
 See [Gestures](usage.md#gestures) for the default touchpad and touchscreen
 controls and the commented default config for more binding names.
+
+### Shake to find the pointer
+
+Shake the mouse to make the pointer grow. Off by default.
+
+```toml
+[pointer]
+shake_to_find = true
+```
 
 ## Power and battery
 

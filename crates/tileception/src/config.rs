@@ -35,6 +35,8 @@ pub struct ConfigFile {
     pub theme: crate::theme::ThemeFile,
     pub keyboard: Keyboard,
     pub touchpad: crate::gestures::TouchpadConfig,
+    /// The mouse pointer.
+    pub pointer: crate::shake::PointerConfig,
     /// Exact touchscreen device names mapped to output connector names.
     pub touchscreens: BTreeMap<String, crate::touch::TouchscreenConfig>,
     pub idle: crate::idle::IdleConfig,
