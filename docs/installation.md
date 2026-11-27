@@ -10,9 +10,9 @@ Tileception to a system you already have.
 
 Packages are available for **amd64** and **arm64** on every supported release
 of **Debian** from 13 (trixie) on and of **Ubuntu** from 24.04 (noble) on,
-interim releases included, and on Debian unstable (sid). A new release gets
-packages with the first Tileception release after its own; one that reaches
-its end of life gets none after that.
+interim releases included, and on Debian unstable (sid). Packages for a new
+distro release arrive with the next Tileception release, and stop once that
+distro reaches end of life.
 
 Derivatives based on these releases are supported too, including **Linux Mint**.
 The installer selects packages for the underlying Debian or Ubuntu release.

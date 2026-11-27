@@ -6,8 +6,8 @@ use crate::{launcher::Paste, text_input::TextInput};
 const LINE: f64 = 21.;
 const LIMIT: usize = 256 * 1024;
 /// Why the whole-file editor refuses its text after config.toml changed.
-const STALE: &str = "config.toml changed on disk, and your edits here cannot be carried onto it, so applying them \
-                     is refused. Copy what you want to keep; Discard reloads the file.";
+const STALE: &str = "config.toml changed on disk and conflicts with your edits here, so they can't be applied. Copy \
+                     anything you want to keep, then click Discard to reload the file.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum PointerAction {
@@ -99,7 +99,7 @@ impl Editor {
             self.disk = None;
             self.error.clear();
             if edited {
-                self.notice = "config.toml changed on disk. Your edits here were carried onto it.".into();
+                self.notice = "config.toml changed on disk. Your edits were merged into the updated file.".into();
             } else if self.notice == STALE {
                 self.notice.clear();
             }
@@ -254,7 +254,7 @@ impl Tileception {
             } else if super::refresh::merge_text(&mut editor.original, &mut text, &source) {
                 kept.push(editor.field.map_or("config.toml", |index| FIELDS[index].label));
                 editor.notice =
-                    "config.toml changed on disk. Your edits here are kept; applying them replaces the file's.".into();
+                    "config.toml changed on disk. Your edits were kept and will overwrite the file's values when applied.".into();
             }
             super::refresh::replace_input(&mut editor.input, text);
             editor.error.clear();
@@ -361,7 +361,7 @@ impl Tileception {
                         if editor.drop_asked.as_ref() != Some(&asked) {
                             editor.drop_asked = Some(asked);
                             return Err(format!(
-                                "{} is set differently here than in Settings. Try again to keep what is written here.",
+                                "{} differs from the value in Settings. Click Apply again to keep the version in this editor.",
                                 differing.join(", ")
                             ));
                         }
@@ -378,7 +378,7 @@ impl Tileception {
                             if editor.drop_asked.as_ref() != Some(&asked) {
                                 editor.drop_asked = Some(asked);
                                 return Err(format!(
-                                    "Your changes to {} do not fit this text. Change it so they fit, or try again to drop them.",
+                                    "Your Settings changes to {} conflict with this file. Edit the file to resolve them, or click Apply again to discard them.",
                                     labels.join(", ")
                                 ));
                             }

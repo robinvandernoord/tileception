@@ -22,15 +22,15 @@ to the category and keeps the screen's draft, including unfinished input. Apply
 changes saves and applies it in one step; Discard screen explicitly removes that
 screen's edits since opening it.
 
-Closing Settings with unapplied changes asks first: **Apply** saves them and
-closes, **Discard** closes without them, and **Cancel** (or Escape) keeps
-Settings open. Enter chooses Apply. Closing keeps no draft, so Settings always
-opens on `config.toml` as it is then.
+If you close Settings with unapplied changes, you'll be asked to **Apply**
+(save and close, or press **Enter**), **Discard** (close without saving), or
+**Cancel** (or press **Escape** to stay open). Drafts aren't kept after
+closing, so Settings always opens with the current `config.toml`.
 
 While Settings is open it follows `config.toml`: when the file changes on disk,
-settings you have not touched show the new values. A setting or screen you have
-edited keeps your edit, and Settings says so when the file changed it too;
-applying then saves your version over the file's.
+settings you have not touched show the new values. Edited settings keep your
+changes; Settings warns you if the file also changed that value, and applying
+overwrites the file with your version.
 
 In Settings, use **Ctrl+Page Up/Down** to switch categories and **Alt+Up** to
 go Back. **Tab** and **Shift+Tab** move between controls, **Page Up/Down**
@@ -96,7 +96,7 @@ until you click it again, click elsewhere or press **Escape**. On the map:
 - Click a window to zoom to it.
 - Drag to pan to another part of the layout at the current zoom level.
 
-The line below the map says what letting go would show. On a split screen the
+The label below the map previews the view you'll land on when you release. On a split screen the
 map shows every area side by side, and choosing something in another area makes
 that area active. You can also open the map by typing **Minimap** in the
 launcher. [Configuration](configuration.md#desktop-components) shows how to hide
@@ -147,7 +147,7 @@ group where the first selected window was. Use **Super+U** to zoom back out, or
 | Super+G                     | Combine selected windows into tabs                             |
 | Super+Tab / Super+Shift+Tab | Switch to the next / previous tab                              |
 | Super+V / Super+Shift+F     | Switch windows between floating and tiled                      |
-| Super+D                     | Clear the desk, or bring back what it cleared                  |
+| Super+D                     | Clear the desk, or restore the cleared windows                 |
 | Super+H                     | Minimize windows                                               |
 | Super+Shift+H               | Restore the most recently minimized window                     |
 | Super+C                     | Close windows                                                  |
@@ -216,16 +216,16 @@ Drag an item on the welcome screen's dashboard to put it anywhere beside the
 welcome screen. It snaps to an 8-pixel grid, and an item dropped on another
 moves to the nearest free place; the others stay where they are. Drag a
 picture or plugin surface by its title, anything else from anywhere but its
-buttons. Where the items are is saved in
-`~/.local/state/tileception/dashboard-layout.toml`, from the nearest corner of
-the screen so they keep their place on a screen of another size; delete it to
-go back to the first-come layout.
+buttons. Item positions are saved in
+`~/.local/state/tileception/dashboard-layout.toml` relative to the nearest
+screen corner, so they stay in place on different screen sizes. Delete this
+file to reset to the default layout.
 
 To remove an item, point at it and click the round **x** on its corner. It
 stays away, also after a restart, until you bring it back with the **+** beside
-the settings button in the welcome screen's footer. The **+** shows while there
-is something to add: it lists the items you removed, and installed plugins with
-dashboard items that are switched off. Choosing a plugin there switches its
+the settings button in the welcome screen's footer. The **+** button appears
+whenever there are hidden items or disabled dashboard plugins you can add back.
+Choosing a plugin there switches its
 dashboard items on in `config.toml`, and the plugin too when it was off.
 
 `tileception msg dashboard` lists the items by name (`notifications`, or a
@@ -249,8 +249,8 @@ window.
 
 In game mode, Tileception's own Super shortcuts step aside, so Super and
 every Super combination reach the game, including Super with the mouse wheel
-or a click, and dragging with Alt. A short notice at the top of the screen
-says when game mode comes on, and a struck-through one when it goes off.
+or a click, and dragging with Alt. A brief banner appears at the top of the
+screen when game mode turns on, and a struck-through banner when it turns off.
 Alt+Tab goes to the game too, and does not switch windows. Pressing Super on
 its own, or Alt+Tab, shows the notice again.
 
@@ -258,7 +258,7 @@ Game mode comes on by itself when you play a game, whichever launcher started
 it. The focused window must be a game and must be fullscreen or have taken the
 mouse pointer. Tileception counts a window as a game when:
 
-- it says it shows a game (the Wayland content type);
+- it reports the Wayland game content type;
 - it runs under Wine, as Windows games do;
 - its program, or the program that started it (Steam, Lutris, Heroic, a game's
   own launcher), has an application entry in the **Game** category.
@@ -341,14 +341,14 @@ or pm, is the next three o'clock, morning or afternoon; write `03:00` or
 Plain sentences work too, without `timer` in front: "set a timer for 10
 minutes", "10 minute timer for tea", "set an alarm at 7", "remind me at 3 to
 call the dentist", "remind me to stretch in 20 minutes" or "wake me up at
-6:30". The first row says what Enter will start and when it is due.
+6:30". The first row previews the timer or alarm and when it will go off.
 
 Each timer shows as a card under the launcher whenever it is open, with the
 time left, a bar for how far it is, and buttons to add a minute, pause or
 resume, and stop. `timer` and a space also lists the timers, where **Enter**
-offers the same actions. When the time is up, a notification says so and stays
-until you dismiss it; the card stays for ten minutes, or until its tick is
-clicked. Alarms and reminders have no pause. Timers keep running while
+offers the same actions. When time is up, you'll get a persistent notification
+until you dismiss it; the card stays for ten minutes or until you click its
+checkmark. Alarms and reminders have no pause. Timers keep running while
 Tileception restarts. If one ends during a restart, its notification arrives
 when Tileception is back. There can be 16 timers of up to a day;
 the launcher shows the cards of the four that end first.
@@ -373,20 +373,21 @@ exact title and issue body, including Tileception's version.
 architecture, backend and output pixel sizes/scales to the preview.
 The **Screenshot** row adds a picture: **Add screenshot...** puts the dialog
 away and opens the [area screenshot](#screenshots) tool, where you pick an
-area or a window, draw on it and redact what is private. Its row of actions
-then holds only **Cancel**, which returns to the dialog unchanged, and
-**Attach to feedback** (or Enter). The attached picture shows as a thumbnail
+area or a window, draw on it and redact what is private. The action bar then
+shows only **Cancel** (return to the dialog unchanged) and **Attach to
+feedback** (or press **Enter**). The attached picture shows as a thumbnail
 with its size; **Edit** opens the tool again on the same frozen screen, area
 and drawings, and **Remove** drops it. A
 GitHub link cannot carry a picture, so **Open in browser** saves the
 screenshot as `tileception-feedback-screenshot-<uid>.png` in the temporary
 folder (usually `/tmp`, readable only by you, replacing the last one) and puts
 it on the clipboard, and the issue body gets a hidden note where it belongs:
-press **Ctrl+V** there to attach it, or drag the file into the issue. What you
-had copied (up to 32 MB) comes back to the clipboard once the screenshot is
-pasted, or after two minutes (only the latter with clipboard persistence on,
-whose helper serves the paste), unless you copy something else first; another
-machine's clipboard shared through handoff stays replaced. Nothing is copied
+press **Ctrl+V** there to attach it, or drag the file into the issue. Your
+previous clipboard content (up to 32 MB) is restored once you paste the
+screenshot or after two minutes—unless you copy something else first. (With
+clipboard persistence enabled, it only restores after two minutes, and a
+clipboard shared from another machine via handoff isn't restored.) Nothing is
+copied
 or saved before you open the issue.
 Wizard's `/report` opens the same dialog over Wizard. The title is optional:
 `/report` alone starts in the empty title field, `/report Wi-Fi drops` fills
@@ -516,7 +517,7 @@ cannot be read. Each has a letter key, shown when you point at it. The colour
 button holds the colours and line widths (also **1** to **6**, **[** and
 **]**); **Ctrl+Z** and **Ctrl+Y** undo and redo.
 
-The row under the area finishes:
+Use the toolbar below the selection (or these shortcuts) to finish:
 
 | Key               | Action                                           |
 |-------------------|--------------------------------------------------|
@@ -537,16 +538,16 @@ Copying a WebP or JPG also offers a PNG, for programs that paste only PNG.
 The [capture settings](configuration.md#area-screenshots) set the qualities
 and sizes.
 
-The two buttons beside Record choose the sound that goes with a recording:
-what the speakers play and the microphone. Both start off, and your choice is
-kept for the next recording, also after a restart. With both, they are mixed.
-Sound is taken from the default output and input through PulseAudio (PipeWire
-provides it with `pipewire-pulse`); when it cannot be recorded, the recording
-goes on without it and a notification says so.
+The two buttons beside **Record** toggle system audio and microphone recording.
+Both are off by default, and your choices are remembered across restarts. If
+both are on, they are mixed together. Audio is captured from the default
+PulseAudio input and output (provided by PipeWire via `pipewire-pulse`); if
+audio capture fails, recording continues silently and you'll get a
+notification.
 
 While recording, a red line marks the area and a small bar shows the time,
-the sounds being recorded, and **Stop**. The microphone's button there mutes
-it in the recording and back. Click **Stop**, or press **Shift+Print** again,
+the sounds being recorded, and **Stop**. Click the microphone button there to
+mute or unmute it mid-recording. Click **Stop**, or press **Shift+Print** again,
 then copy the recording as an MP4 or GIF, or save it. A GIF has no sound.
 Recording needs `ffmpeg`.
 
@@ -642,8 +643,8 @@ with what is on first, and **All off** switches off every light and plug.
 The block folds to one line while nothing is on and unfolds when something
 turns on; click its title to fold or unfold it yourself, or a room's name to
 fold that room. Devices that are switched off at the wall show as unreachable
-at the bottom of their room. While something is on, a chip in the bar says
-what; click it to open the block. The built-in lock screen shows the indoor
+at the bottom of their room. When any device is on, a chip in the bar shows
+what's active; click it to open the block. The built-in lock screen shows the indoor
 temperature in its clock tile.
 
 In the launcher, type `home` and a space to switch devices and rooms:
@@ -678,8 +679,8 @@ On systems that use APT (Ubuntu, Debian, Mint), a chip appears in the bar
 while updates wait: APT packages, Flatpaks, snaps, Python tools installed with
 uvenv and, once switched on, firmware from fwupd. It counts security updates first: `3 +9` means three
 security updates and nine others. While updates install it shows progress,
-and it says **Restart** when earlier updates need one or names a newer Ubuntu
-release once one is out. With nothing to do there is no chip.
+shows **Restart** when a reboot is needed, or displays an available Ubuntu
+release upgrade. When your system is up to date, the chip is hidden.
 
 Click the chip for a card with the updates by kind and three buttons:
 **Review**, **Install all** and **Security only**. **Enter** opens the
@@ -690,8 +691,8 @@ administrator: polkit asks for the password in Tileception's prompt and
 remembers it for a few minutes. See [Administrator rights](#administrator-rights).
 
 Tileception refreshes the package lists by itself every few hours, which
-needs no password. It leaves that on a metered connection and below 30% on
-battery; **Check** still works then.
+needs no password. Automatic checks are skipped on metered connections or below
+30% battery, though you can still click **Check** manually.
 
 **Review** opens the Updates window, which also opens with
 `tileception msg updates open` or "Updates" in the launcher. It has five pages;
@@ -702,10 +703,10 @@ list, **Space** ticks a row and **Enter** runs the page's main button.
 
 | Page      | What it does                                                                                                                                                                                                                                                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Untick the ones to leave out, then **Install**. **Preview** shows first what `apt-get` would do with the ticked APT updates. **Check** refreshes the package lists. |
+| Available | Lists every update with its versions and download size: one row per source package, with its description and the packages built from it, then the apps and the firmware. Uncheck any updates you want to skip, then click **Install**. Click **Preview** to see what `apt-get` will do for the selected APT updates. **Check** refreshes the package lists. |
 | Kernels   | Does what [kerntop](https://github.com/robinvandernoord/kerntop) does. See below.                                                                                                                                                                                                                                                            |
-| Release   | Says whether a newer Ubuntu release is out and what to look at first: disk space, pending updates, package sources that the upgrade switches off, mains power and a snapshot. **Upgrade** runs `do-release-upgrade` in a terminal, where it asks its questions. Afterwards it lists the other sources that are switched off, says whether each has the new release yet, and **Switch on** moves a source to the new release and switches it on again. |
-| History   | What apt did before, from its log. **Ask the Wizard** sends the packages of one entry to the Wizard; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
+| Release   | Checks if a newer Ubuntu release is available and lists pre-upgrade checks: disk space, pending updates, third-party sources that will be disabled, AC power, and a system snapshot. **Upgrade** runs `do-release-upgrade` in a terminal to complete the upgrade interactively. Afterwards it lists disabled sources, shows whether each supports the new release yet, and **Switch on** updates a source to the new release and re-enables it. |
+| History   | Past APT activity from the log. **Ask the Wizard** sends the packages of one entry to the Wizard; **Copy list** copies them. **Last task log** opens everything the last task printed.                                                                                                                                                            |
 | Settings  | Notifications, automatic updates, firmware updates, which releases are offered, and the Ubuntu mirror. See below.                                                                                                                                                                                                                                                                                  |
 
 Flatpaks of the system and of your own installation, and snaps, are listed
@@ -735,21 +736,21 @@ arrives. **Hold** keeps an APT package at its version with `apt-mark hold`
 until **Release** lets it update again. Skipping is remembered by Tileception
 alone; a hold is apt's own and also applies in a terminal.
 
-Below the updates, the Available page says what else installing everything
-does: packages it removes, updates apt keeps back, and updates the archive
-is still phasing in, which follow later by themselves. When installing
+Below the list, the Available page summarizes side effects of installing all
+updates: packages that will be removed, updates held back by APT, and phased
+updates that will roll out later automatically. When installing
 everything would remove packages, **Install all** in the card and **Install**
 in the window show the preview first; nothing is removed unseen.
 
-Under **Housekeeping** the page offers the dependencies that nothing needs any
-more. **Review** shows what `apt-get autoremove` would take, and **Remove**
-there does it.
+**Housekeeping** lists unused dependencies. Click **Review** to preview what
+`apt-get autoremove` will delete, then **Remove** to clean them up.
 
 While packages are installed or removed the computer stays on: restarting,
-switching off, suspending and logging out wait for the task. Choose one in the
-power menu and it follows by itself once the task ends; choose it again to
-call it off. If the task fails, it is called off. Where systemd's logind runs,
-other programs asking to restart or sleep are held off for as long too.
+switching off, suspending and logging out wait for the task. If you pick one in
+the power menu, it runs automatically when the update finishes (pick it again
+to cancel, or it cancels automatically if the task fails). On systems with
+`systemd-logind`, reboot and sleep requests from other apps are also delayed
+until the task finishes.
 
 Everything the last task printed is kept, also across a restart of
 Tileception. After a failure the window offers **Show log**, and **Repair**
@@ -768,8 +769,8 @@ fallback. **Install** and **Remove** put a kernel on the queue instead of acting
 at once. Installing takes the matching headers along; removing takes the
 modules and headers that nothing else then uses. **Preview** shows what
 `apt-get` would do with the whole queue, **Apply queue** does it as one
-transaction and **Clear** empties it. **Purge: on** also removes the
-configuration of what goes; switch it off to keep that. **Queue old kernels**
+transaction and **Clear** empties it. **Purge: on** also deletes configuration
+files for removed kernels; turn it off to keep them. **Queue old kernels**
 queues everything except the running kernel and the fallback. The page warns
 when no fallback is installed, and when the queue would leave none.
 
@@ -798,11 +799,11 @@ release; there is no way back to an older one. The switch does not offer
 `never`, and it is left out when the file says `never`, so a system set that way by
 hand stays as it is. Linux Mint has no such file and no switch.
 
-Below that, the page shows the Ubuntu mirror in use. **Test**, in the row
-below the mirror, asks the mirror in use, the main archive and the mirrors Ubuntu lists for your country
-for a small file and part of a larger one, and lists them fastest first with
-their speed, how long they took to answer and how far behind the main archive
-they are. **Use** switches to one: it rewrites the Ubuntu entries of the
+Below that, the page shows the current Ubuntu mirror. Click **Test** to
+benchmark your current mirror, the main archive, and Ubuntu mirrors for your
+country, sorting reachable mirrors fastest-first by download speed and showing
+latency and sync delay alongside each one.
+**Use** switches to one: it rewrites the Ubuntu entries of the
 package sources, leaving the security pocket alone, and refreshes the lists.
 On Linux Mint these are in `official-package-repositories.list`, beside Mint's
 own mirror, which stays as it is;
@@ -843,7 +844,7 @@ From scripts and key bindings:
 | `tileception msg updates changelog <name>`           | Show what changed in an update                                 |
 | `tileception msg updates hold <package>...`          | Hold APT packages at their version; `unhold` releases them     |
 | `tileception msg updates skip <name>`                | Skip the waiting version of an update; `unskip` brings it back |
-| `tileception msg updates automatic [on\|off]`        | Say how automatic updates are set up, or switch them           |
+| `tileception msg updates automatic [on\|off]`        | Show automatic update status, or turn automatic updates on or off |
 | `tileception msg updates mirrors`                    | Test the mirrors; ask again for the results                    |
 | `tileception msg updates mirror <url>`               | Use this mirror                                                |
 | `tileception msg updates history [since YYYY-MM-DD]` | What apt changed, with versions, newest first                  |
@@ -901,9 +902,9 @@ the chosen button. If a password turns out wrong, the
 card asks for it again. **Network settings** at the bottom of the card opens
 the Network page in Settings.
 
-The Network page lists the same networks with a **Join** button each, and holds
-what the card leaves out. It acts on NetworkManager at once rather than as part
-of the Settings draft:
+The Network page lists the same networks with a **Join** button next to each,
+plus extra details not shown in the card. It acts on NetworkManager at once
+rather than as part of the Settings draft:
 
 - The connections that are up, with their addresses, gateway, DNS servers,
   interface and hardware address.

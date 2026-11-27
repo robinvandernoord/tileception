@@ -126,7 +126,7 @@ impl Sheet {
             Sheet::InstallRestart => "Install and restart preview",
             Sheet::Autoremove => "Clean-up preview",
             Sheet::Repair => "Repair preview",
-            Sheet::Log => "The last task",
+            Sheet::Log => "Last task log",
             Sheet::Notes => "Release notes",
         }
     }
@@ -170,7 +170,7 @@ impl Window {
     pub(super) fn set_preview(&mut self, request: u64, text: String) {
         if request == self.preview_request && self.preview.is_some() && self.sheet != Sheet::Log {
             let empty =
-                if self.sheet == Sheet::Notes { "No release notes were found." } else { "apt-get printed nothing." };
+                if self.sheet == Sheet::Notes { "No release notes were found." } else { "No output from apt-get." };
             self.preview = Some(if text.trim().is_empty() { empty.into() } else { text });
             self.scroll = 0.0;
         }
@@ -634,7 +634,9 @@ impl Tileception {
                 rows.push(Row::Text(waiting.into()));
             }
             if updates.window.sheet == Sheet::Repair && !preview.is_empty() {
-                rows.push(Row::Text("First `dpkg --configure -a` finishes what was left half installed. Then:".into()));
+                rows.push(Row::Text(
+                    "First, `dpkg --configure -a` will finish any interrupted installations. Then:".into(),
+                ));
                 rows.push(Row::Text(String::new()));
             }
             rows.extend(preview.lines().map(|line| Row::Text(line.to_string())));
@@ -698,7 +700,7 @@ impl Tileception {
                 if updates.automatic.available {
                     rows.push(Row::Automatic);
                 } else {
-                    rows.push(Row::Text(format!("{tool} is not installed, so nothing updates by itself.")));
+                    rows.push(Row::Text(format!("{tool} is not installed, so automatic updates are unavailable.")));
                 }
                 rows.push(Row::Heading("Firmware".into(), String::new()));
                 rows.push(Row::Firmware);
@@ -756,14 +758,14 @@ impl Tileception {
                 rows.push(Row::Heading("Before you start".into(), String::new()));
                 rows.extend((0..self.updates_release_checks().len()).map(Row::Check));
                 if !self.updates.switched_off.is_empty() {
-                    rows.push(Row::Heading("Switched-off sources".into(), "an upgrade switches them off".into()));
+                    rows.push(Row::Heading("Switched-off sources".into(), "disabled during release upgrades".into()));
                     rows.extend((0..self.updates.switched_off.len()).map(Row::Source));
                 }
             }
             Page::History => {
                 rows.extend((0..snapshot.history.len()).map(Row::Entry));
                 if snapshot.history.is_empty() {
-                    rows.push(Row::Text("No apt history could be read.".into()));
+                    rows.push(Row::Text("Could not read apt history.".into()));
                 }
             }
         }
@@ -1252,14 +1254,15 @@ impl Tileception {
                 args.insert(0, "-s".into());
                 args
             }
-            Sheet::Notes => return Err("Choose an update for its release notes.".into()),
+            Sheet::Notes => return Err("Select an update to view its release notes.".into()),
             Sheet::Autoremove => apt::autoremove_args(true),
             Sheet::Repair => apt::repair_args(true),
             Sheet::Log => {
                 let text = self.updates.log().map(|log| log.text.clone()).ok_or("No task has run yet.")?;
                 let window = &mut self.updates.window;
                 window.sheet = sheet;
-                window.preview = Some(if text.trim().is_empty() { "The task printed nothing.".into() } else { text });
+                window.preview =
+                    Some(if text.trim().is_empty() { "No output from the last task.".into() } else { text });
                 window.scroll = 0.0;
                 return Ok(());
             }
@@ -1917,7 +1920,7 @@ impl Tileception {
                 }
                 release::Offer::Unsupported => (
                     "Release upgrades are not available here".to_string(),
-                    "This system has no do-release-upgrade.".to_string(),
+                    "do-release-upgrade is not installed on this system.".to_string(),
                 ),
                 release::Offer::Unknown => ("Looking for a newer release...".to_string(), String::new()),
             };
@@ -1930,7 +1933,7 @@ impl Tileception {
             let track = match updates.track().unwrap_or_default() {
                 release::Track::Lts => "LTS releases only",
                 release::Track::Normal => "Every release",
-                release::Track::Never => "Offers switched off",
+                release::Track::Never => "Release upgrades disabled",
             };
             text_right(&mut painter, track, Rect::new(hero.x, hero.y, hero.w - 16.0, hero.h), muted);
         }
@@ -2064,14 +2067,14 @@ impl Tileception {
                     Row::Automatic => {
                         let automatic = &updates.automatic;
                         let covers = if automatic.covers.is_empty() {
-                            "It is set to install nothing.".to_string()
+                            "Configured to install no updates.".to_string()
                         } else {
                             format!("Covers {}", automatic.covers.join(", "))
                         };
                         switch_row(
                             painter,
                             rect,
-                            ("Install updates by themselves, once a day", &covers),
+                            ("Install updates automatically once a day", &covers),
                             (body, muted),
                             automatic.enabled,
                         );
@@ -2081,8 +2084,8 @@ impl Tileception {
                         rect,
                         (
                             "Offer every release, not only LTS",
-                            "Each lasts 9 months, so upgrade twice a year. Back to LTS only takes effect at the next \
-                             LTS release.",
+                            "Standard releases are supported for 9 months. Switching back to LTS takes effect at the \
+                             next LTS release.",
                         ),
                         (body, muted),
                         updates.track() == Some(release::Track::Normal),
@@ -2284,7 +2287,7 @@ impl Tileception {
                     Row::TestMirrors => {
                         painter.glyph(glyph::RESTART, tick_box(rect), 14, theme.muted);
                         let (label, note) = if updates.mirrors.candidates.is_empty() {
-                            ("Test the mirrors near you", "compares their speed and how far behind each is")
+                            ("Test the mirrors near you", "compares download speed and how up to date each mirror is")
                         } else {
                             ("Test again", "the results above are from the last test")
                         };
@@ -2324,9 +2327,7 @@ impl Tileception {
                         let (icon, tint, detail) = match source.available {
                             Some(true) => (glyph::CHECK, theme.accent, format!("Has {suites} \u{b7} {file}")),
                             Some(false) => (glyph::MINUS, theme.muted, format!("No {suites} yet \u{b7} {file}")),
-                            None => {
-                                (glyph::MINUS, theme.muted, format!("Could not be asked about {suites} \u{b7} {file}"))
-                            }
+                            None => (glyph::MINUS, theme.muted, format!("Could not check {suites} \u{b7} {file}")),
                         };
                         painter.glyph(icon, Rect::new(rect.x + 6.0, rect.y + 6.0, 20.0, 20.0), 15, tint);
                         painter.text(
@@ -2387,7 +2388,7 @@ impl Tileception {
                         let note = match (waits, update.source) {
                             (Some(true), _) => format!("Held with apt-mark \u{b7} from {origin}"),
                             (Some(false), _) => {
-                                format!("Version {} skipped \u{b7} the next one shows again", update.new)
+                                format!("Version {} skipped \u{b7} newer versions will still appear", update.new)
                             }
                             (None, apt::Source::Firmware) => {
                                 format!("{} \u{b7} from {origin} \u{b7} tick it to install", update.summary)
@@ -2400,7 +2401,7 @@ impl Tileception {
                 }
                 (Page::Available, Some(Row::Unneeded)) => {
                     painter.text("Dependencies of packages that have been removed", lines, body.bold());
-                    painter.text("Review lists what `apt-get autoremove` would remove.", second, muted);
+                    painter.text("Click Review to preview what `apt-get autoremove` will remove.", second, muted);
                 }
                 (Page::History, Some(Row::Entry(index))) => {
                     if let Some(entry) = snapshot.history.get(index) {
@@ -2498,7 +2499,7 @@ impl Tileception {
                         Some((Sheet::Log, _)) => ("Kept until the next task ends.".to_string(), theme.muted),
                         Some((_, plan)) if window.preview.as_ref().is_some_and(String::is_empty) => {
                             let _ = plan;
-                            ("Asking apt-get...".to_string(), theme.muted)
+                            ("Checking with apt-get...".to_string(), theme.muted)
                         }
                         Some((_, plan)) if plan.removes() && window.sheet != Sheet::Autoremove => {
                             (format!("This removes {}: {}", plan.removed.len(), plan.removed.join(", ")), theme.warning)
@@ -2509,7 +2510,7 @@ impl Tileception {
                 }
                 (_, Page::Available) => {
                     let (count, bytes, ..) = self.updates_ticked();
-                    let restart = if snapshot.restart { " \u{b7} a restart is waiting" } else { "" };
+                    let restart = if snapshot.restart { " \u{b7} restart required" } else { "" };
                     let text = if snapshot.updates.is_empty() {
                         match updates.outcome() {
                             Some(Ok(message)) => message.clone(),
@@ -2543,7 +2544,7 @@ impl Tileception {
                     let text = if updates.release().is_none() {
                         "Nothing to upgrade to."
                     } else if release::ready(&checks) {
-                        "Runs do-release-upgrade in a terminal, where it asks its questions."
+                        "Opens do-release-upgrade in a terminal to complete the upgrade interactively."
                     } else {
                         "Fix the marked items first."
                     };
@@ -2553,7 +2554,7 @@ impl Tileception {
                 (_, Page::Settings) => {
                     let text = match updates.mirrors.current.as_ref() {
                         Some(_) if updates.mirrors.candidates.is_empty() => {
-                            "Testing asks each mirror for a small file and part of a larger one.".to_string()
+                            "Testing measures each mirror's latency and download speed.".to_string()
                         }
                         Some(_) => "Using a mirror rewrites the Ubuntu sources and refreshes the lists.".to_string(),
                         None => "No Ubuntu mirror was found in the package sources.".to_string(),

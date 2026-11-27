@@ -666,7 +666,7 @@ impl Tileception {
                     "notifications" => "Notifications".to_string(),
                     _ => titles.get(key).cloned().unwrap_or_else(|| key.clone()),
                 },
-                detail: "Removed: bring it back",
+                detail: "Hidden \u{2014} click to restore",
                 click: Click::Restore(key.clone()),
             })
             .collect();
@@ -782,7 +782,7 @@ impl Tileception {
                 self.schedule_render();
                 Ok("ok".to_string())
             }
-            _ => Err("dashboard takes nothing, hide <item> or show <item>|all".to_string()),
+            _ => Err("dashboard takes no arguments, hide <item> or show <item>|all".to_string()),
         }
     }
 

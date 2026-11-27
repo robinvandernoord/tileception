@@ -427,7 +427,7 @@ fn import(
         None => ask_hidden("Access Secret: ")?,
     };
     if client_id.is_empty() || secret.is_empty() {
-        return Err("the Access ID and the Access Secret are both needed".into());
+        return Err("Both Access ID and Access Secret are required".into());
     }
     let region = match region {
         Some(region) => region,
@@ -464,7 +464,7 @@ fn import(
                     _ => (cloud_only.join(", "), "are sensors that only report", "they were", "them"),
                 };
                 println!(
-                    "\n{names} {verb} to the cloud ({unheard} not heard on this network). Reading {them} every 10 minutes needs the Access Secret stored in {} (readable by you only).",
+                    "\n{names} {verb} to the cloud ({unheard} not found on this network). Reading {them} every 10 minutes needs the Access Secret stored in {} (readable by you only).",
                     file.display()
                 );
                 matches!(ask(&format!("Read {them} from the cloud? [y/N] "))?.to_lowercase().as_str(), "y" | "yes")
@@ -496,7 +496,7 @@ fn import(
             (Some(host), Some(version)) => format!("on this network at {host}, protocol {version}"),
             (Some(host), None) => format!("last seen at {host}"),
             _ if cloud_only.contains(&device.name) && poll_sensors => "read from the cloud".to_string(),
-            _ => "not heard on this network (off, or elsewhere)".to_string(),
+            _ => "not found on this network (off or elsewhere)".to_string(),
         };
         println!("  {}  [{}]  {found}", device.name, if place.is_empty() { "-".into() } else { place });
     }
@@ -534,7 +534,7 @@ fn simulate(file: &std::path::Path) -> Result<(), String> {
     let household = tileception_home::sim::household().map_err(|err| err.to_string())?;
     store::save(file, &household.file)?;
     println!("Simulating {} devices; device file: {}", household.file.devices.len(), file.display());
-    println!("Point [home] devices at it in a test config. Interrupt to stop.");
+    println!("Point [home] devices to this file in a test config. Press Ctrl+C to stop.");
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }

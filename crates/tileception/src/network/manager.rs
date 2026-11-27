@@ -532,7 +532,7 @@ impl Worker<'_> {
                     pending.seen = true;
                 }
             }
-            Some(1) => self.fail("The network did not answer".into(), false),
+            Some(1) => self.fail("Network didn't respond".into(), false),
             Some(0) | None if early => {}
             _ => self.fail("Could not connect".into(), false),
         }
@@ -716,9 +716,9 @@ pub fn failure(reason: u32) -> (&'static str, bool) {
     match reason {
         // No secrets, the supplicant disconnected or failed: usually the password.
         7 | 8 | 10 => ("Wrong password?", true),
-        9 => ("The network's settings do not work", true),
-        11 => ("The network did not answer", false),
-        5 | 6 => ("No address from the network", false),
+        9 => ("Invalid network settings", true),
+        11 => ("Network didn't respond", false),
+        5 | 6 => ("Couldn't get an IP address", false),
         53 => ("The network is out of range", false),
         _ => ("Could not connect", false),
     }

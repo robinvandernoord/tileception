@@ -681,8 +681,8 @@ impl Tileception {
                 format!("{stranded} windows are still on {name}")
             };
             let body = format!(
-                "The connection to {name} was lost. Bring them back here, or keep them there: they go \
-                 on there when {name} links again, and handoff reclaim brings them back later."
+                "Connection to {name} lost. Bring them back now, or leave them until {name} reconnects \
+                 (you can also run `tileception msg handoff reclaim` later)."
             );
             tracing::info!("handoff: {stranded} windows wait for {name}");
             let reclaim = crate::handoff::HandoffCommand::Reclaim(Some(format!("{peer:016x}")));

@@ -17,7 +17,7 @@ use smithay::{
     output::{Mode, Output},
     reexports::calloop::timer::{TimeoutAction, Timer},
     reexports::wayland_server::{backend::GlobalId, protocol::wl_surface::WlSurface},
-    utils::{Logical, Point, Transform},
+    utils::{Logical, Point, Rectangle, Transform},
     wayland::seat::WaylandFocus,
 };
 use tileception_core::{Placement, Rect, WindowId, World};
@@ -274,7 +274,7 @@ impl Tileception {
                 setting.transform = Default::default();
             }
             let requested = setting.mode.parse()?;
-            let mode = requested
+            let mut mode = requested
                 .or(output.preferred_mode())
                 .or(output.current_mode())
                 .ok_or_else(|| format!("{} has no available mode", output.name()))?;
@@ -283,13 +283,39 @@ impl Tileception {
                     return Err("nested backend does not support output mode, transform or enable changes".into());
                 }
             } else if !output.name().starts_with("headless") && !output.modes().contains(&mode) {
-                return Err(format!(
-                    "{} does not support {}x{}@{}",
-                    output.name(),
-                    mode.size.w,
-                    mode.size.h,
-                    f64::from(mode.refresh) / 1000.0
-                ));
+                let unchanged_mode = self
+                    .config
+                    .file
+                    .outputs
+                    .get(&output.name())
+                    .or_else(|| self.config.file.outputs.get("*"))
+                    .is_some_and(|saved| saved.mode == setting.mode);
+                if (allow_fallback || unchanged_mode)
+                    && let Some(fallback) = [output.preferred_mode(), output.current_mode()]
+                        .into_iter()
+                        .flatten()
+                        .find(|candidate| output.modes().contains(candidate))
+                {
+                    tracing::warn!(
+                        output = %output.name(),
+                        "configured mode {}x{}@{} is not supported; falling back to {}x{}@{}",
+                        mode.size.w,
+                        mode.size.h,
+                        f64::from(mode.refresh) / 1000.0,
+                        fallback.size.w,
+                        fallback.size.h,
+                        f64::from(fallback.refresh) / 1000.0
+                    );
+                    mode = fallback;
+                } else {
+                    return Err(format!(
+                        "{} does not support {}x{}@{}",
+                        output.name(),
+                        mode.size.w,
+                        mode.size.h,
+                        f64::from(mode.refresh) / 1000.0
+                    ));
+                }
             }
             runtime.push(RuntimeOutput {
                 output: output.clone(),
@@ -1460,19 +1486,48 @@ impl Tileception {
     }
 
     /// Connector-name order by default; explicit positions are logical pixels.
+    /// Shifts active outputs together so the layout starts at (0, 0), keeping
+    /// Xwayland output and window coordinates non-negative.
     pub fn arrange_outputs(&mut self) {
-        let mut right = 0;
-        for output in self.all_outputs() {
-            let configured = self.config.file.outputs.get(&output.name()).and_then(|entry| entry.position);
-            let position = configured.unwrap_or([right, 0]);
-            output.change_current_state(None, None, None, Some((position[0], position[1]).into()));
-            let width = output.current_mode().map_or(0, |mode| {
-                (f64::from(output.current_transform().transform_size(mode.size).w)
-                    / output.current_scale().fractional_scale())
-                .round() as i32
-            });
-            right = right.max(position[0].saturating_add(width));
+        let outputs = self.all_outputs();
+        let specs: Vec<(Option<[i32; 2]>, [i32; 2])> = outputs
+            .iter()
+            .map(|output| {
+                let configured = self.config.file.outputs.get(&output.name()).and_then(|entry| entry.position);
+                let size = output.current_mode().map_or([0, 0], |mode| {
+                    let transformed = output.current_transform().transform_size(mode.size);
+                    let scale = output.current_scale().fractional_scale();
+                    [
+                        (f64::from(transformed.w) / scale).round().max(1.0) as i32,
+                        (f64::from(transformed.h) / scale).round().max(1.0) as i32,
+                    ]
+                });
+                (configured, size)
+            })
+            .collect();
+        let positions = arranged_positions(&specs);
+        let mut moved = Vec::new();
+        for (output, position) in outputs.into_iter().zip(positions) {
+            let location = Point::from((position[0], position[1]));
+            if output.current_location() != location {
+                output.change_current_state(None, None, None, Some(location));
+                moved.push(output);
+            }
         }
+        for output in moved {
+            self.with_output(&output, |state| {
+                if let Some(window_id) = state.fullscreen
+                    && let Some(x11) = state.windows.get(&window_id).and_then(|window| window.x11_surface())
+                {
+                    let size = crate::state::slot_size(&state.output_rect());
+                    let _ = x11.configure(Rectangle::new(state.x11_origin(), size));
+                }
+                for index in 0..state.area_count() {
+                    state.with_local_area(index, Tileception::apply_layout);
+                }
+            });
+        }
+        self.arrange_peer_screens();
         // Linked machines learn how much of their edge is left.
         self.share_edges();
     }
@@ -1938,10 +1993,324 @@ fn remembered_windows(node: &tileception_core::tree::LayoutNode) -> Vec<WindowId
     }
 }
 
+fn rects_overlap(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
+    spans_overlap(first_pos[0], first_size[0], second_pos[0], second_size[0])
+        && spans_overlap(first_pos[1], first_size[1], second_pos[1], second_size[1])
+}
+
+fn rects_touch(first_pos: [i64; 2], first_size: [i64; 2], second_pos: [i64; 2], second_size: [i64; 2]) -> bool {
+    let meet = |axis: usize| {
+        first_pos[axis] + first_size[axis] == second_pos[axis]
+            || second_pos[axis] + second_size[axis] == first_pos[axis]
+    };
+    (meet(0) && spans_overlap(first_pos[1], first_size[1], second_pos[1], second_size[1]))
+        || (meet(1) && spans_overlap(first_pos[0], first_size[0], second_pos[0], second_size[0]))
+}
+
+fn spans_overlap(first: i64, first_len: i64, second: i64, second_len: i64) -> bool {
+    first < second + second_len && second < first + first_len
+}
+
+fn clamp_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Logical origins for active outputs, shifted so the layout starts at
+/// (0, 0) and Xwayland output and window coordinates stay non-negative.
+/// See [`arranged_positions_unshifted`] for how they are chosen.
+pub(crate) fn arranged_positions(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
+    let positions = arranged_positions_raw(outputs);
+    let min_x = positions.iter().map(|position| position[0]).min().unwrap_or(0);
+    let min_y = positions.iter().map(|position| position[1]).min().unwrap_or(0);
+    positions.into_iter().map(|position| [clamp_i32(position[0] - min_x), clamp_i32(position[1] - min_y)]).collect()
+}
+
+/// Logical origins for active outputs, in the saved coordinate frame, so the
+/// Settings display map can show them beside saved offline monitors.
+///
+/// Outputs without a saved position go to the right of those with one, as a
+/// new connector must never land on a saved screen. A saved layout is kept
+/// as it is when no screens overlap and they all touch. A scale, mode or
+/// rotation change, or an unplugged neighbour, can break that; the screens
+/// are then packed in their saved order, as a stack if they were stacked and
+/// a row otherwise.
+pub(crate) fn arranged_positions_unshifted(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i32; 2]> {
+    arranged_positions_raw(outputs)
+        .into_iter()
+        .map(|position| [clamp_i32(position[0]), clamp_i32(position[1])])
+        .collect()
+}
+
+fn arranged_positions_raw(outputs: &[(Option<[i32; 2]>, [i32; 2])]) -> Vec<[i64; 2]> {
+    let sizes: Vec<[i64; 2]> =
+        outputs.iter().map(|&(_, size)| [i64::from(size[0].max(1)), i64::from(size[1].max(1))]).collect();
+    let mut positions = place_unconfigured(outputs, &sizes);
+    if !layout_is_sound(&positions, &sizes) {
+        pack_in_order(&mut positions, &sizes);
+    }
+    positions
+}
+
+fn place_unconfigured(outputs: &[(Option<[i32; 2]>, [i32; 2])], sizes: &[[i64; 2]]) -> Vec<[i64; 2]> {
+    let configured = |index: usize| outputs[index].0.map(|position| [i64::from(position[0]), i64::from(position[1])]);
+    // Beside the saved screen reaching furthest right, top-aligned with it,
+    // so the new screen shares an edge with it whatever the saved layout.
+    let [mut right, top] = (0..outputs.len())
+        .filter_map(|index| configured(index).map(|position| [position[0] + sizes[index][0], position[1]]))
+        .max_by_key(|&[right, top]| (right, std::cmp::Reverse(top)))
+        .unwrap_or([0, 0]);
+    (0..outputs.len())
+        .map(|index| {
+            configured(index).unwrap_or_else(|| {
+                let position = [right, top];
+                right += sizes[index][0];
+                position
+            })
+        })
+        .collect()
+}
+
+/// No two screens overlap, and every screen can be reached from the first
+/// by crossing shared edges.
+fn layout_is_sound(positions: &[[i64; 2]], sizes: &[[i64; 2]]) -> bool {
+    let count = positions.len();
+    for first in 0..count {
+        for second in first + 1..count {
+            if rects_overlap(positions[first], sizes[first], positions[second], sizes[second]) {
+                return false;
+            }
+        }
+    }
+    let mut reached = vec![false; count];
+    let mut queue: Vec<usize> = Vec::new();
+    if count > 0 {
+        reached[0] = true;
+        queue.push(0);
+    }
+    while let Some(current) = queue.pop() {
+        for next in 0..count {
+            if !reached[next] && rects_touch(positions[current], sizes[current], positions[next], sizes[next]) {
+                reached[next] = true;
+                queue.push(next);
+            }
+        }
+    }
+    reached.into_iter().all(|reached| reached)
+}
+
+/// Places the screens edge to edge in their current order: top to bottom
+/// when every pair is one above the other, left to right otherwise. The
+/// first screen stays put, and each next one keeps its other coordinate as
+/// far as it still shares an edge with the one before it.
+fn pack_in_order(positions: &mut [[i64; 2]], sizes: &[[i64; 2]]) {
+    let count = positions.len();
+    // A pair is one above the other when they share columns but not rows.
+    // When they share both (they overlap) or neither (diagonal), it is how
+    // far apart their saved corners are relative to their sizes that tells:
+    // the corners are what a size change leaves where it was.
+    let below = |first: usize, second: usize| {
+        let shared = |axis: usize| {
+            spans_overlap(positions[first][axis], sizes[first][axis], positions[second][axis], sizes[second][axis])
+        };
+        if shared(0) != shared(1) {
+            return shared(0);
+        }
+        let apart = |axis: usize| i128::from((positions[second][axis] - positions[first][axis]).abs());
+        let extent = |axis: usize| i128::from(sizes[first][axis] + sizes[second][axis]);
+        apart(1) * extent(0) > apart(0) * extent(1)
+    };
+    let stacked = count > 1 && (0..count).all(|first| (first + 1..count).all(|second| below(first, second)));
+    let (along, across) = if stacked { (1, 0) } else { (0, 1) };
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&index| (positions[index][along], positions[index][across], index));
+    for pair in order.windows(2) {
+        let (previous, current) = (pair[0], pair[1]);
+        positions[current][along] = positions[previous][along] + sizes[previous][along];
+        let lowest = positions[previous][across] - sizes[current][across] + 1;
+        let highest = positions[previous][across] + sizes[previous][across] - 1;
+        positions[current][across] = positions[current][across].clamp(lowest, highest);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test setup and assertions should fail immediately on unexpected errors")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arranged_positions_normalize_negative_and_disconnected_offsets() {
+        assert_eq!(arranged_positions(&[]), Vec::<[i32; 2]>::new());
+        // Automatic horizontal row stays anchored at (0, 0).
+        assert_eq!(arranged_positions(&[(None, [1920, 1080]), (None, [2560, 1440])]), vec![[0, 0], [1920, 0]]);
+        // A monitor placed above the primary with a negative Y shifts the pair down to Y >= 0.
+        assert_eq!(
+            arranged_positions(&[(Some([0, -1440]), [2560, 1440]), (Some([0, 0]), [2560, 1440])]),
+            vec![[0, 0], [0, 1440]]
+        );
+        // A lone monitor whose saved position was negative or offset returns to (0, 0).
+        assert_eq!(arranged_positions(&[(Some([0, -750]), [2560, 1440])]), vec![[0, 0]]);
+        assert_eq!(arranged_positions(&[(Some([2560, 1440]), [2560, 1440])]), vec![[0, 0]]);
+        // An automatic neighbour of a negative explicit position sits beside it, top-aligned.
+        assert_eq!(
+            arranged_positions(&[(Some([-2560, -200]), [2560, 1440]), (None, [2560, 1440])]),
+            vec![[0, 0], [2560, 0]]
+        );
+    }
+
+    #[test]
+    fn arranged_positions_avoid_overlap_and_close_gaps() {
+        // An unconfigured DP-2 sorting before eDP-1 (saved at [0, 0]) is placed beside eDP-1, not on top of it.
+        assert_eq!(arranged_positions(&[(None, [1920, 1080]), (Some([0, 0]), [1280, 800])]), vec![[1280, 0], [0, 0]]);
+        // Increasing scale/logical width on the left screen pushes the overlapping neighbour right.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [1707, 1067]), (Some([1280, 0]), [2560, 1440])]),
+            vec![[0, 0], [1707, 0]]
+        );
+        // Growing a 1080p left screen to 4K keeps its side-by-side neighbour to the right rather than moving it above.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1920, 0]), [1920, 1080])]),
+            vec![[0, 0], [3840, 0]]
+        );
+        // Same in a three-monitor horizontal row: both neighbours move right instead of jumping above.
+        assert_eq!(
+            arranged_positions(&[
+                (Some([0, 0]), [3840, 2160]),
+                (Some([1920, 0]), [1920, 1080]),
+                (Some([3840, 0]), [1920, 1080]),
+            ]),
+            vec![[0, 0], [3840, 0], [5760, 0]]
+        );
+        // Same when the three monitors are ordered right-to-left.
+        assert_eq!(
+            arranged_positions(&[
+                (Some([3840, 0]), [1920, 1080]),
+                (Some([1920, 0]), [1920, 1080]),
+                (Some([0, 0]), [3840, 2160]),
+            ]),
+            vec![[5760, 0], [3840, 0], [0, 0]]
+        );
+        // Growing the left monitor past both neighbours preserves left-middle-right order in any connector order,
+        // including when the first shift lands exactly past the rightmost monitor without overlapping it.
+        for (specs, expected_x) in [
+            (
+                [(Some([0, 0]), [5120, 2160]), (Some([1920, 0]), [1920, 1080]), (Some([3840, 0]), [1920, 1080])],
+                [0, 5120, 7040],
+            ),
+            (
+                [(Some([0, 0]), [3840, 1080]), (Some([1280, 0]), [1280, 1080]), (Some([2560, 0]), [1280, 1080])],
+                [0, 3840, 5120],
+            ),
+        ] {
+            for perm in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                let input: Vec<_> = perm.into_iter().map(|idx| specs[idx]).collect();
+                let expected: Vec<_> = perm.into_iter().map(|idx| [expected_x[idx], 0]).collect();
+                assert_eq!(arranged_positions(&input), expected, "permutation {perm:?}");
+            }
+        }
+        // Same when the right monitor sorts first and the left monitor grows.
+        assert_eq!(
+            arranged_positions(&[(Some([1920, 0]), [1920, 1080]), (Some([0, 0]), [3840, 2160])]),
+            vec![[3840, 0], [0, 0]]
+        );
+        // Growing the top monitor in a vertical stack keeps the bottom monitor underneath.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([0, 1080]), [1920, 1080])]),
+            vec![[0, 0], [0, 2160]]
+        );
+        // Same for a horizontally offset vertical stack where delta_x > delta_y, in either connector order.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [3840, 2160]), (Some([1600, 1080]), [1920, 1440])]),
+            vec![[0, 0], [1600, 2160]]
+        );
+        assert_eq!(
+            arranged_positions(&[(Some([1600, 1080]), [1920, 1440]), (Some([0, 0]), [3840, 2160])]),
+            vec![[1600, 2160], [0, 0]]
+        );
+        // Decreasing logical width or unplugging a middle screen pulls the separated neighbour left.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [1280, 800]), (Some([3840, 0]), [1920, 1080])]),
+            vec![[0, 0], [1280, 0]]
+        );
+        // A screen plugged in beside a stack joins the screen reaching furthest
+        // right, leaving the stack as it was.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [1920, 1080]), (Some([0, 1080]), [2560, 1440]), (None, [1920, 1080])]),
+            vec![[0, 0], [0, 1080], [2560, 1080]]
+        );
+        // Scaling up the top screen of an offset stack leaves a gap below it,
+        // which closes upwards, keeping the portrait screen's offset.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [2048, 1152]), (Some([1480, 1440]), [1080, 1920])]),
+            vec![[0, 0], [1480, 1152]]
+        );
+        // Vertical stack gap closes vertically.
+        assert_eq!(
+            arranged_positions(&[(Some([0, 0]), [1920, 1080]), (Some([0, 1600]), [1920, 1080])]),
+            vec![[0, 0], [0, 1080]]
+        );
+    }
+
+    #[test]
+    fn arranged_positions_repair_any_broken_layout_into_one_touching_group() {
+        let assert_connected_no_overlap = |specs: &[(Option<[i32; 2]>, [i32; 2])]| {
+            let pos = arranged_positions(specs);
+            assert_eq!(pos.len(), specs.len());
+            let sizes: Vec<[i64; 2]> =
+                specs.iter().map(|&(_, size)| [i64::from(size[0]), i64::from(size[1])]).collect();
+            let pos64: Vec<[i64; 2]> = pos.iter().map(|&point| [i64::from(point[0]), i64::from(point[1])]).collect();
+            for first in 0..pos.len() {
+                assert!(pos[first][0] >= 0 && pos[first][1] >= 0);
+                for second in first + 1..pos.len() {
+                    assert!(
+                        !rects_overlap(pos64[first], sizes[first], pos64[second], sizes[second]),
+                        "overlap {first} vs {second}: {pos:?}"
+                    );
+                }
+            }
+            let mut seen = vec![false; pos.len()];
+            let mut queue = std::collections::VecDeque::from([0usize]);
+            seen[0] = true;
+            while let Some(cur) = queue.pop_front() {
+                for next in 0..pos.len() {
+                    if !seen[next] && rects_touch(pos64[cur], sizes[cur], pos64[next], sizes[next]) {
+                        seen[next] = true;
+                        queue.push_back(next);
+                    }
+                }
+            }
+            assert!(seen.iter().all(|&visited| visited), "disconnected layout: {pos:?}");
+        };
+
+        // A stack with a screen floating apart above it.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [100, 100]),
+            (Some([0, 100]), [200, 100]),
+            (Some([0, 200]), [300, 100]),
+            (Some([110, -160]), [40, 150]),
+        ]);
+
+        // Three disconnected islands plus a stacked pair and a side screen.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [1920, 1080]),
+            (Some([0, 1080]), [1920, 1080]),
+            (Some([5000, 200]), [1280, 800]),
+            (Some([-4000, -1000]), [2560, 1440]),
+        ]);
+
+        // Extreme i32 coordinates must not overflow or panic.
+        assert_connected_no_overlap(&[
+            (Some([i32::MIN / 2, i32::MIN / 2]), [1920, 1080]),
+            (Some([i32::MAX / 2, i32::MAX / 2]), [1920, 1080]),
+        ]);
+
+        // A screen overlapping both of its neighbours and the one above them.
+        assert_connected_no_overlap(&[
+            (Some([0, 0]), [100, 100]),
+            (Some([150, 0]), [100, 100]),
+            (Some([75, 0]), [100, 100]),
+            (Some([0, -100]), [250, 100]),
+        ]);
+    }
 
     #[test]
     fn slices_cover_the_room_on_whole_pixels() {

@@ -246,18 +246,18 @@ fn shape_plain(fonts: &mut FontSystem, key: &Key, scale: f32) -> PlainShaped {
         buffer.layout_runs().map(|run| run.line_w).fold(0.0f32, f32::max)
     };
     // Too long: wider than allowed on one line, or more lines than allowed when wrapping.
-    let too_long = |buffer: &mut Buffer, fonts: &mut FontSystem, sample: &str| {
-        let width = width_of(buffer, fonts, sample);
+    let exceeds = |buffer: &Buffer, width: f32| {
         if wrapped { buffer.layout_runs().count() > max_lines } else { width > max_width as f32 }
     };
     let mut width = width_of(&mut buffer, fonts, &key.text);
-    if key.field.is_none() && too_long(&mut buffer, fonts, &key.text) {
+    if key.field.is_none() && exceeds(&buffer, width) {
         let chars: Vec<char> = key.text.chars().collect();
         let (mut low, mut high) = (0usize, chars.len());
         while low < high {
             let mid = (low + high).div_ceil(2);
             let candidate: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "...";
-            if !too_long(&mut buffer, fonts, &candidate) {
+            let candidate_width = width_of(&mut buffer, fonts, &candidate);
+            if !exceeds(&buffer, candidate_width) {
                 low = mid;
             } else {
                 high = mid - 1;
@@ -375,16 +375,27 @@ fn shape_rich(fonts: &mut FontSystem, key: &RichKey, scale: f32) -> RichShaped {
 /// Paints a glyph's coverage at (`x_pos`, `y_pos`), premultiplied "over" what
 /// is already in the `width` x `height` pixels.
 fn blend(pixels: &mut [u8], width: i32, height: i32, (x_pos, y_pos): (i32, i32), colour: Color) {
-    if x_pos < 0 || y_pos < 0 || x_pos >= width || y_pos >= height {
+    let src_alpha = colour.a();
+    if src_alpha == 0 || x_pos < 0 || y_pos < 0 || x_pos >= width || y_pos >= height {
         return;
     }
     let offset = ((y_pos * width + x_pos) * 4) as usize;
-    let alpha = colour.a() as f32 / 255.0;
-    let src = [colour.r() as f32 * alpha, colour.g() as f32 * alpha, colour.b() as f32 * alpha, colour.a() as f32];
-    for channel in 0..4 {
-        let dst = pixels[offset + channel] as f32;
-        pixels[offset + channel] = (src[channel] + dst * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+    let alpha_u32 = u32::from(src_alpha);
+    if src_alpha == 255 || pixels[offset + 3] == 0 {
+        pixels[offset] = ((u32::from(colour.r()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 1] = ((u32::from(colour.g()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 2] = ((u32::from(colour.b()) * alpha_u32 + 127) / 255) as u8;
+        pixels[offset + 3] = src_alpha;
+        return;
     }
+    let inv_alpha = 255 - alpha_u32;
+    let src_rgb = [u32::from(colour.r()), u32::from(colour.g()), u32::from(colour.b())];
+    for channel in 0..3 {
+        let blended = (src_rgb[channel] * alpha_u32 + u32::from(pixels[offset + channel]) * inv_alpha + 127) / 255;
+        pixels[offset + channel] = blended.min(255) as u8;
+    }
+    let blended_alpha = alpha_u32 + (u32::from(pixels[offset + 3]) * inv_alpha + 127) / 255;
+    pixels[offset + 3] = blended_alpha.min(255) as u8;
 }
 
 /// The first `chars` characters of `spans`, ended in "...".
@@ -915,5 +926,22 @@ mod tests {
     #[test]
     fn nothing_drawn_has_no_ink() {
         assert_eq!(ink(&pixels(&[], &[]), 4, 1.0), None);
+    }
+
+    #[test]
+    fn blend_premultiplies_and_composites_over() {
+        let mut buf = vec![0u8; 4];
+        // Transparent source leaves destination untouched.
+        blend(&mut buf, 1, 1, (0, 0), Color::rgba(200, 100, 50, 0));
+        assert_eq!(buf, [0, 0, 0, 0]);
+        // Onto empty destination: premultiplied straight write.
+        blend(&mut buf, 1, 1, (0, 0), Color::rgba(200, 100, 50, 128));
+        assert_eq!(buf, [100, 50, 25, 128]);
+        // Translucent over existing pixel.
+        blend(&mut buf, 1, 1, (0, 0), Color::rgba(0, 200, 100, 128));
+        assert_eq!(buf, [50, 125, 63, 192]);
+        // Opaque source replaces destination.
+        blend(&mut buf, 1, 1, (0, 0), Color::rgba(10, 20, 30, 255));
+        assert_eq!(buf, [10, 20, 30, 255]);
     }
 }

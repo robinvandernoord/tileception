@@ -473,7 +473,7 @@ pub fn switch_on(
     read: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Vec<Edit>, String> {
     let lines: Vec<&str> = text.lines().collect();
-    let missing = || format!("{file} has no switched-off source {index} for {uri}; look again");
+    let missing = || format!("{file} has no disabled source {index} for {uri}; refresh and try again");
     let kind = kind(file).ok_or_else(missing)?;
     if kind == Kind::Stanzas {
         let (stanza, _, suites) = off_stanzas(&lines)

@@ -711,7 +711,12 @@ impl Screen {
                     "Enable on both computers and use the same passphrase.",
                     Form::Toggle,
                 ));
-                fields.push(Spec::key("name", "Computer name", "Empty uses this computer's host name.", Form::Text));
+                fields.push(Spec::key(
+                    "name",
+                    "Computer name",
+                    "Leave empty to use this computer's hostname.",
+                    Form::Text,
+                ));
                 fields.push(Spec::key(
                     "passphrase",
                     "Shared passphrase",

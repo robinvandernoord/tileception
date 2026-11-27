@@ -1087,8 +1087,7 @@ impl<'a> Painter<'a> {
         self.state
             .text
             .borrow_mut()
-            .styled(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
-            .map(|rendered| (rendered.width, rendered.height))
+            .styled_size(label, font, style.size, style.colour, max_width.max(1.0) as f32, style.weight, style.lines)
             .unwrap_or((0.0, 0.0))
     }
 

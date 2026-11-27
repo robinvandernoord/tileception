@@ -320,14 +320,7 @@ impl Tileception {
         // (calendar, map, updates, network), go over every panel, so one stays
         // readable beside the open notifications or the Wizard. The lock screen, the volume card and
         // the prompts above stay over them.
-        let (bar, mut tooltips) = self.bar_elements(renderer, feedback);
-        let tray = if active {
-            let (tray, tray_tooltips) = self.tray_elements(renderer);
-            tooltips.extend(tray_tooltips);
-            tray
-        } else {
-            Vec::new()
-        };
+        let (bar, tray, tooltips) = self.bar_and_tray_elements(renderer, feedback, active);
         elements.extend(tooltips);
         if active {
             elements.extend(tray);

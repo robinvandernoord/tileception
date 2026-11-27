@@ -262,7 +262,7 @@ impl Tileception {
         if updates.snapshot.restart {
             offers.push(Part::Offer {
                 title: "Restart to finish".into(),
-                detail: "Earlier updates are waiting for it".into(),
+                detail: "Required to finish installing earlier updates".into(),
                 button: "Restart",
                 hit: Hit::Restart,
             });

@@ -88,8 +88,8 @@ impl Tileception {
                 false,
             ),
             _ => (
-                "The screens changed or the config reloaded, so the displays went back. Your changes are still \
-                 here: Apply to try again."
+                "Displays reverted because monitors changed or the config reloaded. Your edits are still here \u{2014} \
+                 click Apply to try again."
                     .into(),
                 false,
             ),
@@ -209,7 +209,7 @@ impl Tileception {
             Rect::new(rect.x + 16., rect.y + 12., rect.w - 32., 38.),
             Style::new(18., theme.text),
         );
-        painter.text(&format!("Reverting in {seconds} seconds. Nothing is saved until Keep changes. Escape reverts and keeps your draft."), Rect::new(rect.x + 16., rect.y + 58., rect.w - 32., 72.), Style::new(12., theme.muted).lines(3));
+        painter.text(&format!("Reverting in {seconds} seconds. Changes aren't saved until you click Keep changes. Press Escape to revert and keep your draft."), Rect::new(rect.x + 16., rect.y + 58., rect.w - 32., 72.), Style::new(12., theme.muted).lines(3));
         for (button, action, label) in self.display_confirmation_buttons() {
             let focused = preview.keep_focused == (action == Action::Keep);
             let hover = button.contains(Point::new(self.settings.pointer.0, self.settings.pointer.1));

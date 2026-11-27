@@ -437,7 +437,10 @@ impl Tileception {
         }
         match network.security {
             Security::Enterprise | Security::Wep => {
-                let text = format!("{} needs more than a password: set it up in Settings, Network", network.name());
+                let text = format!(
+                    "{} requires extra setup \u{2014} configure it in Settings \u{2192} Network",
+                    network.name()
+                );
                 self.network.status = Some(Status { text, error: true });
             }
             Security::Password { .. } if network.saved.is_none() => self.network_prompt(network),
@@ -861,7 +864,7 @@ impl Tileception {
         } else if layout.body.h > 0.0 {
             let text = match () {
                 _ if snapshot.wifi_device.is_some() && !snapshot.wifi_hardware => {
-                    "Wi-Fi is off: a hardware switch or airplane mode"
+                    "Wi-Fi is disabled by a hardware switch or airplane mode"
                 }
                 _ if snapshot.wifi_device.is_some() => "Wi-Fi is off",
                 _ => "No network devices",
@@ -875,7 +878,7 @@ impl Tileception {
         painter.fill(Rect::new(footer.x, footer.y, footer.w, 1.0), theme.border, 0.0);
         let (text, colour) = match &self.network.status {
             Some(status) => (status.text.clone(), if status.error { theme.danger } else { theme.muted }),
-            None if self.network.prompt.is_some() => ("Enter joins, Esc goes back".into(), theme.muted),
+            None if self.network.prompt.is_some() => ("Enter to join, Esc to go back".into(), theme.muted),
             None if self.network_listing() && !snapshot.networks.is_empty() => {
                 let count = snapshot.networks.len();
                 (format!("{count} network{}", if count == 1 { "" } else { "s" }), theme.muted)

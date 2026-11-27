@@ -136,13 +136,13 @@ Usage:
 
 Starts the Tileception compositor, or with `msg` controls a running one.
 `config` reads or changes one setting in config.toml, keeping its comments
-(`tileception config --help`). `setup` chooses the desktop's parts and the
-login screen again (`tileception setup --help`). `pair` shows or sets the
-passphrase that lets other computers share this mouse and keyboard
+(`tileception config --help`). `setup` re-runs desktop and login screen
+setup (`tileception setup --help`). `pair` shows or sets the passphrase
+that lets other computers share this mouse and keyboard
 (`tileception pair --help`). `plugin` serves a bundled plugin over MCP;
-Tileception starts these itself. `doctor-mcp` offers a plugin's tools to
-Doctor's agent over MCP, asking the compositor before each call; Doctor
-gives it to its agent.
+Tileception starts these itself. `doctor-mcp` exposes a plugin's tools to
+Doctor's agent over MCP, confirming each call with the compositor
+(started automatically).
 A command after `--` is started once the compositor is up.
 
 Modes:
@@ -167,12 +167,12 @@ Files:
   ~/.local/state/tileception/tileception.log the session's log (from
                                              tileception-session)
   /etc/tileception/greeter.toml              the greeter's settings
-  /var/lib/tileception-greeter/state.toml    who logged in last, and with
-                                             which session (greeter)
+  /var/lib/tileception-greeter/state.toml    last logged-in user and session
+                                             (greeter)
 
 Environment:
   TILECEPTION_SOCKET         command socket for `msg`; set for programs inside
-  TILECEPTION_TERMINAL       the terminal `terminal` opens
+  TILECEPTION_TERMINAL       terminal emulator launched by the `terminal` command
   TILECEPTION_SCALE          output scale, overriding [outputs]
   TILECEPTION_HEADLESS_SIZE  headless screen size, such as 1280x800
   TILECEPTION_RENDER_NODE    headless render node, such as /dev/dri/renderD128
@@ -182,7 +182,7 @@ Environment:
   RUST_LOG                   log filter (default: info,smithay=warn)
   GREETD_SOCK                greetd's socket, set by greetd (greeter)
   TILECEPTION_GREETER_CONFIG the greeter's settings file, for tests
-  TILECEPTION_GREETER_STATE  the greeter's memory file, for tests
+  TILECEPTION_GREETER_STATE  greeter state file, for tests
   TILECEPTION_GREETER_PASSWD a passwd file to list people from, for tests
   TILECEPTION_GREETER_SESSIONS Wayland session directories, for tests
 ";
