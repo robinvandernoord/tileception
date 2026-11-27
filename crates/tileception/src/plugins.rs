@@ -995,7 +995,7 @@ impl Host {
     fn read_dashboard(&mut self, plugin: String, value: Value, changed: &mut Changed) {
         match serde_json::from_value::<crate::dashboard::Items>(value) {
             Ok(mut items) => {
-                items.items.truncate(crate::dashboard::PLUGIN_ITEMS);
+                items.limit();
                 items.seal();
                 self.dashboards.insert(plugin.clone(), items.items);
             }

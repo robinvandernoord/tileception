@@ -569,7 +569,7 @@ and behind the windows while Super+D is held. [Using
 Tileception](usage.md#the-dashboard) describes how users arrange, remove and
 add items.
 
-Plugins with a `[dashboard]` block put up to six items each on it from the
+Plugins with a `[dashboard]` block put items on it from the
 `tileception://dashboard` resource:
 
 ```json
@@ -589,6 +589,12 @@ Plugins with a `[dashboard]` block put up to six items each on it from the
   `action`.
 - `surface` is drawn by the plugin itself; see [Dashboard
   surfaces](#dashboard-surfaces).
+
+A plugin can list as many cards as it likes. Images and surfaces are limited
+to six per plugin, together, and later ones are left out: each holds a
+picture of up to 4096 pixels a side in memory, so the limit keeps one plugin
+from taking a large share of it. A seventh surface's `get_item` is a
+`too_many` protocol error.
 
 `size` sets the height of an image or surface: `small`, `medium` or `large`.
 Every item is as wide as a dashboard column. Tileception frames images and

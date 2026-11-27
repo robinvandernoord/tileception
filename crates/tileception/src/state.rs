@@ -134,6 +134,8 @@ pub struct Tileception {
     pub cursor_status: CursorImageStatus,
     /// A frame is already asked for when the animated pointer's next picture is due.
     pub cursor_wake_pending: bool,
+    /// Shaking the mouse to make the pointer grow.
+    pub shake: crate::shake::Shake,
     /// Set when running as the session's compositor.
     pub udev: Option<Box<crate::udev::Udev>>,
 
@@ -393,6 +395,7 @@ impl Tileception {
             syncobj_state: None,
             cursor_status: CursorImageStatus::default_named(),
             cursor_wake_pending: false,
+            shake: Default::default(),
             udev: None,
             world: World::new(settings, Rect::new(0.0, 0.0, 1280.0, 800.0)),
             windows: HashMap::new(),
@@ -902,8 +905,8 @@ impl Tileception {
         }
         let focus = self.world.focus();
         if !self.world.in_overview() {
-            let screen = self.world.screen();
             for placement in self.world.placements(self.world.target_view()) {
+                let screen = self.world.room_for(placement.role);
                 if !placement.rect.intersects(&screen) {
                     continue;
                 }

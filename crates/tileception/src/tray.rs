@@ -28,6 +28,8 @@ pub struct Tray {
     menu: Option<Menu>,
     offset: usize,
     scrolled: f64,
+    /// Wheel movement over an item, in notches, until a whole one is sent.
+    wheel: f64,
 }
 
 struct Menu {
@@ -404,6 +406,7 @@ impl Tileception {
     }
 
     pub fn tray_scroll(&mut self, slots: &[(Slot, Rect)], anchor: Rect, amount: f64) -> bool {
+        let point = Point::new(self.pointer.x, self.pointer.y);
         if self.tray.open {
             let rect = self.tray_popup(anchor);
             let count = self
@@ -413,22 +416,36 @@ impl Tileception {
                 .map(|menu| menu.rows.len())
                 .unwrap_or_else(|| self.tray_items().len().saturating_sub(self.tray_inline_count()));
             let limit = count.saturating_sub(self.tray_visible_rows(rect));
+            // When the overflow list fits, the wheel belongs to the item under it.
+            if limit == 0
+                && let Some((_, PointerAction::Item(key))) = self.tray_control(anchor, point)
+            {
+                self.tray_wheel(key, amount);
+                return true;
+            }
             self.tray.scrolled += amount;
             let steps = self.tray.scrolled.trunc();
             self.tray.scrolled -= steps;
             self.tray.offset = self.tray.offset.saturating_add_signed(steps as isize).min(limit);
             return true;
         }
-        let point = Point::new(self.pointer.x, self.pointer.y);
         if let Some((slot, _)) = slots.iter().find(|(_, rect)| rect.contains(point)) {
             if let Slot::Item(index) = slot
                 && let Some(item) = self.tray_items().get(*index)
             {
-                self.tray_request(Request::Scroll { key: item.key.clone(), delta: (-amount * 120.0) as i32 });
+                let key = item.key.clone();
+                self.tray_wheel(key, amount);
             }
             return true;
         }
         false
+    }
+
+    /// Sends the item one `Scroll` per whole notch.
+    fn tray_wheel(&mut self, key: String, amount: f64) {
+        for delta in wheel_deltas(&mut self.tray.wheel, amount) {
+            self.tray_request(Request::Scroll { key: key.clone(), delta });
+        }
     }
 
     fn draw_tray_item(&self, painter: &mut Painter, item: &Item, rect: Rect) {
@@ -627,4 +644,38 @@ fn bitmap(item: &Item) -> Option<MemoryRenderBuffer> {
         }
     }
     Some(MemoryRenderBuffer::from_slice(image.as_raw(), Fourcc::Abgr8888, (16, 16), 1, Transform::Normal, None))
+}
+
+/// Adds `amount` notches (positive is down) to `wheel` and takes out each
+/// whole notch as a `Scroll` delta. Positive means down, as libappindicator
+/// (and with it Variety and other GTK and Electron items) reads it; a zero
+/// delta would also read as down, so fractions wait until they add up.
+fn wheel_deltas(wheel: &mut f64, amount: f64) -> Vec<i32> {
+    *wheel += amount;
+    let steps = wheel.trunc();
+    *wheel -= steps;
+    let delta = if steps > 0.0 { 120 } else { -120 };
+    vec![delta; steps.abs() as usize]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wheel_deltas;
+
+    #[test]
+    fn a_notch_down_scrolls_down_positively() {
+        let mut wheel = 0.0;
+        assert_eq!(wheel_deltas(&mut wheel, 1.0), vec![120]);
+        assert_eq!(wheel_deltas(&mut wheel, -2.0), vec![-120, -120]);
+    }
+
+    #[test]
+    fn fractions_add_up_without_sending_zero() {
+        let mut wheel = 0.0;
+        assert!(wheel_deltas(&mut wheel, 0.3).is_empty());
+        assert!(wheel_deltas(&mut wheel, 0.3).is_empty());
+        assert!(wheel_deltas(&mut wheel, 0.3).is_empty());
+        assert_eq!(wheel_deltas(&mut wheel, 0.3), vec![120]);
+        assert!(wheel_deltas(&mut wheel, -0.1).is_empty());
+    }
 }

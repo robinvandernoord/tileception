@@ -612,7 +612,8 @@ impl Tileception {
         else {
             return;
         };
-        let screen = self.world.screen();
+        // A floating window's menus may reach over the areas beside its own.
+        let screen = self.world.room_for(drawn.role);
         let mut target = Rectangle::new(
             (
                 ((screen.x - drawn.origin.x) / drawn.scale.0).floor() as i32,

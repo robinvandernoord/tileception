@@ -757,7 +757,32 @@ impl Screen {
                         "Disabled screens stay in this list so you can enable them again.",
                         Form::Toggle,
                     ));
+                    let mut sources = vec![("Not mirrored: a desktop of its own".to_string(), "inherit".to_string())];
+                    sources.extend(
+                        self.rows
+                            .iter()
+                            .filter(|other| {
+                                other.name != "*"
+                                    && other.name != row.name
+                                    && other.value.get("enabled").and_then(Value::as_bool) != Some(false)
+                                    && other.value.get("mirror").is_none()
+                            })
+                            .map(|other| (format!("Mirror of {}", other.name), other.name.clone())),
+                    );
+                    if let Some(value) = row.value.get("mirror").and_then(Value::as_str)
+                        && !sources.iter().any(|(_, candidate)| candidate == value)
+                    {
+                        sources.push((format!("Mirror of {value} (unavailable)"), value.into()));
+                    }
+                    fields.push(Spec::key(
+                        "mirror",
+                        "Mirror",
+                        "Show another screen here, scaled to fit, as for a projector. Mirror the smaller screen \
+                         from the larger one.",
+                        Form::Choice(sources),
+                    ));
                 }
+                let mirroring = row.name != "*" && row.value.get("mirror").is_some();
                 let mut modes = vec![("Preferred resolution and refresh".into(), "preferred".into())];
                 if let Some(monitor) = self.monitors.iter().find(|monitor| monitor.name == row.name) {
                     for mode in &monitor.modes {
@@ -794,6 +819,10 @@ impl Screen {
                         ("Mirrored, 90° clockwise", "flipped-270"),
                     ]),
                 ));
+                if mirroring {
+                    // A mirror has no desktop to scale, place or split.
+                    return fields;
+                }
                 fields.push(Spec::key(
                     "scale",
                     "Scale",
@@ -1239,6 +1268,8 @@ fn describe_command(command: &str) -> String {
         ("minimize", _) => "Minimize",
         ("restore", _) => "Restore a minimized window",
         ("show-minimized", _) => "Show minimized windows",
+        ("send-key", _) => return format!("Press {}", first.replace('_', " ")),
+        ("send-scroll", _) => return format!("Scroll {first} notches"),
         ("select", _) => "Select windows",
         ("group", _) => "Group the selection into tabs",
         ("next-tab", _) => "Next tab",
