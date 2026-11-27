@@ -9,7 +9,6 @@
 
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -188,8 +187,7 @@ struct Desktop {
     selection: crate::selection::Selection,
     strip: crate::minimized::Strip,
     bar: crate::bar::Bar,
-    wallpaper: Option<crate::wallpaper::Wallpaper>,
-    wallpaper_failed: Option<PathBuf>,
+    wallpaper: crate::wallpaper::Shown,
     captures: Vec<PendingCapture>,
     text: std::cell::RefCell<crate::text::Text>,
 }
@@ -599,8 +597,7 @@ impl Tileception {
                     selection: Default::default(),
                     strip: Default::default(),
                     bar: Default::default(),
-                    wallpaper: None,
-                    wallpaper_failed: None,
+                    wallpaper: Default::default(),
                     captures: Vec::new(),
                     text: Default::default(),
                 },
@@ -708,7 +705,7 @@ impl Tileception {
         macro_rules! exchange {
             ($($field:ident),+) => { $(std::mem::swap(&mut self.$field, &mut desktop.$field);)+ };
         }
-        exchange!(world, scale, pointer, fullscreen, layer_focus, selection, strip, wallpaper, wallpaper_failed, text);
+        exchange!(world, scale, pointer, fullscreen, layer_focus, selection, strip, wallpaper, text);
         self.bar.exchange_output(&mut desktop.bar);
         std::mem::swap(&mut self.pending_captures, &mut desktop.captures);
         self.outputs.parked.insert(current.name(), desktop);
@@ -1449,9 +1446,6 @@ impl Tileception {
                     state.with_local_area(index, |state| state.world.settings = state.config.world_settings());
                 }
                 state.apply_split();
-                state.wallpaper = None;
-                state.wallpaper_failed = None;
-                state.text.borrow_mut().clear();
                 state.apply_output_scale();
             });
         }

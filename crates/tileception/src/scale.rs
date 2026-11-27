@@ -288,9 +288,6 @@ impl Tileception {
             self.text.borrow_mut().set_scale(scale as f32);
             self.glyphs.set_scale(scale);
             self.launcher.icons.set_scale(scale);
-            // Drawn for the old scale.
-            self.wallpaper = None;
-            self.wallpaper_failed = None;
         }
         let screen = self.output_rect();
         // Laid out once, below, in the room the bars leave.

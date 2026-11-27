@@ -279,9 +279,8 @@ pub struct Tileception {
     pub calendar: crate::calendar::Agenda,
     pub sleep: crate::sleep::Sleep,
     pub handoff: crate::handoff::Handoff,
-    pub wallpaper: Option<crate::wallpaper::Wallpaper>,
-    /// A wallpaper that could not be loaded, so it is not retried every frame.
-    pub wallpaper_failed: Option<std::path::PathBuf>,
+    pub wallpaper: crate::wallpaper::Shown,
+    pub wallpaper_loader: crate::wallpaper::Loader,
     /// The picture from a wallpaper folder, shared by every screen.
     pub wallpaper_rotation: crate::wallpaper::Rotation,
     /// Set when running without a screen.
@@ -496,8 +495,8 @@ impl Tileception {
             calendar: Default::default(),
             sleep: Default::default(),
             handoff: Default::default(),
-            wallpaper: None,
-            wallpaper_failed: None,
+            wallpaper: Default::default(),
+            wallpaper_loader: Default::default(),
             wallpaper_rotation,
             headless: None,
         }

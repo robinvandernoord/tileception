@@ -402,7 +402,7 @@ impl Tileception {
                 painter.shape(corner(screen.right() - screen.w * 0.1, screen.y + screen.h * 0.18), glow(accent.1));
             }
             WallpaperFallback::System => {
-                if let Some(wallpaper) = &self.wallpaper {
+                if let Some(wallpaper) = &self.wallpaper.picture {
                     painter.image(&wallpaper.buffer, (screen.x, screen.y));
                     painter.fill(screen, Colour([0.0, 0.0, 0.0, 0.35]), 0.0);
                 }
@@ -748,8 +748,11 @@ impl Tileception {
                     .get(person)
                     .filter(|_| greeter.file.per_user.wallpaper)
                     .map(|(wallpaper, size)| (wallpaper, centred(scene.screen, self.scale, *size)));
-                let system =
-                    self.wallpaper.as_ref().map(|wallpaper| (&wallpaper.buffer, (scene.screen.x, scene.screen.y)));
+                let system = self
+                    .wallpaper
+                    .picture
+                    .as_ref()
+                    .map(|wallpaper| (&wallpaper.buffer, (scene.screen.x, scene.screen.y)));
                 let fallback = wallpaper_fallback(greeter);
                 let picture = match (shared, fallback) {
                     (Some(wallpaper), _) => Some(wallpaper),

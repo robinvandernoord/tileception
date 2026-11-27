@@ -1,5 +1,6 @@
 //! The background image, from `wallpaper` in the `[theme]` section. It is
-//! decoded and scaled to the output once, then drawn behind everything. The
+//! decoded and scaled to the output once, on a thread of its own so the
+//! desktop carries on meanwhile, then drawn behind everything. The
 //! lock screen uses the same image. The file is watched, so a tool that
 //! swaps the picture by overwriting it (Variety and the like) is followed.
 //!
@@ -16,7 +17,7 @@ use image::{DynamicImage, GenericImageView, RgbaImage, imageops::FilterType};
 use smithay::{
     backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
     reexports::calloop::{
-        LoopHandle,
+        LoopHandle, channel,
         timer::{TimeoutAction, Timer},
     },
     utils::Transform,
@@ -57,15 +58,54 @@ impl Scaling {
     }
 }
 
+/// Everything a scaled wallpaper is made from. A picture is loaded again
+/// only when one of these changes, so reloading the config keeps it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub path: PathBuf,
+    pub fit: Scaling,
+    /// In physical pixels, so a change of scale alone keeps the picture.
+    pub size: (u32, u32),
+    /// Fills what the picture leaves of the screen.
+    pub background: [f32; 4],
+    /// Counts changes to the file itself.
+    pub version: u64,
+}
+
 /// A decoded wallpaper, scaled for one output size.
 #[derive(Debug, Clone)]
 pub struct Wallpaper {
-    pub path: PathBuf,
-    pub fit: Scaling,
-    pub size: (u32, u32),
+    pub source: Source,
     pub buffer: MemoryRenderBuffer,
     /// The picture this one replaced, fading out over it, and since when.
     pub previous: Option<(MemoryRenderBuffer, Instant)>,
+}
+
+/// The wallpaper of one screen.
+#[derive(Debug, Default)]
+pub struct Shown {
+    pub picture: Option<Wallpaper>,
+    /// What could not be loaded, so it is not tried again every frame.
+    failed: Option<Source>,
+    /// A picture is being loaded on its thread; one at a time per screen.
+    loading: bool,
+}
+
+/// Loads pictures away from the event loop.
+#[derive(Debug, Default)]
+pub struct Loader {
+    /// Counts changes to the wallpaper file, for [`Source::version`].
+    version: u64,
+    /// Where loading threads send their pictures, once the first is asked for.
+    sender: Option<channel::Sender<Loaded>>,
+}
+
+/// A picture loaded for a screen, or why it could not be.
+#[derive(Debug)]
+pub struct Loaded {
+    output: String,
+    source: Source,
+    result: Result<MemoryRenderBuffer, String>,
 }
 
 /// How long a new picture takes to fade in over the one it replaces.
@@ -189,20 +229,20 @@ pub fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-/// Loads and scales `path` for a `width` x `height` screen, `background` filling any
+/// Loads and scales `source.path` for its screen size, `source.background` filling any
 /// bars (premultiplied RGBA).
-pub fn load(path: &Path, fit: Scaling, width: u32, height: u32, background: [f32; 4]) -> Result<Wallpaper, String> {
-    let img = image::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let canvas = compose(&img, fit, width, height, background);
-    let buffer = MemoryRenderBuffer::from_slice(
+fn load(source: &Source) -> Result<MemoryRenderBuffer, String> {
+    let (width, height) = source.size;
+    let img = image::open(&source.path).map_err(|error| format!("{}: {error}", source.path.display()))?;
+    let canvas = compose(&img, source.fit, width, height, source.background);
+    Ok(MemoryRenderBuffer::from_slice(
         canvas.as_raw(),
         Fourcc::Abgr8888,
         (width as i32, height as i32),
         1,
         Transform::Normal,
         None,
-    );
-    Ok(Wallpaper { path: path.to_path_buf(), fit, size: (width, height), buffer, previous: None })
+    ))
 }
 
 fn compose(img: &DynamicImage, fit: Scaling, width: u32, height: u32, background: [f32; 4]) -> RgbaImage {
@@ -337,7 +377,7 @@ impl crate::state::Tileception {
                 tracing::info!("wallpaper {} from the folder", path.display());
             }
             for output in self.all_outputs() {
-                self.with_output(&output, |state| state.wallpaper_failed = None);
+                self.with_output(&output, |state| state.wallpaper.failed = None);
             }
             self.publish_greeter_card();
             self.schedule_render();
@@ -347,58 +387,39 @@ impl crate::state::Tileception {
     /// Reads the file again for every screen. A file that cannot be read
     /// (gone again, or not a picture) leaves the picture that is showing.
     fn reload_wallpaper(&mut self) {
-        for output in self.all_outputs() {
-            self.with_output(&output, Self::reload_output_wallpaper);
-        }
+        self.wallpaper_loader.version += 1;
         self.schedule_render();
     }
 
-    fn reload_output_wallpaper(&mut self) {
-        let Some(path) = self.wallpaper_path() else { return };
-        let (width, height) = self.output_pixels();
-        if width <= 0 || height <= 0 {
-            return;
-        }
-        match load(&path, self.theme.wallpaper_fit, width as u32, height as u32, self.theme.background.0) {
-            Ok(wallpaper) => {
-                tracing::info!("wallpaper {} at {width}x{height}", path.display());
-                self.wallpaper = Some(wallpaper);
-                self.wallpaper_failed = None;
-            }
-            Err(err) => tracing::warn!("wallpaper: {err}"),
-        }
-    }
-
-    /// The wallpaper scaled for the current output's pixels, loaded on first
-    /// use and again when the theme, the picture or the output size changes.
-    /// Another picture at the same size fades in over the one before.
-    pub fn wallpaper_buffer(&mut self) -> Option<Drawn> {
+    /// What the current output's wallpaper is to be made from.
+    fn wanted_wallpaper(&self) -> Option<Source> {
         let path = self.wallpaper_path()?;
         let (width, height) = self.output_pixels();
-        let size = (width.max(0) as u32, height.max(0) as u32);
-        let current = self.wallpaper.as_ref().is_some_and(|wallpaper| {
-            wallpaper.path == path && wallpaper.fit == self.theme.wallpaper_fit && wallpaper.size == size
-        });
-        if !current {
-            if self.wallpaper_failed.as_ref() == Some(&path) || size.0 == 0 || size.1 == 0 {
-                return None;
-            }
-            match load(&path, self.theme.wallpaper_fit, size.0, size.1, self.theme.background.0) {
-                Ok(mut wallpaper) => {
-                    tracing::info!("wallpaper {} at {}x{}", path.display(), size.0, size.1);
-                    if let Some(old) = self.wallpaper.take().filter(|old| old.size == size && old.path != path) {
-                        wallpaper.previous = Some((old.buffer, Instant::now()));
-                    }
-                    self.wallpaper = Some(wallpaper);
-                }
-                Err(err) => {
-                    tracing::warn!("wallpaper: {err}");
-                    self.wallpaper_failed = Some(path);
-                    return None;
-                }
-            }
+        if width <= 0 || height <= 0 {
+            return None;
         }
-        let wallpaper = self.wallpaper.as_mut()?;
+        Some(Source {
+            path,
+            fit: self.theme.wallpaper_fit,
+            size: (width as u32, height as u32),
+            background: self.theme.background.0,
+            version: self.wallpaper_loader.version,
+        })
+    }
+
+    /// The wallpaper scaled for the current output's pixels. One that is
+    /// missing or out of date is loaded on a thread; until it arrives, the
+    /// picture before it stays when it fits the screen, and nothing shows
+    /// otherwise. Another picture at the same size fades in over the one
+    /// before.
+    pub fn wallpaper_buffer(&mut self) -> Option<Drawn> {
+        let wanted = self.wanted_wallpaper()?;
+        let shown = &self.wallpaper;
+        let current = shown.picture.as_ref().is_some_and(|picture| picture.source == wanted);
+        if !current && !shown.loading && shown.failed.as_ref() != Some(&wanted) {
+            self.load_wallpaper(wanted.clone());
+        }
+        let wallpaper = self.wallpaper.picture.as_mut().filter(|picture| picture.source.size == wanted.size)?;
         let previous = match &wallpaper.previous {
             Some((buffer, since)) => {
                 let shown = crate::ui::ease_out(since.elapsed().as_secs_f64() / CROSSFADE);
@@ -412,6 +433,68 @@ impl crate::state::Tileception {
             None => None,
         };
         Some(Drawn { buffer: wallpaper.buffer.clone(), previous })
+    }
+
+    /// Starts loading `source` for the current output.
+    fn load_wallpaper(&mut self, source: Source) {
+        let Some(output) = self.output.as_ref().map(smithay::output::Output::name) else { return };
+        let sender = match &self.wallpaper_loader.sender {
+            Some(sender) => sender.clone(),
+            None => {
+                let (sender, receiver) = channel::channel();
+                let inserted = self.loop_handle.insert_source(receiver, |event, _, state| {
+                    if let channel::Event::Msg(loaded) = event {
+                        state.wallpaper_loaded(loaded);
+                    }
+                });
+                if let Err(error) = inserted {
+                    tracing::error!("wallpaper: could not listen for pictures: {error}");
+                    self.wallpaper.failed = Some(source);
+                    return;
+                }
+                self.wallpaper_loader.sender = Some(sender.clone());
+                sender
+            }
+        };
+        let job = source.clone();
+        let spawned = std::thread::Builder::new().name("wallpaper".into()).spawn(move || {
+            let result = load(&job);
+            let _ = sender.send(Loaded { output, source: job, result });
+        });
+        match spawned {
+            Ok(_) => self.wallpaper.loading = true,
+            Err(error) => {
+                tracing::error!("wallpaper: could not start loading: {error}");
+                self.wallpaper.failed = Some(source);
+            }
+        }
+    }
+
+    /// Shows a picture a thread has loaded. When something changed while it
+    /// was loading, the next frame asks for the picture wanted now.
+    fn wallpaper_loaded(&mut self, Loaded { output, source, result }: Loaded) {
+        let Some(output) = self.output_named(&output) else { return };
+        self.with_output(&output, |state| {
+            let shown = &mut state.wallpaper;
+            shown.loading = false;
+            match result {
+                Ok(buffer) => {
+                    tracing::info!("wallpaper {} at {}x{}", source.path.display(), source.size.0, source.size.1);
+                    let previous = shown
+                        .picture
+                        .take()
+                        .filter(|old| old.source.size == source.size && old.source.path != source.path)
+                        .map(|old| (old.buffer, Instant::now()));
+                    shown.picture = Some(Wallpaper { source, buffer, previous });
+                    shown.failed = None;
+                }
+                Err(error) => {
+                    tracing::warn!("wallpaper: {error}");
+                    shown.failed = Some(source);
+                }
+            }
+        });
+        self.schedule_render();
     }
 
     /// A lock command line with `{wallpaper}` filled in, quoted.
@@ -462,6 +545,17 @@ mod tests {
         assert_eq!(canvas.get_pixel(100, 100).0, [255, 0, 0, 255]);
         assert_eq!(expand_home("/a/b"), PathBuf::from("/a/b"));
         assert!(Scaling::parse("zoom").is_err());
+    }
+
+    #[test]
+    fn a_source_loads_or_names_its_file() {
+        let path = std::env::temp_dir().join(format!("tileception-wallpaper-{}.png", std::process::id()));
+        RgbaImage::from_pixel(40, 10, image::Rgba([0, 255, 0, 255])).save(&path).unwrap();
+        let source = Source { path: path.clone(), fit: Scaling::Fit, size: (20, 20), background: [0.0; 4], version: 0 };
+        assert!(load(&source).is_ok());
+        std::fs::remove_file(&path).unwrap();
+        let missing = load(&source).unwrap_err();
+        assert!(missing.contains(&path.display().to_string()), "{missing}");
     }
 
     #[test]
