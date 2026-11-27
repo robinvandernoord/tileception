@@ -33,6 +33,8 @@ pub struct ConnectedMonitor {
     pub current_mode: Option<Mode>,
     pub preferred_mode: Option<Mode>,
     pub transform: Transform,
+    /// The screen this one shows instead of a desktop, while it does.
+    pub mirror: Option<String>,
 }
 
 /// A monotonic deadline, shared by Settings and the backend's timeout source.
@@ -48,6 +50,8 @@ struct RuntimeOutput {
     enabled: bool,
     mode: Mode,
     transform: Transform,
+    /// The screen it mirrors: enabled and connected, mirroring nothing.
+    mirror: Option<Output>,
 }
 
 struct OutputPreview {
@@ -86,6 +90,8 @@ pub struct Outputs {
     /// The desktops of screens that went while another stayed, by connector
     /// name, so their windows go back as they were when the screen returns.
     departed: BTreeMap<String, Departed>,
+    /// Screens that show another instead of a desktop of their own.
+    pub mirroring: crate::mirroring::Mirroring,
 }
 
 /// What a screen that went had: its areas' desktops and which was active.
@@ -207,6 +213,11 @@ impl Outputs {
             })
             .sum()
     }
+
+    /// A connected screen, with a desktop or not.
+    pub(crate) fn connected_named(&self, name: &str) -> Option<Output> {
+        self.connected.get(name).cloned()
+    }
 }
 
 impl Tileception {
@@ -218,11 +229,12 @@ impl Tileception {
             .values()
             .map(|output| ConnectedMonitor {
                 name: output.name(),
-                enabled: self.output_named(&output.name()).is_some(),
+                enabled: self.output_named(&output.name()).is_some() || self.mirror_source(output).is_some(),
                 modes: output.modes(),
                 current_mode: output.current_mode(),
                 preferred_mode: output.preferred_mode(),
                 transform: output.current_transform(),
+                mirror: self.mirror_source(output).map(Output::name),
             })
             .collect()
     }
@@ -232,11 +244,13 @@ impl Tileception {
             .connected
             .values()
             .filter_map(|output| {
+                let mirror = self.mirror_source(output).cloned();
                 Some(RuntimeOutput {
                     output: output.clone(),
-                    enabled: self.output_named(&output.name()).is_some(),
+                    enabled: self.output_named(&output.name()).is_some() || mirror.is_some(),
                     mode: output.current_mode()?,
                     transform: output.current_transform(),
+                    mirror,
                 })
             })
             .collect()
@@ -282,7 +296,28 @@ impl Tileception {
                 enabled: setting.enabled,
                 mode,
                 transform: if output.name() == "winit" { output.current_transform() } else { setting.transform.into() },
+                mirror: None,
             });
+        }
+        // A screen mirrors another only while that one is on and is a
+        // desktop itself; otherwise it is a desktop of its own.
+        let shown: Vec<Option<Output>> = runtime
+            .iter()
+            .map(|target| {
+                let source = proposed.get(&target.output.name())?.mirror.as_ref()?;
+                runtime
+                    .iter()
+                    .find(|candidate| {
+                        candidate.enabled
+                            && candidate.output.name() == *source
+                            && proposed.get(source).is_none_or(|setting| setting.mirror.is_none())
+                    })
+                    .filter(|_| target.enabled)
+                    .map(|candidate| candidate.output.clone())
+            })
+            .collect();
+        for (target, mirror) in runtime.iter_mut().zip(shown) {
+            target.mirror = mirror;
         }
         if !runtime.is_empty() && !runtime.iter().any(|output| output.enabled) {
             if !allow_fallback {
@@ -300,22 +335,41 @@ impl Tileception {
 
     fn apply_runtime_outputs(&mut self, runtime: &[RuntimeOutput]) -> Result<(), String> {
         // Configure and enable destinations before moving windows off disabled screens.
-        for target in runtime.iter().filter(|target| target.enabled) {
+        for target in runtime.iter().filter(|target| target.enabled && target.mirror.is_none()) {
             self.configure_drm_output(&target.output, target.mode, target.transform, true)?;
             target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
+            // A mirror whose source went becomes a desktop, as a screen
+            // plugged in does.
+            self.outputs.mirroring.sources.remove(&target.output.name());
             if self.output_named(&target.output.name()).is_none() {
                 self.add_output(target.output.clone());
                 self.advertise_output(&target.output);
             }
         }
+        // Mirrors stay lit, without a desktop: their windows move as from a
+        // disabled screen, and programs no longer see them.
+        for target in runtime.iter().filter(|target| target.enabled) {
+            let Some(source) = &target.mirror else { continue };
+            self.configure_drm_output(&target.output, target.mode, target.transform, true)?;
+            if self.output_named(&target.output.name()).is_some() {
+                self.remove_output(&target.output);
+            }
+            self.withdraw_output(&target.output);
+            target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
+            if self.outputs.mirroring.sources.insert(target.output.name(), source.clone()).as_ref() != Some(source) {
+                tracing::info!("{} mirrors {}", target.output.name(), source.name());
+            }
+        }
         for target in runtime.iter().filter(|target| !target.enabled) {
             self.configure_drm_output(&target.output, target.mode, target.transform, false)?;
+            self.outputs.mirroring.sources.remove(&target.output.name());
             if self.output_named(&target.output.name()).is_some() {
                 self.remove_output(&target.output);
                 self.withdraw_output(&target.output);
             }
             target.output.change_current_state(Some(target.mode), Some(target.transform), None, None);
         }
+        self.outputs.mirroring.tidy();
         self.configure_output_layouts();
         self.schedule_render();
         Ok(())
@@ -521,6 +575,29 @@ impl Tileception {
     pub fn forget_connected_output(&mut self, output: &Output) {
         self.withdraw_output(output);
         self.outputs.connected.remove(&output.name());
+        self.outputs.mirroring.sources.remove(&output.name());
+        self.outputs.mirroring.tidy();
+    }
+
+    /// A screen that was just connected. One set to mirror a screen with a
+    /// desktop starts as a mirror, so programs never see it come and go;
+    /// `configure_outputs` settles the rest.
+    pub fn connect_output(&mut self, output: Output) {
+        let outputs = &self.config.file.outputs;
+        let source = crate::scale::validate(outputs)
+            .ok()
+            .and_then(|()| outputs.get(&output.name()))
+            .filter(|setting| setting.enabled)
+            .and_then(|setting| setting.mirror.as_deref())
+            .and_then(|source| self.output_named(source));
+        if let Some(source) = source {
+            tracing::info!("{} mirrors {}", output.name(), source.name());
+            self.outputs.connected.insert(output.name(), output.clone());
+            self.outputs.mirroring.sources.insert(output.name(), source);
+            return;
+        }
+        self.advertise_output(&output);
+        self.add_output(output);
     }
 
     pub fn advertise_output(&mut self, output: &Output) {
@@ -1540,6 +1617,12 @@ impl Tileception {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
+        // A mirror has no desktop to take apart.
+        if self.output_named(&output.name()).is_none() {
+            self.outputs.mirroring.sources.remove(&output.name());
+            self.outputs.mirroring.tidy();
+            return;
+        }
         self.frost.get_mut().remove_output(&output.name());
         if let Some(shapes) = self.shapes.get() {
             shapes.remove_output(output);
@@ -1788,6 +1871,17 @@ impl Tileception {
                     scale
                 )
             })
+            .chain(self.outputs.mirroring.sources.iter().map(|(name, source)| {
+                let size = self
+                    .outputs
+                    .connected
+                    .get(name)
+                    .and_then(|output| {
+                        output.current_mode().map(|mode| output.current_transform().transform_size(mode.size))
+                    })
+                    .unwrap_or_default();
+                format!("{name} mirrors {} {}x{}\n", source.name(), size.w, size.h)
+            }))
             .collect()
     }
 

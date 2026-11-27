@@ -733,8 +733,7 @@ impl Tileception {
         };
         let size = wl_mode.size;
         tracing::info!("lit {name} at {}x{}@{:.2}", size.w, size.h, wl_mode.refresh as f64 / 1000.0);
-        self.advertise_output(&output);
-        self.add_output(output.clone());
+        self.connect_output(output.clone());
         surfaces.push(Lit {
             connector: connector.handle(),
             modes: connector.modes().to_vec(),
@@ -996,147 +995,160 @@ impl Tileception {
         };
         self.process_streams(&mut udev.renderer);
         self.process_window_copies(&mut udev.renderer);
-        for gpu in &mut gpus {
-            for lit in &mut gpu.surfaces {
-                if !lit.enabled || lit.frame_pending {
-                    continue;
+        // Screens with a desktop first, then the mirrors, which show what
+        // their sources just drew.
+        for mirrors in [false, true] {
+            for gpu in &mut gpus {
+                for lit in &mut gpu.surfaces {
+                    if !lit.enabled || lit.frame_pending || self.mirror_source(&lit.output).is_some() != mirrors {
+                        continue;
+                    }
+                    if mirrors {
+                        queued |= self.render_mirror(lit, &gbm, &mut udev.renderer, gpu.renderer.as_mut());
+                        continue;
+                    }
+                    let output = lit.output.clone();
+                    let secondary = gpu.renderer.is_some();
+                    let node = gpu.node;
+                    self.with_output(&output, |state| {
+                        state.update_bar();
+                        state.process_special_captures(&mut udev.renderer);
+                        let clear = state.clear_colour();
+                        let scene = state.frame_elements(&mut udev.renderer, now);
+                        state.process_captures(&mut udev.renderer, Some(&scene));
+                        state.draw_for_mirrors(&mut udev.renderer, &scene);
+                        let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                        let mut elements = if state.is_active_output() {
+                            state.cursor_elements(renderer, &mut udev.cursor)
+                        } else {
+                            Vec::new()
+                        };
+                        let elements = if let Some(secondary) = gpu.renderer.as_mut() {
+                            let size = state.output_pixels();
+                            // The pointer is drawn by the secondary GPU itself, so
+                            // moving it needs nothing new from the primary.
+                            lit.mirrored(&gbm, &mut udev.renderer, secondary, &scene, size, clear).map(|frame| {
+                                elements.push(frame);
+                                elements
+                            })
+                        } else {
+                            elements.extend(scene);
+                            Ok(elements)
+                        };
+                        let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
+                        let rendered = match &elements {
+                            Ok(elements) => lit
+                                .drm_output
+                                .render_frame(renderer, elements, clear, FrameFlags::DEFAULT)
+                                .map_err(|error| format!("render: {error:?}")),
+                            Err(error) => Err(format!("secondary GPU frame: {error}")),
+                        };
+                        match rendered {
+                            Ok(result) if !result.is_empty => {
+                                // A picture made on the primary GPU holds the
+                                // surfaces its own pass drew.
+                                let states = if secondary {
+                                    lit.mirror.as_ref().map(|mirror| mirror.states())
+                                } else {
+                                    Some(&result.states)
+                                };
+                                let feedback = state.presentation_feedback(states);
+                                let batch = state.take_fifo_barriers();
+                                let mut fifo: Vec<u64> = state.fifo_in_flight(batch).into_iter().collect();
+                                // If KMS cannot wait on the render fence, finish GPU work
+                                // before scanout rather than displaying an unfinished frame.
+                                let unfinished = match &result.primary_element {
+                                    PrimaryPlaneElement::Swapchain(element) if result.needs_sync() => element
+                                        .sync
+                                        .wait()
+                                        .inspect_err(|err| tracing::warn!("render sync: {err:?}"))
+                                        .is_err(),
+                                    _ => false,
+                                };
+                                // Looked at once that wait is over, as the
+                                // screen may have refreshed during it.
+                                let latest =
+                                    if lit.unchanged.is_empty() { None } else { latest_vblank(&gpu.manager, lit.crtc) };
+                                let (unchanged_fifo, waiting) = lit.take_unchanged(latest);
+                                fifo.extend(unchanged_fifo);
+                                lit.flipping.extend(waiting);
+                                let done = FrameDone { feedback, fifo: fifo.clone() };
+                                if unfinished {
+                                    lit.flipped(None);
+                                    release_now.extend(fifo);
+                                } else {
+                                    match lit.drm_output.queue_frame(done) {
+                                        Ok(()) => {
+                                            queued = true;
+                                            lit.frame_pending = true;
+                                            lit.lock_queued = state.is_locked();
+                                            lit.in_flight = state.frame_buffers(&lit.output);
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!("queue frame: {err}");
+                                            lit.flipped(None);
+                                            release_now.extend(fifo);
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(result) => {
+                                // Nothing changed on screen: what was committed is
+                                // already shown.
+                                let states = if secondary {
+                                    lit.mirror.as_ref().map(|mirror| mirror.states())
+                                } else {
+                                    Some(&result.states)
+                                };
+                                let feedback = state.presentation_feedback(states);
+                                let batch = state.take_fifo_barriers();
+                                let fifo = state.fifo_in_flight(batch);
+                                if feedback.is_some() || fifo.is_some() {
+                                    match latest_vblank(&gpu.manager, lit.crtc) {
+                                        None => {
+                                            // The kernel cannot say when the screen
+                                            // refreshes: shown as of now.
+                                            if let Some(feedback) = feedback {
+                                                let refresh = crate::frame_timing::refresh_of(&lit.output);
+                                                crate::frame_timing::presented_now(feedback, refresh);
+                                            }
+                                            release_now.extend(fifo);
+                                        }
+                                        Some((after, _)) => {
+                                            let token = NEXT_UNCHANGED.fetch_add(1, Ordering::Relaxed);
+                                            lit.unchanged.push(Unchanged { token, feedback, fifo, after });
+                                            let crtc = lit.crtc;
+                                            let timer = Timer::from_duration(unchanged_wait(&lit.output));
+                                            let registered =
+                                                state.loop_handle.insert_source(timer, move |_, _, state| {
+                                                    state.resolve_unchanged(node, crtc, token, 0);
+                                                    TimeoutAction::Drop
+                                                });
+                                            if let Err(error) = registered {
+                                                tracing::warn!("presentation timer: {error}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!("{}: {error}", lit.output.name());
+                                let batch = state.take_fifo_barriers();
+                                release_now.extend(state.fifo_in_flight(batch));
+                            }
+                        }
+                        let elapsed = state.start.elapsed();
+                        // Minimized windows are hidden: no frames, so they need not draw.
+                        // Windows in every area of a split screen draw.
+                        for (_, window) in state.windows.iter().filter(|(window_id, _)| state.screen_shows(**window_id))
+                        {
+                            window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| {
+                                Some(lit.output.clone())
+                            });
+                        }
+                        state.send_layer_frames(elapsed);
+                    });
                 }
-                let output = lit.output.clone();
-                let secondary = gpu.renderer.is_some();
-                let node = gpu.node;
-                self.with_output(&output, |state| {
-                    state.update_bar();
-                    state.process_special_captures(&mut udev.renderer);
-                    let clear = state.clear_colour();
-                    let scene = state.frame_elements(&mut udev.renderer, now);
-                    state.process_captures(&mut udev.renderer, Some(&scene));
-                    let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
-                    let mut elements = if state.is_active_output() {
-                        state.cursor_elements(renderer, &mut udev.cursor)
-                    } else {
-                        Vec::new()
-                    };
-                    let elements = if let Some(secondary) = gpu.renderer.as_mut() {
-                        let size = state.output_pixels();
-                        // The pointer is drawn by the secondary GPU itself, so
-                        // moving it needs nothing new from the primary.
-                        lit.mirrored(&gbm, &mut udev.renderer, secondary, &scene, size, clear).map(|frame| {
-                            elements.push(frame);
-                            elements
-                        })
-                    } else {
-                        elements.extend(scene);
-                        Ok(elements)
-                    };
-                    let renderer = gpu.renderer.as_mut().unwrap_or(&mut udev.renderer);
-                    let rendered = match &elements {
-                        Ok(elements) => lit
-                            .drm_output
-                            .render_frame(renderer, elements, clear, FrameFlags::DEFAULT)
-                            .map_err(|error| format!("render: {error:?}")),
-                        Err(error) => Err(format!("secondary GPU frame: {error}")),
-                    };
-                    match rendered {
-                        Ok(result) if !result.is_empty => {
-                            // A picture made on the primary GPU holds the
-                            // surfaces its own pass drew.
-                            let states = if secondary {
-                                lit.mirror.as_ref().map(|mirror| mirror.states())
-                            } else {
-                                Some(&result.states)
-                            };
-                            let feedback = state.presentation_feedback(states);
-                            let batch = state.take_fifo_barriers();
-                            let mut fifo: Vec<u64> = state.fifo_in_flight(batch).into_iter().collect();
-                            // If KMS cannot wait on the render fence, finish GPU work
-                            // before scanout rather than displaying an unfinished frame.
-                            let unfinished = match &result.primary_element {
-                                PrimaryPlaneElement::Swapchain(element) if result.needs_sync() => element
-                                    .sync
-                                    .wait()
-                                    .inspect_err(|err| tracing::warn!("render sync: {err:?}"))
-                                    .is_err(),
-                                _ => false,
-                            };
-                            // Looked at once that wait is over, as the
-                            // screen may have refreshed during it.
-                            let latest =
-                                if lit.unchanged.is_empty() { None } else { latest_vblank(&gpu.manager, lit.crtc) };
-                            let (unchanged_fifo, waiting) = lit.take_unchanged(latest);
-                            fifo.extend(unchanged_fifo);
-                            lit.flipping.extend(waiting);
-                            let done = FrameDone { feedback, fifo: fifo.clone() };
-                            if unfinished {
-                                lit.flipped(None);
-                                release_now.extend(fifo);
-                            } else {
-                                match lit.drm_output.queue_frame(done) {
-                                    Ok(()) => {
-                                        queued = true;
-                                        lit.frame_pending = true;
-                                        lit.lock_queued = state.is_locked();
-                                        lit.in_flight = state.frame_buffers(&lit.output);
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!("queue frame: {err}");
-                                        lit.flipped(None);
-                                        release_now.extend(fifo);
-                                    }
-                                }
-                            }
-                        }
-                        Ok(result) => {
-                            // Nothing changed on screen: what was committed is
-                            // already shown.
-                            let states = if secondary {
-                                lit.mirror.as_ref().map(|mirror| mirror.states())
-                            } else {
-                                Some(&result.states)
-                            };
-                            let feedback = state.presentation_feedback(states);
-                            let batch = state.take_fifo_barriers();
-                            let fifo = state.fifo_in_flight(batch);
-                            if feedback.is_some() || fifo.is_some() {
-                                match latest_vblank(&gpu.manager, lit.crtc) {
-                                    None => {
-                                        // The kernel cannot say when the screen
-                                        // refreshes: shown as of now.
-                                        if let Some(feedback) = feedback {
-                                            let refresh = crate::frame_timing::refresh_of(&lit.output);
-                                            crate::frame_timing::presented_now(feedback, refresh);
-                                        }
-                                        release_now.extend(fifo);
-                                    }
-                                    Some((after, _)) => {
-                                        let token = NEXT_UNCHANGED.fetch_add(1, Ordering::Relaxed);
-                                        lit.unchanged.push(Unchanged { token, feedback, fifo, after });
-                                        let crtc = lit.crtc;
-                                        let timer = Timer::from_duration(unchanged_wait(&lit.output));
-                                        let registered = state.loop_handle.insert_source(timer, move |_, _, state| {
-                                            state.resolve_unchanged(node, crtc, token, 0);
-                                            TimeoutAction::Drop
-                                        });
-                                        if let Err(error) = registered {
-                                            tracing::warn!("presentation timer: {error}");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!("{}: {error}", lit.output.name());
-                            let batch = state.take_fifo_barriers();
-                            release_now.extend(state.fifo_in_flight(batch));
-                        }
-                    }
-                    let elapsed = state.start.elapsed();
-                    // Minimized windows are hidden: no frames, so they need not draw.
-                    // Windows in every area of a split screen draw.
-                    for (_, window) in state.windows.iter().filter(|(window_id, _)| state.screen_shows(**window_id)) {
-                        window.send_frame(&lit.output, elapsed, Some(Duration::ZERO), |_, _| Some(lit.output.clone()));
-                    }
-                    state.send_layer_frames(elapsed);
-                });
             }
         }
         udev.gpus = gpus;
@@ -1183,6 +1195,61 @@ impl Tileception {
         }
         self.sleep_frame_queued(queued);
         self.after_frame();
+    }
+
+    /// Draws a mirroring screen: its source's last frame, scaled to fit.
+    /// Nothing waits on it: programs are paced by the source's frames, so
+    /// it reports no presentation and sends no frame callbacks. Returns
+    /// whether a frame was queued.
+    fn render_mirror(
+        &mut self,
+        lit: &mut Lit,
+        gbm: &GbmDevice<DrmDeviceFd>,
+        primary: &mut GlesRenderer,
+        secondary: Option<&mut GlesRenderer>,
+    ) -> bool {
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let scene = self.mirror_elements(&lit.output);
+        self.process_mirror_captures(primary, &lit.output, &scene);
+        let (elements, renderer) = match secondary {
+            Some(secondary) => {
+                let size = lit.output.current_transform().transform_size(lit.mode.size);
+                match lit.mirrored(gbm, primary, secondary, &scene, (size.w, size.h), black) {
+                    Ok(frame) => (vec![frame], secondary),
+                    Err(error) => {
+                        tracing::warn!("{}: secondary GPU frame: {error}", lit.output.name());
+                        return false;
+                    }
+                }
+            }
+            None => (scene, primary),
+        };
+        let result = match lit.drm_output.render_frame(renderer, &elements, black, FrameFlags::DEFAULT) {
+            Ok(result) if !result.is_empty => result,
+            Ok(_) => return false,
+            Err(error) => {
+                tracing::warn!("{}: render: {error:?}", lit.output.name());
+                return false;
+            }
+        };
+        if let PrimaryPlaneElement::Swapchain(element) = &result.primary_element
+            && result.needs_sync()
+            && let Err(error) = element.sync.wait()
+        {
+            tracing::warn!("render sync: {error:?}");
+            return false;
+        }
+        match lit.drm_output.queue_frame(FrameDone { feedback: None, fifo: Vec::new() }) {
+            Ok(()) => {
+                lit.frame_pending = true;
+                lit.lock_queued = self.is_locked();
+                true
+            }
+            Err(error) => {
+                tracing::warn!("queue frame: {error}");
+                false
+            }
+        }
     }
 
     /// Opens a device for a VT switch, from the keyboard shortcut.

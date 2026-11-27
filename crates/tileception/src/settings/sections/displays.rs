@@ -46,10 +46,19 @@ impl Screen {
 
     pub(super) fn display_rects(&self) -> Vec<(usize, Rect)> {
         let mut next = 0.;
+        let enabled = |row: &Row| row.value.get("enabled").and_then(toml::Value::as_bool) != Some(false);
+        // A screen mirroring another that is on has no place of its own.
+        let mirroring = |row: &Row| {
+            row.value.get("mirror").and_then(toml::Value::as_str).is_some_and(|source| {
+                self.rows
+                    .iter()
+                    .any(|other| other.name == source && enabled(other) && other.value.get("mirror").is_none())
+            })
+        };
         let mut indices: Vec<_> = (0..self.rows.len())
             .filter(|index| {
-                self.rows[*index].name != "*"
-                    && self.rows[*index].value.get("enabled").and_then(toml::Value::as_bool) != Some(false)
+                let row = &self.rows[*index];
+                row.name != "*" && enabled(row) && !mirroring(row)
             })
             .collect();
         indices.sort_by_key(|index| {
