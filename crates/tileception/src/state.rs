@@ -906,8 +906,8 @@ impl Tileception {
         }
         let focus = self.world.focus();
         if !self.world.in_overview() {
-            let screen = self.world.screen();
             for placement in self.world.placements(self.world.target_view()) {
+                let screen = self.world.room_for(placement.role);
                 if !placement.rect.intersects(&screen) {
                     continue;
                 }

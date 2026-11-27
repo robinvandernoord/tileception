@@ -206,6 +206,10 @@ pub struct World {
     cleared: Option<ClearedDesk>,
     /// The output area the framed space fills, in pixels.
     screen: Rect,
+    /// Where floating windows may hang, when wider than `screen`: the whole
+    /// screen when it is split into areas, so a float can reach over the
+    /// area beside its own.
+    float_room: Option<Rect>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -304,6 +308,7 @@ impl World {
             minimized: Vec::new(),
             cleared: None,
             screen,
+            float_room: None,
         }
     }
 
@@ -331,15 +336,43 @@ impl World {
         self.screen
     }
 
-    /// Changes the room the world fills. Floating windows that no longer fit,
-    /// as when a screen is split under them, move and shrink onto it.
+    /// Changes the room the world fills. Floating windows that no longer fit
+    /// their room move and shrink onto it.
     pub fn set_screen(&mut self, screen: Rect) {
         self.screen = screen;
-        if screen.w <= 0.0 || screen.h <= 0.0 {
+        self.fit_floats();
+    }
+
+    /// Where floating windows may hang: `screen` unless a wider room is set.
+    pub fn float_room(&self) -> Rect {
+        self.float_room.unwrap_or(self.screen)
+    }
+
+    /// Changes the room the world fills and lets floating windows hang
+    /// anywhere in `float_room` rather than only on `screen`, or (with
+    /// `None`) only on `screen`. New floating windows still open on `screen`.
+    /// Floats outside their room move onto it.
+    pub fn set_rooms(&mut self, screen: Rect, float_room: Option<Rect>) {
+        self.screen = screen;
+        self.float_room = float_room;
+        self.fit_floats();
+    }
+
+    /// Where a window in `role` may be drawn: its float room or the screen.
+    pub fn room_for(&self, role: WindowRole) -> Rect {
+        match role {
+            WindowRole::Floating => self.float_room(),
+            WindowRole::Tiled => self.screen,
+        }
+    }
+
+    fn fit_floats(&mut self) {
+        let room = self.float_room();
+        if room.w <= 0.0 || room.h <= 0.0 {
             return;
         }
         for float in self.floats.values_mut() {
-            float.rect = fit_on(float.rect, screen);
+            float.rect = fit_on(float.rect, room);
         }
     }
 
@@ -517,9 +550,9 @@ impl World {
     }
 
     /// Centres a floating window over a rectangle, such as the window a
-    /// dialog belongs to, keeping its size and staying on screen.
+    /// dialog belongs to, keeping its size and staying in its room.
     pub fn centre_float_over(&mut self, win: WindowId, over: Rect) {
-        let screen = self.screen;
+        let screen = self.float_room();
         if let Some(float) = self.floats.get_mut(&win) {
             let (width, height) = (float.rect.w, float.rect.h);
             let rect = Rect::new(over.x + (over.w - width) / 2.0, over.y + (over.h - height) / 2.0, width, height);
@@ -528,9 +561,9 @@ impl World {
     }
 
     /// Grows a floating window's rectangle to a size its program insists on
-    /// (a dialog that grew), keeping its centre and staying on screen.
+    /// (a dialog that grew), keeping its centre and staying in its room.
     pub fn grow_float(&mut self, win: WindowId, width: f64, height: f64) {
-        let screen = self.screen;
+        let screen = self.float_room();
         if let Some(float) = self.floats.get_mut(&win) {
             let (width, height) = (width.max(float.rect.w).min(screen.w), height.max(float.rect.h).min(screen.h));
             let (center_x, center_y) = (float.rect.x + float.rect.w / 2.0, float.rect.y + float.rect.h / 2.0);
@@ -540,10 +573,10 @@ impl World {
         }
     }
 
-    /// Moves a floating window wholly onto the screen, shrinking it if it is
+    /// Moves a floating window wholly into its room, shrinking it if it is
     /// larger. Returns whether it changed.
     pub fn fit_float(&mut self, win: WindowId) -> bool {
-        let screen = self.screen;
+        let screen = self.float_room();
         let Some(float) = self.floats.get_mut(&win) else { return false };
         let fitted = fit_on(float.rect, screen);
         let changed = fitted != float.rect;
@@ -1080,7 +1113,7 @@ impl World {
     fn add_float(&mut self, win: WindowId, rect: Option<Rect>) {
         let rect = rect.or_else(|| self.last_float.get(&win).copied()).unwrap_or_else(|| self.default_float_rect());
         // The screen may have shrunk or been split since it floated there.
-        let rect = fit_on(rect, self.screen);
+        let rect = fit_on(rect, self.float_room());
         self.floats.insert(win, Float { rect, sized: true });
         self.tree.float(win);
     }
@@ -2105,6 +2138,39 @@ mod tests {
         world.set_float_rect(WindowId(1), Rect::new(half.x + 10.0, half.y + 10.0, 100.0, 100.0));
         world.set_screen(Rect::new(half.x, half.y, half.w - 1.0, half.h));
         assert_eq!(world.float_rect(WindowId(1)), Some(Rect::new(half.x + 10.0, half.y + 10.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn floats_hang_anywhere_in_their_room() {
+        let mut world = world();
+        let screen = world.screen();
+        world.add_window(WindowId(1), Placement::Float, 0.0);
+        let wide = Rect::new(screen.x + 40.0, screen.y + 20.0, screen.w - 80.0, 300.0);
+        world.set_float_rect(WindowId(1), wide);
+        // Split in two, the float room still the whole screen: it stays put.
+        let half = Rect::new(screen.x, screen.y, screen.w / 2.0, screen.h);
+        world.set_rooms(half, Some(screen));
+        assert_eq!(world.float_rect(WindowId(1)), Some(wide));
+        assert!(!world.fit_float(WindowId(1)), "within its room");
+        assert_eq!(world.room_for(WindowRole::Floating), screen);
+        assert_eq!(world.room_for(WindowRole::Tiled), half);
+        // A float restored from minimized fits the room, not the area.
+        world.minimize(WindowId(1), 0.0);
+        world.restore(WindowId(1), 1.0);
+        assert_eq!(world.float_rect(WindowId(1)), Some(wide));
+        // New floats still open in their own area.
+        world.add_window(WindowId(2), Placement::Float, 2.0);
+        let fresh = world.float_rect(WindowId(2)).unwrap();
+        assert!(half.contains_rect(&fresh), "{fresh:?} in {half:?}");
+        // Without the room, floats come back to the area.
+        world.set_rooms(half, None);
+        let fitted = world.float_rect(WindowId(1)).unwrap();
+        assert!(half.contains_rect(&fitted), "{fitted:?} on {half:?}");
+        // Combined again: the float keeps its place on the whole screen.
+        world.set_float_rect(WindowId(1), wide);
+        world.set_rooms(half, Some(screen));
+        world.set_rooms(screen, None);
+        assert_eq!(world.float_rect(WindowId(1)), Some(wide));
     }
 
     #[test]

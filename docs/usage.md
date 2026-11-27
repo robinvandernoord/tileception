@@ -113,8 +113,9 @@ scroll and show hover effects without taking the keyboard.
 - Drag the gap between two areas to change their widths. Resizing a window on
   the side where its area meets the next one moves that gap too.
 - Alt-drag a window into another area to move it there. A floating window
-  dropped there lands wholly inside it; floating windows also shrink and move
-  to stay inside their area when it narrows.
+  belongs to the area the pointer was in when you let go, but it can reach
+  over the areas beside it and stays where you put it when an area's width
+  changes. Clicking it makes its area active.
 - **Super+M** zooms to the focused window within its area. **Super+F** covers
   the whole monitor.
 - The overview and the minimized-window strip belong to the active area.

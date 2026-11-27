@@ -864,7 +864,10 @@ impl Tileception {
             let shown = self.with_area(&area, |state| {
                 let room = state.area_clip().unwrap_or_else(|| state.output_rect());
                 let mut shown = state.drawn_windows(now);
-                shown.retain(|drawn| drawn.content.intersects(&room));
+                // Floating windows are not cut to their area.
+                shown.retain(|drawn| {
+                    drawn.role == tileception_core::WindowRole::Floating || drawn.content.intersects(&room)
+                });
                 shown
             });
             drawn.extend(shown.unwrap_or_default());
@@ -993,11 +996,34 @@ impl Tileception {
             .unwrap_or(areas.shares.len() - 1)
     }
 
+    /// The area of the context screen whose floating window is over a point.
+    /// The area in use goes first, as its floating windows are drawn on top.
+    pub(crate) fn float_area_at(&self, point: tileception_core::Point) -> Option<usize> {
+        let areas = self.split()?;
+        let covers = |world: &World| {
+            world
+                .tree()
+                .floats()
+                .iter()
+                .any(|window| world.float_rect(*window).is_some_and(|rect| rect.contains(point)))
+        };
+        let mut worlds = self.area_worlds();
+        worlds.sort_by_key(|(index, _)| *index != areas.context);
+        worlds.into_iter().find(|(_, world)| covers(world)).map(|(index, _)| index)
+    }
+
+    /// The area of the context screen that a point belongs to: the one whose
+    /// floating window is there, which may reach over the area beside its
+    /// own, else the one under it.
+    pub fn area_under(&self, pos: Point<f64, Logical>) -> usize {
+        self.float_area_at(tileception_core::Point::new(pos.x, pos.y)).unwrap_or_else(|| self.area_at(pos.x))
+    }
+
     /// The area of the context screen the pointer is over, when it is not the
     /// active one. Hovering there does not activate it; a click does.
     fn hovered_area(&self) -> Option<usize> {
         let areas = self.split()?;
-        let index = self.area_at(self.pointer.x);
+        let index = self.area_under(self.pointer);
         (index != areas.active && self.fullscreen.is_none()).then_some(index)
     }
 
@@ -1052,7 +1078,7 @@ impl Tileception {
     /// or a touch in its room. Returns whether it switched areas.
     pub fn activate_area_at(&mut self, pos: Point<f64, Logical>) -> bool {
         let Some(areas) = self.split() else { return false };
-        let index = self.area_at(pos.x);
+        let index = self.area_under(pos);
         if index == areas.active || self.fullscreen.is_some() {
             return false;
         }
@@ -1073,7 +1099,7 @@ impl Tileception {
         if self.fullscreen.is_some() || pos.y < areas.usable.y || pos.y >= areas.usable.bottom() {
             return None;
         }
-        if self.float_covers(tileception_core::Point::new(pos.x, pos.y)) {
+        if self.float_area_at(tileception_core::Point::new(pos.x, pos.y)).is_some() {
             return None;
         }
         let reach = self.world.settings.gap / 2.0 + 4.0;
@@ -1154,8 +1180,9 @@ impl Tileception {
             areas.usable = usable;
             areas.shares.clone()
         }) else {
-            if usable != self.world.screen() {
-                self.world.set_screen(usable);
+            let wider_floats = self.world.float_room() != self.world.screen();
+            if usable != self.world.screen() || wider_floats {
+                self.world.set_rooms(usable, None);
                 if layout {
                     self.apply_layout();
                 }
@@ -1165,8 +1192,9 @@ impl Tileception {
         for index in 0..shares.len() {
             let rect = slice(usable, &shares, index);
             self.with_local_area(index, |state| {
-                if state.world.screen() != rect {
-                    state.world.set_screen(rect);
+                // Floating windows may reach over the areas beside their own.
+                if state.world.screen() != rect || state.world.float_room() != usable {
+                    state.world.set_rooms(rect, Some(usable));
                     if layout {
                         state.apply_layout();
                     }

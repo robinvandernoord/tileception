@@ -1268,11 +1268,6 @@ impl Tileception {
                 if let Some(target) = drag.target {
                     self.world.apply_drop(drag.window, target, now);
                 }
-                // On a split screen, what hangs over a neighbouring area is cut
-                // off, so a floating window lands wholly in its own.
-                if self.area_clip().is_some() {
-                    self.world.fit_float(drag.window);
-                }
                 self.apply_layout();
                 self.persist_layout();
                 // A title bar drag began with a press the client saw; close it.
@@ -1713,7 +1708,9 @@ impl Tileception {
 
     /// The split boundary under a point, if any, for dragging gaps.
     pub(crate) fn gap_at(&self, pos: Point<f64, Logical>) -> Option<GapDrag> {
-        if self.float_covers(tileception_core::Point::new(pos.x, pos.y)) {
+        let point = tileception_core::Point::new(pos.x, pos.y);
+        // A floating window of the area beside may reach over this one.
+        if self.float_covers(point) || self.float_area_at(point).is_some() {
             return None;
         }
         let view = self.world.target_view();
