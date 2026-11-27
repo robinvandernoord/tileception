@@ -128,6 +128,11 @@ off_after = 600
 # lock_before_sleep = true
 
 [lock]
+# Behind the lock screen's tiles: "wallpaper" (the [theme] wallpaper, dimmed)
+# or "rain" (tile glyphs falling in the accent colours, with the clock drawn
+# in them and the tiles in a band along the bottom).
+# backdrop = "wallpaper"
+#
 # Notifications on Tileception's own lock screen (other lockers draw only
 # themselves): "none", "count" (how many came in), "apps" (which apps, with
 # the content hidden) or "full" (what they say, without their buttons).

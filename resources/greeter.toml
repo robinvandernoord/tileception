@@ -46,7 +46,10 @@ accent = true
 # Their shared wallpaper between the tiles (else wallpaper_fallback); off uses
 # the [theme] wallpaper for everyone.
 wallpaper = true
-# generated (from the accent), system (the [theme] wallpaper) or flat.
+# generated (from the accent), system (the [theme] wallpaper), flat, or rain:
+# tile glyphs falling in the person's accent colours. With wallpaper = true,
+# a shared wallpaper still covers the rain; set it to false for rain behind
+# everyone.
 wallpaper_fallback = "generated"
 
 [motd]

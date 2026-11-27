@@ -27,6 +27,8 @@ pub enum WallpaperFallback {
     System,
     /// Plain graphite.
     Flat,
+    /// Streams of tile glyphs falling in the person's accent colours.
+    Rain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]

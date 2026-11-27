@@ -18,6 +18,7 @@ mod draw;
 mod greetd;
 pub(crate) mod keymap;
 mod layout;
+mod rain;
 mod readings;
 mod sessions;
 mod settings;
@@ -47,7 +48,7 @@ use self::{
     accounts::Account,
     greetd::{ErrorType, Greetd, Prompt, Request, Response, Responses},
     sessions::Session,
-    settings::{Memory, Panel, UsersAs},
+    settings::{Memory, Panel, UsersAs, WallpaperFallback},
 };
 use crate::{Tileception, config::Mods, lock::LockState, text_input::SecretField, theme::Colour};
 
@@ -299,8 +300,9 @@ impl Greeter {
 
     /// The lock screen of a session: only `login` is shown, the theme stays
     /// the session's, and nothing is remembered. `still` reduces motion as
-    /// the session does without animations.
-    pub fn lock(login: &str, still: bool) -> Greeter {
+    /// the session does without animations. With `rain`, the clock is drawn
+    /// in the rain behind the tiles instead of in a tile of its own.
+    pub fn lock(login: &str, still: bool, rain: bool) -> Greeter {
         let account = accounts::list(&[]).into_iter().find(|listed| listed.login == login).unwrap_or_else(|| Account {
             login: login.to_string(),
             name: login.to_string(),
@@ -313,7 +315,11 @@ impl Greeter {
             // The administrator decides what a locked screen may show.
             lock: administrator.lock,
             reduce_motion: administrator.reduce_motion || still,
-            per_user: settings::PerUser { accent: false, wallpaper: false, ..Default::default() },
+            per_user: settings::PerUser {
+                accent: false,
+                wallpaper: false,
+                wallpaper_fallback: if rain { WallpaperFallback::Rain } else { WallpaperFallback::Generated },
+            },
             ..Default::default()
         };
         let mut greeter = Greeter::with(file, vec![account], Vec::new(), Memory::default(), PathBuf::new(), 0);
@@ -329,6 +335,15 @@ impl Greeter {
 
     fn locked(&self) -> bool {
         matches!(self.mode, Mode::Lock { .. })
+    }
+
+    /// Locked with rain behind: the clock is drawn in the rain above the
+    /// tiles, which keep to a band along the bottom. High contrast has no
+    /// rain, so the tiles fill the screen again.
+    fn rain_clock(&self) -> bool {
+        self.locked()
+            && self.file.per_user.wallpaper_fallback == WallpaperFallback::Rain
+            && !self.aid_on(Aid::HighContrast)
     }
 
     fn other(&self) -> bool {
@@ -1288,7 +1303,14 @@ impl Tileception {
         let Some(greeter) = self.greeter.as_deref() else { return Vec::new() };
         let screen = self.output_rect();
         let area = Rect::new(screen.x, screen.y + draw::BAR_H, screen.w, (screen.h - draw::BAR_H).max(0.0));
-        layout::place(&greeter.file.panels, area, self.config.file.general.gap.clamp(4.0, 32.0))
+        let gap = self.config.file.general.gap.clamp(4.0, 32.0);
+        if greeter.rain_clock() {
+            // The clock is in the rain above, so only these two need tiles.
+            let panels =
+                settings::Panels { columns: vec![vec![Panel::Login], vec![Panel::Session]], ratios: vec![1.3, 1.0] };
+            return layout::place(&panels, layout::rain_lock(area).1, gap);
+        }
+        layout::place(&greeter.file.panels, area, gap)
     }
 
     /// A press of the main button.
